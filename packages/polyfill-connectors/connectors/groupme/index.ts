@@ -636,6 +636,33 @@ interface PerConversationWalkResult {
   truncated: boolean;
 }
 
+/**
+ * Applies a declared `since` boundary to one fetched page: counts and emits
+ * only messages at-or-after `since`; a message before it is neither counted
+ * (does not inflate `considered` with an out-of-scope row) nor emitted.
+ *
+ * Does NOT assume the page is sorted newest-first — GroupMe's docs describe
+ * `before_id` pagination but make no ordering guarantee this connector can
+ * verify from the response alone, so every message is checked individually
+ * rather than stopping at the first in-page out-of-scope row. Returns
+ * whether EVERY message on this page was out of scope (`pageFullyOutOfScope`)
+ * — the caller only stops fetching further pages on that signal, which is
+ * robust to a single non-monotonic straggler: one out-of-order early/late
+ * message on an otherwise in-scope page keeps the walk going, and only a
+ * page that is entirely out of scope is treated as having crossed the
+ * boundary.
+ */
+function applySinceBoundToPage(
+  messages: GroupMeMessage[],
+  sinceEpochSeconds: number | null
+): { inScope: GroupMeMessage[]; pageFullyOutOfScope: boolean } {
+  if (sinceEpochSeconds === null) {
+    return { inScope: messages, pageFullyOutOfScope: false };
+  }
+  const inScope = messages.filter((msg) => msg.created_at >= sinceEpochSeconds);
+  return { inScope, pageFullyOutOfScope: inScope.length === 0 };
+}
+
 async function collectGroupMessagesForGroup(
   token: string,
   group: GroupMeGroup,
@@ -666,33 +693,36 @@ async function collectGroupMessagesForGroup(
     });
 
     const messages = resp.messages || [];
-    totalSeen += messages.length;
-    await progressWithSignals("Fetched group messages page", {
-      stream: "group_messages",
-      phase: "page",
-      item_count: messages.length,
-      total_seen: totalSeen,
-    });
-
     if (!messages.length) {
       return { totalSeen, truncated: false };
     }
 
-    for (const msg of messages) {
-      // GroupMe pages messages newest-first (before_id walks backward), so
-      // once a message falls before the declared `since` boundary every
-      // message after it in this and all subsequent pages is also out of
-      // bounds. Stopping here is an honest, fully-considered end of the
-      // DECLARED scope, not a truncation — `truncated` stays false so the
-      // caller still commits STATE and a coverage claim for the boundary it
-      // was asked to walk.
-      if (sinceEpochSeconds !== null && msg.created_at < sinceEpochSeconds) {
-        return { totalSeen, truncated: false };
-      }
+    // `considered` (totalSeen) counts only messages inside the declared
+    // scope — a page spanning the boundary must not credit its out-of-scope
+    // tail as part of what was "considered" for this run's coverage claim.
+    const { inScope, pageFullyOutOfScope } = applySinceBoundToPage(messages, sinceEpochSeconds);
+    totalSeen += inScope.length;
+    await progressWithSignals("Fetched group messages page", {
+      stream: "group_messages",
+      phase: "page",
+      item_count: inScope.length,
+      total_seen: totalSeen,
+    });
+
+    for (const msg of inScope) {
       const record = await toGroupMessageRecord(msg, group.id, uploader, emitAttachmentRecord);
       if (cursor.shouldEmit(record)) {
         await emitRecord("group_messages", record);
       }
+    }
+
+    // Every message on this page was before `since`: this page (and every
+    // page after it, since before_id only walks further back in time) is
+    // entirely outside the declared boundary. This is an honest, fully-
+    // considered end of the DECLARED scope, not a truncation — `truncated`
+    // stays false so the caller still commits STATE and a coverage claim.
+    if (pageFullyOutOfScope) {
+      return { totalSeen, truncated: false };
     }
 
     if (messages.length < PAGE_SIZE) {
@@ -894,29 +924,33 @@ async function collectDirectChatMessagesForChat(
     });
 
     const messages = resp.direct_messages || [];
-    totalSeen += messages.length;
-    await progressWithSignals("Fetched direct messages page", {
-      stream: "direct_chat_messages",
-      phase: "page",
-      item_count: messages.length,
-      total_seen: totalSeen,
-    });
-
     if (!messages.length) {
       return { totalSeen, truncated: false };
     }
 
-    for (const msg of messages) {
-      // Same newest-first walk-back logic as collectGroupMessagesForGroup: a
-      // message before the declared `since` ends the DECLARED scope cleanly,
-      // not via truncation.
-      if (sinceEpochSeconds !== null && msg.created_at < sinceEpochSeconds) {
-        return { totalSeen, truncated: false };
-      }
+    // Same in-scope-only accounting as collectGroupMessagesForGroup: a page
+    // spanning the boundary must not credit its out-of-scope tail as part of
+    // what was "considered".
+    const { inScope, pageFullyOutOfScope } = applySinceBoundToPage(messages, sinceEpochSeconds);
+    totalSeen += inScope.length;
+    await progressWithSignals("Fetched direct messages page", {
+      stream: "direct_chat_messages",
+      phase: "page",
+      item_count: inScope.length,
+      total_seen: totalSeen,
+    });
+
+    for (const msg of inScope) {
       const record = await toDirectChatMessageRecord(msg, chat.id, uploader, emitAttachmentRecord);
       if (cursor.shouldEmit(record)) {
         await emitRecord("direct_chat_messages", record);
       }
+    }
+
+    // Same non-monotonic-safe stop condition as collectGroupMessagesForGroup:
+    // only a page that is entirely out of scope ends the walk cleanly.
+    if (pageFullyOutOfScope) {
+      return { totalSeen, truncated: false };
     }
 
     if (messages.length < PAGE_SIZE) {
