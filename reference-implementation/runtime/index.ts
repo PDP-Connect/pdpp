@@ -13,6 +13,7 @@ import { emitControllerBootedAndStashEpoch } from "../lib/controller-boot.ts";
 import type { SpineEventInput, SpineEventRecord } from "../lib/spine.ts";
 import { createTraceContext, emitSpineEvent, getCurrentBootEpoch } from "../lib/spine.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
+import { readStoredCollectionScope } from "../server/local-collection-scope.ts";
 import { getDefaultConnectorAttentionStore } from "../server/stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
 import {
@@ -1087,7 +1088,8 @@ function validateStartScopeStream(streamScope: StreamScope, manifestStream: Mani
 
 function buildStartScope(
   manifest: ConnectorManifest | null | undefined,
-  providedScope: { streams?: unknown } | null | undefined
+  providedScope: { streams?: unknown } | null | undefined,
+  declaredCollectionScopeSince?: string | null
 ): StartScope {
   const manifestByStream = new Map<string, ManifestStream>(
     (manifest?.streams || []).map((stream) => [stream.name, stream])
@@ -1105,9 +1107,20 @@ function buildStartScope(
     };
   }
 
+  // No explicit per-run scope: fold in the connection's own durably-declared
+  // `collection_scope.since` (owner-set via
+  // `PUT /v1/owner/connections/:id/collection-scope`) as every default
+  // stream's `time_range.since`. This is the only place a hosted (non
+  // local-device) run's scope reaches the connector: `runNow` never builds an
+  // explicit `providedScope` for an ordinary sync, so without this the owner's
+  // declared boundary would be persisted but never delivered. Connectors that
+  // don't bound their query by `since` simply ignore the field; the emission
+  // gate (`passesTimeRange`) still drops any record a connector emits outside
+  // it for streams with a `consent_time_field`.
+  const defaultTimeRange = declaredCollectionScopeSince ? { time_range: { since: declaredCollectionScopeSince } } : {};
   const streams = (manifest?.streams || [])
     .filter((stream) => !streamUnsupportedInDefaultScope(stream))
-    .map((stream) => ({ name: stream.name }));
+    .map((stream) => ({ name: stream.name, ...defaultTimeRange }));
   if (!streams.length) {
     throw new Error("START.scope requires at least one stream");
   }
@@ -2002,7 +2015,8 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   validateRequiredRuntimeBindings(requiredBindings, availableBindings);
 
   const explicitlyRequestedStreams = requestedRuntimeStreams(providedScope);
-  const startScope = buildStartScope(manifest, providedScope);
+  const declaredCollectionScope = readStoredCollectionScope(state).scope;
+  const startScope = buildStartScope(manifest, providedScope, declaredCollectionScope?.since ?? null);
   const startCollectionMode = validateCollectionMode(collectionMode);
   const startState = persistState ? validateStartState(state) : null;
   // §4.3: validate and normalize recoveryOnly — must be a boolean if provided

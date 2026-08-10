@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 
+import { buildStoredCollectionScope, COLLECTION_SCOPE_STATE_KEY } from "../server/local-collection-scope.ts";
 import {
   loadSyncState,
   type RuntimeRunConnectorOptions,
@@ -1220,6 +1221,126 @@ test("Collection Profile conformance", async (t) => {
             },
           ],
         });
+      } finally {
+        cleanup();
+        rmSync(tmpDir, { force: true, recursive: true });
+        await closeServer(server);
+      }
+    }
+  );
+
+  await t.test(
+    "an ordinary hosted run (no providedScope) folds the connection's declared collection_scope.since into every default stream's time_range",
+    async () => {
+      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const { asPort, rsPort } = server;
+      const manifest = {
+        ...MINIMAL_MANIFEST,
+        connector_id: "test-hosted-declared-scope",
+        streams: [
+          {
+            consent_time_field: "source_updated_at",
+            name: "items",
+            primary_key: ["id"],
+            schema: {
+              properties: {
+                id: { type: "string" },
+                source_updated_at: { type: "string" },
+                value: { type: "string" },
+              },
+              required: ["value"],
+              type: "object",
+            },
+            semantics: "append_only",
+          },
+        ],
+      };
+      const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+      const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-hosted-declared-scope-"));
+      const capturePath = join(tmpDir, "start.json");
+      const { connectorPath, cleanup } = createStartCaptureConnector(capturePath);
+      const declaredSince = "2026-08-01T00:00:00.000Z";
+      const storedScope = buildStoredCollectionScope({ since: declaredSince }, "2026-08-01T00:00:00.000Z");
+
+      try {
+        // No `scope` option: this is the ordinary owner-agent `runNow` path
+        // (`server/routes/owner-connection-run.ts` never builds a
+        // `providedScope`). The connection's own durably-declared boundary
+        // (as written by `PUT /v1/owner/connections/:id/collection-scope`,
+        // persisted under the reserved `$collection_scope` state key) must
+        // still reach the connector.
+        const result = await runTestConnector({
+          collectionMode: "full_refresh",
+          connectorId,
+          connectorPath,
+          manifest,
+          onInteraction: async () => ({}),
+          ownerToken,
+          persistState: true,
+          rsUrl: `http://localhost:${rsPort}`,
+          state: { [COLLECTION_SCOPE_STATE_KEY]: storedScope },
+        });
+
+        assert.equal(result.status, "succeeded");
+        const captured = JSON.parse(readFileSync(capturePath, "utf8"));
+        assert.deepEqual(captured.scope, {
+          streams: [{ name: "items", time_range: { since: declaredSince } }],
+        });
+      } finally {
+        cleanup();
+        rmSync(tmpDir, { force: true, recursive: true });
+        await closeServer(server);
+      }
+    }
+  );
+
+  await t.test(
+    "an ordinary hosted run with no declared collection_scope omits time_range entirely (unscoped, unchanged default behavior)",
+    async () => {
+      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const { asPort, rsPort } = server;
+      const manifest = {
+        ...MINIMAL_MANIFEST,
+        connector_id: "test-hosted-no-declared-scope",
+        streams: [
+          {
+            consent_time_field: "source_updated_at",
+            name: "items",
+            primary_key: ["id"],
+            schema: {
+              properties: {
+                id: { type: "string" },
+                source_updated_at: { type: "string" },
+                value: { type: "string" },
+              },
+              required: ["value"],
+              type: "object",
+            },
+            semantics: "append_only",
+          },
+        ],
+      };
+      const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+      const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-hosted-no-declared-scope-"));
+      const capturePath = join(tmpDir, "start.json");
+      const { connectorPath, cleanup } = createStartCaptureConnector(capturePath);
+
+      try {
+        const result = await runTestConnector({
+          collectionMode: "full_refresh",
+          connectorId,
+          connectorPath,
+          manifest,
+          onInteraction: async () => ({}),
+          ownerToken,
+          persistState: true,
+          rsUrl: `http://localhost:${rsPort}`,
+          state: null,
+        });
+
+        assert.equal(result.status, "succeeded");
+        const captured = JSON.parse(readFileSync(capturePath, "utf8"));
+        assert.deepEqual(captured.scope, { streams: [{ name: "items" }] });
       } finally {
         cleanup();
         rmSync(tmpDir, { force: true, recursive: true });
