@@ -115,19 +115,26 @@ const MANIFEST_ROOTS = ["reference-implementation/manifests", "packages/polyfill
  * has to be a closed, PR-reviewed set. It contains no connector names, only
  * file-path pairs, so it does not reintroduce the violation class the guard
  * exists to forbid.
+ *
+ * Empty as of `ri-zero-knowledge-terminal-revise-0810`: the two production
+ * files that used to load a sibling RI-owned JSON registry through this
+ * allowlist no longer do. `compact-record-history.ts`'s per-connector
+ * fingerprint-exclusion policy is read generically from each connector's own
+ * manifest (`compaction_fingerprint`, a real manifest read already governed
+ * by the manifest-provenance check above, not this allowlist).
+ * `version-disposition.ts`'s two remaining reference-controlled signals
+ * split the same way: the manifest-declared `compaction_class` (also a real
+ * manifest read, governed above) for the connector-fact half, and OPERATOR
+ * RUNTIME STATE at `PDPP_COMPACTION_RESIDUE_REVIEW_PATH` — genuinely
+ * external state read at request time, never RI-committed source or
+ * RI-committed JSON, so it was never a candidate for this allowlist either
+ * (see `reference-implementation/server/version-disposition.ts`'s own module
+ * doc comment). Left as an explicit empty Map (not deleted) so a future
+ * legitimate RI-owned sibling registry has an obvious, documented place to
+ * register — adding an entry here is a real security decision, same bar as
+ * `SANCTIONED_GENERIC_DATA_READ_CALL_SITES` below.
  */
-const SANCTIONED_POLICY_RESOURCES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  [
-    "reference-implementation/server/version-disposition.ts",
-    new Set(["reference-implementation/server/version-disposition-policy.json"]),
-  ],
-  // compact-record-history.ts no longer reads a sibling RI-owned JSON
-  // registry (ri-zero-knowledge-terminal-revise-0810): its per-connector
-  // fingerprint-exclusion policy is now read generically from each
-  // connector's own manifest (`compaction_fingerprint`), a real manifest
-  // read already governed by the manifest-provenance check above, not this
-  // allowlist.
-]);
+const SANCTIONED_POLICY_RESOURCES: ReadonlyMap<string, ReadonlySet<string>> = new Map([]);
 
 /**
  * Closed, human-reviewed allowlist of call sites (file + 1-indexed line of
@@ -193,6 +200,19 @@ const SANCTIONED_GENERIC_DATA_READ_CALL_SITES: ReadonlySet<string> = new Set([
   // line-pinned by design (see this array's own doc comment above); it must
   // be re-derived whenever an edit anywhere above the call site shifts it.
   "reference-implementation/server/polyfill-manifest-reconcile.ts:103",
+  // readReviewedCompactionResidueMap() in version-disposition.ts:
+  // readFileSync(path, "utf8") where `path` is compactionResidueReviewPath()
+  // — process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH, an OPERATOR-supplied
+  // runtime-state file path (default /var/lib/pdpp/compaction-residue-
+  // review.json), never a connector-identity path. This is the operator
+  // reviewed-residue judgment call ri-zero-knowledge-terminal-revise-0810
+  // moved OUT of RI-committed JSON into external runtime state precisely
+  // because it must never be self-attested connector data; the path itself
+  // is env-configured operator input, the same class of call this allowlist
+  // already covers (cache.ts:125, common.ts:35 above). Verified by direct
+  // inspection: `path` here is never derived from a connector_id/stream, only
+  // from an env var with a fixed /var/lib/pdpp-relative default.
+  "reference-implementation/server/version-disposition.ts:238",
 ]);
 
 /** Directory segments, relative to a production scan root (e.g. `server/`),

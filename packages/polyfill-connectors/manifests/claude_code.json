@@ -51,6 +51,9 @@
       "description": "Claude Code sessions. One session = one CLI invocation in a specific project directory.",
       "compaction_class": "recurring_snapshot",
       "compaction_class_note": "aggregated per-session record; message_count/last_event_at widen on growth; never compactable, never re-alarms as growth accumulates.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Claude Code sessions",
         "detail": "Session start time, duration, project directory, git branch, Claude Code version, total message count."

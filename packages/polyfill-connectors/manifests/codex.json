@@ -57,6 +57,9 @@
       "description": "Codex CLI sessions. Canonical metadata comes from ~/.codex/state_5.sqlite#threads (title, archived, tokens_used, first_user_message, sandbox_policy, approval_mode), enriched with message/tool-call counts from the on-disk rollout JSONL.",
       "compaction_class": "recurring_snapshot",
       "compaction_class_note": "whole record is an evolving observation (message_count, last_event_at widen on growth); never compactable, never re-alarms as growth accumulates.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Codex CLI sessions",
         "detail": "Title, working directory, git commit/branch, model provider, CLI version, approval mode, sandbox policy, token usage, and counts."

@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
@@ -20,7 +24,90 @@ import {
   createSqliteConnectorInstanceStore,
   makeDefaultAccountConnectorInstanceId,
 } from "../server/stores/connector-instance-store.ts";
-import { REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT } from "../server/version-disposition.ts";
+import { resetReviewedCompactionResidueCacheForTests } from "../server/version-disposition.ts";
+
+// Real reviewed-at timestamp used by the tests below, matching the operator
+// runtime-state fixture seeded via withReviewedCompactionResidueFixture. Not
+// read from any committed file — ri-zero-knowledge-terminal-revise-0810
+// moved this out of RI-committed JSON into operator runtime state, so these
+// tests own their own fixture value instead of importing one.
+const USAA_ACCOUNTS_REVIEWED_AT = "2026-06-05T13:57:05.707Z";
+const USAA_STATEMENTS_REVIEWED_AT = "2026-06-05T13:57:05.707Z";
+const CHASE_STATEMENTS_REVIEWED_AT = "2026-06-05T13:57:05.707Z";
+
+// Seed a temp PDPP_COMPACTION_RESIDUE_REVIEW_PATH file with the operator
+// reviewed-residue fixture these tests rely on, run `fn`, then restore the
+// env var and reset version-disposition.ts's read-once cache. Mirrors the
+// prior REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT import, but as real operator
+// runtime state rather than an RI-committed constant.
+async function withReviewedCompactionResidueFixture<T>(fn: () => T | Promise<T>): Promise<T> {
+  const previous = process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH;
+  const dir = mkdtempSync(join(tmpdir(), "record-version-stats-residue-"));
+  const filePath = join(dir, "review.json");
+  writeFileSync(
+    filePath,
+    JSON.stringify({
+      "chase/statements": {
+        pendingRemediation: "content_fingerprint_pending",
+        reviewedAt: CHASE_STATEMENTS_REVIEWED_AT,
+      },
+      "usaa/accounts": { pendingRemediation: "owner_migration_pending", reviewedAt: USAA_ACCOUNTS_REVIEWED_AT },
+      "usaa/statements": { pendingRemediation: "content_fingerprint_pending", reviewedAt: USAA_STATEMENTS_REVIEWED_AT },
+    })
+  );
+  process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH = filePath;
+  resetReviewedCompactionResidueCacheForTests();
+  try {
+    return await fn();
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+    if (previous === undefined) {
+      delete process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH;
+    } else {
+      process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH = previous;
+    }
+    resetReviewedCompactionResidueCacheForTests();
+  }
+}
+
+// Test-only manifest-backed compactionClass resolver: reads the REAL manifest
+// JSON files from disk (the same static-file pattern connector-key.test.ts
+// already uses), NOT the runtime DB-catalog getConnectorManifest production
+// code path — this file never seeds the connectors table with github/slack/
+// ynab/claude-code/codex/usaa/chase manifests, so injecting this resolver via
+// buildRecordVersionStatsEnvelope's resolveConnectorManifest collaborator
+// lets the disposition tests exercise the real compaction_class values those
+// connectors' shipped manifests declare, without requiring a DB seed per
+// connector under test.
+//
+// packages/polyfill-connectors/manifests/ is checked FIRST: it is the real
+// first-party manifest source registerConnector()/polyfill-manifest-
+// reconcile.ts registers into the DB catalog at runtime (see
+// defaultPolyfillManifestsDir in polyfill-manifest-reconcile.ts), so it is
+// the one production getConnectorManifest actually resolves for a real
+// connection. reference-implementation/manifests/ is a SEPARATE, older
+// "reference fixture" set used only by `pdpp seed`'s demo connectors
+// (defaultReferenceFixturesDir) and must not shadow the real manifest here.
+const MANIFEST_ROOTS_FOR_TEST = [
+  fileURLToPath(new URL("../../packages/polyfill-connectors/manifests", import.meta.url)),
+  fileURLToPath(new URL("../manifests", import.meta.url)),
+];
+
+// biome-ignore lint/suspicious/useAwait: localized test double preserves the real resolver's async contract.
+async function manifestBackedCompactionClassResolver(connectorId: unknown): Promise<Record<string, unknown> | null> {
+  if (typeof connectorId !== "string" || !connectorId) {
+    return null;
+  }
+  for (const root of MANIFEST_ROOTS_FOR_TEST) {
+    const candidatePath = join(root, `${connectorId.replace(/-/g, "_")}.json`);
+    try {
+      return JSON.parse(readFileSync(candidatePath, "utf8"));
+    } catch {
+      // Not this root / not this filename convention; try the next root.
+    }
+  }
+  return null;
+}
 
 const CONNECTOR_ID = "https://test.pdpp.dev/connectors/version-churn";
 const CONNECTOR_INSTANCE_ID = "cin_test_version_churn";
@@ -532,6 +619,7 @@ async function envelopeFor(
       listGroundTruthForKeys: groundTruthForKeysFromRows(groundTruthRows),
       listGroundTruthStreams: async () => groundTruthRows,
       listStreams: async () => streamRows,
+      resolveConnectorManifest: manifestBackedCompactionClassResolver,
     }
   ) as Promise<VersionStatsEnvelope>;
 }
@@ -605,39 +693,40 @@ function projectionRowFor(gt: GroundTruthRow): ProjectionStreamRow {
 }
 
 test("AC-4: reviewed residue re-alarms to lossless_compaction_candidate after the review timestamp", async () => {
-  const reviewedAt = REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.get("usaa/accounts");
-  assert.ok(reviewedAt);
-  // Within window → reviewed_historical_residue.
-  const withinGt = {
-    connector_id: "usaa",
-    connector_instance_id: "cin_usaa",
-    current_record_count: 4,
-    last_current_at: NOW,
-    last_history_at: reviewedAt,
-    record_history_count: 80,
-    record_key_count: 4,
-    stream: "accounts",
-  };
-  const within = await envelopeFor([projectionRowFor(withinGt)], [withinGt]);
-  const [withinRow] = within.data;
-  assert.ok(withinRow);
-  assert.equal(withinRow.version_disposition, "reviewed_historical_residue");
+  await withReviewedCompactionResidueFixture(async () => {
+    const reviewedAt = USAA_ACCOUNTS_REVIEWED_AT;
+    // Within window → reviewed_historical_residue.
+    const withinGt = {
+      connector_id: "usaa",
+      connector_instance_id: "cin_usaa",
+      current_record_count: 4,
+      last_current_at: NOW,
+      last_history_at: reviewedAt,
+      record_history_count: 80,
+      record_key_count: 4,
+      stream: "accounts",
+    };
+    const within = await envelopeFor([projectionRowFor(withinGt)], [withinGt]);
+    const [withinRow] = within.data;
+    assert.ok(withinRow);
+    assert.equal(withinRow.version_disposition, "reviewed_historical_residue");
 
-  // After window → re-alarm.
-  const afterGt = {
-    connector_id: "usaa",
-    connector_instance_id: "cin_usaa",
-    current_record_count: 4,
-    last_current_at: NOW,
-    last_history_at: oneMillisecondAfter(reviewedAt),
-    record_history_count: 80,
-    record_key_count: 4,
-    stream: "accounts",
-  };
-  const after = await envelopeFor([projectionRowFor(afterGt)], [afterGt]);
-  const [afterRow] = after.data;
-  assert.ok(afterRow);
-  assert.equal(afterRow.version_disposition, "lossless_compaction_candidate");
+    // After window → re-alarm.
+    const afterGt = {
+      connector_id: "usaa",
+      connector_instance_id: "cin_usaa",
+      current_record_count: 4,
+      last_current_at: NOW,
+      last_history_at: oneMillisecondAfter(reviewedAt),
+      record_history_count: 80,
+      record_key_count: 4,
+      stream: "accounts",
+    };
+    const after = await envelopeFor([projectionRowFor(afterGt)], [afterGt]);
+    const [afterRow] = after.data;
+    assert.ok(afterRow);
+    assert.equal(afterRow.version_disposition, "lossless_compaction_candidate");
+  });
 });
 
 test("AC-5: sessions classify recurring_point_in_time_snapshot and do not re-alarm on growth", async () => {
@@ -710,12 +799,19 @@ test("AC-7: a connector-authored field in the source row cannot alter version_di
 // disposition, and never lets it touch the numeric risk path.
 
 // A reviewed-residue ground-truth row for `connector/stream`: its last_history_at
-// sits at the registered review timestamp so the disposition resolves to
-// reviewed_historical_residue (the precondition for the statement/accounts
-// remediations).
+// sits at the fixture's reviewed-at timestamp (see withReviewedCompactionResidueFixture)
+// so the disposition resolves to reviewed_historical_residue (the precondition
+// for the statement/accounts remediations). Only valid for the three
+// connector/stream pairs the fixture seeds.
+const REVIEWED_RESIDUE_FIXTURE_TIMESTAMPS: Record<string, string> = {
+  "chase/statements": CHASE_STATEMENTS_REVIEWED_AT,
+  "usaa/accounts": USAA_ACCOUNTS_REVIEWED_AT,
+  "usaa/statements": USAA_STATEMENTS_REVIEWED_AT,
+};
+
 function reviewedResidueGt(connector_id: string, stream: string): GroundTruthRow {
-  const reviewedAt = REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.get(`${connector_id}/${stream}`);
-  assert.ok(reviewedAt, `expected a reviewed-at entry for ${connector_id}/${stream}`);
+  const reviewedAt = REVIEWED_RESIDUE_FIXTURE_TIMESTAMPS[`${connector_id}/${stream}`];
+  assert.ok(reviewedAt, `expected a reviewed-at fixture entry for ${connector_id}/${stream}`);
   return {
     connector_id,
     connector_instance_id: `cin_${connector_id}_${stream}`,
@@ -772,37 +868,41 @@ test("AC-2(remediation): adding remediation leaves risk_level/risk_reasons/versi
 });
 
 test("AC-3(remediation): chase/statements and usaa/statements are content_fingerprint_pending", async () => {
-  for (const connector_id of ["chase", "usaa"]) {
-    const gt = reviewedResidueGt(connector_id, "statements");
-    // biome-ignore lint/performance/noAwaitInLoops: localized test assertion preserves its explicit contract.
-    const envelope = await envelopeFor([projectionRowFor(gt)], [gt]);
-    const [row] = envelope.data;
-    assert.ok(row);
-    assert.equal(row.version_disposition, "reviewed_historical_residue");
-    assert.equal(
-      row.version_remediation,
-      "content_fingerprint_pending",
-      `${connector_id}/statements must be content_fingerprint_pending`
-    );
-  }
+  await withReviewedCompactionResidueFixture(async () => {
+    for (const connector_id of ["chase", "usaa"]) {
+      const gt = reviewedResidueGt(connector_id, "statements");
+      // biome-ignore lint/performance/noAwaitInLoops: localized test assertion preserves its explicit contract.
+      const envelope = await envelopeFor([projectionRowFor(gt)], [gt]);
+      const [row] = envelope.data;
+      assert.ok(row);
+      assert.equal(row.version_disposition, "reviewed_historical_residue");
+      assert.equal(
+        row.version_remediation,
+        "content_fingerprint_pending",
+        `${connector_id}/statements must be content_fingerprint_pending`
+      );
+    }
+  });
 });
 
 test("AC-4(remediation): usaa/accounts is owner_migration_pending, distinct from the statement rows", async () => {
-  const accountsGt = reviewedResidueGt("usaa", "accounts");
-  const accountsEnv = await envelopeFor([projectionRowFor(accountsGt)], [accountsGt]);
-  const [accountsRow] = accountsEnv.data;
-  assert.ok(accountsRow);
-  assert.equal(accountsRow.version_disposition, "reviewed_historical_residue");
-  assert.equal(accountsRow.version_remediation, "owner_migration_pending");
+  await withReviewedCompactionResidueFixture(async () => {
+    const accountsGt = reviewedResidueGt("usaa", "accounts");
+    const accountsEnv = await envelopeFor([projectionRowFor(accountsGt)], [accountsGt]);
+    const [accountsRow] = accountsEnv.data;
+    assert.ok(accountsRow);
+    assert.equal(accountsRow.version_disposition, "reviewed_historical_residue");
+    assert.equal(accountsRow.version_remediation, "owner_migration_pending");
 
-  // Same disposition as the statement rows, different remediation — the row is
-  // distinguishable from a fingerprint-pending residue row.
-  const statementsGt = reviewedResidueGt("usaa", "statements");
-  const statementsEnv = await envelopeFor([projectionRowFor(statementsGt)], [statementsGt]);
-  const [statementsRow] = statementsEnv.data;
-  assert.ok(statementsRow);
-  assert.equal(statementsRow.version_disposition, accountsRow.version_disposition);
-  assert.notEqual(statementsRow.version_remediation, accountsRow.version_remediation);
+    // Same disposition as the statement rows, different remediation — the row is
+    // distinguishable from a fingerprint-pending residue row.
+    const statementsGt = reviewedResidueGt("usaa", "statements");
+    const statementsEnv = await envelopeFor([projectionRowFor(statementsGt)], [statementsGt]);
+    const [statementsRow] = statementsEnv.data;
+    assert.ok(statementsRow);
+    assert.equal(statementsRow.version_disposition, accountsRow.version_disposition);
+    assert.notEqual(statementsRow.version_remediation, accountsRow.version_remediation);
+  });
 });
 
 test("AC-5(remediation): claude-code/codex sessions are owner_retention_policy", async () => {
@@ -873,41 +973,43 @@ test("AC-7(remediation): a connector-authored field in the source row cannot alt
 });
 
 test("AC-8(remediation): owner_retention_policy rows always have the recurring-snapshot disposition", async () => {
-  // Scan a mixed fixture: every row that comes back owner_retention_policy must
-  // also be recurring_point_in_time_snapshot, and no row gets a remediation that
-  // contradicts its disposition.
-  const sessionsGt: GroundTruthRow = {
-    connector_id: "claude-code",
-    connector_instance_id: "cin_sessions",
-    current_record_count: 60,
-    last_current_at: NOW,
-    last_history_at: "2027-01-01T00:00:00.000Z",
-    record_history_count: 600,
-    record_key_count: 60,
-    stream: "sessions",
-  };
-  const statementsGt = reviewedResidueGt("chase", "statements");
-  const accountsGt = reviewedResidueGt("usaa", "accounts");
-  const envelope = await envelopeFor(
-    [
-      projectionRowFor(sessionsGt),
-      projectionRowFor(statementsGt),
-      projectionRowFor(accountsGt),
-      dispositionRow({ connector_id: "mystery", connector_instance_id: "cin_my", stream: "widgets" }),
-    ],
-    [sessionsGt, statementsGt, accountsGt]
-  );
-  for (const row of envelope.data) {
-    if (row.version_remediation === "owner_retention_policy") {
-      assert.equal(row.version_disposition, "recurring_point_in_time_snapshot");
+  await withReviewedCompactionResidueFixture(async () => {
+    // Scan a mixed fixture: every row that comes back owner_retention_policy must
+    // also be recurring_point_in_time_snapshot, and no row gets a remediation that
+    // contradicts its disposition.
+    const sessionsGt: GroundTruthRow = {
+      connector_id: "claude-code",
+      connector_instance_id: "cin_sessions",
+      current_record_count: 60,
+      last_current_at: NOW,
+      last_history_at: "2027-01-01T00:00:00.000Z",
+      record_history_count: 600,
+      record_key_count: 60,
+      stream: "sessions",
+    };
+    const statementsGt = reviewedResidueGt("chase", "statements");
+    const accountsGt = reviewedResidueGt("usaa", "accounts");
+    const envelope = await envelopeFor(
+      [
+        projectionRowFor(sessionsGt),
+        projectionRowFor(statementsGt),
+        projectionRowFor(accountsGt),
+        dispositionRow({ connector_id: "mystery", connector_instance_id: "cin_my", stream: "widgets" }),
+      ],
+      [sessionsGt, statementsGt, accountsGt]
+    );
+    for (const row of envelope.data) {
+      if (row.version_remediation === "owner_retention_policy") {
+        assert.equal(row.version_disposition, "recurring_point_in_time_snapshot");
+      }
+      if (
+        row.version_disposition === "active_defect_or_unclassified" ||
+        row.version_disposition === "lossless_compaction_candidate"
+      ) {
+        assert.equal(row.version_remediation, "none");
+      }
     }
-    if (
-      row.version_disposition === "active_defect_or_unclassified" ||
-      row.version_disposition === "lossless_compaction_candidate"
-    ) {
-      assert.equal(row.version_remediation, "none");
-    }
-  }
+  });
 });
 
 test("/_ref/records/version-stats reads projection-backed high-churn rows", async () => {

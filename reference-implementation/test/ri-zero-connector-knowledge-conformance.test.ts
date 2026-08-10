@@ -157,11 +157,19 @@ test("falsifiability: the scanner does not flag manifest-generic code", () => {
 //
 // SAFETY: `withSyntheticProductionFile` REFUSES to write over a path that
 // already exists on disk — it throws immediately instead of clobbering a
-// real production file. Use `withSyntheticContentAtRealPath` for the one
-// legitimate case that needs a REAL, already-existing relPath string
-// (testing the SANCTIONED_POLICY_RESOURCES allowlist end-to-end): it writes
-// synthetic content to an ISOLATED tmpdir file and passes the real file's
-// relPath string alongside it, never touching the real file on disk.
+// real production file.
+//
+// `SANCTIONED_POLICY_RESOURCES` (ri-zero-connector-knowledge-data-load-
+// scan.ts) is EMPTY as of `ri-zero-knowledge-terminal-revise-0810` — both
+// production files that used to load a sibling RI-owned JSON registry
+// through it (compact-record-history.ts, version-disposition.ts) now read
+// their connector-fact half from a real manifest and their owner-judgment
+// half from operator runtime state instead (see that constant's own doc
+// comment). There is accordingly no longer a real allowlisted relPath to
+// exercise end-to-end, so the `withSyntheticContentAtRealPath` helper this
+// section previously used ONLY for that one test has been removed along with
+// the test — if a future change adds a genuine `SANCTIONED_POLICY_RESOURCES`
+// entry, re-add an equivalent real-relPath falsifiability test alongside it.
 
 function withSyntheticProductionFile<T>(fileName: string, contents: string, run: (relPath: string) => T): T {
   const relPath = `reference-implementation/server/${fileName}`;
@@ -174,28 +182,6 @@ function withSyntheticProductionFile<T>(fileName: string, contents: string, run:
     return run(relPath);
   } finally {
     rmSync(absPath, { force: true });
-  }
-}
-
-/**
- * Writes `contents` to an isolated tmpdir file (never touches the real repo
- * tree) and invokes `run` with that tmpdir file's absolute path AND a REAL
- * repo-relative path string of the caller's choosing — exercising
- * classification logic (allowlist/manifest-root lookups keyed by relPath)
- * against a real path WITHOUT ever writing to or deleting the real file.
- */
-function withSyntheticContentAtRealPath<T>(
-  realRelPath: string,
-  contents: string,
-  run: (absPath: string, relPath: string) => T
-): T {
-  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-real-relpath-"));
-  try {
-    const tmpAbsPath = join(dir, "synthetic-source.ts");
-    writeFileSync(tmpAbsPath, contents);
-    return run(tmpAbsPath, realRelPath);
-  } finally {
-    rmSync(dir, { force: true, recursive: true });
   }
 }
 
@@ -478,32 +464,6 @@ test("falsifiability: a real manifest-root file WITH manifest provenance is not 
       } finally {
         rmSync(realManifestPath, { force: true });
       }
-    }
-  );
-});
-
-test("falsifiability: a sanctioned RI-owned sibling policy resource is not flagged (regardless of load-site syntax)", () => {
-  // Uses withSyntheticContentAtRealPath (isolated tmpdir content, never
-  // written to the real file on disk) — NOT withSyntheticProductionFile —
-  // because relPath here is the REAL SANCTIONED_POLICY_RESOURCES key
-  // (reference-implementation/server/version-disposition.ts). An earlier
-  // version of this test wrote synthetic content directly over that real
-  // production file and deleted it in `finally`; this shape proves the same
-  // allowlist entry without ever touching the file on disk.
-  withSyntheticContentAtRealPath(
-    "reference-implementation/server/version-disposition.ts",
-    [
-      'import { readFileSync } from "node:fs";',
-      'const POLICY_PATH = new URL("./version-disposition-policy.json", import.meta.url);',
-      'const POLICY = JSON.parse(readFileSync(POLICY_PATH, "utf8"));',
-      "",
-    ].join("\n"),
-    (absPath, relPath) => {
-      // The real version-disposition-policy.json sibling already exists at
-      // this relPath in the repo, so this exercises the real allowlist
-      // entry end-to-end without needing a synthetic policy file.
-      const violations = scanFileDataLoads(absPath, relPath, repoRoot);
-      assert.deepEqual(violations, [], "an allowlisted sibling policy resource must not be flagged");
     }
   );
 });

@@ -71,26 +71,26 @@ export interface DirectPrepareAllowlistEntry {
 export const DIRECT_PREPARE_ALLOWLIST: readonly DirectPrepareAllowlistEntry[] = [
   {
     category: "grandfathered_pre_wrapper",
-    line: 252,
-    note: "getRecordVersionStatsStore().listGroundTruthForKeys: CREATE TEMP TABLE IF NOT EXISTS _vstats_wanted_keys",
+    line: 267,
+    note: "getRecordVersionStatsStore().listGroundTruthForKeys: CREATE TEMP TABLE IF NOT EXISTS _vstats_wanted_keys. Re-derived 2026-08-10 (ri-zero-knowledge-terminal-revise-0810): moved from 252 after the compactionClass/reviewed-residue resolution imports and helpers were added earlier in the file; the call site itself is unchanged.",
     path: "reference-implementation/server/record-version-stats.ts",
   },
   {
     category: "grandfathered_pre_wrapper",
-    line: 259,
-    note: "getRecordVersionStatsStore().listGroundTruthForKeys: DELETE FROM _vstats_wanted_keys before repopulating it",
+    line: 274,
+    note: "getRecordVersionStatsStore().listGroundTruthForKeys: DELETE FROM _vstats_wanted_keys before repopulating it. Re-derived 2026-08-10 (ri-zero-knowledge-terminal-revise-0810): moved from 259, same cause as above.",
     path: "reference-implementation/server/record-version-stats.ts",
   },
   {
     category: "grandfathered_pre_wrapper",
-    line: 260,
-    note: "getRecordVersionStatsStore().listGroundTruthForKeys: prepared INSERT OR IGNORE reused once per wanted key",
+    line: 275,
+    note: "getRecordVersionStatsStore().listGroundTruthForKeys: prepared INSERT OR IGNORE reused once per wanted key. Re-derived 2026-08-10 (ri-zero-knowledge-terminal-revise-0810): moved from 260, same cause as above.",
     path: "reference-implementation/server/record-version-stats.ts",
   },
   {
     category: "grandfathered_pre_wrapper",
-    line: 302,
-    note: "getRecordVersionStatsStore().listGroundTruthForKeys: DELETE FROM _vstats_wanted_keys cleanup after the scan returns",
+    line: 317,
+    note: "getRecordVersionStatsStore().listGroundTruthForKeys: DELETE FROM _vstats_wanted_keys cleanup after the scan returns. Re-derived 2026-08-10 (ri-zero-knowledge-terminal-revise-0810): moved from 302, same cause as above.",
     path: "reference-implementation/server/record-version-stats.ts",
   },
   {
