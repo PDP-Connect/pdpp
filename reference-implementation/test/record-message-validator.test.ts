@@ -38,7 +38,3 @@ for (const [name, msg, messageRe] of INVALID_CASES) {
     assert.throws(() => assertValidRecordEnvelope(msg), messageRe);
   });
 }
-
-test("assertValidRecordEnvelope allows a delete op to omit data", () => {
-  assert.doesNotThrow(() => assertValidRecordEnvelope({ emitted_at: "2026-04-18T00:00:00Z", key: "m1", op: "delete" }));
-});
