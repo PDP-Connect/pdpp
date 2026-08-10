@@ -1295,5 +1295,7 @@ test("console catalog respects uat_expose_unlisted_connectors server fact", () =
     1,
     "unproven connector with uat_expose_unlisted_connectors=true should be included"
   );
-  assert.equal(catalog[0].connectorKey, "test-unproven");
+  const [exposedConnector] = catalog;
+  assert.ok(exposedConnector);
+  assert.equal(exposedConnector.connectorKey, "test-unproven");
 });
