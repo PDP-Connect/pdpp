@@ -237,6 +237,42 @@ test("rs.records.ingest does not halt on a failing line; subsequent lines still 
 
 // ── Systemic/retryable classification (RecordsIngestSystemicFailureError) ──
 
+test("RecordsIngestSystemicFailureError carries ONLY fixed, public-safe fields — no field retains the underlying classified failure's own text", async () => {
+  const secretMarker = "sk_live_51StructuralAssertionMarkerMustNeverSurvive";
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({ body: '{"id":"r1"}' }),
+        defaultDeps({
+          ingestRecord: () => {
+            throw unclassifiedThrow(
+              `duplicate key value violates unique constraint: Key (record_key)=(${secretMarker}) already exists`
+            );
+          },
+        })
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsIngestSystemicFailureError);
+      // Exhaustive own-property check: any future field added to this class
+      // must be deliberately reviewed for external safety, not silently
+      // inherited by every catch site that logs or serializes the error.
+      // (`stack` is excluded — inherited from Error, not own-enumerable, and
+      // legitimately carries source-location detail, not record data.)
+      assert.deepEqual(
+        Object.keys(err).sort(),
+        ["code", "name", "retryableFailureCount"],
+        "RecordsIngestSystemicFailureError must expose exactly its fixed public-safe fields — no additional field for classified-failure detail"
+      );
+      const serialized = JSON.stringify({ ...err, message: err.message });
+      assert.ok(
+        !serialized.includes(secretMarker),
+        `no field on RecordsIngestSystemicFailureError may contain the underlying failure's own text; got: ${serialized}`
+      );
+      return true;
+    }
+  );
+});
+
 test("rs.records.ingest treats an UNCLASSIFIED thrown error as systemic by default (no .retryable field)", async () => {
   await assert.rejects(
     () =>
