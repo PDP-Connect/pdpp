@@ -67,5 +67,5 @@ test("validateGoogleMapsTimelineArtifact identifies artifacts over the manifest 
   const validation = validateGoogleMapsTimelineArtifact(VALID_LEGACY, { maxFileBytes: 8 });
 
   assert.equal(validation.status, "too_large");
-  assert.match(validation.remediation ?? "", /import-folder/i);
+  assert.match(validation.remediation ?? "", /raise the deployment limit/i);
 });

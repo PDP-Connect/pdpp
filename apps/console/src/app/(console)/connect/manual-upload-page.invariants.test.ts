@@ -102,3 +102,24 @@ test("manual-upload no longer posts large multipart bodies through a Server Acti
   assert.doesNotMatch(src, NO_SERVER_ACTION);
   assert.doesNotMatch(src, NO_SECRET_LOG);
 });
+
+test("manual-upload-final-redteam-0810 #2: the Preview button's request declares the streamed content type, not the default octet-stream fallback", async () => {
+  // Regression test for the exact defect the independent red team found:
+  // sendRawFile()'s XHR defaults Content-Type to "application/octet-stream"
+  // unless the caller passes an explicit `contentType` -- previewManualUpload
+  // omitted it, so the RS's streaming-only content-type gate fell through to
+  // the wildcard whole-buffer parser for the "Preview" button specifically
+  // (a real, easily-triggered user journey with no client-side size gate).
+  // Isolate previewManualUpload's own function body (not just "the string
+  // appears somewhere in the file") so a future refactor that moves the
+  // streamed call elsewhere in the file still fails this test honestly.
+  const src = await readFile(FORM_FILE, "utf8");
+  const bodyMatch = src.match(/async function previewManualUpload\([\s\S]*?\n\}\n/);
+  assert.ok(bodyMatch, "expected to locate previewManualUpload's function body in manual-upload-form.tsx");
+  const body = bodyMatch[0];
+  assert.match(
+    body,
+    STAGED_CONTENT_TYPE,
+    "previewManualUpload must pass contentType: 'application/vnd.pdpp.manual-upload' to sendRawFile"
+  );
+});

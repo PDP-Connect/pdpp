@@ -268,7 +268,7 @@ async function createManualUploadDraft(asUrl: string, cookie: string, connectorI
   url.searchParams.set("file_name", "Timeline.json");
   return fetchJson(url, {
     body: VALID_TIMELINE_BODY,
-    headers: { Accept: "application/json", "Content-Type": "application/octet-stream", Cookie: cookie },
+    headers: { Accept: "application/json", "Content-Type": "application/vnd.pdpp.manual-upload", Cookie: cookie },
     method: "POST",
   });
 }

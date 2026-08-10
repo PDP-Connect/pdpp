@@ -110,24 +110,26 @@ test("twitter_archive streams its JS archive instead of whole-file reading", () 
 });
 
 test("the guard fires when a reviewed exception is removed", () => {
-  // Negative control against a still-present exception (whatsapp per-export
-  // chat read). Removing it must surface the otherwise-allowlisted readFile.
-  const withoutWhatsappRead = BOUNDED_READ_EXCEPTIONS.filter(
+  // Negative control against a still-present exception (ical per-calendar
+  // read). Removing it must surface the otherwise-allowlisted readFile.
+  // (WhatsApp's .txt path no longer whole-file-reads at all -- see this
+  // task's report -- so it no longer has a readFile exception to use here.)
+  const withoutIcalRead = BOUNDED_READ_EXCEPTIONS.filter(
     (exception) =>
       !(
-        exception.connector === "whatsapp" &&
+        exception.connector === "ical" &&
         exception.pattern === "readFile" &&
-        exception.lineIncludes.includes("const content = await readFile")
+        exception.lineIncludes.includes("await readFile(join(dir, f)")
       )
   );
-  const findings = findUnapprovedBoundedReads({ exceptions: withoutWhatsappRead });
+  const findings = findUnapprovedBoundedReads({ exceptions: withoutIcalRead });
   assert.ok(
     findings.some(
       (finding) =>
-        finding.connector === "whatsapp" &&
+        finding.connector === "ical" &&
         finding.pattern === "readFile" &&
-        finding.text.includes("const content = await readFile")
+        finding.text.includes("await readFile(join(dir, f)")
     ),
-    "removing the WhatsApp per-export read exception must surface the unbounded read"
+    "removing the ical per-calendar read exception must surface the unbounded read"
   );
 });

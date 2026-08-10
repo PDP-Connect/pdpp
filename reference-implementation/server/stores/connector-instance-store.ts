@@ -1714,6 +1714,7 @@ export function createSqliteConnectorInstanceStore() {
           normalized.createdAt ?? null,
           normalized.updatedAt ?? null,
           normalized.revokedAt,
+          normalized.connectorId,
         ]);
         return this.get(normalized.connectorInstanceId);
       } catch (err) {
@@ -2470,9 +2471,17 @@ export function createPostgresConnectorInstanceStore() {
       // production.
       await testOnlyUpsertTombstoneCheckDelay();
       try {
+        // `record_identity_generation` is seeded from the connector's
+        // currently persisted manifest, not left at the column default —
+        // see the identical rationale in the SQLite arm's `insert.sql`.
         await postgresQuery(
-          `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
-           VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
+          `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at, record_identity_generation)
+           VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11,
+             COALESCE(
+               (SELECT (manifest #>> '{capabilities,record_identity,generation}')::int
+                  FROM connectors WHERE connector_id = $3),
+               0
+             ))
            ON CONFLICT(owner_subject_id, connector_id, source_kind, source_binding_key) DO UPDATE SET
              display_name = excluded.display_name,
              status = excluded.status,

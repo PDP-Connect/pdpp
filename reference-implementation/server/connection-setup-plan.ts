@@ -273,11 +273,20 @@ export interface ManualUploadAcquisitionMethod {
 }
 
 export interface ManualUploadValidationLike {
+  /** Declares that this kind's validator accepts a caller-owned file
+   *  descriptor (fd-backed, never buffers the whole artifact) rather than
+   *  requiring the full artifact bytes in memory first. A generic RI-side
+   *  capability flag, not a connector identity -- RI reads this boolean to
+   *  decide WHICH shared dispatcher to call
+   *  (validateManualUploadArtifactFromFileByKind vs.
+   *  validateManualUploadArtifactByKind), never which connector it is. */
+  readonly file_backed?: boolean | null;
   readonly kind?: string | null;
   readonly max_file_bytes?: number | null;
 }
 
 export interface ManualUploadValidation {
+  readonly fileBacked: boolean;
   readonly kind: string;
   readonly maxFileBytes: number | null;
 }
@@ -599,6 +608,7 @@ export function manualUploadSetupFromManifest(
     typeof meta?.validation?.max_file_bytes === "number" && Number.isFinite(meta.validation.max_file_bytes)
       ? meta.validation.max_file_bytes
       : null;
+  const fileBacked = meta?.validation?.file_backed === true;
   return {
     acceptedFileExtensions,
     acceptedFileNames,
@@ -609,7 +619,7 @@ export function manualUploadSetupFromManifest(
     importDirEnvVar: cleanString(meta?.import_dir_env_var),
     label: cleanString(meta?.label) ?? "Import file",
     largeFileFallback: cleanString(meta?.large_file_fallback),
-    validation: validationKind ? { kind: validationKind, maxFileBytes } : null,
+    validation: validationKind ? { fileBacked, kind: validationKind, maxFileBytes } : null,
     validationExpectations: Array.isArray(meta?.validation_expectations)
       ? meta.validation_expectations.filter((value): value is string => cleanString(value) !== null)
       : [],

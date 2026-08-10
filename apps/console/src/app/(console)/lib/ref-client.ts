@@ -2600,6 +2600,16 @@ export async function getManualUploadSetup(connectorId: string): Promise<ManualU
   )) as ManualUploadSetup;
 }
 
+// Matches server/transport.ts's PDPP_MANUAL_UPLOAD_STREAM_CONTENT_TYPE.
+// Every manual-upload route that accepts a raw file body requires this
+// exact Content-Type so the RS's dedicated streaming parser (not the
+// wildcard whole-buffer parser) handles the request -- a browser fetch()
+// call with `body: file` and no explicit Content-Type would otherwise
+// default to the File object's own MIME type (commonly text/plain or
+// application/octet-stream for a .txt/.zip export), silently falling
+// through to the buffering parser for a multi-GB upload.
+const MANUAL_UPLOAD_STREAM_CONTENT_TYPE = "application/vnd.pdpp.manual-upload";
+
 async function postManualUploadFile(
   path: string,
   file: File,
@@ -2617,6 +2627,7 @@ async function postManualUploadFile(
   const init = await withOwnerSessionCookie({
     body: file,
     cache: "no-store",
+    headers: { "Content-Type": MANUAL_UPLOAD_STREAM_CONTENT_TYPE },
     method: "POST",
   });
   let res: Response;

@@ -787,6 +787,12 @@ export async function bootstrapPostgresSchema({
         ADD COLUMN IF NOT EXISTS record_reset_generation BIGINT NOT NULL DEFAULT 0;
       ALTER TABLE connector_instances
         ADD COLUMN IF NOT EXISTS manifest_generation BIGINT NOT NULL DEFAULT 0;
+      -- Generic, connector-agnostic record-identity-generation checkpoint:
+      -- see ensureRecordIdentityGenerationColumn's doc comment in db.ts for
+      -- the full design (compared against a manifest's own declared
+      -- capabilities.record_identity.generation at reconcile time).
+      ALTER TABLE connector_instances
+        ADD COLUMN IF NOT EXISTS record_identity_generation BIGINT NOT NULL DEFAULT 0;
 
       -- Existing Postgres deployments may have been bootstrapped before the
       -- static-secret draft lifecycle existed. Widen the status CHECK in place

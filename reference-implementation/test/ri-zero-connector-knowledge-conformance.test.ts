@@ -50,9 +50,13 @@ import { isExemptDataLoadPath, scanFileDataLoads } from "./helpers/ri-zero-conne
 import {
   formatViolationInventory,
   manifestDerivedConnectorKeys,
+  manifestDerivedValidationKinds,
   productionFiles,
   scanFile,
   scanRepository,
+  scanSharedLibraryKindDispatchFile,
+  scanSharedLibraryKindDispatchRoot,
+  sharedLibraryKindDispatchScanFiles,
 } from "./helpers/ri-zero-connector-knowledge-scan.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -798,5 +802,301 @@ test("falsifiability (revise3 P2 counterweight): .d.ts declaration files and tes
 
 test("RI production code contains zero connector/provider-specific executable knowledge", () => {
   const violations = scanRepository({ repoRoot });
+  assert.deepEqual(violations, [], formatViolationInventory(violations));
+});
+
+// ─── Regression mutation tests: the real violation this guard originally
+// missed (manual-upload-final-redteam-0810, finding 2/6) ────────────────
+//
+// `ref-manual-upload-draft-connection.ts` shipped a
+// `validateWhatsAppChatExportArtifactFromFile` import plus a
+// `kind === "whatsapp_chat_export"` branch in RI production code — real
+// connector knowledge, invisible to every rule that existed at the time
+// (rule (1) only matches `connector_key`/`connector_id` values like
+// `"whatsapp"`, not a `validation.kind` value like `"whatsapp_chat_export"`;
+// no rule inspected import specifiers at all). These tests reproduce that
+// EXACT shape as a synthetic fixture and prove the two new rules this
+// pass adds (6: hardcoded-validation-kind-literal, 7: connector-module-import)
+// catch it — a scanner-hardening mutation test, not just a code fix.
+
+test("manifest-derived validation-kind set is non-trivial and includes the real WhatsApp kind", () => {
+  const kinds = manifestDerivedValidationKinds({ repoRoot });
+  assert.ok(kinds.size > 0, `expected at least one manifest-declared validation.kind, got ${kinds.size}`);
+  assert.ok(kinds.has("whatsapp_chat_export"), "expected the real WhatsApp manifest's validation.kind to be derivable");
+});
+
+test("falsifiability (final-redteam #2): the scanner detects a synthetic hardcoded validation.kind branch", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-falsifiability-"));
+  try {
+    const badFile = join(dir, "synthetic-validation-kind.ts");
+    writeFileSync(
+      badFile,
+      [
+        "export function requiresFileBackedValidation(kind: string | null): boolean {",
+        '  return kind === "whatsapp_chat_export";',
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(
+      badFile,
+      "synthetic-validation-kind.ts",
+      new Set(),
+      repoRoot,
+      new Set(["whatsapp_chat_export"])
+    );
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-validation-kind-literal"),
+      "scanner failed to detect a synthetic validation.kind literal branch — the exact shape that shipped undetected"
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("falsifiability (final-redteam #2): a bare `kind === <unrelated string>` comparison, not a manifest-derived kind, is NOT flagged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-falsifiability-"));
+  try {
+    const goodFile = join(dir, "synthetic-unrelated-kind.ts");
+    writeFileSync(
+      goodFile,
+      [
+        "export function isRecordKind(kind: string | null): boolean {",
+        '  return kind === "record" || kind === "collection";',
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(
+      goodFile,
+      "synthetic-unrelated-kind.ts",
+      new Set(),
+      repoRoot,
+      new Set(["whatsapp_chat_export"])
+    );
+    assert.ok(
+      violations.every((v) => v.rule !== "hardcoded-validation-kind-literal"),
+      `an unrelated 'kind' discriminator (not a manifest-derived validation.kind value) must not be flagged, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("falsifiability (final-redteam #2): the scanner detects a synthetic connector-module import specifier", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-falsifiability-"));
+  try {
+    const badFile = join(dir, "synthetic-connector-import.ts");
+    writeFileSync(
+      badFile,
+      [
+        'import { validateWhatsAppChatExportArtifactFromFile } from "../../../packages/polyfill-connectors/connectors/whatsapp/validation.ts";',
+        "export { validateWhatsAppChatExportArtifactFromFile };",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-connector-import.ts", new Set(), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "connector-module-import"),
+      "scanner failed to detect a direct import of a connector's own module — the exact shape that shipped undetected"
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("falsifiability (final-redteam #2 counterweight): importing the shared connector-agnostic dispatcher (packages/polyfill-connectors/src/...) is NOT flagged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-falsifiability-"));
+  try {
+    const goodFile = join(dir, "synthetic-shared-dispatcher-import.ts");
+    writeFileSync(
+      goodFile,
+      [
+        'import { validateManualUploadArtifactFromFileByKind } from "../../../packages/polyfill-connectors/src/manual-upload-validation.ts";',
+        "export { validateManualUploadArtifactFromFileByKind };",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(goodFile, "synthetic-shared-dispatcher-import.ts", new Set(), repoRoot);
+    assert.ok(
+      violations.every((v) => v.rule !== "connector-module-import"),
+      `importing the shared, connector-agnostic dispatcher module must not be flagged, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("falsifiability (final-redteam #2 counterweight): RI's own reference-implementation/connectors/seed/ deterministic fixture import is NOT flagged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-falsifiability-"));
+  try {
+    const goodFile = join(dir, "synthetic-seed-fixture-import.ts");
+    writeFileSync(
+      goodFile,
+      ['import { SUPPORTED_SEED_CONNECTOR_KEYS } from "../../connectors/seed/index.ts";', "", ""].join("\n")
+    );
+    const violations = scanFile(goodFile, "synthetic-seed-fixture-import.ts", new Set(), repoRoot);
+    assert.ok(
+      violations.every((v) => v.rule !== "connector-module-import"),
+      `RI's own deterministic seed-fixture connector (not a third-party provider) must not be flagged, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+// ─── manual-upload-terminal-redteam-0810 finding #3: packages/polyfill-connectors/src/
+// trusted-root scanner extension ────────────────────────────────────────────
+//
+// The red team's own live (uncommitted) probe: a SECOND file dropped in
+// `packages/polyfill-connectors/src/` — the one root RI is allowed to import
+// shared, connector-agnostic infrastructure from — that internally
+// hardcodes a `kind === <manifest-declared kind>` branch or imports a
+// connector's own module, but exports it under a generic name, was invisible
+// to every existing rule: rule (6)/(7) only ever scanned RI's OWN files
+// (`PRODUCTION_SCAN_ROOTS`), never the shared root those RI files import
+// FROM. These tests plant that exact synthetic shape as a real file inside
+// `packages/polyfill-connectors/src/` (removed in `finally`) and prove
+// `scanSharedLibraryKindDispatchRoot` now catches it.
+
+function withSyntheticSharedLibraryFile<T>(fileName: string, contents: string, run: (relPath: string) => T): T {
+  const relPath = `packages/polyfill-connectors/src/${fileName}`;
+  const absPath = join(repoRoot, relPath);
+  if (existsSync(absPath)) {
+    throw new Error(`refusing to overwrite a file that already exists on disk: ${absPath}`);
+  }
+  writeFileSync(absPath, contents);
+  try {
+    return run(relPath);
+  } finally {
+    rmSync(absPath, { force: true });
+  }
+}
+
+test("falsifiability (terminal-redteam-0810 #3): a synthetic second generic-named helper in packages/polyfill-connectors/src/ with a hidden validation.kind branch is caught", () => {
+  withSyntheticSharedLibraryFile(
+    "synthetic-second-generic-dispatch-helper.ts",
+    [
+      "// Deliberately generic export name -- no 'connector' or 'kind' in the",
+      "// identifier itself, mirroring the red team's exact evasion shape.",
+      "export function process_upload(kind: string | null, bytes: Uint8Array): boolean {",
+      '  if (kind === "whatsapp_chat_export") {',
+      "    return bytes.length > 0;",
+      "  }",
+      "  return false;",
+      "}",
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const violations = scanRepository({ repoRoot });
+      const hit = violations.find((v) => v.file === relPath);
+      assert.ok(
+        hit && hit.rule === "hardcoded-validation-kind-literal",
+        `scanner failed to detect a hidden validation.kind branch in a second, generically-named packages/polyfill-connectors/src/ helper -- the exact evasion the red team demonstrated live. Violations: ${JSON.stringify(violations)}`
+      );
+    }
+  );
+});
+
+test("falsifiability (terminal-redteam-0810 #3): a synthetic second generic-named helper in packages/polyfill-connectors/src/ with a hidden connector-module import is caught", () => {
+  withSyntheticSharedLibraryFile(
+    "synthetic-second-generic-import-helper.ts",
+    [
+      'import { validateWhatsAppChatExportArtifactFromFile } from "../connectors/whatsapp/validation.ts";',
+      "export function handle(fd: number, filePath: string, fileSize: number): unknown {",
+      '  return validateWhatsAppChatExportArtifactFromFile(fd, filePath, fileSize, { fileName: "x", fileSha256: "y" });',
+      "}",
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const violations = scanRepository({ repoRoot });
+      const hit = violations.find((v) => v.file === relPath && v.rule === "connector-module-import");
+      assert.ok(
+        hit,
+        `scanner failed to detect a hidden connector-module import in a second, generically-named packages/polyfill-connectors/src/ helper. Violations: ${JSON.stringify(violations)}`
+      );
+    }
+  );
+});
+
+test("falsifiability (terminal-redteam-0810 #3 counterweight): every real allowlisted registry/self-reference file is excluded from the scan's own file set and never appears in its violations", () => {
+  // Three real, legitimate files -- not one. Auditing the actual tree (not
+  // just the file this task set out to fix) surfaced collector-registry.ts
+  // (a second, pre-existing connector-importing registry, same shape as
+  // manual-upload-validation.ts but for the collector-definition pattern)
+  // and auto-login/heb.ts (imports only ITS OWN connector's sibling
+  // parsers.ts -- self-referential, not cross-connector knowledge). Treating
+  // either as a violation would have been a false positive on real,
+  // unrelated production code, not a fix.
+  const allowlistedRelPaths = [
+    "packages/polyfill-connectors/src/manual-upload-validation.ts",
+    "packages/polyfill-connectors/src/collector-registry.ts",
+    "packages/polyfill-connectors/src/auto-login/heb.ts",
+  ];
+  for (const relPath of allowlistedRelPaths) {
+    assert.ok(existsSync(join(repoRoot, relPath)), `expected ${relPath} to exist as a real fixture`);
+  }
+  const files = sharedLibraryKindDispatchScanFiles({ repoRoot });
+  for (const relPath of allowlistedRelPaths) {
+    assert.ok(!files.includes(relPath), `${relPath} must be excluded from the shared-library scan's own file set`);
+  }
+  const violations = scanSharedLibraryKindDispatchRoot({ repoRoot });
+  for (const relPath of allowlistedRelPaths) {
+    assert.ok(
+      violations.every((v) => v.file !== relPath),
+      `${relPath} must never appear in shared-library scan violations, got: ${JSON.stringify(violations.filter((v) => v.file === relPath))}`
+    );
+  }
+});
+
+test("falsifiability (terminal-redteam-0810 #3 counterweight): packages/polyfill-connectors/src/'s legitimate connector-aware modules (orchestrator, auto-login, static-secret-injection) are NOT flagged by the narrow shared-library scan", () => {
+  // These files are the shared/polyfill layer's WHOLE PURPOSE: they legitimately
+  // hardcode every connector's identity, login URL, and credential env-var
+  // name. Confirms the shared-library scan is scoped to rules (6)/(7) only
+  // (never (1)/(3)/(4)) -- running the full rule set here would be ~100 false
+  // positives on exactly the code this package exists to contain.
+  const violations = scanSharedLibraryKindDispatchRoot({ repoRoot });
+  const legitimateFiles = [
+    "packages/polyfill-connectors/src/orchestrator.ts",
+    "packages/polyfill-connectors/src/static-secret-injection.ts",
+    "packages/polyfill-connectors/src/auto-login/usaa.ts",
+  ];
+  for (const relPath of legitimateFiles) {
+    assert.ok(
+      existsSync(join(repoRoot, relPath)),
+      `expected ${relPath} to exist as a real fixture for this counterweight`
+    );
+  }
+  assert.ok(
+    violations.every((v) => !legitimateFiles.includes(v.file)),
+    `legitimate connector-aware shared-library modules must not be flagged by the narrow (rules 6/7 only) scan, got: ${JSON.stringify(violations.filter((v) => legitimateFiles.includes(v.file)))}`
+  );
+});
+
+test("falsifiability (terminal-redteam-0810 #3): scanSharedLibraryKindDispatchFile in isolation detects the same synthetic violation shape as the full-repo scan", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-falsifiability-"));
+  try {
+    const badFile = join(dir, "synthetic-isolated-check.ts");
+    writeFileSync(
+      badFile,
+      ["export function dispatch(kind) {", '  return kind === "whatsapp_chat_export";', "}", ""].join("\n")
+    );
+    const violations = scanSharedLibraryKindDispatchFile(
+      badFile,
+      "packages/polyfill-connectors/src/synthetic-isolated-check.ts",
+      new Set(["whatsapp_chat_export"]),
+      repoRoot
+    );
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-validation-kind-literal"),
+      "scanSharedLibraryKindDispatchFile must detect the same violation shape as the full-repo scan"
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("RI shared-library trust boundary (packages/polyfill-connectors/src/, excluding the allowlisted registry file) contains zero validation-kind branches or connector-module imports outside that registry", () => {
+  const violations = scanSharedLibraryKindDispatchRoot({ repoRoot });
   assert.deepEqual(violations, [], formatViolationInventory(violations));
 });

@@ -43,7 +43,11 @@ import { canonicalConnectorKeyFromManifest } from "./connector-key.ts";
 // records.js is also still JavaScript. The invalidation helper is
 // scoped to the reconciliation flip path; see the design notes under
 // openspec/changes/reconcile-invalidates-stale-records/.
-import { deleteAllRecordsForConnector } from "./records.ts";
+import {
+  deleteAllRecordsForConnector,
+  listRecordIdentityGenerationsByConnector,
+  setRecordIdentityGeneration,
+} from "./records.ts";
 
 // Auth.js wires these as untyped JS functions; until that file
 // migrates, we re-declare the narrow shape this module relies on so
@@ -53,7 +57,10 @@ type RegisterConnector = (
   manifest: PolyfillManifest,
   options?: { backfillRetrievalIndexes?: boolean }
 ) => Promise<unknown>;
-type DeleteAllRecordsForConnector = (connectorId: string) => Promise<{ deletedCount: number; streams: string[] }>;
+type DeleteAllRecordsForConnector = (
+  connectorId: string,
+  instanceIdFilter?: ReadonlySet<string>
+) => Promise<{ deletedCount: number; streams: string[] }>;
 
 const getConnectorManifestTyped: GetConnectorManifest = getConnectorManifest as GetConnectorManifest;
 const registerConnectorTyped: RegisterConnector = registerConnector as RegisterConnector;
@@ -337,10 +344,11 @@ async function loadShippedManifest(
 
 async function invalidatePriorRecords(
   connectorId: string,
-  log: ReconcileLog
+  log: ReconcileLog,
+  instanceIdFilter?: ReadonlySet<string>
 ): Promise<{ ok: true; invalidatedConnectors: number; invalidatedRecords: number } | { ok: false }> {
   try {
-    const invalidation = await deleteAllRecordsForConnectorTyped(connectorId);
+    const invalidation = await deleteAllRecordsForConnectorTyped(connectorId, instanceIdFilter);
     if (invalidation.deletedCount > 0) {
       log(
         `[manifest-reconcile] invalidated ${connectorId}: ${invalidation.deletedCount} record(s) across streams [${invalidation.streams.join(", ")}] before applying new manifest`
@@ -391,6 +399,126 @@ interface EntryContext {
  * stream view) trips the structural diff but NOT the fingerprint
  * transition, so records are preserved.
  */
+/**
+ * Read a manifest's own declared `capabilities.record_identity.generation`
+ * — an integer a connector AUTHOR bumps when their record_key derivation
+ * changes in a way that breaks idempotency against previously-emitted
+ * records (see B2 in the manual-upload-large-artifact task report for a
+ * worked example). Absent/malformed resolves to 0, matching a legacy
+ * manifest that never declared this field.
+ *
+ * RI holds NO knowledge of what a "record-identity-generation transition"
+ * means for any specific connector; this function only extracts a plain
+ * integer from a manifest object. All connector-specific semantics
+ * (chatId schemes, content-hash message ids, whatever a future connector
+ * invents) live entirely in that connector's own manifest + code, never
+ * in RI.
+ */
+function declaredRecordIdentityGeneration(manifest: unknown): number {
+  const capabilitiesRaw = (manifest as { capabilities?: unknown } | null)?.capabilities;
+  if (!capabilitiesRaw || typeof capabilitiesRaw !== "object" || Array.isArray(capabilitiesRaw)) {
+    return 0;
+  }
+  const recordIdentityRaw = (capabilitiesRaw as { record_identity?: unknown }).record_identity;
+  if (!recordIdentityRaw || typeof recordIdentityRaw !== "object" || Array.isArray(recordIdentityRaw)) {
+    return 0;
+  }
+  const generationRaw = (recordIdentityRaw as { generation?: unknown }).generation;
+  return typeof generationRaw === "number" && Number.isInteger(generationRaw) && generationRaw >= 0 ? generationRaw : 0;
+}
+
+/**
+ * Reconcile every instance of `connectorId` against the shipped manifest's
+ * declared record-identity generation. For each instance whose OWN
+ * `record_identity_generation` checkpoint is behind the shipped value:
+ * invalidate ONLY that instance's records (via `deleteAllRecordsForConnector`'s
+ * `instanceIdFilter`, never the whole connector type), then advance its
+ * checkpoint to the shipped generation. Instances already caught up are
+ * left completely untouched — no read, no write, no fence. Instances that
+ * are AHEAD (shipped generation lower than an instance's checkpoint, e.g. a
+ * manifest rollback) are also left untouched: this function only closes a
+ * behind-checkpoint gap, it never regresses one.
+ *
+ * A connector that has never declared this field, and a shipped manifest
+ * that still doesn't declare it either, is the (0, 0) steady state: every
+ * instance's checkpoint is 0, the shipped generation is 0, nothing is ever
+ * behind, so this reconcile pass is a pure no-op for every connector that
+ * doesn't use the mechanism. Bumping the shipped manifest's declared
+ * generation is the ONLY way to opt an instance in; ordinary manifest
+ * evolution (new streams, semantic_fields, description fixes) never
+ * touches `capabilities.record_identity.generation` and so never
+ * invalidates anything.
+ */
+// Test-only, opt-in delay between reading each instance's checkpoint and
+// acting on it (delete + advance) — widens the read-then-write window a
+// concurrent-reconcile race must land in to be deterministically
+// reproducible rather than a timing-luck flake, matching
+// testOnlyUpsertTombstoneCheckDelay in connector-instance-store.ts. A
+// complete no-op unless PDPP_TEST_RECORD_IDENTITY_RECONCILE_DELAY_MS is set
+// to a positive integer (never set in production). See
+// test/polyfill-manifest-reconcile-invalidation-postgres.test.ts.
+async function testOnlyRecordIdentityReconcileDelay(): Promise<void> {
+  const raw = process.env.PDPP_TEST_RECORD_IDENTITY_RECONCILE_DELAY_MS;
+  const ms = raw ? Number.parseInt(raw, 10) : 0;
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return;
+  }
+  await new Promise((done) => setTimeout(done, ms));
+}
+
+async function reconcileRecordIdentityGeneration(
+  connectorId: string,
+  shippedGeneration: number,
+  log: ReconcileLog
+): Promise<{ ok: boolean; invalidatedConnectors: number; invalidatedRecords: number }> {
+  if (shippedGeneration <= 0) {
+    return { invalidatedConnectors: 0, invalidatedRecords: 0, ok: true };
+  }
+  let instances: Array<{ connectorInstanceId: string; generation: number }>;
+  try {
+    instances = await listRecordIdentityGenerationsByConnector(connectorId);
+  } catch (err) {
+    log(`[manifest-reconcile] record-identity-generation lookup failed for ${connectorId}: ${errorMessage(err)}`);
+    return { invalidatedConnectors: 0, invalidatedRecords: 0, ok: false };
+  }
+  await testOnlyRecordIdentityReconcileDelay();
+  const behindInstanceIds = new Set(
+    instances
+      .filter((instance) => instance.generation < shippedGeneration)
+      .map((instance) => instance.connectorInstanceId)
+  );
+  if (behindInstanceIds.size === 0) {
+    return { invalidatedConnectors: 0, invalidatedRecords: 0, ok: true };
+  }
+  const invalidation = await invalidatePriorRecords(connectorId, log, behindInstanceIds);
+  if (!invalidation.ok) {
+    return { invalidatedConnectors: 0, invalidatedRecords: 0, ok: false };
+  }
+  for (const connectorInstanceId of behindInstanceIds) {
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: Sequential to keep each instance's checkpoint write clearly attributable if one fails.
+      await setRecordIdentityGeneration(connectorInstanceId, shippedGeneration);
+    } catch (err) {
+      log(
+        `[manifest-reconcile] failed to advance record_identity_generation for instance ${connectorInstanceId}: ${errorMessage(err)}`
+      );
+      return {
+        invalidatedConnectors: invalidation.invalidatedConnectors,
+        invalidatedRecords: invalidation.invalidatedRecords,
+        ok: false,
+      };
+    }
+  }
+  log(
+    `[manifest-reconcile] advanced record_identity_generation to ${shippedGeneration} for ${behindInstanceIds.size} instance(s) of ${connectorId}`
+  );
+  return {
+    invalidatedConnectors: invalidation.invalidatedConnectors,
+    invalidatedRecords: invalidation.invalidatedRecords,
+    ok: true,
+  };
+}
+
 function isFixtureToPolyfillTransition(
   connectorId: string,
   persisted: unknown,
@@ -508,6 +636,18 @@ async function reconcileChangedManifestEntry(
     // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
     invalidatedRecords = invalidation.invalidatedRecords;
   }
+  // Generic, connector-agnostic record-identity-generation reconcile: runs
+  // independently of the fixture-transition check above (both can fire on
+  // the same pass; `deleteAllRecordsForConnector`'s per-instance fencing
+  // makes a second, instance-filtered invalidation call safe even if the
+  // fixture-transition branch above already touched this connector type).
+  const shippedGeneration = declaredRecordIdentityGeneration(shipped);
+  const generationReconcile = await reconcileRecordIdentityGeneration(connectorId, shippedGeneration, ctx.log);
+  if (!generationReconcile.ok) {
+    return { errors: 1, invalidatedConnectors, invalidatedRecords };
+  }
+  invalidatedConnectors += generationReconcile.invalidatedConnectors;
+  invalidatedRecords += generationReconcile.invalidatedRecords;
   const registration = await applyShippedManifest(shipped, connectorId, entryName, ctx.log);
   return {
     errors: registration.ok ? 0 : 1,

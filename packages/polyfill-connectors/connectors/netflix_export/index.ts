@@ -24,8 +24,7 @@
  * diffed locally against prior state for new/deleted records.
  */
 
-import { existsSync, readdirSync, realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { closeSync, existsSync, openSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CollectContext } from "../../src/connector-runtime.ts";
@@ -33,7 +32,7 @@ import { runConnector } from "../../src/connector-runtime.ts";
 import {
   buildViewingActivityRecord,
   detectViewingActivitySchema,
-  extractViewingActivityArtifact,
+  extractViewingActivityArtifactFromFile,
   inferDirectHistoryDateOrderFromRows,
   parseCSVContentForValidation,
   parseCSVFile,
@@ -106,12 +105,32 @@ function classifyBySchema(parseResult: {
   return { malformedCount: parseResult.malformedCount, rows: parseResult.rows, schema };
 }
 
-async function loadUploadedArtifactRows(
-  canonicalImportDir: string,
-  uploadedFileName: string
-): Promise<LoadedRows | LoadRowsSkip> {
-  const uploadedBytes = await readFile(join(canonicalImportDir, uploadedFileName)).catch((): Buffer => Buffer.alloc(0));
-  const artifact = extractViewingActivityArtifact(uploadedFileName, uploadedBytes);
+/**
+ * Reads the uploaded artifact via a file descriptor. For a .zip upload, the
+ * archive is never buffered whole in memory (see
+ * extractViewingActivityArtifactFromFile's doc comment for exactly what is
+ * and isn't bounded — the .csv branch is still a whole-file read). Mirrors
+ * the pre-existing "missing/unreadable file treated as empty, not thrown"
+ * contract of the buffer-based path it replaces.
+ */
+function extractUploadedArtifactFromFile(canonicalImportDir: string, uploadedFileName: string) {
+  const filePath = join(canonicalImportDir, uploadedFileName);
+  let fd: number;
+  try {
+    fd = openSync(filePath, "r");
+  } catch {
+    return { ok: false as const, code: "unsupported_shape" as const, message: "The uploaded file could not be read." };
+  }
+  try {
+    const fileSize = statSync(filePath).size;
+    return extractViewingActivityArtifactFromFile(fd, fileSize, uploadedFileName);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function loadUploadedArtifactRows(canonicalImportDir: string, uploadedFileName: string): LoadedRows | LoadRowsSkip {
+  const artifact = extractUploadedArtifactFromFile(canonicalImportDir, uploadedFileName);
   if (!artifact.ok) {
     // entry_too_large / total_too_large / too_many_entries: a real (or
     // plausibly real) export that tripped the decompression-bomb policy —
@@ -233,7 +252,7 @@ async function collectViewingActivity(
 
   const uploadedFileName = findUploadedArtifact(canonicalImportDir);
   const loaded = uploadedFileName
-    ? await loadUploadedArtifactRows(canonicalImportDir, uploadedFileName)
+    ? loadUploadedArtifactRows(canonicalImportDir, uploadedFileName)
     : await loadLegacyDirectoryRows(canonicalImportDir);
 
   if (isLoadRowsSkip(loaded)) {

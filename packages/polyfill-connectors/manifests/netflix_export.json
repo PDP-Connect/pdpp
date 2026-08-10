@@ -40,9 +40,10 @@
       "import_dir_env_var": "NETFLIX_EXPORT_DIR",
       "help_url": "https://help.netflix.com/en/node/101917",
       "help_text": "Netflix does not expose viewing history through an account API or OAuth grant. This source imports an owner-downloaded CSV: either the instant per-profile Download all export, or the full account data export.",
-      "large_file_fallback": "The full Netflix data export archive can include many CSVs beyond viewing history; if the .zip exceeds the upload limit, extract it yourself and upload just CONTENT_INTERACTION/ViewingActivity.csv, or use the server import-folder handoff.",
+      "large_file_fallback": "The full Netflix data export archive can include many CSVs beyond viewing history; if the .zip exceeds the upload limit, extract it yourself and upload just CONTENT_INTERACTION/ViewingActivity.csv instead of the whole archive.",
       "validation": {
         "kind": "netflix_viewing_activity",
+        "file_backed": true,
         "max_file_bytes": 52428800
       },
       "validation_expectations": [

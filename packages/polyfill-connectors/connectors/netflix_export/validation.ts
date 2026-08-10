@@ -6,7 +6,9 @@ import {
   buildViewingActivityRecord,
   detectViewingActivitySchema,
   extractViewingActivityArtifact,
+  extractViewingActivityArtifactFromFile,
   inferDirectHistoryDateOrderFromRows,
+  type NetflixExportExtractionResult,
   parseCSVContentForValidation,
 } from "./parsers.ts";
 import type { ViewingActivityRecord, ViewingActivitySourceSchema } from "./types.ts";
@@ -47,7 +49,7 @@ function remediationFor(status: NetflixExportValidationStatus): string | null {
     case "empty":
       return "This looks like a Netflix viewing activity export, but it does not contain importable rows.";
     case "too_large":
-      return "This is a real Netflix export, but it (or the ViewingActivity.csv inside it) is larger than PDPP can safely process from a browser upload. Extract the archive yourself and upload just CONTENT_INTERACTION/ViewingActivity.csv, or use the server import-folder handoff.";
+      return "This is a real Netflix export, but it (or the ViewingActivity.csv inside it) is larger than PDPP can safely process from a browser upload. Extract the archive yourself and upload just CONTENT_INTERACTION/ViewingActivity.csv instead of the whole archive.";
     case "unsupported":
       return "Choose the CSV from Download all on netflix.com/viewingactivity, ViewingActivity.csv, or the .zip archive from netflix.com/account/getmyinfo. Other files are not supported.";
     case "ambiguous_date_order":
@@ -59,12 +61,20 @@ function remediationFor(status: NetflixExportValidationStatus): string | null {
   }
 }
 
-export function validateNetflixExportArtifact(
-  input: Buffer | Uint8Array | string,
-  options: NetflixExportValidationOptions = {}
+/**
+ * Shared tail of both {@link validateNetflixExportArtifact} (buffer-backed)
+ * and {@link validateNetflixExportArtifactFromFile} (file-backed): once an
+ * artifact has been extracted into CSV text (however that extraction
+ * happened), the CSV-parsing/schema-detection/record-building/duplicate-check
+ * logic is identical for both entrypoints. Kept as one function so the two
+ * public entrypoints cannot silently drift in their validation semantics --
+ * the ONLY difference between them is how `artifact` is obtained.
+ */
+function buildValidationFromArtifact(
+  artifact: NetflixExportExtractionResult,
+  fileSha256: string,
+  existingFileHashes: readonly string[] | undefined
 ): NetflixExportValidation {
-  const bytes = typeof input === "string" ? Buffer.from(input, "utf8") : Buffer.from(input);
-  const fileSha256 = createHash("sha256").update(bytes).digest("hex");
   const base = {
     date_range: { end: null, start: null },
     detected_format: "unsupported" as const,
@@ -73,11 +83,6 @@ export function validateNetflixExportArtifact(
     file_sha256: fileSha256,
   };
 
-  if (options.maxFileBytes !== null && options.maxFileBytes !== undefined && bytes.byteLength > options.maxFileBytes) {
-    return { ...base, remediation: remediationFor("too_large"), status: "too_large" };
-  }
-
-  const artifact = extractViewingActivityArtifact(options.fileName ?? "ViewingActivity.csv", bytes);
   if (!artifact.ok) {
     // entry_too_large / total_too_large / too_many_entries mean this IS a
     // real (or plausibly real) export that tripped the decompression-bomb
@@ -122,7 +127,7 @@ export function validateNetflixExportArtifact(
   const dateRange = minMax(records.map((rec) => rec.watched_at));
 
   let status: NetflixExportValidationStatus = "valid";
-  if (new Set(options.existingFileHashes ?? []).has(fileSha256)) {
+  if (new Set(existingFileHashes ?? []).has(fileSha256)) {
     status = "duplicate";
   } else if (records.length === 0) {
     status = "empty";
@@ -137,4 +142,69 @@ export function validateNetflixExportArtifact(
     remediation: remediationFor(status),
     status,
   };
+}
+
+export function validateNetflixExportArtifact(
+  input: Buffer | Uint8Array | string,
+  options: NetflixExportValidationOptions = {}
+): NetflixExportValidation {
+  const bytes = typeof input === "string" ? Buffer.from(input, "utf8") : Buffer.from(input);
+  const fileSha256 = createHash("sha256").update(bytes).digest("hex");
+
+  if (options.maxFileBytes !== null && options.maxFileBytes !== undefined && bytes.byteLength > options.maxFileBytes) {
+    return {
+      date_range: { end: null, start: null },
+      detected_format: "unsupported",
+      detected_schema: null,
+      estimated_records: 0,
+      file_sha256: fileSha256,
+      remediation: remediationFor("too_large"),
+      status: "too_large",
+    };
+  }
+
+  const artifact = extractViewingActivityArtifact(options.fileName ?? "ViewingActivity.csv", bytes);
+  return buildValidationFromArtifact(artifact, fileSha256, options.existingFileHashes);
+}
+
+export interface NetflixExportFileValidationOptions {
+  readonly existingFileHashes?: readonly string[];
+  readonly fileName?: string | null;
+  /** Already-known SHA-256 of the file (e.g. computed once during the
+   *  streaming upload write) — passed in rather than recomputed, so this
+   *  validator never needs a second whole-file read just to hash it again. */
+  readonly fileSha256: string;
+  readonly maxFileBytes?: number | null;
+}
+
+/**
+ * File-descriptor-backed variant of {@link validateNetflixExportArtifact}:
+ * the artifact's bytes are never buffered whole for its zip branch (see
+ * {@link extractViewingActivityArtifactFromFile}'s own doc comment for the
+ * one disclosed exception -- its .csv branch is a bounded, capped whole-file
+ * read, not a structurally streamed one; that residual is unchanged by this
+ * function and remains explicitly documented there, not silently narrowed
+ * here). `fd`/`fileName` are caller-owned; this function neither opens nor
+ * closes `fd`.
+ */
+export function validateNetflixExportArtifactFromFile(
+  fd: number,
+  fileName: string,
+  fileSize: number,
+  options: NetflixExportFileValidationOptions
+): NetflixExportValidation {
+  if (options.maxFileBytes !== null && options.maxFileBytes !== undefined && fileSize > options.maxFileBytes) {
+    return {
+      date_range: { end: null, start: null },
+      detected_format: "unsupported",
+      detected_schema: null,
+      estimated_records: 0,
+      file_sha256: options.fileSha256,
+      remediation: remediationFor("too_large"),
+      status: "too_large",
+    };
+  }
+
+  const artifact = extractViewingActivityArtifactFromFile(fd, fileSize, options.fileName ?? fileName);
+  return buildValidationFromArtifact(artifact, options.fileSha256, options.existingFileHashes);
 }

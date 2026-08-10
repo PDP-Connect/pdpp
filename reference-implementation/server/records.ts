@@ -6233,24 +6233,49 @@ async function deleteAllRecordsWithinCoordinator(storageTarget: RecordStorageTar
  * Returns the number of records deleted plus the list of stream names
  * that had records, so the caller can produce an informative log line.
  */
-export async function deleteAllRecordsForConnector(connectorId: string) {
+/**
+ * `instanceIdFilter`, when supplied, restricts deletion to EXACTLY those
+ * connector_instance_ids -- every other instance of this connector type is
+ * left untouched, including its records, version counters, and blob
+ * bindings. Omitted (the default), this deletes for every instance of the
+ * connector type, as before. Added so a per-instance-scoped caller (e.g. a
+ * record-identity-generation reconcile that must only touch instances
+ * still on an old generation) can reuse this function's per-instance-fenced
+ * deletion machinery without inheriting its connector-wide blast radius.
+ */
+export async function deleteAllRecordsForConnector(connectorId: string, instanceIdFilter?: ReadonlySet<string>) {
   if (typeof connectorId !== "string" || !connectorId) {
+    return { deletedCount: 0, streams: [] };
+  }
+  if (instanceIdFilter && instanceIdFilter.size === 0) {
     return { deletedCount: 0, streams: [] };
   }
   const storageConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
   if (isPostgresStorageBackend()) {
-    return postgresDeleteAllRecordsForConnector(storageConnectorId);
+    return postgresDeleteAllRecordsForConnector(storageConnectorId, instanceIdFilter);
   }
   // Take exactly one instance fence at a time in stable id order.  The former
   // connector-wide transaction bypassed sibling instance coordination; this
   // keeps each instance's durable + derived teardown indivisible with respect
   // to direct/device writers without holding a lock for a second instance.
-  const namespaceRows = allowUnboundedReadAcknowledged<StreamNamespaceRow>(
+  const namespaceRowsUnfiltered = allowUnboundedReadAcknowledged<StreamNamespaceRow>(
     referenceQueries.recordsDeleteListInstanceStreamsByConnector,
     [storageConnectorId, storageConnectorId]
   );
-  const countRow = getOne<CountRow>(referenceQueries.recordsDeleteCountRecordsByConnector, [storageConnectorId]);
-  const deletedCount = countRow?.count || 0;
+  const namespaceRows = instanceIdFilter
+    ? namespaceRowsUnfiltered.filter((row) => instanceIdFilter.has(row.connector_instance_id))
+    : namespaceRowsUnfiltered;
+  let deletedCount: number;
+  if (instanceIdFilter) {
+    const filteredInstanceIds = Array.from(new Set(namespaceRows.map((row) => row.connector_instance_id)));
+    deletedCount = filteredInstanceIds.reduce((sum, instanceId) => {
+      const instanceCountRow = getOne<CountRow>(referenceQueries.recordsDeleteCountRecordsByInstance, [instanceId]);
+      return sum + (instanceCountRow?.count || 0);
+    }, 0);
+  } else {
+    const countRow = getOne<CountRow>(referenceQueries.recordsDeleteCountRecordsByConnector, [storageConnectorId]);
+    deletedCount = countRow?.count || 0;
+  }
   const streams = Array.from(new Set(namespaceRows.map((row) => row.stream)));
   const streamsByInstance = new Map<string, string[]>();
   for (const row of namespaceRows) {
@@ -6307,7 +6332,7 @@ export async function deleteAllRecordsForConnector(connectorId: string) {
 // version_counter, lexical/semantic search tables) and drop `blob_bindings`
 // separately, mirroring the SQLite per-connector path's extra fourth delete
 // vs. the per-stream owner-reset path.
-async function postgresDeleteAllRecordsForConnector(connectorId: string) {
+async function postgresDeleteAllRecordsForConnector(connectorId: string, instanceIdFilter?: ReadonlySet<string>) {
   // Union of (instance, stream) pairs across `records`, `record_changes`,
   // `blob_bindings`, AND `version_counter` so a stream that has only
   // history rows, only surviving blob bindings (records already pruned), or
@@ -6330,15 +6355,32 @@ async function postgresDeleteAllRecordsForConnector(connectorId: string) {
      ORDER BY connector_instance_id, stream`,
     [connectorId]
   );
-  const namespaceRows = pairsResult.rows;
+  const namespaceRows = instanceIdFilter
+    ? pairsResult.rows.filter((row) => instanceIdFilter.has(row.connector_instance_id))
+    : pairsResult.rows;
   const streams = Array.from(new Set(namespaceRows.map((row) => row.stream)));
 
-  const countResult = await postgresQuery<CountRow>(
-    `SELECT COUNT(*)::int AS count FROM records
-       WHERE connector_id = $1 AND deleted = FALSE`,
-    [connectorId]
-  );
-  const deletedCount = Number(countResult.rows[0]?.count || 0);
+  let deletedCount: number;
+  if (instanceIdFilter) {
+    const filteredInstanceIds = Array.from(new Set(namespaceRows.map((row) => row.connector_instance_id)));
+    if (filteredInstanceIds.length === 0) {
+      deletedCount = 0;
+    } else {
+      const countResult = await postgresQuery<CountRow>(
+        `SELECT COUNT(*)::int AS count FROM records
+           WHERE connector_id = $1 AND deleted = FALSE AND connector_instance_id = ANY($2::text[])`,
+        [connectorId, filteredInstanceIds]
+      );
+      deletedCount = Number(countResult.rows[0]?.count || 0);
+    }
+  } else {
+    const countResult = await postgresQuery<CountRow>(
+      `SELECT COUNT(*)::int AS count FROM records
+         WHERE connector_id = $1 AND deleted = FALSE`,
+      [connectorId]
+    );
+    deletedCount = Number(countResult.rows[0]?.count || 0);
+  }
 
   const streamsByInstance = new Map<string, string[]>();
   for (const row of namespaceRows) {
@@ -6386,6 +6428,62 @@ async function postgresDeleteAllRecordsForConnector(connectorId: string) {
   }
 
   return { deletedCount, streams };
+}
+
+interface RecordIdentityGenerationRow {
+  connector_instance_id: string;
+  record_identity_generation: number | string;
+}
+
+/**
+ * Every instance's `record_identity_generation` checkpoint for a connector
+ * type. Consumed by the generic (connector-agnostic) manifest reconcile
+ * pass to decide, per instance, whether it is behind the shipped manifest's
+ * declared `capabilities.record_identity.generation` — the reconcile code
+ * itself never learns what "generation" means for any specific connector,
+ * only that these are two integers to compare. See
+ * `ensureRecordIdentityGenerationColumn` in db.ts for the column design.
+ */
+export async function listRecordIdentityGenerationsByConnector(
+  connectorId: string
+): Promise<Array<{ connectorInstanceId: string; generation: number }>> {
+  const storageConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery<RecordIdentityGenerationRow>(
+      "SELECT connector_instance_id, record_identity_generation FROM connector_instances WHERE connector_id = $1 ORDER BY connector_instance_id ASC",
+      [storageConnectorId]
+    );
+    return result.rows.map((row) => ({
+      connectorInstanceId: row.connector_instance_id,
+      generation: Number(row.record_identity_generation),
+    }));
+  }
+  const rows = allowUnboundedReadAcknowledged<RecordIdentityGenerationRow>(
+    referenceQueries.connectorInstancesListGenerationByConnector,
+    [storageConnectorId]
+  );
+  return rows.map((row) => ({
+    connectorInstanceId: row.connector_instance_id,
+    generation: Number(row.record_identity_generation),
+  }));
+}
+
+/**
+ * Set a single instance's `record_identity_generation` checkpoint to
+ * `generation`. Called only AFTER that instance's records have been
+ * successfully invalidated (or on first registration, when there is
+ * nothing to invalidate) so the checkpoint always reflects what the
+ * instance's data actually reflects.
+ */
+export async function setRecordIdentityGeneration(connectorInstanceId: string, generation: number): Promise<void> {
+  if (isPostgresStorageBackend()) {
+    await postgresQuery(
+      "UPDATE connector_instances SET record_identity_generation = $1 WHERE connector_instance_id = $2",
+      [generation, connectorInstanceId]
+    );
+    return;
+  }
+  exec(referenceQueries.connectorInstancesSetRecordIdentityGeneration, [generation, connectorInstanceId]);
 }
 
 /**

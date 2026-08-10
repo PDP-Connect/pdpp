@@ -388,6 +388,7 @@ import {
   type ManualUploadDraftSourceBinding,
   mountRefManualUploadDraftConnection,
   promoteManualUploadDraftBinding,
+  reconcileAbandonedManualUploadArtifactsAtBoot,
 } from "./routes/ref-manual-upload-draft-connection.ts";
 import {
   mountRefProviderAppConfigGet,
@@ -6903,6 +6904,24 @@ export async function startServer(opts: ServerOpts = {}) {
         selected: reconciled.selected,
       },
       "boot-time orphan reconciliation: terminalised prior-incarnation orphans and repaired run_history drift"
+    );
+  }
+
+  // H5: manual-upload artifacts left stuck at uploaded/validating by a
+  // process that died mid-upload/mid-validation (crash, OOM, kill -9, an
+  // unclean deploy restart) sit non-terminal forever with nothing else to
+  // revisit them; terminalize them once at boot, same shape as the
+  // orphaned-run reconciliation above. Not gated behind the polyfill-
+  // manifest-reconcile enable/disable switch below -- this sweep only
+  // touches this process's own DB rows by staleness, never overwrites
+  // manifests, so it's safe to always run.
+  const abandonedUploads = await reconcileAbandonedManualUploadArtifactsAtBoot({
+    createRequestManualUploadArtifactStore,
+  } as unknown as Parameters<typeof reconcileAbandonedManualUploadArtifactsAtBoot>[0]);
+  if (abandonedUploads.swept > 0) {
+    logger.info(
+      { swept: abandonedUploads.swept },
+      "boot-time manual-upload reconciliation: terminalised artifacts abandoned by a prior process incarnation"
     );
   }
 

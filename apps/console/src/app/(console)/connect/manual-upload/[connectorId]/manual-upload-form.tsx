@@ -337,7 +337,13 @@ function sendRawFile<T>(
   file: File,
   options: {
     connectionId?: string | null;
-    contentType?: string;
+    /** Required, not defaulted: the RS's streaming-only manual-upload routes
+     *  gate on this exact content type, and a silent
+     *  "application/octet-stream" fallback here previously fell through to
+     *  the wildcard whole-buffer parser undetected (final-redteam-0810 #2,
+     *  the Preview button specifically). A missing value must fail to
+     *  compile, not silently downgrade every future caller to that path. */
+    contentType: string;
     displayName?: string | null;
     onProgress: (percent: number | null) => void;
   }
@@ -355,7 +361,7 @@ function sendRawFile<T>(
     xhr.open("POST", url.toString());
     xhr.withCredentials = true;
     xhr.setRequestHeader("Accept", "application/json");
-    xhr.setRequestHeader("Content-Type", options.contentType ?? "application/octet-stream");
+    xhr.setRequestHeader("Content-Type", options.contentType);
     xhr.upload.onprogress = (event) => {
       options.onProgress(event.lengthComputable ? Math.round((event.loaded / event.total) * 100) : null);
     };
@@ -535,6 +541,7 @@ async function previewManualUpload(
     file,
     {
       connectionId: target.connectionId,
+      contentType: "application/vnd.pdpp.manual-upload",
       displayName: target.displayName,
       onProgress: (percent) =>
         setState(uploadProgress(file, { currentFile: 1, percent, phase: "uploading", totalFiles: 1 })),

@@ -182,7 +182,7 @@ async function createDraft(
     body,
     headers: {
       Accept: "application/json",
-      "Content-Type": "application/octet-stream",
+      "Content-Type": "application/vnd.pdpp.manual-upload",
       Cookie: cookie,
     },
     method: "POST",

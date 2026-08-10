@@ -6,12 +6,13 @@
 // CSV reading and the emit loop live in index.ts.
 
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { join, sep } from "node:path";
 import {
   hasZipLocalFileSignature,
   readZipEntries,
+  readZipEntriesFromFile,
   ZipPolicyViolationError,
   type ZipReadPolicy,
   zipBasename,
@@ -723,6 +724,7 @@ export type NetflixExportExtractionFailureCode =
   | "no_viewing_activity_entry"
   | "too_many_entries"
   | "total_too_large"
+  | "unsafe_entry_name"
   | "unsupported_shape";
 
 export interface NetflixExportExtractionFailure {
@@ -741,7 +743,44 @@ const ZIP_POLICY_CODE_TO_EXTRACTION_CODE: Record<
   entry_too_large: "entry_too_large",
   too_many_entries: "too_many_entries",
   total_too_large: "total_too_large",
+  unsafe_entry_name: "unsafe_entry_name",
 };
+
+/**
+ * Given already-listed zip entries (from either the buffer or file-backed
+ * reader), find and extract the ViewingActivity.csv entry. Shared by both
+ * {@link extractViewingActivityArtifact} and
+ * {@link extractViewingActivityArtifactFromFile} so the entry-matching and
+ * error-mapping logic exists exactly once.
+ */
+function extractViewingActivityFromEntries(entries: ReturnType<typeof readZipEntries>): NetflixExportExtractionResult {
+  const match = entries.find((entry) => VIEWING_ACTIVITY_ENTRY_RE.test(zipBasename(entry.name)));
+  if (!match) {
+    return {
+      ok: false,
+      code: "no_viewing_activity_entry",
+      message: "No ViewingActivity.csv entry was found in the uploaded zip archive.",
+    };
+  }
+  let csvText: string;
+  try {
+    csvText = match.data().toString("utf8");
+  } catch (err) {
+    if (err instanceof ZipPolicyViolationError) {
+      return {
+        ok: false,
+        code: ZIP_POLICY_CODE_TO_EXTRACTION_CODE[err.code],
+        message: err.message,
+      };
+    }
+    return {
+      ok: false,
+      code: "unsupported_shape",
+      message: "The ViewingActivity.csv entry in the uploaded zip could not be extracted.",
+    };
+  }
+  return { ok: true, csvText, format: "viewing_activity_zip", sourceEntryName: match.name };
+}
 
 /**
  * Extract ViewingActivity.csv text from an uploaded artifact: either the CSV
@@ -750,6 +789,12 @@ const ZIP_POLICY_CODE_TO_EXTRACTION_CODE: Record<
  * export (`entry_too_large`/`total_too_large`/`too_many_entries` — a
  * decompression-bomb-policy rejection) from a genuinely unrecognized/corrupt
  * artifact (`unsupported_shape`/`no_viewing_activity_entry`).
+ *
+ * `input` must already be fully buffered in memory. For an artifact that
+ * already exists as a file on disk (the manual-upload staging case), use
+ * {@link extractViewingActivityArtifactFromFile} instead, which reads the
+ * zip archive from a file descriptor without ever materializing it as one
+ * in-memory buffer.
  */
 export function extractViewingActivityArtifact(
   filename: string,
@@ -771,17 +816,55 @@ export function extractViewingActivityArtifact(
       }
       return { ok: false, code: "unsupported_shape", message: "The uploaded zip could not be read." };
     }
-    const match = entries.find((entry) => VIEWING_ACTIVITY_ENTRY_RE.test(zipBasename(entry.name)));
-    if (!match) {
-      return {
-        ok: false,
-        code: "no_viewing_activity_entry",
-        message: "No ViewingActivity.csv entry was found in the uploaded zip archive.",
-      };
-    }
-    let csvText: string;
+    return extractViewingActivityFromEntries(entries);
+  }
+
+  if (CSV_EXT_RE.test(filename)) {
+    return { ok: true, csvText: bytes.toString("utf8"), format: "viewing_activity_csv", sourceEntryName: filename };
+  }
+
+  return {
+    ok: false,
+    code: "unsupported_shape",
+    message: "Choose ViewingActivity.csv, or the .zip archive from netflix.com/account/getmyinfo.",
+  };
+}
+
+/**
+ * File-backed variant of {@link extractViewingActivityArtifact}. `fd` is
+ * caller-owned: this function neither opens nor closes it.
+ *
+ * IMPORTANT — this is bounded-memory ONLY for the .zip branch: it reads via
+ * {@link readZipEntriesFromFile}, so a zip archive's central directory is
+ * read as one small window and each entry's compressed bytes only when that
+ * entry's `data()` is called — the archive's full bytes are never
+ * materialized as a single in-memory buffer, mirroring the WhatsApp
+ * connector's already-proven file-backed path.
+ *
+ * The .csv branch is NOT streaming: it still reads the whole file into one
+ * buffer (`readSync` in place of the old `readFile`), because the CSV
+ * parser this connector shares with the legacy-directory path
+ * (parseCSVContentForValidation) consumes a complete string, not a stream —
+ * and this module's own "bounded" reader for that path
+ * (`readFileBounded`, used by {@link parseCSVFile}) is ALSO not
+ * bounded-memory in the peak-RSS sense: it just accumulates the same whole
+ * string incrementally via repeated `content +=`, which is no better (worse,
+ * due to string-concat reallocation) than one read + one `toString`. There
+ * is no existing streaming CSV boundary in this codebase to reuse without
+ * writing a second parser, so the CSV branch is left explicitly unbounded
+ * here, same as before this change — it is capped at MAX_CSV_BYTES (50 MiB),
+ * which keeps the memory cost proportionate even though it is not
+ * structurally bounded the way the zip branch now is.
+ */
+export function extractViewingActivityArtifactFromFile(
+  fd: number,
+  fileSize: number,
+  filename: string
+): NetflixExportExtractionResult {
+  if (ZIP_EXT_RE.test(filename)) {
+    let entries: ReturnType<typeof readZipEntriesFromFile>;
     try {
-      csvText = match.data().toString("utf8");
+      entries = readZipEntriesFromFile(fd, fileSize, NETFLIX_ZIP_POLICY);
     } catch (err) {
       if (err instanceof ZipPolicyViolationError) {
         return {
@@ -790,17 +873,25 @@ export function extractViewingActivityArtifact(
           message: err.message,
         };
       }
-      return {
-        ok: false,
-        code: "unsupported_shape",
-        message: "The ViewingActivity.csv entry in the uploaded zip could not be extracted.",
-      };
+      return { ok: false, code: "unsupported_shape", message: "The uploaded zip could not be read." };
     }
-    return { ok: true, csvText, format: "viewing_activity_zip", sourceEntryName: match.name };
+    return extractViewingActivityFromEntries(entries);
   }
 
   if (CSV_EXT_RE.test(filename)) {
-    return { ok: true, csvText: bytes.toString("utf8"), format: "viewing_activity_csv", sourceEntryName: filename };
+    if (fileSize > MAX_CSV_BYTES) {
+      return {
+        ok: false,
+        code: "entry_too_large",
+        message: `Uploaded CSV file exceeds the safe read policy (${fileSize} > ${MAX_CSV_BYTES} bytes)`,
+      };
+    }
+    // NOT bounded-memory (see function doc) -- a whole-file read, same
+    // memory-cost class as the readFile it replaces, just via a different
+    // API. Capped at MAX_CSV_BYTES above, same as before this change.
+    const buf = Buffer.allocUnsafe(fileSize);
+    readSync(fd, buf, 0, fileSize, 0);
+    return { ok: true, csvText: buf.toString("utf8"), format: "viewing_activity_csv", sourceEntryName: filename };
   }
 
   return {

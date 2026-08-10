@@ -2101,6 +2101,23 @@ function ensureRecordResetGenerationColumn(raw: SqliteDatabase): void {
   addColumnIfMissing(raw, "connector_instances", "record_reset_generation", "INTEGER NOT NULL DEFAULT 0");
 }
 
+// Generic, connector-agnostic record-identity-generation checkpoint: the
+// value of a manifest's own declared `capabilities.record_identity.generation`
+// (an integer a connector author bumps when their record_key derivation
+// changes in a way that breaks idempotency against previously-emitted
+// records) that THIS instance's records were last reconciled against.
+// Defaults to 0, matching "no manifest has ever declared a generation" —
+// the same default an absent/legacy manifest field resolves to. The RI
+// reconcile loop (polyfill-manifest-reconcile.ts) compares this per-
+// INSTANCE value against the shipped manifest's declared generation and
+// invalidates ONLY instances still behind, using deleteAllRecordsForConnector's
+// instanceIdFilter -- never the whole connector type. RI holds no
+// knowledge of what a "record-identity-generation transition" means for
+// any specific connector; it only compares two integers.
+function ensureRecordIdentityGenerationColumn(raw: SqliteDatabase): void {
+  addColumnIfMissing(raw, "connector_instances", "record_identity_generation", "INTEGER NOT NULL DEFAULT 0");
+}
+
 function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
   addColumnIfMissing(raw, "connector_summary_evidence", "last_record_updated_at", "TEXT");
   addColumnIfMissing(raw, "connector_summary_evidence", "stream_records_json", "TEXT NOT NULL DEFAULT '[]'");
@@ -5215,6 +5232,7 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   );
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "search_index_dirty", "next_attempt_at", "TEXT"));
   runWithSqliteBusyRetrySync(() => ensureRecordResetGenerationColumn(raw));
+  runWithSqliteBusyRetrySync(() => ensureRecordIdentityGenerationColumn(raw));
   // Incremental add-source linkage: a later same-client ceremony records the
   // prior package it extends via `parent_package_id`. Pre-existing reference
   // DBs predate the column; add it non-destructively (NULL = a root package

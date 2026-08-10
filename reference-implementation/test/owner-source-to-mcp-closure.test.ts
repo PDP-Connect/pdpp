@@ -229,7 +229,7 @@ async function createManualDraft(asUrl: string, session: OwnerSession): Promise<
     body: JSON.stringify({
       locations: [{ latitudeE7: 377_749_000, longitudeE7: -1_224_194_000, timestampMs: "1717595122000" }],
     }),
-    headers: { "Content-Type": "application/octet-stream", Cookie: session.cookie },
+    headers: { "Content-Type": "application/vnd.pdpp.manual-upload", Cookie: session.cookie },
     method: "POST",
   });
   assert.equal(created.status, 201, created.text);

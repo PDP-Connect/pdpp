@@ -463,8 +463,10 @@ test("google_takeout's committed manifest classifies as local_collector_enroll (
   // local filesystem it runs on — exactly the local-collector shape, not a
   // browser-upload or provider-API connector. It is now bundled into
   // @pdpp/local-collector (SUPPORTED_LOCAL_COLLECTOR_CONNECTORS), so it must
-  // classify as the proven, actionable disposition, not the unproven one
-  // netflix_export still correctly gets above.
+  // classify as the proven, actionable disposition, not the unproven
+  // `local_collector_unproven` disposition a filesystem-shaped connector
+  // gets before it ships in that bundle (see the synthetic-manifest test
+  // above asserting that disposition directly).
   const connectorId = "google_takeout";
   const shippedManifest = (
     await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } })

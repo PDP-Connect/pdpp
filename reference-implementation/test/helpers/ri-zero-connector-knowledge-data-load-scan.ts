@@ -161,7 +161,13 @@ const SANCTIONED_GENERIC_DATA_READ_CALL_SITES: ReadonlySet<string> = new Set([
   // reconcilePolyfillManifests's `referenceFixturesDir`/`manifestsDir` params) —
   // one hop deeper than this scanner's bounded parameter resolver follows.
   // Verified by direct inspection, not by the scanner, hence the allowlist entry.
-  "reference-implementation/server/polyfill-manifest-reconcile.ts:96",
+  // Re-derived 2026-08-10 (manual-upload-large-artifact RI-owner ruling closure):
+  // moved from line 96 to 103 after unrelated edits earlier in the file (a
+  // multi-line import and a multi-line type alias) added 7 net lines above
+  // this call site -- the function itself is unchanged. This entry is
+  // line-pinned by design (see this array's own doc comment above); it must
+  // be re-derived whenever an edit anywhere above the call site shifts it.
+  "reference-implementation/server/polyfill-manifest-reconcile.ts:103",
 ]);
 
 /** Directory segments, relative to a production scan root (e.g. `server/`),

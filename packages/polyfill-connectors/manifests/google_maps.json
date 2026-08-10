@@ -36,12 +36,6 @@
           "help_url": "https://support.google.com/maps/answer/6258979?co=GENIE.Platform%3DiOS&hl=en"
         },
         {
-          "label": "Import-folder handoff",
-          "platform": "server",
-          "posture": "secondary",
-          "detail": "For a large export, place the file in the configured server import folder and start the same manual import flow."
-        },
-        {
           "label": "Takeout backup probe",
           "platform": "takeout",
           "posture": "advanced",
@@ -57,9 +51,10 @@
       "import_dir_env_var": "GOOGLE_MAPS_TIMELINE_DIR",
       "help_url": "https://support.google.com/maps/answer/6258979?co=GENIE.Platform%3DAndroid&hl=en",
       "help_text": "Google Maps Timeline points and segments are not exposed by Google's documented Data Portability API. This source imports an owner-provided Timeline export file; no Google account sign-in is used.",
-      "large_file_fallback": "Use the server import-folder handoff for large Timeline archives instead of waiting on a browser upload.",
+      "large_file_fallback": "This connector accepts uploads up to the deployment limit shown above. There is currently no alternate upload path for larger files — ask your PDPP operator to raise the deployment limit if your export exceeds it.",
       "validation": {
         "kind": "google_maps_timeline",
+        "file_backed": true,
         "max_file_bytes": 104857600
       },
       "validation_expectations": [
