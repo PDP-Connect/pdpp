@@ -93,6 +93,7 @@ function ownerTemplate(
     proofGate?: string | null;
     setupModality?: string;
     supportState?: string;
+    uat_expose_unlisted_connectors?: boolean | null;
   } = {}
 ): OwnerConnectorTemplateLike {
   const connectorKey = args.connectorKey ?? "test-provider";
@@ -121,6 +122,7 @@ function ownerTemplate(
         url: args.actionUrl === undefined ? "https://reference.test/v1/owner/connections/intents" : args.actionUrl,
       },
     ],
+    uat_expose_unlisted_connectors: args.uat_expose_unlisted_connectors ?? null,
   };
 }
 
@@ -1263,4 +1265,35 @@ test("a connector-key allowlist cannot declare readiness a deployment has not su
     entry.deploymentReadiness.blockers.map((blocker) => blocker.key),
     ["ACME_OAUTH_CLIENT_ID"]
   );
+});
+
+test("console catalog respects uat_expose_unlisted_connectors server fact", () => {
+  // Unproven connector WITHOUT the UAT fact → filtered out
+  const uatFalseTemplate = ownerTemplate({
+    connectorKey: "test-unproven",
+    listed: false,
+    listingStatus: "unproven",
+    uat_expose_unlisted_connectors: false,
+  });
+  let catalog = buildOwnerConnectorCatalog([], [uatFalseTemplate]);
+  assert.equal(
+    catalog.length,
+    0,
+    "unproven connector with uat_expose_unlisted_connectors=false should be filtered"
+  );
+
+  // Unproven connector WITH the UAT fact → included
+  const uatTrueTemplate = ownerTemplate({
+    connectorKey: "test-unproven",
+    listed: false,
+    listingStatus: "unproven",
+    uat_expose_unlisted_connectors: true,
+  });
+  catalog = buildOwnerConnectorCatalog([], [uatTrueTemplate]);
+  assert.equal(
+    catalog.length,
+    1,
+    "unproven connector with uat_expose_unlisted_connectors=true should be included"
+  );
+  assert.equal(catalog[0].connectorKey, "test-unproven");
 });

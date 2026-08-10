@@ -435,3 +435,152 @@ test("client grant bearer cannot list owner connector templates", async () => {
     assert.equal(asRecord(asRecord(body).error).code, "permission_error");
   });
 });
+
+test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 exposes real unproven connectors with uat_expose_unlisted_connectors=true", async () => {
+  const declaredSettings = {
+    PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
+  };
+  const priorSettings = new Map(Object.keys(declaredSettings).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, declaredSettings);
+  try {
+    await withServer(async ({ asUrl, rsUrl }) => {
+      const manifestIds = ["apple_photos", "google_messages", "imessage", "netflix_export", "steam"];
+      // After canonicalization, these become kebab-case
+      const connectorKeys = ["apple-photos", "google-messages", "imessage", "netflix-export", "steam"];
+
+      // Register all five unproven connectors with real manifests
+      for (const manifestId of manifestIds) {
+        const manifest = loadManifest(manifestId);
+        await registerConnector(asUrl, manifest);
+      }
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 200);
+
+      const { data } = asRecord(body);
+      const returnedKeys = Array.isArray(data) ? data.map((item) => asRecord(item).connector_key) : [];
+      assert.ok(
+        connectorKeys.every((key) => returnedKeys.includes(key)),
+        `all unproven connectors should be in response; got: ${returnedKeys.join(", ")}`
+      );
+
+      // Verify all five are present with correct flags
+      for (const connectorKey of connectorKeys) {
+        const template = byConnector(body, connectorKey);
+
+        // public_listing remains honest (listed:false, status:unproven)
+        const listing = asRecord(template.public_listing);
+        assert.equal(listing.listed, false, `${connectorKey}: public_listing.listed must remain false (honest)`);
+        assert.equal(listing.status, "unproven", `${connectorKey}: public_listing.status must remain unproven`);
+
+        // UAT exposure fact is explicitly true
+        assert.equal(
+          template.uat_expose_unlisted_connectors,
+          true,
+          `${connectorKey}: uat_expose_unlisted_connectors must be true when flag is set`
+        );
+
+        // Setup action fields and help URLs must exist (no synthetic/example URLs)
+        const setup = asRecord(asRecord(template.setup_plan));
+        assert.ok(setup.catalog_disposition, `${connectorKey}: must have catalog_disposition`);
+        assert.ok(setup.setup_modality, `${connectorKey}: must have setup_modality`);
+      }
+    });
+  } finally {
+    for (const [key, value] of priorSettings) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("without PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT, unproven connectors have uat_expose_unlisted_connectors=false", async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifestIds = ["steam", "netflix_export"];
+    const connectorKeys = ["steam", "netflix-export"];
+
+    for (const manifestId of manifestIds) {
+      const manifest = loadManifest(manifestId);
+      await registerConnector(asUrl, manifest);
+    }
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+    const { data } = asRecord(body);
+    const templates = Array.isArray(data) ? data : [];
+
+    // Verify unproven connectors appear but with uat_expose_unlisted_connectors=false
+    for (const connectorKey of connectorKeys) {
+      const template = templates.find((t) => asRecord(t).connector_key === connectorKey);
+      assert.ok(
+        template,
+        `${connectorKey}: should appear in server response (manifest is registered)`
+      );
+
+      // public_listing is honest
+      const listing = asRecord(asRecord(template).public_listing);
+      assert.equal(listing.listed, false, `${connectorKey}: public_listing.listed stays false`);
+      assert.equal(listing.status, "unproven", `${connectorKey}: public_listing.status stays unproven`);
+
+      // UAT exposure fact is false (flag not set)
+      assert.equal(
+        asRecord(template).uat_expose_unlisted_connectors,
+        false,
+        `${connectorKey}: uat_expose_unlisted_connectors=false when flag not set`
+      );
+    }
+  });
+});
+
+test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 does not expose unlisted connectors without setup modality", async () => {
+  const declaredSettings = {
+    PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
+  };
+  const priorSettings = new Map(Object.keys(declaredSettings).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, declaredSettings);
+  try {
+    await withServer(async ({ asUrl, rsUrl }) => {
+      const unprovenConnectorIds = ["steam", "netflix_export"];
+
+      for (const manifestId of unprovenConnectorIds) {
+        const manifest = loadManifest(manifestId);
+        await registerConnector(asUrl, manifest);
+      }
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 200);
+
+      // Both steam and netflix-export ARE exposed (they have setup modality)
+      const steam = byConnector(body, "steam");
+      const netflix = byConnector(body, "netflix-export");
+
+      assert.equal(steam.uat_expose_unlisted_connectors, true, "steam should be UAT-exposed (has setup_modality)");
+      assert.equal(netflix.uat_expose_unlisted_connectors, true, "netflix-export should be UAT-exposed (has setup_modality)");
+
+      // Constraint: both are unproven, have status:unproven, and have real setup modalities
+      const steamListing = asRecord(steam.public_listing);
+      assert.equal(steamListing.status, "unproven");
+      assert.ok(asRecord(steam.setup_plan).setup_modality, "steam should have setup_modality");
+    });
+  } finally {
+    for (const [key, value] of priorSettings) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});

@@ -92,6 +92,7 @@ export interface MountOwnerConnectorTemplatesContext {
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
   resolveResource: (req: unknown) => string;
+  uatExposeUnlistedConnectors?: boolean;
 }
 
 function stripTrailingSlash(value: string): string {
@@ -280,6 +281,14 @@ function projectTemplate(
   const connections = (connectionsByConnector.get(connectorKey) ?? []).map((instance) =>
     projectConnectionSummary(ctx, instance)
   );
+  // Explicit UAT exposure fact: true only when deployment opts in AND connector is unproven
+  // with a real setup modality (not just any unlisted connector). Constraints: listed:false,
+  // status:unproven, and a recognized setup modality (not unknown_unsupported).
+  const listing = manifest.capabilities?.public_listing;
+  const isUnproven = listing?.listed === false && typeof listing?.status === "string" && listing.status === "unproven";
+  const hasSetupModality = plan.setupModality && !["unknown", "unsupported"].includes(plan.setupModality);
+  const uatExposeUnlistedConnectors =
+    ctx.uatExposeUnlistedConnectors === true && isUnproven && hasSetupModality;
   return {
     connection_count: connections.length,
     connections,
@@ -294,6 +303,7 @@ function projectTemplate(
     setup_plan: projectSetupPlan(manifest, plan),
     stream_count: Array.isArray(manifest.streams) ? manifest.streams.length : 0,
     supported_actions: buildTemplateSupportedActions({ manifest, plan, resource }),
+    uat_expose_unlisted_connectors: uatExposeUnlistedConnectors,
     version: manifest.version ?? null,
   };
 }

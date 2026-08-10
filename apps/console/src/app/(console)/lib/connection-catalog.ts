@@ -134,6 +134,7 @@ export interface OwnerConnectorTemplateLike {
         url?: string | null;
       }[]
     | null;
+  uat_expose_unlisted_connectors?: boolean | null;
 }
 
 /** Binding-derived modality, matching the backend intent route's taxonomy. */
@@ -477,14 +478,13 @@ export function buildOwnerConnectorCatalog(
     const connectorKey = cleanManifestText(template.connector_key);
     const setupPlan = template.setup_plan;
     // Every offered entry requires an explicit operator opt-in into public
-    // listing (`listed === true`), whatever its support_state. The Experimental
-    // section is a presentation of what is already offered, NOT a second door
-    // into the offer surface: a connector the operator has not listed must not
-    // be addable through it. `listed` answers only the OFFER question — an
-    // existing owner connection for an unlisted connector stays fully visible
-    // and manageable on /sources, which is a separate inventory read.
+    // listing (`listed === true`), whatever its support_state. UAT mode can
+    // temporarily expose unlisted connectors via the `uat_expose_unlisted_connectors`
+    // flag, which the server sets only when PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1.
+    // The public_listing remains byte-faithful; the UAT fact is explicit and separate.
     const isListed = template.public_listing?.listed === true;
-    if (!connectorKey || template.registration_status !== "registered" || !isListed) {
+    const isUatExposed = template.uat_expose_unlisted_connectors === true;
+    if (!connectorKey || template.registration_status !== "registered" || (!isListed && !isUatExposed)) {
       continue;
     }
     const disposition = setupPlan?.catalog_disposition;

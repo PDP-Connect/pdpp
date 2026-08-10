@@ -6754,6 +6754,7 @@ function buildRsApp(opts: ServerOpts = {}) {
     requireToken,
     resolveResource: (req: unknown) =>
       resolvePublicUrl(req as Parameters<typeof resolvePublicUrl>[0], explicitResource),
+    uatExposeUnlistedConnectors: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT === "1",
   } as unknown as Parameters<typeof mountOwnerConnectorTemplates>[1]);
 
   // GET /v1/owner/control is the bearer-authed owner-agent control entrypoint:
