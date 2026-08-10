@@ -5418,6 +5418,96 @@ test("runCustomInstructionsStream: an unreadable body on a later run does not pr
   );
 });
 
+/**
+ * The custom_instructions discriminator: run_1786336482583 (a real UAT run)
+ * showed /sources rendering "Coverage · unknown" for this stream while
+ * conversations/messages/memories/shared_conversations all read complete in
+ * the same run. Root cause: runCustomInstructionsStream committed STATE on
+ * every success path but never emitted a DETAIL_COVERAGE message at all, so
+ * the console had zero coverage evidence to project — not a false negative,
+ * an absent signal. These tests pin that a coverage message now emits on
+ * every genuinely-successful observation boundary (a real record, a
+ * fingerprint-suppressed no-op, and a genuinely-cleared/empty body all
+ * count), and stays absent on every path that proves nothing.
+ */
+function customInstructionsCoverage(
+  messages: readonly EmittedMessage[]
+): Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> | undefined {
+  return messages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+      m.type === "DETAIL_COVERAGE" && m.stream === "custom_instructions"
+  );
+}
+
+test("runCustomInstructionsStream: a successful 200 with a real record proves coverage (considered === covered === 1)", async () => {
+  const { deps, messages } = makeHarness({
+    fetchQueue: [{ status: 200, json: { about_user_message: "I'm a tester", enabled: true } }],
+  });
+  await runCustomInstructionsStream(deps);
+  const coverage = customInstructionsCoverage(messages);
+  assert.ok(coverage, "a successful observation must emit coverage — this is the run_1786336482583 regression");
+  assert.equal(coverage.considered, 1, "the account has exactly one custom-instructions boundary");
+  assert.equal(coverage.covered, 1, "the boundary was successfully observed and a record emitted");
+  assert.equal(coverage.state_stream, "custom_instructions", "singleton full scan: stream is its own state stream");
+});
+
+test("runCustomInstructionsStream: a fingerprint-suppressed no-op still proves coverage — record count must not gate the proof", async () => {
+  const body = { about_user_message: "I'm a tester", enabled: true };
+  const first = makeHarness({ fetchQueue: [{ status: 200, json: body }] });
+  await runCustomInstructionsStream(first.deps, {});
+  const priorCursor = lastStateCursor(first.messages, "custom_instructions");
+
+  const second = makeHarness({ fetchQueue: [{ status: 200, json: body }] });
+  await runCustomInstructionsStream(second.deps, { custom_instructions: priorCursor });
+
+  assert.equal(
+    second.emitted.filter((r) => r.stream === "custom_instructions").length,
+    0,
+    "sanity: the byte-identical refresh suppresses the record"
+  );
+  const coverage = customInstructionsCoverage(second.messages);
+  assert.ok(coverage, "zero emitted records must not read as zero coverage — the source was genuinely observed");
+  assert.equal(coverage.considered, 1);
+  assert.equal(coverage.covered, 1, "fingerprint-suppressed-as-unchanged is a genuinely-observed outcome, not a gap");
+});
+
+test("runCustomInstructionsStream: a genuinely cleared/empty body proves coverage exactly like a populated one", async () => {
+  const { deps, messages } = makeHarness({
+    fetchQueue: [{ status: 200, json: {} }],
+  });
+  await runCustomInstructionsStream(deps);
+  const coverage = customInstructionsCoverage(messages);
+  assert.ok(coverage, "a genuine empty/cleared account still proves its one boundary was observed");
+  assert.equal(coverage.considered, 1);
+  assert.equal(coverage.covered, 1);
+});
+
+for (const status of [404, 403, 500] as const) {
+  test(`runCustomInstructionsStream: http ${status} must NOT prove coverage — failure never proves an observation`, async () => {
+    const { deps, messages } = makeHarness({
+      fetchQueue: [{ status, json: null }],
+    });
+    await runCustomInstructionsStream(deps);
+    assert.equal(
+      customInstructionsCoverage(messages),
+      undefined,
+      `http ${status} never observed the boundary and must not claim coverage`
+    );
+  });
+}
+
+test("runCustomInstructionsStream: an unreadable 200 body must NOT prove coverage — failure never proves an observation", async () => {
+  const { deps, messages } = makeHarness({
+    fetchQueue: [{ status: 200, json: null }],
+  });
+  await runCustomInstructionsStream(deps);
+  assert.equal(
+    customInstructionsCoverage(messages),
+    undefined,
+    "an unreadable body must not be inferred as a proven-empty/complete boundary"
+  );
+});
+
 test("runCustomGptsStream: paginates gizmos/mine and emits STATE when complete", async () => {
   const { deps, emitted, messages } = makeHarness({
     fetchQueue: [

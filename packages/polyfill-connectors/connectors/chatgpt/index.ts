@@ -34,6 +34,7 @@ import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
   buildDetailGap,
+  buildFullScanCoverageMessage,
   type CollectContext,
   type CollectionRateProgress,
   type DetailCoverageMessage,
@@ -1983,6 +1984,18 @@ export async function runCustomInstructionsStream(
     stream: "custom_instructions",
     cursor: { fetched_at: nowIso(), fingerprints: fingerprintCursor.toState() },
   });
+  // A singleton full scan: the account has exactly one custom-instructions
+  // boundary, and reaching here means it was successfully observed (readable
+  // 200, not merely absent per the not_available/http_error/parse_error
+  // returns above). `covered` is 1 whether this run emitted a fresh record
+  // or the fingerprint gate suppressed it as byte-identical to last run —
+  // both are genuinely-observed outcomes, same contract as the fingerprinted
+  // full-scan streams above. Without this the console had no DETAIL_COVERAGE
+  // for this stream at all and rendered "Coverage · unknown" even on a
+  // clean, successful run (run_1786336482583: conversations/messages/
+  // memories/shared_conversations all reported complete while this stream
+  // reported nothing).
+  deps.emit(buildFullScanCoverageMessage("custom_instructions", 1));
 }
 
 /**
