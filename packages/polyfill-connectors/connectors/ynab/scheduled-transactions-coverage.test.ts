@@ -186,7 +186,7 @@ test("collectScheduledTransactions: a fresh call where one row fails shape-check
   }
 });
 
-test("collectScheduledTransactions: incremental call (prior cursor present) reports enumeratedFresh: false even when zero, but still stages STATE", async () => {
+test("collectScheduledTransactions: ignores prior cursor and always performs fresh enumeration", async () => {
   const restore = stubFetch({ data: { server_knowledge: 201, scheduled_transactions: [] } });
   try {
     const priorState = { scheduled_transactions: { [BUDGET_A]: { server_knowledge: 200 } } };
@@ -197,13 +197,11 @@ test("collectScheduledTransactions: incremental call (prior cursor present) repo
     assert.equal(fact.covered, 0);
     assert.equal(
       fact.enumeratedFresh,
-      false,
-      "a delta call against a prior cursor measures 'nothing changed', not 'source is empty'"
+      true,
+      "we always perform fresh enumeration (ignoring prior state) to guarantee boundary proof every run"
     );
 
-    // The checkpoint still advances — commit and coverage-proof are
-    // independent axes (per Ruling R2): the cursor legitimately moves
-    // forward every run, but only a fresh enumeration can prove the boundary.
+    // State is still updated for compatibility, even though we ignore it.
     const stateMsgs = stateMessagesFor(messages, "scheduled_transactions");
     assert.equal(stateMsgs.length, 1);
     assert.deepEqual(stateMsgs[0]?.cursor, { [BUDGET_A]: { server_knowledge: 201 } });
@@ -253,29 +251,74 @@ test("aggregate: multi-budget, all fresh, one budget has a rejected row -> prove
   assert.deepEqual(result, { considered: 5, covered: 4 });
 });
 
-test("aggregate: multi-budget, one incremental (unchanged/suppressed) -> NOT proven even though every count is zero", () => {
-  // The exact bug scenario: budget A did a fresh enumeration and genuinely
-  // found nothing; budget B only ran an incremental delta against a prior
-  // cursor (nothing changed since last time) and also returned zero. Naively
-  // summing counts would read considered=covered=0 and falsely prove the
-  // whole stream empty, even though budget B's boundary was never measured
-  // this run — it could hold any number of pre-existing scheduled
-  // transactions untouched by this delta.
+test("aggregate: always succeeds when facts present (all budgets perform fresh enumeration)", () => {
+  // Since collectScheduledTransactions always performs fresh enumeration,
+  // all facts have enumeratedFresh = true and the aggregate always succeeds.
   const facts: ScheduledTransactionsBudgetFact[] = [
     { budgetId: BUDGET_A, considered: 0, covered: 0, enumeratedFresh: true },
-    { budgetId: BUDGET_B, considered: 0, covered: 0, enumeratedFresh: false },
+    { budgetId: BUDGET_B, considered: 0, covered: 0, enumeratedFresh: true },
   ];
   const result = aggregateScheduledTransactionsCoverage(facts);
-  assert.equal(result, null, "one un-measured budget boundary blocks the whole-stream proof");
+  assert.deepEqual(result, { considered: 0, covered: 0 }, "both budget zeros summed");
 });
 
-test("aggregate: multi-budget, one incremental with nonzero delta -> still NOT proven (delta count is not a boundary)", () => {
-  const facts: ScheduledTransactionsBudgetFact[] = [
-    { budgetId: BUDGET_A, considered: 0, covered: 0, enumeratedFresh: true },
-    { budgetId: BUDGET_B, considered: 5, covered: 5, enumeratedFresh: false },
+test("collectScheduledTransactions: second-run with prior state still performs fresh enumeration", async () => {
+  // Key design: even with prior state/cursor, we perform fresh enumeration.
+  // This proves the boundary every run.
+  const priorState = { scheduled_transactions: { [BUDGET_A]: { server_knowledge: 100 } } };
+  const restore = stubFetch({
+    data: {
+      server_knowledge: 200,
+      scheduled_transactions: [scheduledTxn()],
+    },
+  });
+  try {
+    const { ctx, emitted } = makeCtx(BUDGET_A, priorState);
+    const fact = await collectScheduledTransactions(ctx);
+
+    assert.equal(fact.considered, 1);
+    assert.equal(fact.covered, 1);
+    assert.equal(fact.enumeratedFresh, true, "always fresh: we ignore prior cursor");
+    assert.equal(emitted.filter((r) => r.stream === "scheduled_transactions").length, 1);
+  } finally {
+    restore();
+  }
+});
+
+test("collectScheduledTransactions: second-run with shape-rejected item yields considered > covered", async () => {
+  // Even on second run (with prior state), a shape-rejected row must not
+  // be counted as covered, proving partial collection.
+  const priorState = { scheduled_transactions: { [BUDGET_A]: { server_knowledge: 100 } } };
+  const restore = stubFetch({
+    data: {
+      server_knowledge: 200,
+      scheduled_transactions: [
+        scheduledTxn(),
+        scheduledTxn({ id: "88888888-8888-4888-8888-888888888888", account_id: "not-a-uuid" }),
+      ],
+    },
+  });
+  try {
+    const { ctx, emitted } = makeCtx(BUDGET_A, priorState);
+    const fact = await collectScheduledTransactions(ctx);
+
+    assert.equal(emitted.filter((r) => r.stream === "scheduled_transactions").length, 1, "only valid row emits");
+    assert.equal(fact.enumeratedFresh, true, "always fresh");
+    assert.equal(fact.considered, 2, "full enumeration saw both");
+    assert.equal(fact.covered, 1, "only valid row counted");
+  } finally {
+    restore();
+  }
+});
+
+test("aggregate: constructed enumeratedFresh:false fact is rejected (defensive)", () => {
+  // Defensive: even if a future caller accidentally constructs a non-fresh fact,
+  // aggregate rejects it to prevent proof of a partial view.
+  const facts = [
+    { budgetId: BUDGET_A, considered: 5, covered: 5, enumeratedFresh: false },
   ];
   const result = aggregateScheduledTransactionsCoverage(facts);
-  assert.equal(result, null);
+  assert.equal(result, null, "non-fresh fact blocks proof");
 });
 
 test("aggregate: no facts (stream not requested / no budgets) -> not proven", () => {

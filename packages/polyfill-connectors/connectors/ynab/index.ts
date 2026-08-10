@@ -1118,25 +1118,24 @@ export interface ScheduledTransactionsBudgetFact {
 
 export async function collectScheduledTransactions(ctx: BudgetCtx): Promise<ScheduledTransactionsBudgetFact> {
   const { budgetId, budgetOrdinal = 0, token, state, newState, emit, trackAndEmit, progress } = ctx;
-  const knowledge = priorKnowledge(state, "scheduled_transactions", budgetId);
+  // Always perform full enumeration (never pass server_knowledge). One request per budget
+  // returns the full inventory, guaranteeing enumeratedFresh = true.
   await progress("Fetching YNAB scheduled transactions window", {
     stream: "scheduled_transactions",
     phase: "fetch",
     offset_ordinal: budgetOrdinal,
-    cursor_present: knowledge !== undefined,
+    cursor_present: false,
   });
   const res = await ynab<YnabScheduledTransactionsResponse>(
     `/budgets/${budgetId}/scheduled_transactions`,
     token,
-    {
-      ...(knowledge === undefined ? {} : { knowledge }),
-    },
+    {},
     progress,
     {
       stream: "scheduled_transactions",
       phase: "fetch",
       offset_ordinal: budgetOrdinal,
-      cursor_present: knowledge !== undefined,
+      cursor_present: false,
     }
   );
   await progress("Fetched YNAB scheduled transactions window", {
@@ -1165,6 +1164,7 @@ export async function collectScheduledTransactions(ctx: BudgetCtx): Promise<Sche
     }
     await trackAndEmit("scheduled_transactions", record);
   }
+  // Emit STATE with server_knowledge as durable receipt (not a future delta cursor).
   const scheduled = (newState.scheduled_transactions as Record<string, { server_knowledge: number }> | undefined) ?? {};
   scheduled[budgetId] = { server_knowledge: res.data.server_knowledge };
   newState.scheduled_transactions = scheduled;
@@ -1177,24 +1177,16 @@ export async function collectScheduledTransactions(ctx: BudgetCtx): Promise<Sche
     budgetId,
     considered: res.data.scheduled_transactions.length,
     covered,
-    enumeratedFresh: knowledge === undefined,
+    enumeratedFresh: true,
   };
 }
 
 /**
  * Aggregate per-budget `scheduled_transactions` facts into the whole-stream
- * self-coverage proof, or `null` when the proof cannot be made this run.
- *
- * The stream is enumerated per-budget via YNAB's `server_knowledge` delta, so
- * `considered` can only be a true boundary measurement when EVERY requested
- * budget did a fresh (knowledge-undefined) call this run — an incremental
- * delta call measures "what changed", not "what exists", so a stray unchanged
- * budget must not let the aggregate collapse to a false zero. Requiring all
- * budgets fresh (not just non-empty) means the proof is offered only on the
- * runs that actually walked every boundary: typically first-ever runs, or a
- * future forced-recheck. Steady-state incremental runs correctly stay
- * unproven here — they never measured the boundary, so `unknown` is the
- * honest verdict, not a synthesized `complete`.
+ * self-coverage proof. Since `collectScheduledTransactions` always performs
+ * full enumeration (never delta), every fact carries enumeratedFresh = true
+ * and proves its boundary. The aggregate emits DETAIL_COVERAGE whenever facts
+ * are present.
  *
  * `considered` and `covered` are summed independently, never aliased to one
  * another: a per-budget row that failed `validateRecord` raises that

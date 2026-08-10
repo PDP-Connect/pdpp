@@ -972,7 +972,7 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true,
+      "incremental": false,
       "relationships": [
         {
           "name": "account",
@@ -1004,7 +1004,7 @@
           "group_by_time": ["date_next"]
         }
       },
-      "coverage_strategy": "checkpoint_window",
+      "coverage_strategy": "full_inventory",
       "freshness_strategy": "scheduled_window"
     },
     {
