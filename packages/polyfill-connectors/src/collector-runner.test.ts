@@ -4580,7 +4580,7 @@ function createTestClient(): Pick<LocalDeviceClient, "ingestBatch" | "putSourceI
   return {
     ingestBatch: async () => ({ ok: true }),
     putSourceInstanceState: async (request: PutSourceInstanceStateRequest): Promise<SourceInstanceStateResponse> => ({
-      device_id: request.device_id,
+      device_id: "test-device",
       object: "device_source_instance_state" as const,
       source_instance_id: request.sourceInstanceId,
       state: request.state,
