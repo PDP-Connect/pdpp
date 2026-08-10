@@ -346,6 +346,19 @@ async function listIfExists(dir: string): Promise<string[] | null> {
   }
 }
 
+// Distinguish ENOENT (legitimate absence) from other errors (unreadable/permission failure)
+async function listIfExistsOrThrow(dir: string): Promise<string[] | null> {
+  try {
+    return await readdir(dir);
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err?.code === "ENOENT") {
+      return null;
+    }
+    throw e;
+  }
+}
+
 async function* walkDayFiles(
   dayPath: string,
   year: string,
@@ -1171,10 +1184,10 @@ interface ScanRolloutsArgs {
 }
 
 interface ScanRolloutsResult {
-  functionCallsConsidered: number;
   functionCallsEmitted: number;
-  messagesConsidered: number;
+  functionCallsExamined: number;
   messagesEmitted: number;
+  messagesExamined: number;
   parsedFiles: number;
   scanOutcome: "complete" | "unreadable" | "parse_error";
 }
@@ -1325,39 +1338,39 @@ async function processRolloutEntry(
 }
 
 async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult> {
-  let baseErr: NodeJS.ErrnoException | null = null;
-  const baseExists = await (async () => {
-    try {
-      return (await listIfExists(args.baseDir)) !== null;
-    } catch (e) {
-      baseErr = e as NodeJS.ErrnoException;
-      return false;
-    }
-  })();
+  let baseExists = false;
+  let baseIsUnreadable = false;
 
-  if (!baseExists) {
+  try {
+    baseExists = (await listIfExistsOrThrow(args.baseDir)) !== null;
+  } catch (e) {
+    // ENOENT is caught and handled by listIfExistsOrThrow returning null
+    // Any other error means the directory is unreadable
+    baseIsUnreadable = true;
+  }
+
+  if (!baseExists || baseIsUnreadable) {
     emit({
       type: "PROGRESS",
       message: "Codex phase=index pass=index sessions_dir_readable=false",
     });
     await waitForEmitDrain();
-    const scanOutcome =
-      baseErr && (baseErr as NodeJS.ErrnoException & { code?: string }).code === "ENOENT" ? "complete" : "unreadable";
+    const scanOutcome = baseIsUnreadable ? "unreadable" : "complete";
     return {
       parsedFiles: 0,
       messagesEmitted: 0,
-      messagesConsidered: 0,
+      messagesExamined: 0,
       functionCallsEmitted: 0,
-      functionCallsConsidered: 0,
+      functionCallsExamined: 0,
       scanOutcome,
     };
   }
 
-  // Wrap emitRecord to count messages/function_calls
+  // Local wrapper to track emissions without mutating args
   const originalEmit = args.emitRecord;
   let messagesEmitted = 0;
   let functionCallsEmitted = 0;
-  args.emitRecord = (stream: string, data: RecordData) => {
+  const countingEmit = (stream: string, data: RecordData): void => {
     if (stream === "messages") {
       messagesEmitted += 1;
     }
@@ -1370,6 +1383,9 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
   let totalRollouts = 0;
   let parsedRollouts = 0;
   let scanOutcome: "complete" | "unreadable" | "parse_error" = "complete";
+  let messagesExamined = 0;
+  let functionCallsExamined = 0;
+
   try {
     for await (const entry of walkRollouts(args.baseDir, args.scope)) {
       if (!isPathWithinSourceRoots(entry.path, args.scope)) {
@@ -1377,20 +1393,29 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
       }
       totalRollouts += 1;
       try {
-        if ((await processRolloutEntry(entry, args, totalRollouts)) === "parsed") {
+        const result = await processRolloutEntry({ ...args, emitRecord: countingEmit }, entry, totalRollouts);
+        if (result === "parsed") {
           parsedRollouts += 1;
         }
       } catch (e) {
-        const err = e as NodeJS.ErrnoException;
-        if (err.code && err.code !== "ENOENT") {
-          scanOutcome = "parse_error";
-        }
+        // Any error during parsing (without code or other) makes scan incomplete
+        scanOutcome = "parse_error";
+        break;
       }
     }
   } catch (e) {
-    const err = e as NodeJS.ErrnoException;
-    if (err.code && err.code !== "ENOENT") {
-      scanOutcome = "parse_error";
+    // Enumeration error (e.g., directory traversal failure) makes scan incomplete
+    scanOutcome = "unreadable";
+  }
+
+  // Count examined records from parse results during this scan
+  // Only count files we actually just parsed (present in newFileCursors but not in fileCursors before scan)
+  const priorCursors = new Set(Object.keys(args.fileCursors));
+  for (const [path, cursor] of Object.entries(args.newFileCursors)) {
+    if (!priorCursors.has(path)) {
+      // This is a newly parsed file in this scan
+      messagesExamined += cursor.message_count;
+      functionCallsExamined += cursor.function_call_count;
     }
   }
 
@@ -1400,20 +1425,12 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
   });
   await waitForEmitDrain();
 
-  // Calculate considered counts from parsed cursors
-  let messagesConsidered = 0;
-  let functionCallsConsidered = 0;
-  for (const cursor of Object.values(args.newFileCursors)) {
-    messagesConsidered += cursor.message_count;
-    functionCallsConsidered += cursor.function_call_count;
-  }
-
   return {
     parsedFiles: parsedRollouts,
     messagesEmitted,
-    messagesConsidered,
+    messagesExamined,
     functionCallsEmitted,
-    functionCallsConsidered,
+    functionCallsExamined,
     scanOutcome,
   };
 }
@@ -1985,9 +2002,9 @@ async function main(): Promise<void> {
   let rolloutScan: ScanRolloutsResult = {
     parsedFiles: 0,
     messagesEmitted: 0,
-    messagesConsidered: 0,
+    messagesExamined: 0,
     functionCallsEmitted: 0,
-    functionCallsConsidered: 0,
+    functionCallsExamined: 0,
     scanOutcome: "complete",
   };
   if (needRollouts) {
@@ -2038,12 +2055,16 @@ async function main(): Promise<void> {
     const derivedRecords: RecordData[] = [];
 
     if (requested.has("messages")) {
-      const status =
-        rolloutScan.scanOutcome === "complete"
-          ? rolloutScan.messagesEmitted > 0
-            ? "collected"
-            : "verified_empty"
-          : "incomplete";
+      let status: "collected" | "verified_empty" | "incomplete";
+      if (rolloutScan.scanOutcome !== "complete") {
+        status = "incomplete";
+      } else if (rolloutScan.messagesEmitted > 0) {
+        status = "collected";
+      } else if (rolloutScan.messagesExamined > 0) {
+        status = "verified_empty";
+      } else {
+        status = "verified_empty";
+      }
       derivedRecords.push({
         id: "coverage:derived_messages",
         store: "derived_messages",
@@ -2054,9 +2075,7 @@ async function main(): Promise<void> {
             ? `rollout enumeration failed: ${rolloutScan.scanOutcome}`
             : status === "collected"
               ? `${rolloutScan.messagesEmitted} message records emitted`
-              : rolloutScan.messagesConsidered === 0
-                ? "enumeration complete, zero messages in scope"
-                : `enumeration complete, ${rolloutScan.messagesConsidered} considered but none emitted (filtered or deferred)`,
+              : `enumeration complete, ${rolloutScan.messagesExamined} examined (${rolloutScan.messagesEmitted} emitted)`,
         ...(enumerationScopeFingerprint(enumerationScope)
           ? { collection_scope: enumerationScopeFingerprint(enumerationScope) }
           : {}),
@@ -2064,12 +2083,16 @@ async function main(): Promise<void> {
     }
 
     if (requested.has("function_calls")) {
-      const status =
-        rolloutScan.scanOutcome === "complete"
-          ? rolloutScan.functionCallsEmitted > 0
-            ? "collected"
-            : "verified_empty"
-          : "incomplete";
+      let status: "collected" | "verified_empty" | "incomplete";
+      if (rolloutScan.scanOutcome !== "complete") {
+        status = "incomplete";
+      } else if (rolloutScan.functionCallsEmitted > 0) {
+        status = "collected";
+      } else if (rolloutScan.functionCallsExamined > 0) {
+        status = "verified_empty";
+      } else {
+        status = "verified_empty";
+      }
       derivedRecords.push({
         id: "coverage:derived_function_calls",
         store: "derived_function_calls",
@@ -2080,9 +2103,7 @@ async function main(): Promise<void> {
             ? `rollout enumeration failed: ${rolloutScan.scanOutcome}`
             : status === "collected"
               ? `${rolloutScan.functionCallsEmitted} function_call records emitted`
-              : rolloutScan.functionCallsConsidered === 0
-                ? "enumeration complete, zero function_calls in scope"
-                : `enumeration complete, ${rolloutScan.functionCallsConsidered} considered but none emitted (filtered or deferred)`,
+              : `enumeration complete, ${rolloutScan.functionCallsExamined} examined (${rolloutScan.functionCallsEmitted} emitted)`,
         ...(enumerationScopeFingerprint(enumerationScope)
           ? { collection_scope: enumerationScopeFingerprint(enumerationScope) }
           : {}),

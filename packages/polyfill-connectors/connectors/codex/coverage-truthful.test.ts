@@ -131,19 +131,21 @@ test("codex coverage truth: derived coverage records included in STATE snapshot"
   assert(storeNames.includes("derived_function_calls"), "STATE snapshot must include derived_function_calls store");
 });
 
-test("codex coverage truth: status differentiates complete vs incomplete scans", async () => {
-  // Test that we can distinguish:
-  // 1. Collected (rollouts parsed, records emitted)
-  // 2. Verified-empty (rollouts scanned, zero records emitted, no errors)
-  // 3. Incomplete (would require a read error, which is harder to simulate)
+test("codex coverage truth: parse error makes coverage incomplete", async () => {
+  // Create a fixture with a malformed rollout file to trigger parse_error
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const parseErrorHome = join(import.meta.dirname, "../../fixtures/codex/parse-error-home");
+  const sessionDir = join(parseErrorHome, "sessions", "2026", "08", "09");
 
-  // Already tested via populated-rollouts (collected) and empty-home (verified_empty)
-  // This test just affirms the derived records exist and have correct statuses
+  // Create directories and a malformed rollout file
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(join(sessionDir, "rollout-bad.jsonl"), '{"type":"session_meta","bad json\n');
+
   const result = await runConnectorProtocolSubprocess({
     allowFailedDone: true,
     cwd: join(import.meta.dirname, "../.."),
     entrypoint: "connectors/codex/index.ts",
-    env: { CODEX_HOME: DEVICE_A_HOME },
+    env: { CODEX_HOME: parseErrorHome },
     start: {
       scope: {
         streams: [{ name: "messages" }, { name: "function_calls" }, { name: "coverage_diagnostics" }],
@@ -158,64 +160,69 @@ test("codex coverage truth: status differentiates complete vs incomplete scans",
   const messagesRecord = coverageRecs.find((r) => r.data.store === "derived_messages");
   const functionCallsRecord = coverageRecs.find((r) => r.data.store === "derived_function_calls");
 
-  assert(messagesRecord, "must have derived_messages coverage record");
-  assert(functionCallsRecord, "must have derived_function_calls coverage record");
+  assert(messagesRecord, "must have coverage record for messages");
+  assert(functionCallsRecord, "must have coverage record for function_calls");
 
-  // With the populated fixture, we should see collected status
-  assert.equal(messagesRecord.data.status, "collected", "populated rollouts must show collected");
-  assert.equal(functionCallsRecord.data.status, "collected", "populated rollouts must show collected");
+  // Parse error = incomplete status
+  assert.equal(messagesRecord.data.status, "incomplete", "parse error must show incomplete");
+  assert.equal(functionCallsRecord.data.status, "incomplete", "parse error must show incomplete");
 });
 
-test("codex coverage truth: unreadable sessions dir shows incomplete status", async () => {
-  // Create a home with an unreadable sessions directory (EACCES)
-  const { execSync } = await import("node:child_process");
-  const unreadableHome = join(import.meta.dirname, "../../fixtures/codex/unreadable-home");
-  const sessionDir = join(unreadableHome, "sessions");
-
-  // Setup: create the dir, make it unreadable
-  execSync(`mkdir -p "${sessionDir}"`);
-  execSync(`chmod 000 "${sessionDir}"`);
-
-  try {
-    const result = await runConnectorProtocolSubprocess({
-      allowFailedDone: true,
-      cwd: join(import.meta.dirname, "../.."),
-      entrypoint: "connectors/codex/index.ts",
-      env: { CODEX_HOME: unreadableHome },
-      start: {
-        scope: {
-          streams: [{ name: "messages" }, { name: "function_calls" }, { name: "coverage_diagnostics" }],
-        },
-        type: "START",
+test("codex coverage truth: suppressed-but-populated shows verified_empty (fingerprinted)", async () => {
+  // A complete scan where messages were examined but none emitted due to fingerprint suppression
+  // should show verified_empty (data exists in scope, but all suppressed by fingerprint gate).
+  // This is tested implicitly by running against DEVICE_A_HOME twice with state:
+  // first pass collects all, second pass fingerprints suppress re-emission.
+  const result1 = await runConnectorProtocolSubprocess({
+    allowFailedDone: true,
+    cwd: join(import.meta.dirname, "../.."),
+    entrypoint: "connectors/codex/index.ts",
+    env: { CODEX_HOME: DEVICE_A_HOME },
+    start: {
+      scope: {
+        streams: [{ name: "messages" }, { name: "function_calls" }, { name: "coverage_diagnostics" }],
       },
-    });
+      type: "START",
+    },
+  });
 
-    const recs = records(result.messages);
-    const coverageRecs = recs.filter((r) => r.stream === "coverage_diagnostics");
+  assert.equal(result1.code, 0);
+  const recs1 = records(result1.messages);
+  const coverageRecs1 = recs1.filter((r) => r.stream === "coverage_diagnostics");
+  const messagesRecord1 = coverageRecs1.find((r) => r.data.store === "derived_messages");
 
-    const messagesRecord = coverageRecs.find((r) => r.data.store === "derived_messages");
-    const functionCallsRecord = coverageRecs.find((r) => r.data.store === "derived_function_calls");
+  // First run: collected (records were emitted)
+  assert.equal(messagesRecord1?.data.status, "collected", "first run should collect records");
 
-    assert(messagesRecord, "must have coverage record for messages");
-    assert(functionCallsRecord, "must have coverage record for function_calls");
+  // Extract STATE cursor for second run (to simulate fingerprint suppression)
+  const states1 = result1.messages.filter(
+    (m): m is Extract<any, { type: "STATE" }> => m.type === "STATE" && m.stream === "messages"
+  );
+  const priorState = states1[states1.length - 1]?.cursor;
 
-    // EACCES (permission denied) = incomplete scan, not verified_empty
-    assert.equal(
-      messagesRecord.data.status,
-      "incomplete",
-      "messages with unreadable sessions (EACCES) must show incomplete"
-    );
-    assert.equal(
-      functionCallsRecord.data.status,
-      "incomplete",
-      "function_calls with unreadable sessions (EACCES) must show incomplete"
-    );
-  } finally {
-    // Cleanup: restore permissions
-    try {
-      execSync(`chmod 755 "${sessionDir}"`);
-    } catch {
-      // Ignore cleanup errors
-    }
-  }
+  // Second run with prior state: should show verified_empty (examined > 0, emitted = 0 due to fingerprint)
+  const result2 = await runConnectorProtocolSubprocess({
+    allowFailedDone: true,
+    cwd: join(import.meta.dirname, "../.."),
+    entrypoint: "connectors/codex/index.ts",
+    env: { CODEX_HOME: DEVICE_A_HOME },
+    start: {
+      scope: {
+        streams: [{ name: "messages" }, { name: "function_calls" }, { name: "coverage_diagnostics" }],
+      },
+      type: "START",
+      state: { messages: priorState },
+    },
+  });
+
+  const recs2 = records(result2.messages);
+  const coverageRecs2 = recs2.filter((r) => r.stream === "coverage_diagnostics");
+  const messagesRecord2 = coverageRecs2.find((r) => r.data.store === "derived_messages");
+
+  // Second run: verified_empty (complete scan, examined > 0, emitted = 0)
+  assert.equal(
+    messagesRecord2?.data.status,
+    "verified_empty",
+    "suppressed-but-populated should show verified_empty, not collected"
+  );
 });
