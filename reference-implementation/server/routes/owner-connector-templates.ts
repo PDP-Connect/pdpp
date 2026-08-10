@@ -206,9 +206,13 @@ function buildTemplateSupportedActions(args: {
   manifest: ConnectorManifestLike;
   plan: ReturnType<typeof buildConnectionSetupPlan>;
   resource: string;
+  uatExposeUnlistedConnectors?: boolean;
 }): OwnerAgentControlAction[] {
   const rs = stripTrailingSlash(args.resource);
-  if (isActionablePublicListing(args.manifest) && isSupportedOwnerActionPlan(args.plan)) {
+  const isActionable =
+    isActionablePublicListing(args.manifest) ||
+    (args.uatExposeUnlistedConnectors === true && isSupportedOwnerActionPlan(args.plan));
+  if (isActionable && isSupportedOwnerActionPlan(args.plan)) {
     return [
       {
         family: "initiate_connection",
@@ -219,7 +223,7 @@ function buildTemplateSupportedActions(args: {
       },
     ];
   }
-  if (isActionablePublicListing(args.manifest) && isOwnerSessionBrowserActionPlan(args.plan)) {
+  if (isActionable && isOwnerSessionBrowserActionPlan(args.plan)) {
     return [
       {
         family: "initiate_connection",
@@ -243,8 +247,15 @@ function buildTemplateSupportedActions(args: {
 
 function projectSetupPlan(
   manifest: ConnectorManifestLike,
-  plan: ReturnType<typeof buildConnectionSetupPlan>
+  plan: ReturnType<typeof buildConnectionSetupPlan>,
+  uatExposeUnlistedConnectors?: boolean
 ): Record<string, unknown> {
+  // Owner-facing actionability: manifest is listed AND actionable, OR UAT is exposing with setup path
+  const isActionableManifest = isActionablePublicListing(manifest);
+  const isUatWithSetup = uatExposeUnlistedConnectors === true && plan.setupModality && !["unknown", "unsupported"].includes(plan.setupModality);
+  // For listed actionable manifests, require full plan actionability. For UAT-exposed, having setup is enough.
+  const isActionablePlan = isOwnerActionablePlan(plan);
+  const ownerActionable = isUatWithSetup || (isActionableManifest && isActionablePlan);
   return {
     catalog_disposition: plan.catalogDisposition,
     deployment_readiness: plan.deploymentReadiness,
@@ -253,7 +264,7 @@ function projectSetupPlan(
     // This is owner-facing actionability, not owner-agent REST support. A
     // browser action is represented in supported_actions as owner_mediated
     // with no method or URL because interactive setup stays in Console.
-    owner_actionable: isActionablePublicListing(manifest) && isOwnerActionablePlan(plan),
+    owner_actionable: ownerActionable,
     proof_gate: plan.proofGate,
     runbook_path: plan.runbookPath,
     setup_modality: plan.setupModality,
@@ -281,14 +292,13 @@ function projectTemplate(
   const connections = (connectionsByConnector.get(connectorKey) ?? []).map((instance) =>
     projectConnectionSummary(ctx, instance)
   );
-  // Explicit UAT exposure fact: true only when deployment opts in AND connector is unproven
-  // with a real setup modality (not just any unlisted connector). Constraints: listed:false,
-  // status:unproven, and a recognized setup modality (not unknown_unsupported).
+  // Explicit UAT exposure fact: true only when deployment opts in, AND connector is unproven unlisted,
+  // AND the plan has a recognized setup modality (not unknown/unsupported).
   const listing = manifest.capabilities?.public_listing;
   const isUnproven = listing?.listed === false && typeof listing?.status === "string" && listing.status === "unproven";
-  const hasSetupModality = plan.setupModality && !["unknown", "unsupported"].includes(plan.setupModality);
+  const hasRecognizedModality = plan.setupModality && !["unknown", "unsupported"].includes(plan.setupModality);
   const uatExposeUnlistedConnectors =
-    ctx.uatExposeUnlistedConnectors === true && isUnproven && hasSetupModality;
+    ctx.uatExposeUnlistedConnectors === true && isUnproven && hasRecognizedModality;
   return {
     connection_count: connections.length,
     connections,
@@ -300,9 +310,9 @@ function projectTemplate(
     object: "owner_connector_template",
     public_listing: manifest.capabilities?.public_listing ?? null,
     registration_status: "registered",
-    setup_plan: projectSetupPlan(manifest, plan),
+    setup_plan: projectSetupPlan(manifest, plan, uatExposeUnlistedConnectors),
     stream_count: Array.isArray(manifest.streams) ? manifest.streams.length : 0,
-    supported_actions: buildTemplateSupportedActions({ manifest, plan, resource }),
+    supported_actions: buildTemplateSupportedActions({ manifest, plan, resource, uatExposeUnlistedConnectors }),
     uat_expose_unlisted_connectors: uatExposeUnlistedConnectors,
     version: manifest.version ?? null,
   };

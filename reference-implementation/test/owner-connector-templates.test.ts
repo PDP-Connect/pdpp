@@ -541,7 +541,24 @@ test("without PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT, unproven connectors have uat_
   });
 });
 
-test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 does not expose unlisted connectors without setup modality", async () => {
+test("without PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT flag set, unproven connectors are not UAT-exposed", async () => {
+  // This is the default behavior - no flag means no exposure
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const steamManifest = loadManifest("steam");
+    await registerConnector(asUrl, steamManifest);
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+
+    const steam = byConnector(body, "steam");
+    assert.equal(steam.uat_expose_unlisted_connectors, false, "steam should NOT be UAT-exposed without flag");
+  });
+});
+
+test("UAT-exposed unproven connectors are owner_actionable with recognized setup modality", async () => {
   const declaredSettings = {
     PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
   };
@@ -549,7 +566,8 @@ test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 does not expose unlisted connectors 
   Object.assign(process.env, declaredSettings);
   try {
     await withServer(async ({ asUrl, rsUrl }) => {
-      const unprovenConnectorIds = ["steam", "netflix_export"];
+      const unprovenConnectorIds = ["apple_photos", "google_messages", "imessage", "netflix_export", "steam"];
+      const expectedKeys = ["apple-photos", "google-messages", "imessage", "netflix-export", "steam"];
 
       for (const manifestId of unprovenConnectorIds) {
         const manifest = loadManifest(manifestId);
@@ -562,17 +580,21 @@ test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 does not expose unlisted connectors 
       });
       assert.equal(status, 200);
 
-      // Both steam and netflix-export ARE exposed (they have setup modality)
-      const steam = byConnector(body, "steam");
-      const netflix = byConnector(body, "netflix-export");
+      for (const connectorKey of expectedKeys) {
+        const template = byConnector(body, connectorKey);
+        const setup = asRecord(template.setup_plan);
 
-      assert.equal(steam.uat_expose_unlisted_connectors, true, "steam should be UAT-exposed (has setup_modality)");
-      assert.equal(netflix.uat_expose_unlisted_connectors, true, "netflix-export should be UAT-exposed (has setup_modality)");
+        // Verify basic facts
+        assert.equal(template.uat_expose_unlisted_connectors, true, `${connectorKey}: must be UAT-exposed`);
+        assert.ok(setup.setup_modality, `${connectorKey}: must have a recognized setup_modality`);
+        assert.equal(setup.owner_actionable, true, `${connectorKey}: must be owner_actionable when UAT-exposed`);
 
-      // Constraint: both are unproven, have status:unproven, and have real setup modalities
-      const steamListing = asRecord(steam.public_listing);
-      assert.equal(steamListing.status, "unproven");
-      assert.ok(asRecord(steam.setup_plan).setup_modality, "steam should have setup_modality");
+        // Verify supported_actions has an entry
+        const actions = template.supported_actions;
+        assert.ok(Array.isArray(actions), `${connectorKey}: must have supported_actions array`);
+        const initiateAction = actions.find((a) => asRecord(a).family === "initiate_connection");
+        assert.ok(initiateAction, `${connectorKey}: must have an initiate_connection action`);
+      }
     });
   } finally {
     for (const [key, value] of priorSettings) {
