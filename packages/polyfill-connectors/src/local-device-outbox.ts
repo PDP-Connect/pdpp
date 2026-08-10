@@ -409,25 +409,6 @@ export class LocalDeviceOutbox {
     return candidate ? rowToItem(candidate) : null;
   }
 
-  /**
-   * Earliest next_attempt_at for any non-succeeded row (ready, leased, dead_letter).
-   * Returns null if no such rows exist. Used by drain to detect backoff-delayed work.
-   */
-  nextRetryTime(input: { sourceInstanceId?: string } = {}): string | null {
-    const query = input.sourceInstanceId
-      ? `SELECT MIN(next_attempt_at) as next_time FROM local_device_outbox
-         WHERE source_instance_id = ? AND status IN ('ready', 'leased', 'dead_letter')`
-      : `SELECT MIN(next_attempt_at) as next_time FROM local_device_outbox
-         WHERE status IN ('ready', 'leased', 'dead_letter')`;
-    const row = input.sourceInstanceId
-      ? this.#db.prepare(query).get(input.sourceInstanceId)
-      : this.#db.prepare(query).get();
-    if (!isRecord(row) || typeof row.next_time !== "string" || !row.next_time) {
-      return null;
-    }
-    return row.next_time;
-  }
-
   acknowledge(input: LocalDeviceOutboxLeaseInput): void {
     const now = this.#now();
     const result = this.#db
