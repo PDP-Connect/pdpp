@@ -47,6 +47,7 @@ import {
   type BudgetCtx,
   collectScheduledTransactions,
   type ScheduledTransactionsBudgetFact,
+  ynab,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
@@ -99,6 +100,7 @@ function makeCtx(
     emit: harness.emit as BudgetCtx["emit"],
     newState: {},
     progress: (): Promise<void> => Promise.resolve(),
+    request: ynab,
     requested: new Map([["scheduled_transactions", {}]]),
     state,
     token: "test-token",
@@ -314,9 +316,7 @@ test("collectScheduledTransactions: second-run with shape-rejected item yields c
 test("aggregate: constructed enumeratedFresh:false fact is rejected (defensive)", () => {
   // Defensive: even if a future caller accidentally constructs a non-fresh fact,
   // aggregate rejects it to prevent proof of a partial view.
-  const facts = [
-    { budgetId: BUDGET_A, considered: 5, covered: 5, enumeratedFresh: false },
-  ];
+  const facts = [{ budgetId: BUDGET_A, considered: 5, covered: 5, enumeratedFresh: false }];
   const result = aggregateScheduledTransactionsCoverage(facts);
   assert.equal(result, null, "non-fresh fact blocks proof");
 });

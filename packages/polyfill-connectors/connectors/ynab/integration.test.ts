@@ -39,6 +39,7 @@ function makeCtx(overrides: Partial<BudgetCtx> = {}): {
     emit: harness.emit as BudgetCtx["emit"],
     newState: {},
     progress: (): Promise<void> => Promise.resolve(),
+    request: () => Promise.reject(new Error("not used")),
     requested: new Map([["month_categories", {}]]),
     state: {},
     token: "test-token",

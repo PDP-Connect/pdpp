@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { type BudgetCtx, collectCategoriesAndGroups, errorDetail } from "./index.ts";
+import { type BudgetCtx, collectCategoriesAndGroups, errorDetail, ynab } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
 // Regression proof for live run_1786288330250, whose terminal row read
@@ -75,6 +75,7 @@ function makeCtx(requestedStreams: readonly string[]): {
     emit: harness.emit as BudgetCtx["emit"],
     newState: {},
     progress: (): Promise<void> => Promise.resolve(),
+    request: ynab,
     requested: new Map(requestedStreams.map((name) => [name, {}])),
     state: {},
     token: "test-token",

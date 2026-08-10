@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { type BudgetCtx, collectCategoriesAndGroups } from "./index.ts";
+import { type BudgetCtx, collectCategoriesAndGroups, ynab } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
 // Regression proof for the stream-coverage evidence omission: a succeeded YNAB
@@ -79,6 +79,7 @@ function makeCtx(requestedStreams: readonly string[]): {
     emit: harness.emit as BudgetCtx["emit"],
     newState: {},
     progress: (): Promise<void> => Promise.resolve(),
+    request: ynab,
     requested: new Map(requestedStreams.map((name) => [name, {}])),
     state: {},
     token: "test-token",
