@@ -546,12 +546,18 @@ function createMockBrowserContext(
     requested,
     state: {},
     context: {} as any,
-    assist: async () => undefined,
+    // biome-ignore lint/suspicious/useAwait: mock returns Promise<never> via throw for type conformance
+    assist: async (): Promise<never> => {
+      throw new Error("mock assist not implemented");
+    },
     completeAssistance: async () => undefined,
-    detailGaps: new Map(),
-    requestDetailGapPage: async () => undefined,
-    scope: { streams: new Map() },
-    sendInteraction: async () => undefined,
+    detailGaps: [],
+    requestDetailGapPage: async (): Promise<readonly never[]> => [],
+    scope: { streams: [] },
+    // biome-ignore lint/suspicious/useAwait: mock returns Promise<never> via throw for type conformance
+    sendInteraction: async (): Promise<never> => {
+      throw new Error("mock sendInteraction not implemented");
+    },
   };
 }
 
