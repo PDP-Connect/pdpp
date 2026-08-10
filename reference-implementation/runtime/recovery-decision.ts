@@ -31,7 +31,12 @@
  * two can never disagree about what "source pressure" means.
  */
 
-import { SOURCE_PRESSURE_GAP_REASONS } from "./scheduler-source-pressure-cooldown.ts";
+import {
+  CONNECTOR_DEFECT_REASONS,
+  INFORMATIONAL_RECOVERY_REASONS,
+  OWNER_REQUIRED_REASONS,
+  PROVIDER_PRESSURE_REASONS,
+} from "./recovery-reason-codes.ts";
 
 // ─── Recovery classes (design.md D4) ─────────────────────────────────────────
 //
@@ -59,47 +64,9 @@ export type RecoveryClass =
   /** Reason absent or unrecognized; treated as generic recoverable work. */
   | "unknown";
 
-/**
- * Canonical DETAIL_GAP reasons that mean provider pressure. This is the SAME
- * set the cooldown governor arms on (`scheduler-source-pressure-cooldown.ts`),
- * re-exported here so callers classify against one source of truth.
- */
-export const PROVIDER_PRESSURE_REASONS: ReadonlySet<string> = SOURCE_PRESSURE_GAP_REASONS;
-
-/**
- * Reasons the terminal-gap classifier stamps on a `terminal` row for a failure
- * that requires owner re-authentication (§10-C `auth_failure`). These route to
- * `owner_required`, never a retry.
- */
-export const OWNER_REQUIRED_REASONS: ReadonlySet<string> = new Set(["auth_failure"]);
-
-/**
- * Reasons the terminal-gap classifier stamps on a `terminal` row for a
- * deterministically unfillable resource (deleted / gone / permanently
- * forbidden). These route to `connector_defect` (system/connector issue), never
- * an owner retry.
- */
-export const CONNECTOR_DEFECT_REASONS: ReadonlySet<string> = new Set([
-  "gone",
-  "not_found",
-  "permanent_forbidden",
-  // A per-item poison item quarantined by the runtime (design.md D10;
-  // `runtime/recovery-quarantine.ts`). It has crossed its per-item no-progress
-  // budget and must never be presented as owner-drainable retry — it is a
-  // connector/system issue with captured evidence.
-  "quarantined",
-]);
-
-/**
- * Informational (non-recoverable, non-defect) reasons. Mirrors
- * `INFORMATIONAL_GAP_REASONS` in `runtime/index.js`; a gap with one of these is
- * an out-of-scope/disabled decision, not drainable retry work.
- */
-export const INFORMATIONAL_RECOVERY_REASONS: ReadonlySet<string> = new Set([
-  "not_available_in_mode",
-  "out_of_scope",
-  "user_disabled",
-]);
+// Re-export reason sets from the authoritative source (recovery-reason-codes.ts).
+// This preserves the existing import API while ensuring all consumers use the same Set instances.
+export { PROVIDER_PRESSURE_REASONS, OWNER_REQUIRED_REASONS, CONNECTOR_DEFECT_REASONS, INFORMATIONAL_RECOVERY_REASONS };
 
 /** Recovery classes that count as durable, drainable non-pressure recovery work. */
 export const NON_PRESSURE_RECOVERY_CLASSES: ReadonlySet<RecoveryClass> = new Set<RecoveryClass>([

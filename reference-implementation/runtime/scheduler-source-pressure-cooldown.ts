@@ -55,6 +55,7 @@
  */
 
 import { getConnectorManifest } from "../server/auth.ts";
+import { PROVIDER_PRESSURE_REASONS } from "./recovery-reason-codes.ts";
 
 // ─── Pressure reasons ───────────────────────────────────────────────────────
 
@@ -68,8 +69,9 @@ import { getConnectorManifest } from "../server/auth.ts";
  * `upstream_pressure` and `rate_limited` are the two source-pressure reasons a
  * connector emits on a `DETAIL_GAP` (see
  * `packages/polyfill-connectors/src/connector-runtime-protocol.ts`).
+ * This is an alias for PROVIDER_PRESSURE_REASONS from recovery-reason-codes.ts.
  */
-export const SOURCE_PRESSURE_GAP_REASONS: ReadonlySet<string> = new Set(["rate_limited", "upstream_pressure"]);
+export const SOURCE_PRESSURE_GAP_REASONS: ReadonlySet<string> = PROVIDER_PRESSURE_REASONS;
 
 // ─── Tunables ──────────────────────────────────────────────────────────────
 
