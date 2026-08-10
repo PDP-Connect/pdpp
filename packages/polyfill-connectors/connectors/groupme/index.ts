@@ -61,8 +61,10 @@
 import { createHash } from "node:crypto";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import {
+  buildDetailCoverageMessage,
   buildFullScanCoverageMessage,
   type CollectContext,
+  type DetailCoverageMessage,
   type RecordData,
   runConnector,
 } from "../../src/connector-runtime.ts";
@@ -1196,6 +1198,100 @@ export interface CollectionOutcome {
 }
 
 /**
+ * Per-run honest coverage accounting for the `attachments` detail stream
+ * (manifest `coverage_strategy: "parent_detail_accounting"` — see
+ * evidence/coherence.ts's `strategyBoundsWindowRatherThanCounting`, which
+ * deliberately excludes this strategy: it owes a per-item accounting, not a
+ * bounded window, so `covered` must actually satisfy `considered`).
+ *
+ * Every attachment `normalizeOneAttachment` attempts to hydrate (an
+ * image/file attachment with a URL) lands in `requiredKeys` — the
+ * denominator — the moment its record reaches `emitAttachmentRecord`.
+ * `hydrationStatus` then places it in exactly one outcome bucket:
+ *   - `hydrated` -> `hydratedKeys` (the numerator: blob bytes actually
+ *     committed to storage).
+ *   - `deferred` or `failed` -> neither bucket. `deferred` covers TWO
+ *     distinct causes this connector cannot currently tell apart from the
+ *     emitted record alone — no blob-upload backend configured this run, or
+ *     `fetchAttachmentBlob` returning null on a real per-item failure (bad
+ *     URL, oversized body, non-2xx fetch) — so crediting it as covered would
+ *     risk overclaiming a real failure as proven. Treating both as
+ *     uncovered is the conservative, honest choice: it never overclaims,
+ *     it only ever under-claims a legitimately-unavailable-backend run.
+ *
+ * There is no gap-key/retry tracking here (unlike gmail's DETAIL_GAP for the
+ * same `failed` outcome) — a stream a `failed`/`deferred` hydration leaves
+ * short of `considered` simply reads `not_proven` for this run; the next
+ * run's ordinary re-walk of the owning message re-attempts hydration since
+ * the fingerprint cursor keys `attachments` on the derived attachment
+ * record, not the owning message.
+ */
+export interface AttachmentDetailCoverage {
+  hydratedKeys: string[];
+  requiredKeys: string[];
+}
+
+/** Fresh, empty accumulator for one run's attachments detail pass. */
+export function makeAttachmentDetailCoverage(): AttachmentDetailCoverage {
+  return { hydratedKeys: [], requiredKeys: [] };
+}
+
+/**
+ * Whether `attachments` coverage is provable for this run: every REQUESTED
+ * parent stream that could feed it (`group_messages`, `direct_chat_messages`)
+ * completed cleanly. A parent that was never requested contributes no
+ * attachments and does not block the claim; a requested parent that failed
+ * means this run's attachment enumeration is incomplete for an unknown
+ * subset of messages, so the accumulated coverage reflects only a partial
+ * boundary and must not be reported as proven. Extracted from `collect()`
+ * purely to keep that function's cognitive complexity within the lint
+ * ceiling — no behavior change from inlining it.
+ */
+function attachmentParentsProvenClean(
+  requested: CollectContext["requested"],
+  groupMessagesOutcome: CollectionOutcome | undefined,
+  directChatMessagesOutcome: CollectionOutcome | undefined
+): boolean {
+  const groupMessagesOk = !requested.has("group_messages") || groupMessagesOutcome?.failed === false;
+  const directChatMessagesOk = !requested.has("direct_chat_messages") || directChatMessagesOutcome?.failed === false;
+  return groupMessagesOk && directChatMessagesOk;
+}
+
+/**
+ * Record one attachment record reaching the `attachments` stream into the
+ * coverage accumulator, keyed by its own `hydration_status`. Pure: mutates
+ * the passed accumulator. `data.id`/`data.hydration_status` are read
+ * defensively (RecordData is an index-signature type) since this runs on
+ * the same record shape `emitRecord` will independently (re-)validate —
+ * this accumulator must never assume the runtime accepted the record.
+ */
+export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, data: RecordData): void {
+  const key = typeof data.id === "string" ? data.id : String(data.id ?? "");
+  coverage.requiredKeys.push(key);
+  if (data.hydration_status === "hydrated") {
+    coverage.hydratedKeys.push(key);
+  }
+}
+
+/**
+ * Build the `attachments` DETAIL_COVERAGE from one run's accumulated
+ * per-attachment outcomes. `stateStream: "attachments"` (not a parent
+ * message stream) because `attachments` carries its own fingerprint cursor
+ * and STATE checkpoint (see `collect()`), unlike gmail's attachments detail
+ * pass which anchors on the parent list cursor.
+ */
+export function buildAttachmentDetailCoverageMessage(coverage: AttachmentDetailCoverage): DetailCoverageMessage {
+  return buildDetailCoverageMessage({
+    stream: "attachments",
+    stateStream: "attachments",
+    requiredKeys: coverage.requiredKeys,
+    hydratedKeys: coverage.hydratedKeys,
+    considered: coverage.requiredKeys.length,
+    covered: coverage.hydratedKeys.length,
+  });
+}
+
+/**
  * Shared try/catch/outcome wrapper for a stream's top-level collection pass.
  * `body` runs the real fetch-and-emit work and returns the raw enumerated
  * "considered" count on a clean pass. Every GroupMe stream needs the exact
@@ -1595,8 +1691,10 @@ export async function collect({
   const attachmentCursor = openFingerprintCursor(state.attachments);
 
   const attachmentsRequested = requested.has("attachments");
+  const attachmentCoverage = makeAttachmentDetailCoverage();
   const emitAttachmentRecord = attachmentsRequested
     ? async (data: RecordData): Promise<void> => {
+        recordAttachmentCoverage(attachmentCoverage, data);
         if (attachmentCursor.shouldEmit(data)) {
           await emitRecord("attachments", data);
         }
@@ -1686,6 +1784,9 @@ export async function collect({
       stream: "attachments",
       cursor: { fingerprints: attachmentCursor.toState() },
     });
+    if (attachmentParentsProvenClean(requested, groupMessagesOutcome, directChatMessagesOutcome)) {
+      await emit(buildAttachmentDetailCoverageMessage(attachmentCoverage));
+    }
   }
 }
 

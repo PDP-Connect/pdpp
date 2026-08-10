@@ -1,0 +1,349 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * Coverage proof for the `attachments` stream (manifest `coverage_strategy:
+ * "parent_detail_accounting"` — see evidence/coherence.ts).
+ *
+ * BEFORE this fix, `collect()` emitted a STATE checkpoint for `attachments`
+ * but never a DETAIL_COVERAGE message at all — the stream could never prove
+ * coverage under `evaluateStreamCoherence` (rule 6: a declared strategy with
+ * no measurement behind it reads `checkpoint_only`/`no_proof_strategy`,
+ * never `proven`), regardless of how many attachments were actually
+ * hydrated. This file proves the fix: `recordAttachmentCoverage` and
+ * `buildAttachmentDetailCoverageMessage` build an honest per-run
+ * considered/covered accounting from each attachment's OWN terminal
+ * `hydration_status`, and `collect()` emits it gated on every requested
+ * parent stream (group_messages, direct_chat_messages) having completed
+ * cleanly this run.
+ *
+ * `covered` counts ONLY `hydrated` outcomes. Both `deferred` (no
+ * blob-upload backend configured, OR a real per-item fetch/validation
+ * failure that `fetchAttachmentBlob` folds into null) and `failed` (the
+ * uploader threw) are excluded from `covered` — the conservative,
+ * non-overclaiming choice documented on `AttachmentDetailCoverage`.
+ */
+
+import assert from "node:assert/strict";
+import { after, before, test } from "node:test";
+import type { CollectContext, EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
+import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
+import {
+  __resetHttpGovernorForTests,
+  __setZeroDelayHttpGovernorForTests,
+  buildAttachmentDetailCoverageMessage,
+  collect,
+  makeAttachmentDetailCoverage,
+  recordAttachmentCoverage,
+} from "./index.ts";
+import { validateRecord } from "./schemas.ts";
+
+const TOKEN = "test-access-token";
+
+before(() => {
+  __setZeroDelayHttpGovernorForTests();
+});
+after(() => {
+  __resetHttpGovernorForTests();
+});
+
+// ─── Unit level: recordAttachmentCoverage / buildAttachmentDetailCoverageMessage ──
+
+test("recordAttachmentCoverage: zero attachments considered this run yields a proven-empty 0/0 claim", () => {
+  const coverage = makeAttachmentDetailCoverage();
+  const msg = buildAttachmentDetailCoverageMessage(coverage);
+
+  assert.equal(msg.type, "DETAIL_COVERAGE");
+  assert.equal(msg.stream, "attachments");
+  assert.equal(msg.state_stream, "attachments");
+  assert.equal(msg.considered, 0, "a genuinely empty run must prove considered: 0, not omit it");
+  assert.equal(msg.covered, 0);
+  assert.deepEqual(msg.required_keys, []);
+  assert.deepEqual(msg.hydrated_keys, []);
+});
+
+test("recordAttachmentCoverage: every attachment hydrated reports considered === covered (nonzero, full coverage)", () => {
+  const coverage = makeAttachmentDetailCoverage();
+  recordAttachmentCoverage(coverage, { id: "a1", hydration_status: "hydrated" });
+  recordAttachmentCoverage(coverage, { id: "a2", hydration_status: "hydrated" });
+  const msg = buildAttachmentDetailCoverageMessage(coverage);
+
+  assert.equal(msg.considered, 2);
+  assert.equal(msg.covered, 2, "a fully hydrated run must prove full coverage, not merely nonzero collection");
+  assert.deepEqual(msg.hydrated_keys, ["a1", "a2"]);
+});
+
+test("recordAttachmentCoverage: a partial hydration failure reports covered < considered — must not be laundered into full coverage", () => {
+  const coverage = makeAttachmentDetailCoverage();
+  recordAttachmentCoverage(coverage, { id: "a1", hydration_status: "hydrated" });
+  recordAttachmentCoverage(coverage, { id: "a2", hydration_status: "failed" });
+  recordAttachmentCoverage(coverage, { id: "a3", hydration_status: "hydrated" });
+  const msg = buildAttachmentDetailCoverageMessage(coverage);
+
+  assert.equal(msg.considered, 3, "the failed attachment was still considered — it must not shrink the denominator");
+  assert.equal(msg.covered, 2, "only the two genuinely hydrated attachments count toward covered");
+  assert.deepEqual(msg.required_keys, ["a1", "a2", "a3"]);
+  assert.deepEqual(msg.hydrated_keys, ["a1", "a3"], "the failed attachment must not appear in hydrated_keys");
+});
+
+test("recordAttachmentCoverage: a deferred attachment (no upload backend, or a null-returning fetch failure) is considered but not covered", () => {
+  const coverage = makeAttachmentDetailCoverage();
+  recordAttachmentCoverage(coverage, { id: "a1", hydration_status: "deferred" });
+  const msg = buildAttachmentDetailCoverageMessage(coverage);
+
+  assert.equal(msg.considered, 1);
+  assert.equal(
+    msg.covered,
+    0,
+    "deferred must never be credited as covered — it conflates 'no backend configured' with a real per-item failure"
+  );
+});
+
+// ─── collect()-level: gating on parent-stream success/failure ──────────────
+
+const GROUP = {
+  id: "group-1",
+  name: "Test Group",
+  description: null,
+  avatar_url: null,
+  created_at: 1_700_000_000,
+  updated_at: 1_700_000_050,
+  members_count: 3,
+  messages_count: 1,
+};
+
+function groupMessageWithAttachment(id: string): Record<string, unknown> {
+  return {
+    id,
+    text: "look at this",
+    created_at: 1_700_000_100,
+    user_id: "user-2",
+    name: "Bob",
+    avatar_url: null,
+    attachments: [{ type: "image", url: "https://i.groupme.com/a.jpg" }],
+    favorited_by: [],
+    system: false,
+  };
+}
+
+const CHAT = {
+  id: "chat-1",
+  last_message: "hey",
+  last_message_at: 1_700_000_000,
+  other_user: { id: "user-2", name: "Bob", avatar_url: null },
+  avatar_url: null,
+};
+
+function directMessageWithAttachment(id: string): Record<string, unknown> {
+  return {
+    id,
+    text: "look at this too",
+    created_at: 1_700_000_100,
+    user_id: "user-2",
+    name: "Bob",
+    avatar_url: null,
+    attachments: [{ type: "image", url: "https://i.groupme.com/b.jpg" }],
+  };
+}
+
+/** Route `globalThis.fetch` by request path, mirroring
+ *  carry-forward-projection.test.ts's stub — collect()'s real fan-out hits
+ *  several distinct paths in one run, not a fixed call sequence. */
+function stubFetchByPath(routes: Record<string, unknown | { status: number; body: unknown }>): () => void {
+  const original = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    const route = routes[url.pathname];
+    if (route === undefined) {
+      throw new Error(`unstubbed path in attachment-detail-coverage test: ${url.pathname}`);
+    }
+    if (typeof route === "object" && route !== null && "status" in route) {
+      const failure = route as { status: number; body: unknown };
+      return Promise.resolve(new Response(JSON.stringify(failure.body), { status: failure.status }));
+    }
+    return Promise.resolve(new Response(JSON.stringify({ response: route }), { status: 200 }));
+  }) as typeof globalThis.fetch;
+  return () => {
+    globalThis.fetch = original;
+  };
+}
+
+const STREAMS: StreamScope[] = [
+  { name: "groups" },
+  { name: "group_messages" },
+  { name: "direct_messages" },
+  { name: "direct_chat_messages" },
+  { name: "attachments" },
+];
+
+function makeCtx(state: Record<string, unknown> = {}): {
+  ctx: CollectContext;
+  emitted: EmittedRecord[];
+  messages: EmittedMessage[];
+} {
+  const harness = makeRecordingEmit(validateRecord);
+  const ctx: CollectContext = {
+    assist: () => Promise.resolve("asst_test"),
+    capture: null,
+    completeAssistance: () => Promise.resolve(),
+    credentials: { GROUPME_ACCESS_TOKEN: TOKEN },
+    detailGaps: [],
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    emittedAt: "2026-08-10T00:00:00.000Z",
+    progress: () => Promise.resolve(),
+    requestDetailGapPage: () => Promise.resolve([]),
+    requested: new Map(STREAMS.map((s) => [s.name, s])),
+    scope: { streams: STREAMS },
+    sendInteraction: () =>
+      Promise.resolve({ request_id: "int_test", status: "cancelled" as const, type: "INTERACTION_RESPONSE" as const }),
+    state,
+  };
+  return { ctx, emitted: harness.emitted, messages: harness.protocolMessages };
+}
+
+function attachmentsCoverageMessage(messages: readonly EmittedMessage[]): EmittedMessage | undefined {
+  return messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "attachments");
+}
+
+test("collect(): zero attachments across both parent streams proves a verified-empty 0/0 attachments claim", async () => {
+  const restore = stubFetchByPath({
+    "/v3/groups": [GROUP],
+    "/v3/chats": [CHAT],
+    "/v3/groups/group-1/messages": {
+      count: 1,
+      messages: [
+        {
+          id: "gmsg-1",
+          text: "hi",
+          created_at: 1_700_000_100,
+          user_id: "user-2",
+          name: "Bob",
+          avatar_url: null,
+          attachments: [],
+          favorited_by: [],
+          system: false,
+        },
+      ],
+    },
+    "/v3/chats/chat-1/messages": {
+      count: 1,
+      direct_messages: [
+        {
+          id: "dmsg-1",
+          text: "hi",
+          created_at: 1_700_000_100,
+          user_id: "user-2",
+          name: "Bob",
+          avatar_url: null,
+          attachments: [],
+        },
+      ],
+    },
+  });
+  try {
+    const { ctx, messages } = makeCtx();
+    await collect(ctx);
+
+    const coverage = attachmentsCoverageMessage(messages);
+    assert.ok(coverage, "attachments DETAIL_COVERAGE must be emitted when both parent streams succeed cleanly");
+    assert.equal(coverage?.type === "DETAIL_COVERAGE" && coverage.considered, 0);
+    assert.equal(coverage?.type === "DETAIL_COVERAGE" && coverage.covered, 0);
+  } finally {
+    restore();
+  }
+});
+
+test("collect(): nonzero attachments with no blob-upload backend configured proves considered > 0, covered: 0 — never false-complete", async () => {
+  // No PDPP_RS_URL/PDPP_OWNER_TOKEN in this test process env, so
+  // makeUploader() returns undefined and every attachment with a URL stays
+  // hydration_status: "deferred" (attempted this run, but not retained).
+  const restore = stubFetchByPath({
+    "/v3/groups": [GROUP],
+    "/v3/chats": [CHAT],
+    "/v3/groups/group-1/messages": { count: 1, messages: [groupMessageWithAttachment("gmsg-1")] },
+    "/v3/chats/chat-1/messages": { count: 1, direct_messages: [directMessageWithAttachment("dmsg-1")] },
+  });
+  try {
+    const { ctx, messages } = makeCtx();
+    await collect(ctx);
+
+    const coverage = attachmentsCoverageMessage(messages);
+    assert.ok(coverage, "attachments DETAIL_COVERAGE must still be emitted — the run itself was clean");
+    assert.equal(coverage?.type === "DETAIL_COVERAGE" && coverage.considered, 2, "both attachments were considered");
+    assert.equal(
+      coverage?.type === "DETAIL_COVERAGE" && coverage.covered,
+      0,
+      "an unconfigured blob backend must never be reported as covered — that would be a false completeness claim"
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("collect(): a failed REQUESTED parent stream (group_messages) withholds attachments coverage entirely — an interrupted run must not claim a partial boundary as proven", async () => {
+  const restore = stubFetchByPath({
+    "/v3/groups": [GROUP],
+    "/v3/chats": [CHAT],
+    "/v3/groups/group-1/messages": { status: 500, body: { error: "server error" } },
+    "/v3/chats/chat-1/messages": { count: 1, direct_messages: [directMessageWithAttachment("dmsg-1")] },
+  });
+  try {
+    const { ctx, messages } = makeCtx();
+    await collect(ctx);
+
+    const coverage = attachmentsCoverageMessage(messages);
+    assert.equal(
+      coverage,
+      undefined,
+      "group_messages failed this run — its attachment boundary is unknown/partial, so attachments coverage must be withheld, not reported against only the successful parent"
+    );
+
+    // The attachments STATE checkpoint still commits (fingerprints for
+    // whatever WAS emitted this run survive), matching the existing
+    // per-stream withhold-coverage-not-state discipline used elsewhere in
+    // this file for groups/group_messages/direct_messages/direct_chat_messages.
+    const attachmentsState = messages.find((m) => m.type === "STATE" && m.stream === "attachments");
+    assert.ok(attachmentsState, "attachments STATE still commits even though its coverage claim is withheld");
+  } finally {
+    restore();
+  }
+});
+
+test("collect(): a parent stream that was never requested does not block attachments coverage for the requested parent that succeeded", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const streams: StreamScope[] = [{ name: "groups" }, { name: "group_messages" }, { name: "attachments" }];
+  const ctx: CollectContext = {
+    assist: () => Promise.resolve("asst_test"),
+    capture: null,
+    completeAssistance: () => Promise.resolve(),
+    credentials: { GROUPME_ACCESS_TOKEN: TOKEN },
+    detailGaps: [],
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    emittedAt: "2026-08-10T00:00:00.000Z",
+    progress: () => Promise.resolve(),
+    requestDetailGapPage: () => Promise.resolve([]),
+    requested: new Map(streams.map((s) => [s.name, s])),
+    scope: { streams },
+    sendInteraction: () =>
+      Promise.resolve({ request_id: "int_test", status: "cancelled" as const, type: "INTERACTION_RESPONSE" as const }),
+    state: {},
+  };
+  const restore = stubFetchByPath({
+    "/v3/groups": [GROUP],
+    "/v3/groups/group-1/messages": { count: 1, messages: [groupMessageWithAttachment("gmsg-1")] },
+  });
+  try {
+    await collect(ctx);
+
+    const coverage = harness.protocolMessages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "attachments");
+    assert.ok(
+      coverage,
+      "direct_chat_messages was never requested, so it must not block the attachments claim for the requested, successful group_messages parent"
+    );
+    assert.equal(coverage?.type === "DETAIL_COVERAGE" && coverage.considered, 1);
+  } finally {
+    restore();
+  }
+});
