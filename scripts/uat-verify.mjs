@@ -17,6 +17,8 @@
 
 import { execFileSync } from "node:child_process";
 
+import { withinLastHours } from "./uat-verify-recency.mjs";
+
 const BASE = process.env.BASE || "http://localhost:3012";
 const CONTAINER = process.env.CONTAINER || "pdpp-final-uat";
 const JSON_OUT = process.argv.includes("--json");
@@ -174,7 +176,7 @@ async function checkStorageRendering() {
 
 function checkConnectorHealth() {
   const skipped = sql(
-    "select connector_id, error from run_history where status='skipped' and error like '%credential_present_and_unrejected%' and started_at > datetime('now','-1 hour')"
+    `select connector_id, error from run_history where status='skipped' and error like '%credential_present_and_unrejected%' and ${withinLastHours("started_at")}`
   );
   record(
     "scheduler.no-self-poisoning-skip-loop",
@@ -185,7 +187,7 @@ function checkConnectorHealth() {
   );
 
   const opaque = sql(
-    "select connector_id, connector_error_json from run_history where connector_error_json like '%Command failed%' and connector_error_json not like '%server:%' and started_at > datetime('now','-1 hour')"
+    `select connector_id, connector_error_json from run_history where connector_error_json like '%Command failed%' and connector_error_json not like '%server:%' and ${withinLastHours("started_at")}`
   );
   record(
     "runtime.imap-errors-carry-detail",
@@ -219,7 +221,7 @@ function checkBrowserRuntime() {
   );
 
   const chatgptSkips = sql(
-    "select count(*) n from run_history where connector_id='chatgpt' and status='skipped' and started_at > datetime('now','-1 hour')"
+    `select count(*) n from run_history where connector_id='chatgpt' and status='skipped' and ${withinLastHours("started_at")}`
   );
   record(
     "browser-runtime.chatgpt-not-skipped",
