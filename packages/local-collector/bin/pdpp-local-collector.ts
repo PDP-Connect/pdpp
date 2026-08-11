@@ -635,7 +635,7 @@ async function main(): Promise<void> {
   }
 
   if (options.command === "retry-dead-letters") {
-    const result = retryLocalOutboxDeadLetters(options);
+    const result = retryLocalOutboxDeadLetters(resolveInspectionOptions(options));
     writeJson(result);
     return;
   }
@@ -647,13 +647,13 @@ async function main(): Promise<void> {
   }
 
   if (options.command === "prune-sent") {
-    const result = pruneSentOutboxRows(options);
+    const result = pruneSentOutboxRows(resolveInspectionOptions(options));
     writeJson(result);
     return;
   }
 
   if (options.command === "compact") {
-    const result = compactOutbox(options);
+    const result = compactOutbox(resolveInspectionOptions(options));
     writeJson(result);
     // A refused apply is an operator error (unsent work present); exit non-zero
     // so a supervising script does not mistake the refusal for a successful
@@ -2484,7 +2484,7 @@ function resolveRecoveryOptions(options: CliOptions): {
 
 export function resolveInspectionOptions(options: CliOptions): CliOptions {
   const sourceInstanceId = options.sourceInstanceId?.trim();
-  if (!sourceInstanceId || options.explicitOptions?.has("--queue") === true) {
+  if (!sourceInstanceId || hasExplicitQueuePath(options)) {
     return options;
   }
 
@@ -2527,7 +2527,7 @@ export function resolveInspectionOptions(options: CliOptions): CliOptions {
  */
 export function resolveRunProfileOptions(options: CliOptions): CliOptions {
   const sourceInstanceId = options.sourceInstanceId?.trim();
-  if (!sourceInstanceId || options.explicitOptions?.has("--queue") === true) {
+  if (!sourceInstanceId || hasExplicitQueuePath(options)) {
     return options;
   }
   const lookup = findLocalCollectorProfiles({

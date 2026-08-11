@@ -40,6 +40,8 @@ export interface CollectorStatePathInput {
   sourceInstanceId?: string | null | undefined;
   /** Injectable platform state root for deterministic tests. */
   stateRoot?: string | undefined;
+  /** Test hook that simulates a legacy collector write after the first snapshot. */
+  beforeMigrationReconcile?: (() => void) | undefined;
 }
 
 export class CollectorStateResolutionError extends Error {
@@ -64,7 +66,7 @@ export function defaultCollectorStateRoot(
   const home = input.home ?? homedir();
   const platform = input.platform ?? process.platform;
   const xdgStateHome = env.XDG_STATE_HOME?.trim();
-  if (xdgStateHome && platform !== "win32" && platform !== "darwin") {
+  if (xdgStateHome && isAbsolute(xdgStateHome) && platform !== "win32" && platform !== "darwin") {
     return xdgStateHome;
   }
   if (platform === "win32") {
@@ -99,7 +101,7 @@ export function canonicalCollectorQueuePath(input: {
   }
   const sourceSegment = safeStatePathSegment(sourceInstanceId);
   const fileName = connectorId
-    ? `${safeStatePathSegment(connectorId)}-${sourceSegment}.sqlite`
+    ? `${safeStatePathSegment(connectorId)}.${sourceSegment}.sqlite`
     : `collector-runner-queue.${sourceSegment}.sqlite`;
   return join(directory, fileName);
 }
@@ -114,8 +116,8 @@ export function canonicalCollectorQueuePath(input: {
  * root through a consistent SQLite snapshot. Old files are never removed.
  */
 export function resolveCollectorQueuePath(input: CollectorStatePathInput = {}): string {
-  const configuredPath = input.configuredPath?.trim();
-  const isExplicit = input.configuredPathIsExplicit ?? Boolean(configuredPath);
+  const configuredPath = input.configuredPath;
+  const isExplicit = input.configuredPathIsExplicit ?? Boolean(configuredPath?.trim());
   if (isExplicit && configuredPath) {
     return configuredPath;
   }
@@ -185,7 +187,7 @@ export function resolveCollectorQueuePath(input: CollectorStatePathInput = {}): 
   if (isWithin(stateDirectory, legacyPath)) {
     return legacyPath;
   }
-  return migrateLegacyStore(legacyPath, canonicalPath, sourceInstanceId);
+  return migrateLegacyStore(legacyPath, canonicalPath, sourceInstanceId, input.beforeMigrationReconcile);
 }
 
 function legacyRoots(input: {
@@ -321,7 +323,12 @@ function containsSourceRows(path: string, sourceInstanceId: string): boolean {
   }
 }
 
-function migrateLegacyStore(legacyPath: string, canonicalPath: string, sourceInstanceId: string): string {
+function migrateLegacyStore(
+  legacyPath: string,
+  canonicalPath: string,
+  sourceInstanceId: string,
+  beforeReconcile?: (() => void) | undefined
+): string {
   mkdirSync(dirname(canonicalPath), { mode: 0o700, recursive: true });
   const temporaryPath = `${canonicalPath}.migration-${process.pid}-${randomUUID()}.tmp`;
   let source: DatabaseSync | undefined;
@@ -335,6 +342,9 @@ function migrateLegacyStore(legacyPath: string, canonicalPath: string, sourceIns
     if (process.platform !== "win32") {
       chmodSync(temporaryPath, 0o600);
     }
+
+    beforeReconcile?.();
+    reconcileLegacyWrites(legacyPath, temporaryPath, sourceInstanceId);
 
     const snapshotFd = openSync(temporaryPath, "r");
     try {
@@ -375,6 +385,58 @@ function migrateLegacyStore(legacyPath: string, canonicalPath: string, sourceIns
   }
 }
 
+/**
+ * Fence the still-running legacy collector while reconciling writes that
+ * landed after VACUUM INTO's snapshot. BEGIN IMMEDIATE waits for any current
+ * writer, then prevents another writer until the rows are copied into the
+ * temporary canonical database. The old database is retained, so a failed
+ * migration remains recoverable with --queue.
+ */
+function reconcileLegacyWrites(legacyPath: string, temporaryPath: string, sourceInstanceId: string): void {
+  let source: DatabaseSync | undefined;
+  try {
+    source = new DatabaseSync(legacyPath);
+    source.exec("PRAGMA busy_timeout = 5000");
+    source.exec("BEGIN IMMEDIATE");
+    const escapedPath = temporaryPath.replaceAll("'", "''");
+    source.exec(`ATTACH DATABASE '${escapedPath}' AS migrated`);
+    source.exec(`
+      INSERT OR IGNORE INTO migrated.local_device_outbox (
+        id, source_instance_id, kind, status, payload_json, body_hash,
+        attempt_count, next_attempt_at, lease_holder, lease_epoch,
+        lease_until, last_error, acknowledged_at, created_at, updated_at
+      )
+      SELECT id, source_instance_id, kind, status, payload_json, body_hash,
+             attempt_count, next_attempt_at, lease_holder, lease_epoch,
+             lease_until, last_error, acknowledged_at, created_at, updated_at
+        FROM main.local_device_outbox
+       WHERE source_instance_id = '${sourceInstanceId.replaceAll("'", "''")}'
+    `);
+    const hasObservedStreamTable = source
+      .prepare("SELECT 1 AS present FROM migrated.sqlite_master WHERE type = 'table' AND name = 'local_device_observed_stream'")
+      .get();
+    if (hasObservedStreamTable) {
+      source.exec(`
+        INSERT OR IGNORE INTO migrated.local_device_observed_stream (outbox_id, source_instance_id, stream)
+        SELECT outbox_id, source_instance_id, stream
+          FROM main.local_device_observed_stream
+         WHERE source_instance_id = '${sourceInstanceId.replaceAll("'", "''")}'
+      `);
+    }
+    source.exec("COMMIT");
+    source.exec("DETACH DATABASE migrated");
+  } catch (error) {
+    try {
+      source?.exec("ROLLBACK");
+    } catch {
+      // Preserve the original migration failure.
+    }
+    throw error;
+  } finally {
+    source?.close();
+  }
+}
+
 function ambiguousLegacyState(
   canonicalPath: string,
   matches: readonly string[],
@@ -387,7 +449,7 @@ function ambiguousLegacyState(
 }
 
 function safeStatePathSegment(value: string): string {
-  return encodeURIComponent(value).replaceAll("%", "_");
+  return Buffer.from(value, "utf8").toString("base64url");
 }
 
 function deduplicatePaths(paths: readonly string[]): string[] {

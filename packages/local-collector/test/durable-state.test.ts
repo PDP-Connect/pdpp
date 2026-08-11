@@ -38,11 +38,11 @@ function packageLegacyPath(installRoot: string, name: string): string {
   return join(installRoot, "dist", "local-collector", ".pdpp-data", name);
 }
 
-function seedOutbox(path: string, sourceInstanceId: string): void {
+function seedOutbox(path: string, sourceInstanceId: string, id = `test-${sourceInstanceId}-${path.length}`): void {
   const outbox = new LocalDeviceOutbox({ path });
   try {
     outbox.enqueue({
-      id: `test-${sourceInstanceId}-${path.length}`,
+      id,
       kind: "record_batch",
       payload: { source: sourceInstanceId },
       sourceInstanceId,
@@ -85,6 +85,27 @@ test("platform state roots are independent of cwd and use the platform conventio
       platform: "win32",
     }),
     "C:\\Users\\tester\\AppData\\Local"
+  );
+  assert.equal(
+    defaultCollectorStateRoot({ env: { XDG_STATE_HOME: "relative-state" }, home: "/home/tester", platform: "linux" }),
+    "/home/tester/.local/state"
+  );
+});
+
+test("source ids use injective filename segments", () => {
+  const first = canonicalCollectorQueuePath({ sourceInstanceId: "a%b", stateRoot: "/state" });
+  const second = canonicalCollectorQueuePath({ sourceInstanceId: "a_25b", stateRoot: "/state" });
+  assert.notEqual(first, second);
+  const pairFirst = canonicalCollectorQueuePath({ connectorId: "a-b", sourceInstanceId: "c", stateRoot: "/state" });
+  const pairSecond = canonicalCollectorQueuePath({ connectorId: "a", sourceInstanceId: "b-c", stateRoot: "/state" });
+  assert.notEqual(pairFirst, pairSecond);
+});
+
+test("explicit queue paths preserve valid path bytes", () => {
+  const explicitPath = " /state/queue with spaces.sqlite ";
+  assert.equal(
+    resolveCollectorQueuePath({ configuredPath: explicitPath, configuredPathIsExplicit: true }),
+    explicitPath
   );
 });
 
@@ -177,9 +198,11 @@ test("an explicit environment queue path remains ahead of a saved profile queue"
     process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDirectory;
     process.env.PDPP_COLLECTOR_QUEUE = explicitQueuePath;
     try {
-      const options = resolveInspectionOptions(parseArgs(["status", "--source-instance-id", SOURCE_A]));
-      assert.equal(options.queuePath, explicitQueuePath);
-      assert.equal(options.queuePathExplicit, true);
+      for (const command of ["status", "doctor", "retry-dead-letters", "prune-sent", "compact"] as const) {
+        const options = resolveInspectionOptions(parseArgs([command, "--source-instance-id", SOURCE_A]));
+        assert.equal(options.queuePath, explicitQueuePath);
+        assert.equal(options.queuePathExplicit, true);
+      }
     } finally {
       if (previousProfileDirectory === undefined) {
         delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
@@ -251,6 +274,31 @@ test("a unique package-local legacy store is copied atomically to stable state w
     assert.equal(sourceSummary(legacyPath, SOURCE_A), 1);
     assert.equal(sourceSummary(canonicalPath, SOURCE_A), 1);
     assert.equal(readFileSync(canonicalPath, { encoding: "utf8" }).startsWith("SQLite format 3"), true);
+  });
+});
+
+test("migration reconciles a legacy write that lands after the snapshot", () => {
+  withTempRoot("pdpp-durable-state-reconcile-", (root) => {
+    const stateRoot = join(root, "user-state");
+    const installRoot = join(root, "npx-temp-package");
+    const legacyPath = packageLegacyPath(installRoot, "collector-runner-queue.sqlite");
+    const canonicalPath = canonicalCollectorQueuePath({
+      connectorId: "claude_code",
+      sourceInstanceId: SOURCE_A,
+      stateRoot,
+    });
+    seedOutbox(legacyPath, SOURCE_A, "before-snapshot");
+
+    const resolved = resolveCollectorQueuePath({
+      connectorId: "claude_code",
+      moduleUrl: modulePath(installRoot),
+      sourceInstanceId: SOURCE_A,
+      stateRoot,
+      beforeMigrationReconcile: () => seedOutbox(legacyPath, SOURCE_A, "after-snapshot"),
+    });
+
+    assert.equal(resolved, canonicalPath);
+    assert.equal(sourceSummary(canonicalPath, SOURCE_A), 2);
   });
 });
 
