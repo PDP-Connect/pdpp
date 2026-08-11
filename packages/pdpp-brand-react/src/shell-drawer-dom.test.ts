@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { afterEach, test } from "node:test";
+import userEvent from "@testing-library/user-event";
 import { JSDOM } from "jsdom";
 import { PathnameContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime";
 import { act, createElement, type ReactNode } from "react";
@@ -117,6 +118,11 @@ function app(children: ReactNode) {
   return createElement(PathnameContext.Provider, { value: "/" }, children);
 }
 
+async function pressTab(user: ReturnType<typeof userEvent.setup>, options?: { shift?: boolean }) {
+  await user.tab(options);
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+}
+
 afterEach(async () => {
   if (!browser) {
     return;
@@ -129,6 +135,7 @@ test("mobile drawer opens as a named dialog, traps focus, and restores the trigg
   const { host } = installBrowserGlobals();
   const currentBrowser = browser;
   assert.ok(currentBrowser);
+  const user = userEvent.setup({ delay: null, document: currentBrowser.dom.window.document });
   const { RecordroomShell } = await import("./shell-frame.tsx");
   act(() => {
     currentBrowser.root.render(
@@ -158,13 +165,35 @@ test("mobile drawer opens as a named dialog, traps focus, and restores the trigg
 
   const close = dialog.querySelector<HTMLButtonElement>('[aria-label="Close navigation"]');
   assert.ok(close);
-  close.focus();
-  await settle();
-  assert.equal(currentBrowser.dom.window.document.activeElement, close);
-
+  const firstNavItem = dialog.querySelector<HTMLAnchorElement>('.rr-nav-item[href="/"]');
+  assert.ok(firstNavItem);
+  const themeToggle = dialog.querySelector<HTMLButtonElement>(".rr-side__theme");
+  assert.ok(themeToggle);
   const outside = host.querySelector<HTMLButtonElement>(".rr-content button");
   assert.ok(outside);
   assert.equal(outside.closest('[role="dialog"]'), null);
+
+  close.focus();
+  await settle();
+  assert.equal(currentBrowser.dom.window.document.activeElement, close);
+  await pressTab(user, { shift: true });
+  assert.equal(currentBrowser.dom.window.document.activeElement, themeToggle);
+  assert.equal(currentBrowser.dom.window.document.activeElement?.closest('[role="dialog"]'), dialog);
+
+  close.focus();
+  await settle();
+  assert.equal(currentBrowser.dom.window.document.activeElement, close);
+  await pressTab(user);
+  assert.equal(currentBrowser.dom.window.document.activeElement, firstNavItem);
+  assert.equal(currentBrowser.dom.window.document.activeElement?.closest('[role="dialog"]'), dialog);
+
+  themeToggle.focus();
+  await settle();
+  assert.equal(currentBrowser.dom.window.document.activeElement, themeToggle);
+  await pressTab(user);
+  assert.equal(currentBrowser.dom.window.document.activeElement, close);
+  assert.equal(currentBrowser.dom.window.document.activeElement?.closest('[role="dialog"]'), dialog);
+  assert.notEqual(currentBrowser.dom.window.document.activeElement, outside);
 
   act(() => {
     dialog.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
