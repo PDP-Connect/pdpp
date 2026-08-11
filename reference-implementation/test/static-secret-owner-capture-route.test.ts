@@ -70,7 +70,10 @@ function permissiveProber() {
   });
 }
 
-async function withServer(fn: (harness: { asUrl: string; rsUrl: string }) => Promise<void>): Promise<void> {
+async function withServer(
+  fn: (harness: { asUrl: string; rsUrl: string }) => Promise<void>,
+  prober: ReturnType<typeof permissiveProber> = permissiveProber()
+): Promise<void> {
   const server = await startServer({
     asPort: 0,
     autoEnrollEligibleSchedules: false,
@@ -80,7 +83,7 @@ async function withServer(fn: (harness: { asUrl: string; rsUrl: string }) => Pro
     quiet: true,
     rsPort: 0,
     staticSecretAutoResume: false,
-    staticSecretCredentialProber: permissiveProber(),
+    staticSecretCredentialProber: prober,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -678,6 +681,121 @@ test("capture accepts a fully complete Venmo credential bundle (both username an
       });
       assert.equal(recovered.secret, JSON.stringify({ password: "synthetic-password", username: "owner@example.com" }));
     });
+  });
+});
+
+// Counts probe invocations so a rejection test can prove the manifest
+// contract fired BEFORE the synchronous credential probe, not after it.
+function countingProber(): { calls: () => number; prober: ReturnType<typeof permissiveProber> } {
+  let count = 0;
+  const inner = permissiveProber();
+  return {
+    calls: () => count,
+    prober: (input) => {
+      count += 1;
+      return inner(input);
+    },
+  };
+}
+
+// The manifest contract enforced ONCE at capture: a REQUIRED bundled capture
+// (usaa's real, unmutated manifest — block-level credential_capture.required
+// defaults true, username and password each required:true at the field
+// level) must reject a PARTIAL bundle before the credential probe, the
+// replacement guard, and the store. Without the per-field rule the route
+// probed and stored the partial bundle, and the miss surfaced only later at
+// injection time (recovered_secret_bundle_field_missing).
+test("capture rejects a partial bundle for a REQUIRED username/password capture before any probe or store", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    const probe = countingProber();
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "usaa");
+      await seedInstance({ connectorId: "usaa", connectorInstanceId: "cin_usaa_partial" });
+      const cookie = await login(asUrl);
+
+      const { status, body, resp } = await captureCredential(
+        asUrl,
+        cookie,
+        "cin_usaa_partial",
+        JSON.stringify({ username: "owner@example.com" }),
+        "username_password"
+      );
+      assert.equal(status, 400);
+      assert.equal(errorOf(body).code, "missing_credential");
+      assert.equal(errorOf(body).message, "USAA password is required.");
+      assert.equal(probe.calls(), 0, "a partial required bundle must be rejected BEFORE the credential probe runs");
+
+      const audit = findCaptureAuditEvent(resp);
+      assert.equal(audit.status, "failed");
+      assert.equal(errorOf(dataOf(audit)).code, "missing_credential");
+
+      const store = createSqliteConnectorInstanceCredentialStore({
+        env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
+      });
+      assert.equal(
+        await store.getMetadata("cin_usaa_partial"),
+        null,
+        "nothing should be stored for a partial required credential bundle"
+      );
+    }, probe.prober);
+  });
+});
+
+test("capture rejects a literal {} bundle for a REQUIRED username/password capture before any probe or store", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    const probe = countingProber();
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "usaa");
+      await seedInstance({ connectorId: "usaa", connectorInstanceId: "cin_usaa_empty" });
+      const cookie = await login(asUrl);
+
+      const { status, body } = await captureCredential(asUrl, cookie, "cin_usaa_empty", "{}", "username_password");
+      assert.equal(status, 400);
+      assert.equal(errorOf(body).code, "missing_credential");
+      assert.equal(errorOf(body).message, "USAA online ID, USAA password is required.");
+      assert.equal(probe.calls(), 0, "an empty required bundle must be rejected BEFORE the credential probe runs");
+
+      const store = createSqliteConnectorInstanceCredentialStore({
+        env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
+      });
+      assert.equal(
+        await store.getMetadata("cin_usaa_empty"),
+        null,
+        "nothing should be stored for an empty required credential bundle"
+      );
+    }, probe.prober);
+  });
+});
+
+test("capture accepts a complete REQUIRED username/password bundle, probing exactly once before storing", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    const probe = countingProber();
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "usaa");
+      await seedInstance({ connectorId: "usaa", connectorInstanceId: "cin_usaa_complete" });
+      const cookie = await login(asUrl);
+
+      const complete = JSON.stringify({ password: "synthetic-password", username: "owner@example.com" });
+      const { status, body } = await captureCredential(
+        asUrl,
+        cookie,
+        "cin_usaa_complete",
+        complete,
+        "username_password"
+      );
+      assert.equal(status, 201);
+      assert.equal(credentialOf(body).present, true);
+      assert.equal(probe.calls(), 1, "a complete required bundle reaches the synchronous probe exactly once");
+
+      const store = createSqliteConnectorInstanceCredentialStore({
+        env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
+      });
+      const recovered = await store.recoverSecret({
+        connectorInstanceId: "cin_usaa_complete",
+        ownerSubjectId: OWNER_SUBJECT_ID,
+      });
+      assert.equal(recovered.secret, complete);
+    }, probe.prober);
   });
 });
 

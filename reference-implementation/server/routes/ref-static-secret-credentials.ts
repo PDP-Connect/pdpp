@@ -785,7 +785,7 @@ function bundleHasField(bundle: Record<string, unknown>, field: StaticSecretSetu
   return typeof value === "string" && value.trim().length > 0;
 }
 
-// Shared reject path for both `validateBundledSecret` rules: audit +
+// Shared reject path for every `validateBundledSecret` rejection: audit +
 // respond identically, only the message differs.
 async function rejectMissingCredential(
   ctx: MountRefStaticSecretCredentialsContext,
@@ -812,18 +812,24 @@ function bundleIsEntirelyBlank(contract: StaticSecretCredentialContract, bundle:
   return !contract.fields.some((field) => bundleHasField(bundle, field));
 }
 
-// BOTH-OR-NONE (contract.required === false, e.g. Venmo): the moment ANY
-// field is present, every field still marked `required: true` on itself is
-// enforced exactly as it would be for a required capture. Callers must check
-// `bundleIsEntirelyBlank` FIRST and never call this for a blank bundle — an
-// entirely blank bundle is the valid choice this function does not itself
-// special-case, to keep "is it blank" and "is a partial bundle invalid"
-// as two separately testable questions.
-function bothOrNoneMissingFields(
+// The ONE per-field completeness rule, shared by BOTH `validateBundledSecret`
+// branches: every SECRET field marked `required: true` on itself must be
+// present and non-blank in the bundle. For a REQUIRED capture this is the
+// manifest contract enforced directly (a partial username/password bundle or
+// a literal `{}` fails here, before any probe or store). For an OPTIONAL
+// capture (BOTH-OR-NONE, e.g. Venmo) the caller must check
+// `bundleIsEntirelyBlank` FIRST — an entirely blank bundle is the valid
+// "sign in by hand" choice this function does not itself special-case — and
+// the moment ANY field is present, the same rule applies unchanged.
+// Scoped to `field.secret` fields only: a required NON-secret field (e.g.
+// Jellyfin's base_url) is setup data that travels through `setup_fields`,
+// never a credential the secret bundle must re-carry — a credential rotation
+// must not demand the owner resubmit it.
+function missingRequiredSecretFields(
   contract: StaticSecretCredentialContract,
   bundle: Record<string, unknown>
 ): readonly StaticSecretSetupField[] {
-  return contract.fields.filter((field) => field.required && !bundleHasField(bundle, field));
+  return contract.fields.filter((field) => field.secret && field.required && !bundleHasField(bundle, field));
 }
 
 // Mirrors the console's `bundledSecretPayload`/`singleSecretPayload` split
@@ -850,11 +856,16 @@ function bundledCredentialKind(kind: string): boolean {
 // "nothing was chosen".
 const BLANK_OPTIONAL_SECRET_SENTINEL = "{}";
 
-/** Outcome of validating a submitted secret/bundle against the manifest's contract, before ANY store write. */
+/**
+ * Outcome of validating a submitted secret/bundle against the manifest's
+ * contract, before ANY store write. A `"rejected"` outcome carries its owner-
+ * facing message so the decision and its explanation come from the SAME
+ * branch — never a second function re-deriving which rule fired.
+ */
 type BundledSecretValidation =
   | { readonly kind: "blank_optional" }
   | { readonly kind: "proceed" }
-  | { readonly kind: "rejected" };
+  | { readonly kind: "rejected"; readonly message: string };
 
 function validateSingleSecret(contract: StaticSecretCredentialContract, secret: string): BundledSecretValidation {
   if (secret !== BLANK_OPTIONAL_SECRET_SENTINEL) {
@@ -866,7 +877,11 @@ function validateSingleSecret(contract: StaticSecretCredentialContract, secret: 
   // `required: false` manifest is `username_password`), but the next
   // single-field optional manifest must not silently inherit the
   // always-required assumption the pre-F4 code made by omission.
-  return contract.required === false ? { kind: "blank_optional" } : { kind: "rejected" };
+  if (contract.required === false) {
+    return { kind: "blank_optional" };
+  }
+  const field = contract.fields.find((candidate) => candidate.secret);
+  return { kind: "rejected", message: field ? `${field.label} is required.` : "A secret field is required." };
 }
 
 /**
@@ -885,45 +900,41 @@ function validateSingleSecret(contract: StaticSecretCredentialContract, secret: 
  * credential for that case (F1). An optional capture's blank choice means
  * "proceed with manual browser sign-in", not "store an empty secret" —
  * those are different outcomes the old boolean return could not express.
+ *
+ * Past that one optional-only escape, required and optional captures share
+ * the SAME per-field rule (`missingRequiredSecretFields`): a bundle missing
+ * any individually-required secret field is rejected here, before the
+ * credential probe, the replacement guard, and the store. A REQUIRED
+ * username/password capture therefore fails closed on a partial bundle or a
+ * literal `{}` at capture time — not later at injection.
  */
 function validateBundledSecret(contract: StaticSecretCredentialContract, secret: string): BundledSecretValidation {
   if (!bundledCredentialKind(contract.credentialKind)) {
     return validateSingleSecret(contract, secret);
   }
   const bundle = parseSecretBundle(secret);
-  if (contract.required === false) {
-    if (bundleIsEntirelyBlank(contract, bundle)) {
-      return { kind: "blank_optional" };
-    }
-    return bothOrNoneMissingFields(contract, bundle).length === 0 ? { kind: "proceed" } : { kind: "rejected" };
+  if (contract.required === false && bundleIsEntirelyBlank(contract, bundle)) {
+    return { kind: "blank_optional" };
   }
-
-  const secretFields = contract.fields.filter((field) => field.secret);
-  if (!isAtLeastOnePathContract(secretFields) || bundleHasAnySecret(bundle, secretFields)) {
-    return { kind: "proceed" };
-  }
-  return { kind: "rejected" };
-}
-
-// Rejection messages for `validateBundledSecret`'s `"rejected"` outcome.
-// This re-derives which rule rejected the submission from the same
-// (contract, secret) inputs — including a second `parseSecretBundle` call —
-// rather than carrying the message on the `"rejected"` variant. That makes
-// it a shadow of the validator's decision tree: any change to
-// `validateBundledSecret`'s branching must be mirrored here, or the route
-// will reject for one reason and name another.
-function rejectedCredentialMessage(contract: StaticSecretCredentialContract, secret: string): string {
-  if (!bundledCredentialKind(contract.credentialKind)) {
-    const field = contract.fields.find((candidate) => candidate.secret);
-    return field ? `${field.label} is required.` : "A secret field is required.";
-  }
-  const bundle = parseSecretBundle(secret);
-  if (contract.required === false) {
-    const missing = bothOrNoneMissingFields(contract, bundle);
-    return `${missing.map((field) => field.label).join(", ")} is required once any credential field is filled.`;
+  const missing = missingRequiredSecretFields(contract, bundle);
+  if (missing.length > 0) {
+    const labels = missing.map((field) => field.label).join(", ");
+    return {
+      kind: "rejected",
+      message:
+        contract.required === false
+          ? `${labels} is required once any credential field is filled.`
+          : `${labels} is required.`,
+    };
   }
   const secretFields = contract.fields.filter((field) => field.secret);
-  return `At least one of ${secretFields.map((field) => field.label).join(", ")} is required.`;
+  if (isAtLeastOnePathContract(secretFields) && !bundleHasAnySecret(bundle, secretFields)) {
+    return {
+      kind: "rejected",
+      message: `At least one of ${secretFields.map((field) => field.label).join(", ")} is required.`,
+    };
+  }
+  return { kind: "proceed" };
 }
 
 // Stores the validated credential and sends the success response.
@@ -1093,15 +1104,7 @@ async function runStaticSecretCredentialCapture(
   }
   const validation = validateBundledSecret(contract, secret);
   if (validation.kind === "rejected") {
-    await rejectMissingCredential(
-      ctx,
-      req,
-      res,
-      namespace,
-      credentialKind,
-      ownerSubjectId,
-      rejectedCredentialMessage(contract, secret)
-    );
+    await rejectMissingCredential(ctx, req, res, namespace, credentialKind, ownerSubjectId, validation.message);
     return;
   }
   const submittedSetupFields = parseStaticSecretSetupFields(setupFieldsRaw, contract.fields, (code, message, param) =>
