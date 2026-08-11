@@ -178,40 +178,14 @@ Read via direct Slack Web API calls (see `slack-api.ts`) using the same session 
 
 See `openspec/changes/complete-slack-bundled-connector-coverage` for the evidence that these four methods are reachable with the connector's existing credential.
 
-**Root cause of the 2026-08-10 `slack_auth_failed` live incident, found and
-fixed:** a live UAT run (`run_1786407784356`) reported `slack_auth_failed` on
-all four direct-API streams while slackdump's own archive/resume subprocess
-succeeded moments earlier and committed 154,372 records using the
-byte-identical `SLACK_TOKEN`/`SLACK_COOKIE` pair — same run, same process,
-same credential. A bounded, read-only diagnostic against the live UAT
-instance (decrypted credential in-process via the reference implementation's
-own credential-encryption helper, never logged) first ruled out TLS-
-fingerprint mismatch and missing browser-shaped headers (`Origin`/`Referer`/
-`Sec-Fetch-*`) — three independently distinct HTTP clients/TLS stacks (Node
-`fetch`, Node `fetch` with added headers, `curl`/libcurl/OpenSSL) all got a
-clean, well-formed HTTP 200 `invalid_auth` from `auth.test`, which only
-application-layer session rejection produces. It then compared the sealed
-credential's cookie value (hash-only, never logged raw) against slackdump's
-own cached session file (`~/.cache/slackdump/provider.bin`, JSON,
-`-no-encryption`) and found the underlying token and cookie **byte-identical**
-— falsifying session/credential divergence between slackdump's subprocess
-and the direct calls. The actual defect: `buildSlackSessionCookieHeader`
-sent the `d` cookie's **raw, un-encoded** value directly in the `Cookie`
-header, while slackdump's Go client (`rusq/slackdump`'s `makeCookie`) always
-percent-encodes a cookie value that contains characters outside its
-URL-safe set before sending it — which the connector's real captured `d`
-cookies routinely do. The raw byte sequence doesn't match the session key
-Slack's cookie parser expects, so it fails to resolve to a valid session and
-returns a clean `invalid_auth` — indistinguishable from a genuinely dead
-credential at the HTTP/TLS layer, which is what made this look like a
-transport problem rather than a wire-format bug. Live-verified: the
-identical credential that failed `auth.test` with the raw cookie value
-succeeded (`ok:true`, team/user identity returned) once percent-encoded.
-Fixed in `slack-api.ts`'s `encodeSlackCookieValue`/
-`buildSlackSessionCookieHeader`, mirroring `rusq/slackdump`'s own
-`urlsafe()`/`url.QueryEscape` logic exactly (only re-encodes a value that
-isn't already fully URL-safe, so an already-safe or already-percent-encoded
-cookie passes through unchanged).
+The `d` cookie value must be percent-encoded on the wire exactly the way
+slackdump's own Go client encodes it (`slack-api.ts`'s
+`encodeSlackCookieValue`, an exact port of `net/url.QueryEscape`'s
+`encodeQueryComponent` mode — not JS's `encodeURIComponent`, which disagrees
+on space and on `!'()*`). A captured `d` cookie routinely contains
+characters outside the URL-safe set; sending it un-encoded produces a
+session Slack's cookie parser can't resolve, which surfaces as a clean
+`invalid_auth` indistinguishable from a genuinely dead credential.
 
 ## Auth
 
