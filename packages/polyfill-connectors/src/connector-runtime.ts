@@ -266,7 +266,7 @@ export interface TerminalErrorDetails {
   /**
    * Provider-neutral recovery action, from the same closed vocabulary and
    * shape as `SKIP_RESULT.recovery_hint` (see `RECOVERY_ACTIONS` /
-   * `validateSkipRecoveryHint` in the reference implementation). `code`
+   * `isValidRecoveryHintShape` in the reference implementation). `code`
    * identifies WHAT went wrong; `recovery_hint` says WHAT TO DO about it —
    * keep the two separate rather than overloading `code` with action meaning.
    */

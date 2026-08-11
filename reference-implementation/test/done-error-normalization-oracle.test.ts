@@ -14,6 +14,7 @@ const REGEXP_5 = /unsupported fields detail/;
 const REGEXP_6 = /invalid DONE\.error\.code/;
 const REGEXP_7 = /invalid DONE\.error\.message/;
 const REGEXP_8 = /invalid DONE\.error\.message/;
+const INVALID_RECOVERY_HINT_MESSAGE_PATTERN = /invalid DONE\.error\.recovery_hint/;
 
 test("validateDoneError returns null when DONE.error is absent", () => {
   assert.equal(validateDoneError("failed", null), null);
@@ -103,5 +104,5 @@ test("validateDoneError accepts a closed-vocabulary recovery_hint distinct from 
 test("validateDoneError rejects an out-of-vocabulary recovery_hint", () => {
   const result = validateDoneError("failed", { message: "failed", recovery_hint: "made_up_action" });
   assert.ok(result instanceof Error);
-  assert.match(result.message, /invalid DONE\.error\.recovery_hint/);
+  assert.match(result.message, INVALID_RECOVERY_HINT_MESSAGE_PATTERN);
 });

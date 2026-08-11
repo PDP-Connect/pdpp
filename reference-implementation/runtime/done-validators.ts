@@ -118,7 +118,9 @@ export function validateDoneError(
     ...(error.code ? { code: error.code } : {}),
     message: error.message.trim(),
     // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
-    ...(error.recovery_hint == null ? {} : { recovery_hint: error.recovery_hint as NonNullable<DoneError["recovery_hint"]> }),
+    ...(error.recovery_hint == null
+      ? {}
+      : { recovery_hint: error.recovery_hint as NonNullable<DoneError["recovery_hint"]> }),
     retryable: error.retryable ?? null,
   };
 }

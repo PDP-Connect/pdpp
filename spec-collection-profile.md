@@ -362,7 +362,7 @@ On failure:
 
 `error` MAY carry `code` and/or `recovery_hint`, in addition to the required `message` and `retryable`:
 
-- `code` is a stable, connector-defined **cause identity** (e.g. distinguishing one failure mode from another). It is opaque free-form identity, not an instruction — the runtime MUST NOT treat `code` as, or derive, an owner-facing recovery action from it.
+- `code` is a stable, connector-defined **cause identity** (e.g. distinguishing one failure mode from another). It is a bounded `snake_case` identifier (a lowercase letter followed by up to 63 lowercase letters, digits, or underscores), an identity rather than an instruction — the runtime MUST NOT treat `code` as, or derive, an owner-facing recovery action from it.
 - `recovery_hint` is the connector's declaration of the owner-facing **recovery action**. It uses the exact same bounded shape and vocabulary as `SKIP_RESULT.recovery_hint` — see [Recovery hints](#recovery-hints).
 
 `code` and `recovery_hint` answer different questions (what went wrong vs. what to do about it) and MUST be validated and consumed independently; a runtime MUST NOT infer one from the other.
@@ -373,8 +373,8 @@ On failure:
 
 - `recovery_hint` is either a bare string from the closed action vocabulary below, or an object `{ action?: string, retryable?: boolean }` where `action`, if present, MUST also be from that vocabulary and `retryable`, if present, MUST be a boolean.
 - Action vocabulary: `retry_by_runtime`, `retry_on_connector_upgrade`, `refresh_credentials`, `manual_action_required`, `update_selector`, `upstream_unblock`, `not_retriable`, `unknown`.
-- A connector requests a specific owner-facing recovery action **only** through `recovery_hint`. A runtime MUST NOT derive a recovery action by inspecting `code`, `message`, or any other connector-authored free-form text.
-- A runtime MUST treat an absent `recovery_hint` as "no hint declared," and MAY fall through to its own generic, connector-neutral policy for choosing a default action (e.g. from the `retryable` flag) — that fallback MUST NOT be, or become, a connector-specific text/identity heuristic.
+- A connector requests a specific owner-facing recovery action **only** through `recovery_hint`. A present, valid `recovery_hint` is authoritative: a runtime MUST NOT override it, and MUST NOT treat `code`, `message`, or any other connector-authored free-form text as the connector's requested action.
+- A runtime MUST treat an absent `recovery_hint` as "no hint declared," and MAY fall through to its own generic, connector-neutral policy for choosing a default action — for example from the `retryable` flag, or from bounded, provider-neutral classification of the error text (such as recognizing generic authentication or browser-infrastructure failures). That fallback MUST NOT infer provider-specific intent, and MUST NOT be, or become, a connector-specific text/identity heuristic.
 - A `recovery_hint` that is present but does not match the shape or vocabulary above is a **protocol violation**: the runtime MUST reject the enclosing message (fail closed), not silently drop the field or substitute a guessed action.
 
 ---
