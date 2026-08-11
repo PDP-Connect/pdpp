@@ -61,6 +61,7 @@ import {
   isRequestValidationEnforced,
   isResponseCanary,
 } from "./contract-validation.ts";
+import { HOSTED_INGEST_MAX_REQUEST_BYTES } from "./hosted-ingest-limits.ts";
 
 // Header name the reference sets on responses to expose the protocol trace
 // ID (handler-set via setReferenceTraceId in server/index.js).
@@ -279,7 +280,7 @@ const PASSTHROUGH_CONTENT_TYPES = ["application/x-ndjson", "text/plain"];
  */
 function buildFastify({ loggerInstance }: { loggerInstance: FastifyBaseLogger }): FastifyInstance {
   const fastify = Fastify({
-    bodyLimit: 200 * 1024 * 1024, // match previous express.text() limit
+    bodyLimit: HOSTED_INGEST_MAX_REQUEST_BYTES, // match previous express.text() limit
     disableRequestLogging: true,
     // Fastify auto-registers HEAD shadow routes for every GET. PDPP relies
     // on this so HEAD probes return GET-equivalent status codes (RFC 7231

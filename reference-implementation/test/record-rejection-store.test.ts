@@ -161,9 +161,10 @@ test("SQLite record rejection store replays exact inputs and keeps payload metad
     stream: "items",
   };
   const first = await store.insertOrReplay(input);
-  const second = await store.insertOrReplay({ ...input, inputIndex: 5 });
+  const second = await store.insertOrReplay({ ...input, inputIndex: 5, reasonCode: "malformed_ndjson" });
   assert.equal(second.receiptId, first.receiptId);
   assert.equal(second.replayed, true);
+  assert.equal(second.code, "invalid_record_identity");
 
   const page = await store.list({ connectorInstanceId: "cin_test", limit: 10, ownerSubjectId: "owner_a" });
   assert.equal(page.items.length, 1);
@@ -210,6 +211,48 @@ test("SQLite record rejection store refuses quota exhaustion without acknowledgi
   const count = getDb().prepare("SELECT COUNT(*) AS count FROM record_rejections").get<{ count: number }>();
   assert.equal(count?.count, 0);
   assertSqliteQuotaMatchesRows("owner_a");
+});
+
+test("SQLite record rejection store enforces the UTF-8 line-byte ceiling before persistence", () => {
+  initDb();
+  seedSqliteConnection();
+  const boundary = insertOrReplaySqliteRecordRejection({
+    connectorId: "test_connector",
+    connectorInstanceId: "cin_test",
+    inputIndex: 0,
+    maxPayloadBytes: 4,
+    ownerSubjectId: "owner_a",
+    quotaBytes: 100,
+    rawLine: "éé",
+    reasonCode: "malformed_ndjson",
+    runId: "run_1",
+    stream: "items",
+  });
+  assert.equal(boundary.replayed, false);
+  assert.throws(
+    () =>
+      insertOrReplaySqliteRecordRejection({
+        connectorId: "test_connector",
+        connectorInstanceId: "cin_test",
+        inputIndex: 1,
+        maxPayloadBytes: 4,
+        ownerSubjectId: "owner_a",
+        quotaBytes: 100,
+        rawLine: "ééa",
+        reasonCode: "malformed_ndjson",
+        runId: "run_1",
+        stream: "items",
+      }),
+    (error) => error instanceof RecordRejectionStoreError && error.code === "record_rejection_payload_too_large"
+  );
+  assert.equal(getDb().prepare("SELECT COUNT(*) AS count FROM record_rejections").get<{ count: number }>()?.count, 1);
+  assertSqliteQuotaMatchesRows("owner_a");
+  assert.equal(
+    getDb()
+      .prepare("SELECT pending_payload_bytes FROM record_rejection_quota WHERE owner_subject_id = 'owner_a'")
+      .get<{ pending_payload_bytes: number }>()?.pending_payload_bytes,
+    4
+  );
 });
 
 test("SQLite record rejection store matches ingest lifecycle and exact run-history fences", () => {
@@ -479,6 +522,33 @@ test("Postgres record rejection store contract", {
       store.insertOrReplay({ ...input, inputIndex: 1 }),
     ]);
     assert.equal(replay.receiptId, first.receiptId);
+    const changedReasonReplay = await store.insertOrReplay({
+      ...input,
+      inputIndex: 2,
+      reasonCode: "malformed_ndjson",
+    });
+    assert.equal(changedReasonReplay.receiptId, first.receiptId);
+    assert.equal(changedReasonReplay.code, "invalid_record_identity");
+    const boundary = await store.insertOrReplay({
+      ...input,
+      inputIndex: 3,
+      maxPayloadBytes: 4,
+      quotaBytes: 100,
+      rawLine: "éé",
+      reasonCode: "malformed_ndjson",
+    });
+    assert.equal(boundary.replayed, false);
+    await assert.rejects(
+      store.insertOrReplay({
+        ...input,
+        inputIndex: 4,
+        maxPayloadBytes: 4,
+        quotaBytes: 100,
+        rawLine: "ééa",
+        reasonCode: "malformed_ndjson",
+      }),
+      (error) => error instanceof RecordRejectionStoreError && error.code === "record_rejection_payload_too_large"
+    );
     const quota = await postgresQuery<{ matches: boolean }>(
       `SELECT q.pending_payload_bytes = COALESCE(SUM(r.payload_bytes), 0) AS matches
          FROM record_rejection_quota q
@@ -521,7 +591,7 @@ test("Postgres record rejection store contract", {
       )?.payloadText,
       '{"id":null}'
     );
-    assert.equal(await store.deleteForConnection({ connectorInstanceId: "cin_test", ownerSubjectId: "owner_a" }), 1);
+    assert.equal(await store.deleteForConnection({ connectorInstanceId: "cin_test", ownerSubjectId: "owner_a" }), 2);
     const postDeleteQuota = await postgresQuery<{ matches: boolean }>(
       `SELECT q.pending_payload_bytes = COALESCE(SUM(r.payload_bytes), 0) AS matches
          FROM record_rejection_quota q

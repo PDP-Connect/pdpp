@@ -4,6 +4,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { PoolClient, QueryResultRow } from "pg";
 import { exec, getMany, getOne, referenceQueries, writeTransaction } from "../../lib/db.ts";
+import { HOSTED_INGEST_MAX_LINE_BYTES } from "../hosted-ingest-limits.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
 
 export const RECORD_REJECTION_GENERATION = "record-rejection-v1";
@@ -26,6 +27,7 @@ export interface InsertOrReplayRecordRejectionInput {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
   readonly inputIndex: number;
+  readonly maxPayloadBytes?: number;
   readonly ownerSubjectId: string;
   readonly quotaBytes?: number;
   readonly rawLine: string;
@@ -122,6 +124,31 @@ function normalizeQuota(value: number | undefined): number {
     );
   }
   return value;
+}
+
+function normalizePayloadLimit(value: number | undefined): number {
+  if (value === undefined) {
+    return HOSTED_INGEST_MAX_LINE_BYTES;
+  }
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RecordRejectionStoreError(
+      "invalid_payload_limit",
+      "Record rejection payload limit must be a positive safe integer.",
+      { retryable: false }
+    );
+  }
+  return Math.min(value, HOSTED_INGEST_MAX_LINE_BYTES);
+}
+
+function boundedPayloadBytes(input: InsertOrReplayRecordRejectionInput): number {
+  const bytes = payloadBytes(input.rawLine);
+  if (bytes > normalizePayloadLimit(input.maxPayloadBytes)) {
+    throw new RecordRejectionStoreError(
+      "record_rejection_payload_too_large",
+      "Record rejection payload exceeds the hosted ingest line limit."
+    );
+  }
+  return bytes;
 }
 
 function assertInput(input: InsertOrReplayRecordRejectionInput): void {
@@ -236,16 +263,24 @@ function assertSqliteWritable(
 
 export function insertOrReplaySqliteRecordRejection(input: InsertOrReplayRecordRejectionInput): RecordRejectionReceipt {
   assertInput(input);
+  const bytes = boundedPayloadBytes(input);
   const digest = sha256Hex(input.rawLine);
-  const bytes = payloadBytes(input.rawLine);
   const key = replayKey(input, digest);
   const quota = normalizeQuota(input.quotaBytes);
   return writeTransaction(() => {
     assertSqliteWritable(input.ownerSubjectId, input.connectorInstanceId, input.connectorId, input.runId);
-    const existing = getOne<{ receipt_id: string }>(referenceQueries.recordRejectionsGetByReplayKey, [key]);
+    const existing = getOne<{ reason_code: string; receipt_id: string }>(
+      referenceQueries.recordRejectionsGetByReplayKey,
+      [key]
+    );
     if (existing) {
       exec(referenceQueries.recordRejectionsUpdateReplay, [input.inputIndex, nowIso(), existing.receipt_id]);
-      return { code: input.reasonCode, inputIndex: input.inputIndex, receiptId: existing.receipt_id, replayed: true };
+      return {
+        code: existing.reason_code,
+        inputIndex: input.inputIndex,
+        receiptId: existing.receipt_id,
+        replayed: true,
+      };
     }
     exec(referenceQueries.recordRejectionsEnsureQuotaOwner, [input.ownerSubjectId, nowIso()]);
     const admitted = exec(referenceQueries.recordRejectionsAdmitQuota, [
@@ -372,8 +407,8 @@ export function insertOrReplayPostgresRecordRejection(
   input: InsertOrReplayRecordRejectionInput
 ): Promise<RecordRejectionReceipt> {
   assertInput(input);
+  const bytes = boundedPayloadBytes(input);
   const digest = sha256Hex(input.rawLine);
-  const bytes = payloadBytes(input.rawLine);
   const key = replayKey(input, digest);
   const quota = normalizeQuota(input.quotaBytes);
   return withPostgresTransaction(
@@ -385,8 +420,8 @@ export function insertOrReplayPostgresRecordRejection(
         input.connectorId,
         input.runId
       );
-      const existing = await client.query<{ receipt_id: string }>(
-        "SELECT receipt_id FROM record_rejections WHERE replay_key = $1 LIMIT 1",
+      const existing = await client.query<{ reason_code: string; receipt_id: string }>(
+        "SELECT receipt_id, reason_code FROM record_rejections WHERE replay_key = $1 LIMIT 1",
         [key]
       );
       const [existingRow] = existing.rows;
@@ -400,7 +435,7 @@ export function insertOrReplayPostgresRecordRejection(
           WHERE receipt_id = $3`,
           [input.inputIndex, nowIso(), receiptId]
         );
-        return { code: input.reasonCode, inputIndex: input.inputIndex, receiptId, replayed: true };
+        return { code: existingRow.reason_code, inputIndex: input.inputIndex, receiptId, replayed: true };
       }
       await client.query(
         `INSERT INTO record_rejection_quota(owner_subject_id, pending_payload_bytes, updated_at)
