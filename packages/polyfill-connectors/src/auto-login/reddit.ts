@@ -96,7 +96,7 @@ async function hasSessionCookie(context: BrowserContext): Promise<boolean> {
  * still exist after logout. Hit old.reddit.com (stable markup) and look for
  * the logout link, which is only rendered when authenticated.
  */
-async function isSessionLive(page: Page): Promise<boolean> {
+export async function isSessionLive(page: Page): Promise<boolean> {
   try {
     await page.goto("https://old.reddit.com/", {
       waitUntil: "domcontentloaded",

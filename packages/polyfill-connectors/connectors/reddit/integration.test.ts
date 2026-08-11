@@ -25,8 +25,16 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
-import { buildStreamTable, collectAllStreams, collectStream, paginate, type RedditListingFetch } from "./index.ts";
+import {
+  buildStreamTable,
+  collectAllStreams,
+  collectStream,
+  makeReauth,
+  paginate,
+  type RedditListingFetch,
+} from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { RedditChild, RedditFetchResult, RedditListing } from "./types.ts";
 
@@ -399,6 +407,184 @@ test("paginate: no onAuthFailed hook supplied → 401 fails immediately (pre-fix
 
   await assert.rejects(paginate(fetch, `${USER_PATH}/submitted.json`, null, null, NO_DELAY), /reddit_auth_failed/);
   assert.equal(calls.length, 1, "no hook means no retry attempt");
+});
+
+// ─── Invariant 6c: makeReauth is credential-gated against process.env ───
+//
+// Unit-tests makeReauth DIRECTLY rather than only through collectAllStreams:
+// a collectAllStreams-level test with an under-specified mock
+// context/page can't discriminate "the env gate refused" from "some
+// unrelated call on the stub context/page threw" — both look identical
+// (makeReauth's outer catch swallows either) from the outside. Testing
+// makeReauth in isolation, with a NEVER_CALLED sendInteraction and a page
+// that would prove a real ensureRedditSession call was reached (by
+// throwing distinctively), makes the gate itself the thing under test.
+
+const REDDIT_ENV_KEYS = ["REDDIT_USERNAME", "REDDIT_PASSWORD"] as const;
+
+function withoutRedditEnvCredentials<T>(fn: () => Promise<T>): Promise<T> {
+  const prior = REDDIT_ENV_KEYS.map((k) => process.env[k]);
+  for (const k of REDDIT_ENV_KEYS) {
+    delete process.env[k];
+  }
+  return fn().finally(() => {
+    REDDIT_ENV_KEYS.forEach((k, i) => {
+      const v = prior[i];
+      if (v !== undefined) {
+        process.env[k] = v;
+      }
+    });
+  });
+}
+
+function withRedditEnvCredentials<T>(
+  username: string | undefined,
+  password: string | undefined,
+  fn: () => Promise<T>
+): Promise<T> {
+  const prior = REDDIT_ENV_KEYS.map((k) => process.env[k]);
+  if (username === undefined) {
+    delete process.env.REDDIT_USERNAME;
+  } else {
+    process.env.REDDIT_USERNAME = username;
+  }
+  if (password === undefined) {
+    delete process.env.REDDIT_PASSWORD;
+  } else {
+    process.env.REDDIT_PASSWORD = password;
+  }
+  return fn().finally(() => {
+    REDDIT_ENV_KEYS.forEach((k, i) => {
+      const v = prior[i];
+      if (v === undefined) {
+        delete process.env[k];
+      } else {
+        process.env[k] = v;
+      }
+    });
+  });
+}
+
+/** A ctx whose context/page/sendInteraction record every property touch in
+ *  `touches` before throwing (so `ensureRedditSession` can't proceed past
+ *  the first access, but the fact that it was REACHED is directly
+ *  observable) — the discriminating signal a bare `assert.equal(result,
+ *  false)` can't provide, since makeReauth's own try/catch makes "gate
+ *  refused" and "gate bypassed then failed downstream" both return `false`.
+ *  Fills every `BrowserCollectContext` field (matching
+ *  `createMockBrowserContext` below), with `as any` on the two
+ *  Playwright-shaped fields rather than a double-cast on the whole object —
+ *  those two are the only fields whose real type this stub doesn't
+ *  structurally satisfy. */
+function makeInstrumentedRedditCtx(): { ctx: BrowserCollectContext; touches: string[] } {
+  const touches: string[] = [];
+  const proxyOf = (label: string) =>
+    new Proxy(
+      {},
+      {
+        get: (_t, prop) => {
+          touches.push(`${label}.${String(prop)}`);
+          throw new Error(`stub ${label} cannot complete ${String(prop)}`);
+        },
+      }
+    );
+  const ctx: BrowserCollectContext = {
+    // biome-ignore lint/suspicious/useAwait: mock returns Promise<never> via throw for type conformance
+    assist: async (): Promise<never> => {
+      throw new Error("mock assist not implemented");
+    },
+    capture: null,
+    completeAssistance: async () => undefined,
+    context: proxyOf("context") as any,
+    credentials: {},
+    detailGaps: [],
+    emit: async () => undefined,
+    emitRecord: async () => undefined,
+    emittedAt: EMITTED_AT,
+    page: proxyOf("page") as any,
+    progress: async () => undefined,
+    requestDetailGapPage: async (): Promise<readonly never[]> => [],
+    requested: new Map(),
+    scope: { streams: [] },
+    // biome-ignore lint/suspicious/useAwait: mock throws synchronously to prove the gate short-circuits before any await
+    sendInteraction: async () => {
+      touches.push("sendInteraction");
+      throw new Error("stub sendInteraction cannot complete");
+    },
+    state: {},
+  };
+  return { ctx, touches };
+}
+
+test("makeReauth: no REDDIT_USERNAME/REDDIT_PASSWORD in process.env → refuses immediately, never touches context/page/sendInteraction", async () => {
+  await withoutRedditEnvCredentials(async () => {
+    const { ctx, touches } = makeInstrumentedRedditCtx();
+    const result = await makeReauth(ctx)();
+    assert.equal(result, false);
+    assert.deepEqual(
+      touches,
+      [],
+      "GATE MUTANT GUARD: with the env-credential check removed, ensureRedditSession would immediately touch context/page/sendInteraction — this list would be non-empty"
+    );
+  });
+});
+
+test("makeReauth: REDDIT_USERNAME set but REDDIT_PASSWORD absent → gate still refuses, still no touch (both vars required, not just username)", async () => {
+  await withRedditEnvCredentials("anon", undefined, async () => {
+    const { ctx, touches } = makeInstrumentedRedditCtx();
+    const result = await makeReauth(ctx)();
+    assert.equal(result, false);
+    assert.deepEqual(touches, [], "password-less env must be treated the same as fully absent");
+  });
+});
+
+test("makeReauth: both env vars present → gate passes through, ensureRedditSession is actually reached (context IS touched)", async () => {
+  await withRedditEnvCredentials("anon", "hunter2", async () => {
+    const { ctx, touches } = makeInstrumentedRedditCtx();
+    const result = await makeReauth(ctx)();
+    assert.equal(result, false, "the stub context/page still can't complete a real session establishment");
+    assert.ok(
+      touches.length > 0,
+      "with credentials present, the gate must pass through and ensureRedditSession must actually touch context/page"
+    );
+  });
+});
+
+test("collectAllStreams: mid-run 401 with credentials only on baseCtx (prompted, not env) never reaches the manual 1800s hand-off — terminal auth_failed instead, and the gate is proven by NO extra page fetch", async () => {
+  await withoutRedditEnvCredentials(async () => {
+    const harness = makeRecordingEmit(validateRecord);
+    const { fetch, calls } = makeScriptedFetch({
+      [`${USER_PATH}/submitted.json`]: [{ status: 401, json: null }],
+    });
+    const ctx = createMockBrowserContext(fetch, harness, ["submitted"]);
+    // Credentials arrived via the interaction prompt (baseCtx.credentials is
+    // populated) but never landed in process.env — the exact gap this fix
+    // closes.
+    await assert.rejects(collectAllStreams(ctx as Parameters<typeof collectAllStreams>[0]), /reddit_auth_failed/);
+    assert.equal(
+      calls.length,
+      1,
+      "no retry: the credential-less reauth hook reports failure without a second page fetch — proves no repair-then-retry cycle ran"
+    );
+  });
+});
+
+test("collectAllStreams: per-stream budget still holds under the env gate — 2 requested streams, 2 independent terminal failures, zero page fetches beyond the first probe each", async () => {
+  await withoutRedditEnvCredentials(async () => {
+    const harness = makeRecordingEmit(validateRecord);
+    const { fetch, calls } = makeScriptedFetch({
+      [`${USER_PATH}/submitted.json`]: [{ status: 401, json: null }],
+      [`${USER_PATH}/comments.json`]: [{ status: 401, json: null }],
+    });
+    const ctx = createMockBrowserContext(fetch, harness, ["submitted", "comments"]);
+
+    await assert.rejects(collectAllStreams(ctx as Parameters<typeof collectAllStreams>[0]), /reddit_auth_failed/);
+    // Only the first requested stream's failure surfaces (collectAllStreams
+    // doesn't catch per-stream and continue), but the budget gate must have
+    // been consulted independently per paginate() call with no page fetch
+    // beyond the one scripted 401 for the stream that ran.
+    assert.equal(calls.length, 1, "the credential-less gate returns false without any additional fetch");
+  });
 });
 
 test("collectStream: threads onAuthFailed through to paginate and self-heals a mid-stream 401", async () => {

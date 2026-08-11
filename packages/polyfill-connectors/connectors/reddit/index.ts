@@ -48,7 +48,7 @@
  */
 
 import type { Page } from "playwright";
-import { ensureRedditSession } from "../../src/auto-login/reddit.ts";
+import { ensureRedditSession, isSessionLive } from "../../src/auto-login/reddit.ts";
 import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
@@ -380,10 +380,40 @@ function makePageFetch(page: Page): RedditListingFetch {
  * to `ensureRedditSession` — the same session-establishment flow already run
  * once at connector start — which no-ops when the cookie is still live, so
  * this is safe to invoke speculatively on a 401/403 rather than only at
- * startup. Returns whether the session is live afterward.
+ * startup.
+ *
+ * Gated strictly on `REDDIT_USERNAME`/`REDDIT_PASSWORD` being present in
+ * `process.env`, mirroring the Amazon connector's
+ * `attemptAutomatedSessionRepair`. Without both, `ensureRedditSession` falls
+ * through to `ensureRedditManualSession` — an interactive owner hand-off
+ * that can block up to 30 minutes and consume an OTP interaction slot. That
+ * path is only safe at run start (`ensureSession`, before any owner-facing
+ * timeout budget is in flight); triggering it speculatively mid-collect on a
+ * background 401/403 is not. Note this checks `process.env` directly, not
+ * `ctx.credentials` — a run whose credentials arrived via the interactive
+ * `sendInteraction` prompt (rather than sealed-secret env injection) has a
+ * populated `credentials` object but empty `process.env`, and must still be
+ * refused here.
+ *
+ * `ensureRedditSession` never returns without either the session already
+ * being probed live or throwing, so a bare "didn't throw" is already backed
+ * by a probe internally — but that's an implementation detail of a function
+ * this hook doesn't own. Re-probing explicitly with `isSessionLive` here is
+ * cheap (one navigation, already-loaded page) and makes the truth this hook
+ * reports self-contained rather than borrowed: if `ensureRedditSession`'s
+ * internal contract ever changes, this still reports the real session state
+ * instead of silently trusting a function that returned without error.
+ *
+ * Exported (in addition to being wired into `collectAllStreams`) so the
+ * env-credential gate is directly unit-testable without needing a
+ * Playwright-shaped `context`/`page` that would otherwise mask the gate
+ * behind an unrelated thrown error from a stub object.
  */
-function makeReauth(ctx: BrowserCollectContext): RedditReauthFn {
+export function makeReauth(ctx: BrowserCollectContext): RedditReauthFn {
   return async () => {
+    if (!(process.env.REDDIT_USERNAME && process.env.REDDIT_PASSWORD)) {
+      return false;
+    }
     try {
       await ensureRedditSession({
         capture: ctx.capture,
@@ -391,7 +421,7 @@ function makeReauth(ctx: BrowserCollectContext): RedditReauthFn {
         page: ctx.page,
         sendInteraction: ctx.sendInteraction,
       });
-      return true;
+      return await isSessionLive(ctx.page);
     } catch {
       return false;
     }
