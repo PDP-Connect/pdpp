@@ -28,7 +28,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { RECOVERY_ACTIONS } from "../runtime/connector-gap-bounding.ts";
-import { buildStoredCollectionScope, COLLECTION_SCOPE_STATE_KEY } from "../server/local-collection-scope.ts";
 import {
   loadSyncState,
   type RuntimeRunConnectorOptions,
@@ -36,6 +35,7 @@ import {
   runConnector,
 } from "../runtime/index.ts";
 import { startServer } from "../server/index.ts";
+import { buildStoredCollectionScope, COLLECTION_SCOPE_STATE_KEY } from "../server/local-collection-scope.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
 
@@ -639,6 +639,32 @@ interface ConnectorManifest {
   readonly connector_id: string;
   readonly [key: string]: unknown;
 }
+
+// Module-scope so lint/performance/useTopLevelRegex is satisfied for the
+// recovery_hint protocol-violation and spec-conformance assertions below —
+// these are shared, not per-call-site literals.
+const INVALID_RECOVERY_HINT_MESSAGE_PATTERN = /invalid DONE\.error\.recovery_hint/;
+const SPEC_TYPESCRIPT_BLOCK_PATTERN = /```typescript\n([\s\S]*?)\n```/;
+const SPEC_RECOVERY_ACTION_UNION_PATTERN = /type RecoveryAction =\s*([\s\S]*?);/;
+const SPEC_QUOTED_ACTION_PATTERN = /'([a-z_]+)'/g;
+const SPEC_SKIP_RESULT_MEMBER_PATTERN = /type:\s*'SKIP_RESULT';[\s\S]*?\}/;
+const SPEC_SKIP_RESULT_RECOVERY_HINT_PATTERN = /recovery_hint\?:\s*RecoveryHint/;
+const SPEC_DONE_MEMBER_PATTERN = /type:\s*'DONE';[\s\S]*?\}/;
+const SPEC_DONE_RECOVERY_HINT_PATTERN = /error\?:\s*\{[^}]*recovery_hint\?:\s*RecoveryHint[^}]*\}/;
+const SPEC_DONE_CODE_PATTERN = /error\?:\s*\{[^}]*code\?:\s*string[^}]*\}/;
+const SPEC_CAUSE_VS_ACTION_PATTERN =
+  /`code` and `recovery_hint` answer different questions[\s\S]{0,400}MUST NOT infer one from the other/;
+const SPEC_FAIL_CLOSED_PATTERN = /MUST reject the enclosing message \(fail closed\)/;
+// Matches the prose "Action vocabulary: `a`, `b`, ..." sentence (spec
+// §Recovery hints) so it can be pinned against RECOVERY_ACTIONS independently
+// of the TypeScript union — the spec states the vocabulary twice (prose +
+// type) and both copies must agree with the runtime.
+const SPEC_ACTION_VOCABULARY_PROSE_PATTERN = /Action vocabulary:\s*([^\n]+)/;
+const SPEC_PROSE_ACTION_NAME_PATTERN = /`([a-z_]+)`/g;
+// Strips `//`-style line comments before scanning a TS union for quoted
+// members, so a commented-out ghost entry (e.g. `// deprecated: 'foo'`)
+// cannot be counted as a live vocabulary member.
+const TS_LINE_COMMENT_PATTERN = /\/\/.*$/gm;
 
 const MINIMAL_MANIFEST = {
   connector_id: "test",
@@ -1358,10 +1384,7 @@ test("Collection Profile conformance", async (t) => {
         assert.equal(result.status, "succeeded");
         const captured = JSON.parse(readFileSync(capturePath, "utf8"));
         assert.deepEqual(captured.scope, {
-          streams: [
-            { name: "temporal_items", time_range: { since: declaredSince } },
-            { name: "non_temporal_items" },
-          ],
+          streams: [{ name: "temporal_items", time_range: { since: declaredSince } }, { name: "non_temporal_items" }],
         });
       } finally {
         cleanup();
@@ -1805,85 +1828,38 @@ test("Collection Profile conformance", async (t) => {
     }
   });
 
-  await t.test("recovery_hint is a provider-neutral channel: an arbitrary connector id gets the same hint", async () => {
-    // Proves the RI derives its recovery hint from the typed, manifest-neutral
-    // DONE.error.recovery_hint field alone — never from a connector's private
-    // `code`/message format. A connector id ChatGPT's normalizer has never
-    // seen ("acme-crm") gets the identical `manual_action_required` hint by
-    // declaring the same recovery_hint, with a `code` and message sharing
-    // nothing with ChatGPT's.
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
-    const { asPort, rsPort } = server;
-    const { ownerToken, connectorId } = await setupConnector(server, asPort, {
-      ...MINIMAL_MANIFEST,
-      connector_id: "acme-crm",
-    });
-
-    const { connectorPath, cleanup } = createTestConnector([
-      {
-        error: {
-          code: "acme_verification_wall",
-          message: "acme_crm_verification_wall: owner must complete an in-app verification step",
-          recovery_hint: "manual_action_required",
-          retryable: false,
-        },
-        records_emitted: 0,
-        status: "failed",
-        type: "DONE",
-      },
-    ]);
-
-    try {
-      const result = await runTestConnector({
-        collectionMode: "full_refresh",
-        connectorId,
-        connectorPath,
-        manifest: MINIMAL_MANIFEST,
-        onInteraction: async () => ({}),
-        ownerToken,
-        persistState: true,
-        rsUrl: `http://localhost:${rsPort}`,
-        state: null,
+  await t.test(
+    "recovery_hint is a provider-neutral channel: an arbitrary connector id gets the same hint",
+    async () => {
+      // Proves the RI derives its recovery hint from the typed, manifest-neutral
+      // DONE.error.recovery_hint field alone — never from a connector's private
+      // `code`/message format. A connector id ChatGPT's normalizer has never
+      // seen ("acme-crm") gets the identical `manual_action_required` hint by
+      // declaring the same recovery_hint, with a `code` and message sharing
+      // nothing with ChatGPT's.
+      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const { asPort, rsPort } = server;
+      const { ownerToken, connectorId } = await setupConnector(server, asPort, {
+        ...MINIMAL_MANIFEST,
+        connector_id: "acme-crm",
       });
 
-      assert.equal(result.status, "failed");
-      const runFailedGap = result.known_gaps?.find((gap) => gap.kind === "run_failed");
-      assert.ok(runFailedGap, `expected run_failed known gap, got ${JSON.stringify(result.known_gaps)}`);
-      assert.equal(runFailedGap.recovery_hint?.action, "manual_action_required");
-    } finally {
-      cleanup();
-      await closeServer(server);
-    }
-  });
-
-  await t.test("runtime rejects a malformed DONE.error.recovery_hint as a protocol violation (fail closed)", async () => {
-    // An out-of-vocabulary recovery_hint is not silently dropped or trusted —
-    // the whole DONE is rejected as a protocol violation, same as any other
-    // malformed connector-declared field (see the sibling SKIP_RESULT test).
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
-    const { asPort, rsPort } = server;
-    const { ownerToken, connectorId } = await setupConnector(server, asPort, {
-      ...MINIMAL_MANIFEST,
-      connector_id: "acme-crm",
-    });
-
-    const { connectorPath, cleanup } = createTestConnector([
-      {
-        error: {
-          message: "acme_crm_unexpected_shutdown: worker process exited",
-          recovery_hint: "acme_totally_made_up_action",
-          retryable: false,
+      const { connectorPath, cleanup } = createTestConnector([
+        {
+          error: {
+            code: "acme_verification_wall",
+            message: "acme_crm_verification_wall: owner must complete an in-app verification step",
+            recovery_hint: "manual_action_required",
+            retryable: false,
+          },
+          records_emitted: 0,
+          status: "failed",
+          type: "DONE",
         },
-        records_emitted: 0,
-        status: "failed",
-        type: "DONE",
-      },
-    ]);
+      ]);
 
-    try {
-      let capturedError: RuntimeRunConnectorError | undefined;
-      await assert.rejects(
-        runTestConnector({
+      try {
+        const result = await runTestConnector({
           collectionMode: "full_refresh",
           connectorId,
           connectorPath,
@@ -1893,20 +1869,72 @@ test("Collection Profile conformance", async (t) => {
           persistState: true,
           rsUrl: `http://localhost:${rsPort}`,
           state: null,
-        }),
-        (err) => {
-          capturedError = asRuntimeError(err);
-          // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
-          assert.match(capturedError.message, /invalid DONE\.error\.recovery_hint/);
-          return true;
-        }
-      );
-      assert.ok(capturedError, "expected a rejection carrying the protocol-violation error");
-    } finally {
-      cleanup();
-      await closeServer(server);
+        });
+
+        assert.equal(result.status, "failed");
+        const runFailedGap = result.known_gaps?.find((gap) => gap.kind === "run_failed");
+        assert.ok(runFailedGap, `expected run_failed known gap, got ${JSON.stringify(result.known_gaps)}`);
+        assert.equal(runFailedGap.recovery_hint?.action, "manual_action_required");
+      } finally {
+        cleanup();
+        await closeServer(server);
+      }
     }
-  });
+  );
+
+  await t.test(
+    "runtime rejects a malformed DONE.error.recovery_hint as a protocol violation (fail closed)",
+    async () => {
+      // An out-of-vocabulary recovery_hint is not silently dropped or trusted —
+      // the whole DONE is rejected as a protocol violation, same as any other
+      // malformed connector-declared field (see the sibling SKIP_RESULT test).
+      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const { asPort, rsPort } = server;
+      const { ownerToken, connectorId } = await setupConnector(server, asPort, {
+        ...MINIMAL_MANIFEST,
+        connector_id: "acme-crm",
+      });
+
+      const { connectorPath, cleanup } = createTestConnector([
+        {
+          error: {
+            message: "acme_crm_unexpected_shutdown: worker process exited",
+            recovery_hint: "acme_totally_made_up_action",
+            retryable: false,
+          },
+          records_emitted: 0,
+          status: "failed",
+          type: "DONE",
+        },
+      ]);
+
+      try {
+        let capturedError: RuntimeRunConnectorError | undefined;
+        await assert.rejects(
+          runTestConnector({
+            collectionMode: "full_refresh",
+            connectorId,
+            connectorPath,
+            manifest: MINIMAL_MANIFEST,
+            onInteraction: async () => ({}),
+            ownerToken,
+            persistState: true,
+            rsUrl: `http://localhost:${rsPort}`,
+            state: null,
+          }),
+          (err) => {
+            capturedError = asRuntimeError(err);
+            assert.match(capturedError.message, INVALID_RECOVERY_HINT_MESSAGE_PATTERN);
+            return true;
+          }
+        );
+        assert.ok(capturedError, "expected a rejection carrying the protocol-violation error");
+      } finally {
+        cleanup();
+        await closeServer(server);
+      }
+    }
+  );
 
   await t.test("spec-collection-profile.md's recovery_hint vocabulary and wire fields match the runtime", () => {
     // Pins spec-collection-profile.md's normative TypeScript types against the
@@ -1922,59 +1950,82 @@ test("Collection Profile conformance", async (t) => {
       return matchResult;
     }
 
-    const typesBlock = requiredMatch(
-      specText,
-      /```typescript\n([\s\S]*?)\n```/,
-      "expected a ```typescript code block in spec-collection-profile.md"
-    )[1] as string;
+    function requiredGroup(matchResult: RegExpMatchArray, groupIndex: number, description: string): string {
+      const group = matchResult[groupIndex];
+      assert.ok(group, description);
+      return group;
+    }
 
-    const actionUnionText = requiredMatch(
+    const typesBlockMatch = requiredMatch(
+      specText,
+      SPEC_TYPESCRIPT_BLOCK_PATTERN,
+      "expected a ```typescript code block in spec-collection-profile.md"
+    );
+    const typesBlock = requiredGroup(typesBlockMatch, 1, "expected a captured typescript block body");
+
+    const actionUnionMatch = requiredMatch(
       typesBlock,
-      /type RecoveryAction =\s*([\s\S]*?);/,
+      SPEC_RECOVERY_ACTION_UNION_PATTERN,
       "expected a `type RecoveryAction = ...` union in the spec's TypeScript types"
-    )[1] as string;
-    const specActions = new Set(Array.from(actionUnionText.matchAll(/'([a-z_]+)'/g)).map((m) => m[1] as string));
+    );
+    const actionUnionText = requiredGroup(actionUnionMatch, 1, "expected a captured RecoveryAction union body");
+    // Strip commented-out members before scanning: a ghost entry like
+    // `// deprecated: 'foo'` must never be counted as live vocabulary.
+    const liveActionUnionText = actionUnionText.replace(TS_LINE_COMMENT_PATTERN, "");
+    const specActions = new Set(
+      Array.from(liveActionUnionText.matchAll(SPEC_QUOTED_ACTION_PATTERN)).map((m) => m[1] as string)
+    );
     assert.deepEqual(
       specActions,
       RECOVERY_ACTIONS,
       "spec-collection-profile.md's RecoveryAction union must list exactly the runtime's RECOVERY_ACTIONS vocabulary"
     );
 
-    const skipResultBlock = requiredMatch(
+    const [proseVocabularySentence] = requiredMatch(
+      specText,
+      SPEC_ACTION_VOCABULARY_PROSE_PATTERN,
+      "expected an 'Action vocabulary: ...' sentence in spec-collection-profile.md's Recovery hints section"
+    );
+    const proseActions = new Set(
+      Array.from(proseVocabularySentence.matchAll(SPEC_PROSE_ACTION_NAME_PATTERN)).map((m) => m[1] as string)
+    );
+    assert.deepEqual(
+      proseActions,
+      RECOVERY_ACTIONS,
+      "spec-collection-profile.md's prose 'Action vocabulary' sentence must list exactly the runtime's RECOVERY_ACTIONS vocabulary (it must stay in sync with the TypeScript union, not just describe a stale copy)"
+    );
+
+    const [skipResultBlock] = requiredMatch(
       typesBlock,
-      /type:\s*'SKIP_RESULT';[\s\S]*?\}/,
+      SPEC_SKIP_RESULT_MEMBER_PATTERN,
       "expected a SKIP_RESULT member in the spec's ConnectorMessage union"
-    )[0];
+    );
     assert.match(
       skipResultBlock,
-      /recovery_hint\?:\s*RecoveryHint/,
+      SPEC_SKIP_RESULT_RECOVERY_HINT_PATTERN,
       "spec-collection-profile.md's SKIP_RESULT type must declare recovery_hint"
     );
 
-    const doneBlock = requiredMatch(
+    const [doneBlock] = requiredMatch(
       typesBlock,
-      /type:\s*'DONE';[\s\S]*?\}/,
+      SPEC_DONE_MEMBER_PATTERN,
       "expected a DONE member in the spec's ConnectorMessage union"
-    )[0];
+    );
     assert.match(
       doneBlock,
-      /error\?:\s*\{[^}]*recovery_hint\?:\s*RecoveryHint[^}]*\}/,
+      SPEC_DONE_RECOVERY_HINT_PATTERN,
       "spec-collection-profile.md's DONE.error type must declare recovery_hint"
     );
-    assert.match(
-      doneBlock,
-      /error\?:\s*\{[^}]*code\?:\s*string[^}]*\}/,
-      "spec-collection-profile.md's DONE.error type must declare code"
-    );
+    assert.match(doneBlock, SPEC_DONE_CODE_PATTERN, "spec-collection-profile.md's DONE.error type must declare code");
 
     assert.match(
       specText,
-      /`code` and `recovery_hint` answer different questions[\s\S]{0,400}MUST NOT infer one from the other/,
+      SPEC_CAUSE_VS_ACTION_PATTERN,
       "spec-collection-profile.md must state code and recovery_hint are independent (cause vs. action)"
     );
     assert.match(
       specText,
-      /MUST reject the enclosing message \(fail closed\)/,
+      SPEC_FAIL_CLOSED_PATTERN,
       "spec-collection-profile.md must state an invalid recovery_hint is a protocol violation"
     );
   });
@@ -2035,6 +2086,180 @@ test("Collection Profile conformance", async (t) => {
       await closeServer(server);
     }
   });
+
+  // Precedence matrix for DONE.error.recovery_hint vs. the runtime's
+  // CDP/browser-infrastructure text fallback (isRuntimeRetryableBrowserProfileError):
+  // a present, valid hint is authoritative and MUST win outright, even over
+  // message text that would otherwise match the runtime's own infrastructure
+  // heuristic. That heuristic is a fallback for an ABSENT hint only — see
+  // recoveryHintFromTerminalConnectorError in runtime/index.ts.
+  const SESSION_CLOSED_MESSAGE =
+    "chatgpt_preprogress_failure: runtime_exception: could not open browser profile: Protocol error (Network.setCacheDisabled): Internal server error, session closed.";
+
+  const RECOVERY_HINT_PRECEDENCE_CASES = [
+    {
+      connectorErrorOverrides: { recovery_hint: "manual_action_required" },
+      expectedAction: "manual_action_required",
+      expectedRetryable: false,
+      message: "acme_crm_login_expired: session revoked",
+      name: "explicit manual_action_required hint wins over benign message text",
+    },
+    {
+      connectorErrorOverrides: { recovery_hint: "refresh_credentials" },
+      expectedAction: "refresh_credentials",
+      expectedRetryable: false,
+      message: SESSION_CLOSED_MESSAGE,
+      name: "explicit refresh_credentials hint wins even when the message matches the runtime's CDP/session-closed infrastructure text",
+    },
+    {
+      connectorErrorOverrides: { recovery_hint: "manual_action_required" },
+      expectedAction: "manual_action_required",
+      expectedRetryable: false,
+      message: SESSION_CLOSED_MESSAGE,
+      name: "explicit manual_action_required hint wins even when the message matches the runtime's CDP/session-closed infrastructure text",
+    },
+    {
+      connectorErrorOverrides: {},
+      expectedAction: "retry_by_runtime",
+      expectedRetryable: true,
+      message: SESSION_CLOSED_MESSAGE,
+      name: "absent hint with the same CDP/session-closed text falls through to the runtime's retryable infrastructure default",
+    },
+    {
+      connectorErrorOverrides: {},
+      expectedAction: "retry_by_runtime",
+      expectedRetryable: true,
+      message: "acme_crm_unexpected_shutdown: worker process exited",
+      name: "absent hint with an unrelated retryable failure still falls through to the runtime-retryable default",
+      retryableFlag: true,
+    },
+    {
+      // Absent hint, retryable:false, and a message that matches neither the
+      // runtime's infrastructure text nor any of normalizeRecoveryHint's
+      // generic inference vocabulary: recoveryHintFromTerminalConnectorError
+      // returns null and buildKnownGap's own fail-closed inference yields the
+      // non-retryable `unknown` action — never a fabricated retry.
+      connectorErrorOverrides: {},
+      expectedAction: "unknown",
+      expectedRetryable: false,
+      message: "acme_crm_worker_halted: subprocess ended before completion",
+      name: "absent hint with a non-retryable, non-infrastructure failure falls through to the non-retryable unknown default",
+    },
+  ] as const;
+
+  for (const testCase of RECOVERY_HINT_PRECEDENCE_CASES) {
+    // biome-ignore lint/performance/noAwaitInLoops: Sequential test setup and assertion order is intentional.
+    await t.test(`recovery_hint precedence: ${testCase.name}`, async () => {
+      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const { asPort, rsPort } = server;
+      const { ownerToken, connectorId } = await setupConnector(server, asPort, {
+        ...MINIMAL_MANIFEST,
+        connector_id: "acme-crm",
+      });
+
+      const { connectorPath, cleanup } = createTestConnector([
+        {
+          error: {
+            message: testCase.message,
+            retryable: "retryableFlag" in testCase ? testCase.retryableFlag : false,
+            ...testCase.connectorErrorOverrides,
+          },
+          records_emitted: 0,
+          status: "failed",
+          type: "DONE",
+        },
+      ]);
+
+      try {
+        const result = await runTestConnector({
+          collectionMode: "full_refresh",
+          connectorId,
+          connectorPath,
+          manifest: MINIMAL_MANIFEST,
+          onInteraction: async () => ({}),
+          ownerToken,
+          persistState: true,
+          rsUrl: `http://localhost:${rsPort}`,
+          state: null,
+        });
+
+        assert.equal(result.status, "failed");
+        assert.ok(result.known_gaps, "expected known_gaps on the terminal result");
+        const runFailedGap = result.known_gaps.find((gap) => gap.kind === "run_failed");
+        assert.ok(runFailedGap, `expected run_failed known gap, got ${JSON.stringify(result.known_gaps)}`);
+        assert.equal(runFailedGap.recovery_hint?.action, testCase.expectedAction);
+        if (testCase.expectedRetryable !== undefined) {
+          assert.equal(runFailedGap.recovery_hint?.retryable, testCase.expectedRetryable);
+        }
+
+        const asUrl = `http://localhost:${asPort}`;
+        const { body: runTimeline } = await fetchJson<TimelineBody>(
+          `${asUrl}/_ref/runs/${encodeURIComponent(requireRunId(result))}/timeline`
+        );
+        const failedEvent = (runTimeline.data || []).find((event) => event.event_type === "run.failed");
+        assert.ok(failedEvent, "expected a failedEvent timeline event to be present");
+        const failedKnownGaps = knownGapsOf(failedEvent);
+        assert.equal(failedKnownGaps[0]?.recovery_hint?.action, testCase.expectedAction);
+      } finally {
+        cleanup();
+        await closeServer(server);
+      }
+    });
+  }
+
+  await t.test(
+    "recovery_hint precedence: malformed hint fails closed even when the message matches the runtime's infrastructure text",
+    async () => {
+      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const { asPort, rsPort } = server;
+      const { ownerToken, connectorId } = await setupConnector(server, asPort, {
+        ...MINIMAL_MANIFEST,
+        connector_id: "acme-crm",
+      });
+
+      const { connectorPath, cleanup } = createTestConnector([
+        {
+          error: {
+            message: SESSION_CLOSED_MESSAGE,
+            recovery_hint: "acme_totally_made_up_action",
+            retryable: false,
+          },
+          records_emitted: 0,
+          status: "failed",
+          type: "DONE",
+        },
+      ]);
+
+      try {
+        let capturedError: RuntimeRunConnectorError | undefined;
+        await assert.rejects(
+          runTestConnector({
+            collectionMode: "full_refresh",
+            connectorId,
+            connectorPath,
+            manifest: MINIMAL_MANIFEST,
+            onInteraction: async () => ({}),
+            ownerToken,
+            persistState: true,
+            rsUrl: `http://localhost:${rsPort}`,
+            state: null,
+          }),
+          (err) => {
+            capturedError = asRuntimeError(err);
+            assert.match(capturedError.message, INVALID_RECOVERY_HINT_MESSAGE_PATTERN);
+            return true;
+          }
+        );
+        assert.ok(
+          capturedError,
+          "expected a rejection carrying the protocol-violation error, not a silently retried run"
+        );
+      } finally {
+        cleanup();
+        await closeServer(server);
+      }
+    }
+  );
 
   await t.test("connector_error.code survives to connector_error_code on the terminal run.failed event", async () => {
     // Proves the DONE.error.code -> connector_error.code -> spine

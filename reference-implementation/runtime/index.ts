@@ -2681,7 +2681,14 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
    * — the same closed vocabulary/shape as `SKIP_RESULT.recovery_hint`
    * (validated on ingest by `validateDoneError`, so an invalid shape can never
    * reach here). `code`/`message` are cause identity and free-form text; the
-   * RI never inspects either to choose an action. `buildKnownGap` (via
+   * RI never inspects either to choose an action.
+   *
+   * A present, validated hint is authoritative and wins outright — including
+   * over the runtime's own CDP/browser-infrastructure text match below. The
+   * text match exists only to give runtime infrastructure failures (a dead
+   * browser process, not connector logic) a sane default action when the
+   * connector declared no hint at all; it is a fallback for an ABSENT hint,
+   * never an override for a PRESENT one. `buildKnownGap` (via
    * `normalizeRecoveryHint`) already fails closed on a missing/unrecognized
    * hint by falling back to its own generic, vocabulary-based inference —
    * this function does not need to duplicate that.
@@ -2689,12 +2696,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   function recoveryHintFromTerminalConnectorError(
     connectorError: ConnectorDoneError | null | undefined
   ): string | { action?: string; retryable?: boolean } | null {
+    if (connectorError?.recovery_hint) {
+      return connectorError.recovery_hint;
+    }
     const message = typeof connectorError?.message === "string" ? connectorError.message : "";
     if (isRuntimeRetryableBrowserProfileError(message)) {
       return "retry_by_runtime";
-    }
-    if (connectorError?.recovery_hint) {
-      return connectorError.recovery_hint;
     }
     if (connectorError?.retryable === true) {
       return "retry_by_runtime";
