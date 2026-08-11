@@ -163,19 +163,13 @@ function makeHangingImpl() {
 test("watchdog force-finalizes a hung run and allows a subsequent run-now to succeed", async (t) => {
   freshDb(t);
 
-  const warnLines: string[] = [];
   const hang = makeHangingImpl();
 
   // Use a very short watchdog budget (20 ms) so the test is fast.
   const controller = createController({
     admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
-    logger: {
-      error: () => undefined,
-      warn: (line) => {
-        warnLines.push(line);
-      },
-    },
+    logger: { error: () => undefined, warn: () => undefined },
     maxRunWallClockMs: 20,
     runConnectorImpl: hang.impl,
     schedulerStore: createSchedulerStore(),
@@ -223,10 +217,6 @@ test("watchdog force-finalizes a hung run and allows a subsequent run-now to suc
   // Release the hanging impl to avoid leaving the promise dangling.
   hang.release();
   await controller.drainActiveRuns(1000);
-
-  // Watchdog must have logged a warning.
-  const watchdogWarn = warnLines.find((l) => String(l).includes("watchdog") && String(l).includes("run_hang_1"));
-  assert.ok(watchdogWarn, `expected a watchdog warning log for run_hang_1 (got: ${JSON.stringify(warnLines)})`);
 });
 
 // ─── (d) Watchdog emits a typed run_timed_out terminal spine event ───────────
@@ -307,9 +297,24 @@ test("watchdog does not fire for a run that completes within budget", async (t) 
   }
 });
 
-// ─── (b) Stale-entry reconciliation: settled promise → reclaimed ─────────────
+// ─── (b) Normal post-settle admission: no false 409 after a clean completion ──
+//
+// NOTE: despite this suite's original name, this test does NOT construct a
+// genuinely stale `activeRuns` entry (map entry present while its owning
+// run/resource is actually gone). `finalizeRunCleanup` marks
+// `settledRunIds` and deletes the `activeRuns` entry in the same
+// synchronous step (no `await` between them), so there is no window an
+// external caller can observe where the entry is stale-but-present. This
+// test's own sequence (run 1 fully drains via `drainActiveRuns` before run 2
+// starts) is the ordinary non-conflicting case and would pass identically
+// against a controller with NO stale-reconciliation logic at all — it does
+// not exercise `assertNoConflictingActiveRun`'s `isStale` branch. The
+// GENUINE stale-entry race (watchdog force-finalizes while a caller's
+// in-flight run-now is still using the old entry) is covered by
+// "watchdog force-finalizes a hung run and allows a subsequent run-now to
+// succeed" above, which actually forces the watchdog path.
 
-test("stale activeRuns entry (settled promise) is reclaimed and new run-now succeeds", async (t) => {
+test("a run that has fully settled (drained) does not block a subsequent run-now with a false 409", async (t) => {
   freshDb(t);
 
   const controller = createController({

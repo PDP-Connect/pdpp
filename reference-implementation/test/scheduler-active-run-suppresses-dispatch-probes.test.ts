@@ -184,7 +184,16 @@ rl.on('line', (line) => {
       connectors: [
         {
           connectorId: spotifyManifest.connector_id,
-          connectorInstanceId: spotifyManifest.connector_id,
+          // Deliberately distinct from connectorId: the real multi-instance
+          // hazard is instance A's active run suppressing dispatch for a
+          // DIFFERENT sibling instance B of the same connector. A fixture
+          // where connectorInstanceId === connectorId can't discriminate a
+          // regression to a connectorId-only guard (e.g.
+          // `activeRuns.has(schedule.connectorId)`) from the correct
+          // per-instance guard — both read the same key. PROVED by
+          // mutation: with this fixture unchanged, that regression left
+          // both tests in this file green.
+          connectorInstanceId: `${spotifyManifest.connector_id}#cin_probe_suppression`,
           connectorPath,
           intervalMs: TICK_INTERVAL_MS,
           manifest: spotifyManifest,
@@ -237,6 +246,17 @@ rl.on('line', (line) => {
       // the run is still in flight (subsequent ticks at TICK_INTERVAL_MS
       // would each re-evaluate dispatch — and re-probe — if unguarded).
       await new Promise((resolve) => setTimeout(resolve, RUN_DURATION_MS - 150));
+      // Guard against the one genuine flake vector: if the run had already
+      // completed by measurement time (e.g. under load), activeRuns would
+      // have cleared and a probe would legitimately fire — that would fail
+      // the assertion below for a reason unrelated to the guard. Assert the
+      // run is still in flight so a failure below can only mean the guard
+      // let a probe through against a genuinely active run.
+      assert.equal(
+        completedRuns.length,
+        0,
+        "the run must still be in flight at measurement time, or the assertion below is meaningless"
+      );
       assert.equal(
         probeCallsWhileRunning,
         0,

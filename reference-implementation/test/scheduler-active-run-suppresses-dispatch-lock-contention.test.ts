@@ -156,7 +156,13 @@ test("guarded scheduler: a real in-flight run's held write lock never contends w
     const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-lock-contention-"));
     const connectorPath = join(tmpDir, "long-running-connector.mjs");
     const startedMarkerPath = join(tmpDir, "started.marker");
-    const connectorInstanceId = spotifyManifest.connector_id;
+    // Deliberately distinct from connector_id: the real multi-instance
+    // hazard this guard must catch is instance A's active run suppressing
+    // dispatch for a DIFFERENT sibling instance B of the same connector. A
+    // fixture where connectorInstanceId === connectorId can't discriminate
+    // a regression to a connectorId-only guard (e.g. `activeRuns.has(schedule.connectorId)`)
+    // from the correct per-instance guard — both read the same key.
+    const connectorInstanceId = `${spotifyManifest.connector_id}#cin_lock_contention`;
 
     // A connector that holds the run's OWN `withConnectorInstanceWrite` lock
     // for its entire in-flight duration — modeling the live incident's

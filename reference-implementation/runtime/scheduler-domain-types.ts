@@ -37,6 +37,7 @@ export type TerminalNonGrantReason =
   | "owner_cancel_forced"
   | "owner_cancelled"
   | "run_timed_out"
+  | "scheduler_dispatch_wedged"
   | "permission_error";
 
 export type TerminalReason = TerminalGrantFailureReason | TerminalNonGrantReason;
@@ -364,6 +365,17 @@ export interface SchedulerOptions {
   getSourcePressureGaps?: GetSourcePressureGapsHandler;
   getState?: GetStateHandler;
   hasUnresolvedAttention?: HasUnresolvedAttentionHandler;
+  /**
+   * Deadline on `executeRun`'s pre-run gate (`readinessChecker`/`getState`),
+   * which runs BEFORE `runExecutor.launchRun` and has no built-in timeout of
+   * its own. On timeout, `executeRun` emits one typed
+   * `scheduler_dispatch_wedged` failed record and returns; its `finally`
+   * clears `runtime.activeRuns` normally.
+   *
+   * Defaults to `PDPP_DISPATCH_LIVENESS_CEILING_MS` when set, otherwise 30
+   * minutes. `0` or `Infinity` disables the deadline.
+   */
+  dispatchLivenessCeilingMs?: number;
   /**
    * Predicate: is this connector managed (browser-surface-leased)? Used to DEFER
    * a managed connector's scheduled tick when the managed-routing seam is not

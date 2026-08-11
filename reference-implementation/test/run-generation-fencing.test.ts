@@ -250,7 +250,7 @@ test("zombie run (stale generation) is refused when emitting launch-failure term
 
   // This tests the .catch() fence path: if runConnectorImpl rejects AFTER
   // the watchdog has reclaimed the slot and bumped the generation, the catch
-  // handler must detect the stale generation and skip the emit.
+  // handler must not corrupt run_2's stream.
   //
   // We simulate this by:
   //   1. Starting a run with a runConnectorImpl that we can make reject on demand.
@@ -258,6 +258,16 @@ test("zombie run (stale generation) is refused when emitting launch-failure term
   //   3. Admitting run_2 (generation bumps to 2).
   //   4. Making run_1's impl reject (zombie path).
   //   5. Asserting run_2 has no corrupted terminal events from run_1.
+  //
+  // Caveat (do not remove without reading): in THIS scenario the watchdog's
+  // own run_timed_out write for run_1 succeeds before the zombie .catch()
+  // fires, so runAlreadyTerminal(run_1) is already true by then — the
+  // generation-mismatch check below is never the sole thing preventing a
+  // second write here (confirmed by mutation: deleting only the fence's
+  // `return;` still leaves this test green). The generation check's OWN
+  // discriminating coverage — the case where the watchdog's terminal write
+  // itself fails and runAlreadyTerminal is false — lives in
+  // run-generation-fencing-terminal-write-failure.test.ts.
 
   const store = createCapturingSchedulerStore();
   // Capture each call's reject independently so we can fire the right one.

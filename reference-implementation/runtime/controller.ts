@@ -941,7 +941,12 @@ const runWatchdogSettlements = new Map<string, { promise: Promise<void>; resolve
 // generation matches the current value before writing terminal/ingest data.
 // Persisted to controller_active_runs.run_generation so the fencing token
 // survives through the DB layer (audit trail + crash-restart consistency).
-// Keys are removed when the entry is cleaned up to avoid unbounded growth.
+// Keys are NEVER removed on run completion (no runGenerations.delete call
+// exists outside the blanket test-reset `.clear()`) -- the counter must
+// stay monotonic per connector_instance for the fence to hold across that
+// instance's full history of runs, not just its currently-active one.
+// Growth is bounded by the number of distinct connector_instance keys ever
+// admitted, not by run count.
 const runGenerations = new Map<string, number>();
 // Keyed by run_id. Interaction broker state is intentionally in-memory:
 // dashboard-submitted values satisfy the current live run only and are never

@@ -44,6 +44,7 @@ import type {
   ConnectorError,
   ConnectorSchedule,
   RunRecord,
+  RunSource,
   SchedulerManifest,
   SchedulerOptions,
   TerminalGrantFailureReason,
@@ -102,6 +103,10 @@ export * from "./scheduler-retry-classifier.ts";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+function buildScheduledRunSource(connectorId: string): RunSource {
+  return { id: connectorId, kind: "connector" };
+}
+
 function runtimeKey(schedule: Pick<ConnectorSchedule, "connectorId" | "connectorInstanceId">): string {
   return schedule.connectorInstanceId || schedule.connectorId;
 }
@@ -145,6 +150,86 @@ function resolveMaxRunWallClockMs(value: number | undefined, envValue: string | 
     return parsed;
   }
   return 14_400_000;
+}
+
+// The connector-attempt watchdog (`maxRunWallClockMs`, hours-scale) only
+// bounds `runExecutor.launchRun` -- the actual connector child. It has no
+// visibility into `executeRun`'s OUTER wrapper: the pre-run gate (an
+// injected, provider-neutral `readinessChecker`/`getState` async callback
+// with no built-in timeout) and grant-state check run BEFORE launchRun is
+// ever reached. If that wrapper's promise never settles, `executeRun`'s
+// `finally` (which deletes the `runtime.activeRuns` entry) never runs
+// either, and every future tick's `dispatchIfDue` guard sees the key as
+// permanently occupied -- silent, no skip record, no back-off entry,
+// forever, until process restart. This ceiling is a much shorter,
+// independent budget for that outer wrapper specifically; it makes no
+// assumption about which provider or connector is involved.
+// 0 and Infinity both mean "disabled" (matches raceDispatchLivenessDeadline's
+// own <= 0 check) -- 0 is accepted, not rejected, so the two callers agree.
+function resolveDispatchLivenessCeilingMs(value: number | undefined, envValue: string | undefined): number {
+  if (value !== undefined) {
+    if (value === Number.POSITIVE_INFINITY) {
+      return value;
+    }
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`dispatchLivenessCeilingMs must be a non-negative number or Infinity; got ${value}`);
+    }
+    return value;
+  }
+  if (envValue !== undefined) {
+    if (envValue === "Infinity") {
+      return Number.POSITIVE_INFINITY;
+    }
+    const parsed = Number(envValue);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new Error(
+        `PDPP_DISPATCH_LIVENESS_CEILING_MS must be a non-negative number or "Infinity", got ${envValue}`
+      );
+    }
+    return parsed;
+  }
+  return 1_800_000; // 30 minutes -- generous for an in-memory gate plus one readiness probe.
+}
+
+/** Sentinel distinguishing "the deadline elapsed" from any real `GateOutcome`. */
+const DISPATCH_LIVENESS_TIMEOUT = Symbol("dispatch-liveness-timeout");
+
+/**
+ * Races `pending` against `ceilingMs`. On timeout, returns the sentinel;
+ * `pending` keeps running, unawaited -- there is no cancellation primitive
+ * for an arbitrary injected callback's promise. Nothing else ever awaits
+ * `pending` again, so a late resolution has no observable effect.
+ */
+function raceDispatchLivenessDeadline<T>(
+  pending: Promise<T>,
+  ceilingMs: number
+): Promise<T | typeof DISPATCH_LIVENESS_TIMEOUT> {
+  if (!Number.isFinite(ceilingMs) || ceilingMs <= 0) {
+    return pending;
+  }
+  let timer: NodeJS.Timeout;
+  const deadline = new Promise<typeof DISPATCH_LIVENESS_TIMEOUT>((resolve) => {
+    timer = setTimeout(() => resolve(DISPATCH_LIVENESS_TIMEOUT), ceilingMs);
+    timer.unref?.();
+  });
+  return Promise.race([pending, deadline]).finally(() => clearTimeout(timer));
+}
+
+function dispatchWedgedRecord(connectorId: string, connectorInstanceId: string | undefined): RunRecord {
+  return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    error: "scheduler_dispatch_wedged: pre-launch dispatch gate did not settle within its liveness ceiling",
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "failed",
+    terminalReason: "scheduler_dispatch_wedged",
+  };
 }
 
 // ─── Core runtime state ─────────────────────────────────────────────────────
@@ -328,6 +413,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     getLastSuccessfulRunAt = async () => null,
     isManagedConnector = () => false,
     maxRunWallClockMs,
+    dispatchLivenessCeilingMs,
     registerRunCancellation,
     resolveStaticSecretRunEnv = null,
     runManagedConnectorViaController = null,
@@ -336,6 +422,10 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   const schedulerMaxRunWallClockMs = resolveMaxRunWallClockMs(
     maxRunWallClockMs,
     process.env.PDPP_MAX_RUN_WALL_CLOCK_MS
+  );
+  const schedulerDispatchLivenessCeilingMs = resolveDispatchLivenessCeilingMs(
+    dispatchLivenessCeilingMs,
+    process.env.PDPP_DISPATCH_LIVENESS_CEILING_MS
   );
 
   const runtime = buildRuntime();
@@ -445,7 +535,19 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
 
     try {
       if (!isManual) {
-        const preflight = await preRunGate.runAutomaticPreflight(schedule, key, automationPolicy);
+        // The gate's injected callbacks (readinessChecker, getState) have
+        // no built-in timeout and nothing can cancel them, so on timeout we
+        // just stop awaiting: `finally` below still clears `activeRuns`
+        // normally, and the abandoned promise is never awaited again by
+        // anyone, so a late resolution cannot trigger a second emission or
+        // launch.
+        const preflight = await raceDispatchLivenessDeadline(
+          preRunGate.runAutomaticPreflight(schedule, key, automationPolicy),
+          schedulerDispatchLivenessCeilingMs
+        );
+        if (preflight === DISPATCH_LIVENESS_TIMEOUT) {
+          return recordAndNotify(dispatchWedgedRecord(connectorId, connectorInstanceId));
+        }
         if (preflight !== "proceed") {
           return preflight;
         }
@@ -454,6 +556,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       if (grantDecision !== "proceed") {
         return grantDecision;
       }
+      // Not deadlined: `launchRun` owns its own much longer connector-attempt
+      // watchdog (`maxRunWallClockMs`, hours-scale) once actually launched.
       return await runExecutor.launchRun(schedule, isManual, automationPolicy, { recoveryOnly });
     } finally {
       runtime.activeRuns.delete(key);
@@ -510,6 +614,10 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       // in `runtime.activeRuns`. Connector-agnostic; no observable scheduling
       // change for an instance that isn't running (`executeRun` would have
       // no-oped on this key anyway).
+      //
+      // A wedged pre-run gate does not leave this key stuck: `executeRun`
+      // deadlines it (see `dispatchLivenessCeilingMs`) and always clears
+      // the key on timeout, so this guard re-opens on its own.
       if (runtime.activeRuns.has(runtimeKey(schedule))) {
         return;
       }
