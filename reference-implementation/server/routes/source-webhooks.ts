@@ -42,6 +42,8 @@ interface AppLike {
 
 export interface SourceWebhookSecret {
   readonly connectorId: string;
+  readonly connectorInstanceId?: string | null;
+  readonly ownerSubjectId?: string | null;
   readonly secret: string;
 }
 
@@ -52,7 +54,12 @@ interface ConnectorManifestLike {
 }
 
 export interface SourceWebhookSchedulerStore {
-  upsertLastRunTime: (connectorId: string, timestampMs: number, timestampIso: string) => unknown | Promise<unknown>;
+  upsertLastRunTime: (
+    connectorInstanceId: string,
+    timestampMs: number,
+    timestampIso: string,
+    connectorId?: string
+  ) => unknown | Promise<unknown>;
 }
 
 export interface SourceWebhookEventStoreLike {
@@ -68,7 +75,9 @@ export interface SourceWebhookController {
   runNow: (
     connectorId: string,
     input: {
+      readonly connectorInstanceId: string;
       readonly manifest: ConnectorManifestLike;
+      readonly ownerSubjectId: string;
       readonly priorityClass: "background";
       readonly triggerKind: "webhook";
     }
@@ -88,7 +97,12 @@ export interface MountRefSourceWebhooksContext {
   getSchedulerStore: () => SourceWebhookSchedulerStore;
   getSourceWebhookEventStore: () => SourceWebhookEventStoreLike;
   handleError: (res: unknown, err: unknown) => void;
-  ingestRecord: (connectorId: string, record: Record<string, unknown>) => unknown | Promise<unknown>;
+  ingestRecord: (
+    target: { connector_id: string; connector_instance_id: string },
+    record: Record<string, unknown>,
+    options: { requireConnectionAdmission: true }
+  ) => unknown | Promise<unknown>;
+  readonly ownerSubjectId: string;
   parseSourceWebhookSecrets: () => SourceWebhookSecretsMap;
   pdppError: (res: unknown, status: number, code: string, message: string | undefined) => unknown;
   projectRunAutomationPolicy: (input: {
@@ -96,6 +110,14 @@ export interface MountRefSourceWebhooksContext {
     readonly refreshPolicy: unknown;
   }) => SourceWebhookAutomationPolicy;
   resolveRegisteredConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike>;
+  resolveSourceWebhookTarget: (input: {
+    readonly connectorId: string;
+    readonly connectorInstanceId?: string | null;
+    readonly ownerSubjectId: string;
+    readonly sourceId: string;
+  }) =>
+    | Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>
+    | { connectorId: string; connectorInstanceId: string; ownerSubjectId: string };
 }
 
 function readHeader(
@@ -134,15 +156,18 @@ export function mountRefSourceWebhooks(app: AppLike, ctx: MountRefSourceWebhooks
         },
         {
           claimEvent: (event) => ctx.getSourceWebhookEventStore().claimEvent(event),
-          ingestRecords: async ({ connectorId, streamName, body: ingestBody }) => {
+          ingestRecords: async ({ connectorId, connectorInstanceId, streamName, body: ingestBody }) => {
             const output = await executeRecordsIngest(
-              { body: ingestBody, connectorId, streamName },
+              { body: ingestBody, connectorId, connectorInstanceId, streamName },
               {
                 hasManifestStream: async (cid, name) => {
                   const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
                   return Boolean((manifest.streams || []).find((stream) => stream.name === name));
                 },
-                ingestRecord: (cid, _connectorInstanceId, record) => ctx.ingestRecord(cid, record),
+                ingestRecord: (cid, cii, record) =>
+                  ctx.ingestRecord({ connector_id: cid, connector_instance_id: cii || connectorInstanceId }, record, {
+                    requireConnectionAdmission: true,
+                  }),
               }
             );
             return output.envelope;
@@ -155,7 +180,7 @@ export function mountRefSourceWebhooks(app: AppLike, ctx: MountRefSourceWebhooks
               triggerKind,
             });
           },
-          requestRun: async ({ connectorId, triggerKind }) => {
+          requestRun: async ({ connectorId, connectorInstanceId, ownerSubjectId, triggerKind }) => {
             if (!ctx.controller) {
               return null;
             }
@@ -166,15 +191,30 @@ export function mountRefSourceWebhooks(app: AppLike, ctx: MountRefSourceWebhooks
             // back to `signalScheduler`. We forward the raw controller
             // result unchanged to preserve that behaviour.
             return ctx.controller.runNow(connectorId, {
+              connectorInstanceId,
               manifest,
+              ownerSubjectId,
               priorityClass: "background",
               triggerKind,
             });
           },
-          resolveConnectorId: (sourceId) => secrets.get(sourceId)?.connectorId,
           resolveSecret: (sourceId) => secrets.get(sourceId)?.secret,
-          signalScheduler: async ({ connectorId, receivedAt }) => {
-            await ctx.getSchedulerStore().upsertLastRunTime(connectorId, Date.parse(receivedAt), receivedAt);
+          resolveTarget: (sourceId) => {
+            const configured = secrets.get(sourceId);
+            if (!configured) {
+              throw new SourceWebhookError("unknown_source", "source webhook credential is not configured", 404);
+            }
+            return ctx.resolveSourceWebhookTarget({
+              connectorId: configured.connectorId,
+              connectorInstanceId: configured.connectorInstanceId ?? null,
+              ownerSubjectId: configured.ownerSubjectId || ctx.ownerSubjectId,
+              sourceId,
+            });
+          },
+          signalScheduler: async ({ connectorId, connectorInstanceId, receivedAt }) => {
+            await ctx
+              .getSchedulerStore()
+              .upsertLastRunTime(connectorInstanceId, Date.parse(receivedAt), receivedAt, connectorId);
           },
         }
       );
