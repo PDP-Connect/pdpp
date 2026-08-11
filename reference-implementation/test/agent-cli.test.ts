@@ -45,8 +45,10 @@ import {
   registerClient,
   stageParRequest,
 } from "../examples/third-party-app/lib/flow.ts";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
 import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from "../server/reference-local-defaults.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 import { makeTemporaryDir } from "./helpers/temp-dir.ts";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -131,6 +133,7 @@ async function createAgentConnectRequest({
   agentConnectClientId?: string;
 }): Promise<AgentConnectRequestResult> {
   const spotifyManifest = await registerSpotify(asUrl);
+  await seedSpotifyOwnerConnection(spotifyManifest);
   const registered = await registerClient({
     asUrl,
     initialAccessToken: DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
@@ -229,6 +232,25 @@ async function registerSpotify(asUrl: string): Promise<SpotifyManifest> {
     throw new Error(`connector registration failed (${resp.status})`);
   }
   return manifest;
+}
+
+async function seedSpotifyOwnerConnection(manifest: SpotifyManifest): Promise<string> {
+  const connectorId = canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id;
+  const connectorInstanceId = `cin_agent_${connectorId}`;
+  const now = new Date().toISOString();
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: `${manifest.connector_id} test account`,
+    ownerSubjectId: "owner_local",
+    sourceBinding: { fixture: connectorInstanceId },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+  return connectorInstanceId;
 }
 
 // ─── cache unit tests ─────────────────────────────────────────────────────────
@@ -378,6 +400,7 @@ test("agent-flow: register client, stage PAR, approve inline, store token, verif
 
   try {
     const spotifyManifest = await registerSpotify(asUrl);
+    await seedSpotifyOwnerConnection(spotifyManifest);
 
     await ensureCacheDirs(cacheRoot);
     writeAccess(cacheRoot, { as_url: asUrl, rs_url: rsUrl });

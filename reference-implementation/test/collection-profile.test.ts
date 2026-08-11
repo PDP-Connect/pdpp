@@ -34,7 +34,7 @@ import {
 } from "../runtime/index.ts";
 import { startServer } from "../server/index.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
-import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
+import { admitOwnerRunConnection, createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 type TestServer = Awaited<ReturnType<typeof startServer>>;
 
@@ -10294,6 +10294,20 @@ async function setupConnector(_server: TestServer, asPort: number, manifest: Con
     body: JSON.stringify(manifest),
     headers: { "Content-Type": "application/json" },
     method: "POST",
+  });
+
+  const now = new Date().toISOString();
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId: manifest.connector_id,
+    connectorInstanceId: `cin_collection_${manifest.connector_id}`,
+    createdAt: now,
+    displayName: `${manifest.connector_id} test account`,
+    ownerSubjectId: "test_user",
+    sourceBinding: { fixture: "collection-profile" },
+    sourceBindingKey: "collection-profile",
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
   });
 
   const ownerToken = await issueOwnerToken(asUrl, "test_user");

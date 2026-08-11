@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) {
-    return `[${value.map(stableJson).join(",")}]`;
+    return `[${value.map(stableJson).sort().join(",")}]`;
   }
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
