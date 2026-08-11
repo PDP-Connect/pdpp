@@ -233,6 +233,30 @@ test(
 );
 
 test(
+  "SQLite: an unscoped fold carries one absolute duration deadline across instance folds",
+  withTempDb(async () => {
+    seedSqliteConnection("cin_unscoped_deadline");
+    await rebuildConnectorSummaryEvidence();
+    seedSqliteTerminalEvents("cin_unscoped_deadline", 1);
+
+    const originalNow = Date.now;
+    let calls = 0;
+    Date.now = () => {
+      const early = calls < 2;
+      calls += 1;
+      return early ? 0 : 1000;
+    };
+    try {
+      const result = await foldConnectorSummaryStreamFacts(null, { maxDurationMs: 1 });
+      assert.equal(result.incomplete, true, "the outer budget expires before the nested instance fold starts");
+      assert.equal(result.eventsRead, 0, "an expired outer budget must not receive a fresh per-instance budget");
+    } finally {
+      Date.now = originalNow;
+    }
+  })
+);
+
+test(
   "SQLite: runBoundedSummaryEvidenceSweep reports the WHOLE sweep incomplete and skips complete pruning when a page's fold does not converge",
   withTempDb(async () => {
     seedSqliteConnection("cin_sweep_budget");
@@ -471,6 +495,36 @@ test("real PostgreSQL: foldConnectorSummaryStreamFacts respects an explicit maxE
       "record_count is stamped equal to its own event_seq by the fixture"
     );
     assert.ok(rounds > 1);
+  } finally {
+    await cleanupPostgres();
+    await closePostgresStorage();
+  }
+});
+
+test("real PostgreSQL: an unscoped fold carries one absolute duration deadline across instance folds", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  await initPostgresStorage(postgresStorageConfig());
+  try {
+    await cleanupPostgres();
+    await seedPostgresConnection("cin_unscoped_deadline_pg");
+    await rebuildConnectorSummaryEvidence();
+    await seedPostgresTerminalEvents("cin_unscoped_deadline_pg", 1);
+
+    const originalNow = Date.now;
+    let calls = 0;
+    Date.now = () => {
+      const early = calls < 2;
+      calls += 1;
+      return early ? 0 : 1000;
+    };
+    try {
+      const result = await foldConnectorSummaryStreamFacts(null, { maxDurationMs: 1 });
+      assert.equal(result.incomplete, true, "the outer budget expires before the nested instance fold starts");
+      assert.equal(result.eventsRead, 0, "an expired outer budget must not receive a fresh per-instance budget");
+    } finally {
+      Date.now = originalNow;
+    }
   } finally {
     await cleanupPostgres();
     await closePostgresStorage();

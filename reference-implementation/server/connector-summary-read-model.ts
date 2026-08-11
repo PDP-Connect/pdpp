@@ -2172,12 +2172,12 @@ export async function foldConnectorSummaryStreamFacts(
         aggregate.incomplete = true;
         break;
       }
-      // biome-ignore lint/performance/noAwaitInLoops: Instance-scoped folds are intentionally sequential so one complete pass has a deterministic budget and receipt order.
-      const result = await foldConnectorSummaryStreamFacts([String(row.connector_instance_id)], {
-        ...(options.deadline === undefined ? {} : { deadline: options.deadline }),
-        ...(options.maxDurationMs === undefined ? {} : { maxDurationMs: options.maxDurationMs }),
+      const foldOptions = {
+        ...(deadline === null ? {} : { deadline }),
         ...(remainingEvents === undefined ? {} : { maxEvents: remainingEvents }),
-      });
+      };
+      // biome-ignore lint/performance/noAwaitInLoops: Instance-scoped folds are intentionally sequential so one complete pass has a deterministic budget and receipt order.
+      const result = await foldConnectorSummaryStreamFacts([String(row.connector_instance_id)], foldOptions);
       aggregate.casRejectedInstanceIds.push(...result.casRejectedInstanceIds);
       aggregate.eventsRead += result.eventsRead;
       aggregate.folded += result.folded;
@@ -2208,6 +2208,10 @@ export async function foldConnectorSummaryStreamFacts(
           aggregate.incomplete = true;
           break;
         }
+      }
+      if (result.incomplete) {
+        aggregate.incomplete = true;
+        break;
       }
     }
     return aggregate;

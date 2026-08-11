@@ -894,6 +894,19 @@ interface RepairedEvidence {
   readonly row: Row;
 }
 
+function missingInstanceRepairResult(connectorInstanceId: string, deleted: boolean): RepairedEvidence {
+  return {
+    deferred: !deleted,
+    failed: false,
+    persisted: true,
+    row: {
+      connector_instance_id: connectorInstanceId,
+      ...(deleted && { __deleted: true }),
+      ...(!deleted && { dirty: 1, state: "stale" }),
+    },
+  };
+}
+
 /**
  * Repair exactly one connection's evidence row under the shared
  * connector-instance writer fence: re-read canonical facts fresh (not the
@@ -1270,17 +1283,8 @@ async function repairCandidateSqlite(connectorInstanceId: string): Promise<Repai
       )
       .get(connectorInstanceId) as Row | undefined;
     if (!instance) {
-      return await withConnectorInstanceWrite(connectorInstanceId, async () =>
-        writeTransaction(() => {
-          exec(referenceQueries.connectorInstancesDeleteSummaryEvidenceByConnectorInstance, [connectorInstanceId]);
-          return {
-            deferred: false,
-            failed: false,
-            persisted: true,
-            row: { __deleted: true, connector_instance_id: connectorInstanceId },
-          };
-        })
-      );
+      const deleted = await deleteEvidenceIfConnectorInstanceMissing(connectorInstanceId);
+      return missingInstanceRepairResult(connectorInstanceId, deleted);
     }
     const sourceRevision = decimalText(instance.source_revision_text);
     sourceRevisionAtRead = sourceRevision;
@@ -1433,22 +1437,8 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
     );
     const instance = instanceResult.rows[0] as Row | undefined;
     if (!instance) {
-      return await withConnectorInstanceWrite(connectorInstanceId, async () =>
-        withPostgresTransaction(
-          async (client: Db) => {
-            await client.query("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [
-              connectorInstanceId,
-            ]);
-            return {
-              deferred: false,
-              failed: false,
-              persisted: true,
-              row: { __deleted: true, connector_instance_id: connectorInstanceId },
-            };
-          },
-          { lockConnectorInstanceId: connectorInstanceId }
-        )
-      );
+      const deleted = await deleteEvidenceIfConnectorInstanceMissing(connectorInstanceId);
+      return missingInstanceRepairResult(connectorInstanceId, deleted);
     }
     const sourceRevision = decimalText(instance.source_revision_text);
     sourceRevisionAtRead = sourceRevision;
