@@ -134,23 +134,13 @@ function normalizeScheduleIntervalMs(intervalMs: number): number {
 }
 
 function resolveMaxRunWallClockMs(value: number | undefined, envValue: string | undefined): number {
-  if (value !== undefined) {
-    if (Number.isFinite(value) || value === Number.POSITIVE_INFINITY) {
-      return value;
-    }
-    throw new Error(`maxRunWallClockMs must be finite, Infinity, or undefined; got ${value}`);
-  }
-  if (envValue !== undefined) {
-    if (envValue === "Infinity") {
-      return Number.POSITIVE_INFINITY;
-    }
-    const parsed = Number(envValue);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      throw new Error(`PDPP_MAX_RUN_WALL_CLOCK_MS must be a non-negative number or "Infinity", got ${envValue}`);
-    }
-    return parsed;
-  }
-  return 14_400_000;
+  return resolveNonNegativeMsOrInfinity(
+    value,
+    envValue,
+    14_400_000, // 4 hours
+    "maxRunWallClockMs",
+    "PDPP_MAX_RUN_WALL_CLOCK_MS"
+  );
 }
 
 // The connector-attempt watchdog (`maxRunWallClockMs`, hours-scale) only

@@ -156,6 +156,22 @@ test("createScheduler rejects a negative dispatchLivenessCeilingMs", () => {
   assert.throws(() => createScheduler(minimalSchedulerOpts(-1)), /non-negative/);
 });
 
+// maxRunWallClockMs shares its resolution logic with dispatchLivenessCeilingMs
+// (both delegate to resolveNonNegativeMsOrInfinity in scheduler-config.ts).
+// This proves the SECOND real caller is actually wired through
+// createScheduler, not just that the shared pure function behaves correctly
+// in isolation (scheduler-config.test.ts covers that).
+test("createScheduler rejects a negative maxRunWallClockMs (shares resolveNonNegativeMsOrInfinity with dispatchLivenessCeilingMs)", () => {
+  assert.throws(
+    () =>
+      createScheduler({
+        ...minimalSchedulerOpts(undefined),
+        maxRunWallClockMs: -1,
+      }),
+    /maxRunWallClockMs/
+  );
+});
+
 test("dispatchLivenessCeilingMs: 0 and Infinity both mean disabled, not rejected", () => {
   assert.doesNotThrow(() => createScheduler(minimalSchedulerOpts(0)).stop());
   assert.doesNotThrow(() => createScheduler(minimalSchedulerOpts(Number.POSITIVE_INFINITY)).stop());

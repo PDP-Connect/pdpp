@@ -388,9 +388,13 @@ export interface SchedulerOptions {
    * Maximum no-progress budget for a direct scheduler connector attempt.
    *
    * Defaults to `PDPP_MAX_RUN_WALL_CLOCK_MS` when set, otherwise four hours.
-   * `Infinity` disables the scheduler attempt watchdog. Valid connector
-   * progress resets the budget, so long-running attempts are allowed when they
-   * continue publishing progress. Managed browser-surface runs route through
+   * `0` or `Infinity` disables the scheduler attempt watchdog. An empty or
+   * whitespace-only `PDPP_MAX_RUN_WALL_CLOCK_MS` is treated as UNSET (falls
+   * to the four-hour default), never as `0` -- `Number("")` coerces to `0`,
+   * and this budget treats `0` as "disabled," so a blank env var must not
+   * silently disable the watchdog. Valid connector progress resets the
+   * budget, so long-running attempts are allowed when they continue
+   * publishing progress. Managed browser-surface runs route through
    * controller.runNow and use the controller watchdog.
    */
   maxRunWallClockMs?: number;
