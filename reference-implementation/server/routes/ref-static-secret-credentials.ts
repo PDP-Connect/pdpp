@@ -795,7 +795,7 @@ async function rejectMissingCredential(
   credentialKind: string | null,
   ownerSubjectId: string | null,
   message: string
-): Promise<false> {
+): Promise<void> {
   await emitCaptureAudit(ctx, req, res, {
     connectionId: namespace.connectorInstanceId,
     connectorId: namespace.connectorId,
@@ -805,7 +805,6 @@ async function rejectMissingCredential(
     ownerSubjectId,
   });
   ctx.pdppError(res, 400, "missing_credential", message, "secret");
-  return false;
 }
 
 /** Every field in the bundle is absent — the connector-honest "sign in by hand" choice, never a partial submission. */
@@ -852,7 +851,7 @@ function bundledCredentialKind(kind: string): boolean {
 const BLANK_OPTIONAL_SECRET_SENTINEL = "{}";
 
 /** Outcome of validating a submitted secret/bundle against the manifest's contract, before ANY store write. */
-export type BundledSecretValidation =
+type BundledSecretValidation =
   | { readonly kind: "blank_optional" }
   | { readonly kind: "proceed" }
   | { readonly kind: "rejected" };
@@ -906,10 +905,13 @@ function validateBundledSecret(contract: StaticSecretCredentialContract, secret:
   return { kind: "rejected" };
 }
 
-// Rejection messages for `validateBundledSecret`'s `"rejected"` outcome — kept
-// alongside the validator (not inlined into it) so the message can be
-// regenerated from the SAME contract/bundle the validator already computed,
-// without re-parsing the secret a second time.
+// Rejection messages for `validateBundledSecret`'s `"rejected"` outcome.
+// This re-derives which rule rejected the submission from the same
+// (contract, secret) inputs — including a second `parseSecretBundle` call —
+// rather than carrying the message on the `"rejected"` variant. That makes
+// it a shadow of the validator's decision tree: any change to
+// `validateBundledSecret`'s branching must be mirrored here, or the route
+// will reject for one reason and name another.
 function rejectedCredentialMessage(contract: StaticSecretCredentialContract, secret: string): string {
   if (!bundledCredentialKind(contract.credentialKind)) {
     const field = contract.fields.find((candidate) => candidate.secret);
@@ -1019,7 +1021,15 @@ async function respondWithoutStoringCredential(
     connection_id: args.namespace.connectorInstanceId,
     connector_id: args.namespace.connectorId,
     connector_instance_id: args.namespace.connectorInstanceId,
-    credential: { captured_at: null, credential_kind: null, fingerprint: null, present: false, revoked_at: null, rotated_at: null, status: null },
+    credential: {
+      captured_at: null,
+      credential_kind: null,
+      fingerprint: null,
+      present: false,
+      revoked_at: null,
+      rotated_at: null,
+      status: null,
+    },
     identity: null,
     next_step: {
       kind: "run_connection",

@@ -31,7 +31,8 @@ const FIELDS_MAP = /formContract\.credentialFields\.map/;
 // case), so the browser's own validation cannot block a submission the
 // server-side buildStaticSecretPayload/validateBundledSecret contract
 // already accepts.
-const REQUIRED_HONORS_BLOCK_LEVEL_FACT = /required=\{setup\.credential_capture\.required !== false && field\.required\}/;
+const REQUIRED_HONORS_BLOCK_LEVEL_FACT =
+  /required=\{setup\.credential_capture\.required !== false && field\.required\}/;
 const NO_FIELD_ONLY_REQUIRED_ATTRIBUTE = /required=\{field\.required\}/;
 const CONNECTION_NAME_FIELD = /name=\{formContract\.connectionName\.name\}/;
 const CONNECTION_NAME_MAX_LENGTH = /maxLength=\{formContract\.connectionName\.maxLength\}/;

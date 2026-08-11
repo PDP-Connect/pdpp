@@ -594,7 +594,7 @@ test("capture on an existing Venmo credential followed by a blank re-submission 
       await seedInstance({ connectorId: "venmo", connectorInstanceId: "cin_venmo_preserved" });
       const cookie = await login(asUrl);
 
-      const complete = JSON.stringify({ username: "owner@example.com", password: "synthetic-password" });
+      const complete = JSON.stringify({ password: "synthetic-password", username: "owner@example.com" });
       const first = await captureCredential(asUrl, cookie, "cin_venmo_preserved", complete, "username_password");
       assert.equal(first.status, 201);
       assert.equal(credentialOf(first.body).present, true);
@@ -663,7 +663,7 @@ test("capture accepts a fully complete Venmo credential bundle (both username an
         asUrl,
         cookie,
         "cin_venmo_complete",
-        JSON.stringify({ username: "owner@example.com", password: "synthetic-password" }),
+        JSON.stringify({ password: "synthetic-password", username: "owner@example.com" }),
         "username_password"
       );
       assert.equal(status, 201);
@@ -676,7 +676,7 @@ test("capture accepts a fully complete Venmo credential bundle (both username an
         connectorInstanceId: "cin_venmo_complete",
         ownerSubjectId: OWNER_SUBJECT_ID,
       });
-      assert.equal(recovered.secret, JSON.stringify({ username: "owner@example.com", password: "synthetic-password" }));
+      assert.equal(recovered.secret, JSON.stringify({ password: "synthetic-password", username: "owner@example.com" }));
     });
   });
 });
