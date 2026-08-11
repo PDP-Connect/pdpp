@@ -127,7 +127,7 @@ export async function resolveStaticSecretRunEnv({
   //      primary credential is the owner-authenticated browser session, so a
   //      static secret is always secondary.
   //   2. `captureOptional` — the CONNECTOR's own manifest declares
-  //      `credential_capture.required: false` (e.g. Venmo), independent of
+  //      `credential_capture.required: false`, independent of
   //      how this particular connection's `sourceBinding.kind` happens to be
   //      set today. This closes the gap where a browser-bound-but-still-
   //      static-secret-draft-bound connection (the real owner journey through

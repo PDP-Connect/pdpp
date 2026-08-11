@@ -758,7 +758,7 @@ async function validateCredentialKind(
 
 // A REQUIRED contract (credential_capture.required is not false) whose
 // secret fields are all individually optional describes "at least one
-// credential path" (e.g. Jellyfin's username+password OR API key) —
+// credential path" (for example, username+password OR an API key) —
 // per-field `required` checks never fire on a fully empty submission for
 // that shape, so it needs its own presence check to reject one.
 function isAtLeastOnePathContract(secretFields: readonly StaticSecretSetupField[]): boolean {
@@ -822,7 +822,7 @@ function bundleIsEntirelyBlank(contract: StaticSecretCredentialContract, bundle:
 // a partially bundled credential requires its required secret fields. For a REQUIRED capture this is the
 // manifest contract enforced directly (a partial username/password bundle or
 // a literal `{}` fails here, before any probe or store). For an OPTIONAL
-// capture (BOTH-OR-NONE, e.g. Venmo) the caller must check
+// capture (BOTH-OR-NONE) the caller must check
 // `bundleIsEntirelyBlank` FIRST — an entirely blank bundle is the valid
 // "sign in by hand" choice this function does not itself special-case — and
 // the moment ANY field is present, the same rule applies unchanged.

@@ -114,7 +114,7 @@ export async function buildStaticSecretCredentialProber() {
 // process-global one. It returns `null` for non-static-secret connectors,
 // for browser-session source bindings that have no optional stored login
 // credential, AND for any connector whose manifest declares
-// `credential_capture.required: false` (e.g. Venmo) regardless of its
+// `credential_capture.required: false` regardless of its
 // connection's `sourceBinding.kind` — see `resolveStaticSecretRunEnv`'s doc.
 // A missing/revoked/deleted credential on a true REQUIRED static-secret
 // connection still fails closed: the run seam throws and the run is refused
