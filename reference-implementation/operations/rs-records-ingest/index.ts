@@ -449,7 +449,10 @@ function buildIngestEnvelope(
       throw new Error("hosted ingest response counts do not balance");
     }
     return {
-      errors,
+      // Hosted durable receipts are the complete public rejection evidence.
+      // Storage/parser messages can contain payload values or backend text;
+      // retain the legacy messages only on the non-hosted compatibility path.
+      errors: [],
       records_accepted: recordsAccepted,
       records_attempted: lineErrors.length,
       records_rejected: recordsRejected,

@@ -338,6 +338,8 @@ test("runtime/server SQLite journey durably receipts invalid identity rejections
     assert.equal(facts.records_unresolved_retryable, 0);
     assert.equal(facts.records_flushed, 1);
     assertOmitsPrivatePayload("run history facts", facts, forbiddenPayloadNeedles);
+    const spineEvidence = getDb().prepare("SELECT data_json FROM spine_events ORDER BY event_seq").all();
+    assertOmitsPrivatePayload("spine timeline and mutation audit", spineEvidence, forbiddenPayloadNeedles);
 
     await closeServer(serverA);
     serverA = null;

@@ -434,7 +434,7 @@ test("rs.records.ingest hosted receipts use zero-based non-empty-line indexes an
 
   assert.equal(out.submittedRecordCount, 3);
   assert.deepEqual(out.envelope, {
-    errors: [out.envelope.errors[0], "invalid record identity"],
+    errors: [],
     records_accepted: 1,
     records_attempted: 3,
     records_rejected: 2,

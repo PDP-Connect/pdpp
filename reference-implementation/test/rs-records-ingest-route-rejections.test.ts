@@ -154,7 +154,7 @@ test("hosted route persists invalid_record_identity receipt with raw non-empty i
   const response = await post(handler, '{"id":"ok"}\n\n{"id":"bad"}');
 
   assert.deepEqual(response.body, {
-    errors: ["invalid identity"],
+    errors: [],
     records_accepted: 1,
     records_attempted: 2,
     records_rejected: 1,
@@ -218,11 +218,32 @@ test("hosted route retains structured batch error code for receipt creation", as
   const response = await post(mountRoute(), '{"id":"bad"}');
 
   assert.deepEqual(response.body, {
-    errors: ["invalid identity"],
+    errors: [],
     records_accepted: 0,
     records_attempted: 1,
     records_rejected: 1,
     rejections: [{ code: "invalid_record_identity", input_index: 0, receipt_id: "rr_0_invalid_record_identity" }],
     stream: "items",
   });
+});
+
+test("hosted route never repeats payload-bearing storage text in its success envelope", async () => {
+  const privateFailureText = "key and data.id disagree: key=private-key data.id=private-data";
+  const response = await post(
+    mountRoute({
+      ingestRecords: async () => [
+        {
+          accepted: false,
+          error: { code: "invalid_record_identity", message: privateFailureText, retryable: false },
+        },
+      ],
+    } as Partial<MountRsMutationContext>),
+    '{"id":"private-data","private_field":"private-key"}'
+  );
+
+  assert.equal(response.statusCode, null);
+  assert.deepEqual((response.body as { errors?: unknown }).errors, []);
+  assert.equal(JSON.stringify(response.body).includes(privateFailureText), false);
+  assert.equal(JSON.stringify(response.body).includes("private-key"), false);
+  assert.equal(JSON.stringify(response.body).includes("private-data"), false);
 });

@@ -52,7 +52,6 @@ import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.
 
 const STREAM = "items";
 const RUN_TERMINAL_RE = /run .* is already terminal/;
-const IDENTITY_MISMATCH_RE = /key and data\.id disagree/;
 const FIXED_TEMPLATE_RE = /systemic\/retryable record failure/;
 const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
 
@@ -247,11 +246,9 @@ test("ALL records failing PERMANENTLY (invalid_record_identity) resolves the 200
     { code: "invalid_record_identity", input_index: 0, receipt_id: "rr_0_invalid_record_identity" },
     { code: "invalid_record_identity", input_index: 1, receipt_id: "rr_1_invalid_record_identity" },
   ]);
-  assert.equal(envelope.errors.length, 2);
-  assert.ok(
-    envelope.errors.every((e) => IDENTITY_MISMATCH_RE.test(e)),
-    "both rejections must be the real permanent identity-mismatch error, not a generic message"
-  );
+  assert.deepEqual(envelope.errors, []);
+  assert.equal(JSON.stringify(envelope).includes("not_p1"), false);
+  assert.equal(JSON.stringify(envelope).includes('"p1"'), false);
   assert.equal(
     readCommittedRecordSqlite(connectorInstanceId, "p1"),
     undefined,
@@ -526,10 +523,9 @@ if (POSTGRES_URL) {
             { code: "invalid_record_identity", input_index: 0, receipt_id: "rr_0_invalid_record_identity" },
             { code: "invalid_record_identity", input_index: 1, receipt_id: "rr_1_invalid_record_identity" },
           ]);
-          assert.ok(
-            envelope.errors.every((e) => IDENTITY_MISMATCH_RE.test(e)),
-            "both rejections must be the real permanent identity-mismatch error on Postgres, not a generic message"
-          );
+          assert.deepEqual(envelope.errors, []);
+          assert.equal(JSON.stringify(envelope).includes("not_pg2"), false);
+          assert.equal(JSON.stringify(envelope).includes('"pg2"'), false);
           assert.equal(await readCommittedRecordPostgres(connectorInstanceId, "pg2"), undefined);
         } finally {
           await closePostgresStorage();
