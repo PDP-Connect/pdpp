@@ -114,6 +114,20 @@ test(
       stream: "files",
     });
     await store.markGapStatus(secondGap.gap_id, "terminal", { now });
+    // A second recovered gap on `first` whose reason lands in the SECOND
+    // 98-value reason chunk of the 101-reason filter below, so the count
+    // assertion proves disjoint reason chunks are summed, not overwritten.
+    const crossChunkGap = await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId: first,
+      gapId: "gap_cross_chunk",
+      now,
+      reason: "other_99",
+      recordKey: "cross_chunk",
+      stream: "files",
+    });
+    assert.ok(crossChunkGap);
+    await store.markGapStatus(crossChunkGap.gap_id, "recovered", { now });
 
     const originalPrepare = Database.prototype.prepare;
     let membershipStatements = 0;
@@ -153,7 +167,7 @@ test(
           reasons: ["rate_limited", ...Array.from({ length: 100 }, (_, index) => `other_${index}`)],
           status: "recovered",
         }),
-        new Map([[first, 1]])
+        new Map([[first, 2]])
       );
       assert.ok(
         maximumMembershipPlaceholders <= 999,
