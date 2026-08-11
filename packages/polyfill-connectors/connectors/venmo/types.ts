@@ -72,18 +72,3 @@ export interface VenmoStoriesResponse {
     next?: string | null;
   } | null;
 }
-
-/** `POST /oauth/access_token` success response body. */
-export interface VenmoAccessTokenResponse {
-  access_token?: string | null;
-  balance?: number | null;
-  user?: VenmoUser | null;
-}
-
-/** `POST /oauth/access_token` 2FA-required error response body. */
-export interface VenmoTwoFactorRequiredResponse {
-  error?: {
-    code?: number | null;
-    message?: string | null;
-  } | null;
-}
