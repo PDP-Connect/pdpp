@@ -766,10 +766,11 @@ export function openAccountCursor(state: Record<string, unknown>, budgetId: stri
  * its type map). `/accounts` returns no separate total-boundary count
  * alongside a delta payload, so a `knowledge`-scoped call could never measure
  * `considered` at all — only a full walk can. This costs nothing extra:
- * `/accounts` is one request per budget either way (see the file's rate-limit
- * comment), so always requesting the full list keeps `accounts`/
- * `account_stats` provable on every run, not just a connection's first ever
- * run.
+ * `/accounts` is one request per budget either way (see
+ * `collectScheduledTransactions`'s "One request per budget" comment for the
+ * same reasoning applied to that endpoint), so always requesting the full
+ * list keeps `accounts`/`account_stats` provable on every run, not just a
+ * connection's first ever run.
  *
  * `accountsCovered`/`accountStatsCovered` follow the `budgets`/usaa/
  * `scheduled_transactions` precedent: emitted-and-valid plus

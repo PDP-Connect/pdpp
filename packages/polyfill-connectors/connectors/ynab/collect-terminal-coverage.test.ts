@@ -361,8 +361,9 @@ test("ynabCollect: a malformed account/payee_location row leaves covered < consi
 // `payee_locations`/`scheduled_transactions`, and `collectTransactions`'s own
 // unconditional `/accounts` refetch): every call walks the full account list,
 // which the API returns just as reliably as a delta payload for this
-// small, per-budget-single-request endpoint (see the file's rate-limit
-// comment — accounts is one request per budget regardless of whether it
+// small, per-budget-single-request endpoint (see `collectScheduledTransactions`'s
+// "One request per budget" comment for the same reasoning applied to that
+// endpoint — accounts is one request per budget regardless of whether it
 // requests a delta). This is what makes `accounts`/`account_stats` provable
 // on EVERY run, not just the first — matching manifest.json's declared
 // `full_inventory` strategy, which the shared coherence oracle
@@ -425,6 +426,67 @@ test("ynabCollect: a run on an established (many-runs-old) connection still prov
   assert.ok(coverageFor(third.messages, "accounts"), "a third run on the same connection still proves coverage");
   const thirdVerdict = coherenceFor(third.messages, "accounts", "full_inventory");
   assert.equal(thirdVerdict.proven, true);
+});
+
+// ─── Full-walk semantics: an account absent from a later full list was
+//     genuinely deleted, and its fingerprint must be pruned from committed
+//     STATE ─────────────────────────────────────────────────────────────────
+//
+// This is only safe because `collectAccounts` never sends a `knowledge`
+// cursor (see above) — a partial delta could never license a prune, since an
+// id absent from a delta might just be unchanged, not deleted. Once every
+// call is a full walk, an id genuinely missing this run MUST be dropped from
+// `newState.accounts[budgetId].fingerprints`, or a future re-creation of the
+// same id would silently no-op against the stale fingerprint instead of
+// re-emitting. `collectAccounts` calls `entityCursor.pruneStale()` right
+// before serializing `fingerprints` into STATE — this test proves that call
+// is load-bearing by asserting the deleted account's fingerprint is actually
+// gone from the second run's committed cursor, not just that the record
+// wasn't re-emitted.
+
+test("ynabCollect: an account present in run 1 and absent from run 2's full list is pruned from committed accounts STATE", async () => {
+  const runOneFixtures: BudgetFixture[] = [{ id: BUDGET_A, accounts: [account(ACCOUNT_1), account(ACCOUNT_2)] }];
+  const { request: requestOne } = fakeRequest(runOneFixtures);
+
+  const first = makeCtx(["accounts"]);
+  await ynabCollect(first.ctx, requestOne);
+
+  const firstStateMsg = first.messages.find(
+    (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "accounts"
+  );
+  assert.ok(firstStateMsg, "run 1 commits an accounts STATE cursor");
+  const firstCursor = firstStateMsg.cursor as Record<string, { fingerprints?: Record<string, string> }>;
+  const firstFingerprints = firstCursor[BUDGET_A]?.fingerprints ?? {};
+  assert.ok(ACCOUNT_1 in firstFingerprints, "run 1's committed STATE fingerprints ACCOUNT_1");
+  assert.ok(ACCOUNT_2 in firstFingerprints, "run 1's committed STATE fingerprints ACCOUNT_2");
+
+  // Run 2: the same budget's full account list now omits ACCOUNT_2 entirely
+  // (closed and purged at the source, not merely marked `deleted: true`) —
+  // the only way `/accounts` can signal a deletion on a full walk.
+  const runTwoFixtures: BudgetFixture[] = [{ id: BUDGET_A, accounts: [account(ACCOUNT_1)] }];
+  const { request: requestTwo } = fakeRequest(runTwoFixtures);
+
+  const second = makeCtx(["accounts"], { accounts: firstStateMsg.cursor as Record<string, unknown> });
+  await ynabCollect(second.ctx, requestTwo);
+
+  const secondStateMsg = second.messages.find(
+    (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "accounts"
+  );
+  assert.ok(secondStateMsg, "run 2 commits an accounts STATE cursor");
+  const secondCursor = secondStateMsg.cursor as Record<string, { fingerprints?: Record<string, string> }>;
+  const secondFingerprints = secondCursor[BUDGET_A]?.fingerprints ?? {};
+
+  assert.ok(
+    ACCOUNT_1 in secondFingerprints,
+    "ACCOUNT_1 is still present this run, so its fingerprint must survive into committed STATE"
+  );
+  assert.ok(
+    !(ACCOUNT_2 in secondFingerprints),
+    "ACCOUNT_2 was absent from run 2's full list — pruneStale must remove its fingerprint from committed STATE, or a future re-creation of ACCOUNT_2 would silently no-op against the stale entry"
+  );
+
+  const secondCov = coverageFor(second.messages, "accounts");
+  assert.equal(secondCov?.considered, 1, "run 2's boundary is 1 account — the deleted account is not double-counted");
 });
 
 // A dedicated "regression pin" test was deliberately NOT added as a separate
