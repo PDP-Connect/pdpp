@@ -4,7 +4,7 @@ FROM ${NODE_IMAGE}
 ARG PNPM_VERSION
 ARG PNPM_INTEGRITY
 
-# Node 25 no longer ships Corepack. Fetch one exact pnpm tarball during image
+# Do not depend on Corepack availability. Fetch one exact pnpm tarball during image
 # construction, verify its SRI value, then run the candidate matrix with Docker
 # networking disabled. This separates the bootstrap trust boundary from the
 # offline consumer proof.

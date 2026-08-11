@@ -7,7 +7,7 @@
 #
 # Keep the dependency/reference stages in sync with the root Dockerfile.
 
-ARG NODE_VERSION=25-bookworm-slim
+ARG NODE_VERSION=24-bookworm-slim
 ARG PNPM_VERSION=10.33.0
 
 FROM node:${NODE_VERSION} AS base
