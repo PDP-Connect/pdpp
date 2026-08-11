@@ -2690,7 +2690,11 @@ async function runBoundedObservationPhases(
   }
   const generic = await startRepair(GENERIC_REPAIR_CANDIDATE_REASONS, options.maxCandidates);
   const result = mergeReconcilePhaseResults(missing, generic);
-  maintenanceIncomplete ||= result.skipped > 0 || foldOutcome.incomplete || Date.now() >= deadline;
+  // A repair that started before the deadline may finish after it. The
+  // cooperative contract makes that unit finish cleanly; it is incomplete
+  // only when the deadline actually deferred remaining candidates, not merely
+  // because the completed final unit crossed the clock boundary.
+  maintenanceIncomplete ||= result.skipped > 0 || foldOutcome.incomplete;
   return { foldOutcome, incomplete: maintenanceIncomplete, repairDurationMs, result };
 }
 
