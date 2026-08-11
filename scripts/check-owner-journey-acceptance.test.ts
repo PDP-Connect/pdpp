@@ -458,9 +458,14 @@ test("bounded mutation probes use disposable local state and reject live authori
   const result = await runBoundedMutationProbes(authority);
   assert.equal(result.status, "pass");
   assert.deepEqual(result.probes, [
+    "reset starts empty",
     "create disposable source",
+    "read durable source state after create",
     "refresh disposable source",
     "delete disposable source",
+    "negative refresh after delete",
+    "read durable source state after delete",
+    "reset restores empty state",
   ]);
   assert.equal(
     resolveDisposableMutationAuthority({ PDPP_UAT_MUTATION_ORIGIN: "https://owner.example" }).kind,
@@ -613,6 +618,7 @@ test("dashboard source-trust oracle covers zero, multiple, stale-projection, and
       {
         connection_id: "cin_one",
         display_name: "First source",
+        source_work: "system_issue",
         rendered_verdict: {
           channel: "advisory",
           forward_statement: "First source needs attention.",
@@ -623,6 +629,7 @@ test("dashboard source-trust oracle covers zero, multiple, stale-projection, and
       {
         connection_id: "cin_two",
         display_name: "Second source",
+        source_work: "system_issue",
         rendered_verdict: {
           channel: "advisory",
           forward_statement: "Second source cannot collect.",
@@ -633,6 +640,7 @@ test("dashboard source-trust oracle covers zero, multiple, stale-projection, and
       {
         connection_id: "cin_healthy",
         display_name: "Healthy source",
+        source_work: "review",
         connection_health: { axes: { freshness: "stale" }, state: "healthy" },
         rendered_verdict: {
           channel: "advisory",
@@ -660,6 +668,7 @@ test("dashboard source-trust oracle covers zero, multiple, stale-projection, and
     [
       {
         connection_id: "cin_stale",
+        source_work: "none",
         display_name: "Stale source",
         connection_health: { axes: { coverage: "terminal_gap" }, state: "degraded" },
         rendered_verdict: {
@@ -683,6 +692,7 @@ test("dashboard source-trust oracle covers zero, multiple, stale-projection, and
       {
         connection_id: "cin_healthy",
         display_name: "Healthy source",
+        source_work: "review",
         rendered_verdict: {
           channel: "advisory",
           forward_statement: "Run a refresh when you want the latest data.",
@@ -699,6 +709,36 @@ test("dashboard source-trust oracle covers zero, multiple, stale-projection, and
     healthyMutation.overstatedHealthyAdvisories.map((issue) => issue.label),
     ["Healthy source"]
   );
+});
+
+test("dashboard source-trust oracle fails closed when server source_work is unavailable", () => {
+  const result = evaluateDashboardSourceTrust(
+    [
+      {
+        connection_id: "cin_unknown",
+        display_name: "Unresolved source",
+        rendered_verdict: {
+          channel: "calm",
+          forward_statement: "Collection is current.",
+          pill: { label: "Healthy", tone: "green" },
+          required_actions: [],
+        },
+      },
+    ],
+    "All assessed sources are healthy."
+  );
+  assert.deepEqual(result.sourceWorkUnavailable, [
+    { label: "Unresolved source", reason: "source_work missing or unavailable" },
+  ]);
+  assert.deepEqual(
+    result.materialIssues.map((issue) => issue.label),
+    ["Unresolved source"]
+  );
+  assert.deepEqual(
+    result.unrepresentedMaterialIssues.map((issue) => issue.label),
+    ["Unresolved source"]
+  );
+  assert.deepEqual(result.healthyRefreshAdvisories, []);
 });
 
 test("live Explore render fails when only one sort direction is present", async () => {
@@ -909,6 +949,7 @@ test("live semantic probe rejects dashboard all-clear when connector summaries c
               connection_id: "cin_chase",
               connector_id: "chase",
               display_name: "Chase - Personal",
+              source_work: "system_issue",
               rendered_verdict: {
                 channel: "advisory",
                 pill: { tone: "red", label: "Can't collect" },
@@ -965,6 +1006,7 @@ test("live semantic probe passes when material source issues are represented on 
               connection_id: "cin_chase",
               connector_id: "chase",
               display_name: "Chase - Personal",
+              source_work: "system_issue",
               rendered_verdict: {
                 channel: "advisory",
                 pill: { tone: "red", label: "Can't collect" },
@@ -1130,6 +1172,7 @@ test("live semantic probe rejects healthy refresh advisories rendered as degrade
               connection_id: "cin_reddit",
               connector_id: "reddit",
               display_name: "Reddit - dondochaka",
+              source_work: "review",
               rendered_verdict: {
                 channel: "advisory",
                 forward_statement: "Run a refresh to bring this up to date.",
@@ -1390,6 +1433,7 @@ test("live semantic probe rejects visible source count claims that diverge from 
               connection_id: "cin_amazon",
               connector_id: "amazon",
               display_name: "Amazon - Personal",
+              source_work: "none",
               stream_count: 2,
               streams: ["orders", "order_items"],
               total_records: 2868,
@@ -1446,6 +1490,7 @@ test("live semantic probe accepts visible source count claims that match connect
               connection_id: "cin_amazon",
               connector_id: "amazon",
               display_name: "Amazon - Personal",
+              source_work: "none",
               stream_count: 2,
               streams: ["orders", "order_items"],
               total_records: 2868,
@@ -1501,6 +1546,7 @@ test("live semantic probe compares the configured stream roster for a fresh draf
               connection_id: "cin_chatgpt_draft",
               connector_id: "chatgpt",
               display_name: "ChatGPT",
+              source_work: "none",
               status: "draft",
               stream_count: 0,
               streams: ["conversations", "messages", "attachments"],
@@ -2088,6 +2134,7 @@ test("live semantic probe rejects dead-letter jargon on source recovery detail p
             {
               connection_id: "cin_local",
               display_name: "Claude Code",
+              source_work: "needs_owner",
               rendered_verdict: {
                 channel: "attention",
                 forward_statement: "The local collector has failed uploads.",
@@ -2152,6 +2199,7 @@ test("live semantic probe accepts failed-upload owner copy on source recovery de
             {
               connection_id: "cin_local",
               display_name: "Claude Code",
+              source_work: "needs_owner",
               rendered_verdict: {
                 channel: "attention",
                 forward_statement: "The local collector has failed uploads.",
@@ -2215,6 +2263,7 @@ test("live semantic probe rejects clean-success source detail copy when collecti
             {
               connection_id: "cin_chase",
               display_name: "Chase - Personal",
+              source_work: "review",
               last_run: { run_id: "run_1", status: "succeeded" },
               collection_report: [
                 {
@@ -2285,6 +2334,7 @@ test("live semantic probe accepts partial source detail copy when collection gap
             {
               connection_id: "cin_chase",
               display_name: "Chase - Personal",
+              source_work: "review",
               last_run: { run_id: "run_1", status: "succeeded" },
               collection_report: [
                 {

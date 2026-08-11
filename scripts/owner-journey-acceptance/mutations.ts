@@ -19,7 +19,7 @@ export interface MutationResponse {
 export interface DisposableMutationAuthority {
   readonly kind: "disposable-local";
   readonly live: false;
-  request: (input: { body?: unknown; method: "DELETE" | "POST"; path: string }) => Promise<MutationResponse>;
+  request: (input: { body?: unknown; method: "DELETE" | "GET" | "POST"; path: string }) => Promise<MutationResponse>;
   reset: () => Promise<void>;
 }
 
@@ -47,8 +47,11 @@ function sourceIdFromBody(body: unknown): string | null {
 
 function handleDisposableMutation(
   state: DisposableState,
-  { body, method, path }: { body?: unknown; method: "DELETE" | "POST"; path: string }
+  { body, method, path }: { body?: unknown; method: "DELETE" | "GET" | "POST"; path: string }
 ): MutationResponse {
+  if (method === "GET" && path === "/__uat__/sources") {
+    return { body: { count: state.sources.size, source_ids: [...state.sources].sort() }, status: 200 };
+  }
   if (method === "POST" && path === "/__uat__/sources") {
     const sourceId = sourceIdFromBody(body);
     if (!sourceId) {
@@ -95,6 +98,11 @@ export function createDisposableMutationAuthority(): DisposableMutationAuthority
 export async function runBoundedMutationProbes(authority: DisposableMutationAuthority): Promise<MutationProbeResult> {
   const probes: string[] = [];
   await authority.reset();
+  const resetBefore = await authority.request({ method: "GET", path: "/__uat__/sources" });
+  probes.push("reset starts empty");
+  if (resetBefore.status !== 200 || !isSourceList(resetBefore.body, [])) {
+    return { detail: "reset did not produce an empty source list", probes, status: "fail" };
+  }
   const created = await authority.request({
     body: { source_id: "uat-disposable-source" },
     method: "POST",
@@ -104,6 +112,11 @@ export async function runBoundedMutationProbes(authority: DisposableMutationAuth
   if (created.status !== 201) {
     return { detail: `create returned ${created.status}`, probes, status: "fail" };
   }
+  const afterCreate = await authority.request({ method: "GET", path: "/__uat__/sources" });
+  probes.push("read durable source state after create");
+  if (afterCreate.status !== 200 || !isSourceList(afterCreate.body, ["uat-disposable-source"])) {
+    return { detail: "create response did not change durable source state", probes, status: "fail" };
+  }
   const refreshed = await authority.request({
     method: "POST",
     path: "/__uat__/sources/uat-disposable-source/refresh",
@@ -111,6 +124,9 @@ export async function runBoundedMutationProbes(authority: DisposableMutationAuth
   probes.push("refresh disposable source");
   if (refreshed.status !== 200) {
     return { detail: `refresh returned ${refreshed.status}`, probes, status: "fail" };
+  }
+  if (!hasRefreshCount(refreshed.body, 1)) {
+    return { detail: "refresh response did not reflect the durable refresh count", probes, status: "fail" };
   }
   const deleted = await authority.request({
     method: "DELETE",
@@ -120,8 +136,48 @@ export async function runBoundedMutationProbes(authority: DisposableMutationAuth
   if (deleted.status !== 200) {
     return { detail: `delete returned ${deleted.status}`, probes, status: "fail" };
   }
+  const refreshAfterDelete = await authority.request({
+    method: "POST",
+    path: "/__uat__/sources/uat-disposable-source/refresh",
+  });
+  probes.push("negative refresh after delete");
+  if (refreshAfterDelete.status !== 404) {
+    return { detail: `deleted source remained refreshable with ${refreshAfterDelete.status}`, probes, status: "fail" };
+  }
+  const afterDelete = await authority.request({ method: "GET", path: "/__uat__/sources" });
+  probes.push("read durable source state after delete");
+  if (afterDelete.status !== 200 || !isSourceList(afterDelete.body, [])) {
+    return { detail: "delete response did not remove the durable source", probes, status: "fail" };
+  }
   await authority.reset();
-  return { detail: "bounded mutation path passed against disposable local state", probes, status: "pass" };
+  const resetAfter = await authority.request({ method: "GET", path: "/__uat__/sources" });
+  probes.push("reset restores empty state");
+  if (resetAfter.status !== 200 || !isSourceList(resetAfter.body, [])) {
+    return { detail: "reset did not restore empty durable state", probes, status: "fail" };
+  }
+  return {
+    detail: "bounded mutation path passed with state-dependent body, negative, and reset proofs",
+    probes,
+    status: "pass",
+  };
+}
+
+function isSourceList(body: unknown, expected: readonly string[]): boolean {
+  if (!body || typeof body !== "object") {
+    return false;
+  }
+  const sourceIds = (body as Record<string, unknown>).source_ids;
+  return (
+    Array.isArray(sourceIds) &&
+    sourceIds.every((value): value is string => typeof value === "string") &&
+    sourceIds.length === expected.length &&
+    sourceIds.every((value, index) => value === expected[index]) &&
+    (body as Record<string, unknown>).count === expected.length
+  );
+}
+
+function hasRefreshCount(body: unknown, expected: number): boolean {
+  return Boolean(body && typeof body === "object" && (body as Record<string, unknown>).refreshes === expected);
 }
 
 /**

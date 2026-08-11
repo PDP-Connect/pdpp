@@ -541,6 +541,9 @@ function isMaterialSourceIssue(connector: Connector): boolean {
     return false;
   }
   const serverWork = serverSourceWork(connector);
+  if (!serverWork) {
+    return true;
+  }
   if (serverWork) {
     if (serverWork === "none" || serverWork === "working") {
       return false;
@@ -569,6 +572,9 @@ function isHealthyRefreshAdvisory(connector: Connector): boolean {
     return false;
   }
   const serverWork = serverSourceWork(connector);
+  if (!serverWork) {
+    return false;
+  }
   if (serverWork && serverWork !== "review") {
     return false;
   }
@@ -690,6 +696,7 @@ export interface DashboardSourceTrustOracle {
   overstatedHealthyAdvisories: readonly { forwardStatement: string; label: string }[];
   projectionDisagreements: readonly { label: string; reason: string }[];
   rawIssues: readonly { label: string; reason: string }[];
+  sourceWorkUnavailable: readonly { label: string; reason: string }[];
   unrepresentedMaterialIssues: readonly { forwardStatement: string; label: string }[];
   unrepresentedRawIssues: readonly { label: string; reason: string }[];
   unsupportedAllClearClaim: string | null;
@@ -719,21 +726,23 @@ export function evaluateDashboardSourceTrust(
   }));
   const rawIssues = connectors.filter(isRawMaterialSourceIssue).map((connector) => ({
     label: connectorLabel(connector),
-    reason:
+    reason: String(
       (connector?.connection_health as Connector | undefined)?.reason_code ??
-      (connector?.last_run as Connector | undefined)?.failure_reason ??
-      "raw source issue",
+        (connector?.last_run as Connector | undefined)?.failure_reason ??
+        "raw source issue"
+    ),
   }));
+  const sourceWorkUnavailable = connectors
+    .filter((connector) => !(connector.revoked_at || serverSourceWork(connector)))
+    .map((connector) => ({ label: connectorLabel(connector), reason: "source_work missing or unavailable" }));
   const projectionDisagreements = rawIssues
     .map((issue) => {
       const connector = connectors.find((candidate) => connectorLabel(candidate) === issue.label);
       const serverWork = connector ? serverSourceWork(connector) : null;
-      const verdict = connector ? renderedVerdict(connector) : null;
-      const calmProjection = verdict?.channel === "calm" && (verdict.pill as Connector | undefined)?.tone === "green";
-      if (serverWork === "none" || (!serverWork && calmProjection)) {
+      if (serverWork === "none") {
         return {
           label: issue.label,
-          reason: serverWork === "none" ? "source_work=none" : "calm green rendered_verdict",
+          reason: "source_work=none",
         };
       }
       return null;
@@ -754,6 +763,7 @@ export function evaluateDashboardSourceTrust(
     materialIssues,
     overstatedHealthyAdvisories,
     projectionDisagreements,
+    sourceWorkUnavailable,
     rawIssues,
     unsupportedAllClearClaim,
     unrepresentedMaterialIssues: materialIssues.filter((issue) => !rows.some((row) => rowRepresents(row, issue))),
@@ -1054,6 +1064,7 @@ async function runLiveSemanticChecks({
     overstatedHealthyAdvisories,
     rawIssues: rawSourceIssues,
     projectionDisagreements,
+    sourceWorkUnavailable,
     unsupportedAllClearClaim,
     unrepresentedMaterialIssues,
     unrepresentedRawIssues,
@@ -1157,6 +1168,21 @@ async function runLiveSemanticChecks({
     });
   }
 
+  if (sourceWorkUnavailable.length > 0) {
+    findings.push({
+      ruleId: "dashboard-source-work-unavailable",
+      class: "dashboard-trust-claim",
+      path: "live:/_ref/connectors",
+      line: 0,
+      excerpt: sourceWorkUnavailable
+        .map((issue) => issue.label)
+        .slice(0, 5)
+        .join(", "),
+      rationale:
+        "The server-owned source_work projection is missing or invalid. The acceptance oracle must fail closed and retain the source as an unresolved material issue; it must never silently classify the source as healthy from a connector-specific fallback.",
+    });
+  }
+
   checks.push({
     id: "dashboard-source-issue-all-clear",
     status: findings.some(
@@ -1165,6 +1191,7 @@ async function runLiveSemanticChecks({
         f.ruleId === "dashboard-source-issue-missing" ||
         f.ruleId === "dashboard-raw-source-issue-missing" ||
         f.ruleId === "dashboard-source-health-projection-disagreement" ||
+        f.ruleId === "dashboard-source-work-unavailable" ||
         f.ruleId === "dashboard-healthy-advisory-overstated" ||
         f.ruleId === "dashboard-unsupported-all-clear-claim"
     )
