@@ -258,7 +258,7 @@ test("SQLite source-webhook controller receipt canonicalizes an alias across res
 });
 
 test("Postgres source-webhook controller receipt canonicalizes an alias across response loss and terminal cleanup", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: process.env.PDPP_TEST_POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
 }, async (t) => {
   const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;
   assert.ok(databaseUrl, "Postgres URL is configured when this test runs");
