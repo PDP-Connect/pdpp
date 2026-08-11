@@ -21,7 +21,7 @@ const relativeFiles = testFiles.map((file) => path.relative(packageRoot, file));
 process.stdout.write(`Discovered ${relativeFiles.length} test file(s): ${relativeFiles.join(", ")}\n`);
 const { stderr, stdout } = await execFileAsync(
   process.execPath,
-  ["--experimental-strip-types", "--test", ...relativeFiles],
+  ["--experimental-strip-types", "--test", ...(process.env.CI ? [] : ["--test-concurrency=2"]), ...relativeFiles],
   { cwd: packageRoot }
 );
 process.stdout.write(stdout);

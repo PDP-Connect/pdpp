@@ -32,7 +32,8 @@ if (tests.length === 0) {
 }
 
 await new Promise<void>((resolve, reject) => {
-  const child = spawn(process.execPath, ["--test", "--import", "tsx", ...tests], {
+  const concurrencyArgs = process.env.CI ? [] : ["--test-concurrency=2"];
+  const child = spawn(process.execPath, ["--test", ...concurrencyArgs, "--import", "tsx", ...tests], {
     cwd: packageRoot,
     stdio: "inherit",
   });
