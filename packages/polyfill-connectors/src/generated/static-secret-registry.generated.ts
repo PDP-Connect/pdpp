@@ -140,6 +140,7 @@ export const GENERATED_STATIC_SECRET_REGISTRY: Readonly<Record<string, Generated
         "password": ["VENMO_PASSWORD"],
         "username": ["VENMO_USERNAME"],
       },
+      optionalSecretBundleFields: ["username", "password"],
     },
     "ynab": {
       credentialKind: "personal_access_token",

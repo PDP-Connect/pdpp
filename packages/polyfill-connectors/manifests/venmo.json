@@ -27,7 +27,7 @@
           "name": "username",
           "label": "Venmo phone, email, or username",
           "type": "text",
-          "required": true,
+          "required": false,
           "secret": true,
           "autocomplete": "username",
           "env": ["VENMO_USERNAME"]
@@ -36,7 +36,7 @@
           "name": "password",
           "label": "Venmo password",
           "type": "password",
-          "required": true,
+          "required": false,
           "secret": true,
           "autocomplete": "current-password",
           "env": ["VENMO_PASSWORD"]

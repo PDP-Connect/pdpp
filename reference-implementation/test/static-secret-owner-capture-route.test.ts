@@ -517,6 +517,65 @@ test("capture accepts an at-least-one-path manifest when exactly one credential 
   });
 });
 
+// Venmo's manifest declares username/password as individually optional with
+// NO other required field in the same credential_capture block — unlike
+// Jellyfin, which always has base_url required, Venmo authenticates through
+// an owner-driven browser session that works with zero saved credentials.
+// isAtLeastOnePathContract must not misclassify this shape as Jellyfin's
+// "at least one credential path" contract; a fully blank submission is the
+// correct, honest "sign in by hand every time" choice, not an error.
+test("capture accepts a fully empty credential bundle for an all-optional, no-fallback-required manifest (Venmo)", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "venmo");
+      await seedInstance({ connectorId: "venmo", connectorInstanceId: "cin_venmo_personal" });
+      const cookie = await login(asUrl);
+
+      const { status, body } = await captureCredential(asUrl, cookie, "cin_venmo_personal", "{}", "username_password");
+      assert.equal(status, 201, "a blank Venmo credential must be a valid, storable choice");
+      assert.equal(credentialOf(body).present, true);
+
+      const store = createSqliteConnectorInstanceCredentialStore({
+        env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
+      });
+      const recovered = await store.recoverSecret({
+        connectorInstanceId: "cin_venmo_personal",
+        ownerSubjectId: OWNER_SUBJECT_ID,
+      });
+      assert.equal(recovered.secret, "{}");
+    });
+  });
+});
+
+test("capture accepts a Venmo credential bundle with only one of username/password filled (fail-closed happens at injection, not capture)", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "venmo");
+      await seedInstance({ connectorId: "venmo", connectorInstanceId: "cin_venmo_partial" });
+      const cookie = await login(asUrl);
+
+      const { status, body } = await captureCredential(
+        asUrl,
+        cookie,
+        "cin_venmo_partial",
+        JSON.stringify({ username: "owner@example.com" }),
+        "username_password"
+      );
+      assert.equal(status, 201);
+      assert.equal(credentialOf(body).present, true);
+
+      const store = createSqliteConnectorInstanceCredentialStore({
+        env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
+      });
+      const recovered = await store.recoverSecret({
+        connectorInstanceId: "cin_venmo_partial",
+        ownerSubjectId: OWNER_SUBJECT_ID,
+      });
+      assert.equal(recovered.secret, JSON.stringify({ username: "owner@example.com" }));
+    });
+  });
+});
+
 test("capture rejects wrong credential kind with a non-secret audit event", async () => {
   await withCredentialKey(TEST_KEY, async () => {
     await withServer(async ({ asUrl }) => {

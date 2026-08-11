@@ -310,6 +310,70 @@ test("reddit injection still accepts the legacy sealed OAuth credential bundle",
   });
 });
 
+test("venmo injection sets both username+password secrets when the bundle is fully saved", () => {
+  const env = buildConnectionScopedSecretEnv("venmo", {
+    credentialKind: "username_password",
+    secret: JSON.stringify({
+      password: "synthetic-password",
+      username: "owner@example.com",
+    }),
+  });
+  assert.deepEqual(env, {
+    VENMO_PASSWORD: "synthetic-password",
+    VENMO_USERNAME: "owner@example.com",
+  });
+});
+
+// Venmo's manifest marks both username and password optional
+// (optionalSecretBundleFields) because ensureVenmoSession falls back to a
+// manual browser sign-in with zero saved credentials — so injection must not
+// throw recovered_secret_bundle_field_missing on a partial or fully empty
+// bundle. This is the honest, fail-closed half of the contract: injection
+// never invents or completes a missing credential half, it only sets what
+// was actually saved, and auto-login.ts's own `username && password` check
+// is what refuses to attempt a half-complete login.
+test("venmo injection sets only the present half of a partial username/password bundle, never throwing", () => {
+  const usernameOnly = buildConnectionScopedSecretEnv("venmo", {
+    credentialKind: "username_password",
+    secret: JSON.stringify({ username: "owner@example.com" }),
+  });
+  assert.deepEqual(usernameOnly, { VENMO_USERNAME: "owner@example.com" });
+
+  const passwordOnly = buildConnectionScopedSecretEnv("venmo", {
+    credentialKind: "username_password",
+    secret: JSON.stringify({ password: "synthetic-password" }),
+  });
+  assert.deepEqual(passwordOnly, { VENMO_PASSWORD: "synthetic-password" });
+});
+
+test("venmo injection sets nothing for a fully empty bundle, never throwing (browser sign-in is always valid)", () => {
+  const env = buildConnectionScopedSecretEnv("venmo", {
+    credentialKind: "username_password",
+    secret: "{}",
+  });
+  assert.deepEqual(env, {});
+});
+
+test("venmo registry secret-bundle env vars match its connector manifest and both fields are optional", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../manifests/venmo.json", import.meta.url), "utf8"));
+  const fields = manifest.setup.credential_capture.fields as Array<{ name: string; env: string[]; required: boolean }>;
+  const descriptor = STATIC_SECRET_CONNECTOR_REGISTRY.venmo;
+  assert.ok(descriptor, "registry must include venmo");
+  for (const bundleField of ["username", "password"]) {
+    const manifestField = fields.find((field) => field.name === bundleField);
+    assert.equal(manifestField?.required, false, `venmo manifest field '${bundleField}' must be required:false`);
+    assert.deepEqual(
+      descriptor.secretFieldEnvVars?.[bundleField],
+      manifestField?.env,
+      `venmo secret bundle env mismatch (${bundleField})`
+    );
+    assert.ok(
+      descriptor.optionalSecretBundleFields?.has(bundleField),
+      `venmo secret bundle field '${bundleField}' must be optional so browser sign-in works with zero saved credentials`
+    );
+  }
+});
+
 test("sealed bundle injection refuses invalid and incomplete recovered bundles", () => {
   assert.throws(
     () => buildConnectionScopedSecretEnv("slack", { credentialKind: "secret_bundle", secret: "not json" }),

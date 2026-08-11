@@ -750,11 +750,22 @@ async function validateCredentialKind(
 }
 
 // A manifest declares an "at least one path" shape when 2+ secret fields
-// exist and none is individually required — e.g. Jellyfin's username+password
-// OR API key. Per-field `required` checks never fire on a fully empty
-// submission for that shape, so it needs its own presence check.
-function isAtLeastOnePathContract(secretFields: readonly StaticSecretSetupField[]): boolean {
-  return secretFields.length >= 2 && !secretFields.some((field) => field.required);
+// exist, none is individually required, but some OTHER field in the same
+// contract still is (e.g. Jellyfin's required base_url plus username+password
+// OR API key) — per-field `required` checks never fire on a fully empty
+// submission for that shape, so it needs its own presence check. A contract
+// with NO required field anywhere (e.g. Venmo, whose credentials only ever
+// assist a browser-driven sign-in that works with zero saved credentials) has
+// no fallback to protect and must accept a fully blank submission.
+function isAtLeastOnePathContract(
+  allFields: readonly StaticSecretSetupField[],
+  secretFields: readonly StaticSecretSetupField[]
+): boolean {
+  return (
+    allFields.some((field) => field.required) &&
+    secretFields.length >= 2 &&
+    !secretFields.some((field) => field.required)
+  );
 }
 
 function parseSecretBundle(secret: string): Record<string, unknown> {
@@ -793,7 +804,7 @@ async function assertBundledSecretNotEmpty(
   secret: string
 ): Promise<boolean> {
   const secretFields = contract.fields.filter((field) => field.secret);
-  if (!isAtLeastOnePathContract(secretFields)) {
+  if (!isAtLeastOnePathContract(contract.fields, secretFields)) {
     return true;
   }
   if (bundleHasAnySecret(parseSecretBundle(secret), secretFields)) {

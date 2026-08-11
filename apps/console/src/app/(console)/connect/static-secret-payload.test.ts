@@ -347,6 +347,102 @@ test("at-least-one-path bundles accept a submission that fills exactly one crede
   });
 });
 
+test("all-optional bundles with no required field anywhere accept a fully empty submission (Venmo: browser sign-in is always valid)", () => {
+  const form = new FormData();
+
+  const payload = buildStaticSecretPayload(
+    setup({
+      credential_capture: {
+        description: null,
+        fields: [
+          {
+            autocomplete: "username",
+            description: null,
+            help_text: null,
+            help_url: null,
+            identity: false,
+            label: "Venmo phone, email, or username",
+            name: "username",
+            placeholder: null,
+            required: false,
+            secret: true,
+            type: "text",
+          },
+          {
+            autocomplete: "current-password",
+            description: null,
+            help_text: null,
+            help_url: null,
+            identity: false,
+            label: "Venmo password",
+            name: "password",
+            placeholder: null,
+            required: false,
+            secret: true,
+            type: "password",
+          },
+        ],
+        kind: "username_password",
+        label: "Venmo sign-in details (optional)",
+        submit_label: null,
+      },
+      credential_kind: "username_password",
+    }),
+    form
+  );
+
+  assert.deepEqual(payload, { ok: true, secret: "{}" });
+});
+
+test("all-optional bundles accept exactly one of two fields filled (fail-closed at injection, not at capture)", () => {
+  const form = new FormData();
+  form.set("username", "owner@example.com");
+
+  const payload = buildStaticSecretPayload(
+    setup({
+      credential_capture: {
+        description: null,
+        fields: [
+          {
+            autocomplete: "username",
+            description: null,
+            help_text: null,
+            help_url: null,
+            identity: false,
+            label: "Venmo phone, email, or username",
+            name: "username",
+            placeholder: null,
+            required: false,
+            secret: true,
+            type: "text",
+          },
+          {
+            autocomplete: "current-password",
+            description: null,
+            help_text: null,
+            help_url: null,
+            identity: false,
+            label: "Venmo password",
+            name: "password",
+            placeholder: null,
+            required: false,
+            secret: true,
+            type: "password",
+          },
+        ],
+        kind: "username_password",
+        label: "Venmo sign-in details (optional)",
+        submit_label: null,
+      },
+      credential_kind: "username_password",
+    }),
+    form
+  );
+
+  assert.equal(payload.ok, true);
+  assert.deepEqual(JSON.parse(payload.ok ? payload.secret : ""), { username: "owner@example.com" });
+});
+
 test("required bundled fields fail before capture instead of storing incomplete credentials", () => {
   const form = new FormData();
   form.set("username", "owner@example.com");
