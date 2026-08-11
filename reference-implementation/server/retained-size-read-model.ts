@@ -667,13 +667,12 @@ export async function listRetainedSizeStreams({ connectorInstanceId, connectorId
   return (rows as RetainedSizeRow[]).map(shapeStreamRow);
 }
 
-/** Page-scoped retained stream facts, grouped by exact instance id. */
-export async function listRetainedSizeStreamsByInstanceIds(connectorInstanceIds: readonly string[]) {
-  const ids = [...new Set(connectorInstanceIds.filter((id) => typeof id === "string" && id.length > 0))];
-  if (ids.length === 0) {
-    return new Map<string, ReturnType<typeof shapeStreamRow>[]>();
-  }
-  const rows: RetainedSizeRow[] = [];
+/**
+ * Dual-backend row fetch for the stream grain, keyed by exact instance id
+ * (same shape as listRetainedSizeConnectionsByInstanceIds's fetch, one
+ * column wider). Callers own id dedup, the empty guard, and grouping.
+ */
+async function fetchRetainedSizeStreamRowsByInstanceIds(ids: readonly string[]): Promise<RetainedSizeRow[]> {
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery<RetainedSizeRow>(
       `SELECT connector_instance_id, connector_id, stream,
@@ -684,24 +683,34 @@ export async function listRetainedSizeStreamsByInstanceIds(connectorInstanceIds:
         ORDER BY connector_instance_id ASC, stream ASC`,
       [ids]
     );
-    rows.push(...result.rows);
-  } else {
-    for (let start = 0; start < ids.length; start += SQLITE_INSTANCE_ID_CHUNK_SIZE) {
-      const chunk = ids.slice(start, start + SQLITE_INSTANCE_ID_CHUNK_SIZE);
-      rows.push(
-        ...(getDb()
-          .prepare(
-            `SELECT connector_instance_id, connector_id, stream,
-                    current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                    record_count, record_history_count, blob_count, dirty, computed_at
-               FROM retained_size_stream
-              WHERE connector_instance_id IN (${chunk.map(() => "?").join(", ")})
-              ORDER BY connector_instance_id ASC, stream ASC`
-          )
-          .all(...chunk) as RetainedSizeRow[])
-      );
-    }
+    return result.rows;
   }
+  const rows: RetainedSizeRow[] = [];
+  for (let start = 0; start < ids.length; start += SQLITE_INSTANCE_ID_CHUNK_SIZE) {
+    const chunk = ids.slice(start, start + SQLITE_INSTANCE_ID_CHUNK_SIZE);
+    rows.push(
+      ...(getDb()
+        .prepare(
+          `SELECT connector_instance_id, connector_id, stream,
+                  current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                  record_count, record_history_count, blob_count, dirty, computed_at
+             FROM retained_size_stream
+            WHERE connector_instance_id IN (${chunk.map(() => "?").join(", ")})
+            ORDER BY connector_instance_id ASC, stream ASC`
+        )
+        .all(...chunk) as RetainedSizeRow[])
+    );
+  }
+  return rows;
+}
+
+/** Page-scoped retained stream facts, grouped by exact instance id. */
+export async function listRetainedSizeStreamsByInstanceIds(connectorInstanceIds: readonly string[]) {
+  const ids = [...new Set(connectorInstanceIds.filter((id) => typeof id === "string" && id.length > 0))];
+  if (ids.length === 0) {
+    return new Map<string, ReturnType<typeof shapeStreamRow>[]>();
+  }
+  const rows = await fetchRetainedSizeStreamRowsByInstanceIds(ids);
   const result = new Map<string, ReturnType<typeof shapeStreamRow>[]>();
   for (const row of rows) {
     const shaped = shapeStreamRow(row);
