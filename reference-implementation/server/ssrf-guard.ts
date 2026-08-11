@@ -410,7 +410,18 @@ function createUndiciConnector(validatedAddresses: readonly string[]): typeof ra
     validatedAddresses,
     (address, options, done) => {
       const servername = options.servername || options.hostname;
-      rawConnect({ ...options, hostname: address, servername }, (error, socket) => {
+      // SNI belongs only to TLS. Undici 8.10 treats a distinct HTTP
+      // `servername` as the logical host and supplies a pinned lookup
+      // callback. Leaving it set for plain HTTP preserves address safety, but
+      // obscures the literal dial target and changes the connector contract.
+      // Clear it for HTTP; HTTPS still needs the original hostname for SNI and
+      // certificate verification while `hostname` remains the validated IP.
+      const { servername: _originalServername, ...baseOptions } = options;
+      const pinnedOptions =
+        options.protocol === "https:"
+          ? { ...baseOptions, hostname: address, servername }
+          : { ...baseOptions, hostname: address };
+      rawConnect(pinnedOptions, (error, socket) => {
         done(error, socket);
       });
     }
