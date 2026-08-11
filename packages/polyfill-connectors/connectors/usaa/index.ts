@@ -98,6 +98,7 @@ import type {
   LocatedExportPage,
   NoExportAffordanceObservation,
   PageDiagnostics,
+  ParseMeta,
   StatementRecord,
   TransactionsPriorState,
   TransactionsStreamCursor,
@@ -122,6 +123,16 @@ const PDF_DOWNLOAD_SKIP_REASON: Record<DownloadFailReason, string> = {
 };
 
 const validateRecord = validateRecordRaw as ValidateRecord;
+
+/** Keep unknown-PDF diagnostics useful for recovery without persisting
+ * statement text, which can contain names, merchants, amounts, and balances. */
+export function buildPdfTemplateUnknownDiagnostics(statementId: string, parseMeta: ParseMeta): Record<string, unknown> {
+  return {
+    parser_era: parseMeta.era,
+    statement_id: statementId,
+    year: parseMeta.year,
+  };
+}
 
 // ─── Module-scope regexes ────────────────────────────────────────────────
 
@@ -2468,11 +2479,7 @@ async function processPdfStatementRow(
         stream: "transactions",
         reason: "pdf_template_unknown",
         message: `PDF statement parse skipped at row ${row.rowIndex + 1}: no parser matched (era=${parseMeta.era})`,
-        diagnostics: {
-          statement_id: row.id,
-          year: parseMeta.year,
-          raw_text_sample: "rawTextSample" in parseMeta ? parseMeta.rawTextSample : null,
-        },
+        diagnostics: buildPdfTemplateUnknownDiagnostics(row.id, parseMeta),
       });
       return;
     }

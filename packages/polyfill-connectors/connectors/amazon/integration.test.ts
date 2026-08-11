@@ -60,6 +60,8 @@ import {
   recordDetailOutcome,
   recoverPendingOrderItemDetailGaps,
   recoverPendingOrderItemDetailGapsBeforeForwardRun,
+  redactAmazonListPageDiagnostics,
+  scrapeListPage,
   shouldEmitTrailingOrdersState,
 } from "./index.ts";
 import { buildOrderRecord, parseOrderDate } from "./parsers.ts";

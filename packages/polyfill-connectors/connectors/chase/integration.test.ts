@@ -75,6 +75,7 @@ import {
   filterAccountsByScope,
   isLikelyChaseQfxResponse,
   isLikelyPdfResponseBody,
+  redactChaseDashboardDiagnostics,
   runCurrentActivity,
   runTransactionsAndBalances,
   snapshotDashboardHtmlForCurrentActivity,

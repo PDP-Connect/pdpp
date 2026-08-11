@@ -1131,7 +1131,7 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
       stream: "orders",
       reason: "selector_drift",
       message: `Year ${year} startIndex=${startIndex}: order containers visible on page but .order-card/.js-order-card selector matched 0. Screenshot=${shotPath}`,
-      diagnostics: diag,
+      diagnostics: redactAmazonListPageDiagnostics(diag),
     });
   } else {
     await emit({
@@ -1139,10 +1139,16 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
       stream: "orders",
       reason: classification.reason,
       message: `Year ${year} startIndex=${startIndex}: empty Amazon list page is not a proven terminal page; refusing to advance the cursor.`,
-      diagnostics: diag ?? { missing_diagnostics: true },
+      diagnostics: diag ? redactAmazonListPageDiagnostics(diag) : { missing_diagnostics: true },
     });
   }
   throw new Error(`amazon_empty_list_page_${classification.reason}`);
+}
+
+/** Browser text, titles, and URLs are useful for local classification but are
+ * not durable connector evidence. Keep only structural facts in SKIP_RESULT. */
+export function redactAmazonListPageDiagnostics(diag: ListPageDiagnostics): ListPageDiagnostics {
+  return { ...diag, body_preview: "", title: "", url: "" };
 }
 
 export function classifyEmptyListPageDiagnostics(
@@ -1173,7 +1179,7 @@ export function classifyEmptyListPageDiagnostics(
  * list signal, optionally capture a fixture, and return the shape-checked
  * orders. On zero orders, emits drift diagnostics before returning [].
  */
-async function scrapeListPage(
+export async function scrapeListPage(
   page: Page,
   capture: CaptureDep,
   year: number,
@@ -1181,12 +1187,21 @@ async function scrapeListPage(
   emit: EmitFn
 ): Promise<ListPageOrder[]> {
   const url = `https://www.amazon.com/your-orders/orders?timeFilter=year-${year}&startIndex=${startIndex}`;
-  await page
-    .goto(url, {
+  try {
+    await page.goto(url, {
       waitUntil: "domcontentloaded",
       timeout: NAV_TIMEOUT_MS,
-    })
-    .catch((): undefined => undefined);
+    });
+  } catch (error) {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: "list_page_navigation_failed",
+      message: "Amazon list-page navigation failed; refusing to reuse the previous page as current data.",
+      diagnostics: { error_class: error instanceof Error ? error.constructor.name : "unknown" },
+    });
+    throw new Error("amazon_list_page_navigation_failed", { cause: error });
+  }
   // Wait for list-page signal. `.order-card` is the standard container
   // in modern layouts; `#ordersContainer` catches legacy. Either appears
   // when the orders list has rendered.
