@@ -8,7 +8,7 @@ PDPP has valuable bespoke falsifiability tests, but their evidence is not consis
 - Define separate intent, execution-attempt, and reviewer-triage artifacts with honest integrity and provenance claims.
 - Run one trusted, repository-owned GroupMe cursor/frontier pilot with checked-in fault operators, focused adapter evidence, and mandatory complete test-accounting backstops.
 - Pre-register resource budgets, selector-miss rules, evidence metrics, and continue, narrow, or stop criteria.
-- Keep all mutation work local, sequential, advisory, and limited to reviewed adapters.
+- Keep all mutation work local, sequential, operator-supervised, advisory, and limited to reviewed adapters.
 - Defer a shared coordinator, generic source-mutating executor, arbitrary or agent-generated patches, StrykerJS, CI scheduling, blocking gates, and automatic test deletion until the pilot evidence justifies a separate proposal.
 
 ## Capabilities
@@ -24,6 +24,7 @@ None.
 ## Impact
 
 - Adds structured output and evidence validation around an existing repository oracle.
-- Adds a bounded GroupMe pilot that uses existing tests and the unchanged test-accounting authority.
+- Adds a bounded GroupMe pilot that uses existing tests and preserves complete test-accounting evidence outside disposable workspaces.
 - Does not change product behavior, public APIs, test-accounting authority, or CI requirements.
+- Makes no sandbox, crash-containment, or heterogeneous-host claim for the experimental developer harness.
 - Produces a decision memo before any reusable mutation execution framework is proposed.

@@ -20,6 +20,8 @@ Version one SHALL be a local developer harness with no daemon, queue, server, or
 
 An intent packet SHALL record the requested risk, trusted adapter and operator descriptors, base identity, and requested budget. An attempt receipt SHALL record immutable machine observations from one execution. A triage receipt SHALL separately record a later reviewer judgment bound to one attempt. The harness SHALL derive conventional killed, survived, or inconclusive projections from valid attempt evidence and SHALL NOT accept those projections or triage dispositions from the intent.
 
+The projection SHALL be conservative and total. Invalid clean evidence, materialization, protocol, authority, retained-artifact, cleanup, timeout, signal, resource, or nondeterminism observations SHALL project to `inconclusive`. A recognized owning-test assertion that passes on the digest-identical clean closure and fails on the mutant SHALL project to `killed`. A focused pass followed by such a complete-backstop failure SHALL also record a selector miss. Only a focused pass plus a complete mutant-backstop pass SHALL project to `survived`. Validated `not_exercised` reachability SHALL project to `inconclusive` pending triage.
+
 #### Scenario: Execution completes
 - **WHEN** a trusted adapter produces valid execution evidence
 - **THEN** the attempt receipt SHALL preserve baseline, materialization, focused, backstop, reachability, cleanup, timeout, and error observations without adding a human judgment
@@ -28,9 +30,13 @@ An intent packet SHALL record the requested risk, trusted adapter and operator d
 - **WHEN** an independent reviewer judges an attempt actionable, likely equivalent, uninteresting, deferred, or invalid
 - **THEN** that judgment SHALL be appended as a separate triage receipt with reviewer claim, evidence reference, reason, and timestamp
 
+#### Scenario: Observations are contradictory
+- **WHEN** valid attempts for one trial key disagree or a failure is not attributable to an owning-test assertion
+- **THEN** the aggregate trial SHALL be inconclusive and the raw attempts SHALL remain visible
+
 ### Requirement: Evidence identity and integrity claims SHALL be precise
 
-Canonicalization and hash algorithms SHALL be versioned. The deterministic trial key SHALL bind the intent digest, repository tree, adapter version, policy version, and mutation identity. Each execution SHALL receive a distinct random attempt identifier. Content digests SHALL establish internal consistency or tamper evidence relative to an independently retained digest; they SHALL NOT be represented as issuer authentication.
+Evidence SHALL use versioned RFC 8785 JSON canonicalization and SHA-256. The deterministic trial key SHALL bind the intent digest, repository tree, adapter version, policy version, and mutation identity. Each execution SHALL receive a distinct random attempt identifier. Content digests SHALL establish internal consistency or tamper evidence relative to an independently retained digest; they SHALL NOT be represented as issuer authentication.
 
 #### Scenario: Same trial is repeated
 - **WHEN** the same bound trial executes more than once
@@ -54,7 +60,11 @@ The test-migration oracle SHALL retain its existing named mutations, mutation-sp
 
 ### Requirement: Test-accounting authority SHALL NOT be overstated
 
-Focused checks in the domain pilot SHALL be labeled adapter evidence, not test-accounting authority receipts. Repository-owned policy SHALL select the focused check and complete owning-suite backstop. The complete clean backstop SHALL always run. The complete mutant backstop SHALL run for every focused survivor. After a focused kill, policy SHALL either run it or record an explicit `not_run_focused_kill` observation. Every backstop that runs SHALL use the unchanged test-accounting authority on a clean committed tree, and mutation evidence SHALL reference its verified receipt digest.
+Focused checks in the domain pilot SHALL be labeled adapter evidence, not test-accounting authority receipts. Repository-owned policy SHALL select the focused check and complete owning-suite backstop. The complete clean backstop SHALL run at the start of each locked pilot batch. The complete mutant backstop SHALL run for every focused survivor. After a focused kill, policy SHALL either run it or record an explicit `not_run_focused_kill` observation. Every backstop that runs SHALL use the unchanged test-accounting authority on a clean committed tree. Before workspace deletion, the verifier SHALL copy and revalidate the complete authority, transcript, completion, receipt, and required closure evidence in its retained bounded store; an attempt SHALL bind the retained locations, sizes, and digests.
+
+Policy SHALL predeclare the evidence root, retained-byte and attempt-count budgets, and retention deadline without evicting prior evidence to admit a run. Completed batch evidence SHALL remain intact through independent review of the decision memo and for at least 30 days afterward. Later deletion SHALL be an explicit audited action.
+
+Clean evidence MAY be reused only inside the same locked batch, for at most two hours, while all bound repository, command, judge, environment, runtime, dependency, and budget identities remain equal and the retained bundle still validates. Reuse SHALL NOT change mutant denominators or hide the raw clean-execution count.
 
 #### Scenario: Focused mutant check passes
 - **WHEN** the focused check passes with a trusted mutant present
@@ -76,29 +86,33 @@ The GroupMe cursor/frontier pilot SHALL use only checked-in declarative fault op
 - **WHEN** execution ends before a complete receipt and verified cleanup
 - **THEN** the issued attempt marker SHALL remain incomplete, its workspace SHALL NOT be reused, and a later run SHALL report or quarantine it
 
-### Requirement: Local execution SHALL use enforceable bounds and honest limitations
+### Requirement: Local execution SHALL use bounded trusted inputs and honest limitations
 
-Repository policy SHALL run one adapter at a time and SHALL set finite hard limits for attempts, wall time, captured output, descendant tasks, CPU, memory, and cleanup time. Workspace bytes SHALL have a preflight reserve and an observed stop threshold, but SHALL NOT be described as a hard quota. Every adapter, focused check, and complete backstop SHALL run inside an owned host containment unit that applies hard limits to the entire descendant process tree and can terminate and verify that tree independently of the launcher process. The containment mechanism and version SHALL be bound into effective policy and the attempt receipt. Version one SHALL support only Linux hosts with the specified cgroup-v2 systemd containment; all other hosts SHALL refuse execution. It SHALL use an environment allowlist and SHALL forbid live credentials, personal data, live third-party services, stateful browsers, and shared production-like databases.
+Repository policy SHALL run one trusted command at a time and SHALL set finite trial-count, wall-time, direct structured-output, workspace-observation, and cleanup budgets. It SHALL distinguish enforced bounds from observations: CPU, memory, task-count, test-accounting transcript bytes, and workspace bytes SHALL NOT be described as hard quotas when the selected mechanism only observes them. The runner SHALL start from an empty environment allowlist and SHALL isolate writable home, temporary, cache, dependency-store, Git, and accounting paths beneath a one-shot attempt root. It SHALL forbid live credentials, personal data, live third-party services, stateful browsers, Docker sockets, and shared production-like databases by policy.
 
-#### Scenario: Hard limit is exceeded
-- **WHEN** wall time, output, task count, CPU, memory, or another enforced limit is exceeded
-- **THEN** the owned containment unit SHALL terminate the descendant tree, verify that no descendant remains, retain bounded evidence, and mark the attempt inconclusive
+Version one SHALL be an operator-supervised Linux developer experiment. It SHALL NOT claim to be a sandbox, to recover automatically after verifier death, or to establish PDPP product-host portability. Any incomplete marker, unexpected workspace, unexplained process, or cleanup failure SHALL block later runs pending explicit review.
+
+Retiring an interrupted marker SHALL require a separate append-only recovery receipt with operator claim, process and workspace observations, disposition, and retained evidence. It SHALL NOT convert the interrupted attempt into a completed attempt.
+
+#### Scenario: Enforced adapter-local bound is exceeded
+- **WHEN** the adapter wall deadline or direct structured-output byte cap is exceeded
+- **THEN** the runner SHALL stop its owning process group, verify that no selected-command process remains, retain bounded evidence, record cleanup observations, and mark the attempt inconclusive without claiming crash-durable containment
 
 #### Scenario: Workspace threshold is observed
 - **WHEN** workspace observation detects that the advisory byte threshold has been crossed
-- **THEN** the harness SHALL stop the contained tree, quarantine the workspace, record the observed overshoot, and SHALL NOT claim that host-disk impact was hard-contained
+- **THEN** the harness SHALL stop its owning process group, quarantine the workspace, record the observed overshoot, and SHALL NOT claim that host-disk impact was hard-contained
 
-#### Scenario: Wrapper dies after child start
-- **WHEN** the manager-owned attempt wrapper exits after claiming the repository marker and starting adapter descendants but before completion is recorded
-- **THEN** the bound unit, invocation, and cgroup identity SHALL let next-start recovery terminate and verify the entire tree before another attempt can begin
+#### Scenario: Verifier dies after child start
+- **WHEN** the verifier exits after publishing an issued marker but before a complete receipt and cleanup evidence
+- **THEN** a later run SHALL refuse automatic recovery and SHALL require explicit operator verification of the marker, workspace, and related processes
 
-#### Scenario: Host cannot enforce required safety
-- **WHEN** the host is not a supported Linux cgroup-v2 systemd host or cannot apply the required descendant, task-count, CPU, memory, wall-time, output, and cleanup controls
+#### Scenario: Preflight cannot establish the declared profile
+- **WHEN** isolated writable paths, empty environment construction, pinned runtime/dependency materialization, hermetic commands, or required adapter-local bounds cannot be established
 - **THEN** the harness SHALL refuse the attempt instead of silently weakening the policy
 
 ### Requirement: Calibration SHALL end with a pre-registered decision
 
-The pilot SHALL remain advisory and SHALL publish raw counts and defined denominators for valid trials, focused-to-backstop misses, invalid faults, execution failures, cleanup failures, runtime, artifact sizes, and reviewer time. It SHALL stop or narrow on any containment or cleanup failure, unexplained selector miss, dominant setup cost, predominantly invalid or trivial faults, or lack of useful evidence within its declared budget. Shared infrastructure SHALL require a later proposal supported by repeated invariants across both adapters and measured reduction in audit cost.
+The pilot SHALL remain advisory and SHALL publish raw counts and defined denominators for valid trials, focused-to-backstop misses, invalid faults, execution failures, cleanup failures, runtime, artifact sizes, and reviewer time. Its valid-result denominator SHALL be exactly killed plus survived; inconclusive, invalid, and not-run attempts SHALL remain separate raw counts. It SHALL stop or narrow on any cleanup failure, abandoned process, unexplained selector miss, dominant setup cost, predominantly invalid or trivial faults, or lack of useful evidence within its declared budget. Shared infrastructure SHALL require a later proposal supported by repeated invariants across both adapters and measured reduction in audit cost.
 
 #### Scenario: Pilot stays within bounds and produces useful evidence
 - **WHEN** the two adapters produce interpretable evidence without cleanup failures or unexplained selector misses at acceptable compute and review cost
