@@ -327,6 +327,31 @@ function buildFastify({ loggerInstance }: { loggerInstance: FastifyBaseLogger })
     done();
   });
 
+  // Fastify rejects a route body that exceeds its local bodyLimit before the
+  // Express-shaped adapter runs. Keep this mapping narrowly scoped so the
+  // reference source-webhook contract still emits the same typed envelope as
+  // handler-owned resource_limit errors; other transport errors retain
+  // Fastify's default handling.
+  fastify.setErrorHandler((error, request, reply) => {
+    const { code, statusCode } = error as { readonly code?: unknown; readonly statusCode?: unknown };
+    if (
+      request.url.startsWith("/_ref/source-webhooks/") &&
+      (code === "FST_ERR_CTP_BODY_TOO_LARGE" || statusCode === 413)
+    ) {
+      reply.header("Request-Id", request.id);
+      reply.status(413).send({
+        error: {
+          code: "resource_limit",
+          message: "source webhook body exceeds 1 MiB",
+          request_id: request.id,
+          type: "request_entity_too_large_error",
+        },
+      });
+      return;
+    }
+    reply.send(error);
+  });
+
   // Emit one structured completion record per request carrying req_id, method,
   // path, statusCode, responseTime, and — when the handler set it via
   // setReferenceTraceId() — trace_id. Kept at `info`; this is the baseline

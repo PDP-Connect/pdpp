@@ -135,6 +135,10 @@ export interface SourceWebhookResult {
 
 const DEFAULT_TOLERANCE_MS = 5 * 60 * 1000;
 
+/** Reference ingress resource policy; these are not PDPP Core constants. */
+export const SOURCE_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024;
+export const SOURCE_WEBHOOK_MAX_RECORDS = 500;
+
 function requireNonEmpty(value: string | null | undefined, code: string, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new SourceWebhookError(code, `${label} is required`, 401);
@@ -167,6 +171,19 @@ function parseBody(body: string): Record<string, unknown> {
   }
 }
 
+function validateRecordCount(payload: Record<string, unknown>): void {
+  if (payload.action !== "ingest_records" || !Array.isArray(payload.records)) {
+    return;
+  }
+  if (payload.records.length > SOURCE_WEBHOOK_MAX_RECORDS) {
+    throw new SourceWebhookError(
+      "resource_limit",
+      `ingest_records accepts at most ${SOURCE_WEBHOOK_MAX_RECORDS} records`,
+      413
+    );
+  }
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
 export async function executeSourceWebhook(
   input: SourceWebhookInput,
@@ -188,6 +205,9 @@ export async function executeSourceWebhook(
 
   verifySignature(secret, eventId, timestamp, input.body, signature);
   const payload = parseBody(input.body);
+  // Reject overlarge record arrays before target lookup, idempotency claim, or
+  // the map/stringify pass that constructs the NDJSON ingest body.
+  validateRecordCount(payload);
   const resolvedTarget = await deps.resolveTarget(sourceId);
   const connectorId = canonicalConnectorKey(resolvedTarget.connectorId) ?? resolvedTarget.connectorId;
   const { connectorInstanceId, ownerSubjectId } = resolvedTarget;
