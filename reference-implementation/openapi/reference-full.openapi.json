@@ -965,6 +965,11 @@
                     "pdpp_self_export_supported": {
                       "type": "boolean"
                     },
+                    "pdpp_source_declaration_uri": {
+                      "format": "uri",
+                      "pattern": "^(?!.*[\\p{Cc}\\s\\\\#])(?!.*%(?![0-9A-Fa-f]{2}))[Hh][Tt][Tt][Pp][Ss]:\\/\\/(?![^/?#]*@)(?:\\[[0-9A-Fa-f:.]+\\](?::\\d+)?|[^/?#\\s\\\\@:%]+(?::\\d+)?)(?:[/?][^\\s\\\\#]*)?$",
+                      "type": "string"
+                    },
                     "pdpp_token_kinds_supported": {
                       "items": {
                         "enum": [
@@ -1001,7 +1006,7 @@
             }
           }
         },
-        "summary": "Return RFC 9728 protected-resource metadata advertising the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`.",
+        "summary": "Return RFC 9728 protected-resource metadata advertising the optional provider-native `pdpp_source_declaration_uri`, the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`.",
         "tags": [
           "metadata"
         ]
@@ -1585,6 +1590,11 @@
                     },
                     "pdpp_self_export_supported": {
                       "type": "boolean"
+                    },
+                    "pdpp_source_declaration_uri": {
+                      "format": "uri",
+                      "pattern": "^(?!.*[\\p{Cc}\\s\\\\#])(?!.*%(?![0-9A-Fa-f]{2}))[Hh][Tt][Tt][Pp][Ss]:\\/\\/(?![^/?#]*@)(?:\\[[0-9A-Fa-f:.]+\\](?::\\d+)?|[^/?#\\s\\\\@:%]+(?::\\d+)?)(?:[/?][^\\s\\\\#]*)?$",
+                      "type": "string"
                     },
                     "pdpp_token_kinds_supported": {
                       "items": {

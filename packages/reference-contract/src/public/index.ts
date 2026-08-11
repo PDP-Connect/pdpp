@@ -61,6 +61,127 @@ const NonEmptyStringSchema = {
   type: "string",
 };
 
+const HTTPS_NO_FRAGMENT_OR_USERINFO_URI_RE =
+  /^(?!.*[\p{Cc}\s\\#])(?!.*%(?![0-9A-Fa-f]{2}))[Hh][Tt][Tt][Pp][Ss]:\/\/(?![^/?#]*@)(?:\[[0-9A-Fa-f:.]+\](?::\d+)?|[^/?#\s\\@:%]+(?::\d+)?)(?:[/?][^\s\\#]*)?$/u;
+
+const SourceDeclarationUriSchema = {
+  format: "uri",
+  pattern: HTTPS_NO_FRAGMENT_OR_USERINFO_URI_RE.source,
+  type: "string",
+};
+
+const RFC_9728_RESOURCE_IDENTIFIER_RE = /^(https):\/\/([^/?#\\]+)([/?][^#\\]*)?$/i;
+const FORBIDDEN_URI_CODE_POINT_RE = /[\p{Cc}\s\\#]/u;
+const INVALID_PERCENT_ENCODING_RE = /%(?![0-9A-Fa-f]{2})/u;
+const IPV6_AUTHORITY_RE = /^\[[0-9A-Fa-f:.]+\](?::\d+)?$/u;
+const HOST_AND_PORT_RE = /^[^:]+:\d+$/u;
+
+function containsNonAsciiCodePoint(value: string): boolean {
+  for (const character of value) {
+    if ((character.codePointAt(0) ?? 0) > 127) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasStrictHttpsAuthority(authority: string): boolean {
+  if (authority.includes("%") || authority.includes("@")) {
+    return false;
+  }
+
+  if (authority.startsWith("[")) {
+    return IPV6_AUTHORITY_RE.test(authority);
+  }
+
+  return !authority.includes(":") || HOST_AND_PORT_RE.test(authority);
+}
+
+function isStrictHttpsUri(value: string): boolean {
+  const components = RFC_9728_RESOURCE_IDENTIFIER_RE.exec(value);
+  if (
+    components === null ||
+    FORBIDDEN_URI_CODE_POINT_RE.test(value) ||
+    INVALID_PERCENT_ENCODING_RE.test(value) ||
+    containsNonAsciiCodePoint(value) ||
+    !hasStrictHttpsAuthority(components[2] ?? "")
+  ) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(value);
+    return (
+      parsed.protocol === "https:" &&
+      parsed.hostname !== "" &&
+      parsed.hash === "" &&
+      parsed.username === "" &&
+      parsed.password === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Apply RFC 9728 Section 3's well-known URI transformation without
+ * normalizing the resource identifier that must later compare exactly.
+ */
+export function deriveProtectedResourceMetadataUrl(resourceIdentifier: string): string {
+  const components = RFC_9728_RESOURCE_IDENTIFIER_RE.exec(resourceIdentifier);
+  if (components === null || !isStrictHttpsUri(resourceIdentifier)) {
+    throw new TypeError("RFC 9728 resource identifiers must be HTTPS URLs without fragments or user information");
+  }
+
+  const authority = `${components[1]}://${components[2]}`;
+  const capturedPathOrQuery = components[3] ?? "";
+  let pathOrQuery = capturedPathOrQuery;
+  if (capturedPathOrQuery === "/") {
+    pathOrQuery = "";
+  } else if (capturedPathOrQuery.startsWith("/?")) {
+    pathOrQuery = capturedPathOrQuery.slice(1);
+  }
+  return `${authority}/.well-known/oauth-protected-resource${pathOrQuery}`;
+}
+
+/** RFC 9728 Section 3.3 requires string identity, not URL equivalence. */
+export function hasExactProtectedResourceIdentity(requestedResource: string, returnedResource: string): boolean {
+  return returnedResource === requestedResource;
+}
+
+export type ProviderNativeDiscoveryValidationResult =
+  | { ok: true; sourceDeclarationUri: string }
+  | {
+      ok: false;
+      reason: "invalid_resource" | "invalid_source_declaration_uri" | "resource_mismatch";
+    };
+
+/** Apply the PDPP provider-native profile to a generic RFC 9728 document. */
+export function validateProviderNativeDiscoveryMetadata(
+  requestedResource: string,
+  metadata: Readonly<Record<string, unknown>>
+): ProviderNativeDiscoveryValidationResult {
+  if (!isStrictHttpsUri(requestedResource)) {
+    return { ok: false, reason: "invalid_resource" };
+  }
+  if (typeof metadata.resource !== "string" || !isStrictHttpsUri(metadata.resource)) {
+    return { ok: false, reason: "invalid_resource" };
+  }
+  if (!hasExactProtectedResourceIdentity(requestedResource, metadata.resource)) {
+    return { ok: false, reason: "resource_mismatch" };
+  }
+
+  const sourceDeclarationUri = metadata.pdpp_source_declaration_uri;
+  if (typeof sourceDeclarationUri !== "string") {
+    return { ok: false, reason: "invalid_source_declaration_uri" };
+  }
+  if (!isStrictHttpsUri(sourceDeclarationUri)) {
+    return { ok: false, reason: "invalid_source_declaration_uri" };
+  }
+
+  return { ok: true, sourceDeclarationUri };
+}
+
 export const BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP = 8;
 export const BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD = 6;
 
@@ -666,6 +787,7 @@ const ProtectedResourceMetadataSchema = {
     pdpp_owner_agent_onboarding: ProtectedResourceOwnerAgentOnboardingSchema,
     pdpp_provider_connect_version: NonEmptyStringSchema,
     pdpp_self_export_supported: { type: "boolean" },
+    pdpp_source_declaration_uri: SourceDeclarationUriSchema,
     pdpp_token_kinds_supported: {
       items: { enum: ["owner", "client"], type: "string" },
       minItems: 1,
@@ -1628,7 +1750,7 @@ export const publicManifests = [
       200: { schema: ProtectedResourceMetadataSchema },
     },
     summary:
-      "Return RFC 9728 protected-resource metadata advertising the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`.",
+      "Return RFC 9728 protected-resource metadata advertising the optional provider-native `pdpp_source_declaration_uri`, the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`.",
     surface: "public",
     tags: ["metadata"],
   },

@@ -1,88 +1,54 @@
 # Tasks
 
-## Ownership and dependencies
+## Normative contract
 
-- [ ] Confirm the three-PR merge order: Source Declaration contract, PR89
-  authorization context, then this discovery and trust change.
-- [ ] Consume the Source schema and accepted snapshot from the first change.
-  Do not redefine grants, consent snapshots, Core schema, or Collection.
-- [ ] Record PR89's target context contract as a dependency. Do not define a
-  legacy acceptance field until that contract is stable.
-
-## P0: authority and onboarding
-
-- [ ] Define `pdpp_source_declaration_uri` as one HTTPS URI string with no
-  fragment and apply RFC 9728 decoded Unicode code-point equality without
-  normalization.
-- [ ] Require `SourceDeclaration.source.id` to equal the provider-native
+- [x] Publish the discovery and trust requirements in the authoritative root
+  companion specification and its generated public-site page.
+- [x] Consume the Source schema and accepted snapshot from the Source
+  Declaration contract. Do not redefine grants, consent snapshots, Core schema,
+  or Collection.
+- [x] Define `pdpp_source_declaration_uri` as one HTTPS URI string with no
+  fragment or user information, use RFC 9728's standard well-known
+  transformation, and apply the RFC 9728 returned-resource equality rule.
+- [x] Require `SourceDeclaration.source.id` to equal the provider-native
   protected resource.
-- [ ] Require owner/operator onboarding before a new provider-native resource
+- [x] Require owner/operator onboarding before a new provider-native resource
   identifier can be used in authorization.
-- [ ] Accept connector and community sources only from an installed catalog,
+- [x] Accept connector and community sources only from an installed catalog,
   trusted registry entry, or explicit local provisioning.
-- [ ] Store resource authority separately from publisher attribution. Bind
-  publisher identity only through an accepted channel or configured mapping.
+- [x] Store resource authority separately from publisher attribution. Keep a
+  publisher claim non-authoritative and unusable for trust decisions unless an
+  accepted channel or configured mapping authenticates it.
+- [x] Require fresh DNS resolution and validation of every resolved address for
+  each connection attempt and redirect hop. Validate redirect targets and the
+  final declaration URL against the accepted pointer and configured policy,
+  while validating `source.id` separately against the protected resource.
 
-## P0: contract and metadata implementation
+## Public protocol contract
 
-- [ ] Add `pdpp_source_declaration_uri` to protected-resource metadata in
-  `packages/reference-contract/src/public/index.ts` without defining a second
-  Source or grant schema.
-- [ ] Extend `reference-implementation/server/metadata.ts` and
-  `reference-implementation/operations/rs-protected-resource-metadata/index.ts`
-  to emit the accepted pointer for the exact protected resource.
-- [ ] Add contract and metadata tests for missing, invalid, fragment-bearing,
-  and valid declaration pointers, plus exact resource mismatches.
+- [x] Add optional `pdpp_source_declaration_uri` to generic protected-resource
+  metadata and a focused provider-native validator that requires the pointer
+  and exact resource identity, without defining a second Source or grant schema.
+- [x] Add protocol-contract tests for missing, invalid, fragment-bearing, and
+  valid declaration pointers, malformed resource identifiers, RFC 9728
+  well-known URI transformation including root-slash forms, and exact
+  returned-resource mismatches.
 
-## P0: retrieval and revision integrity
+## Deferred implementation
 
-- [ ] Implement HTTPS, no redirects, no ambient credentials, bounded bytes, time,
-  depth, exact source/revision validation, and fail-closed outcomes.
-- [ ] Permit private or local endpoints only through explicit local
-  provisioning or onboarding. Do not make a broad IP list universal protocol
-  conformance.
-- [ ] Do not automatically fetch remote schemas.
-- [ ] Compare exact accepted UTF-8 JSON body bytes after HTTP content decoding,
-  keyed by accepted authority binding, source ID, and opaque version. Reject
-  later non-identical bytes under the same key.
-- [ ] Do not add a cross-implementation digest, parsed-JSON equivalence,
-  portable cache-key grammar, rollback framework, or version ordering.
-
-## P0: authority pipeline and persistence
-
-- [ ] Add a focused source-declaration discovery module with injected retrieval
-  and storage effects. Keep retrieval, trust policy, and consent resolution out
-  of `auth.ts`.
-- [ ] Add owner/operator onboarding and installed-catalog, configured-registry,
-  and explicit-local-provisioning adapters. Reject an unaccepted source or a
-  client-selected declaration URI before network access.
-- [ ] Persist accepted authority binding, source ID, opaque declaration version,
-  publisher attribution, trust basis, and exact accepted body bytes. Enforce
-  same-key immutability transactionally in each supported database backend.
-- [ ] Retain the accepted revision through consent staging and issuance by
-  consuming the snapshot contract from the Source change. Do not add a live
-  declaration lookup to RS grant enforcement.
-
-## P1: output and lifecycle boundaries
-
-- [ ] Keep output-context escaping and whole-response/parser/display limits as
-  implementation policy. Do not add fixed display `maxLength` values.
-- [ ] Remove Source-owned snapshot or evolution duplication.
-- [ ] Support only local blocking for new consent in this change. Defer
-  quarantine records and workflow. Do not automatically revoke historical
-  grants.
-- [ ] Keep Collection optional and preserve the Core, Source Declaration, PR89,
-  and Collection ownership boundaries.
+Reference-server metadata emission, retrieval, onboarding adapters,
+persistence, consent integration, local blocking, and lifecycle behavior are
+out of scope for this specification PR. Their implementation changes must
+consume this contract and add focused runtime, SQLite, and PostgreSQL tests.
 
 ## Validation
 
-- [ ] Run focused metadata, identity, onboarding, retrieval, immutability,
-  consent-snapshot, SQLite, and PostgreSQL tests.
-- [ ] Regenerate checked-in contract and route artifacts after the schemas and
-  adapters settle.
-- [ ] Run `openspec validate define-source-declaration-discovery-and-trust --strict`.
-- [ ] Run `openspec validate --all --strict`.
-- [ ] Run a target diff check and stale sweeps for removed maxLength numbers,
-  parsed-JSON comparison, redirect-following, quarantine workflow, duplicated
-  snapshots/evolution, invented legacy acceptance fields, and client-selected
-  authorities.
+- [x] Run the reference-contract tests, typecheck, and style check. Regenerate
+  checked-in contract artifacts twice and verify stable output.
+- [x] Run `pnpm spec:check`.
+- [x] Run `openspec validate define-source-declaration-discovery-and-trust --strict`.
+- [x] Run `openspec validate --all --strict`. The target change passes; 10
+  unrelated existing changes remain invalid.
+- [x] Run a target diff check and stale sweeps for removed dependencies,
+  source-identity redirect checks, unauthenticated publisher trust, incomplete
+  DNS/IP validation, and em dashes.
