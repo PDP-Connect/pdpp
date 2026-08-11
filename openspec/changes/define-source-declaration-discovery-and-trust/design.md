@@ -1,16 +1,14 @@
 # Design: Source Declaration discovery and trust
 
-## Ownership and merge order
+## Ownership
 
-| Merge order | Change | Owns | This change's dependency |
-|---|---|---|---|
-| 1 | Source Declaration contract | `SourceDeclaration`, its schema, accepted source/revision snapshot, and declaration-defined authorization terms | Discovery consumes the schema and snapshot. It does not redefine them. |
-| 2 | PR89 authorization context | The binding-neutral authorization context and its target context contract | Discovery consumes the stable context contract. It does not define the context or legacy acceptance field. |
-| 3 | This discovery and trust change | Provider-native discovery pointer, source onboarding inputs, authority binding, bounded retrieval, exact validation, and local blocking for new consent | It must not redefine grants, consent snapshots, Core schema, or Collection. |
+| Contract | Owns | This change's dependency |
+|---|---|---|
+| Source Declaration contract | `SourceDeclaration`, its schema, accepted source/revision snapshot, and declaration-defined authorization terms | Discovery consumes the schema and snapshot. It does not redefine them. |
+| This discovery and trust change | Provider-native discovery pointer, source onboarding inputs, authority binding, bounded retrieval, exact validation, and local blocking for new consent | It must not redefine grants, consent snapshots, Core schema, or Collection. |
 
-The merge order is 1, 2, 3. Discovery may later advertise legacy acceptance when
-PR89's target context contract is stable. This change records that dependency
-but does not invent the field.
+The Source Declaration contract must be available before an implementation can
+validate or retain declarations.
 
 ## Boundary
 
@@ -22,21 +20,29 @@ an issued grant.
 
 ## Provider-native discovery
 
-For the exact protected-resource identifier, the AS uses RFC 9728 protected-
-resource metadata and RFC 9728's standard well-known URI transformation. PDPP
-adds the provider-native metadata member
-`pdpp_source_declaration_uri`. It is one HTTPS URI string with no fragment.
+For the requested protected-resource identifier, the AS uses RFC 9728
+protected-resource metadata and RFC 9728's standard well-known URI
+transformation. The returned metadata `resource` member must equal the
+requested protected-resource identifier under RFC 9728's exact comparison
+rule. PDPP adds the provider-native metadata member
+`pdpp_source_declaration_uri`. It is one HTTPS URI string with no fragment or
+user information.
+The member is optional in generic protected-resource metadata because a
+multi-source personal server or hosted MCP resource need not map to one Source
+Declaration. Provider-native onboarding requires it for the specific protected
+resource being accepted.
 
-RFC 9728 exact resource comparison uses decoded Unicode code-point equality
-without normalization. PDPP explicitly requires
-`SourceDeclaration.source.id` to equal the provider-native protected resource.
-This is PDPP policy. A mismatch fails closed.
+The retrieved `SourceDeclaration.source.id` must equal the accepted
+protected-resource identifier under the Source Declaration contract. A
+mismatch fails closed.
 
 TLS-authenticated protected-resource metadata is authoritative for its
 declaration pointer. The declaration URI may be hosted on another origin. A
 cross-origin host does not, by itself, authenticate `publisher.id`. Publisher
 attribution is authenticated only by an accepted channel or configured mapping.
 The AS stores resource authority and publisher attribution as separate facts.
+Without that authentication, the publisher value remains a non-authoritative
+claim and cannot support attribution or any trust decision.
 
 ## Onboarding and trust
 
@@ -51,23 +57,45 @@ source, but cannot turn an arbitrary URL into an authority.
 
 ## Retrieval and revision integrity
 
-The reference implementation uses HTTPS, no redirects, no ambient
-credentials, bounded bytes, time, and retrieval depth, exact source and revision
-validation, and fail-closed outcomes. It does not automatically fetch remote
-schemas. Private or local endpoints are allowed only through explicit local
-provisioning or onboarding. A broad IP-address exclusion list is not universal
-protocol conformance.
+Declaration retrieval uses HTTPS, no ambient credentials, bounded bytes, time,
+and retrieval depth, exact source and revision validation, and fail-closed
+outcomes. Redirect handling is local policy: every redirect target and the
+final declaration URL must satisfy the accepted pointer and configured
+redirect policy. The policy may reject all redirects. For each connection
+attempt, including every redirect hop, the retriever resolves the destination
+again, validates every resolved address against the applicable network policy,
+and connects only to an address from that validated result while preserving the
+destination authority for TLS authentication. This prevents an earlier DNS
+decision from authorizing a later rebound address. Source identity validation
+remains a separate check against `SourceDeclaration.source.id`; a declaration
+URL is not reinterpreted as the source identifier. These rules are PDPP
+retrieval policy, not RFC 9728 redirect rules. Implementations do not
+automatically fetch remote schemas. Private or local endpoints are allowed only
+through explicit local provisioning or onboarding. Such provisioning supplies
+the applicable network policy; a broad IP-address exclusion list is not
+universal protocol conformance.
 
 An accepted revision is identified by the accepted authority binding,
-`source.id`, and opaque `declaration_version`. Its immutable content is the
-exact accepted UTF-8 JSON body bytes after HTTP content decoding. Later
-non-identical bytes under the same key are rejected. This design does not
-require a cross-implementation digest, parsed-JSON equivalence, a portable
-cache-key grammar, rollback framework, or version ordering.
+`source.id`, and opaque `declaration_version`. After parsing and validating the
+JSON, later content under the same key must compare equal as parsed JSON. A
+deployment may use an internal content fingerprint to make that comparison
+efficient, but its algorithm is not a protocol identity or cross-implementation
+digest. A current pointer that returns a prior revision is not ordered or
+rejected by `declaration_version`; accepting it requires explicit publisher or
+local policy. A different parsed document under the same revision is
+equivocation and is rejected.
 
 Display values are untrusted and must be escaped for their output context.
-Whole-response, parser, and display limits are implementation policy. This
-change does not add fixed display `maxLength` numbers to the Source schema.
+The implementation defines configured whole-response, parser, and display
+maxima. Values over a configured maximum are rejected before consent rendering
+or logging. This change does not add fixed display `maxLength` numbers to the
+Source schema.
+
+Current declaration query capability is separate from issued-grant rights. This
+change does not add expansion constraints to grants. Unless the Source
+Declaration change explicitly makes expansion an authorization constraint,
+current expansion capability must not widen the streams or fields in an issued
+grant.
 
 ## Lifecycle
 
@@ -93,8 +121,12 @@ Core grant and consent contracts.
 
 | Decision | Class | Basis |
 |---|---|---|
-| RFC 9728 metadata lookup, exact resource comparison, and decoded code-point equality | Primary evidence | RFC 9728 |
+| RFC 9728 metadata lookup, standard well-known transformation, and exact returned-resource comparison | primary precedent | RFC 9728 |
 | `pdpp_source_declaration_uri`, HTTPS/no fragment, source ID equality, onboarding, and authority separation | PDPP policy | Cross-redteam and discovery implementation review |
-| Exact decoded-body-byte immutability keyed by authority, source ID, and opaque version | PDPP policy | Collection rereview and implementation map |
-| No schema, grant, consent snapshot, Core, or Collection duplication | Boundary decision | Three-PR ownership matrix |
-| Local blocking without automatic historical grant revocation; quarantine deferred | Scope decision | Cross-redteam review |
+| Parsed-content immutability keyed by authority, source ID, and opaque version | PDPP policy | Collection rereview and implementation map |
+| Per-connection DNS/IP validation, hop-by-hop redirect policy, and final declaration URL validation | PDPP policy | Retrieval threat model; not an RFC 9728 rule |
+| Current-pointer rollback requires explicit publisher/local policy | PDPP policy | Opaque revision semantics and lifecycle boundary |
+| Client-supplied arbitrary declaration URLs are rejected | PDPP policy | Authority substitution and SSRF threat; no live accepting path is claimed |
+| Normal declaration evolution does not reinterpret resolved grants | demonstrated defect | Prior review identified live declaration dependence as a grant-widening risk |
+| No schema, grant, consent snapshot, Core, or Collection duplication | PDPP policy | Contract ownership matrix |
+| Local blocking without automatic historical grant revocation; quarantine deferred | PDPP policy | Cross-redteam review |

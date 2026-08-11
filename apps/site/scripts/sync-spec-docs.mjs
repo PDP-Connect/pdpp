@@ -40,6 +40,7 @@ const SPECS = [
     "spec-core",
     "spec-data-query-api",
     "spec-deferred",
+    "spec-discovery-and-trust",
 ];
 // Root header shape (uniform across all spec files):
 //   line 1: `# <Title>`
