@@ -265,9 +265,7 @@ async function emitMessageRecordScopedByChannel(deps: {
 
 interface SlackdumpProgressSnapshot {
   archiveBytes: number;
-  channels: number | null;
-  maxChunkId: number | null;
-  messages: number | null;
+  archiveMtimeMs: number;
 }
 
 function existingFileSize(path: string): number {
@@ -278,57 +276,43 @@ function existingFileSize(path: string): number {
   }
 }
 
-function countSqliteRows(db: DatabaseSync, sql: string): number | null {
-  const [row] = safeAll<{ value: number }>(db, sql);
-  const value = row?.value;
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+function existingFileMtimeMs(path: string): number {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return 0;
+  }
 }
 
+// Filesystem-only: this is read on every poll tick WHILE slackdump is still
+// running and writing the SAME file, so it must never open a SQLite
+// connection against the archive. A prior version did — even a single
+// read-only SELECT — and that reader's SHARED lock can collide with
+// slackdump's own COMMIT and force ITS write to fail with "database is
+// locked" (confirmed directly: a batched-insert writer against a
+// rollback-journal-mode archive hit SQLITE_BUSY on COMMIT in ~50% of trials
+// with a concurrent read-only poller, no matter how minimal the read). We
+// don't control slackdump's journal mode, so no read-side tuning
+// (busy_timeout, single-statement reads) can make a real SQL read provably
+// non-blocking. `immutable=1`/`nolock=1` URI modes skip locking but can then
+// return stale or torn state — false progress data — which is worse than no
+// data. Stat-ing the file is the only observation that can never contend
+// with the writer.
 export function readSlackdumpProgressSnapshot(sqlitePath: string): SlackdumpProgressSnapshot | null {
-  const archiveBytes =
-    existingFileSize(sqlitePath) + existingFileSize(`${sqlitePath}-wal`) + existingFileSize(`${sqlitePath}-shm`);
+  const paths = [sqlitePath, `${sqlitePath}-wal`, `${sqlitePath}-shm`];
+  const archiveBytes = paths.reduce((sum, path) => sum + existingFileSize(path), 0);
   if (archiveBytes === 0) {
     return null;
   }
-
-  let messages: number | null = null;
-  let channels: number | null = null;
-  let maxChunkId: number | null = null;
-  try {
-    const db = new DatabaseSync(sqlitePath, { readOnly: true });
-    try {
-      messages = countSqliteRows(db, "SELECT COUNT(*) AS value FROM MESSAGE");
-      channels = countSqliteRows(db, "SELECT COUNT(*) AS value FROM CHANNEL");
-      maxChunkId = countSqliteRows(
-        db,
-        `
-        SELECT MAX(value) AS value
-        FROM (
-          SELECT MAX(CHUNK_ID) AS value FROM MESSAGE
-          UNION ALL
-          SELECT MAX(CHUNK_ID) AS value FROM CHANNEL
-        )
-        `
-      );
-    } finally {
-      db.close();
-    }
-  } catch {
-    // The archive may be temporarily locked or mid-creation while slackdump is
-    // writing. File growth is still a valid no-progress signal.
-  }
-
-  return { archiveBytes, channels, maxChunkId, messages };
-}
-
-// True only when both reads succeeded (non-null) and disagree — a genuine
-// observed change. A transition into or out of null is a FAILED read
-// (readSlackdumpProgressSnapshot's try/catch falls back to null when the
-// archive is locked/mid-write — see its comment), not evidence of anything;
-// counting it as "changed" would report progress from a read failure alone,
-// with nothing on disk having actually happened.
-function countAdvanced(previous: number | null, current: number | null): boolean {
-  return previous !== null && current !== null && previous !== current;
+  // mtime, not just size, because SQLite WAL mode can checkpoint (fold the
+  // WAL back into the main file and reuse its allocation) on every commit,
+  // keeping combined main+WAL+SHM byte size flat across real, committed
+  // writes (confirmed directly: two committed inserts, combined size
+  // unchanged both times, mtime advanced both times). Byte size alone would
+  // silently miss that progress and let the stall watchdog time out a
+  // healthy long-running dump.
+  const archiveMtimeMs = Math.max(...paths.map(existingFileMtimeMs));
+  return { archiveBytes, archiveMtimeMs };
 }
 
 export function slackdumpProgressChanged(
@@ -341,38 +325,11 @@ export function slackdumpProgressChanged(
   if (!previous) {
     return true;
   }
-  // Reverted an archiveBytes-only simplification: in SQLite WAL mode, a
-  // checkpoint can fold the WAL back into the main file and reuse its
-  // allocation, so combined main+WAL+SHM byte size can stay flat across real,
-  // committed writes (confirmed directly: two committed inserts, combined
-  // size unchanged both times). archiveBytes alone can therefore silently
-  // miss real progress and let the scheduler's progress-driven watchdog time
-  // out a healthy long-running dump. Row/chunk counts, read from a fresh
-  // read-only connection, correctly observe checkpointed writes that byte
-  // size misses — checking all four signals is the safe behavior, not a
-  // race-prone one.
-  //
-  // archiveBytes is a plain file stat, never null, so it's compared directly.
-  // The three SQLite-read counts use countAdvanced instead of !==, because a
-  // failed read (locked/mid-write archive) falls back to null and must not
-  // be conflated with a real change — only two successful, differing reads
-  // count as progress.
-  return (
-    current.archiveBytes !== previous.archiveBytes ||
-    countAdvanced(previous.channels, current.channels) ||
-    countAdvanced(previous.maxChunkId, current.maxChunkId) ||
-    countAdvanced(previous.messages, current.messages)
-  );
+  return current.archiveBytes !== previous.archiveBytes || current.archiveMtimeMs !== previous.archiveMtimeMs;
 }
 
 function formatSlackdumpProgress(label: string, snapshot: SlackdumpProgressSnapshot): string {
-  const facts = [
-    `archive_bytes=${snapshot.archiveBytes}`,
-    snapshot.messages === null ? null : `messages=${snapshot.messages}`,
-    snapshot.channels === null ? null : `channels=${snapshot.channels}`,
-    snapshot.maxChunkId === null ? null : `max_chunk=${snapshot.maxChunkId}`,
-  ].filter(Boolean);
-  return `Slack slackdump ${label} progress: ${facts.join(" ")}`;
+  return `Slack slackdump ${label} progress: archive_bytes=${snapshot.archiveBytes}`;
 }
 
 function redactSlackdumpOutput(output: string, env: NodeJS.ProcessEnv): string {
@@ -473,7 +430,6 @@ export function runSlackdump(
         return;
       }
       progress(formatSlackdumpProgress(progressLabel, snapshot), {
-        ...(snapshot.messages === null ? {} : { count: snapshot.messages }),
         stream: "messages",
       }).catch(() => undefined);
     };

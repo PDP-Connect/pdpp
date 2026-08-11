@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -10,6 +11,7 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { resolveConnectorArtifactDir } from "../../src/connector-artifact-root.ts";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
@@ -19,10 +21,13 @@ import {
   normalizeSlackCookie,
   normalizeSlackToken,
   normalizeSlackWorkspace,
+  readSlackdumpProgressSnapshot,
   runSlackdump,
   SLACK_RETRYABLE_FAILURE_RE,
   slackdumpProgressChanged,
 } from "./index.ts";
+
+const execFileAsync = promisify(execFile);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -276,7 +281,7 @@ setTimeout(() => process.exit(0), 100);
   assert.equal((progressEvents[0]?.extra as { stream?: unknown } | undefined)?.stream, "messages");
 });
 
-test("runSlackdump: detects progress from row counts even when a WAL checkpoint keeps archive bytes flat", async () => {
+test("runSlackdump: detects progress from mtime even when a WAL checkpoint keeps archive bytes flat", async () => {
   // SQLite WAL mode can checkpoint (fold the WAL back into the main file and
   // reuse its allocation) on every commit, so combined main+WAL+SHM byte size
   // can stay unchanged across real, committed writes. An archiveBytes-only
@@ -284,7 +289,9 @@ test("runSlackdump: detects progress from row counts even when a WAL checkpoint 
   // progress-driven watchdog time out a healthy long-running dump. The fake
   // slackdump here performs REAL WAL-mode commits with wal_autocheckpoint=1
   // (matching the condition that keeps file size flat) so this test would
-  // fail if slackdumpProgressChanged only compared archiveBytes.
+  // fail if slackdumpProgressChanged only compared archiveBytes. Detection
+  // must come from stat-ing the file (mtime), NOT from opening the SQLite
+  // archive ourselves — see readSlackdumpProgressSnapshot's comment for why.
   const tmpDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-wal-checkpoint-"));
   const fakeSlackdump = join(tmpDir, "fake-slackdump.mjs");
   const sqlitePath = join(tmpDir, "slackdump.sqlite");
@@ -343,37 +350,102 @@ const insert = setInterval(() => {
     await rm(tmpDir, { recursive: true, force: true });
   }
 
-  const messageCounts = progressEvents.map((event) => (event.extra as { count?: unknown } | undefined)?.count);
+  // At least one commit must be observed AFTER the first (i.e. more than one
+  // progress event), proving mtime advanced across a checkpoint that left
+  // combined byte size unchanged.
   assert.ok(
-    messageCounts.some((count) => typeof count === "number" && count >= 2),
-    `expected progress to observe message count advancing past the first commit; got counts=${JSON.stringify(messageCounts)}`
+    progressEvents.length >= 2,
+    `expected more than one progress event across multiple checkpointed commits; got ${progressEvents.length}`
   );
 });
 
-test("slackdumpProgressChanged does not treat a failed read (counts falling to null) as progress", () => {
-  // readSlackdumpProgressSnapshot falls back to null for channels/maxChunkId/
-  // messages when the archive is locked or mid-write (its try/catch). A
-  // naive !== comparison sees `null !== 5` as "changed" and would report a
-  // read FAILURE as real progress — with nothing on disk having actually
-  // happened. Only a transition between two successfully-read, differing
-  // non-null values counts.
-  const previous = { archiveBytes: 1000, channels: 2, maxChunkId: 3, messages: 5 };
-  const failedRead = { archiveBytes: 1000, channels: null, maxChunkId: null, messages: null };
+test("slackdumpProgressChanged does not treat a missing archive (null) as progress", () => {
+  const previous = { archiveBytes: 1000, archiveMtimeMs: 111 };
+  const missing: { archiveBytes: number; archiveMtimeMs: number } | null = null;
   assert.equal(
-    slackdumpProgressChanged(previous, failedRead),
+    slackdumpProgressChanged(previous, missing),
     false,
-    "a transient failed read must not be reported as progress"
+    "a transient missing-archive read must not be reported as progress"
   );
 });
 
-test("slackdumpProgressChanged still detects a real count advance even when archiveBytes is flat", () => {
-  const previous = { archiveBytes: 1000, channels: 2, maxChunkId: 3, messages: 5 };
-  const advanced = { archiveBytes: 1000, channels: 2, maxChunkId: 3, messages: 6 };
+test("slackdumpProgressChanged detects an mtime advance even when archiveBytes is flat", () => {
+  const previous = { archiveBytes: 1000, archiveMtimeMs: 111 };
+  const advanced = { archiveBytes: 1000, archiveMtimeMs: 222 };
   assert.equal(
     slackdumpProgressChanged(previous, advanced),
     true,
-    "a genuine successful-read count advance must still be reported as progress"
+    "a genuine mtime advance must still be reported as progress even when byte size is flat"
   );
+});
+
+// THE concurrency oracle for the observer-induced lock. Confirms the fix is
+// real: a writer that holds a multi-row transaction against the archive
+// (slackdump does real batched inserts, not one-row-per-open) must never see
+// SQLITE_BUSY from our own polling reader. Before the fix, readSlackdumpProgressSnapshot
+// opened a read-only SQLite connection on every poll tick; that reader's
+// SHARED lock could collide with the writer's COMMIT and fail the writer's
+// OWN transaction — confirmed directly via a standalone repro (batched
+// writer + concurrent read-only poller against a rollback-journal-mode
+// archive: SQLITE_BUSY on COMMIT in roughly half of repeated trials). This
+// test pins the after-state: polling `readSlackdumpProgressSnapshot` at the
+// same real cadence a live run would use, concurrently with a genuine
+// multi-row committed transaction, must never perturb the writer.
+test("readSlackdumpProgressSnapshot polling never causes a concurrent multi-row writer transaction to fail", async () => {
+  const tmpDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-lock-oracle-"));
+  const sqlitePath = join(tmpDir, "slackdump.sqlite");
+  try {
+    const db = new DatabaseSync(sqlitePath);
+    try {
+      createSlackArchiveSchema(db);
+    } finally {
+      db.close();
+    }
+
+    const writerScript = join(tmpDir, "writer.mjs");
+    await writeFile(
+      writerScript,
+      `#!/usr/bin/env node
+import { DatabaseSync } from "node:sqlite";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const db = new DatabaseSync(process.argv[2]);
+for (let batch = 0; batch < 150; batch++) {
+  db.exec("BEGIN");
+  for (let i = 0; i < 50; i++) {
+    const n = batch * 50 + i;
+    db.prepare(
+      "INSERT INTO MESSAGE (CHANNEL_ID, TS, THREAD_TS, IS_PARENT, TXT, NUM_FILES, DATA, CHUNK_ID) VALUES (?,?,?,?,?,?,?,?)"
+    ).run("C0PROGRESS", "17140330" + String(n).padStart(6, "0") + ".000000", null, null, "chunk " + n, null, null, n + 1);
+  }
+  db.exec("COMMIT");
+  await sleep(3);
+}
+db.close();
+console.log("writer-ok");
+`,
+      "utf8"
+    );
+    await chmod(writerScript, 0o755);
+
+    // Poll at the same 5ms cadence used to reliably reproduce the pre-fix
+    // regression in isolation, for the ~450ms+ window the writer's 150
+    // batched commits (with a short gap between each) take to run.
+    let pollCount = 0;
+    const pollTimer = setInterval(() => {
+      pollCount += 1;
+      readSlackdumpProgressSnapshot(sqlitePath);
+    }, 5);
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [writerScript, sqlitePath], { timeout: 30_000 });
+      assert.match(stdout, /writer-ok/);
+    } finally {
+      clearInterval(pollTimer);
+    }
+    assert.ok(pollCount > 20, `expected many concurrent polls during the writer run; got ${pollCount}`);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test("slack manifest declares no unsupported-in-mode streams (all four gap streams now collect directly)", async () => {
