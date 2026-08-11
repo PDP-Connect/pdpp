@@ -23,14 +23,14 @@
  *     mutated in place" half.
  *
  * The race window is normally sub-millisecond in production. This suite
- * uses the test-only PDPP_TEST_TXT_TOCTOU_DELAY_MS hook (index.ts,
- * testOnlyTxtToctouDelay) to widen it deterministically, so the mutation
- * can land inside the window on every run rather than relying on real
- * timing (which would be flaky).
+ * uses the test-only PDPP_TEST_TXT_TOCTOU_BARRIER_DIR hook (index.ts,
+ * testOnlyTxtToctouBarrier) to pause at the exact pass boundary. The test
+ * rewrites only after the child signals that pass 1 is complete, then
+ * releases pass 2, so it does not rely on subprocess startup timing.
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
@@ -39,6 +39,21 @@ import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 
 function largeFixtureBaseDir(): string {
   return process.env.PDPP_TEST_LARGE_FIXTURE_DIR || tmpdir();
+}
+
+async function waitForBarrier(path: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    try {
+      await access(path);
+      return;
+    } catch (error) {
+      if (Date.now() >= deadline) {
+        throw new Error(`timed out waiting for test barrier: ${path}`, { cause: error });
+      }
+      await new Promise((done) => setTimeout(done, 10));
+    }
+  }
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -72,7 +87,7 @@ test("a .txt export rewritten (same size, new mtime) between pass 1 and pass 2 f
       env: {
         PDPP_OWNER_TOKEN: "",
         PDPP_RS_URL: "",
-        PDPP_TEST_TXT_TOCTOU_DELAY_MS: "1000",
+        PDPP_TEST_TXT_TOCTOU_BARRIER_DIR: importRoot,
         RS_URL: "",
         TZ: "America/Chicago",
         WHATSAPP_EXPORT_DIR: importRoot,
@@ -84,12 +99,9 @@ test("a .txt export rewritten (same size, new mtime) between pass 1 and pass 2 f
       timeoutMs: 15_000,
     });
 
-    // Land the rewrite inside the widened pass1-end -> pass2-start window.
-    // 500ms covers subprocess startup + module load + pass 1 over this
-    // tiny fixture, leaving the remaining ~500ms of the 1000ms hook
-    // window for the rewrite to land before pass 2's identity re-check.
-    await new Promise((r) => setTimeout(r, 500));
+    await waitForBarrier(join(importRoot, "pass-1-complete"));
     await writeFile(filePath, REWRITTEN_SAME_SIZE_EXPORT);
+    await writeFile(join(importRoot, "release-pass-2"), "release\n");
 
     const result = await runPromise;
     const done = result.messages.at(-1);
@@ -107,22 +119,22 @@ test("a .txt export rewritten (same size, new mtime) between pass 1 and pass 2 f
   }
 });
 
-test("a .txt export left UNCHANGED between pass 1 and pass 2 (delay hook active, no mutation) still succeeds", async () => {
-  // Proves the delay hook + identity re-check do not themselves introduce
-  // a false positive: widening the window without touching the file must
-  // still succeed.
+test("a .txt export left UNCHANGED between pass 1 and pass 2 (barrier active, no mutation) still succeeds", async () => {
+  // Proves the barrier + identity re-check do not themselves introduce a
+  // false positive: releasing the exact boundary without touching the file
+  // must still succeed.
   const importRoot = await mkdtemp(join(largeFixtureBaseDir(), "pdpp-whatsapp-toctou-stable-"));
   const filePath = join(importRoot, "WhatsApp Chat - Alice.txt");
   try {
     await writeFile(filePath, ORIGINAL_EXPORT);
 
-    const result = await runConnectorProtocolSubprocess({
+    const runPromise = runConnectorProtocolSubprocess({
       cwd: PACKAGE_ROOT,
       entrypoint: WHATSAPP_ENTRYPOINT,
       env: {
         PDPP_OWNER_TOKEN: "",
         PDPP_RS_URL: "",
-        PDPP_TEST_TXT_TOCTOU_DELAY_MS: "150",
+        PDPP_TEST_TXT_TOCTOU_BARRIER_DIR: importRoot,
         RS_URL: "",
         TZ: "America/Chicago",
         WHATSAPP_EXPORT_DIR: importRoot,
@@ -133,6 +145,9 @@ test("a .txt export left UNCHANGED between pass 1 and pass 2 (delay hook active,
       },
       timeoutMs: 15_000,
     });
+    await waitForBarrier(join(importRoot, "pass-1-complete"));
+    await writeFile(join(importRoot, "release-pass-2"), "release\n");
+    const result = await runPromise;
 
     const done = result.messages.at(-1);
     assert.equal(done?.type, "DONE");

@@ -16,7 +16,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { closeSync, createReadStream, fstatSync, openSync, statSync } from "node:fs";
+import { closeSync, createReadStream, existsSync, fstatSync, openSync, statSync, writeFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -426,23 +426,32 @@ class TxtArtifactChangedError extends Error {
 }
 
 /**
- * Test-only, opt-in synchronous pause between pass 1 finishing and pass 2's
- * identity re-check, widening the real (size, mtimeMs) race window so a
- * test can deterministically rewrite the staged file mid-window and assert
- * TxtArtifactChangedError fires -- rather than relying on a timing-based
- * race, which would be flaky. No-op in production (PDPP_TEST_TXT_TOCTOU_DELAY_MS
- * unset). Blocking (Atomics.wait), not async, because `linesForPass` is a
- * synchronous call in the production API (mirrored by the zip path's sync
- * `splitWhatsAppChatLines`); an async version would leak into every caller's
- * signature for a test-only concern.
+ * Test-only, opt-in synchronous barrier between pass 1 finishing and pass 2's
+ * identity re-check. The test observes the ready marker, rewrites the staged
+ * file, and creates the release marker. This makes the mutation land at the
+ * exact boundary rather than guessing subprocess startup time. No-op in
+ * production (PDPP_TEST_TXT_TOCTOU_BARRIER_DIR unset). Blocking (Atomics.wait),
+ * not async, because `linesForPass` is a synchronous call in the production
+ * API (mirrored by the zip path's sync `splitWhatsAppChatLines`); an async
+ * version would leak into every caller's signature for a test-only concern.
  */
-function testOnlyTxtToctouDelay(): void {
-  const raw = process.env.PDPP_TEST_TXT_TOCTOU_DELAY_MS;
-  const ms = raw ? Number.parseInt(raw, 10) : 0;
-  if (!Number.isFinite(ms) || ms <= 0) {
+function testOnlyTxtToctouBarrier(): void {
+  const barrierDir = process.env.PDPP_TEST_TXT_TOCTOU_BARRIER_DIR;
+  if (!barrierDir) {
     return;
   }
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  const readyPath = join(barrierDir, "pass-1-complete");
+  const releasePath = join(barrierDir, "release-pass-2");
+  writeFileSync(readyPath, `${String(process.pid)}\n`, { flag: "wx" });
+
+  const deadline = Date.now() + 10_000;
+  const waitCell = new Int32Array(new SharedArrayBuffer(4));
+  while (!existsSync(releasePath)) {
+    if (Date.now() >= deadline) {
+      throw new Error("timed out waiting for the WhatsApp .txt TOCTOU test barrier release");
+    }
+    Atomics.wait(waitCell, 0, 0, 10);
+  }
 }
 
 /**
@@ -498,7 +507,7 @@ async function parseTxtExportFile(fileName: string): Promise<TxtParseOutcome> {
         closeSource,
         fileTitle: basename(fileName),
         linesForPass: () => {
-          testOnlyTxtToctouDelay();
+          testOnlyTxtToctouBarrier();
           const current = txtFileIdentitySnapshot(fd);
           if (current.size !== identitySnapshot.size || current.mtimeMs !== identitySnapshot.mtimeMs) {
             throw new TxtArtifactChangedError(fileName);
