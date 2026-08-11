@@ -10,13 +10,15 @@ interface ChildWithPipedOutput extends EventEmitter {
 }
 
 /** Collect both output streams until Node confirms the process and stdio are closed. */
-export function collectChildProcessOutput(child: ChildWithPipedOutput): Promise<string> {
+export function collectChildProcessOutput(child: ChildWithPipedOutput, onChunk?: () => void): Promise<string> {
   return new Promise((resolve) => {
     let output = "";
     child.stdout?.on("data", (chunk: Buffer) => {
+      onChunk?.();
       output += chunk.toString();
     });
     child.stderr?.on("data", (chunk: Buffer) => {
+      onChunk?.();
       output += chunk.toString();
     });
     child.once("close", () => resolve(output));
