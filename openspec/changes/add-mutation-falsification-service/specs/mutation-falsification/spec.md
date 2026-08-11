@@ -78,18 +78,22 @@ The GroupMe cursor/frontier pilot SHALL use only checked-in declarative fault op
 
 ### Requirement: Local execution SHALL use enforceable bounds and honest limitations
 
-Repository policy SHALL run one adapter at a time and SHALL set finite limits for attempts, wall time, captured output, workspace bytes, descendant processes, and cleanup time. Every adapter, focused check, and complete backstop SHALL run inside an owned host containment unit that applies limits to the entire descendant process tree and can terminate and verify that tree independently of the wrapper process. The containment mechanism and version SHALL be bound into effective policy and the attempt receipt. Version one SHALL support only Linux hosts with the specified cgroup-v2 systemd containment; all other hosts SHALL refuse execution. It SHALL use an environment allowlist and SHALL forbid live credentials, personal data, live third-party services, stateful browsers, and shared production-like databases.
+Repository policy SHALL run one adapter at a time and SHALL set finite hard limits for attempts, wall time, captured output, descendant tasks, CPU, memory, and cleanup time. Workspace bytes SHALL have a preflight reserve and an observed stop threshold, but SHALL NOT be described as a hard quota. Every adapter, focused check, and complete backstop SHALL run inside an owned host containment unit that applies hard limits to the entire descendant process tree and can terminate and verify that tree independently of the launcher process. The containment mechanism and version SHALL be bound into effective policy and the attempt receipt. Version one SHALL support only Linux hosts with the specified cgroup-v2 systemd containment; all other hosts SHALL refuse execution. It SHALL use an environment allowlist and SHALL forbid live credentials, personal data, live third-party services, stateful browsers, and shared production-like databases.
 
 #### Scenario: Hard limit is exceeded
-- **WHEN** wall time, output, workspace, or another enforced limit is exceeded
+- **WHEN** wall time, output, task count, CPU, memory, or another enforced limit is exceeded
 - **THEN** the owned containment unit SHALL terminate the descendant tree, verify that no descendant remains, retain bounded evidence, and mark the attempt inconclusive
 
+#### Scenario: Workspace threshold is observed
+- **WHEN** workspace observation detects that the advisory byte threshold has been crossed
+- **THEN** the harness SHALL stop the contained tree, quarantine the workspace, record the observed overshoot, and SHALL NOT claim that host-disk impact was hard-contained
+
 #### Scenario: Wrapper dies after child start
-- **WHEN** the wrapper exits after the contained process tree starts but before completion is recorded
-- **THEN** the issued marker and containment-unit identity SHALL let next-start recovery terminate and verify the entire tree before another attempt can begin
+- **WHEN** the manager-owned attempt wrapper exits after claiming the repository marker and starting adapter descendants but before completion is recorded
+- **THEN** the bound unit, invocation, and cgroup identity SHALL let next-start recovery terminate and verify the entire tree before another attempt can begin
 
 #### Scenario: Host cannot enforce required safety
-- **WHEN** the host is not a supported Linux cgroup-v2 systemd host or cannot apply the required descendant, task-count, wall-time, output, and cleanup controls
+- **WHEN** the host is not a supported Linux cgroup-v2 systemd host or cannot apply the required descendant, task-count, CPU, memory, wall-time, output, and cleanup controls
 - **THEN** the harness SHALL refuse the attempt instead of silently weakening the policy
 
 ### Requirement: Calibration SHALL end with a pre-registered decision
