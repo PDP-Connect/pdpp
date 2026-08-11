@@ -53,7 +53,7 @@
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "low",
       "background_safe": true,
-      "rationale": "YNAB API uses a long-lived token; budgets do not change minute-to-minute, so hourly is enough."
+      "rationale": "YNAB API uses a long-lived token and documents a rolling 200-request-per-hour access-token budget; budgets do not change minute-to-minute, so hourly is enough."
     },
     "public_listing": {
       "listed": true,
@@ -420,7 +420,7 @@
           "semantic_fields": ["note"]
         }
       },
-      "coverage_strategy": "full_inventory",
+      "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "scheduled_window"
     },
     {
@@ -552,7 +552,7 @@
           "goal_under_funded": ["gte", "gt", "lte", "lt"]
         }
       },
-      "coverage_strategy": "full_inventory",
+      "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "scheduled_window"
     },
     {
@@ -596,7 +596,7 @@
           "lexical_fields": ["name"]
         }
       },
-      "coverage_strategy": "full_inventory",
+      "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "scheduled_window"
     },
     {
@@ -1091,7 +1091,7 @@
           "group_by_time": ["month"]
         }
       },
-      "coverage_strategy": "full_inventory",
+      "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "scheduled_window"
     },
     {
@@ -1292,7 +1292,7 @@
           "group_by_time": ["month"]
         }
       },
-      "coverage_strategy": "full_inventory",
+      "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "scheduled_window"
     }
   ],

@@ -323,6 +323,12 @@ export function errorDetail(body: string): string {
   return redactTransportDetail(body).slice(0, ERROR_DETAIL_MAX);
 }
 
+interface YnabRawResponse {
+  body: string;
+  headers?: Record<string, string | undefined>;
+  status: number;
+}
+
 export async function ynab<T>(
   path: string,
   token: string,
@@ -337,9 +343,9 @@ export async function ynab<T>(
   if (sinceDate) {
     url.searchParams.set("since_date", sinceDate);
   }
-  let result: { body: string; status: number };
+  let result: YnabRawResponse;
   try {
-    const r = await httpGovernor.request<{ body: string; status: number }, { body: string; status: number }>(
+    const r = await httpGovernor.request<YnabRawResponse, YnabRawResponse>(
       async () => {
         const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
         const retryAfter = res.headers.get("retry-after");
@@ -347,9 +353,13 @@ export async function ynab<T>(
           body: await res.text().catch((): string => ""),
           ...(retryAfter === null ? {} : { headers: { "retry-after": retryAfter } }),
           status: res.status,
-        } as { body: string; status: number };
+        };
       },
-      (raw) => ({ status: raw.status, value: raw })
+      (raw) => ({
+        status: raw.status,
+        ...(raw.headers === undefined ? {} : { headers: raw.headers }),
+        value: raw,
+      })
     );
     result = r.value;
   } catch (error) {
@@ -398,6 +408,19 @@ type YnabRequest = <T>(
   progress?: ProgressFn,
   extra?: Parameters<ProgressFn>[1]
 ) => Promise<T>;
+
+const YNAB_RETRYABLE_PATTERN = /rate_limited|ECONN|ETIMEDOUT|fetch failed|retryable status \d+/i;
+
+/**
+ * Keep retryable failures from the optional account-type enrichment request
+ * visible to the outer run. A transient failure there still consumed a YNAB
+ * request and must not be relabeled as a successful transaction collection.
+ * Permanent endpoint errors remain non-fatal because the transaction payload
+ * itself is still useful without account-type enrichment.
+ */
+export function isYnabRetryableError(error: unknown): boolean {
+  return error instanceof Error && YNAB_RETRYABLE_PATTERN.test(error.message);
+}
 
 interface TimeRange {
   since?: string;
@@ -702,9 +725,34 @@ export function monthCategoryRecord(c: YnabCategory, month: string, budgetId: st
 
 // ─── Per-budget stream collectors ───────────────────────────────────────
 
-type EmitFn = (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
+type EmitFn = CollectContext["emit"];
 
 type TrackedEmitRecord = (stream: string, data: RecordData) => Promise<void>;
+
+interface CoverageFact {
+  considered: number;
+  covered: number;
+}
+
+function coverageForRecords(stream: string, records: readonly RecordData[]): CoverageFact {
+  return {
+    considered: records.length,
+    covered: records.reduce((count, record) => count + (validateRecord(stream, record).ok ? 1 : 0), 0),
+  };
+}
+
+function aggregateCoverageFacts(facts: readonly CoverageFact[]): CoverageFact | null {
+  if (facts.length === 0) {
+    return null;
+  }
+  return facts.reduce(
+    (total, fact) => ({
+      considered: total.considered + fact.considered,
+      covered: total.covered + fact.covered,
+    }),
+    { considered: 0, covered: 0 }
+  );
+}
 
 type ProgressFn = (
   message: string,
@@ -965,7 +1013,10 @@ export function aggregateAccountsCoverage(facts: readonly AccountsBudgetFact[]):
   return { accounts, accountStats };
 }
 
-export async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> {
+export async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<{
+  categoryGroups: CoverageFact;
+  categories: CoverageFact;
+}> {
   const { budgetId, budgetOrdinal = 0, request, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "categories", budgetId);
   await progress("Fetching YNAB categories window", {
@@ -1000,13 +1051,19 @@ export async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> 
     count: categoryCount,
     total: categoryCount,
   });
+  const categoryGroupRecords: RecordData[] = [];
+  const categoryRecords: RecordData[] = [];
   for (const group of res.data.category_groups) {
     if (requested.has("category_groups")) {
-      await trackAndEmit("category_groups", categoryGroupRecord(group, budgetId));
+      const record = categoryGroupRecord(group, budgetId);
+      categoryGroupRecords.push(record);
+      await trackAndEmit("category_groups", record);
     }
     if (requested.has("categories")) {
       for (const c of group.categories ?? []) {
-        await trackAndEmit("categories", categoryRecord(c, group, budgetId));
+        const record = categoryRecord(c, group, budgetId);
+        categoryRecords.push(record);
+        await trackAndEmit("categories", record);
       }
     }
   }
@@ -1022,9 +1079,8 @@ export async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> 
   // advances on the identical `server_knowledge` delta cursor. Stage its own
   // STATE checkpoint (when requested) so the runtime records a committed
   // checkpoint for the stream — without it, a succeeded run leaves
-  // `category_groups` at `checkpoint:not_staged`, and the `full_inventory`
-  // coverage strategy cannot prove coverage, so the stream projects unmeasured
-  // despite retained records.
+  // `category_groups` at `checkpoint:not_staged`, and its checkpoint-window
+  // coverage would otherwise be unmeasured despite retained records.
   if (requested.has("category_groups")) {
     const groups = (newState.category_groups as Record<string, { server_knowledge: number }> | undefined) ?? {};
     groups[budgetId] = { server_knowledge: res.data.server_knowledge };
@@ -1035,9 +1091,13 @@ export async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> 
       cursor: newState.category_groups,
     });
   }
+  return {
+    categoryGroups: coverageForRecords("category_groups", categoryGroupRecords),
+    categories: coverageForRecords("categories", categoryRecords),
+  };
 }
 
-async function collectPayees(ctx: BudgetCtx): Promise<void> {
+async function collectPayees(ctx: BudgetCtx): Promise<CoverageFact> {
   const { budgetId, budgetOrdinal = 0, request, token, state, newState, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "payees", budgetId);
   await progress("Fetching YNAB payees window", {
@@ -1071,13 +1131,15 @@ async function collectPayees(ctx: BudgetCtx): Promise<void> {
     count: res.data.payees.length,
     total: res.data.payees.length,
   });
-  for (const p of res.data.payees) {
-    await trackAndEmit("payees", payeeRecord(p, budgetId));
+  const records = res.data.payees.map((p) => payeeRecord(p, budgetId));
+  for (const record of records) {
+    await trackAndEmit("payees", record);
   }
   const payees = (newState.payees as Record<string, { server_knowledge: number }> | undefined) ?? {};
   payees[budgetId] = { server_knowledge: res.data.server_knowledge };
   newState.payees = payees;
   await emit({ type: "STATE", stream: "payees", cursor: newState.payees });
+  return coverageForRecords("payees", records);
 }
 
 /**
@@ -1202,7 +1264,7 @@ export function aggregatePayeeLocationsCoverage(
   };
 }
 
-async function collectTransactions(ctx: BudgetCtx): Promise<void> {
+async function collectTransactions(ctx: BudgetCtx): Promise<CoverageFact> {
   const { budgetId, budgetOrdinal = 0, request, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
   const stream = requested.get("transactions");
   const knowledge = priorKnowledge(state, "transactions", budgetId);
@@ -1231,8 +1293,10 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
     for (const a of aRes.data.accounts) {
       accountTypeById.set(a.id, a.type);
     }
-  } catch {
-    /* non-fatal */
+  } catch (error) {
+    if (isYnabRetryableError(error)) {
+      throw error;
+    }
   }
 
   const res = await request<YnabTransactionsResponse>(
@@ -1251,11 +1315,14 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
     }
   );
   let emittedTransactions = 0;
+  const records: RecordData[] = [];
   for (const t of res.data.transactions) {
     if (!withinTimeRange(t.date, stream?.time_range)) {
       continue;
     }
-    await trackAndEmit("transactions", transactionRecord(t, budgetId, accountTypeById));
+    const record = transactionRecord(t, budgetId, accountTypeById);
+    records.push(record);
+    await trackAndEmit("transactions", record);
     emittedTransactions += 1;
   }
   await progress("Processed YNAB transactions window", {
@@ -1281,6 +1348,7 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
     stream: "transactions",
     cursor: newState.transactions,
   });
+  return coverageForRecords("transactions", records);
 }
 
 /**
@@ -1450,6 +1518,32 @@ async function fetchMonthsIfNeeded(ctx: BudgetCtx, shouldFetch: boolean): Promis
   return monthList;
 }
 
+interface MonthStreamFacts {
+  monthCategories?: CoverageFact;
+  months?: CoverageFact;
+}
+
+async function collectMonthStreams(ctx: BudgetCtx): Promise<MonthStreamFacts> {
+  const monthsStream = ctx.requested.get("months");
+  const monthCategoriesStream = ctx.requested.get("month_categories");
+  const monthList = await fetchMonthsIfNeeded(ctx, Boolean(monthsStream || monthCategoriesStream));
+  if (!monthList) {
+    return {};
+  }
+
+  const facts: MonthStreamFacts = {};
+  if (monthsStream) {
+    facts.months = coverageForRecords(
+      "months",
+      monthList.map((month) => monthRecord(month, ctx.budgetId))
+    );
+  }
+  if (monthCategoriesStream) {
+    facts.monthCategories = await collectMonthCategories(ctx, monthList, monthCategoriesStream);
+  }
+  return facts;
+}
+
 type MonthDetailFetcher = (budgetId: string, month: string, token: string, request: YnabRequest) => Promise<YnabMonth>;
 
 async function fetchMonthDetail(
@@ -1467,7 +1561,7 @@ export async function collectMonthCategories(
   monthList: YnabMonth[],
   monthCategoriesStream: { time_range?: TimeRange },
   fetchMonth: MonthDetailFetcher = fetchMonthDetail
-): Promise<void> {
+): Promise<CoverageFact> {
   const { budgetId, budgetOrdinal = 0, request, token, state, newState, emit, trackAndEmit, progress } = ctx;
   const mcState = state.month_categories as Record<string, { last_fetched_month?: string }> | undefined;
   const priorCutoff = mcState?.[budgetId]?.last_fetched_month;
@@ -1497,6 +1591,7 @@ export async function collectMonthCategories(
   });
 
   let highestMonth: string | null = priorCutoff || scopeSince || null;
+  const records: RecordData[] = [];
   for (let i = 0; i < activeMonths.length; i += 1) {
     const m = activeMonths[i];
     if (!m) {
@@ -1513,7 +1608,9 @@ export async function collectMonthCategories(
     });
     const monthDetail = await fetchMonth(budgetId, m.month, token, request);
     for (const c of monthDetail.categories ?? []) {
-      await trackAndEmit("month_categories", monthCategoryRecord(c, m.month, budgetId));
+      const record = monthCategoryRecord(c, m.month, budgetId);
+      records.push(record);
+      await trackAndEmit("month_categories", record);
     }
     if (!highestMonth || m.month > highestMonth) {
       highestMonth = m.month;
@@ -1542,51 +1639,61 @@ export async function collectMonthCategories(
     stream: "month_categories",
     cursor: newState.month_categories,
   });
+  return coverageForRecords("month_categories", records);
 }
 
 interface CollectForBudgetFacts {
   accounts?: AccountsBudgetFact;
+  categories?: CoverageFact;
+  categoryGroups?: CoverageFact;
+  monthCategories?: CoverageFact;
+  months?: CoverageFact;
   payeeLocations?: PayeeLocationsBudgetFact;
+  payees?: CoverageFact;
   scheduledTransactions?: ScheduledTransactionsBudgetFact;
+  transactions?: CoverageFact;
 }
 
 async function collectForBudget(ctx: BudgetCtx): Promise<CollectForBudgetFacts> {
   const { requested } = ctx;
   let accounts: AccountsBudgetFact | undefined;
+  let categories: CoverageFact | undefined;
+  let categoryGroups: CoverageFact | undefined;
+  let payees: CoverageFact | undefined;
+  let transactions: CoverageFact | undefined;
   if (requested.has("accounts") || requested.has("account_stats")) {
     accounts = await collectAccounts(ctx);
   }
   if (requested.has("categories") || requested.has("category_groups")) {
-    await collectCategoriesAndGroups(ctx);
+    ({ categories, categoryGroups } = await collectCategoriesAndGroups(ctx));
   }
   if (requested.has("payees")) {
-    await collectPayees(ctx);
+    payees = await collectPayees(ctx);
   }
   let payeeLocations: PayeeLocationsBudgetFact | undefined;
   if (requested.has("payee_locations")) {
     payeeLocations = await collectPayeeLocations(ctx);
   }
   if (requested.has("transactions")) {
-    await collectTransactions(ctx);
+    transactions = await collectTransactions(ctx);
   }
   let scheduledTransactions: ScheduledTransactionsBudgetFact | undefined;
   if (requested.has("scheduled_transactions")) {
     scheduledTransactions = await collectScheduledTransactions(ctx);
   }
 
-  const monthsStream = requested.get("months");
-  const monthCategoriesStream = requested.get("month_categories");
-  const shouldFetchMonths = Boolean(monthsStream || monthCategoriesStream);
-  const monthList = await fetchMonthsIfNeeded(ctx, shouldFetchMonths);
-
-  if (monthCategoriesStream && monthList) {
-    await collectMonthCategories(ctx, monthList, monthCategoriesStream);
-  }
+  const { months, monthCategories } = await collectMonthStreams(ctx);
 
   return {
     ...(accounts === undefined ? {} : { accounts }),
+    ...(categories === undefined ? {} : { categories }),
+    ...(categoryGroups === undefined ? {} : { categoryGroups }),
+    ...(monthCategories === undefined ? {} : { monthCategories }),
+    ...(months === undefined ? {} : { months }),
     ...(payeeLocations === undefined ? {} : { payeeLocations }),
+    ...(payees === undefined ? {} : { payees }),
     ...(scheduledTransactions === undefined ? {} : { scheduledTransactions }),
+    ...(transactions === undefined ? {} : { transactions }),
   };
 }
 
@@ -1626,6 +1733,9 @@ export async function emitBudgetsStream(deps: BudgetsStreamDeps): Promise<void> 
   let covered = 0;
   for (const b of budgets) {
     const record = budgetRecord(b);
+    if (!validateRecord("budgets", record).ok) {
+      continue;
+    }
     if (!cursor.shouldEmit(record)) {
       // Suppressed because unchanged since the prior run. The budget is still
       // accounted for as covered — `/budgets` re-enumerated it and the run
@@ -1689,6 +1799,89 @@ async function emitWholeStreamCoverage(
       covered: aggregate.covered,
     }
   );
+}
+
+interface YnabCoverageFacts {
+  accounts: AccountsBudgetFact[];
+  categories: CoverageFact[];
+  categoryGroups: CoverageFact[];
+  monthCategories: CoverageFact[];
+  months: CoverageFact[];
+  payeeLocations: PayeeLocationsBudgetFact[];
+  payees: CoverageFact[];
+  scheduledTransactions: ScheduledTransactionsBudgetFact[];
+  transactions: CoverageFact[];
+}
+
+function appendBudgetFacts(collection: YnabCoverageFacts, facts: CollectForBudgetFacts): void {
+  if (facts.accounts) {
+    collection.accounts.push(facts.accounts);
+  }
+  if (facts.categories) {
+    collection.categories.push(facts.categories);
+  }
+  if (facts.categoryGroups) {
+    collection.categoryGroups.push(facts.categoryGroups);
+  }
+  if (facts.monthCategories) {
+    collection.monthCategories.push(facts.monthCategories);
+  }
+  if (facts.months) {
+    collection.months.push(facts.months);
+  }
+  if (facts.payeeLocations) {
+    collection.payeeLocations.push(facts.payeeLocations);
+  }
+  if (facts.payees) {
+    collection.payees.push(facts.payees);
+  }
+  if (facts.scheduledTransactions) {
+    collection.scheduledTransactions.push(facts.scheduledTransactions);
+  }
+  if (facts.transactions) {
+    collection.transactions.push(facts.transactions);
+  }
+}
+
+async function emitYnabCoverage(
+  emit: CollectContext["emit"],
+  requested: ReadonlyMap<string, unknown>,
+  facts: YnabCoverageFacts
+): Promise<void> {
+  if (requested.has("accounts") || requested.has("account_stats")) {
+    const { accounts, accountStats } = aggregateAccountsCoverage(facts.accounts);
+    await emitWholeStreamCoverage(emit, "accounts", requested.has("accounts") ? accounts : null);
+    await emitWholeStreamCoverage(emit, "account_stats", requested.has("account_stats") ? accountStats : null);
+  }
+
+  if (requested.has("payee_locations")) {
+    await emitWholeStreamCoverage(emit, "payee_locations", aggregatePayeeLocationsCoverage(facts.payeeLocations));
+  }
+  if (requested.has("category_groups")) {
+    await emitWholeStreamCoverage(emit, "category_groups", aggregateCoverageFacts(facts.categoryGroups));
+  }
+  if (requested.has("categories")) {
+    await emitWholeStreamCoverage(emit, "categories", aggregateCoverageFacts(facts.categories));
+  }
+  if (requested.has("payees")) {
+    await emitWholeStreamCoverage(emit, "payees", aggregateCoverageFacts(facts.payees));
+  }
+  if (requested.has("transactions")) {
+    await emitWholeStreamCoverage(emit, "transactions", aggregateCoverageFacts(facts.transactions));
+  }
+  if (requested.has("months")) {
+    await emitWholeStreamCoverage(emit, "months", aggregateCoverageFacts(facts.months));
+  }
+  if (requested.has("month_categories")) {
+    await emitWholeStreamCoverage(emit, "month_categories", aggregateCoverageFacts(facts.monthCategories));
+  }
+  if (requested.has("scheduled_transactions")) {
+    await emitWholeStreamCoverage(
+      emit,
+      "scheduled_transactions",
+      aggregateScheduledTransactionsCoverage(facts.scheduledTransactions)
+    );
+  }
 }
 
 /**
@@ -1761,9 +1954,17 @@ export async function ynabCollect(
     await emitBudgetsStream({ budgets, state, newState, emit, trackAndEmit });
   }
 
-  const accountsFacts: AccountsBudgetFact[] = [];
-  const payeeLocationsFacts: PayeeLocationsBudgetFact[] = [];
-  const scheduledTransactionsFacts: ScheduledTransactionsBudgetFact[] = [];
+  const coverageFacts: YnabCoverageFacts = {
+    accounts: [],
+    categories: [],
+    categoryGroups: [],
+    monthCategories: [],
+    months: [],
+    payeeLocations: [],
+    payees: [],
+    scheduledTransactions: [],
+    transactions: [],
+  };
   for (let budgetOrdinal = 0; budgetOrdinal < budgetIds.length; budgetOrdinal += 1) {
     const budgetId = budgetIds[budgetOrdinal];
     if (!budgetId) {
@@ -1781,34 +1982,9 @@ export async function ynabCollect(
       trackAndEmit,
       progress: progressWithCounters,
     });
-    if (facts.accounts) {
-      accountsFacts.push(facts.accounts);
-    }
-    if (facts.payeeLocations) {
-      payeeLocationsFacts.push(facts.payeeLocations);
-    }
-    if (facts.scheduledTransactions) {
-      scheduledTransactionsFacts.push(facts.scheduledTransactions);
-    }
+    appendBudgetFacts(coverageFacts, facts);
   }
-
-  if (requested.has("accounts") || requested.has("account_stats")) {
-    const { accounts, accountStats } = aggregateAccountsCoverage(accountsFacts);
-    await emitWholeStreamCoverage(emit, "accounts", requested.has("accounts") ? accounts : null);
-    await emitWholeStreamCoverage(emit, "account_stats", requested.has("account_stats") ? accountStats : null);
-  }
-
-  if (requested.has("payee_locations")) {
-    await emitWholeStreamCoverage(emit, "payee_locations", aggregatePayeeLocationsCoverage(payeeLocationsFacts));
-  }
-
-  if (requested.has("scheduled_transactions")) {
-    await emitWholeStreamCoverage(
-      emit,
-      "scheduled_transactions",
-      aggregateScheduledTransactionsCoverage(scheduledTransactionsFacts)
-    );
-  }
+  await emitYnabCoverage(emit, requested, coverageFacts);
 }
 
 if (isMainModule(import.meta.url)) {
@@ -1822,7 +1998,7 @@ if (isMainModule(import.meta.url)) {
     // transient upstream fault does not make the fault permanent. Without it a
     // YNAB 503 terminals the connection as permanently failed and the owner is
     // asked to reconnect a credential that was never the problem.
-    retryablePattern: /rate_limited|ECONN|ETIMEDOUT|fetch failed|retryable status \d+/i,
+    retryablePattern: YNAB_RETRYABLE_PATTERN,
     // YNAB marks deleted records with `deleted: true` in-band. Runtime strips
     // to { id } and emits with op: 'delete'.
     isTombstone: (_stream, d) => d.deleted === true,
