@@ -54,6 +54,8 @@ const STALE_MS = 30 * 60 * 1000;
 const NOW = "2026-05-19T12:00:00.000Z";
 const FRESH = "2026-05-19T11:55:00.000Z"; // 5 min ago
 const OLD = "2026-05-19T11:00:00.000Z"; // 60 min ago — past 30-min stale threshold
+const BACKLOG_FRESH = "2026-05-19T10:00:00.000Z"; // 2h ago — well under the 24h backlog-age threshold
+const BACKLOG_OLD = "2026-05-18T11:59:00.000Z"; // ~24h01m ago — past the 24h backlog-age threshold
 const ACCEPTED_COVERAGE_AXES: readonly CoverageAxis[] = ["unsupported", "unavailable", "deferred", "inventory_only"];
 
 function heartbeat(overrides: Partial<HeartbeatOutboxEvidence> = {}): HeartbeatOutboxEvidence {
@@ -1837,6 +1839,137 @@ test("outbox axis: pending work + stale heartbeat degrades to stale_pending stal
   assert.equal(r.cause, "stale_pending");
 });
 
+// ─── Outbox axis: old-but-fresh-heartbeat backlog (explicit-transient retry-forever) ──
+
+test("outbox axis: fresh heartbeat with a fresh retrying backlog stays active (no false-red)", () => {
+  // A genuinely live retry loop: the heartbeat is fresh AND the oldest
+  // pending row is fresh. Must not be mistaken for a stuck backlog just
+  // because the connector is retrying.
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestPendingAt: BACKLOG_FRESH,
+      recordsPending: 3,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "active");
+  assert.equal(r.cause, null);
+});
+
+test("outbox axis: fresh heartbeat with an old retrying backlog is stalled/transient_upload_failure, not active forever", () => {
+  // The gap this closes: explicit-transient rows (structured 408/429/5xx,
+  // timeout, recognized network fault) retry indefinitely by design
+  // (collector-runner.ts's classifyLocalDeviceFailure) and never dead-letter,
+  // so the heartbeat keeps reporting "retrying" with a live-looking check-in
+  // even when the same row has been stuck for weeks. The backlog's own age
+  // (oldest_pending_at, derived from created_at, never reset by a retry) is
+  // the signal a live heartbeat can't fake.
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestPendingAt: BACKLOG_OLD,
+      recordsPending: 3,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "stalled");
+  // Reuses the existing system-handled, no-owner-action cause — this is not
+  // a new dead-letter/owner-action state, only a visibility change on top of
+  // the already-durable, already-retrying outbox row.
+  assert.equal(r.cause, "transient_upload_failure");
+});
+
+test("outbox axis: fresh heartbeat with an old PENDING (not retrying-status) backlog also stalls", () => {
+  // The `healthy`-status + `recordsPending > 0` shape (not just
+  // starting/retrying) must get the same backlog-age check, since a
+  // permanently-stuck row can surface under either heartbeat status.
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "healthy",
+      oldestPendingAt: BACKLOG_OLD,
+      recordsPending: 1,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "stalled");
+  assert.equal(r.cause, "transient_upload_failure");
+});
+
+test("outbox axis: missing oldestPendingAt never triggers the backlog-age stall (fails conservatively)", () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestPendingAt: null,
+      recordsPending: 3,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "active");
+  assert.equal(r.cause, null);
+});
+
+test("outbox axis: malformed oldestPendingAt never triggers the backlog-age stall (fails conservatively)", () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestPendingAt: "not-a-timestamp",
+      recordsPending: 3,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "active");
+  assert.equal(r.cause, null);
+});
+
+test("outbox axis: old backlog with zero pending never stalls (age check requires pending > 0)", () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "healthy",
+      oldestPendingAt: BACKLOG_OLD,
+      recordsPending: 0,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "idle");
+  assert.equal(r.cause, null);
+});
+
+test("outbox axis: an old retrying backlog that later recovers (drains) returns active/idle, not stuck stalled", () => {
+  // Recovery path: once the row finally succeeds, recordsPending drops to 0
+  // (or oldestPendingAt resets to the next-oldest still-pending row's fresh
+  // created_at) and the axis must climb back out of `stalled` — this is a
+  // pure re-derivation from evidence, not a sticky/latched state.
+  const stalled = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestPendingAt: BACKLOG_OLD,
+      recordsPending: 1,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(stalled.axis, "stalled");
+
+  const recovered = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "healthy",
+      oldestPendingAt: null,
+      recordsPending: 0,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(recovered.axis, "idle");
+  assert.equal(recovered.cause, null);
+});
+
 // ─── Stalled cause drives specific, non-generic projection copy ──────────
 
 test("local exporter: state_read_failed renders re-run copy, not generic stalled", () => {
@@ -1899,6 +2032,82 @@ test("local exporter: transient_upload_failure is degraded but system-handled", 
     findCondition(snap, "BacklogClear")?.reason,
     CONNECTION_CONDITION_REASONS.OUTBOX_TRANSIENT_UPLOAD_FAILURE
   );
+});
+
+test("end-to-end: an old-but-fresh-heartbeat retrying backlog projects as degraded/system-handled, not stuck-active-forever", () => {
+  // Full pipeline: deriveOutboxAxisFromHeartbeat's age-based axis/cause feeds
+  // directly into computeConnectionHealth, proving the operational gap this
+  // closes end to end — an explicit-transient row that retries indefinitely
+  // (by design, per collector-runner.ts) now surfaces as visible and
+  // self-handled instead of silently reading as healthy/active forever.
+  const derived = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestPendingAt: BACKLOG_OLD,
+      recordsPending: 1,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
+      outbox: { axis: derived.axis, cause: derived.cause },
+      run: run(),
+    })
+  );
+  assert.equal(snap.state, "degraded");
+  assert.equal(snap.axes.outbox, "stalled");
+  const exporter = findCondition(snap, "LocalExporterAvailable");
+  assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_TRANSIENT_UPLOAD_FAILURE);
+  assert.equal(exporter?.severity, "warning");
+  assert.equal(exporter?.remediation?.action, "wait");
+  assert.match(exporter?.message ?? "", TOP_LEVEL_REGEX_2);
+});
+
+test("end-to-end: a genuinely live fresh retrying backlog projects as healthy, not a false-red degrade", () => {
+  const derived = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestPendingAt: BACKLOG_FRESH,
+      recordsPending: 1,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
+      outbox: { axis: derived.axis, cause: derived.cause },
+      run: run(),
+    })
+  );
+  assert.equal(snap.state, "healthy");
+  assert.equal(snap.axes.outbox, "active");
+});
+
+test("end-to-end: recovery after the backlog drains returns to green, not latched degraded", () => {
+  const recoveredDerived = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "healthy",
+      oldestPendingAt: null,
+      recordsPending: 0,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
+      outbox: { axis: recoveredDerived.axis, cause: recoveredDerived.cause },
+      run: run(),
+    })
+  );
+  assert.equal(snap.state, "healthy");
+  assert.equal(snap.axes.outbox, "idle");
 });
 
 test("local exporter: stale_pending names the stopped heartbeat, not a backlog", () => {

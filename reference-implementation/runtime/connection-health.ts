@@ -48,7 +48,7 @@
 
 import type { EphemeralBrowserRuntimeProjection } from "./browser-surface/ephemeral-health-projection.ts";
 import { type BrowserSurfaceRepairEvidence, decideBrowserSurfaceRepair } from "./browser-surface/repair-decision.ts";
-import { BLOCKED_PROMOTION_THRESHOLD } from "./connection-health-policy.ts";
+import { BLOCKED_PROMOTION_THRESHOLD, OUTBOX_STALE_PENDING_BACKLOG_AGE_MS } from "./connection-health-policy.ts";
 import { type PendingPressureGap, SOURCE_PRESSURE_GAP_REASONS } from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Public types ──────────────────────────────────────────────────────────
@@ -3444,6 +3444,15 @@ export interface HeartbeatOutboxEvidence {
   readonly lastHeartbeatAt: string | null;
   /** Last reported `status` from the heartbeat body. */
   readonly lastHeartbeatStatus: "blocked" | "healthy" | "retrying" | "starting" | "stopped" | null;
+  /**
+   * ISO timestamp of the oldest still-`ready` outbox row the device last
+   * reported (`created_at`, never reset by a retry — only the row's
+   * `next_attempt_at` moves). `null`/absent/unparseable is treated as "no
+   * age evidence": the backlog-age check below never fires, so a missing or
+   * malformed timestamp fails conservatively (stays at its pre-existing
+   * axis) rather than fabricating a stall.
+   */
+  readonly oldestPendingAt?: string | null;
   /** Pending durable work depth the device last reported. */
   readonly recordsPending: number | null;
 }
@@ -3467,6 +3476,20 @@ export interface HeartbeatOutboxEvidence {
  * or before it ever reports its first `healthy` heartbeat — e.g. the
  * host or the collector process was killed on restart without a final
  * heartbeat).
+ *
+ * Stale-backlog detection: a *fresh* heartbeat with pending work does not,
+ * by itself, prove the backlog is healthy — an explicit-transient row
+ * retries forever by design (see `collector-runner.ts`'s
+ * `classifyLocalDeviceFailure`), so a permanently-broken endpoint that
+ * happens to fail in a retryable shape (5xx, timeout, network fault) would
+ * otherwise sit in `active` forever with a live-looking heartbeat. When
+ * `evidence.oldestPendingAt` is older than `OUTBOX_STALE_PENDING_BACKLOG_AGE_MS`,
+ * the axis degrades to `stalled` with cause `transient_upload_failure` — the
+ * same system-handled, no-owner-action cause already used for a dead-lettered
+ * transient-5xx summary, since both describe the same situation: the system,
+ * not the owner, owns recovery. A missing or unparseable `oldestPendingAt`
+ * never triggers this path, so absent evidence fails conservatively rather
+ * than fabricating a stall.
  */
 export function deriveOutboxAxisFromHeartbeat(
   evidence: HeartbeatOutboxEvidence,
@@ -3498,6 +3521,10 @@ export function deriveOutboxAxisFromHeartbeat(
 
   if (pending > 0 && heartbeatStale) {
     return { axis: "stalled", cause: "stale_pending", unreliable: false };
+  }
+  const backlogAgeMs = ageMs(evidence.oldestPendingAt ?? null, options.nowIso);
+  if (pending > 0 && backlogAgeMs !== null && backlogAgeMs > OUTBOX_STALE_PENDING_BACKLOG_AGE_MS) {
+    return { axis: "stalled", cause: "transient_upload_failure", unreliable: false };
   }
   if (evidence.lastHeartbeatStatus === "starting" || evidence.lastHeartbeatStatus === "retrying") {
     if (heartbeatStale) {
@@ -3554,7 +3581,10 @@ function isTransientDeadLetterErrorClass(errorClass: string): boolean {
   );
 }
 
-function ageMs(iso: string, nowIso: string): number | null {
+function ageMs(iso: string | null, nowIso: string): number | null {
+  if (iso === null) {
+    return null;
+  }
   const observed = Date.parse(iso);
   const now = Date.parse(nowIso);
   if (!(Number.isFinite(observed) && Number.isFinite(now))) {
