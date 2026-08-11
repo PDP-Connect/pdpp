@@ -359,6 +359,7 @@ function InstanceListItem({
       <Link
         aria-current={selected ? "page" : undefined}
         className={`${cls} rr-s-item--mobile`}
+        data-pdpp-source-row={instance.connectionId ?? instance.id}
         href={instance.detailHref}
       >
         {inner}
@@ -372,7 +373,13 @@ function InstanceListItem({
        * is the single affordance.
        */}
       <div className="rr-s-item-wrap rr-s-item-wrap--desktop">
-        <button aria-pressed={selected} className={`${cls} rr-s-item--desktop`} onClick={onSelect} type="button">
+        <button
+          aria-pressed={selected}
+          className={`${cls} rr-s-item--desktop`}
+          data-pdpp-source-row={instance.connectionId ?? instance.id}
+          onClick={onSelect}
+          type="button"
+        >
           {inner}
         </button>
       </div>
@@ -886,7 +893,7 @@ function StreamManifest({ instance }: { instance: SourceInstanceView }) {
             <TableHeader>read in</TableHeader>
           </TableHeaderRow>
           {instance.streams.map((stream) => (
-            <StreamManifestRow key={stream.name} stream={stream} />
+            <StreamManifestRow connectionId={instance.connectionId ?? instance.id} key={stream.name} stream={stream} />
           ))}
         </Table>
       )}
@@ -898,11 +905,24 @@ function StreamManifest({ instance }: { instance: SourceInstanceView }) {
   );
 }
 
-function StreamManifestRow({ stream }: { stream: SourceInstanceView["streams"][number] }) {
+function StreamManifestRow({
+  connectionId,
+  stream,
+}: {
+  connectionId: string;
+  stream: SourceInstanceView["streams"][number];
+}) {
   const { collection } = stream;
   const isDisplayLabelDifferent = stream.displayLabel !== stream.name;
   return (
-    <Link className="pdpp-table__row rr-s-stream-row" href={stream.exploreHref} style={{ display: "grid" }}>
+    <Link
+      className="pdpp-table__row rr-s-stream-row"
+      data-connection-id={connectionId}
+      data-pdpp-stream-row="true"
+      data-stream-name={stream.name}
+      href={stream.exploreHref}
+      style={{ display: "grid" }}
+    >
       <TableCell>
         <span className="rr-s-stream" title={isDisplayLabelDifferent ? stream.name : undefined}>
           {stream.displayLabel}

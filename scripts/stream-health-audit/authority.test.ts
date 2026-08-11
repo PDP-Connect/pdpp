@@ -4,15 +4,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { FetchImpl } from "../lib/owner-session.ts";
-import { auditStreamHealth } from "./audit.ts";
-import { evaluateStreamHealthAuthority, parseOwnerSourcesDom, type StreamHealthAuthorityResult } from "./authority.ts";
+import { fetchAllConnectorSummaries } from "../lib/ref-connectors-page-follow.ts";
+import {
+  evaluateStreamHealthAuthority,
+  parseOwnerSourcesDom,
+  type StreamHealthAuthorityInput,
+  type StreamHealthAuthorityResult,
+} from "./authority.ts";
 import { runLiveStreamHealthAuthority } from "./live.ts";
 
 type Json = Record<string, unknown>;
 
 const REVISION = "pdpp-reference@1.0.0+abcdef123456";
+const EVIDENCE_AT = "2026-08-11T12:00:00.000Z";
 const SUCCESSFUL_RUNTIME_EVIDENCE_PATTERN = /successful runtime evidence/;
 const DISAGREEMENT_PATTERN = /disagrees/;
+const PROJECTION_PATTERN = /projection/;
+const SOCKET_FAILURE_PATTERN = /socket failed/;
 
 function manifest(overrides: Json = {}): Json {
   return {
@@ -41,8 +49,8 @@ function healthyConnection(overrides: Json = {}): Json {
       conditions: [{ type: "ProjectionReliable", status: "true" }],
     },
     rendered_verdict: { pill: { tone: "green", label: "Healthy" } },
-    last_run: { status: "succeeded", run_id: "run-1" },
-    last_successful_run: { status: "succeeded", run_id: "run-1" },
+    last_run: { finished_at: EVIDENCE_AT, status: "succeeded", run_id: "run-1" },
+    last_successful_run: { finished_at: EVIDENCE_AT, status: "succeeded", run_id: "run-1" },
     collection_report: [
       {
         stream: "messages",
@@ -52,6 +60,7 @@ function healthyConnection(overrides: Json = {}): Json {
         checkpoint: "checkpoint-1",
         considered: 1,
         covered: 1,
+        evidence_as_of: EVIDENCE_AT,
       },
     ],
     stream_records: [{ stream: "messages", record_count: 3, count_state: "known", declaration_state: "declared" }],
@@ -59,14 +68,39 @@ function healthyConnection(overrides: Json = {}): Json {
   };
 }
 
+function fullyEvidencedInput(connection: Json, connectorManifest = manifest()): StreamHealthAuthorityInput {
+  const synthetic = (connectorManifest.catalog as Json | undefined)?.kind === "test_fixture";
+  return {
+    auth: { authenticated: true, mode: "test", resolved: true },
+    connections: [connection],
+    dom: {
+      authenticated: true,
+      connectionIds: synthetic ? [] : [String(connection.connection_id)],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      streamKeys: synthetic ? [] : [{ connectionId: String(connection.connection_id), stream: "messages" }],
+      suspense: false,
+    },
+    manifests: [connectorManifest],
+    paginationComplete: true,
+    revision: { dom: REVISION, expected: REVISION, sha: "abcdef123456", summaries: REVISION },
+  };
+}
+
 function evaluate(connection: Json, connectorManifest = manifest()): StreamHealthAuthorityResult {
-  return evaluateStreamHealthAuthority({ connections: [connection], manifests: [connectorManifest] });
+  return evaluateStreamHealthAuthority(fullyEvidencedInput(connection, connectorManifest));
 }
 
 function streamResult(result: StreamHealthAuthorityResult): StreamHealthAuthorityResult["streams"][number] {
   const stream = result.streams.find((item) => item.stream === "messages");
   assert.ok(stream, "expected a messages stream finding");
   return stream;
+}
+
+function unsafeAuthorityInput(value: unknown): StreamHealthAuthorityInput {
+  return value as StreamHealthAuthorityInput;
 }
 
 function response(body: unknown, status = 200, revision = REVISION) {
@@ -85,11 +119,27 @@ function response(body: unknown, status = 200, revision = REVISION) {
 test("derives an exact green numerator/denominator from active production streams", () => {
   const second = healthyConnection({ connection_id: "c2" });
   const result = evaluateStreamHealthAuthority({
+    auth: { authenticated: true, mode: "test", resolved: true },
     connections: [healthyConnection(), second],
+    dom: {
+      authenticated: true,
+      connectionIds: ["c1", "c2"],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      streamKeys: [
+        { connectionId: "c1", stream: "messages" },
+        { connectionId: "c2", stream: "messages" },
+      ],
+      suspense: false,
+    },
     manifests: [manifest()],
+    paginationComplete: true,
+    revision: { dom: REVISION, expected: REVISION, sha: "abcdef123456", summaries: REVISION },
   });
 
-  assert.equal(result.status, "pass");
+  assert.equal(result.status, "pass", JSON.stringify({ gates: result.gates, findings: result.findings }));
   assert.equal(result.ok, true);
   assert.deepEqual(result.score, { denominator: 2, numerator: 2, percentage: 100, ratio: "2/2" });
   assert.equal(result.activeConnectionCount, 2);
@@ -135,24 +185,98 @@ test("false-known-zero is unobserved, while records/checkpoints without a succes
   assert.equal(streamResult(recordsNoProofResult).class, "unobserved");
   assert.match(streamResult(recordsNoProofResult).reason, SUCCESSFUL_RUNTIME_EVIDENCE_PATTERN);
   assert.equal(recordsNoProofResult.ok, false);
+
+  const untiedRuntime = healthyConnection({
+    last_run: { finished_at: EVIDENCE_AT, status: "succeeded", run_id: "run-2" },
+    last_successful_run: { finished_at: EVIDENCE_AT, status: "succeeded", run_id: "run-1" },
+  });
+  const untiedRuntimeResult = evaluate(untiedRuntime);
+  assert.equal(streamResult(untiedRuntimeResult).class, "unobserved");
+  assert.match(streamResult(untiedRuntimeResult).reason, SUCCESSFUL_RUNTIME_EVIDENCE_PATTERN);
 });
 
-test("mutation counterweight: the legacy records-present shortcut passes what the final authority must reject", () => {
-  const falseZero = healthyConnection();
-  const [report] = falseZero.collection_report as Json[];
-  const [record] = falseZero.stream_records as Json[];
-  assert.ok(report);
-  assert.ok(record);
-  report.considered = 0;
-  report.covered = 0;
-  record.record_count = 0;
-  record.count_state = "known_zero";
+test("omitted authority inputs and an explicitly empty manifest fail closed", () => {
+  const omitted = evaluateStreamHealthAuthority(unsafeAuthorityInput({ connections: [healthyConnection()] }));
+  assert.equal(omitted.status, "inconclusive");
+  assert.equal(omitted.gates.auth, "inconclusive");
+  assert.equal(omitted.gates.dom, "inconclusive");
+  assert.equal(omitted.gates.revision, "inconclusive");
 
-  const legacy = auditStreamHealth([falseZero]);
-  const authority = evaluate(falseZero);
-  assert.equal(legacy.ok, true, "the old ad hoc audit is the mutation being discriminated");
-  assert.equal(authority.ok, false);
-  assert.equal(streamResult(authority).class, "unobserved");
+  const emptyManifest = evaluateStreamHealthAuthority({
+    ...fullyEvidencedInput(healthyConnection()),
+    manifests: [],
+  });
+  assert.equal(emptyManifest.status, "inconclusive");
+  assert.equal(emptyManifest.perClass.manifest_unavailable, 1);
+  assert.equal(emptyManifest.score.denominator, 0);
+
+  const { manifests: omittedManifests, ...omittedManifestInput } = fullyEvidencedInput(healthyConnection());
+  assert.ok(omittedManifests);
+  const omittedManifest = evaluateStreamHealthAuthority(unsafeAuthorityInput(omittedManifestInput));
+  assert.equal(omittedManifest.status, "inconclusive");
+  assert.equal(omittedManifest.perClass.manifest_unavailable, 1);
+  assert.equal(omittedManifest.score.denominator, 0);
+});
+
+test("missing terminal or manifest projection evidence cannot inherit a green runtime result", () => {
+  const missingTerminal = healthyConnection({ terminal_facts: null });
+  const terminalResult = evaluate(missingTerminal);
+  assert.equal(streamResult(terminalResult).class, "unobserved");
+  assert.match(streamResult(terminalResult).reason, PROJECTION_PATTERN);
+
+  const missingManifestDeclaration = healthyConnection({ manifest_declaration: null });
+  const manifestResult = evaluate(missingManifestDeclaration);
+  assert.equal(streamResult(manifestResult).class, "unobserved");
+  assert.match(streamResult(manifestResult).reason, PROJECTION_PATTERN);
+});
+
+test("cancelled latest runs, duplicate declarations, and fractional counts are rejected", () => {
+  const cancelled = evaluate(healthyConnection({ last_run: { status: "cancelled", run_id: "run-2" } }));
+  assert.equal(streamResult(cancelled).class, "failed");
+
+  const duplicateManifest = evaluate(
+    healthyConnection(),
+    manifest({
+      streams: [
+        { name: "messages", required: true },
+        { name: "messages", required: true },
+      ],
+    })
+  );
+  assert.equal(duplicateManifest.perClass.manifest_unavailable, 1);
+  assert.equal(duplicateManifest.status, "inconclusive");
+
+  const duplicateManifestRows = evaluateStreamHealthAuthority({
+    ...fullyEvidencedInput(healthyConnection()),
+    manifests: [manifest(), manifest()],
+  });
+  assert.equal(duplicateManifestRows.status, "fail");
+  assert.ok(duplicateManifestRows.perClass.projection_disagreement > 0);
+
+  const duplicateConnectionStreams = evaluate(healthyConnection({ streams: ["messages", "messages"] }));
+  assert.equal(streamResult(duplicateConnectionStreams).class, "projection_disagreement");
+
+  const fractional = healthyConnection();
+  const [fractionalReport] = fractional.collection_report as Json[];
+  const [fractionalRecord] = fractional.stream_records as Json[];
+  assert.ok(fractionalReport);
+  assert.ok(fractionalRecord);
+  fractionalReport.collected = 0.5;
+  fractionalReport.considered = 1.5;
+  fractionalReport.covered = 1.5;
+  fractionalRecord.record_count = 3.5;
+  const fractionalResult = evaluate(fractional);
+  assert.equal(streamResult(fractionalResult).class, "projection_disagreement");
+  assert.equal(fractionalResult.status, "fail");
+
+  const fractionalCoverage = healthyConnection();
+  const [fractionalCoverageReport] = fractionalCoverage.collection_report as Json[];
+  assert.ok(fractionalCoverageReport);
+  fractionalCoverageReport.considered = 1.5;
+  fractionalCoverageReport.covered = 1.5;
+  const fractionalCoverageResult = evaluate(fractionalCoverage);
+  assert.equal(streamResult(fractionalCoverageResult).class, "unobserved");
+  assert.equal(fractionalCoverageResult.status, "fail");
 });
 
 test("stale projection is distinct from unobserved and cannot be laundered by a green pill", () => {
@@ -246,6 +370,70 @@ test("uses the collection-report forward disposition and fails closed on manifes
   assert.equal(unknown.status, "inconclusive");
 });
 
+test("all owner-health vocabulary surfaces reject unknown axes, actions, conditions, and rendered fields", () => {
+  const mutations: [string, (connection: Json) => void][] = [
+    [
+      "remote surface axis",
+      (connection) => {
+        ((connection.connection_health as Json).axes as Json).remote_surface = "future";
+      },
+    ],
+    [
+      "next-action owner action",
+      (connection) => {
+        (connection.connection_health as Json).next_action = { owner_action: "future" };
+      },
+    ],
+    [
+      "next-action notification state",
+      (connection) => {
+        (connection.connection_health as Json).next_action = { notification_state: "future" };
+      },
+    ],
+    [
+      "condition type",
+      (connection) => {
+        (connection.connection_health as Json).conditions = [{ type: "FutureCondition" }];
+      },
+    ],
+    [
+      "condition status",
+      (connection) => {
+        (connection.connection_health as Json).conditions = [{ type: "ProjectionReliable", status: "future" }];
+      },
+    ],
+    [
+      "condition remediation action",
+      (connection) => {
+        (connection.connection_health as Json).conditions = [
+          { type: "ProjectionReliable", status: "true", remediation: { action: "future" } },
+        ];
+      },
+    ],
+    [
+      "rendered required action",
+      (connection) => {
+        (connection.rendered_verdict as Json).required_actions = [
+          { kind: "future", audience: "future", urgency: "future", satisfied_when: { kind: "future" } },
+        ];
+      },
+    ],
+    [
+      "rendered stream disposition",
+      (connection) => {
+        (connection.rendered_verdict as Json).streams = [{ coverage: "complete", disposition: "future" }];
+      },
+    ],
+  ];
+  for (const [label, mutate] of mutations) {
+    const connection = healthyConnection();
+    mutate(connection);
+    const result = evaluate(connection);
+    assert.equal(result.status, "inconclusive", label);
+    assert.ok(result.perClass.unknown_vocabulary > 0, label);
+  }
+});
+
 test("catalog metadata excludes synthetic fixtures without excluding a production connector by name", () => {
   const connection = healthyConnection({ connector_id: "pg_runtime_demo" });
   const synthetic = manifest({ connector_id: "pg_runtime_demo", catalog: { kind: "test_fixture" } });
@@ -275,7 +463,7 @@ test("projection disagreement is visible instead of trusting the connection stre
 });
 
 test("malformed owner inventory rows fail closed instead of disappearing from the score", () => {
-  const result = evaluateStreamHealthAuthority({ connections: [null] });
+  const result = evaluateStreamHealthAuthority(unsafeAuthorityInput({ connections: [null] }));
 
   assert.equal(result.connectionCount, 1);
   assert.equal(result.perClass.projection_disagreement, 1);
@@ -285,9 +473,21 @@ test("malformed owner inventory rows fail closed instead of disappearing from th
 
 test("resolved authenticated DOM must agree with every real owner connection", () => {
   const result = evaluateStreamHealthAuthority({
+    auth: { authenticated: true, mode: "test", resolved: true },
     connections: [healthyConnection()],
     manifests: [manifest()],
-    dom: { authenticated: true, connectionIds: [], paginationComplete: true, resolved: true },
+    dom: {
+      authenticated: true,
+      connectionIds: [],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      streamKeys: [],
+      suspense: false,
+    },
+    paginationComplete: true,
+    revision: null,
   });
 
   assert.equal(result.domAgreement.status, "disagree");
@@ -298,22 +498,70 @@ test("resolved authenticated DOM must agree with every real owner connection", (
 
 test("auth, Suspense/loading, unknown vocabulary, and revision disagreement fail closed", () => {
   const auth = evaluateStreamHealthAuthority({
-    auth: { authenticated: false, resolved: false },
+    auth: { authenticated: false, mode: "none", resolved: false },
     connections: [],
-    dom: { authenticated: false, connectionIds: [], paginationComplete: false, resolved: false, suspense: false },
+    dom: {
+      authenticated: false,
+      connectionIds: [],
+      nextPageHrefs: [],
+      paginationComplete: false,
+      renderedRows: false,
+      resolved: false,
+      streamKeys: [],
+      suspense: false,
+    },
+    manifests: [],
     paginationComplete: false,
-    revision: { dom: null, summaries: null },
+    revision: { dom: null, expected: null, sha: null, summaries: null },
   });
   assert.equal(auth.status, "inconclusive");
   assert.ok(auth.perClass.inconclusive_auth > 0);
 
+  const missingAuthIdentity = evaluateStreamHealthAuthority(
+    unsafeAuthorityInput({
+      ...fullyEvidencedInput(healthyConnection()),
+      auth: { resolved: true },
+    })
+  );
+  assert.equal(missingAuthIdentity.status, "inconclusive");
+  assert.equal(missingAuthIdentity.gates.auth, "inconclusive");
+
   const suspense = evaluateStreamHealthAuthority({
-    auth: { authenticated: true, resolved: true },
+    auth: { authenticated: true, mode: "test", resolved: true },
     connections: [],
-    dom: { authenticated: true, connectionIds: [], paginationComplete: true, resolved: false, suspense: true },
+    dom: {
+      authenticated: true,
+      connectionIds: [],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: false,
+      resolved: false,
+      streamKeys: [],
+      suspense: true,
+    },
+    manifests: [],
+    paginationComplete: true,
+    revision: null,
   });
   assert.equal(suspense.status, "inconclusive");
   assert.ok(suspense.perClass.inconclusive_suspense > 0);
+
+  const noRenderedStructure = evaluateStreamHealthAuthority({
+    ...fullyEvidencedInput(healthyConnection()),
+    dom: {
+      authenticated: true,
+      connectionIds: ["c1"],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: false,
+      resolved: true,
+      streamKeys: [{ connectionId: "c1", stream: "messages" }],
+      suspense: false,
+    },
+  });
+  assert.equal(noRenderedStructure.status, "inconclusive");
+  assert.equal(noRenderedStructure.gates.dom, "inconclusive");
+  assert.ok(noRenderedStructure.perClass.inconclusive_suspense > 0);
 
   const unknownConnection = healthyConnection({ owner_state: { resolver: "future_resolver" } });
   const unknown = evaluate(unknownConnection);
@@ -321,10 +569,20 @@ test("auth, Suspense/loading, unknown vocabulary, and revision disagreement fail
   assert.ok(unknown.perClass.unknown_vocabulary > 0);
 
   const revision = evaluateStreamHealthAuthority({
+    auth: { authenticated: true, mode: "test", resolved: true },
     connections: [healthyConnection()],
     manifests: [manifest()],
-    dom: { authenticated: true, connectionIds: ["c1"], paginationComplete: true, resolved: true },
-    expectedSha: "abcdef123456",
+    dom: {
+      authenticated: true,
+      connectionIds: ["c1"],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      streamKeys: [{ connectionId: "c1", stream: "messages" }],
+      suspense: false,
+    },
+    paginationComplete: true,
     revision: { dom: REVISION, expected: "different-revision", sha: "abcdef123456", summaries: REVISION },
   });
   assert.equal(revision.status, "inconclusive");
@@ -334,14 +592,24 @@ test("auth, Suspense/loading, unknown vocabulary, and revision disagreement fail
 
 test("exact revision and SHA receipt is accepted only when summary and authenticated DOM agree", () => {
   const result = evaluateStreamHealthAuthority({
+    auth: { authenticated: true, mode: "test", resolved: true },
     connections: [healthyConnection()],
     manifests: [manifest()],
-    dom: { authenticated: true, connectionIds: ["c1"], paginationComplete: true, resolved: true },
-    expectedSha: "abcdef123456",
+    dom: {
+      authenticated: true,
+      connectionIds: ["c1"],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      streamKeys: [{ connectionId: "c1", stream: "messages" }],
+      suspense: false,
+    },
+    paginationComplete: true,
     revision: { dom: REVISION, expected: REVISION, sha: "abcdef123456", summaries: REVISION },
   });
 
-  assert.equal(result.status, "pass");
+  assert.equal(result.status, "pass", JSON.stringify({ gates: result.gates, findings: result.findings }));
   assert.equal(result.gates.revision, "exact");
   assert.deepEqual(result.revisionReceipt, {
     exact: true,
@@ -351,9 +619,44 @@ test("exact revision and SHA receipt is accepted only when summary and authentic
   });
 });
 
+test("dirty revision receipts never become exact by stripping the dirty marker", () => {
+  const dirtyRevision = `${REVISION}.dirty`;
+  const result = evaluateStreamHealthAuthority({
+    ...fullyEvidencedInput(healthyConnection()),
+    revision: {
+      dom: dirtyRevision,
+      expected: dirtyRevision,
+      sha: "abcdef123456",
+      summaries: dirtyRevision,
+    },
+  });
+  assert.equal(result.gates.revision, "inconclusive");
+  assert.equal(result.status, "inconclusive");
+  assert.equal(result.revisionReceipt.exact, false);
+});
+
+test("stream evidence must be bound to an expected rendered row and manifest stream", () => {
+  const result = evaluateStreamHealthAuthority({
+    ...fullyEvidencedInput(healthyConnection()),
+    dom: {
+      authenticated: true,
+      connectionIds: ["c1"],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      streamKeys: [{ connectionId: "c1", stream: "not-declared" }],
+      suspense: false,
+    },
+  });
+  assert.equal(result.domAgreement.status, "disagree");
+  assert.deepEqual(result.domAgreement.invalidStreamKeys, ["c1:not-declared"]);
+  assert.equal(result.status, "fail");
+});
+
 test("the DOM parser recognizes source identities, pagination, empty state, and unresolved auth/loading", () => {
   const resolved = parseOwnerSourcesDom(
-    '<a href="/sources/c1">one</a><a href="/sources/c1/messages">messages</a><a href="/sources?page_cursor=next">Next</a>'
+    '<a data-pdpp-source-row="c1" href="/sources/c1">one</a><a class="rr-s-stream-row" data-connection-id="c1" data-pdpp-stream-row="true" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages">messages</a><a href="/sources?page_cursor=next">Next</a>'
   );
   assert.equal(resolved.resolved, true);
   assert.deepEqual(resolved.connectionIds, ["c1"]);
@@ -361,6 +664,31 @@ test("the DOM parser recognizes source identities, pagination, empty state, and 
   assert.deepEqual(resolved.nextPageHrefs, ["/sources?page_cursor=next"]);
 
   assert.equal(parseOwnerSourcesDom('<div data-testid="sources-empty">No sources</div>').resolved, true);
+  assert.equal(parseOwnerSourcesDom('<a href="/sources/c1">unrelated documentation</a>').resolved, false);
+  assert.equal(
+    parseOwnerSourcesDom(
+      '<a data-pdpp-stream-row="true" data-connection-id="c1" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages">orphan stream</a>'
+    ).resolved,
+    false
+  );
+  assert.equal(
+    parseOwnerSourcesDom(
+      '<script>const html = \'<a data-pdpp-source-row="c1" data-pdpp-stream-row="true" data-connection-id="c1" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages"></a>\';</script>'
+    ).resolved,
+    false
+  );
+  assert.equal(
+    parseOwnerSourcesDom(
+      '<a data-pdpp-source-row="c1" href="/sources/c1">one</a><a data-pdpp-stream-row="true" data-connection-id="c1" data-stream-name="messages" href="/explore?connection=c1&amp;stream=other">bad</a>'
+    ).resolved,
+    false
+  );
+  assert.equal(
+    parseOwnerSourcesDom(
+      '<a data-pdpp-source-row="c1" href="/sources/c1">one</a><a data-pdpp-stream-row="true" data-connection-id="c1" data-stream-name="messages" href="/docs?connection=c1&amp;stream=messages">wrong route</a>'
+    ).resolved,
+    false
+  );
   assert.equal(parseOwnerSourcesDom('<form><input name="password" /></form>').resolved, false);
   assert.equal(parseOwnerSourcesDom('<div aria-busy="true">Loading</div>').suspense, true);
 });
@@ -380,7 +708,7 @@ test("live authority exhausts summary pages and catches a DOM that hides the sec
       return Promise.resolve(response(manifest()));
     }
     if (parsed.pathname === "/sources") {
-      return Promise.resolve(response('<a href="/sources/c1">one</a>'));
+      return Promise.resolve(response('<a data-pdpp-source-row="c1" href="/sources/c1">one</a>'));
     }
     throw new Error(`unexpected test URL ${url}`);
   };
@@ -411,7 +739,7 @@ test("live authority does not score a connection when its production manifest is
       return Promise.resolve(response({ error: "not_found" }, 404));
     }
     if (parsed.pathname === "/sources") {
-      return Promise.resolve(response('<a href="/sources/c1">one</a>'));
+      return Promise.resolve(response('<a data-pdpp-source-row="c1" href="/sources/c1">one</a>'));
     }
     throw new Error(`unexpected test URL ${url}`);
   };
@@ -477,4 +805,101 @@ test("live authority fails closed on a malformed/repeating summary cursor", asyn
   assert.equal(result.fetched, false);
   assert.equal(result.status, "inconclusive");
   assert.ok(result.perClass.inconclusive_pagination > 0);
+});
+
+test("summary pagination follows more than 200 pages without a fixed cap", async () => {
+  const pageCount = 201;
+  let calls = 0;
+  const result = await fetchAllConnectorSummaries({
+    base: "https://example.test",
+    fetchImpl: (url) => {
+      calls += 1;
+      const cursor = new URL(url).searchParams.get("cursor");
+      const page = cursor ? Number(cursor.replace("page-", "")) : 1;
+      return Promise.resolve(
+        response({
+          data: [],
+          has_more: page < pageCount,
+          next_cursor: page < pageCount ? `page-${page + 1}` : null,
+          object: "list",
+        })
+      );
+    },
+    headers: { accept: "application/json" },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(calls, pageCount);
+});
+
+test("DOM pagination follows more than 200 rendered pages and preserves cycle detection", async () => {
+  const pageCount = 201;
+  let calls = 0;
+  const fetchImpl: FetchImpl = (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === "/_ref/connectors") {
+      return Promise.resolve(response({ data: [healthyConnection()], has_more: false, object: "list" }));
+    }
+    if (parsed.pathname === "/connectors/mail") {
+      return Promise.resolve(response(manifest()));
+    }
+    if (parsed.pathname === "/sources") {
+      calls += 1;
+      const cursor = parsed.searchParams.get("page_cursor");
+      const page = cursor ? Number(cursor.replace("page-", "")) : 1;
+      const next = page < pageCount ? `<a href="/sources?page_cursor=page-${page + 1}">Next</a>` : "";
+      return Promise.resolve(response(`<a data-pdpp-source-row="c1" href="/sources/c1">one</a>${next}`));
+    }
+    throw new Error(`unexpected test URL ${url}`);
+  };
+  const result = await runLiveStreamHealthAuthority({
+    env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
+    expectedRevision: REVISION,
+    expectedSha: "abcdef123456",
+    fetchImpl,
+    origin: "https://example.test",
+  });
+  assert.equal(result.fetched, true);
+  assert.equal(calls, pageCount);
+  assert.equal(result.gates.pagination, "complete");
+  assert.equal(result.status, "pass");
+
+  const cycleResult = await runLiveStreamHealthAuthority({
+    env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
+    expectedRevision: REVISION,
+    expectedSha: "abcdef123456",
+    fetchImpl: (url) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/_ref/connectors") {
+        return Promise.resolve(response({ data: [healthyConnection()], has_more: false, object: "list" }));
+      }
+      if (parsed.pathname === "/connectors/mail") {
+        return Promise.resolve(response(manifest()));
+      }
+      if (parsed.pathname === "/sources") {
+        return Promise.resolve(
+          response(
+            '<a data-pdpp-source-row="c1" href="/sources/c1">one</a><a href="/sources?page_cursor=loop">Next</a>'
+          )
+        );
+      }
+      throw new Error(`unexpected test URL ${url}`);
+    },
+    origin: "https://example.test",
+  });
+  assert.equal(cycleResult.gates.pagination, "inconclusive");
+  assert.equal(cycleResult.status, "inconclusive");
+});
+
+test("owner-auth transport errors return a structured inconclusive result", async () => {
+  const result = await runLiveStreamHealthAuthority({
+    env: { PDPP_OWNER_PASSWORD: "owner-password" },
+    fetchImpl: () => {
+      throw new Error("socket failed");
+    },
+    origin: "https://example.test",
+  });
+  assert.equal(result.status, "inconclusive");
+  assert.equal(result.fetched, false);
+  assert.match(result.error ?? "", SOCKET_FAILURE_PATTERN);
+  assert.equal(result.gates.auth, "inconclusive");
 });

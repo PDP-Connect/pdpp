@@ -4,13 +4,17 @@
 /**
  * Final, pure stream-health acceptance authority.
  *
- * The older `auditStreamHealth` machine remains a narrow coverage-evidence
- * check. This module owns the acceptance score: one scored unit is one active
+ * This module owns the acceptance score: one scored unit is one active
  * owner connection crossed with one production stream declared by its
  * manifest. A count, checkpoint, or green pill is never a substitute for a
  * successful runtime proof and committed coverage (or an explicit verified
  * empty proof).
  */
+
+import {
+  type CoverageProofStrategy,
+  evaluateStreamCoherence,
+} from "../../packages/reference-contract/src/evidence/index.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -75,6 +79,7 @@ const KNOWN_COVERAGE_AXES = new Set([
 const KNOWN_FRESHNESS_AXES = new Set(["fresh", "stale", "unknown"]);
 const KNOWN_ATTENTION_AXES = new Set(["acknowledged", "in_progress", "none", "open"]);
 const KNOWN_OUTBOX_AXES = new Set(["active", "idle", "stalled", "unknown"]);
+const KNOWN_REMOTE_SURFACE_AXES = new Set(["failed", "idle", "leased", "none", "unknown", "waiting"]);
 const KNOWN_FORWARD_DISPOSITIONS = new Set([
   "awaiting_owner",
   "checking",
@@ -92,6 +97,7 @@ const KNOWN_RUN_STATUSES = new Set([
   "completed",
   "deferred",
   "expired",
+  "error",
   "failed",
   "in_progress",
   "leased",
@@ -101,6 +107,7 @@ const KNOWN_RUN_STATUSES = new Set([
   "starting_surface",
   "surface_failed",
   "succeeded",
+  "succeeded_with_gaps",
   "success",
   "waiting_for_browser_surface",
 ]);
@@ -135,9 +142,122 @@ const KNOWN_FRESHNESS_STRATEGIES = new Set([
 const KNOWN_COUNT_STATES = new Set(["known", "known_zero", "unobserved", "stale", "unknown"]);
 const KNOWN_DECLARATION_STATES = new Set(["declared", "dormant", "unexpected", "unavailable"]);
 const SUCCESSFUL_RUN_STATUSES = new Set(["completed", "succeeded", "success"]);
-const FAILED_RUN_STATUSES = new Set(["abandoned", "failed", "rejected", "surface_failed"]);
+const FAILED_RUN_STATUSES = new Set([
+  "abandoned",
+  "cancelled",
+  "error",
+  "expired",
+  "failed",
+  "rejected",
+  "surface_failed",
+]);
 const ACTIVE_RUN_STATUSES = new Set(["active", "in_progress", "leased", "started", "starting_surface"]);
 const ACCEPTED_ABSENCE_POLICIES = new Set(["deferred", "inventory_only", "unavailable", "unsupported"]);
+const KNOWN_CONDITION_TYPES = new Set([
+  "AttentionClear",
+  "BacklogClear",
+  "CollectionSucceeded",
+  "CredentialContinuity",
+  "CredentialsValid",
+  "Fresh",
+  "LocalExporterAvailable",
+  "ProjectionReliable",
+  "RemoteSurfaceAvailable",
+  "RetryPolicyClear",
+  "RuntimeAvailable",
+  "ScheduleEligible",
+  "SourceCoverageComplete",
+]);
+const KNOWN_CONDITION_STATUSES = new Set(["false", "not_applicable", "true", "unknown"]);
+const KNOWN_CONDITION_SEVERITIES = new Set(["blocked", "error", "info", "warning"]);
+const KNOWN_CONDITION_ORIGINS = new Set([
+  "connector",
+  "local_device",
+  "operator",
+  "read_model",
+  "readiness",
+  "remote_surface",
+  "runtime",
+  "scheduler",
+]);
+const KNOWN_CONDITION_SENSITIVITIES = new Set(["owner", "public", "secret_redacted"]);
+const KNOWN_CONDITION_REMEDIATION_ACTIONS = new Set([
+  "check_runtime",
+  "clear_backlog",
+  "refresh_credentials",
+  "retry_by_runtime",
+  "satisfy_attention",
+  "update_connector",
+  "wait",
+]);
+const KNOWN_OWNER_ACTION_SURFACES = new Set([
+  "browser_session",
+  "local_device",
+  "maintainer",
+  "none",
+  "provider_interaction",
+  "runtime_retry",
+  "schedule",
+  "stored_credential",
+]);
+const KNOWN_NEXT_ACTION_NOTIFICATION_STATES = new Set(["acknowledged", "failed", "pending", "sent", "suppressed"]);
+const KNOWN_NEXT_ACTION_OWNER_ACTIONS = new Set(["act_elsewhere", "operate_attachment", "provide_value"]);
+const KNOWN_NEXT_ACTION_RESPONSE_CONTRACTS = new Set(["response_required", "none"]);
+const KNOWN_NEXT_ACTION_SOURCES = new Set(["none", "schedule_fallback", "structured"]);
+const KNOWN_SYNC_TARGET_KINDS = new Set(["sync"]);
+const KNOWN_LOCAL_DEVICE_TARGET_KINDS = new Set(["local_device"]);
+const KNOWN_RENDERED_CHANNELS = new Set(["advisory", "attention", "calm"]);
+const KNOWN_ANNOTATION_KINDS = new Set(["activity", "attention", "coverage", "freshness", "outbox", "schedule"]);
+const KNOWN_REQUIRED_ACTION_KINDS = new Set([
+  "add_info",
+  "backfill",
+  "code_fix",
+  "contact_support",
+  "reattach_schedule",
+  "reauth",
+  "refresh_now",
+  "retry_gap",
+  "wait",
+]);
+const KNOWN_ACTION_AUDIENCES = new Set(["maintainer", "none", "owner"]);
+const KNOWN_ACTION_URGENCIES = new Set(["now", "overdue", "soon", "verifying"]);
+const KNOWN_VERDICT_LABELS = new Set([
+  "Can't collect",
+  "Checking",
+  "Degraded",
+  "Healthy",
+  "Needs refresh",
+  "Not measured",
+  "Syncing",
+]);
+const KNOWN_SATISFACTION_KINDS = new Set([
+  "attention_resolved",
+  "backfill_window_covered",
+  "confirming_run_succeeded",
+  "credential_present_and_unrejected",
+  "gap_recovered",
+  "none",
+  "schedule_attached_and_enabled",
+]);
+const KNOWN_PROGRESS_MODES = new Set(["deferred", "local_device", "manual", "scheduled"]);
+const KNOWN_SUPPRESSED_SIGNAL_KINDS = new Set(["cooldown", "drain", "runtime_fault", "syncing"]);
+const KNOWN_REMEDIATION_KINDS = new Set(["local_collector_recovery"]);
+const KNOWN_REMEDIATION_CAUSES = new Set([
+  "dead_letter_backlog",
+  "stale_heartbeat",
+  "stale_pending",
+  "state_read_failed",
+  "stalled_unknown",
+  "transient_upload_failure",
+]);
+const KNOWN_REMEDIATION_COMMAND_KINDS = new Set([
+  "local_collector_doctor",
+  "local_collector_recover_apply",
+  "local_collector_recover_preview",
+  "local_collector_retry_dead_letters_apply",
+  "local_collector_retry_dead_letters_preview",
+  "local_collector_run",
+]);
 const EXPLICIT_TEST_ENVIRONMENTS = new Set(["fixture", "test", "testing"]);
 const EXPLICIT_SYNTHETIC_KINDS = new Set(["fixture", "synthetic", "synthetic_fixture", "test_fixture"]);
 const CHECKPOINT_UNKNOWN_VALUES = new Set(["", "none", "unknown", "unobserved", "pending"]);
@@ -148,32 +268,41 @@ const SUSPENSE_CLASS_PATTERN = /(?:skeleton|animate-pulse)/i;
 const HREF_PATTERN = /\bhref=(['"])(.*?)\1/gi;
 const PAGE_CURSOR_PATTERN = /[?&]page_cursor=/;
 const EXPLICIT_EMPTY_PATTERN = /data-testid=["']sources-empty["']/i;
+const HTML_TAG_PATTERN = /<[^>]+>/g;
+const NON_RENDERED_HTML_PATTERN = /<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>/gi;
+const ATTRIBUTE_PATTERN = /(?:^|\s)([A-Za-z_:][A-Za-z0-9_.:-]*)(?:\s*=\s*(?:(["'])(.*?)\2|([^\s>]+)))?/g;
+const ROW_ATTRIBUTE_NAMES = new Set([
+  "data-pdpp-source-row",
+  "data-pdpp-stream-row",
+  "data-connection-id",
+  "data-stream-name",
+  "href",
+]);
 
 export interface OwnerSourcesDomEvidence {
-  authenticated?: boolean;
+  authenticated: boolean;
   connectionIds: readonly string[];
-  nextPageHrefs?: readonly string[];
-  paginationComplete?: boolean;
+  nextPageHrefs: readonly string[];
+  paginationComplete: boolean;
   reason?: string | null;
+  renderedRows: boolean;
   resolved: boolean;
-  streamKeys?: readonly { connectionId: string; stream: string }[];
-  suspense?: boolean;
+  streamKeys: readonly { connectionId: string; stream: string }[];
+  suspense: boolean;
 }
 
 export interface StreamHealthAuthorityInput {
-  auth?: { authenticated?: boolean; mode?: string; resolved: boolean };
-  catalog?: readonly unknown[];
+  auth: { authenticated: boolean; mode: string; resolved: boolean };
   connections: readonly unknown[];
-  dom?: OwnerSourcesDomEvidence | string | null;
-  expectedSha?: string | null;
-  manifests?: readonly unknown[];
-  paginationComplete?: boolean;
-  revision?: {
-    dom?: string | null;
-    expected?: string | null;
-    sha?: string | null;
-    summaries?: string | null;
-  };
+  dom: OwnerSourcesDomEvidence | string | null;
+  manifests: readonly unknown[];
+  paginationComplete: boolean;
+  revision: {
+    dom: string | null;
+    expected: string | null;
+    sha: string | null;
+    summaries: string | null;
+  } | null;
 }
 
 export interface StreamHealthFinding {
@@ -199,8 +328,11 @@ export interface StreamHealthAuthorityResult {
   connectionCount: number;
   domAgreement: {
     extraConnectionIds: string[];
+    extraStreamKeys: string[];
+    invalidStreamKeys: string[];
     missingConnectionIds: string[];
     observedConnectionIds: string[];
+    observedStreamKeys: string[];
     resolved: boolean;
     status: "agree" | "disagree" | "inconclusive";
   };
@@ -209,7 +341,7 @@ export interface StreamHealthAuthorityResult {
     auth: "resolved" | "inconclusive";
     dom: "resolved" | "inconclusive";
     pagination: "complete" | "inconclusive";
-    revision: "exact" | "inconclusive" | "not_required";
+    revision: "exact" | "inconclusive";
     vocabulary: "known" | "inconclusive";
   };
   numerator: number;
@@ -236,7 +368,6 @@ interface ManifestStream {
 interface ResolvedManifest {
   duplicate: boolean;
   missing: boolean;
-  source: "catalog" | "connection" | "summary";
   streams: ManifestStream[];
   value: JsonObject;
 }
@@ -350,10 +481,16 @@ function streamDefinitions(value: unknown): { invalid: boolean; streams: Manifes
     return { invalid: true, streams: [] };
   }
   const streams: ManifestStream[] = [];
+  const names = new Set<string>();
   let invalid = false;
   for (const entry of value) {
     if (typeof entry === "string" && entry.trim()) {
-      streams.push({ name: entry.trim(), raw: { name: entry.trim() } });
+      const name = entry.trim();
+      if (names.has(name)) {
+        invalid = true;
+      }
+      names.add(name);
+      streams.push({ name, raw: { name } });
       continue;
     }
     const object = asObject(entry);
@@ -362,6 +499,10 @@ function streamDefinitions(value: unknown): { invalid: boolean; streams: Manifes
       invalid = true;
       continue;
     }
+    if (names.has(name)) {
+      invalid = true;
+    }
+    names.add(name);
     streams.push({ name, raw: object });
   }
   return { invalid, streams };
@@ -401,79 +542,25 @@ function manifestFingerprint(manifest: JsonObject): string {
   });
 }
 
-function manifestProjectionIsCurrent(connection: JsonObject): boolean {
-  const declarationValue = connection.manifest_declaration;
-  if (declarationValue !== undefined) {
-    return nestedObject(connection, "manifest_declaration")?.state === "current";
-  }
-  return asNonEmptyString(connection.manifest_version) !== null;
-}
-
-function summaryManifest(connection: JsonObject): JsonObject | null {
-  for (const [field, value] of [
-    ["manifest", connection.manifest],
-    ["manifest_excerpt", connection.manifest_excerpt],
-    ["manifest_projection", connection.manifest_projection],
-  ] as const) {
-    const candidate = manifestFromCandidate(value);
-    if (
-      candidate &&
-      Array.isArray(candidate.streams) &&
-      (field === "manifest" || manifestProjectionIsCurrent(connection))
-    ) {
-      return candidate;
-    }
-  }
-  const manifestStreams = connection.manifest_streams;
-  if (Array.isArray(manifestStreams) && manifestProjectionIsCurrent(connection)) {
-    return {
-      connector_id: connectionConnectorId(connection),
-      streams: manifestStreams,
-      version: connection.manifest_version ?? null,
-    };
-  }
-  const streams = streamDefinitions(connection.streams);
-  if (streams.streams.length > 0 && !streams.invalid && manifestProjectionIsCurrent(connection)) {
-    return {
-      connector_id: connectionConnectorId(connection),
-      streams: connection.streams,
-      version: connection.manifest_version ?? null,
-    };
-  }
-  return null;
-}
-
 function resolveManifest(connection: JsonObject, input: StreamHealthAuthorityInput): ResolvedManifest | null {
-  const catalogProvided = input.manifests !== undefined || input.catalog !== undefined;
-  const candidates = [...(input.manifests ?? []), ...(input.catalog ?? [])]
+  const candidates = (input.manifests ?? [])
     .map(manifestFromCandidate)
     .filter((manifest): manifest is JsonObject => manifest !== null)
     .filter((manifest) => manifestMatches(connection, manifest));
   if (candidates.length > 0) {
     const chosen = candidates[0] as JsonObject;
     const parsed = streamDefinitions(chosen.streams);
-    const duplicate = candidates.some((candidate) => manifestFingerprint(candidate) !== manifestFingerprint(chosen));
+    const duplicate =
+      candidates.length > 1 ||
+      candidates.some((candidate) => manifestFingerprint(candidate) !== manifestFingerprint(chosen));
     return {
       duplicate,
       missing: parsed.invalid || parsed.streams.length === 0,
-      source: "catalog",
       streams: parsed.streams,
       value: chosen,
     };
   }
-
-  const fallback = summaryManifest(connection);
-  if (!fallback) {
-    return null;
-  }
-  const parsed = streamDefinitions(fallback.streams);
-  return {
-    duplicate: false,
-    missing: parsed.invalid || parsed.streams.length === 0 || catalogProvided,
-    source: connection.manifest ? "connection" : "summary",
-    streams: parsed.streams,
-    value: fallback,
-  };
+  return null;
 }
 
 function checkVocabulary(value: unknown, allowed: ReadonlySet<string>, path: string, unknown: string[]): void {
@@ -485,6 +572,203 @@ function checkVocabulary(value: unknown, allowed: ReadonlySet<string>, path: str
   }
 }
 
+function checkNextActionVocabulary(candidate: JsonObject | null, path: string, unknown: string[]): void {
+  if (!candidate) {
+    return;
+  }
+  checkVocabulary(
+    candidate.notification_state,
+    KNOWN_NEXT_ACTION_NOTIFICATION_STATES,
+    `${path}.notification_state`,
+    unknown
+  );
+  checkVocabulary(candidate.owner_action, KNOWN_NEXT_ACTION_OWNER_ACTIONS, `${path}.owner_action`, unknown);
+  checkVocabulary(
+    candidate.response_contract,
+    KNOWN_NEXT_ACTION_RESPONSE_CONTRACTS,
+    `${path}.response_contract`,
+    unknown
+  );
+  checkVocabulary(candidate.source, KNOWN_NEXT_ACTION_SOURCES, `${path}.source`, unknown);
+  if (
+    candidate.action_target !== undefined &&
+    candidate.action_target !== null &&
+    typeof candidate.action_target !== "string"
+  ) {
+    unknown.push(`${path}.action_target=${String(candidate.action_target)}`);
+  }
+}
+
+function checkConditionVocabulary(health: JsonObject | null, unknown: string[]): void {
+  const conditions = health?.conditions;
+  if (conditions !== undefined && !Array.isArray(conditions)) {
+    unknown.push("connection_health.conditions=<malformed>");
+  }
+  for (const [index, condition] of (Array.isArray(conditions) ? conditions : []).entries()) {
+    const object = asObject(condition);
+    if (!object) {
+      unknown.push(`connection_health.conditions[${index}]=<malformed>`);
+      continue;
+    }
+    const path = `connection_health.conditions[${index}]`;
+    checkVocabulary(object.type, KNOWN_CONDITION_TYPES, `${path}.type`, unknown);
+    checkVocabulary(object.status, KNOWN_CONDITION_STATUSES, `${path}.status`, unknown);
+    checkVocabulary(object.severity, KNOWN_CONDITION_SEVERITIES, `${path}.severity`, unknown);
+    checkVocabulary(object.origin, KNOWN_CONDITION_ORIGINS, `${path}.origin`, unknown);
+    checkVocabulary(object.sensitivity, KNOWN_CONDITION_SENSITIVITIES, `${path}.sensitivity`, unknown);
+    const remediation = nestedObject(object, "remediation");
+    checkVocabulary(remediation?.action, KNOWN_CONDITION_REMEDIATION_ACTIONS, `${path}.remediation.action`, unknown);
+    checkVocabulary(
+      nestedObject(remediation, "surface")?.kind,
+      KNOWN_OWNER_ACTION_SURFACES,
+      `${path}.remediation.surface.kind`,
+      unknown
+    );
+  }
+}
+
+function checkRequiredActionVocabulary(action: unknown, index: number, unknown: string[]): void {
+  const object = asObject(action);
+  const path = `rendered_verdict.required_actions[${index}]`;
+  if (!object) {
+    unknown.push(`${path}=<malformed>`);
+    return;
+  }
+  checkVocabulary(object.kind, KNOWN_REQUIRED_ACTION_KINDS, `${path}.kind`, unknown);
+  checkVocabulary(object.audience, KNOWN_ACTION_AUDIENCES, `${path}.audience`, unknown);
+  checkVocabulary(object.urgency, KNOWN_ACTION_URGENCIES, `${path}.urgency`, unknown);
+  checkVocabulary(
+    nestedObject(object, "satisfied_when")?.kind,
+    KNOWN_SATISFACTION_KINDS,
+    `${path}.satisfied_when.kind`,
+    unknown
+  );
+  checkVocabulary(nestedObject(object, "surface")?.kind, KNOWN_OWNER_ACTION_SURFACES, `${path}.surface.kind`, unknown);
+  checkVocabulary(nestedObject(object, "target")?.kind, KNOWN_SYNC_TARGET_KINDS, `${path}.target.kind`, unknown);
+  const remediation = nestedObject(object, "remediation");
+  checkVocabulary(remediation?.kind, KNOWN_REMEDIATION_KINDS, `${path}.remediation.kind`, unknown);
+  checkVocabulary(remediation?.cause, KNOWN_REMEDIATION_CAUSES, `${path}.remediation.cause`, unknown);
+  checkVocabulary(
+    nestedObject(remediation, "target")?.kind,
+    KNOWN_LOCAL_DEVICE_TARGET_KINDS,
+    `${path}.remediation.target.kind`,
+    unknown
+  );
+  const commands = remediation?.commands;
+  if (commands !== undefined && !Array.isArray(commands)) {
+    unknown.push(`${path}.remediation.commands=<malformed>`);
+  }
+  for (const [commandIndex, command] of (Array.isArray(commands) ? commands : []).entries()) {
+    checkVocabulary(
+      asObject(command)?.kind,
+      KNOWN_REMEDIATION_COMMAND_KINDS,
+      `${path}.remediation.commands[${commandIndex}].kind`,
+      unknown
+    );
+  }
+  if (object.terminal !== undefined && typeof object.terminal !== "boolean") {
+    unknown.push(`${path}.terminal=${String(object.terminal)}`);
+  }
+}
+
+function checkRenderedAnnotations(annotations: unknown, unknown: string[]): void {
+  if (annotations !== undefined && !Array.isArray(annotations)) {
+    unknown.push("rendered_verdict.annotations=<malformed>");
+  }
+  for (const [index, annotation] of (Array.isArray(annotations) ? annotations : []).entries()) {
+    checkVocabulary(
+      asObject(annotation)?.kind,
+      KNOWN_ANNOTATION_KINDS,
+      `rendered_verdict.annotations[${index}].kind`,
+      unknown
+    );
+  }
+}
+
+function checkRenderedActions(actions: unknown, unknown: string[]): void {
+  if (actions !== undefined && !Array.isArray(actions)) {
+    unknown.push("rendered_verdict.required_actions=<malformed>");
+  }
+  for (const [index, action] of (Array.isArray(actions) ? actions : []).entries()) {
+    checkRequiredActionVocabulary(action, index, unknown);
+  }
+}
+
+function checkRenderedStreams(verdictStreams: unknown, unknown: string[]): void {
+  if (verdictStreams !== undefined && !Array.isArray(verdictStreams)) {
+    unknown.push("rendered_verdict.streams=<malformed>");
+  }
+  for (const [index, stream] of (Array.isArray(verdictStreams) ? verdictStreams : []).entries()) {
+    const object = asObject(stream);
+    checkVocabulary(object?.coverage, KNOWN_COVERAGE_AXES, `rendered_verdict.streams[${index}].coverage`, unknown);
+    checkVocabulary(
+      object?.disposition,
+      KNOWN_FORWARD_DISPOSITIONS,
+      `rendered_verdict.streams[${index}].disposition`,
+      unknown
+    );
+  }
+}
+
+function checkRenderedDetail(detail: JsonObject | null, unknown: string[]): void {
+  checkVocabulary(detail?.state, KNOWN_HEALTH_STATES, "rendered_verdict.detail.state", unknown);
+  checkVocabulary(
+    detail?.forward_disposition,
+    KNOWN_FORWARD_DISPOSITIONS,
+    "rendered_verdict.detail.forward_disposition",
+    unknown
+  );
+  const suppressed = detail?.suppressed;
+  for (const [index, signal] of (Array.isArray(suppressed) ? suppressed : []).entries()) {
+    checkVocabulary(
+      asObject(signal)?.kind,
+      KNOWN_SUPPRESSED_SIGNAL_KINDS,
+      `rendered_verdict.detail.suppressed[${index}].kind`,
+      unknown
+    );
+  }
+}
+
+function checkRenderedTrace(trace: JsonObject | null, unknown: string[]): void {
+  checkVocabulary(trace?.tone_cause, KNOWN_PILL_TONES, "rendered_verdict.trace.tone_cause", unknown);
+  checkVocabulary(
+    trace?.primary_action_kind,
+    KNOWN_REQUIRED_ACTION_KINDS,
+    "rendered_verdict.trace.primary_action_kind",
+    unknown
+  );
+  for (const [index, toneInput] of (Array.isArray(trace?.tone_inputs) ? trace.tone_inputs : []).entries()) {
+    checkVocabulary(
+      asObject(toneInput)?.tone,
+      KNOWN_PILL_TONES,
+      `rendered_verdict.trace.tone_inputs[${index}].tone`,
+      unknown
+    );
+  }
+}
+
+function checkRenderedVerdictVocabulary(verdict: JsonObject | null, unknown: string[]): void {
+  if (!verdict) {
+    return;
+  }
+  const { annotations, channel, required_actions: actions, streams: verdictStreams } = verdict;
+  const pill = nestedObject(verdict, "pill");
+  checkVocabulary(pill?.tone, KNOWN_PILL_TONES, "rendered_verdict.pill.tone", unknown);
+  checkVocabulary(pill?.label, KNOWN_VERDICT_LABELS, "rendered_verdict.pill.label", unknown);
+  checkVocabulary(channel, KNOWN_RENDERED_CHANNELS, "rendered_verdict.channel", unknown);
+  checkRenderedAnnotations(annotations, unknown);
+  checkRenderedActions(actions, unknown);
+  checkRenderedStreams(verdictStreams, unknown);
+  checkVocabulary(
+    nestedObject(verdict, "progress")?.mode,
+    KNOWN_PROGRESS_MODES,
+    "rendered_verdict.progress.mode",
+    unknown
+  );
+  checkRenderedDetail(nestedObject(verdict, "detail"), unknown);
+  checkRenderedTrace(nestedObject(verdict, "trace"), unknown);
+}
+
 function checkConnectionVocabulary(connection: JsonObject): string[] {
   const unknown: string[] = [];
   checkVocabulary(connection.status, KNOWN_CONNECTION_STATUSES, "status", unknown);
@@ -492,7 +776,6 @@ function checkConnectionVocabulary(connection: JsonObject): string[] {
   checkVocabulary(ownerState?.resolver, KNOWN_OWNER_RESOLVERS, "owner_state.resolver", unknown);
   checkVocabulary(ownerState?.owner_of_state, KNOWN_OWNER_OF_STATES, "owner_state.owner_of_state", unknown);
   checkVocabulary(ownerState?.posture, KNOWN_OWNER_POSTURES, "owner_state.posture", unknown);
-
   const health = nestedObject(connection, "connection_health");
   checkVocabulary(health?.state, KNOWN_HEALTH_STATES, "connection_health.state", unknown);
   checkVocabulary(
@@ -506,14 +789,18 @@ function checkConnectionVocabulary(connection: JsonObject): string[] {
   checkVocabulary(axes?.freshness, KNOWN_FRESHNESS_AXES, "connection_health.axes.freshness", unknown);
   checkVocabulary(axes?.attention, KNOWN_ATTENTION_AXES, "connection_health.axes.attention", unknown);
   checkVocabulary(axes?.outbox, KNOWN_OUTBOX_AXES, "connection_health.axes.outbox", unknown);
-
-  const pill = nestedObject(nestedObject(connection, "rendered_verdict"), "pill");
-  checkVocabulary(pill?.tone, KNOWN_PILL_TONES, "rendered_verdict.pill.tone", unknown);
+  checkVocabulary(axes?.remote_surface, KNOWN_REMOTE_SURFACE_AXES, "connection_health.axes.remote_surface", unknown);
+  checkNextActionVocabulary(nestedObject(health, "next_action"), "connection_health.next_action", unknown);
+  checkNextActionVocabulary(nestedObject(connection, "next_action"), "next_action", unknown);
+  checkConditionVocabulary(health, unknown);
+  checkRenderedVerdictVocabulary(nestedObject(connection, "rendered_verdict"), unknown);
   for (const [index, run] of [connection.last_run, connection.last_successful_run].entries()) {
     checkVocabulary(asObject(run)?.status, KNOWN_RUN_STATUSES, `run[${index}].status`, unknown);
   }
-  const report = Array.isArray(connection.collection_report) ? connection.collection_report : [];
-  for (const [index, entry] of report.entries()) {
+  for (const [index, entry] of (Array.isArray(connection.collection_report)
+    ? connection.collection_report
+    : []
+  ).entries()) {
     const object = asObject(entry);
     checkVocabulary(
       object?.coverage_condition,
@@ -540,8 +827,7 @@ function checkConnectionVocabulary(connection: JsonObject): string[] {
       unknown
     );
   }
-  const records = Array.isArray(connection.stream_records) ? connection.stream_records : [];
-  for (const [index, record] of records.entries()) {
+  for (const [index, record] of (Array.isArray(connection.stream_records) ? connection.stream_records : []).entries()) {
     const object = asObject(record);
     checkVocabulary(object?.count_state, KNOWN_COUNT_STATES, `stream_records[${index}].count_state`, unknown);
     checkVocabulary(
@@ -612,14 +898,23 @@ function manifestVocabulary(manifest: ResolvedManifest | null): string[] {
   return unknown;
 }
 
-function namedEntries(connection: JsonObject, key: string): { duplicates: string[]; map: Map<string, JsonObject> } {
+function namedEntries(
+  connection: JsonObject,
+  key: string
+): {
+  duplicates: string[];
+  malformed: boolean;
+  map: Map<string, JsonObject>;
+} {
   const map = new Map<string, JsonObject>();
   const duplicates: string[] = [];
+  let malformed = false;
   const values = Array.isArray(connection[key]) ? connection[key] : [];
   for (const value of values) {
     const object = asObject(value);
     const name = asNonEmptyString(object?.stream);
     if (!(object && name)) {
+      malformed = true;
       continue;
     }
     if (map.has(name)) {
@@ -627,7 +922,7 @@ function namedEntries(connection: JsonObject, key: string): { duplicates: string
     }
     map.set(name, object);
   }
-  return { duplicates, map };
+  return { duplicates, malformed, map };
 }
 
 function declaredConnectionStreams(connection: JsonObject): string[] {
@@ -653,18 +948,37 @@ function projectionAgreement(connection: JsonObject, manifest: ResolvedManifest 
     return `required stream ${contradictoryStream.name} declares accepted absence`;
   }
   const manifestNames = new Set(manifest.streams.map((stream) => stream.name));
-  const connectionNames = new Set(declaredConnectionStreams(connection));
-  if (
-    connectionNames.size > 0 &&
-    (manifestNames.size !== connectionNames.size || [...manifestNames].some((name) => !connectionNames.has(name)))
-  ) {
+  if (!Array.isArray(connection.streams)) {
+    return "connection stream membership is unavailable";
+  }
+  const normalizedConnectionStreams = connection.streams.map((value) =>
+    typeof value === "string" ? value.trim() : asNonEmptyString(asObject(value)?.name)
+  );
+  if (normalizedConnectionStreams.some((name) => !name)) {
+    return "connection stream membership contains a malformed stream name";
+  }
+  const connectionStreamNames = normalizedConnectionStreams as string[];
+  const duplicateConnectionStream = connectionStreamNames.find(
+    (name, index) => connectionStreamNames.indexOf(name) !== index
+  );
+  if (duplicateConnectionStream) {
+    return `connection stream membership repeats ${duplicateConnectionStream}`;
+  }
+  const connectionNames = new Set(connectionStreamNames);
+  if (manifestNames.size !== connectionNames.size || [...manifestNames].some((name) => !connectionNames.has(name))) {
     return "connection stream membership disagrees with the manifest";
   }
   const report = namedEntries(connection, "collection_report");
+  if (report.malformed) {
+    return "collection_report contains a malformed stream entry";
+  }
   if (report.duplicates.length > 0) {
     return `collection_report repeats ${report.duplicates.join(", ")}`;
   }
   const records = namedEntries(connection, "stream_records");
+  if (records.malformed) {
+    return "stream_records contains a malformed stream entry";
+  }
   if (records.duplicates.length > 0) {
     return `stream_records repeats ${records.duplicates.join(", ")}`;
   }
@@ -673,7 +987,8 @@ function projectionAgreement(connection: JsonObject, manifest: ResolvedManifest 
     return (
       (record.count_state === "known_zero" && count !== 0) ||
       (record.count_state === "known" && count === 0) ||
-      ((record.count_state === "known" || record.count_state === "known_zero") && typeof count !== "number")
+      ((record.count_state === "known" || record.count_state === "known_zero") && !isNonNegativeInteger(count)) ||
+      (count !== null && count !== undefined && !isNonNegativeInteger(count))
     );
   });
   if (inconsistentRecord) {
@@ -828,13 +1143,37 @@ function isOwnerStateUnobserved(connection: JsonObject): boolean {
   );
 }
 
-function successfulRuntimeEvidence(connection: JsonObject): boolean {
+function successfulRuntimeEvidence(connection: JsonObject, report: JsonObject): boolean {
   const lastSuccess = asObject(connection.last_successful_run);
   const lastRun = asObject(connection.last_run);
-  return (
-    (typeof lastSuccess?.status === "string" && SUCCESSFUL_RUN_STATUSES.has(lastSuccess.status)) ||
-    (typeof lastRun?.status === "string" && SUCCESSFUL_RUN_STATUSES.has(lastRun.status))
-  );
+  if (
+    !(lastSuccess && lastRun) ||
+    typeof lastSuccess.status !== "string" ||
+    typeof lastRun.status !== "string" ||
+    !SUCCESSFUL_RUN_STATUSES.has(lastSuccess.status) ||
+    !SUCCESSFUL_RUN_STATUSES.has(lastRun.status)
+  ) {
+    return false;
+  }
+  const lastSuccessId = asNonEmptyString(lastSuccess.run_id);
+  const lastRunId = asNonEmptyString(lastRun.run_id);
+  if (
+    (lastSuccessId !== null || lastRunId !== null) &&
+    (!(lastSuccessId && lastRunId) || lastSuccessId !== lastRunId)
+  ) {
+    return false;
+  }
+  const evidenceAsOf = asNonEmptyString(report.evidence_as_of) ?? asNonEmptyString(report.as_of);
+  if (!evidenceAsOf) {
+    return false;
+  }
+  const successfulTimes = [
+    asNonEmptyString(lastSuccess.finished_at),
+    asNonEmptyString(lastSuccess.last_at),
+    asNonEmptyString(lastRun.finished_at),
+    asNonEmptyString(lastRun.last_at),
+  ].filter((value): value is string => value !== null);
+  return successfulTimes.includes(evidenceAsOf);
 }
 
 function latestRunFailed(connection: JsonObject): boolean {
@@ -847,15 +1186,19 @@ function committedCheckpoint(value: unknown): boolean {
   return checkpoint !== null && !CHECKPOINT_UNKNOWN_VALUES.has(checkpoint.toLowerCase());
 }
 
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 0;
+}
+
+function optionalCountIsValid(value: unknown): boolean {
+  return value === undefined || value === null || isNonNegativeInteger(value);
+}
+
 function currentProjectionEvidence(connection: JsonObject): boolean {
   const snapshot = nestedObject(connection, "record_snapshot");
   const manifest = nestedObject(connection, "manifest_declaration");
   const terminal = nestedObject(connection, "terminal_facts");
-  return (
-    snapshot?.state === "current" &&
-    (manifest === null || manifest.state === "current") &&
-    (terminal === null || terminal.state === "current")
-  );
+  return snapshot?.state === "current" && manifest?.state === "current" && terminal?.state === "current";
 }
 
 function explicitVerifiedEmpty(connection: JsonObject, report: JsonObject): boolean {
@@ -879,6 +1222,24 @@ function explicitVerifiedEmpty(connection: JsonObject, report: JsonObject): bool
 
 function committedCoverageProof(report: JsonObject): boolean {
   const { considered, covered } = report;
+  const integerCounts = isNonNegativeInteger(considered) && isNonNegativeInteger(covered) && covered <= considered;
+  const auxiliaryCountsAreValid =
+    optionalCountIsValid(report.collected) && optionalCountIsValid(report.pending_detail_gaps);
+  const coherence = evaluateStreamCoherence(
+    {
+      checkpoint: asNonEmptyString(report.checkpoint),
+      collected: typeof report.collected === "number" ? report.collected : null,
+      considered: integerCounts ? considered : null,
+      covered: integerCounts ? covered : null,
+      pending_detail_gaps: typeof report.pending_detail_gaps === "number" ? report.pending_detail_gaps : null,
+      skipped: report.skipped === true ? {} : null,
+    },
+    {
+      coverage_strategy:
+        typeof report.coverage_strategy === "string" ? (report.coverage_strategy as CoverageProofStrategy) : null,
+      accepted_absence: null,
+    }
+  );
   return (
     report.coverage_condition === "complete" &&
     (report.forward_disposition === undefined || report.forward_disposition === "complete") &&
@@ -887,13 +1248,9 @@ function committedCoverageProof(report: JsonObject): boolean {
     typeof report.freshness_strategy === "string" &&
     KNOWN_FRESHNESS_STRATEGIES.has(report.freshness_strategy) &&
     committedCheckpoint(report.checkpoint) &&
-    typeof considered === "number" &&
-    Number.isFinite(considered) &&
-    considered >= 0 &&
-    typeof covered === "number" &&
-    Number.isFinite(covered) &&
-    covered >= 0 &&
-    covered <= considered
+    integerCounts &&
+    auxiliaryCountsAreValid &&
+    coherence.proven
   );
 }
 
@@ -906,7 +1263,7 @@ function isGreenStream(
   if (!report) {
     return { green: false, reason: "no collection report for the manifest-declared stream" };
   }
-  if (!successfulRuntimeEvidence(connection)) {
+  if (!successfulRuntimeEvidence(connection, report)) {
     return { green: false, reason: "no current successful runtime evidence" };
   }
   if (!currentProjectionEvidence(connection)) {
@@ -925,7 +1282,12 @@ function isGreenStream(
     return { green: false, reason: "zero evidence is not explicitly verified empty" };
   }
   const recordCount = record?.record_count;
-  if (typeof recordCount !== "number" || !Number.isFinite(recordCount) || recordCount < 0) {
+  if (
+    typeof recordCount !== "number" ||
+    !Number.isFinite(recordCount) ||
+    !Number.isInteger(recordCount) ||
+    recordCount < 0
+  ) {
     return { green: false, reason: "records are present without a usable retained-record projection" };
   }
   if (record?.count_state === "stale" || record?.count_state === "unobserved" || record?.count_state === "unknown") {
@@ -940,19 +1302,17 @@ function isGreenStream(
   return { green: true, reason: `successful runtime evidence covers ${stream.name}` };
 }
 
-function defaultDomEvidence(
-  connections: readonly JsonObject[],
-  input: StreamHealthAuthorityInput
-): OwnerSourcesDomEvidence {
+function missingDomEvidence(reason = "owner Sources evidence was not supplied"): OwnerSourcesDomEvidence {
   return {
-    authenticated: true,
-    connectionIds: connections
-      .filter((connection) => !connectionIsSynthetic(connection, resolveManifest(connection, input)))
-      .map(connectionId)
-      .filter((id): id is string => id !== null),
-    paginationComplete: true,
-    resolved: true,
+    authenticated: false,
+    connectionIds: [],
+    nextPageHrefs: [],
+    paginationComplete: false,
+    renderedRows: false,
+    resolved: false,
+    streamKeys: [],
     suspense: false,
+    reason,
   };
 }
 
@@ -963,73 +1323,158 @@ function decodeHtml(value: string): string {
     .replace(/&quot;/g, '"');
 }
 
-function sourceHrefParts(href: string): string[] {
+function htmlAttributes(tag: string): Map<string, string> {
+  const attributes = new Map<string, string>();
+  for (const match of tag.matchAll(ATTRIBUTE_PATTERN)) {
+    const name = match[1]?.toLowerCase();
+    if (name && ROW_ATTRIBUTE_NAMES.has(name)) {
+      attributes.set(name, decodeHtml(match[3] ?? match[4] ?? ""));
+    }
+  }
+  return attributes;
+}
+
+interface RenderedRowEvidence {
+  connectionIds: Set<string>;
+  malformedStreamRow: boolean;
+  orphanedStreamRow: boolean;
+  renderedRows: boolean;
+  streamKeys: { connectionId: string; stream: string }[];
+}
+
+function parseRenderedStreamRow(
+  attributes: Map<string, string>
+): { key: { connectionId: string; stream: string }; malformed: false } | { key: null; malformed: true } | null {
+  if (!attributes.has("data-pdpp-stream-row")) {
+    return null;
+  }
+  const rowConnectionId = attributes.get("data-connection-id")?.trim() ?? "";
+  const stream = attributes.get("data-stream-name")?.trim() ?? "";
+  const href = attributes.get("href") ?? "";
+  let hrefConnection = "";
+  let hrefStream = "";
+  let hrefPathname = "";
   try {
     const url = new URL(decodeHtml(href), "https://pdpp.invalid");
-    return url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+    hrefPathname = url.pathname;
+    hrefConnection = url.searchParams.get("connection")?.trim() ?? "";
+    hrefStream = url.searchParams.get("stream")?.trim() ?? "";
   } catch {
-    return [];
+    // The row is malformed below and will keep the page unresolved.
   }
+  if (
+    !(rowConnectionId && stream && href) ||
+    hrefPathname !== "/explore" ||
+    hrefConnection !== rowConnectionId ||
+    hrefStream !== stream
+  ) {
+    return { key: null, malformed: true };
+  }
+  return { key: { connectionId: rowConnectionId, stream }, malformed: false };
+}
+
+function parseRenderedRows(source: string): RenderedRowEvidence {
+  const connectionIds = new Set<string>();
+  const streamKeys: { connectionId: string; stream: string }[] = [];
+  let malformedStreamRow = false;
+  let orphanedStreamRow = false;
+  let renderedRows = false;
+  for (const tagMatch of source.matchAll(HTML_TAG_PATTERN)) {
+    const attributes = htmlAttributes(tagMatch[0] ?? "");
+    const sourceRow = attributes.get("data-pdpp-source-row");
+    if (sourceRow) {
+      renderedRows = true;
+      connectionIds.add(sourceRow);
+    }
+    const streamRow = parseRenderedStreamRow(attributes);
+    if (!streamRow) {
+      continue;
+    }
+    renderedRows = true;
+    if (streamRow.malformed) {
+      malformedStreamRow = true;
+      continue;
+    }
+    streamKeys.push(streamRow.key);
+  }
+  for (const streamKey of streamKeys) {
+    if (!connectionIds.has(streamKey.connectionId)) {
+      orphanedStreamRow = true;
+    }
+  }
+  return { connectionIds, malformedStreamRow, orphanedStreamRow, renderedRows, streamKeys };
+}
+
+function parsePageHrefs(source: string): string[] {
+  const nextPageHrefs: string[] = [];
+  for (const match of source.matchAll(HREF_PATTERN)) {
+    const href = match[2] ?? "";
+    const decodedHref = decodeHtml(href);
+    try {
+      const url = new URL(decodedHref, "https://pdpp.invalid");
+      if (url.pathname === "/sources" && PAGE_CURSOR_PATTERN.test(url.search)) {
+        nextPageHrefs.push(decodedHref);
+      }
+    } catch {
+      // Invalid pager links are ignored; the page remains resolved only from
+      // its rendered rows, while a valid repeated cursor is handled by live traversal.
+    }
+  }
+  return nextPageHrefs;
 }
 
 /** Parse the resolved, authenticated owner `/sources` HTML without a browser. */
 export function parseOwnerSourcesDom(html: string): OwnerSourcesDomEvidence {
   const source = String(html);
-  const authFailure = AUTH_FAILURE_PATTERN.test(source);
+  const renderedSource = source.replace(NON_RENDERED_HTML_PATTERN, "");
+  const authFailure = AUTH_FAILURE_PATTERN.test(renderedSource);
   const suspense =
-    SUSPENSE_TESTID_PATTERN.test(source) || SUSPENSE_BUSY_PATTERN.test(source) || SUSPENSE_CLASS_PATTERN.test(source);
-  const connectionIds = new Set<string>();
-  const nextPageHrefs: string[] = [];
-  const streamKeys: { connectionId: string; stream: string }[] = [];
-  for (const match of source.matchAll(HREF_PATTERN)) {
-    const href = match[2] ?? "";
-    const parts = sourceHrefParts(href);
-    if (parts[0] !== "sources") {
-      continue;
-    }
-    if (parts.length === 2 && parts[1] !== "add") {
-      connectionIds.add(parts[1] as string);
-    }
-    if (parts.length === 3 && parts[1] !== "add") {
-      connectionIds.add(parts[1] as string);
-      streamKeys.push({ connectionId: parts[1] as string, stream: parts[2] as string });
-    }
-    if (PAGE_CURSOR_PATTERN.test(href)) {
-      nextPageHrefs.push(decodeHtml(href));
-    }
-  }
-  const explicitEmpty = EXPLICIT_EMPTY_PATTERN.test(source);
-  const resolved = !(authFailure || suspense) && (explicitEmpty || connectionIds.size > 0);
+    SUSPENSE_TESTID_PATTERN.test(renderedSource) ||
+    SUSPENSE_BUSY_PATTERN.test(renderedSource) ||
+    SUSPENSE_CLASS_PATTERN.test(renderedSource);
+  const rendered = parseRenderedRows(renderedSource);
+  const nextPageHrefs = parsePageHrefs(renderedSource);
+  const explicitEmpty = EXPLICIT_EMPTY_PATTERN.test(renderedSource);
+  const renderedRows = rendered.renderedRows || explicitEmpty;
+  const resolved =
+    !(authFailure || suspense || rendered.malformedStreamRow || rendered.orphanedStreamRow) && renderedRows;
   let reason: string | null = null;
   if (authFailure) {
     reason = "owner authentication was not resolved";
   } else if (suspense) {
     reason = "owner page is still suspended/loading";
+  } else if (rendered.malformedStreamRow) {
+    reason = "a rendered stream row did not bind to its source and Explore route";
+  } else if (rendered.orphanedStreamRow) {
+    reason = "a rendered stream row did not belong to a rendered source row";
+  } else if (!renderedRows) {
+    reason = "owner page contained no rendered source or empty-state row";
   }
   return {
     authenticated: !authFailure,
-    connectionIds: [...connectionIds],
+    connectionIds: [...rendered.connectionIds],
     nextPageHrefs,
     paginationComplete: true,
+    renderedRows,
     resolved,
-    streamKeys,
+    streamKeys: [
+      ...new Map(
+        rendered.streamKeys.map((key) => [key.connectionId + String.fromCharCode(0) + key.stream, key])
+      ).values(),
+    ],
     suspense,
     reason,
   };
 }
 
-function normalizeDom(
-  dom: StreamHealthAuthorityInput["dom"],
-  connections: readonly JsonObject[],
-  input: StreamHealthAuthorityInput
-): OwnerSourcesDomEvidence {
+function normalizeDom(dom: StreamHealthAuthorityInput["dom"]): OwnerSourcesDomEvidence {
   if (typeof dom === "string") {
     return parseOwnerSourcesDom(dom);
   }
   if (dom && typeof dom === "object") {
     return dom;
   }
-  return defaultDomEvidence(connections, input);
+  return missingDomEvidence();
 }
 
 function emptyClassCounts(): Record<StreamHealthClass, number> {
@@ -1052,28 +1497,23 @@ function gateRevision(input: StreamHealthAuthorityInput): {
 } {
   if (!input.revision) {
     return {
-      gate: "not_required",
-      receipt: { exact: true, observedDom: null, observedSummaries: null, sha: null },
+      gate: "inconclusive",
+      receipt: { exact: false, observedDom: null, observedSummaries: null, sha: null },
     };
   }
   const observedSummaries = input.revision.summaries?.trim() || null;
   const observedDom = input.revision.dom?.trim() || null;
   const expected = input.revision.expected?.trim() || null;
-  const sha = input.revision.sha?.trim() || input.expectedSha?.trim() || null;
+  const sha = input.revision.sha?.trim() || null;
   const exact = Boolean(
-    observedSummaries &&
-      observedDom &&
-      observedSummaries === observedDom &&
-      (!expected || observedSummaries === expected)
+    observedSummaries && observedDom && observedSummaries === observedDom && expected && observedSummaries === expected
   );
   const rawRevisionSuffix = observedSummaries?.split("+").at(-1) ?? null;
-  const revisionSuffix = rawRevisionSuffix?.endsWith(".dirty")
-    ? rawRevisionSuffix.slice(0, -".dirty".length)
-    : rawRevisionSuffix;
-  const shaMatches = !sha || observedSummaries === sha || revisionSuffix === sha;
+  const dirty = [observedSummaries, observedDom, expected].some((value) => value?.endsWith(".dirty") === true);
+  const shaMatches = !sha || (!dirty && (observedSummaries === sha || rawRevisionSuffix === sha));
   return {
-    gate: exact && shaMatches ? "exact" : "inconclusive",
-    receipt: { exact: exact && shaMatches, observedDom, observedSummaries, sha },
+    gate: exact && !dirty && shaMatches ? "exact" : "inconclusive",
+    receipt: { exact: exact && !dirty && shaMatches, observedDom, observedSummaries, sha },
   };
 }
 
@@ -1179,37 +1619,105 @@ function compareDom(
         .filter((id): id is string => id !== null)
     ),
   ].sort();
-  if (!dom.resolved || dom.authenticated === false || dom.suspense === true) {
+  const streamValues = Array.isArray(dom.streamKeys)
+    ? [
+        ...new Map(
+          dom.streamKeys
+            .filter((key) => asNonEmptyString(key?.connectionId) && asNonEmptyString(key?.stream))
+            .map((key) => [`${key.connectionId}\u0000${key.stream}`, key])
+        ).values(),
+      ]
+    : [];
+  const observedStreamKeys = streamValues.map((key) => `${key.connectionId}:${key.stream}`).sort();
+  const expectedStreams = new Map<string, Set<string>>();
+  for (const connection of connections) {
+    const id = connectionId(connection);
+    const manifest = resolveManifest(connection, input);
+    if (!id || connectionIsSynthetic(connection, manifest) || !manifest) {
+      continue;
+    }
+    expectedStreams.set(id, new Set(manifest.streams.map((stream) => stream.name)));
+  }
+  const extraStreamKeys: string[] = [];
+  const invalidStreamKeys: string[] = [];
+  const expectedSet = new Set(expected);
+  let streamManifestUnavailable = false;
+  for (const key of streamValues) {
+    const label = `${key.connectionId}:${key.stream}`;
+    const allowed = expectedStreams.get(key.connectionId);
+    if (!allowed) {
+      if (expectedSet.has(key.connectionId)) {
+        streamManifestUnavailable = true;
+      } else {
+        extraStreamKeys.push(label);
+      }
+    } else if (!allowed.has(key.stream)) {
+      invalidStreamKeys.push(label);
+    }
+  }
+  const structuralResolved = dom.resolved && dom.renderedRows && Array.isArray(dom.streamKeys);
+  if (!dom.resolved || dom.authenticated === false || dom.suspense === true || !structuralResolved) {
     return {
       extraConnectionIds: [],
+      extraStreamKeys,
+      invalidStreamKeys,
       missingConnectionIds: expected,
       observedConnectionIds: observed,
+      observedStreamKeys,
       resolved: false,
       status: "inconclusive",
     };
   }
-  const expectedSet = new Set(expected);
   const observedSet = new Set(observed);
   const missingConnectionIds = expected.filter((id) => !observedSet.has(id));
   const extraConnectionIds = observed.filter((id) => !expectedSet.has(id));
-  if (missingConnectionIds.length > 0 || extraConnectionIds.length > 0) {
+  if (
+    missingConnectionIds.length > 0 ||
+    extraConnectionIds.length > 0 ||
+    extraStreamKeys.length > 0 ||
+    invalidStreamKeys.length > 0
+  ) {
     addFinding(findings, counts, {
       class: "projection_disagreement",
       connection_id: null,
       connector_id: null,
       denominator: false,
-      reason: `authenticated owner DOM differs from owner connection inventory (missing=${missingConnectionIds.length}, extra=${extraConnectionIds.length})`,
+      reason: `authenticated owner DOM differs from owner inventory (missing=${missingConnectionIds.length}, extra=${extraConnectionIds.length}, extra_streams=${extraStreamKeys.length}, invalid_streams=${invalidStreamKeys.length})`,
       stream: "<owner-dom>",
     });
     return {
       extraConnectionIds,
+      extraStreamKeys,
+      invalidStreamKeys,
       missingConnectionIds,
       observedConnectionIds: observed,
+      observedStreamKeys,
       resolved: true,
       status: "disagree",
     };
   }
-  return { extraConnectionIds, missingConnectionIds, observedConnectionIds: observed, resolved: true, status: "agree" };
+  if (streamManifestUnavailable) {
+    return {
+      extraConnectionIds,
+      extraStreamKeys,
+      invalidStreamKeys,
+      missingConnectionIds,
+      observedConnectionIds: observed,
+      observedStreamKeys,
+      resolved: true,
+      status: "inconclusive",
+    };
+  }
+  return {
+    extraConnectionIds,
+    extraStreamKeys,
+    invalidStreamKeys,
+    missingConnectionIds,
+    observedConnectionIds: observed,
+    observedStreamKeys,
+    resolved: true,
+    status: "agree",
+  };
 }
 
 function gateFindings(
@@ -1220,8 +1728,9 @@ function gateFindings(
   findings: StreamHealthFinding[],
   counts: Record<StreamHealthClass, number>
 ): StreamHealthAuthorityResult["gates"] {
-  const authResolved = input.auth?.resolved !== false && input.auth?.authenticated !== false;
-  const paginationComplete = input.paginationComplete !== false && dom.paginationComplete !== false;
+  const auth = asObject(input.auth);
+  const authResolved = auth?.resolved === true && auth.authenticated === true;
+  const paginationComplete = input.paginationComplete === true && dom.paginationComplete === true;
   if (!authResolved) {
     addFinding(findings, counts, {
       class: "inconclusive_auth",
@@ -1232,9 +1741,9 @@ function gateFindings(
       stream: "<audit>",
     });
   }
-  if (!dom.resolved || dom.authenticated === false || dom.suspense === true) {
+  if (!dom.resolved || dom.authenticated !== true || dom.suspense === true || !dom.renderedRows) {
     addFinding(findings, counts, {
-      class: dom.authenticated === false ? "inconclusive_auth" : "inconclusive_suspense",
+      class: dom.authenticated === true ? "inconclusive_suspense" : "inconclusive_auth",
       connection_id: null,
       connector_id: null,
       denominator: false,
@@ -1274,7 +1783,7 @@ function gateFindings(
   }
   return {
     auth: authResolved ? "resolved" : "inconclusive",
-    dom: dom.resolved && dom.authenticated !== false && !dom.suspense ? "resolved" : "inconclusive",
+    dom: dom.resolved && dom.authenticated === true && dom.renderedRows && !dom.suspense ? "resolved" : "inconclusive",
     pagination: paginationComplete ? "complete" : "inconclusive",
     revision: revisionGate,
     vocabulary: vocabularyUnknown ? "inconclusive" : "known",
@@ -1527,7 +2036,7 @@ export function evaluateStreamHealthAuthority(input: StreamHealthAuthorityInput)
       stream: "<connection>",
     });
   }
-  const dom = normalizeDom(input.dom, connections, input);
+  const dom = normalizeDom(input.dom);
   const revision = gateRevision(input);
   let activeConnectionCount = 0;
   let productionStreamCount = 0;
@@ -1569,18 +2078,3 @@ export function evaluateStreamHealthAuthority(input: StreamHealthAuthorityInput)
   };
   return result;
 }
-
-/** Array-form convenience API for tests and small read-only callers. */
-export function auditStreamHealthAuthority(
-  connections: readonly unknown[],
-  manifests: readonly unknown[] = [],
-  options: Omit<StreamHealthAuthorityInput, "catalog" | "connections" | "manifests"> = {}
-): StreamHealthAuthorityResult {
-  return evaluateStreamHealthAuthority({
-    ...options,
-    connections,
-    ...(manifests.length > 0 ? { manifests } : {}),
-  });
-}
-
-export const auditFinalStreamHealth = evaluateStreamHealthAuthority;

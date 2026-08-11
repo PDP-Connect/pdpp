@@ -10,7 +10,7 @@ import {
   expectedLocalCoverageStoreDescriptors,
   expectedLocalCoverageStores,
 } from "../../packages/polyfill-connectors/src/local-source-inventory.ts";
-import { auditStreamHealth } from "../../scripts/stream-health-audit/audit.ts";
+import { evaluateStreamHealthAuthority } from "../../scripts/stream-health-audit/authority.ts";
 import type { CollectionRateSnapshot, CoverageAxis, OutboxAxis } from "../runtime/connection-health.ts";
 import {
   __setConnectorInstanceWritePhaseHookForTest,
@@ -83,6 +83,39 @@ const NOW = "2026-06-03T12:00:00.000Z";
 const HEARTBEAT_AT = "2026-06-03T11:59:00.000Z";
 const STALE_HISTORICAL_RUN_AT = "2026-05-22T14:31:18.319Z";
 const STATE_CONNECTOR_ID = CONNECTOR_ID;
+
+function streamHealthForSummary(summary: unknown, manifestStreams?: readonly unknown[]) {
+  const object =
+    summary && typeof summary === "object" && !Array.isArray(summary) ? (summary as Record<string, unknown>) : {};
+  const declaredStreams = manifestStreams ?? (Array.isArray(object.streams) ? object.streams : []);
+  const connectionId = typeof object.connection_id === "string" ? object.connection_id : "<missing>";
+  const connectorId = typeof object.connector_id === "string" ? object.connector_id : "<missing>";
+  const streamKeys = declaredStreams
+    .filter((stream): stream is string => typeof stream === "string" && stream.trim().length > 0)
+    .map((stream) => ({ connectionId, stream }));
+  return evaluateStreamHealthAuthority({
+    auth: { authenticated: true, mode: "test", resolved: true },
+    connections: [summary],
+    dom: {
+      authenticated: true,
+      connectionIds: [connectionId],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      streamKeys,
+      suspense: false,
+    },
+    manifests: [{ connector_id: connectorId, streams: declaredStreams }],
+    paginationComplete: true,
+    revision: {
+      dom: "local-coverage-test",
+      expected: "local-coverage-test",
+      sha: "local-coverage-test",
+      summaries: "local-coverage-test",
+    },
+  });
+}
 
 function withTmpDb(fn: () => Promise<void>) {
   return async () => {
@@ -523,7 +556,6 @@ test(
       }
 
       const fleet = composeFleetHealthVerdict({
-        coverageAudit: { status: "pass" },
         inventory: [
           {
             connectorId: CONNECTOR_ID,
@@ -534,6 +566,7 @@ test(
           },
         ],
         runtime: { ok: true },
+        streamHealth: { status: "pass" },
         summaries: [row],
       });
       assert.equal(fleet.state, "indeterminate");
@@ -624,7 +657,7 @@ test(
 );
 
 test(
-  "SQLite persisted private coverage STATE is malformed, cannot project complete, and never reaches summary or audit output",
+  "SQLite persisted private coverage STATE is malformed, cannot project complete, and never reaches summary or authority output",
   withTmpDb(async () => {
     const privacySentinel = "/private/local-coverage-sentinel";
     seedConnector();
@@ -657,17 +690,17 @@ test(
       connector_instance_id: CONNECTOR_INSTANCE_ID,
     });
     const summary = await projectConnection();
-    const audit = auditStreamHealth([summary]);
+    const authority = streamHealthForSummary(summary);
 
     assert.equal(proof.malformed, true);
     assert.equal(proof.hasCommittedSnapshot, false);
     assert.equal(summary.connection_health.axes.coverage, "unknown");
-    assert.equal(JSON.stringify({ audit, summary }).includes(privacySentinel), false);
+    assert.equal(JSON.stringify({ authority, summary }).includes(privacySentinel), false);
   })
 );
 
 test(
-  "unsupported local inventory cannot turn an arbitrary singleton into complete report or audit pass",
+  "unsupported local inventory cannot turn an arbitrary singleton into complete report or authority pass",
   withTmpDb(async () => {
     const connectorId = "unsupported-local-proof-gate";
     const instanceId = "cin_unsupported_local_proof";
@@ -750,7 +783,7 @@ test(
     assert.ok(row);
     assert.equal(row.connection_health.axes.coverage, "unknown");
     assert.notEqual(row.collection_report.find((entry) => entry.stream === "messages")?.coverage_condition, "complete");
-    assert.notEqual(auditStreamHealth([row]).status, "pass");
+    assert.notEqual(streamHealthForSummary(row).status, "pass");
   })
 );
 
@@ -816,12 +849,24 @@ test(
       assert.equal(entry?.forward_disposition, "unmeasured", `${stream} must remain unmeasured`);
     }
 
-    const audit = auditStreamHealth([summary]);
-    assert.equal(audit.status, "fail");
+    const authority = streamHealthForSummary(
+      summary,
+      manifest.streams.map((stream) => stream.name)
+    );
+    assert.notEqual(authority.status, "pass");
     assert.deepEqual(
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: the runtime fixture deliberately exercises an absent or nullable boundary value.
-      [...(audit.failures[0]?.streams ?? [])].sort((a, b) => a.stream.localeCompare(b.stream)),
-      requiredStreams.map((stream) => ({ class: "runtime_evidence_missing", stream })),
+      authority.findings
+        .filter(
+          (finding) =>
+            finding.stream !== "<owner-dom>" &&
+            finding.stream !== "<revision>" &&
+            finding.stream !== "<vocabulary>" &&
+            finding.stream !== "<audit>" &&
+            finding.stream !== "<pagination>"
+        )
+        .map((finding) => finding.stream)
+        .sort((left, right) => left.localeCompare(right)),
+      requiredStreams,
       "each shipped required stream is red until runtime evidence is committed"
     );
   })

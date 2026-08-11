@@ -16,9 +16,8 @@
 //   node scripts/check-stream-health-audit.ts --json
 //
 // This CLI only runs the live probe — it requires an origin (via --origin
-// or PDPP_ACCEPTANCE_ORIGIN). The seeded local audit lives in the unit
-// test at reference-implementation/test/stream-health-audit.test.ts
-// (`node --test` target, wired into CI separately).
+// or PDPP_ACCEPTANCE_ORIGIN). Seeded local authority regressions live in
+// scripts/stream-health-audit/authority.test.ts.
 //
 // Live owner auth (never printed) is read from the environment. `/_ref/connectors`
 // is cookie-gated, so this audit only ever sends a Cookie header — but the
@@ -99,7 +98,7 @@ async function main(): Promise<void> {
   if (!origin) {
     process.stderr.write(
       "stream-health audit: no origin supplied. Pass --origin or set PDPP_ACCEPTANCE_ORIGIN.\n" +
-        "For the seeded/local audit, run: node --test reference-implementation/test/stream-health-audit.test.ts\n"
+        "For the seeded/local authority regressions, run: node --test --import tsx scripts/stream-health-audit/authority.test.ts\n"
     );
     process.exitCode = 1;
     return;

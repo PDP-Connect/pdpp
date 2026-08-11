@@ -22,6 +22,9 @@ const RUN_VERDICT_LABEL_RE = /\{isPending \? "Starting.*" : primaryVerdictAction
 const OWNER_VERDICT_ACTION_TESTID_RE = /data-testid="sources-owner-verdict-action"/;
 const OWNER_VERDICT_ACTION_HREF_RE = /href=\{instance\.detailHref\}/;
 const OWNER_VERDICT_ACTION_TITLE_RE = /Open source details to complete this owner action/;
+const SOURCE_ROW_MARKER_RE = /data-pdpp-source-row=\{instance\.connectionId \?\? instance\.id\}/g;
+const STREAM_ROW_MARKER_RE =
+  /data-connection-id=\{connectionId\}[\s\S]*data-pdpp-stream-row="true"[\s\S]*data-stream-name=\{stream\.name\}/;
 
 test("SourcesView resets passport-local state when the selected source changes", async () => {
   const src = await readFile(SOURCES_VIEW_FILE, "utf8");
@@ -59,6 +62,12 @@ test("SourcesView renders non-run owner actions as subject-scoped detail links, 
   assert.match(action, OWNER_VERDICT_ACTION_TESTID_RE);
   assert.match(action, OWNER_VERDICT_ACTION_HREF_RE);
   assert.match(action, OWNER_VERDICT_ACTION_TITLE_RE);
+});
+
+test("SourcesView emits stable source and stream row markers for acceptance evidence", async () => {
+  const src = await readFile(SOURCES_VIEW_FILE, "utf8");
+  assert.equal(src.match(SOURCE_ROW_MARKER_RE)?.length, 2, "mobile and desktop source rows must both be marked");
+  assert.match(src, STREAM_ROW_MARKER_RE);
 });
 
 const SOURCES_VIEW_CSS_FILE = `${HERE}sources-view.css`;

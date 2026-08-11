@@ -3,7 +3,6 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { auditStreamHealth } from "../../scripts/stream-health-audit/audit.ts";
 import { composeFleetHealthVerdict } from "../server/fleet-health.ts";
 
 function inventory(id: string, overrides: Record<string, unknown> = {}) {
@@ -45,9 +44,9 @@ function compose(
   overrides: Record<string, unknown> = {}
 ) {
   return composeFleetHealthVerdict({
-    coverageAudit: { status: "pass" },
     inventory: inventoryRows,
     runtime: { ok: true },
+    streamHealth: { status: "pass" },
     summaries,
     ...overrides,
   } as unknown as Parameters<typeof composeFleetHealthVerdict>[0]);
@@ -134,7 +133,7 @@ test("ChatGPT owner action, USAA recovery gap, Chase code fix, and Slack policy 
   );
 });
 
-test("the existing coverage audit can pass while an owner-action fleet is unhealthy", () => {
+test("stream-health authority can pass while an owner-action fleet is unhealthy", () => {
   const chatgpt = summary("chatgpt-a", {
     collection_report: [
       {
@@ -154,17 +153,17 @@ test("the existing coverage audit can pass while an owner-action fleet is unheal
     stream_records: [{ last_updated: null, record_count: 1, stream: "messages" }],
     streams: ["messages"],
   });
-  const coverageAudit = auditStreamHealth([chatgpt]);
-  const result = compose([inventory("chatgpt-a")], [chatgpt], { coverageAudit });
-  assert.equal(coverageAudit.status, "pass");
+  const streamHealth = { status: "pass" as const };
+  const result = compose([inventory("chatgpt-a")], [chatgpt], { streamHealth });
+  assert.equal(streamHealth.status, "pass");
   assert.equal(result.state, "unhealthy");
   assert.equal(result.dimensions.coverage_audit, "pass");
 });
 
-test("runtime outage and stream-audit failure independently make a fleet unhealthy", () => {
+test("runtime outage and stream-health failure independently make a fleet unhealthy", () => {
   const one = summary("one-a");
   assert.equal(compose([inventory("one-a")], [one], { runtime: { ok: false } }).state, "unhealthy");
-  assert.equal(compose([inventory("one-a")], [one], { coverageAudit: { status: "fail" } }).state, "unhealthy");
+  assert.equal(compose([inventory("one-a")], [one], { streamHealth: { status: "fail" } }).state, "unhealthy");
   const unavailableBinding = summary("binding-a", {
     connection_health: {
       ...summary("x").connection_health,

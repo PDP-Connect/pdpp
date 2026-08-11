@@ -3,6 +3,7 @@
 
 /** Pure owner-fleet health composition over already-read typed evidence. */
 
+import type { StreamHealthAuthorityResult } from "../../scripts/stream-health-audit/authority.ts";
 import type {
   AttentionAxis,
   ConnectionHealthSnapshot,
@@ -17,7 +18,7 @@ import type { OwnerStateResolver } from "../runtime/owner-state.ts";
 import type { RenderedVerdict } from "../runtime/rendered-verdict.ts";
 import type { ConnectorSummary } from "./ref-control.ts";
 
-export type FleetCoverageAuditState = "fail" | "inconclusive" | "pass";
+export type FleetCoverageAuditState = StreamHealthAuthorityResult["status"];
 export type FleetHealthState = "healthy" | "healthy_with_advisories" | "indeterminate" | "unhealthy";
 export type FleetRuntimeState = "healthy" | "unhealthy" | "unknown";
 
@@ -418,7 +419,7 @@ function fleetState(input: {
 
 /** Compose a strict fleet verdict from already-read, typed evidence. */
 export function composeFleetHealthVerdict(input: {
-  readonly coverageAudit: { readonly status: FleetCoverageAuditState };
+  readonly streamHealth: Pick<StreamHealthAuthorityResult, "status">;
   readonly inventory: readonly FleetConfiguredConnection[];
   readonly runtime: { readonly ok?: boolean } | null | undefined;
   readonly summaries: readonly FleetSummary[];
@@ -428,7 +429,7 @@ export function composeFleetHealthVerdict(input: {
   const runtime = runtimeState(input.runtime);
   const unhealthy =
     runtime === "unhealthy" ||
-    input.coverageAudit.status === "fail" ||
+    input.streamHealth.status === "fail" ||
     evidence.needsOwner.length > 0 ||
     evidence.degradedOrBroken.length > 0 ||
     evidence.retryable.length > 0 ||
@@ -436,7 +437,7 @@ export function composeFleetHealthVerdict(input: {
     evidence.stalledWork.length > 0;
   const indeterminate =
     runtime === "unknown" ||
-    input.coverageAudit.status === "inconclusive" ||
+    input.streamHealth.status === "inconclusive" ||
     scope.setupPending.length > 0 ||
     scope.unassessed.length > 0 ||
     evidence.activeWork.length > 0 ||
@@ -447,7 +448,7 @@ export function composeFleetHealthVerdict(input: {
     dimensions: {
       active_work: evidence.activeWork,
       attention: { needs_owner: evidence.needsOwner },
-      coverage_audit: input.coverageAudit.status,
+      coverage_audit: input.streamHealth.status,
       freshness_advisories: evidence.freshnessAdvisories,
       intentional_policy: { manual: evidence.manual, paused: evidence.paused },
       recovery: { retryable: evidence.retryable, terminal: evidence.terminal },

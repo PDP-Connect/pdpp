@@ -22,7 +22,11 @@ import {
   PDPP_CLI_DEFAULT_CLIENT_ID,
 } from "../../packages/cli/src/package-info.ts";
 import type { ProviderAuthManifestLike } from "../../packages/polyfill-connectors/src/provider-auth-adapter.ts";
-import { auditStreamHealth } from "../../scripts/stream-health-audit/audit.ts";
+import {
+  evaluateStreamHealthAuthority,
+  type OwnerSourcesDomEvidence,
+  type StreamHealthAuthorityResult,
+} from "../../scripts/stream-health-audit/authority.ts";
 import { emitControllerBootedAndStashEpoch, reconcileOrphanedRunsAtBoot } from "../lib/controller-boot.ts";
 import { exec, getOne, referenceQueries, transaction } from "../lib/db.ts";
 import {
@@ -4002,6 +4006,82 @@ function resolveNekoWindowSettleProbe(probe: ((url: string) => Promise<Response>
   return probe ?? defaultNekoWindowSettleProbe;
 }
 
+function authorityRevisionSha(revision: string | null): string | null {
+  if (!revision || revision.endsWith(".dirty")) {
+    return null;
+  }
+  return revision.split("+").at(-1) ?? null;
+}
+
+async function evaluateOwnerStreamHealthAuthority({
+  referenceRevision,
+  summaries,
+}: {
+  referenceRevision: string;
+  summaries: readonly unknown[];
+}): Promise<StreamHealthAuthorityResult> {
+  const connectorIds = new Set<string>();
+  for (const summary of summaries) {
+    if (summary && typeof summary === "object" && !Array.isArray(summary)) {
+      const connectorId = (summary as Record<string, unknown>).connector_id;
+      if (typeof connectorId === "string" && connectorId.trim()) {
+        connectorIds.add(connectorId.trim());
+      }
+    }
+  }
+  const manifests = await Promise.all(
+    [...connectorIds].map(async (connectorId) => {
+      try {
+        return await resolveRegisteredConnectorManifest(connectorId);
+      } catch {
+        return { connector_id: connectorId, streams: [] };
+      }
+    })
+  );
+  const connectionIds = summaries
+    .map((summary) =>
+      summary && typeof summary === "object" ? (summary as Record<string, unknown>).connection_id : null
+    )
+    .filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+  const streamKeys = summaries.flatMap((summary) => {
+    if (!summary || typeof summary !== "object" || Array.isArray(summary)) {
+      return [];
+    }
+    const object = summary as Record<string, unknown>;
+    const connectionId = typeof object.connection_id === "string" ? object.connection_id : null;
+    const streams = Array.isArray(object.streams) ? object.streams : [];
+    if (!connectionId) {
+      return [];
+    }
+    return streams
+      .filter((stream): stream is string => typeof stream === "string" && stream.trim().length > 0)
+      .map((stream) => ({ connectionId, stream }));
+  });
+  const dom: OwnerSourcesDomEvidence = {
+    authenticated: true,
+    connectionIds,
+    nextPageHrefs: [],
+    paginationComplete: true,
+    renderedRows: true,
+    resolved: true,
+    streamKeys,
+    suspense: false,
+  };
+  return evaluateStreamHealthAuthority({
+    auth: { authenticated: true, mode: "owner-session", resolved: true },
+    connections: summaries,
+    dom,
+    manifests,
+    paginationComplete: true,
+    revision: {
+      dom: referenceRevision,
+      expected: referenceRevision,
+      sha: authorityRevisionSha(referenceRevision),
+      summaries: referenceRevision,
+    },
+  });
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 export function buildAsApp(opts: ServerOpts = {}) {
   const app = createApp({ ...(opts.logger === null ? {} : { logger: opts.logger }) });
@@ -5252,10 +5332,11 @@ export function buildAsApp(opts: ServerOpts = {}) {
         ownerSubjectId,
         visibleConnections: inventory,
       });
+      const streamHealth = await evaluateOwnerStreamHealthAuthority({ referenceRevision, summaries });
       return composeFleetHealthVerdict({
-        coverageAudit: auditStreamHealth(summaries),
         inventory,
         runtime: getRuntimeStatus(),
+        streamHealth,
         summaries,
       });
     },
@@ -5329,7 +5410,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
       if (!(page.includeFleetHealth && page.connectorId === null && page.cursor === null && !summaryPage.has_more)) {
         return envelope;
       }
-      const fullSummaries = summaryPage.data as unknown as Parameters<typeof auditStreamHealth>[0];
+      const fullSummaries = summaryPage.data;
       // Reachable only from the unfiltered, no-profile branch (the guard
       // above requires `page.connectorId === null` AND `page.profile` was
       // never set to reach this fleet-health composition), so `inventory`
@@ -5341,9 +5422,9 @@ export function buildAsApp(opts: ServerOpts = {}) {
       return {
         ...envelope,
         fleet_health: composeFleetHealthVerdict({
-          coverageAudit: auditStreamHealth(fullSummaries),
           inventory: fleetInventory,
           runtime: getRuntimeStatus(),
+          streamHealth: await evaluateOwnerStreamHealthAuthority({ referenceRevision, summaries: fullSummaries }),
           summaries: fullSummaries as unknown as Parameters<typeof composeFleetHealthVerdict>[0]["summaries"],
         }),
       };

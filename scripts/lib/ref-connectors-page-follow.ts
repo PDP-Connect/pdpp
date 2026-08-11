@@ -14,7 +14,6 @@ import { validateListEnvelope } from "@pdpp/list-envelope";
 import type { FetchImpl } from "./owner-session.ts";
 
 const REF_CONNECTORS_PAGE_LIMIT = 100;
-const REF_CONNECTORS_PAGE_GUARD = 200; // generous cap on pages; never expected to bind in practice.
 
 export interface RefConnectorsPageFollowResult {
   readonly data: readonly unknown[];
@@ -49,7 +48,7 @@ export async function fetchAllConnectorSummaries({
   // keep the visited set local to this invocation and fail closed on any
   // repeated opaque continuation rather than reporting a partial audit.
   const seenCursors = new Set<string>();
-  for (let page = 0; page < REF_CONNECTORS_PAGE_GUARD; page += 1) {
+  for (;;) {
     const params = new URLSearchParams({ limit: String(REF_CONNECTORS_PAGE_LIMIT) });
     if (cursor) {
       params.set("cursor", cursor);
@@ -82,5 +81,4 @@ export async function fetchAllConnectorSummaries({
     seenCursors.add(nextCursor);
     cursor = nextCursor;
   }
-  return { data, lastPageBody, ok: false, status: 200, error: "connector-summary page-follow guard exhausted" };
 }

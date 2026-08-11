@@ -1,11 +1,10 @@
 ## Context
 
-Connection health is already a typed server projection. The stream-health audit
-is intentionally narrower: it evaluates required-stream coverage evidence for
-settled visible summaries. It does not consider owner actions, connector
-repair, runtime availability, lifecycle scope, or an omitted configured
-connection. A passing audit therefore cannot answer whether the owner fleet is
-fully healthy.
+Connection health is already a typed server projection. Stream-health
+acceptance has one shared authority: it evaluates manifest-declared streams
+against explicit runtime, projection, owner-surface, pagination, and revision
+evidence. The owner fleet composer adds lifecycle scope and fleet dimensions;
+it does not create a second stream-health interpretation.
 
 ## Goals / Non-Goals
 
@@ -21,8 +20,8 @@ fully healthy.
 
 - Persisting a fleet state or introducing another connection-health state
   machine.
-- Changing per-connection health precedence, schedule policy, connector
-  collection, or stream-audit predicates.
+- Changing per-connection health precedence, schedule policy, or connector
+  collection.
 - Inferring state from rendered UI copy, failed-run strings, or connector keys.
 
 ## Decisions
@@ -30,10 +29,10 @@ fully healthy.
 ### Pure composition accepts explicit evidence
 
 The composer is transport-neutral and pure. Its input contains configured
-inventory, current summaries with rendered verdicts, runtime envelope, and a
-typed stream-audit result. Its output contains state, `fully_healthy`, scope,
-and dimensions. The route obtains evidence and serializes the result; it does
-not own policy.
+inventory, current summaries with rendered verdicts, runtime envelope, and the
+shared stream-health authority result. Its output contains state,
+`fully_healthy`, scope, and dimensions. The route obtains evidence and
+serializes the result; it does not own policy.
 
 This separates I/O from classification and gives tests a small deterministic
 oracle. A database-backed fleet projection was rejected because it would add
@@ -59,7 +58,7 @@ freshness advice, intentional policy, unknown evidence, and scope each remain
 separate output dimensions. The fleet state is a conservative precedence over
 those dimensions:
 
-1. `unhealthy` for runtime failure, stream-audit failure, owner action,
+1. `unhealthy` for runtime failure, stream-health failure, owner action,
    connector broken/degraded, retryable or terminal recovery trouble, or
    stalled work.
 2. `indeterminate` when no unhealthy evidence exists but active work, unknown
@@ -77,24 +76,25 @@ Every dimension stores a safe connection reference keyed by
 `connector_instance_id` / `connection_id`; no bucket aggregates by connector
 type. This preserves distinct ChatGPT, Slack, and financial-source bindings.
 
-### One owner-only read surface is the integration seam
+### One shared stream-health contract is the integration seam
 
-The reference owner route exposes the composed value. The console consumes it
-for aggregate copy only and continues to render per-connection detail from the
-existing summary contract. Extending the stream audit was rejected because its
-output and exclusion rules are deliberately coverage-specific.
+The reference owner route, rendered Sources acceptance, and acceptance CLI use
+the same stream-health authority contract. The console emits explicit source
+and stream row evidence for that contract; it does not re-derive health from
+copy or connector names. The fleet composer consumes the authority result for
+aggregate state while retaining its compatibility output field.
 
 ## Risks / Trade-offs
 
-- [The summary projection changes shape] → Keep classification at the typed
-  snapshot/verdict boundary and add fixtures for each discriminating outcome.
 - [Inventory and summary reads observe different moments] → Return
   `indeterminate` for a missing assessment rather than hide the disagreement.
 - [Console copy drifts from server semantics] → Derive aggregate state and
   causes from the owner route, leaving layout local.
+- [The summary projection changes shape] → Keep classification at the explicit
+  authority boundary and add fixtures for each discriminating outcome.
 
 ## Migration Plan
 
-The new read surface is additive. Existing connection summaries and the stream
-audit retain their contracts. Rollback removes the new route and console
-consumer without durable cleanup because the change stores no fleet state.
+The new read surface remains additive. Existing connection summaries retain
+their contracts. Rollback removes the new route and console consumer without
+durable cleanup because the change stores no fleet state.
