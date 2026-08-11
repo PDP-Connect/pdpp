@@ -9,6 +9,11 @@
 // at the owner-session capture page, but it never carries the credential itself.
 
 import {
+  isBundledStaticSecretCredentialKind,
+  isFullyBundledStaticSecretCredentialKind,
+} from "../../../packages/polyfill-connectors/src/static-secret-credential-capture.ts";
+
+import {
   type ConnectorManifestLike,
   expectedStaticSecretCredentialKind,
   type StaticSecretSetupField,
@@ -757,7 +762,7 @@ async function validateCredentialKind(
 // per-field `required` checks never fire on a fully empty submission for
 // that shape, so it needs its own presence check to reject one.
 function isAtLeastOnePathContract(secretFields: readonly StaticSecretSetupField[]): boolean {
-  return secretFields.length >= 2 && !secretFields.some((field) => field.required);
+  return secretFields.length > 0 && !secretFields.some((field) => field.required);
 }
 
 function parseSecretBundle(secret: string): Record<string, unknown> {
@@ -813,36 +818,25 @@ function bundleIsEntirelyBlank(contract: StaticSecretCredentialContract, bundle:
 }
 
 // The ONE per-field completeness rule, shared by BOTH `validateBundledSecret`
-// branches: every SECRET field marked `required: true` on itself must be
-// present and non-blank in the bundle. For a REQUIRED capture this is the
+// branches. A fully bundled credential requires every required capture field;
+// a partially bundled credential requires its required secret fields. For a REQUIRED capture this is the
 // manifest contract enforced directly (a partial username/password bundle or
 // a literal `{}` fails here, before any probe or store). For an OPTIONAL
 // capture (BOTH-OR-NONE, e.g. Venmo) the caller must check
 // `bundleIsEntirelyBlank` FIRST — an entirely blank bundle is the valid
 // "sign in by hand" choice this function does not itself special-case — and
 // the moment ANY field is present, the same rule applies unchanged.
-// Scoped to `field.secret` fields only: a required NON-secret field (e.g.
-// Jellyfin's base_url) is setup data that travels through `setup_fields`,
-// never a credential the secret bundle must re-carry — a credential rotation
-// must not demand the owner resubmit it.
-function missingRequiredSecretFields(
+// The credential-kind fact is load-bearing: `secret_bundle` seals non-secret
+// fields too, while `username_password` keeps setup fields (such as a base URL)
+// outside the credential so rotation does not require resubmitting them.
+function missingRequiredBundledFields(
   contract: StaticSecretCredentialContract,
   bundle: Record<string, unknown>
 ): readonly StaticSecretSetupField[] {
-  return contract.fields.filter((field) => field.secret && field.required && !bundleHasField(bundle, field));
-}
-
-// Mirrors the console's `bundledSecretPayload`/`singleSecretPayload` split
-// (`static-secret-payload.ts`) EXACTLY, by the same two kind names — a
-// single-secret kind's `secret` is a bare provider string, never JSON, so it
-// must never be run through `parseSecretBundle` (which would silently
-// classify any non-JSON string as an empty bundle and misfire the
-// BOTH-OR-NONE/blank-optional branch on a real, non-blank secret). This is
-// the root cause F4 named: a single-field `required: false` manifest with no
-// kind-aware split would either always look blank (JSON-parse failure) or
-// never look blank (no check at all).
-function bundledCredentialKind(kind: string): boolean {
-  return kind === "secret_bundle" || kind === "username_password";
+  const fullyBundled = isFullyBundledStaticSecretCredentialKind(contract.credentialKind);
+  return contract.fields.filter(
+    (field) => (fullyBundled || field.secret) && field.required && !bundleHasField(bundle, field)
+  );
 }
 
 // The wire encoding for "no credential was submitted" on an OPTIONAL
@@ -902,21 +896,21 @@ function validateSingleSecret(contract: StaticSecretCredentialContract, secret: 
  * those are different outcomes the old boolean return could not express.
  *
  * Past that one optional-only escape, required and optional captures share
- * the SAME per-field rule (`missingRequiredSecretFields`): a bundle missing
- * any individually-required secret field is rejected here, before the
+ * the SAME per-field rule (`missingRequiredBundledFields`): a bundle missing
+ * any field required by its credential-kind bundling policy is rejected before the
  * credential probe, the replacement guard, and the store. A REQUIRED
  * username/password capture therefore fails closed on a partial bundle or a
  * literal `{}` at capture time — not later at injection.
  */
 function validateBundledSecret(contract: StaticSecretCredentialContract, secret: string): BundledSecretValidation {
-  if (!bundledCredentialKind(contract.credentialKind)) {
+  if (!isBundledStaticSecretCredentialKind(contract.credentialKind)) {
     return validateSingleSecret(contract, secret);
   }
   const bundle = parseSecretBundle(secret);
   if (contract.required === false && bundleIsEntirelyBlank(contract, bundle)) {
     return { kind: "blank_optional" };
   }
-  const missing = missingRequiredSecretFields(contract, bundle);
+  const missing = missingRequiredBundledFields(contract, bundle);
   if (missing.length > 0) {
     const labels = missing.map((field) => field.label).join(", ");
     return {

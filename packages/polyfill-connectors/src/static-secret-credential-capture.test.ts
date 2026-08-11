@@ -176,7 +176,7 @@ test("block-level required: true explicitly set behaves the same as omitting it"
 test("secret_bundle: every field (secret and non-secret alike) is still returned for the caller to bundle-decide", () => {
   // The normalizer itself does not decide bundling policy (secret_bundle vs
   // username_password fully-bundled semantics) — that is the generator's
-  // responsibility (FULLY_BUNDLED_CREDENTIAL_KINDS in
+  // responsibility (isFullyBundledStaticSecretCredentialKind in
   // generate-static-secret-registry.ts) and the console's capture-time
   // decision. This proves the normalizer hands back ALL fields, secret and
   // non-secret, unfiltered, with `secret` correctly flagged on each so a

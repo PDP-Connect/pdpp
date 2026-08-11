@@ -214,6 +214,26 @@ async function registerOptionalSingleSecretConnector(asUrl: string, connectorKey
   assert.equal(resp.status, 201, `register ${connectorKey} failed: ${resp.status}`);
 }
 
+async function registerRequiredOnePathBundleConnector(asUrl: string, connectorKey: string): Promise<void> {
+  const manifest = structuredClone(loadManifest("jellyfin"));
+  manifest.connector_key = connectorKey;
+  manifest.connector_id = connectorKey;
+  manifest.manifest_uri = `https://registry.pdpp.org/connectors/${connectorKey}`;
+  const setup = manifest.setup as {
+    credential_capture: { fields: Array<{ name: string }>; required?: boolean };
+  };
+  setup.credential_capture.fields = setup.credential_capture.fields.filter(
+    (field) => field.name === "base_url" || field.name === "secret"
+  );
+  setup.credential_capture.required = true;
+  const resp = await fetch(`${asUrl}/connectors`, {
+    body: JSON.stringify(manifest),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(resp.status, 201, `register ${connectorKey} failed: ${resp.status}`);
+}
+
 async function seedInstance({
   connectorInstanceId,
   connectorId,
@@ -795,6 +815,75 @@ test("capture accepts a complete REQUIRED username/password bundle, probing exac
         ownerSubjectId: OWNER_SUBJECT_ID,
       });
       assert.equal(recovered.secret, complete);
+    }, probe.prober);
+  });
+});
+
+test("capture rejects a required fully bundled credential missing a required non-secret field", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    const probe = countingProber();
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "slack");
+      await seedInstance({ connectorId: "slack", connectorInstanceId: "cin_slack_partial" });
+      const cookie = await login(asUrl);
+      const partial = JSON.stringify({ slack_cookie: "synthetic-cookie", slack_token: "synthetic-token" });
+
+      const { body, status } = await captureCredential(asUrl, cookie, "cin_slack_partial", partial, "secret_bundle");
+      assert.equal(status, 400);
+      assert.equal(errorOf(body).code, "missing_credential");
+      assert.equal(probe.calls(), 0, "a partial fully bundled credential must fail before its probe");
+      const store = createSqliteConnectorInstanceCredentialStore({
+        env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
+      });
+      assert.equal(await store.getMetadata("cin_slack_partial"), null);
+    }, probe.prober);
+  });
+});
+
+test("capture accepts a complete required fully bundled credential", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    const probe = countingProber();
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "slack");
+      await seedInstance({ connectorId: "slack", connectorInstanceId: "cin_slack_complete" });
+      const cookie = await login(asUrl);
+      const complete = JSON.stringify({
+        slack_cookie: "synthetic-cookie",
+        slack_token: "synthetic-token",
+        slack_workspace: "example",
+      });
+
+      const { body, status } = await captureCredential(asUrl, cookie, "cin_slack_complete", complete, "secret_bundle");
+      assert.equal(status, 201);
+      assert.equal(credentialOf(body).present, true);
+      assert.equal(probe.calls(), 1);
+    }, probe.prober);
+  });
+});
+
+test("capture rejects an empty required bundle with one optional credential path", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    const probe = countingProber();
+    await withServer(async ({ asUrl }) => {
+      const connectorId = "required_one_path_bundle";
+      await registerRequiredOnePathBundleConnector(asUrl, connectorId);
+      await seedInstance({ connectorId, connectorInstanceId: "cin_required_one_path" });
+      const cookie = await login(asUrl);
+
+      const { body, status } = await captureCredential(
+        asUrl,
+        cookie,
+        "cin_required_one_path",
+        "{}",
+        "username_password"
+      );
+      assert.equal(status, 400, JSON.stringify(body));
+      assert.equal(errorOf(body).code, "missing_credential");
+      assert.equal(probe.calls(), 0);
+      const store = createSqliteConnectorInstanceCredentialStore({
+        env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
+      });
+      assert.equal(await store.getMetadata("cin_required_one_path"), null);
     }, probe.prober);
   });
 });

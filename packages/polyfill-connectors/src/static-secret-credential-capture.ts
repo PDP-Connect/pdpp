@@ -47,6 +47,18 @@
 
 export type StaticSecretFieldType = "email" | "password" | "text";
 
+const BUNDLED_STATIC_SECRET_CREDENTIAL_KINDS = new Set(["secret_bundle", "username_password"]);
+const FULLY_BUNDLED_STATIC_SECRET_CREDENTIAL_KINDS = new Set(["secret_bundle"]);
+
+export function isBundledStaticSecretCredentialKind(kind: string): boolean {
+  return BUNDLED_STATIC_SECRET_CREDENTIAL_KINDS.has(kind);
+}
+
+/** True when every capture field, not only secret fields, is sealed into the credential bundle. */
+export function isFullyBundledStaticSecretCredentialKind(kind: string): boolean {
+  return FULLY_BUNDLED_STATIC_SECRET_CREDENTIAL_KINDS.has(kind);
+}
+
 export interface StaticSecretCredentialCaptureFieldLike {
   readonly autocomplete?: string | null;
   readonly description?: string | null;

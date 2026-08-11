@@ -83,6 +83,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  isBundledStaticSecretCredentialKind,
+  isFullyBundledStaticSecretCredentialKind,
   normalizeStaticSecretCredentialCapture,
   type StaticSecretCredentialCaptureLike,
 } from "../src/static-secret-credential-capture.ts";
@@ -145,7 +147,6 @@ interface StaticSecretDescriptor {
   setupFieldEnvVars?: Record<string, string[]>;
 }
 
-const MULTI_SECRET_FIELD_CREDENTIAL_KINDS = new Set(["username_password", "secret_bundle"]);
 // Only `secret_bundle` treats the ENTIRE capture (secret and non-secret
 // fields alike) as one opaque sealed JSON object — see the console's
 // `bundledSecretPayload`, which puts every field, non-secret included, into
@@ -157,8 +158,6 @@ const MULTI_SECRET_FIELD_CREDENTIAL_KINDS = new Set(["username_password", "secre
 // `sourceBinding: null` (reference-implementation/test/
 // scheduler-static-secret-injection.test.ts): slack's non-secret
 // `slack_workspace` must still resolve from the sealed secret alone.
-const FULLY_BUNDLED_CREDENTIAL_KINDS = new Set(["secret_bundle"]);
-
 function descriptorFromManifest(connectorKey: string, manifest: ManifestLike): StaticSecretDescriptor | null {
   const normalized = normalizeStaticSecretCredentialCapture(connectorKey, manifest.setup?.credential_capture);
   if (!normalized) {
@@ -169,14 +168,14 @@ function descriptorFromManifest(connectorKey: string, manifest: ManifestLike): S
   if (secretFields.length === 0) {
     return null;
   }
-  const fullyBundled = FULLY_BUNDLED_CREDENTIAL_KINDS.has(credentialKind);
+  const fullyBundled = isFullyBundledStaticSecretCredentialKind(credentialKind);
   const bundleFields = fullyBundled ? fields : secretFields;
   const setupFields = fullyBundled ? [] : fields.filter((field) => !field.secret);
   const descriptor: StaticSecretDescriptor = {
     credentialKind,
     ...(required === false ? { captureRequired: false } : {}),
   };
-  if (MULTI_SECRET_FIELD_CREDENTIAL_KINDS.has(credentialKind) && bundleFields.length > 1) {
+  if (isBundledStaticSecretCredentialKind(credentialKind) && bundleFields.length > 1) {
     descriptor.secretFieldEnvVars = Object.fromEntries(bundleFields.map((field) => [field.name, [...field.env]]));
     const optional = bundleFields.filter((field) => !field.required).map((field) => field.name);
     if (optional.length > 0) {
