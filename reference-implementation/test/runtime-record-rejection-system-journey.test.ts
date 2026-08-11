@@ -202,9 +202,37 @@ function assertOmitsPrivatePayload(surfaceName: string, surface: unknown, forbid
   }
 }
 
-function withLostFirstIngestResponse(runId: string): { restore: () => void; seen: () => number } {
+interface CapturedIngestEnvelope {
+  body: unknown;
+  runId: string;
+}
+
+function rejectionReceiptIdFromEnvelope(body: unknown): string {
+  const { rejections } = body as { rejections?: { receipt_id?: unknown }[] };
+  assert.ok(Array.isArray(rejections), "ingest envelope must include rejections array");
+  assert.equal(rejections.length, 1);
+  const receiptId = rejections[0]?.receipt_id;
+  if (typeof receiptId !== "string") {
+    assert.fail("ingest envelope rejection must include a string receipt_id");
+  }
+  return receiptId;
+}
+
+function withCapturedIngestResponses({
+  loseResponseForRunId,
+  watchedRunIds,
+}: {
+  loseResponseForRunId: string;
+  watchedRunIds: readonly string[];
+}): {
+  captured: () => readonly CapturedIngestEnvelope[];
+  restore: () => void;
+  seenLostResponse: () => number;
+} {
   const originalFetch = globalThis.fetch;
-  let seen = 0;
+  const captured: CapturedIngestEnvelope[] = [];
+  const watched = new Set(watchedRunIds);
+  let seenLostResponse = 0;
   globalThis.fetch = (async (input, init) => {
     let url: URL;
     if (typeof input === "string" || input instanceof URL) {
@@ -212,18 +240,24 @@ function withLostFirstIngestResponse(runId: string): { restore: () => void; seen
     } else {
       url = new URL(input.url);
     }
-    if (url.pathname === "/v1/ingest/items" && url.searchParams.get("run_id") === runId) {
-      seen += 1;
-      await originalFetch(input, init);
-      throw new Error("simulated response loss after durable ingest commit");
+    const runId = url.searchParams.get("run_id") ?? "";
+    if (url.pathname === "/v1/ingest/items" && watched.has(runId)) {
+      const response = await originalFetch(input, init);
+      captured.push({ body: await response.clone().json(), runId });
+      if (runId === loseResponseForRunId) {
+        seenLostResponse += 1;
+        throw new Error("simulated response loss after durable ingest commit");
+      }
+      return response;
     }
     return originalFetch(input, init);
   }) as typeof fetch;
   return {
+    captured: () => captured,
     restore: () => {
       globalThis.fetch = originalFetch;
     },
-    seen: () => seen,
+    seenLostResponse: () => seenLostResponse,
   };
 }
 
@@ -441,6 +475,7 @@ test("runtime/server SQLite response loss replays the same durable rejection rec
   const emittedAt = "2026-08-11T12:10:00.000Z";
   const rejectedRecord = { data: { id: "bad-data", value: "bad" }, emitted_at: emittedAt, key: "bad-key" };
   const rejectedPayloadLine = JSON.stringify(rejectedRecord);
+  let ingestObserver: ReturnType<typeof withCapturedIngestResponses> | null = null;
   let server: ClosableServer | null = null;
 
   try {
@@ -470,7 +505,10 @@ test("runtime/server SQLite response loss replays the same durable rejection rec
       { records_emitted: 1, status: "succeeded", type: "DONE" },
     ]);
     const firstProgress: unknown[] = [];
-    const lostResponse = withLostFirstIngestResponse(firstRunId);
+    ingestObserver = withCapturedIngestResponses({
+      loseResponseForRunId: firstRunId,
+      watchedRunIds: [firstRunId, secondRunId],
+    });
     try {
       await assert.rejects(
         () =>
@@ -499,14 +537,13 @@ test("runtime/server SQLite response loss replays the same durable rejection rec
           }),
         SIMULATED_RESPONSE_LOSS_RE
       );
-      assert.equal(lostResponse.seen(), 1, "test wrapper must lose exactly the first ingest response");
+      assert.equal(ingestObserver.seenLostResponse(), 1, "test wrapper must lose exactly the first ingest response");
       assertOmitsPrivatePayload("lost-response runtime progress", firstProgress, [
         rejectedPayloadLine,
         "bad-key",
         "bad-data",
       ]);
     } finally {
-      lostResponse.restore();
       firstAttempt.cleanup();
     }
 
@@ -529,6 +566,17 @@ test("runtime/server SQLite response loss replays the same durable rejection rec
     assert.equal(rowAfterLoss.reason_code, "invalid_record_identity");
     assert.equal(rowAfterLoss.payload_text, rejectedPayloadLine);
     assert.equal(rowAfterLoss.replay_count, 0);
+    const firstEnvelope = ingestObserver.captured().find((envelope) => envelope.runId === firstRunId);
+    assert.ok(firstEnvelope, "lost response envelope must be captured before the simulated transport loss");
+    assert.equal(rejectionReceiptIdFromEnvelope(firstEnvelope.body), rowAfterLoss.receipt_id);
+    assertOmitsPrivatePayload("lost response ingest envelope", firstEnvelope.body, [
+      rejectedPayloadLine,
+      "bad-key",
+      "bad-data",
+      "storage exploded",
+      "parser exploded",
+      "simulated response loss",
+    ]);
     assert.equal(
       getDb()
         .prepare("SELECT COUNT(*) AS count FROM record_rejections WHERE connector_instance_id = ?")
@@ -594,6 +642,18 @@ test("runtime/server SQLite response loss replays the same durable rejection rec
     assert.equal(rowAfterReplay.receipt_id, rowAfterLoss.receipt_id);
     assert.equal(rowAfterReplay.payload_text, rejectedPayloadLine);
     assert.equal(rowAfterReplay.replay_count, 1);
+    const secondEnvelope = ingestObserver.captured().find((envelope) => envelope.runId === secondRunId);
+    assert.ok(secondEnvelope, "replay response envelope must be captured");
+    assert.equal(rejectionReceiptIdFromEnvelope(secondEnvelope.body), rowAfterLoss.receipt_id);
+    assert.equal(rejectionReceiptIdFromEnvelope(secondEnvelope.body), rowAfterReplay.receipt_id);
+    assertOmitsPrivatePayload("replay response ingest envelope", secondEnvelope.body, [
+      rejectedPayloadLine,
+      "bad-key",
+      "bad-data",
+      "storage exploded",
+      "parser exploded",
+      "simulated response loss",
+    ]);
     assert.equal(
       getDb()
         .prepare("SELECT COUNT(*) AS count FROM record_rejections WHERE connector_instance_id = ?")
@@ -615,6 +675,7 @@ test("runtime/server SQLite response loss replays the same durable rejection rec
     assert.equal(facts.records_flushed, 0);
     assertOmitsPrivatePayload("replay run history facts", facts, [rejectedPayloadLine, "bad-key", "bad-data"]);
   } finally {
+    ingestObserver?.restore();
     if (server) {
       await closeServer(server);
     }
