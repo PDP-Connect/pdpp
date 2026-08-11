@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import { afterEach, before, test } from "node:test";
+import { evaluateStreamCoherence } from "@pdpp/reference-contract/evidence";
 import { buildPacingStateFields, readPersistedPacingInterval } from "../../src/connector-http-governor.ts";
 import type { StreamScope } from "../../src/connector-runtime.ts";
 import {
@@ -78,6 +79,7 @@ interface CapturedSkip {
 
 interface CapturedCoverage {
   considered: number | undefined;
+  covered: number | undefined;
   hydratedKeys: number;
   requiredKeys: number;
   stateStream: string;
@@ -111,6 +113,7 @@ function makeCtx(
             requiredKeys: msg.required_keys.length,
             hydratedKeys: msg.hydrated_keys.length,
             considered: msg.considered,
+            covered: msg.covered,
           });
         } else {
           states.push({ stream: msg.stream, cursor: msg.cursor });
@@ -732,4 +735,259 @@ test("declareListConsidered: never aliases considered to the emitted count", asy
   const cov = coverages.find((c) => c.stream === "repositories");
   assert.ok(cov, "an empty enumeration still declares considered: 0 (a fact, not unknown)");
   assert.equal(cov?.considered, 0);
+});
+
+// ─── Honest `covered` evidence at the enumeration site ─────────────────────
+//
+// Live UAT evidence (run_1786417047230) showed repositories/starred/pull_requests
+// declaring `considered` with no `covered`, and `user` (the one manifest
+// `required: true` stream) declaring neither — landing on the coherence
+// contract's `checkpoint_only` rejection rather than a proven `complete`. These
+// tests assert the positive `covered` evidence every stream now measures at its
+// own enumeration site (never aliased to `collected`), and prove the fix against
+// the real `evaluateStreamCoherence` oracle from `@pdpp/reference-contract`, not
+// a reimplementation of its rules.
+
+test("collectUser: FIX proof — user declares singleton_presence coverage so the coherence contract proves it, not checkpoint_only", async () => {
+  installUserFetch();
+  const { ctx, coverages } = makeCtx(["user"]);
+  await collectUser(ctx);
+
+  const cov = coverages.find((c) => c.stream === "user");
+  assert.ok(
+    cov,
+    "user must declare DETAIL_COVERAGE — a required singleton_presence stream cannot rely on a bare checkpoint"
+  );
+  assert.equal(cov?.considered, 1);
+  assert.equal(cov?.covered, 1);
+
+  // End-to-end proof against the real oracle: a steady-state run (fingerprint
+  // unchanged, zero records emitted) with this coverage declaration and a
+  // committed checkpoint now reads `proven` via `enumeration_boundary`, never
+  // `checkpoint_only`.
+  const verdict = evaluateStreamCoherence(
+    {
+      checkpoint: "committed",
+      collected: 0,
+      considered: cov?.considered ?? null,
+      covered: cov?.covered ?? null,
+      pending_detail_gaps: 0,
+      skipped: null,
+    },
+    { coverage_strategy: "singleton_presence" }
+  );
+  assert.deepEqual(verdict, { proven: true, reason: "enumeration_boundary" });
+});
+
+test("collectUser: BEFORE-FIX regression guard — a considered-less declaration reads checkpoint_only under the real oracle", () => {
+  // Documents the exact live-evidence bug this change closes: a committed
+  // checkpoint with no considered/covered measurement is never proof, no matter
+  // how the manifest strategy reads.
+  const verdict = evaluateStreamCoherence(
+    { checkpoint: "committed", collected: 0, considered: null, covered: null, pending_detail_gaps: 0, skipped: null },
+    { coverage_strategy: "singleton_presence" }
+  );
+  assert.deepEqual(verdict, { proven: false, reason: "checkpoint_only" });
+});
+
+test("collectUser: user_stats also declares singleton_presence coverage", async () => {
+  installUserFetch();
+  const { ctx, coverages } = makeCtx(["user_stats"]);
+  await collectUser(ctx);
+
+  const cov = coverages.find((c) => c.stream === "user_stats");
+  assert.ok(cov);
+  assert.equal(cov?.considered, 1);
+  assert.equal(cov?.covered, 1);
+});
+
+test("collectUser: no coverage declared for a stream that was not requested", async () => {
+  installUserFetch();
+  const { ctx, coverages } = makeCtx(["user"]);
+  await collectUser(ctx);
+
+  assert.equal(
+    coverages.find((c) => c.stream === "user_stats"),
+    undefined,
+    "user_stats coverage must not be declared when user_stats was not in scope"
+  );
+});
+
+test("collectRepositories: zero-changed steady state declares covered === considered (proves complete, not partial)", async () => {
+  // Every repo on the page is already at/older than the cursor: the FIRST item
+  // triggers the stop, so evaluated = considered = covered = 1 even though
+  // collected = 0. This is the honest positive proof of a real no-op run.
+  globalThis.fetch = () => Promise.resolve(jsonResponse([repoItem(1, "2026-01-01T00:00:00Z")]));
+  const { ctx, records, coverages } = makeCtx(["repositories"], {
+    repositories: { last_pushed_at: "2026-03-01T00:00:00Z" },
+  });
+  await collectRepositories(ctx);
+
+  assert.equal(records.filter((r) => r.stream === "repositories").length, 0);
+  const cov = coverages.find((c) => c.stream === "repositories");
+  assert.equal(cov?.considered, 1);
+  assert.equal(cov?.covered, 1);
+
+  const verdict = evaluateStreamCoherence(
+    {
+      checkpoint: "committed",
+      collected: 0,
+      considered: cov?.considered ?? null,
+      covered: cov?.covered ?? null,
+      pending_detail_gaps: 0,
+      skipped: null,
+    },
+    { coverage_strategy: "full_inventory" }
+  );
+  assert.deepEqual(verdict, { proven: true, reason: "enumeration_boundary" });
+});
+
+test("collectRepositories: FIX proof — a page tail past the cursor stop is never counted toward considered", async () => {
+  // Three items on one page: item 1 is new, item 2 matches the cursor (stop),
+  // item 3 sits after the match and is never visited by the loop. Before the
+  // fix, `considered` used the raw page length (3); the honest count is only
+  // the 2 items the loop actually walked (item1 emitted, item2 confirmed the
+  // stop) — item3 was never inspected, so counting it would be a fabricated
+  // boundary claim, not a measured one.
+  globalThis.fetch = () =>
+    Promise.resolve(
+      jsonResponse([
+        repoItem(1, "2026-06-01T00:00:00Z"),
+        repoItem(2, "2026-01-01T00:00:00Z"),
+        repoItem(3, "2025-01-01T00:00:00Z"),
+      ])
+    );
+  const { ctx, records, coverages } = makeCtx(["repositories"], {
+    repositories: { last_pushed_at: "2026-03-01T00:00:00Z" },
+  });
+  await collectRepositories(ctx);
+
+  assert.equal(records.filter((r) => r.stream === "repositories").length, 1);
+  const cov = coverages.find((c) => c.stream === "repositories");
+  assert.equal(
+    cov?.considered,
+    2,
+    "considered must count only the 2 items the loop actually walked, not the raw page size of 3"
+  );
+  assert.equal(cov?.covered, 2, "both evaluated items were accounted for: one emitted, one the confirming stop match");
+});
+
+test("collectStarred: covered excludes dropped entries so a drop reads an honest partial under the real oracle", async () => {
+  globalThis.fetch = () =>
+    Promise.resolve(jsonResponse([starredEntry(1, true), starredEntry(2, false), starredEntry(3, true)]));
+  const { ctx, coverages } = makeCtx(["starred"]);
+  await collectStarred(ctx);
+
+  const cov = coverages.find((c) => c.stream === "starred");
+  assert.equal(cov?.considered, 3);
+  assert.equal(cov?.covered, 2, "the dropped entry (no repo object) was evaluated but never accounted for");
+
+  const verdict = evaluateStreamCoherence(
+    {
+      checkpoint: "committed",
+      collected: 2,
+      considered: cov?.considered ?? null,
+      covered: cov?.covered ?? null,
+      pending_detail_gaps: 0,
+      skipped: null,
+    },
+    { coverage_strategy: "full_inventory" }
+  );
+  assert.deepEqual(
+    verdict,
+    { proven: false, reason: "boundary_shortfall" },
+    "an explicit covered < considered must always read a real shortfall, never waved through by a closed checkpoint"
+  );
+});
+
+test("collectStarred: zero drops → covered === considered (steady state proves complete)", async () => {
+  globalThis.fetch = () => Promise.resolve(jsonResponse([starredEntry(1, true), starredEntry(2, true)]));
+  const { ctx, coverages } = makeCtx(["starred"]);
+  await collectStarred(ctx);
+
+  const cov = coverages.find((c) => c.stream === "starred");
+  assert.equal(cov?.considered, 2);
+  assert.equal(cov?.covered, 2);
+});
+
+test("collectIssues: considered > collected (until-filtered) but fully covered — proves complete, not partial", async () => {
+  globalThis.fetch = () =>
+    Promise.resolve(
+      jsonResponse([
+        issueItem(1, "2026-06-01T00:00:00Z"),
+        issueItem(2, "2026-06-10T00:00:00Z"),
+        issueItem(3, "2026-05-01T00:00:00Z"),
+      ])
+    );
+  const { ctx, records, coverages } = makeCtx(["issues"]);
+  ctx.requested.set("issues", { name: "issues", time_range: { until: "2026-06-05T00:00:00Z" } });
+  await collectIssues(ctx);
+
+  assert.equal(records.filter((r) => r.stream === "issues").length, 2);
+  const cov = coverages.find((c) => c.stream === "issues");
+  assert.equal(cov?.considered, 3, "considered > collected: the until filter excluded one in-window issue");
+  assert.equal(
+    cov?.covered,
+    3,
+    "every considered issue was accounted for — emitted, or deliberately excluded by until"
+  );
+
+  const verdict = evaluateStreamCoherence(
+    {
+      checkpoint: "committed",
+      collected: 2,
+      considered: cov?.considered ?? null,
+      covered: cov?.covered ?? null,
+      pending_detail_gaps: 0,
+      skipped: null,
+    },
+    { coverage_strategy: "checkpoint_window" }
+  );
+  assert.deepEqual(
+    verdict,
+    { proven: true, reason: "enumeration_boundary" },
+    "considered > collected must still prove complete when covered accounts for the full boundary"
+  );
+});
+
+test("collectGists: covered equals considered (every fetched gist is accounted for)", async () => {
+  globalThis.fetch = () =>
+    Promise.resolve(jsonResponse([gistItem(1, "2026-06-01T00:00:00Z"), gistItem(2, "2026-05-20T00:00:00Z")]));
+  const { ctx, coverages } = makeCtx(["gists"]);
+  await collectGists(ctx);
+
+  const cov = coverages.find((c) => c.stream === "gists");
+  assert.equal(cov?.considered, 2);
+  assert.equal(cov?.covered, 2);
+});
+
+test("collectPullRequests: covered equals considered when no detail fetch fails (degraded records still count as accounted for)", async () => {
+  const items = [prSearchItem(1, "owner/a"), prSearchItem(2, "owner/b")];
+  installPrFetch(items, new Set(["owner/b"]));
+  const { ctx, coverages } = makeCtx(["pull_requests"]);
+  await collectPullRequests(ctx);
+
+  const cov = coverages.find((c) => c.stream === "pull_requests");
+  assert.equal(cov?.considered, 2);
+  assert.equal(
+    cov?.covered,
+    2,
+    "a detail-fetch failure degrades the record but the PR itself is still emitted and accounted for"
+  );
+});
+
+test("collectPullRequests: provider/list failure counterweight — a cap-truncated window still declares no covered (unknowable, not falsely proven)", async () => {
+  installWindowedPrFetch(
+    "2026-01-01T00:00:00Z",
+    { 2026: [prSearchItemCreated(1, "owner/a", 2026), prSearchItemCreated(2, "owner/b", 2026)] },
+    { 2026: 1023 }
+  );
+  const { ctx, coverages } = makeCtx(["pull_requests"]);
+  await collectPullRequests(ctx);
+
+  assert.equal(
+    coverages.filter((c) => c.stream === "pull_requests").length,
+    0,
+    "a cap-truncated window must declare neither considered nor covered — the boundary is unknowable, not zero"
+  );
 });

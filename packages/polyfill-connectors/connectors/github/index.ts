@@ -206,25 +206,37 @@ export interface StreamCtx {
 }
 
 /**
- * Declare a list-stream `considered` denominator for the Collection Report
+ * Declare a list-stream coverage denominator for the Collection Report
  * (OpenSpec task 4.1). GitHub's list streams have no detail-hydration phase, so
  * this emits a DETAIL_COVERAGE whose `state_stream`/`stream` are the list stream
  * itself with EMPTY `required_keys`/`hydrated_keys` and an explicit `considered`
- * count. Empty key sets mean the runtime's pre-commit coverage gate has nothing
- * to mark missing (it never blocks the commit), and the only signal carried is
- * the denominator the terminal collection-fact block reads.
+ * (and, when supplied, `covered`) count. Empty key sets mean the runtime's
+ * pre-commit coverage gate has nothing to mark missing (it never blocks the
+ * commit), and the only signal carried is the denominator(s) the terminal
+ * collection-fact block reads.
  *
  * Honesty contract: `considered` is the number of items the run actually
- * enumerated from the source within its boundary (the paginated total it saw),
- * measured at the fetch site — NEVER the count it chose to emit. When the run
- * emitted every item it enumerated the stream reads `complete` for that boundary
- * (the honest verdict: nothing in-boundary was left behind); when it weighed and
- * excluded in-boundary items (e.g. an `until` filter, a dropped malformed entry)
- * `collected < considered` reads `partial`. A stream that cannot know its full
- * inventory for the run (e.g. a search-API cap truncation) MUST NOT call this —
- * it leaves `considered` unknown and relies on its terminal-gap evidence instead.
+ * EVALUATED against its boundary from the source (never the raw page size when
+ * a page can contain unvisited items past an early stop) — NEVER the count it
+ * chose to emit. `covered`, when supplied, is the number of those evaluated
+ * items the run accounted for — emitted, or confirmed unchanged/out-of-window by
+ * the same per-item comparison that decided not to emit it. It must be measured
+ * at the same enumeration site, never aliased to `considered` or `collected`
+ * blindly. When every evaluated item was accounted for, the stream reads
+ * `complete` for that boundary on a steady-state run too (the honest verdict:
+ * nothing evaluated was left unaccounted for); when the run evaluated an item
+ * and could not account for it (e.g. a dropped malformed entry), omit it from
+ * `covered` so `covered < considered` reads a real `partial`. A stream that
+ * cannot know its full inventory for the run (e.g. a search-API cap truncation)
+ * MUST NOT call this — it leaves `considered` unknown and relies on its
+ * terminal-gap evidence instead.
  */
-async function declareListConsidered(ctx: StreamCtx, stream: string, considered: number): Promise<void> {
+async function declareListConsidered(
+  ctx: StreamCtx,
+  stream: string,
+  considered: number,
+  covered?: number
+): Promise<void> {
   if (!Number.isInteger(considered) || considered < 0) {
     return;
   }
@@ -235,6 +247,7 @@ async function declareListConsidered(ctx: StreamCtx, stream: string, considered:
       requiredKeys: [],
       hydratedKeys: [],
       considered,
+      ...(covered === undefined ? {} : { covered }),
     })
   );
 }
@@ -265,6 +278,15 @@ export async function collectUser(ctx: StreamCtx): Promise<void> {
       stream: "user",
       cursor: userCursor,
     });
+    // `user` is a `singleton_presence` stream (manifest: required): a committed
+    // checkpoint with no coverage measurement reads `checkpoint_only`, never
+    // `complete` (the contract explicitly rejects laundering a bare checkpoint
+    // into proof — see coherence.ts). The `/user` fetch above already proved the
+    // one entity this stream owns was reached; declare that boundary explicitly
+    // so a steady-state run (fingerprint unchanged, nothing emitted) still reads
+    // `complete` rather than `unknown`. Only reached after the fetch above
+    // succeeded — never claim presence on a failed fetch.
+    await declareListConsidered(ctx, "user", 1, 1);
   }
 
   // Stats record: sampled metrics keyed by {user_id}:{YYYY-MM-DD}.
@@ -277,10 +299,17 @@ export async function collectUser(ctx: StreamCtx): Promise<void> {
       stream: "user_stats",
       cursor: { observed_on: observedOn, fetched_at: nowIso() },
     });
+    // Same `singleton_presence` honesty requirement as `user` above: the daily
+    // sample was successfully derived from the same proven `/user` fetch.
+    await declareListConsidered(ctx, "user_stats", 1, 1);
   }
 }
 
 interface ReposPageResult {
+  /** Items this page the loop actually inspected (walked up to and including
+   *  a stop match). Items after a stop match within the same page are never
+   *  visited, so they must not count toward `considered`. */
+  evaluated: number;
   latest: string | null | undefined;
   stop: boolean;
 }
@@ -292,14 +321,16 @@ async function emitRepositoriesPage(
   latestIn: string | null | undefined
 ): Promise<ReposPageResult> {
   let latest = latestIn;
+  let evaluated = 0;
   for (const r of items) {
+    evaluated += 1;
     if (priorPushed && r.pushed_at && r.pushed_at <= priorPushed) {
-      return { latest, stop: true };
+      return { evaluated, latest, stop: true };
     }
     await ctx.emitRecord("repositories", repoRecord(r));
     latest = laterIso(latest, r.pushed_at);
   }
-  return { latest, stop: false };
+  return { evaluated, latest, stop: false };
 }
 
 export async function collectRepositories(ctx: StreamCtx): Promise<void> {
@@ -311,6 +342,13 @@ export async function collectRepositories(ctx: StreamCtx): Promise<void> {
   let stop = false;
   let pageIndex = 0;
   let totalSeen = 0;
+  // Items the loop actually evaluated against the incremental cursor, summed
+  // across pages. This is the honest `considered` denominator: it excludes any
+  // page tail past an early stop match, which the loop never visits (see
+  // `emitRepositoriesPage`). Every evaluated item is either emitted (new) or
+  // is itself the stop match confirming the boundary was reached, so
+  // `covered === evaluated` — nothing evaluated is ever silently dropped.
+  let totalEvaluated = 0;
   while (path && !stop) {
     const pageExtra = {
       stream: "repositories",
@@ -333,13 +371,17 @@ export async function collectRepositories(ctx: StreamCtx): Promise<void> {
     const result = await emitRepositoriesPage(ctx, page.data, priorPushed, latestPushed);
     latestPushed = result.latest;
     ({ stop } = result);
+    totalEvaluated += result.evaluated;
     path = page.nextUrl;
     pageIndex += 1;
   }
-  // The run enumerated `totalSeen` repositories from the source within its
-  // boundary (full pages until the cursor stop). Declare that as `considered`;
-  // the runtime counts what was emitted as `collected`.
-  await declareListConsidered(ctx, "repositories", totalSeen);
+  // The run evaluated `totalEvaluated` repositories against the incremental
+  // cursor within its boundary. Declare that as `considered`; every evaluated
+  // item was either emitted (new) or is the stop match confirming the rest of
+  // the boundary is unchanged, so `covered` equals the same count. This proves
+  // a zero-changed steady-state run `complete` rather than leaving it to the
+  // strategy's checkpoint-only fallback.
+  await declareListConsidered(ctx, "repositories", totalEvaluated, totalEvaluated);
   await ctx.emit({
     type: "STATE",
     stream: "repositories",
@@ -350,6 +392,10 @@ export async function collectRepositories(ctx: StreamCtx): Promise<void> {
 interface StarredPageResult {
   /** Entries whose `repo` was missing, so starredRecord() returned null. */
   dropped: number;
+  /** Entries this page the loop actually inspected (walked up to and including
+   *  a stop match). Entries after a stop match within the same page are never
+   *  visited, so they must not count toward `considered`. */
+  evaluated: number;
   latest: string | null | undefined;
   stop: boolean;
 }
@@ -362,10 +408,12 @@ async function emitStarredPage(
 ): Promise<StarredPageResult> {
   let latest = latestIn;
   let dropped = 0;
+  let evaluated = 0;
   for (const entry of entries) {
+    evaluated += 1;
     const starredAt = entry.starred_at || null;
     if (priorStarred && starredAt && starredAt <= priorStarred) {
-      return { dropped, latest, stop: true };
+      return { dropped, evaluated, latest, stop: true };
     }
     const rec = starredRecord(entry);
     if (!rec) {
@@ -378,7 +426,7 @@ async function emitStarredPage(
     await ctx.emitRecord("starred", rec);
     latest = laterIso(latest, starredAt);
   }
-  return { dropped, latest, stop: false };
+  return { dropped, evaluated, latest, stop: false };
 }
 
 export async function collectStarred(ctx: StreamCtx): Promise<void> {
@@ -391,6 +439,10 @@ export async function collectStarred(ctx: StreamCtx): Promise<void> {
   let pageIndex = 0;
   let totalSeen = 0;
   let droppedTotal = 0;
+  // Entries the loop actually evaluated against the incremental cursor, summed
+  // across pages — excludes any page tail past an early stop match (see
+  // `emitStarredPage`). The honest `considered` denominator.
+  let totalEvaluated = 0;
   while (path && !stop) {
     // Use star:timestamp media type to get starred_at
     const pageExtra = {
@@ -423,6 +475,7 @@ export async function collectStarred(ctx: StreamCtx): Promise<void> {
     latestStarred = result.latest;
     ({ stop } = result);
     droppedTotal += result.dropped;
+    totalEvaluated += result.evaluated;
     path = page.nextUrl;
     pageIndex += 1;
   }
@@ -438,11 +491,14 @@ export async function collectStarred(ctx: StreamCtx): Promise<void> {
       diagnostics: { dropped: droppedTotal, total_seen: totalSeen },
     });
   }
-  // `totalSeen` is every starred entry enumerated in this run's boundary,
-  // including the ones dropped for a missing `repo`. Declaring it as `considered`
-  // makes a run that silently dropped entries read `partial` (collected <
-  // considered), never falsely complete.
-  await declareListConsidered(ctx, "starred", totalSeen);
+  // `totalEvaluated` is every starred entry actually evaluated in this run's
+  // boundary, including the ones dropped for a missing `repo`. Declaring it as
+  // `considered` makes a run that silently dropped entries read `partial`
+  // (covered < considered), never falsely complete. `covered` excludes the
+  // dropped entries — they were evaluated but never accounted for — so a
+  // steady-state run with zero drops reads `complete`, and a run that drops
+  // entries still reads an honest `partial`.
+  await declareListConsidered(ctx, "starred", totalEvaluated, totalEvaluated - droppedTotal);
   await ctx.emit({
     type: "STATE",
     stream: "starred",
@@ -506,11 +562,16 @@ export async function collectIssues(ctx: StreamCtx): Promise<void> {
     path = page.nextUrl;
     pageIndex += 1;
   }
-  // `totalSeen` is every issue the run enumerated in its `[since, until]`
-  // boundary; `until`-filtered items are considered-but-not-collected, so
-  // declaring `considered` lets the report show a real partial when a window is
-  // capped, and complete when the run emitted everything it weighed.
-  await declareListConsidered(ctx, "issues", totalSeen);
+  // `totalSeen` is every issue the run enumerated AND evaluated in its
+  // `[since, until]` boundary (every fetched page is walked in full by
+  // `emitIssuesPage`, so nothing is left unvisited). `until`-filtered items are
+  // considered-but-not-emitted — but the run DID make an accounting decision for
+  // every one of them (emit, or correctly exclude as outside the requested
+  // window), so `covered` equals the same count. A steady-state run (nothing
+  // new since the cursor, no `until`) reads `complete`; a window genuinely
+  // capped by pagination truncation would surface via the run's own terminal
+  // evidence, not a considered/covered mismatch here.
+  await declareListConsidered(ctx, "issues", totalSeen, totalSeen);
   await ctx.emit({
     type: "STATE",
     stream: "issues",
@@ -630,6 +691,10 @@ interface PrPageResult {
   detailFailed: number;
   /** PR records actually emitted after since/until filters. */
   emitted: number;
+  /** Items this page the loop actually inspected (walked up to and including
+   *  a `since` stop match). Items after a stop match within the same page are
+   *  never visited, so they must not count toward `considered`. */
+  evaluated: number;
   latest: string | null | undefined;
   stop: boolean;
 }
@@ -639,6 +704,9 @@ interface PrWindowResult {
   capTruncated: boolean;
   detailFailed: number;
   emitted: number;
+  /** Items across this window's pages the loop actually evaluated (see
+   *  `PrPageResult.evaluated`) — excludes any page tail past a `since` stop. */
+  evaluated: number;
   /** Raw search hits seen across this window's pages (before since/until filters). */
   fetched: number;
   latest: string | null | undefined;
@@ -673,9 +741,11 @@ async function emitPullRequestPage(
   let latest = latestIn;
   let detailFailed = 0;
   let emitted = 0;
+  let evaluated = 0;
   for (const it of items) {
+    evaluated += 1;
     if (isBeforeSince(it.updated_at, sinceParam)) {
-      return { detailFailed, emitted, latest, stop: true };
+      return { detailFailed, emitted, evaluated, latest, stop: true };
     }
     if (isAtOrAfterUntil(it.updated_at, until)) {
       continue;
@@ -687,7 +757,7 @@ async function emitPullRequestPage(
       detailFailed += 1;
     }
   }
-  return { detailFailed, emitted, latest, stop: false };
+  return { detailFailed, emitted, evaluated, latest, stop: false };
 }
 
 /**
@@ -712,6 +782,7 @@ async function drainPrSearchWindow(
   let fetchedCount = 0;
   let detailFailed = 0;
   let emitted = 0;
+  let evaluated = 0;
   let reportedTotal = 0;
   let latest = latestIn;
   while (path && !stop) {
@@ -739,6 +810,7 @@ async function drainPrSearchWindow(
     ({ stop } = result);
     detailFailed += result.detailFailed;
     emitted += result.emitted;
+    evaluated += result.evaluated;
     fetchedCount += items.length;
     await ctx.progress("Fetched GitHub pull requests page", {
       stream: "pull_requests",
@@ -757,6 +829,7 @@ async function drainPrSearchWindow(
     capTruncated: reportedTotal > PR_SEARCH_RESULT_CAP,
     detailFailed,
     emitted,
+    evaluated,
     fetched: fetchedCount,
     reportedTotal,
     latest,
@@ -785,6 +858,7 @@ export async function collectPullRequests(ctx: StreamCtx): Promise<void> {
   let detailFailedTotal = 0;
   let emittedCount = 0;
   let fetchedTotal = 0;
+  let evaluatedTotal = 0;
   let capTruncatedWindows = 0;
   let maxReportedTotal = 0;
   let pageIndex = 0;
@@ -794,6 +868,7 @@ export async function collectPullRequests(ctx: StreamCtx): Promise<void> {
     detailFailedTotal += result.detailFailed;
     emittedCount += result.emitted;
     fetchedTotal += result.fetched;
+    evaluatedTotal += result.evaluated;
     maxReportedTotal = Math.max(maxReportedTotal, result.reportedTotal);
     if (result.capTruncated) {
       capTruncatedWindows += 1;
@@ -841,8 +916,13 @@ export async function collectPullRequests(ctx: StreamCtx): Promise<void> {
   // the run's true denominator is unknowable — leave `considered` unknown and
   // let the `pr_search_cap_truncated` terminal-gap above carry the incompleteness
   // honestly rather than under-reporting a denominator that looks complete.
+  // `evaluatedTotal` (not `fetchedTotal`) excludes any page tail past a `since`
+  // stop match that the loop never visited (see `emitPullRequestPage`); every
+  // evaluated PR was either emitted (possibly detail-degraded, but not dropped)
+  // or is the stop match confirming the rest is already known, so `covered`
+  // equals the same count.
   if (capTruncatedWindows === 0) {
-    await declareListConsidered(ctx, "pull_requests", fetchedTotal);
+    await declareListConsidered(ctx, "pull_requests", evaluatedTotal, evaluatedTotal);
   }
   await ctx.emit({
     type: "STATE",
@@ -927,9 +1007,11 @@ export async function collectGists(ctx: StreamCtx): Promise<void> {
     path = page.nextUrl;
     pageIndex += 1;
   }
-  // Every gist enumerated in the run's boundary; `until`-filtered gists are
-  // considered-but-not-collected (see `collectIssues` for the same reasoning).
-  await declareListConsidered(ctx, "gists", totalSeen);
+  // Every gist enumerated AND evaluated in the run's boundary (full page walk,
+  // nothing left unvisited); `until`-filtered gists were still accounted for
+  // (see `collectIssues` for the same reasoning), so `covered` equals the same
+  // count.
+  await declareListConsidered(ctx, "gists", totalSeen, totalSeen);
   await ctx.emit({
     type: "STATE",
     stream: "gists",
