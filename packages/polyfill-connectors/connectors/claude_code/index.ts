@@ -1516,15 +1516,16 @@ async function emitCoverageDiagnosticsState(input: {
 /**
  * Build the `coverage_diagnostics` records for the derived streams
  * (messages, attachments, memory_notes) based on the actual project-directory
- * scan outcome, using additive synthetic store ids so
- * `assertExpectedLocalCoverageStores`'s self-consistency check (which only
- * validates `CLAUDE_CODE_KNOWN_LOCAL_STORES`) is not tripped. The record
- * shape/status/reason policy itself is shared with Codex's identical
- * derived-stream problem — see `buildDerivedCoverageRecord` in
- * local-source-inventory.ts. A thrown error during any scan above fails the
- * whole run before this ever gets called (see `run().catch` in
- * connector-runtime.ts), so `scanComplete: true` is honest whenever this is
- * reached.
+ * scan outcome. The store id and record id are selected by
+ * `buildDerivedCoverageRecord` from `LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR`
+ * (the authority shared with the server proof reader), not chosen here — this
+ * call site supplies only the stream, connector id, and connector-specific
+ * counting/label. The record shape/status/reason policy itself is shared
+ * with Codex's identical derived-stream problem — see
+ * `buildDerivedCoverageRecord` in local-source-inventory.ts. A thrown error
+ * during any scan above fails the whole run before this ever gets called
+ * (see `run().catch` in connector-runtime.ts), so `scanComplete: true` is
+ * honest whenever this is reached.
  */
 function buildDerivedCoverageRecords(input: {
   requested: Map<string, StreamScope>;
@@ -1537,12 +1538,11 @@ function buildDerivedCoverageRecords(input: {
   if (input.requested.has("messages")) {
     records.push(
       buildDerivedCoverageRecord({
+        connectorId: "claude_code",
         emitted: input.messages.emitted,
         examined: input.messages.examined,
-        id: "coverage:derived_messages",
         label: "message",
         scanComplete: input.scanComplete,
-        store: "derived_messages",
         stream: "messages",
       })
     );
@@ -1550,12 +1550,11 @@ function buildDerivedCoverageRecords(input: {
   if (input.requested.has("attachments")) {
     records.push(
       buildDerivedCoverageRecord({
+        connectorId: "claude_code",
         emitted: input.attachments.emitted,
         examined: input.attachments.examined,
-        id: "coverage:derived_attachments",
         label: "attachment",
         scanComplete: input.scanComplete,
-        store: "derived_attachments",
         stream: "attachments",
       })
     );
@@ -1563,12 +1562,11 @@ function buildDerivedCoverageRecords(input: {
   if (input.requested.has("memory_notes")) {
     records.push(
       buildDerivedCoverageRecord({
+        connectorId: "claude_code",
         emitted: input.memoryNotes.emitted,
         examined: input.memoryNotes.examined,
-        id: "coverage:derived_memory_notes",
         label: "memory note",
         scanComplete: input.scanComplete,
-        store: "derived_memory_notes",
         stream: "memory_notes",
       })
     );

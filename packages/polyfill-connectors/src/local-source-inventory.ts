@@ -261,25 +261,28 @@ export function describeDerivedCoverageReason(input: {
  * classify what it never got to examine.
  *
  * This is pure mechanical policy shared across connectors. Enumeration,
- * store/stream ids, `label` wording, counting, and mapping a connector's own
- * scan-outcome type onto `scanComplete`/`incompleteReason` all stay
- * connector-specific.
+ * `label` wording, counting, and mapping a connector's own scan-outcome type
+ * onto `scanComplete`/`incompleteReason` all stay connector-specific. The
+ * store id and record id are NOT connector-specific inputs -- see
+ * {@link selectLocalCoverageDerivedDescriptor}: the authority table selects
+ * them, so an emitter cannot report a derived stream under a store id the
+ * table doesn't declare.
  */
 export function buildDerivedCoverageRecord(input: {
+  connectorId: string;
   emitted: number;
   examined: number;
-  id: string;
   incompleteReason?: string | undefined;
   label: string;
   scanComplete: boolean;
   scopeFingerprint?: string;
-  store: string;
   stream: string;
 }): CoverageRecord {
+  const descriptor = selectLocalCoverageDerivedDescriptor(input.connectorId, input.stream);
   const status: CoverageStatus | "unaccounted" = input.scanComplete ? "collected" : "unaccounted";
   return {
-    id: input.id,
-    store: input.store,
+    id: `coverage:${descriptor.store}`,
+    store: descriptor.store,
     stream: input.stream,
     status,
     reason: describeDerivedCoverageReason({
@@ -291,6 +294,35 @@ export function buildDerivedCoverageRecord(input: {
     }),
     ...(input.scopeFingerprint ? { collection_scope: input.scopeFingerprint } : {}),
   };
+}
+
+/**
+ * Resolve the ONE descriptor the authority table declares for a derived
+ * stream -- the structural link that makes it impossible for a connector's
+ * `emitDerivedCoverage` to report a store id the table doesn't know about.
+ * Throws (fails loud, at the point the drift would happen) when the
+ * connector has no authoritative inventory, when no descriptor maps to this
+ * stream, or when more than one does (ambiguous -- e.g. `codex`'s `sessions`
+ * stream is deliberately mapped by two static stores, `sessions` and
+ * `state_db`, so a derived-stream caller for `sessions` would be an error,
+ * not a silent pick).
+ */
+export function selectLocalCoverageDerivedDescriptor(
+  connectorId: string,
+  stream: string
+): LocalCoverageStoreDescriptor {
+  const descriptors = expectedLocalCoverageStoreDescriptors(connectorId);
+  if (!descriptors) {
+    throw new Error(`${connectorId} has no authoritative local coverage inventory`);
+  }
+  const matches = descriptors.filter((descriptor) => descriptor.stream === stream);
+  const [match] = matches;
+  if (matches.length !== 1 || !match) {
+    throw new Error(
+      `${connectorId}: expected exactly one descriptor for derived stream '${stream}', found ${matches.length}`
+    );
+  }
+  return match;
 }
 
 export interface ParsedCoverageDiagnosticsStateSnapshot {

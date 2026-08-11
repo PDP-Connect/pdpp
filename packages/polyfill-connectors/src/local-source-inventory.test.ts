@@ -242,12 +242,11 @@ test("legacy cursor (no fingerprints field) re-emits everything once", () => {
 
 test("buildDerivedCoverageRecord: a completed scan with emitted records is collected, reason names the count", () => {
   const record = buildDerivedCoverageRecord({
+    connectorId: "claude_code",
     emitted: 3,
     examined: 5,
-    id: "coverage:derived_messages",
     label: "message",
     scanComplete: true,
-    store: "derived_messages",
     stream: "messages",
   });
   assert.equal(record.status, "collected");
@@ -256,12 +255,11 @@ test("buildDerivedCoverageRecord: a completed scan with emitted records is colle
 
 test("buildDerivedCoverageRecord: a completed scan with zero examined is collected, not missing", () => {
   const record = buildDerivedCoverageRecord({
+    connectorId: "claude_code",
     emitted: 0,
     examined: 0,
-    id: "coverage:derived_messages",
     label: "message",
     scanComplete: true,
-    store: "derived_messages",
     stream: "messages",
   });
   assert.equal(record.status, "collected", "an empty-but-complete scan is collected, not missing/unaccounted");
@@ -270,12 +268,11 @@ test("buildDerivedCoverageRecord: a completed scan with zero examined is collect
 
 test("buildDerivedCoverageRecord: examined>0 but emitted=0 (fingerprint-suppressed) is still collected", () => {
   const record = buildDerivedCoverageRecord({
+    connectorId: "claude_code",
     emitted: 0,
     examined: 4,
-    id: "coverage:derived_messages",
     label: "message",
     scanComplete: true,
-    store: "derived_messages",
     stream: "messages",
   });
   assert.equal(record.status, "collected");
@@ -284,12 +281,11 @@ test("buildDerivedCoverageRecord: examined>0 but emitted=0 (fingerprint-suppress
 
 test("buildDerivedCoverageRecord: an incomplete scan is unaccounted with a generic fallback reason", () => {
   const record = buildDerivedCoverageRecord({
+    connectorId: "claude_code",
     emitted: 0,
     examined: 0,
-    id: "coverage:derived_messages",
     label: "message",
     scanComplete: false,
-    store: "derived_messages",
     stream: "messages",
   });
   assert.equal(record.status, "unaccounted");
@@ -298,13 +294,12 @@ test("buildDerivedCoverageRecord: an incomplete scan is unaccounted with a gener
 
 test("buildDerivedCoverageRecord: a connector-supplied incompleteReason overrides the generic fallback", () => {
   const record = buildDerivedCoverageRecord({
+    connectorId: "codex",
     emitted: 0,
     examined: 0,
-    id: "coverage:derived_function_calls",
     incompleteReason: "rollout enumeration failed: parse_error",
     label: "function_call",
     scanComplete: false,
-    store: "derived_function_calls",
     stream: "function_calls",
   });
   assert.equal(record.status, "unaccounted");
@@ -315,26 +310,110 @@ test("buildDerivedCoverageRecord: a connector-supplied incompleteReason override
   );
 });
 
+// ─── emitter <-> authority structural link ────────────────────────────────
+//
+// buildDerivedCoverageRecord no longer accepts a `store`/`id` from its
+// caller -- it SELECTS them from LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR
+// via selectLocalCoverageDerivedDescriptor, keyed on (connectorId, stream).
+// This closes the drift class a manifest<->descriptor conformance test alone
+// cannot: a connector's derived emitter could previously hard-code a store id
+// string that silently diverged from the table with no failure anywhere.
+// These tests exercise the actual selection path, not a hand-supplied store.
+
+test("buildDerivedCoverageRecord: the emitted store id is exactly what the authority table declares for this (connector, stream) pair", () => {
+  for (const [connectorId, stream, expectedStore] of [
+    ["claude_code", "messages", "derived_messages"],
+    ["claude_code", "attachments", "derived_attachments"],
+    ["claude_code", "memory_notes", "derived_memory_notes"],
+    ["codex", "messages", "derived_messages"],
+    ["codex", "function_calls", "derived_function_calls"],
+  ] as const) {
+    const record = buildDerivedCoverageRecord({
+      connectorId,
+      emitted: 1,
+      examined: 1,
+      label: "x",
+      scanComplete: true,
+      stream,
+    });
+    assert.equal(
+      record.store,
+      expectedStore,
+      `${connectorId}/${stream}: store id must come from the authority table, not a hard-coded literal`
+    );
+    assert.equal(record.id, `coverage:${expectedStore}`, "record id must be derived from the selected store");
+  }
+});
+
+test("buildDerivedCoverageRecord: refuses to build a record for a stream the authority table doesn't declare a descriptor for", () => {
+  assert.throws(
+    () =>
+      buildDerivedCoverageRecord({
+        connectorId: "claude_code",
+        emitted: 1,
+        examined: 1,
+        label: "x",
+        scanComplete: true,
+        stream: "some_future_stream_with_no_descriptor",
+      }),
+    /expected exactly one descriptor/,
+    "an emitter cannot fabricate coverage for a stream the shared authority has not declared -- this is the exact " +
+      "structural failure mode a hard-coded store id previously allowed silently"
+  );
+});
+
+test("buildDerivedCoverageRecord: refuses an ambiguous stream mapped by more than one descriptor rather than silently picking one", () => {
+  // codex's `sessions` stream is deliberately declared by TWO static
+  // descriptors (`sessions` and `state_db`) -- a derived-stream caller for
+  // `sessions` has no single authoritative store to select and must fail
+  // loud, not guess.
+  assert.throws(
+    () =>
+      buildDerivedCoverageRecord({
+        connectorId: "codex",
+        emitted: 1,
+        examined: 1,
+        label: "x",
+        scanComplete: true,
+        stream: "sessions",
+      }),
+    /expected exactly one descriptor for derived stream 'sessions', found 2/
+  );
+});
+
+test("buildDerivedCoverageRecord: refuses a connector with no authoritative descriptor table at all", () => {
+  assert.throws(
+    () =>
+      buildDerivedCoverageRecord({
+        connectorId: "some_unregistered_connector",
+        emitted: 1,
+        examined: 1,
+        label: "x",
+        scanComplete: true,
+        stream: "messages",
+      }),
+    /no authoritative local coverage inventory/
+  );
+});
+
 test("buildDerivedCoverageRecord: carries an optional scopeFingerprint as collection_scope, omits it when absent", () => {
   const withScope = buildDerivedCoverageRecord({
+    connectorId: "claude_code",
     emitted: 1,
     examined: 1,
-    id: "coverage:derived_messages",
     label: "message",
     scanComplete: true,
     scopeFingerprint: "fp-abc",
-    store: "derived_messages",
     stream: "messages",
   });
   assert.equal((withScope as { collection_scope?: string }).collection_scope, "fp-abc");
 
   const withoutScope = buildDerivedCoverageRecord({
+    connectorId: "claude_code",
     emitted: 1,
     examined: 1,
-    id: "coverage:derived_messages",
     label: "message",
     scanComplete: true,
-    store: "derived_messages",
     stream: "messages",
   });
   assert.equal(

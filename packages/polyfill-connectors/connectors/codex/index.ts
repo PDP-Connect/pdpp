@@ -2004,14 +2004,13 @@ async function emitDerivedCoverage(input: {
   if (requested.has("messages")) {
     derivedRecords.push(
       buildDerivedCoverageRecord({
+        connectorId: "codex",
         emitted: rolloutScan.messagesEmitted,
         examined: rolloutScan.messagesExamined,
-        id: "coverage:derived_messages",
         incompleteReason,
         label: "message",
         scanComplete,
         scopeFingerprint,
-        store: "derived_messages",
         stream: "messages",
       })
     );
@@ -2020,14 +2019,13 @@ async function emitDerivedCoverage(input: {
   if (requested.has("function_calls")) {
     derivedRecords.push(
       buildDerivedCoverageRecord({
+        connectorId: "codex",
         emitted: rolloutScan.functionCallsEmitted,
         examined: rolloutScan.functionCallsExamined,
-        id: "coverage:derived_function_calls",
         incompleteReason,
         label: "function_call",
         scanComplete,
         scopeFingerprint,
-        store: "derived_function_calls",
         stream: "function_calls",
       })
     );
