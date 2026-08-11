@@ -38,6 +38,7 @@ import {
 } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import { RetryBudget } from "../../src/provider-budget.ts";
 import { githubPacingProfile } from "../../src/provider-profile.ts";
 import {
   API_BASE as BASE,
@@ -72,9 +73,8 @@ const USER_AGENT = "pdpp-connector-github/0.1";
 // Single per-provider send governor + retry layer. The bare factory call yields
 // the shared ADAPTIVE rate controller by default: slow-start discovery → AIMD
 // accelerate-under-success → ceiling-bounded back-off, all automatic (Phase A
-// collection-governor generalization). `maxAttempts: 1` keeps the
-// 403-quota/`github_rate_limited` throw byte-identical (cross-run cooldown via
-// `retryablePattern`); raising it activates the wired Retry-After honor.
+// collection-governor generalization). A run-shared retry budget enables real
+// Retry-After retries without multiplying requests across every PR detail.
 //
 // `let` (not `const`) so `collect` can re-seed it WARM-STARTED from durable state
 // at run start, compounding the AIMD descent across runs. This is the reference
@@ -91,15 +91,27 @@ const USER_AGENT = "pdpp-connector-github/0.1";
 // docs/research/per-connector-rate-profiles-2026-06-13.md for the derivation.
 let httpGovernor = createConnectorHttpGovernor({
   name: "github",
-  maxAttempts: 1,
+  maxAttempts: 4,
   profile: githubPacingProfile(),
+  retryBudget: new RetryBudget({ capacity: 8, initialTokens: 2, refillPerSuccess: 0.25 }),
 });
 
 const DEFAULT_GITHUB_MAX_LIST_PAGES = 200;
 let maxGithubListPages = DEFAULT_GITHUB_MAX_LIST_PAGES;
 
 /** Runtime retry classification, including the governor's exhausted 5xx form. */
-export const GITHUB_RETRYABLE_PATTERN = /rate_limited|ECONN|fetch failed|retryable status \d+/i;
+export const GITHUB_RETRYABLE_PATTERN =
+  /github_malformed_response|rate_limited|ECONN|fetch failed|retryable status \d+/i;
+
+/** Test-only reset for direct collector tests that bypass the runtime's collect hook. */
+export function __resetGithubHttpGovernorForTests(): void {
+  httpGovernor = createConnectorHttpGovernor({
+    name: "github",
+    maxAttempts: 4,
+    profile: githubPacingProfile(),
+    retryBudget: new RetryBudget({ capacity: 8, initialTokens: 2, refillPerSuccess: 0.25 }),
+  });
+}
 
 /** Test-only cap injection; production keeps the bounded default. */
 export function __setMaxGithubListPages(maxPages: number): void {
@@ -119,8 +131,9 @@ function restoreGithubPacing(state: Record<string, unknown>): void {
   const restoredIntervalMs = readPersistedPacingInterval(userCursor);
   httpGovernor = createConnectorHttpGovernor({
     name: "github",
-    maxAttempts: 1,
+    maxAttempts: 4,
     profile: githubPacingProfile(),
+    retryBudget: new RetryBudget({ capacity: 8, initialTokens: 2, refillPerSuccess: 0.25 }),
     ...(restoredIntervalMs === null ? {} : { restoredIntervalMs }),
   });
 }
@@ -666,12 +679,29 @@ export async function collectIssues(ctx: StreamCtx): Promise<void> {
 // PRs updated since the last cursor is almost never >1000, and a window that
 // somehow still exceeds the cap emits a terminal-gap SKIP_RESULT so the run is
 // honestly incomplete rather than silently truncated.
-const PR_ERROR_BUBBLE_PATTERN = /rate_limited|auth_failed|retryable status 503\b/i;
+const PR_ERROR_BUBBLE_PATTERN = /rate_limited|auth_failed|ECONN|fetch failed|retryable status [45]\d\d\b/i;
 
 // A single search window that still reports more than this many total results
 // cannot be fully drained (the API stops at ~1000). We treat any window whose
 // reported total exceeds this as cap-truncated and surface it as a gap.
 const PR_SEARCH_RESULT_CAP = 1000;
+
+function parsePrSearchResponse(data: GitHubSearchResponse): { items: GitHubIssue[]; total_count: number } {
+  if (
+    !data ||
+    typeof data !== "object" ||
+    !Array.isArray(data.items) ||
+    !Number.isInteger(data.total_count) ||
+    (data.total_count as number) < 0
+  ) {
+    throw createConnectorFailure(
+      "github_malformed_response",
+      "GitHub pull-request search returned a malformed 200 response; collection is incomplete",
+      { retryable: true }
+    );
+  }
+  return { items: data.items, total_count: data.total_count as number };
+}
 
 interface PullDetailResult {
   detail: GitHubPullDetail | null;
@@ -860,17 +890,22 @@ async function drainPrSearchWindow(
       cursor_present: pageIndex > pageIndexStart || Boolean(sinceParam) || Boolean(createdRange),
     };
     await ctx.progress("Fetching GitHub pull requests page", pageExtra);
-    const page: GhResult<GitHubSearchResponse> = await gh<GitHubSearchResponse>(
-      path,
-      ctx.token,
-      {},
-      ctx.progress,
-      pageExtra
-    );
-    if (page.data.total_count !== undefined) {
-      reportedTotal = Math.max(reportedTotal, page.data.total_count);
+    let page: GhResult<GitHubSearchResponse>;
+    try {
+      page = await gh<GitHubSearchResponse>(path, ctx.token, {}, ctx.progress, pageExtra);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw createConnectorFailure(
+          "github_malformed_response",
+          "GitHub pull-request search returned invalid JSON in a 200 response; collection is incomplete",
+          { retryable: true }
+        );
+      }
+      throw error;
     }
-    const items = page.data.items || [];
+    const search = parsePrSearchResponse(page.data);
+    const { items, total_count: totalCount } = search;
+    reportedTotal = Math.max(reportedTotal, totalCount);
     const result = await emitPullRequestPage(ctx, items, sinceParam, until, latest);
     ({ latest } = result);
     ({ stop } = result);
@@ -885,8 +920,8 @@ async function drainPrSearchWindow(
       item_count: items.length,
       total_seen: fetchedCount,
       cursor_present: Boolean(page.nextUrl),
-      count: Math.min(fetchedCount, page.data.total_count ?? fetchedCount),
-      ...(page.data.total_count === undefined ? {} : { total: page.data.total_count }),
+      count: Math.min(fetchedCount, totalCount),
+      total: totalCount,
     });
     path = page.nextUrl;
     pageIndex += 1;

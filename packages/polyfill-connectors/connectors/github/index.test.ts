@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { afterEach, before, test } from "node:test";
+import { afterEach, before, beforeEach, test } from "node:test";
 import { evaluateStreamCoherence } from "@pdpp/reference-contract/evidence";
 import { buildPacingStateFields, readPersistedPacingInterval } from "../../src/connector-http-governor.ts";
 import type { StreamScope } from "../../src/connector-runtime.ts";
 import {
+  __resetGithubHttpGovernorForTests,
   __setMaxGithubListPages,
   collectGists,
   collectIssues,
@@ -48,6 +49,10 @@ before(() => {
       return handle;
     },
   });
+});
+
+beforeEach(() => {
+  __resetGithubHttpGovernorForTests();
 });
 
 afterEach(() => {
@@ -299,7 +304,7 @@ function prSearchItem(id: number, repo: string): Record<string, unknown> {
  *  - GET /user                        → login
  *  - GET /search/issues?...           → PR summaries
  *  - GET /repos/{owner}/{repo}/pulls/{n} → per-PR detail (may 500)
- * `failDetailForRepos` returns a non-fatal 500 for those repos' detail fetch.
+ * `failDetailForRepos` returns a non-fatal 400 for those repos' detail fetch.
  */
 function installPrFetch(items: Record<string, unknown>[], failDetailForRepos: ReadonlySet<string>): void {
   globalThis.fetch = (input: string | URL | Request) => {
@@ -314,8 +319,8 @@ function installPrFetch(items: Record<string, unknown>[], failDetailForRepos: Re
     if (detailMatch) {
       const repo = detailMatch[1] ?? "";
       if (failDetailForRepos.has(repo)) {
-        // Non-fatal server error (not rate_limited / auth_failed) → counted, not thrown.
-        return Promise.resolve(new Response("boom", { status: 500 }));
+        // Non-retryable provider error → counted, not thrown.
+        return Promise.resolve(new Response("bad request", { status: 400 }));
       }
       return Promise.resolve(jsonResponse({ merged_at: "2026-05-10T00:00:00Z", commits: 3 }));
     }
@@ -1084,6 +1089,80 @@ test("GitHub repositories: fresh next links stop at the bounded page cap with a 
 
 test("GitHub retryability: exhausted transient 503 text remains retryable", () => {
   assert.match("HTTP request got retryable status 503 after retry budget was exhausted", GITHUB_RETRYABLE_PATTERN);
+  assert.match("HTTP request got retryable status 502 after retry budget was exhausted", GITHUB_RETRYABLE_PATTERN);
+  assert.match("HTTP request got retryable status 504 after retry budget was exhausted", GITHUB_RETRYABLE_PATTERN);
+  assert.match(
+    "github_malformed_response: GitHub pull-request search returned a malformed 200 response",
+    GITHUB_RETRYABLE_PATTERN
+  );
+});
+
+test("collectPullRequests: malformed search 200 fails closed without 0/0 coverage or state", async () => {
+  globalThis.fetch = (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.endsWith("/user")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }), {
+          status: 200,
+        })
+      );
+    }
+    return Promise.resolve(jsonResponse({ total_count: 0 }));
+  };
+  const { ctx, coverages, states } = makeCtx(["pull_requests"]);
+
+  await assert.rejects(
+    () => collectPullRequests(ctx),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { code?: string; retryable?: boolean }).code === "github_malformed_response" &&
+      (error as Error & { code?: string; retryable?: boolean }).retryable === true
+  );
+  assert.equal(coverages.length, 0, "malformed search must not emit a fabricated 0/0 denominator");
+  assert.equal(states.length, 0, "malformed search must not advance the PR cursor");
+});
+
+test("collectPullRequests: invalid JSON search 200 also fails closed without state", async () => {
+  globalThis.fetch = (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.endsWith("/user")) {
+      return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
+    }
+    return Promise.resolve(new Response("<html>bad gateway</html>", { status: 200 }));
+  };
+  const { ctx, coverages, states } = makeCtx(["pull_requests"]);
+
+  await assert.rejects(
+    () => collectPullRequests(ctx),
+    (error: unknown) =>
+      error instanceof Error && (error as Error & { code?: string }).code === "github_malformed_response"
+  );
+  assert.equal(coverages.length, 0);
+  assert.equal(states.length, 0);
+});
+
+test("collectPullRequests: shared Retry-After retry recovers a transient search 429", async () => {
+  let searchCalls = 0;
+  globalThis.fetch = (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.endsWith("/user")) {
+      return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
+    }
+    if (url.includes("/search/issues")) {
+      searchCalls += 1;
+      return Promise.resolve(
+        searchCalls === 1
+          ? jsonResponse({}, { status: 429, headers: { "Retry-After": "1" } })
+          : jsonResponse({ total_count: 0, items: [] })
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  };
+  const { ctx, states } = makeCtx(["pull_requests"]);
+
+  await collectPullRequests(ctx);
+  assert.equal(searchCalls, 2, "Retry-After must trigger one bounded real retry");
+  assert.equal(states.length, 1, "state is emitted only after the retried search completes");
 });
 
 test("collectPullRequests: exhausted transient detail 503 bubbles instead of degrading to a checkpoint", async () => {
@@ -1108,3 +1187,28 @@ test("collectPullRequests: exhausted transient detail 503 bubbles instead of deg
   );
   assert.equal(states.length, 0, "an exhausted transient detail failure must not advance state");
 });
+
+for (const status of [502, 504]) {
+  test(`collectPullRequests: exhausted transient detail ${status} bubbles as incomplete`, async () => {
+    globalThis.fetch = (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/user")) {
+        return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
+      }
+      if (url.includes("/search/issues")) {
+        return Promise.resolve(jsonResponse({ total_count: 1, items: [prSearchItem(1, "owner/a")] }));
+      }
+      if (/\/repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(url)) {
+        return Promise.resolve(new Response("temporary", { status }));
+      }
+      return Promise.resolve(jsonResponse({}));
+    };
+    const { ctx, states } = makeCtx(["pull_requests"]);
+
+    await assert.rejects(
+      () => collectPullRequests(ctx),
+      (error: unknown) => error instanceof Error && GITHUB_RETRYABLE_PATTERN.test(error.message)
+    );
+    assert.equal(states.length, 0, `${status} detail failure must not advance state`);
+  });
+}
