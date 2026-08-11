@@ -341,6 +341,46 @@ test("rs.records.ingest: a SINGLE systemic failure mixed with accepted AND perma
   );
 });
 
+test("hosted ingest commits permanent receipt evidence before a later systemic sibling fails the request", async () => {
+  const persisted: InsertOrReplayRejectionInput[] = [];
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({
+          body: '{"id":"accepted"}\n{"id":"permanent"}\n{"id":"systemic"}',
+          connectorInstanceId: "cin_gmail_work",
+          hostedRejectionReceipts: true,
+        }),
+        defaultDeps({
+          ingestRecord: (_cid, _cin, record) => {
+            if (record.id === "permanent") {
+              throw permanentThrow("payload-bearing permanent detail");
+            }
+            if (record.id === "systemic") {
+              throw unclassifiedThrow("database unavailable");
+            }
+          },
+          insertOrReplayRejection: (input) => {
+            persisted.push(input);
+            return receiptFor(input);
+          },
+        })
+      ),
+    (error) => error instanceof RecordsIngestSystemicFailureError && error.retryableFailureCount === 1
+  );
+
+  assert.deepEqual(
+    persisted.map(({ code, inputIndex, rawLine }) => ({ code, inputIndex, rawLine })),
+    [
+      {
+        code: "invalid_record_identity",
+        inputIndex: 1,
+        rawLine: '{"id":"permanent"}',
+      },
+    ]
+  );
+});
+
 test("rs.records.ingest: the batch-capability path also classifies systemic vs permanent from the outcome's own .retryable field", async () => {
   await assert.rejects(
     () =>

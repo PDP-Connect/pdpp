@@ -363,7 +363,7 @@ async function buildRejectionReceipts(args: {
   const receipts: RejectionReceipt[] = [];
   try {
     for (const [inputIndex, error] of args.lineErrors.entries()) {
-      if (error === null) {
+      if (error === null || error.retryable) {
         continue;
       }
       const { code } = error;
@@ -514,6 +514,23 @@ export async function executeRecordsIngest(
   );
   applyIngestErrors(parsed.lineErrors, parsed.parsedInputs, ingestErrors);
 
+  // Commit every permanent rejection receipt before deciding whether a
+  // systemic sibling makes the overall request retryable. A later systemic
+  // failure must not erase already-established recovery evidence; exact
+  // request replay returns the same receipt.
+  const rejections =
+    input.hostedRejectionReceipts === true
+      ? await buildRejectionReceipts({
+          connectorId,
+          connectorInstanceId: input.connectorInstanceId ?? null,
+          dependencies,
+          lineErrors: parsed.lineErrors,
+          lines,
+          runId: input.runId ?? null,
+          streamName: input.streamName,
+        })
+      : null;
+
   // At least one line failed systemically (retryable: true) — a storage or
   // coordination failure that never proved that line's OWN data invalid.
   // This is thrown AFTER every per-record write already ran to completion
@@ -530,19 +547,6 @@ export async function executeRecordsIngest(
   if (retryableFailureCount > 0) {
     throw new RecordsIngestSystemicFailureError(input.streamName, retryableFailureCount, lines.length);
   }
-
-  const rejections =
-    input.hostedRejectionReceipts === true
-      ? await buildRejectionReceipts({
-          connectorId,
-          connectorInstanceId: input.connectorInstanceId ?? null,
-          dependencies,
-          lineErrors: parsed.lineErrors,
-          lines,
-          runId: input.runId ?? null,
-          streamName: input.streamName,
-        })
-      : null;
 
   return {
     envelope: buildIngestEnvelope(input.streamName, parsed.lineErrors, rejections),
