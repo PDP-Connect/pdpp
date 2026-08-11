@@ -18,7 +18,7 @@
     "verify": "pnpm types:check && pnpm test:view-models && pnpm test:stream && pnpm check && pnpm build"
   },
   "dependencies": {
-    "@base-ui/react": "^1.6.0",
+    "@base-ui/react": "^1.7.0",
     "@demodesk/neko": "1.6.32",
     "@opendatalabs/remote-surface": "^1.5.2",
     "@pdpp/brand": "workspace:*",
@@ -32,11 +32,11 @@
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "imapflow": "^1.6.5",
-    "lucide-react": "^1.28.0",
+    "imapflow": "^1.6.6",
+    "lucide-react": "^1.30.0",
     "next": "16.3.0",
     "pdpp-reference-implementation": "workspace:*",
-    "postcss": "^8.5.25",
+    "postcss": "^8.5.26",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
@@ -48,7 +48,7 @@
   },
   "devDependencies": {
     "@types/mdx": "^2.0.14",
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "typescript": "^7.0.2"

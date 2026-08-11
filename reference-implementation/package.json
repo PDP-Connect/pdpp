@@ -53,24 +53,24 @@
     "@huggingface/transformers": "^4.2.0",
     "@pdpp/mcp-server": "workspace:*",
     "@pdpp/reference-contract": "workspace:*",
-    "better-sqlite3": "^13.0.2",
+    "better-sqlite3": "^13.0.3",
     "express": "^5.2.1",
-    "fastify": "^5.11.0",
-    "ipaddr.js": "2.4.0",
+    "fastify": "^5.11.3",
+    "ipaddr.js": "2.5.0",
     "patchright": "1.61.1",
-    "pg": "^8.22.0",
+    "pg": "^8.23.0",
     "pino": "^10.3.1",
     "qs": "^6.15.3",
     "sqlite-vec": "^0.1.9",
-    "undici": "^8.9.0",
+    "undici": "^8.10.0",
     "web-push": "^3.6.7"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.6",
-    "@types/pg": "8.20.3",
+    "@biomejs/biome": "2.5.7",
+    "@types/pg": "8.21.0",
     "jsdom": "^30.0.1",
     "pino-pretty": "^13.0.0",
-    "ultracite": "7.9.4"
+    "ultracite": "7.10.2"
   },
   "license": "Apache-2.0",
   "optionalDependencies": {
