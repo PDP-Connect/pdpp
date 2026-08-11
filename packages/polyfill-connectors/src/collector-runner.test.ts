@@ -4914,6 +4914,305 @@ test("drainCollectorOutbox honors a server Retry-After for an explicit-transient
   }
 });
 
+test("drainCollectorOutbox dead-letters on attempt-count exhaustion even when a NON-transient error's message is crafted to match the legacy prose regex exactly", async () => {
+  // Mutation/counterweight test for classifyLocalDeviceFailure: a plain
+  // Error (not LocalDeviceHttpError, not LocalDeviceRequestTimeoutError, no
+  // structured `.cause.code`) whose message is deliberately crafted to
+  // START WITH the exact anchored prefix
+  // TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE matches ("fetch failed") —
+  // proving this is a business-logic error impersonating the transient
+  // prose shape, not an actual network fault — must still dead-letter on
+  // attempt-count exhaustion. If classification still ran the legacy regex
+  // against a live error's message, this row would incorrectly retry
+  // forever instead of dead-lettering. Confirmed pre-existing regex WOULD
+  // have misclassified this exact message as transient (verified against
+  // the prior prose-matching implementation before this test was hardened).
+  const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
+  try {
+    const client = createTestClient();
+    client.ingestBatch = () =>
+      Promise.reject(
+        new Error("fetch failed: destination rejected the batch as permanently malformed (not a network fault)")
+      );
+
+    const srcId = "test-src-misleading-prose";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-misleading-prose",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+      ],
+      sourceInstanceId: srcId,
+    });
+    const itemId = buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-misleading-prose"],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: itemId,
+      kind: "record_batch" as const,
+      payload: {
+        batchId: "batch-misleading-prose",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy: {
+        drainBatchSize: 1,
+        leaseMs: 60_000,
+        maxAttempts: 2,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 8,
+        maxEnqueuedBatchesPerRun: 10_000,
+        maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
+        retryBackoffMs: 1,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    assert.equal(result.deadLettered, 1, "a non-structured error must still dead-letter on attempt-count exhaustion");
+    const item = outbox.get(itemId);
+    assert.equal(item?.status, "dead_letter", "misleading message prose must not keep the row alive forever");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox classifies LocalDeviceHttpError as transient by structured status alone, independent of code/message content", async () => {
+  // Mutation/counterweight test, inverse of the one above: a LocalDeviceHttpError
+  // with status 503 but a completely unrelated code/message (no "503",
+  // "device_ingest_retryable", or any legacy-regex substring anywhere in
+  // the envelope) must still classify as explicit-transient. Guards against
+  // a regression where classifyLocalDeviceFailure is narrowed to check
+  // `error.code === "device_ingest_retryable"` (or similar code/message
+  // matching) instead of the TYPED `.status` field — status 5xx/408/429 is
+  // the authoritative signal per HTTP semantics, regardless of which PDPP
+  // error code the server's envelope happens to carry.
+  const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
+  try {
+    let sendAttempts = 0;
+    const client = createTestClient();
+    client.ingestBatch = () => {
+      sendAttempts += 1;
+      // The envelope code/message deliberately shares NO substring with the
+      // legacy regex ("408", "429", "5xx", "timed out", "fetch failed",
+      // "ECONN", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND") — only `.status`
+      // carries the transient signal.
+      return Promise.reject(new LocalDeviceHttpError(503, '{"error":{"code":"upstream_hiccup"}}'));
+    };
+
+    const srcId = "test-src-structured-status-only";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-structured-status-only",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+      ],
+      sourceInstanceId: srcId,
+    });
+    const itemId = buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-structured-status-only"],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: itemId,
+      kind: "record_batch" as const,
+      payload: {
+        batchId: "batch-structured-status-only",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    const policy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, maxDrainIterations: 20, retryBackoffMs: 1 };
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy,
+      sourceInstanceId: srcId,
+    });
+
+    assert.ok(
+      sendAttempts > policy.maxAttempts,
+      `expected attempts beyond maxAttempts (${policy.maxAttempts}), got ${sendAttempts}`
+    );
+    assert.equal(
+      result.deadLettered,
+      0,
+      "a 503 status must classify transient by status alone, independent of code/message text"
+    );
+    const item = outbox.get(itemId);
+    assert.equal(item?.status, "ready");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox classifies a network-transport fault as transient via structured .cause.code, and an unrecognized cause code as terminal", async () => {
+  // Covers the third branch of classifyLocalDeviceFailure: a raw fetch
+  // TypeError ("fetch failed", contentless) with the real fault nested on
+  // `.cause` (the shape Node's fetch actually produces — see
+  // describeThrownTransportError in http-retry.ts for the same pattern).
+  // A recognized transport code (ECONNRESET) must classify transient; an
+  // unrecognized one must NOT — proving the fix does not broaden to "any
+  // error with a .cause is retried forever" (explicit non-broadening
+  // requirement).
+  const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
+  try {
+    let sendAttempts = 0;
+    const client = createTestClient();
+    client.ingestBatch = () => {
+      sendAttempts += 1;
+      const transportFault = new Error("read ECONNRESET") as Error & { code: string };
+      transportFault.code = "ECONNRESET";
+      const fetchFailed = new Error("fetch failed", { cause: transportFault });
+      return Promise.reject(fetchFailed);
+    };
+
+    const srcId = "test-src-network-cause-code";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-network-cause-code",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+      ],
+      sourceInstanceId: srcId,
+    });
+    const itemId = buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-network-cause-code"],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: itemId,
+      kind: "record_batch" as const,
+      payload: {
+        batchId: "batch-network-cause-code",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    const policy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, maxDrainIterations: 20, retryBackoffMs: 1 };
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy,
+      sourceInstanceId: srcId,
+    });
+
+    assert.ok(sendAttempts > policy.maxAttempts, `expected attempts beyond maxAttempts, got ${sendAttempts}`);
+    assert.equal(result.deadLettered, 0, "ECONNRESET on .cause.code must classify transient structurally");
+    assert.equal(outbox.get(itemId)?.status, "ready");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox dead-letters a network error whose .cause has no recognized transport code, rather than retrying forever", async () => {
+  // Explicit non-broadening guard: an error with SOME .cause but an
+  // unrecognized/absent code must NOT be swept into infinite retries just
+  // because it superficially resembles a transport failure.
+  const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
+  try {
+    const client = createTestClient();
+    client.ingestBatch = () => {
+      const unknownFault = new Error("something odd happened") as Error & { code: string };
+      unknownFault.code = "EWEIRD_UNRECOGNIZED_CODE";
+      return Promise.reject(new Error("fetch failed", { cause: unknownFault }));
+    };
+
+    const srcId = "test-src-unrecognized-cause-code";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-unrecognized-cause-code",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+      ],
+      sourceInstanceId: srcId,
+    });
+    const itemId = buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-unrecognized-cause-code"],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: itemId,
+      kind: "record_batch" as const,
+      payload: {
+        batchId: "batch-unrecognized-cause-code",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy: {
+        drainBatchSize: 1,
+        leaseMs: 60_000,
+        maxAttempts: 2,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 8,
+        maxEnqueuedBatchesPerRun: 10_000,
+        maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
+        retryBackoffMs: 1,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    assert.equal(
+      result.deadLettered,
+      1,
+      "an unrecognized cause code must still dead-letter on attempt-count exhaustion"
+    );
+    assert.equal(outbox.get(itemId)?.status, "dead_letter");
+  } finally {
+    outbox.close();
+  }
+});
+
 test("drainCollectorOutbox exits cleanly when abort fires during backoff wait", async () => {
   const queuePath = await tempQueuePath();
   const outbox = new LocalDeviceOutbox({ path: queuePath });

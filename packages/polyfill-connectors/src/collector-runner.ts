@@ -38,6 +38,7 @@ import {
   type HeartbeatOutboxDiagnostics,
   LocalDeviceClient,
   LocalDeviceHttpError,
+  LocalDeviceRequestTimeoutError,
   type TerminalCollectionFact,
 } from "./local-device-client.ts";
 import {
@@ -88,8 +89,80 @@ const LONG_OPAQUE_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
 const SCAN_BATCH_LIMIT_DETAIL_RE =
   /enqueued\s+\d+\s+batches\s+>=\s+(?:run batch limit|(?:maxEnqueuedBatchesPerRun|\[REDACTED\]))\s+(\d+)/;
 const CONNECTOR_PROTOCOL_DEBUG_DIR_ENV = "PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR";
+/**
+ * Matches the REDACTED, PERSISTED `last_error` text a dead-letter row was
+ * already written with — the only place this regex may still be used. Once a
+ * row is dead-lettered, `failOutboxItem`'s sanitized message string is all
+ * that survives in SQLite; there is no structured status/code left to
+ * inspect, so `requeueTransientLocalDeviceDeadLetters` (the next-run
+ * self-heal path, driven by {@link LocalDeviceOutbox.requeueDeadLetters})
+ * has no choice but to pattern-match the legacy persisted prose. A LIVE
+ * failure (still holding its original `Error` instance) must classify via
+ * {@link classifyLocalDeviceFailure} instead — see the note there for why
+ * prose-matching a live error is the wrong layer.
+ */
 const TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE =
   /^(?:local device request failed: (?:408|429|5\d\d)(?:\b|$)|local device request timed out after\b|fetch failed\b|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND)/i;
+
+/**
+ * Transport-level error codes that indicate the request never reached (or
+ * never got a response from) the server — the same vocabulary
+ * `describeThrownTransportError` (`http-retry.ts`) documents: Node's
+ * `fetch` reports every connect/DNS/reset/timeout fault as a contentless
+ * `TypeError: fetch failed` and puts the real fault on `.cause.code`.
+ * Structured, not prose — matched against `.code`, never `.message`.
+ */
+const TRANSIENT_NETWORK_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EAI_AGAIN",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+/**
+ * Classify a LIVE (still-thrown) local-device failure as explicit-transient
+ * using structured fields only — never the error's message text.
+ *
+ * `failOutboxItem` previously ran `TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE`
+ * against the same sanitized message it was about to persist. That is
+ * brittle in both directions: (1) a connector or proxy that folds an
+ * unrelated string containing "503" or "ETIMEDOUT" into an error message
+ * would be misclassified as transient even though nothing structured says
+ * so, and (2) `LocalDeviceHttpError` already carries a typed `status`
+ * (`408`/`429`/`5xx`) and `LocalDeviceRequestTimeoutError` is its own typed
+ * class — re-deriving that from prose throws away information the error
+ * object already has. This function reads only typed fields:
+ * `LocalDeviceHttpError.status`, `LocalDeviceRequestTimeoutError`'s type
+ * itself, and a bounded walk of `.cause.code` for network-transport faults
+ * (mirroring `describeThrownTransportError`'s walk). It does NOT match on
+ * `error.message`/`error.code` string content and does NOT broaden to any
+ * error type outside these three structured shapes — an unrecognized error
+ * (including a network error whose `.cause` lacks a known `.code`) is
+ * classified non-transient, so it still exhausts `maxAttempts` and
+ * dead-letters rather than retrying forever.
+ */
+function classifyLocalDeviceFailure(error: unknown): boolean {
+  if (error instanceof LocalDeviceHttpError) {
+    return error.status === 408 || error.status === 429 || (error.status >= 500 && error.status < 600);
+  }
+  if (error instanceof LocalDeviceRequestTimeoutError) {
+    return true;
+  }
+  let cause: unknown = error instanceof Error ? error.cause : null;
+  for (let depth = 0; depth < 3 && cause instanceof Error; depth += 1) {
+    const { code } = cause as Error & { code?: unknown };
+    if (typeof code === "string" && TRANSIENT_NETWORK_ERROR_CODES.has(code)) {
+      return true;
+    }
+    ({ cause } = cause);
+  }
+  return false;
+}
 
 /**
  * Default policy bounds for durable outbox drains. These are intentionally
@@ -2374,19 +2447,18 @@ function failOutboxItem(
   // cookies, OTPs, opaque credentials, or unbounded request/response bodies
   // regardless of which error reached this path.
   const message = sanitizeCollectorGapDetails(error instanceof Error ? error.message : String(error));
-  // An explicit-transient failure (device_ingest_retryable/408/429/5xx,
-  // request timeout, or a network-level error — the same class
-  // `requeueTransientLocalDeviceDeadLetters` already recognizes as
-  // self-healing) is an authoritative "retry me" signal from the server or
-  // transport, not an unclassified failure. It must not dead-letter solely
-  // because the fixed `maxAttempts` counter was exhausted — that would
-  // discard work the server explicitly promised was retryable. It stays
-  // durably `ready`/backed-off instead, honoring `Retry-After` when the
-  // server sent one (bounded by `maxRetryAfterMs` so it cannot stall a row
-  // past one drain's duration budget), falling back to the same linear
-  // backoff schedule otherwise.
-  const isExplicitTransient =
-    !(error instanceof OutboxPayloadShapeError) && TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE.test(message);
+  // An explicit-transient failure (408/429/5xx status, a typed request
+  // timeout, or a recognized network-transport fault — see
+  // `classifyLocalDeviceFailure`, which reads only structured fields, never
+  // this sanitized message string) is an authoritative "retry me" signal
+  // from the server or transport, not an unclassified failure. It must not
+  // dead-letter solely because the fixed `maxAttempts` counter was
+  // exhausted — that would discard work the server explicitly promised was
+  // retryable. It stays durably `ready`/backed-off instead, honoring
+  // `Retry-After` when the server sent one (bounded by `maxRetryAfterMs` so
+  // it cannot stall a row past one drain's duration budget), falling back
+  // to the same linear backoff schedule otherwise.
+  const isExplicitTransient = !(error instanceof OutboxPayloadShapeError) && classifyLocalDeviceFailure(error);
   const isTerminal =
     error instanceof OutboxPayloadShapeError ||
     (!isExplicitTransient && item.attempt_count + 1 >= input.policy.maxAttempts);
