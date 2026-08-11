@@ -359,15 +359,28 @@ test("unwrapGizmo: handles {resource:{gizmo:{}}}, {resource:{}}, {gizmo:{}} and 
   assert.deepEqual((unwrapGizmo({ id: "d" }) as RawGizmo).id, "d");
 });
 
-// `{ info: {...gizmo fields...}, list: {...listing metadata} }` is a fifth
-// observed `/gizmos/mine` item wrapper — live in UAT run run_1786417045973,
-// where a considered:1/covered:0 shape_check_failed reported the rejected
-// item's top-level keys as exactly `["info", "list"]`. Same family as the
-// `{gizmo:{}}` wrapper (the gizmo fields sit one level down under a sibling
-// key), but under `info` instead of `gizmo`, with a `list` sibling carrying
-// listing-only metadata (not gizmo fields) that must stay unread.
+// `{ info: {...}, list: {...} }` is a fifth `/gizmos/mine` item wrapper —
+// live in UAT run run_1786417045973 (considered:1/covered:0 shape_check_failed,
+// rejected item's keys exactly `["info", "list"]`). `list` is listing-only
+// metadata (e.g. is_starred), not gizmo fields, and stays unread.
 test("unwrapGizmo: handles {info:{}, list:{}} (live shape drift, run_1786417045973)", () => {
   assert.deepEqual((unwrapGizmo({ info: { id: "e" }, list: { is_starred: true } }) as RawGizmo).id, "e");
+});
+
+// `picked` selects the first *object-valued* candidate, not the first non-nullish
+// one — a malformed/scalar higher-priority field must not mask a valid lower one.
+test("unwrapGizmo: precedence — object-valued candidates win, arrays and scalars are skipped", () => {
+  // documented priority: resource.gizmo > gizmo > info > resource > flat
+  assert.equal((unwrapGizmo({ gizmo: { id: "g" }, info: { id: "i" } }) as RawGizmo).id, "g");
+  assert.equal((unwrapGizmo({ resource: { gizmo: { id: "rg" } }, info: { id: "i" } }) as RawGizmo).id, "rg");
+  // competing info/resource: info wins per documented priority
+  assert.equal((unwrapGizmo({ info: { id: "i" }, resource: { id: "r" } }) as RawGizmo).id, "i");
+  // malformed info (scalar/array) falls through to a valid lower-priority candidate
+  assert.equal((unwrapGizmo({ info: "junk", resource: { id: "r" } }) as RawGizmo).id, "r");
+  assert.equal((unwrapGizmo({ info: 0, resource: { id: "r" } }) as RawGizmo).id, "r");
+  assert.equal((unwrapGizmo({ info: [1, 2], resource: { id: "r" } }) as RawGizmo).id, "r");
+  // malformed info with no valid wrapper field anywhere falls through to the flat item itself
+  assert.deepEqual(unwrapGizmo({ info: "junk", gizmo: 5, id: "flat" }), { info: "junk", gizmo: 5, id: "flat" });
 });
 
 test("resolveGizmoIsPublic: boolean wins over sharing string, else sharing==='public'", () => {

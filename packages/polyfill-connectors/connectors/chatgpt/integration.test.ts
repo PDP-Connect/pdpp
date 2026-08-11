@@ -5788,12 +5788,8 @@ test("runCustomGptsStream: considered counts enumerated items, and covered exclu
   assert.equal(shapeCheckSkip.stream, "custom_gpts");
 });
 
-// `{ info: {...}, list: {...} }` is a fifth `/gizmos/mine` item wrapper, live
-// in UAT run run_1786417045973: a considered:1/covered:0 shape_check_failed
-// reported the rejected item's top-level keys as exactly `["info", "list"]`.
-// `unwrapGizmo` previously only recognized `resource.gizmo`/`resource`/
-// `gizmo`/flat, so every gizmo under this wrapper looked id-less and was
-// rejected — a shape gap, not a genuinely malformed item.
+// Live shape drift, run_1786417045973 (see unwrapGizmo doc-comment): drives
+// the full stream, not just the parser, to prove the fix reaches production.
 test("runCustomGptsStream: an {info,list}-wrapped item (live shape drift, run_1786417045973) is read, not rejected", async () => {
   const { deps, emitted, messages } = makeHarness({
     fetchQueue: [
