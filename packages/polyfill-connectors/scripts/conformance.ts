@@ -63,7 +63,7 @@ function manifestPath(connector: string): string {
   return join(MANIFESTS_DIR, `${connector}.json`);
 }
 
-function checkManifest(connector: string): Step {
+export function checkManifest(connector: string): Step {
   const file = manifestPath(connector);
   if (!existsSync(file)) {
     return {
@@ -75,8 +75,8 @@ function checkManifest(connector: string): Step {
   }
   try {
     const manifest = JSON.parse(readFileSync(file, "utf8")) as {
+      capabilities?: { public_listing?: { status?: string } };
       streams?: unknown;
-      public_listing?: { status?: string };
     };
     const streams = Array.isArray(manifest.streams) ? manifest.streams.length : 0;
     if (streams === 0) {
@@ -87,7 +87,7 @@ function checkManifest(connector: string): Step {
         verdict: "FAIL",
       };
     }
-    const status = manifest.public_listing?.status ?? "unset";
+    const status = manifest.capabilities?.public_listing?.status ?? "unset";
     return { detail: `${streams} stream(s), evidence level "${status}"`, name: "manifest", verdict: "PASS" };
   } catch (err) {
     return {
@@ -148,14 +148,14 @@ function checkPilotFixture(connector: string): Step {
   }
   const records = join(dir, "records");
   const streams = existsSync(records) ? readdirSync(records).filter((f) => f.endsWith(".jsonl")).length : 0;
+  if (streams > 0) {
+    return { detail: `${streams} stream fixture(s) present`, name: "pilot fixture", verdict: "PASS" };
+  }
   return {
     detail: `${streams} stream fixture(s) present`,
     name: "pilot fixture",
-    nextAction:
-      streams > 0
-        ? undefined
-        : `fixtures/${connector}/scrubbed/pilot-real-shape/records/ exists but has no .jsonl files — re-run the fixture capture, the directory was created without records`,
-    verdict: streams > 0 ? "PASS" : "UNKNOWN",
+    nextAction: `fixtures/${connector}/scrubbed/pilot-real-shape/records/ exists but has no .jsonl files — re-run the fixture capture, the directory was created without records`,
+    verdict: "UNKNOWN",
   };
 }
 
@@ -185,7 +185,13 @@ function checkMockMutation(connector: string): Step {
       nextAction =
         "one or more path literals are decorative (the suite still passes when corrupted) — see the literal(s) named in the detail above and add an assertion that fails when that exact path is wrong";
     }
-    return { advisory: true, detail: first.detail, name: "mock mutation", nextAction, verdict };
+    return {
+      advisory: true,
+      detail: first.detail,
+      name: "mock mutation",
+      ...(nextAction ? { nextAction } : {}),
+      verdict,
+    };
   } catch (err) {
     return {
       advisory: true,
