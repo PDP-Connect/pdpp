@@ -480,7 +480,70 @@ test("probeVenmoAccount: a page-context transport fault throws venmo_probe_trans
   await assert.rejects(probeVenmoAccount(page as Page), (err: unknown) => {
     assert.ok(err instanceof Error);
     assert.match(err.message, /venmo_probe_transport_error/);
+    // Benign counterweight: a transport fault carrying no secret must keep
+    // its diagnostic vocabulary legible — redaction must not blank the class
+    // of failure a connector's retryablePattern (and an operator) reads.
     assert.match(err.message, /Failed to fetch/);
+    return true;
+  });
+});
+
+// F: the connector index (index.ts's makePageFetch/errorDetail) already
+// redacts equivalent transport detail via redactTransportDetail before it
+// reaches a thrown error; this probe throw is the one boundary that skipped
+// it. A transport fault message is authored by a third-party layer we do not
+// control (Chromium's fetch shim, a proxy, an intermediary) and can embed a
+// bearer token, a loose secret= form, an email, or a URL bearing a query-
+// string credential — none of that may reach the terminal error text this
+// probe throws, which lands directly in connector_error_json.
+test("probeVenmoAccount: a transport fault carrying a bearer token cannot reach the thrown error text", async () => {
+  const page: Pick<Page, "evaluate" | "goto" | "url"> = {
+    async evaluate(): Promise<unknown> {
+      return await Promise.reject(
+        new Error("Failed to fetch https://api.venmo.com/v1/account (Authorization: Bearer abc123SECRETTOKEN)")
+      );
+    },
+    goto(): ReturnType<Page["goto"]> {
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return "https://venmo.com/";
+    },
+  };
+  await assert.rejects(probeVenmoAccount(page as Page), (err: unknown) => {
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /venmo_probe_transport_error/);
+    assert.doesNotMatch(err.message, /abc123SECRETTOKEN/, "a bearer token must not survive");
+    assert.match(err.message, /\[redacted-authorization]/);
+    assert.match(err.message, /Failed to fetch/, "the safe transport class must remain visible");
+    return true;
+  });
+});
+
+test("probeVenmoAccount: a transport fault carrying a query-string token, cookie, and email cannot reach the thrown error text", async () => {
+  const page: Pick<Page, "evaluate" | "goto" | "url"> = {
+    async evaluate(): Promise<unknown> {
+      return await Promise.reject(
+        new Error(
+          "fetch failed for https://api.venmo.com/v1/account?access_token=QUERYSECRETVALUE " +
+            "cookie=session=COOKIESECRETVALUE; owner contact owner@example.com token=T0KENSECRETVALUE ECONNRESET"
+        )
+      );
+    },
+    goto(): ReturnType<Page["goto"]> {
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return "https://venmo.com/";
+    },
+  };
+  await assert.rejects(probeVenmoAccount(page as Page), (err: unknown) => {
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /venmo_probe_transport_error/);
+    for (const leak of ["QUERYSECRETVALUE", "COOKIESECRETVALUE", "owner@example.com", "T0KENSECRETVALUE"]) {
+      assert.doesNotMatch(err.message, new RegExp(leak), `${leak} must not survive`);
+    }
+    assert.match(err.message, /ECONNRESET/, "the safe transport code must remain visible");
     return true;
   });
 });

@@ -32,7 +32,11 @@ import type { Page } from "playwright";
 import { manualBrowserLogin } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse, SessionCheckpointFn } from "../connector-runtime.ts";
 import type { CaptureSession, LocatorProbe } from "../fixture-capture.ts";
+import { redactTransportDetail } from "../http-retry.ts";
 import { locatorIsVisible } from "./locator-helpers.ts";
+
+/** Same bound `index.ts`'s `errorDetail` applies after redaction — keeps one link short and legible without truncating mid-token. */
+const PROBE_TRANSPORT_DETAIL_MAX = 200;
 
 const HOME_URL = "https://venmo.com/";
 const LOGIN_URL = "https://venmo.com/login";
@@ -152,7 +156,9 @@ export async function probeVenmoAccount(page: Page): Promise<VenmoAccountProbeRe
     outcome = { kind: "transport_error", message: err instanceof Error ? err.message : String(err) };
   }
   if (outcome.kind === "transport_error") {
-    throw new Error(`venmo_probe_transport_error: ${outcome.message}`);
+    throw new Error(
+      `venmo_probe_transport_error: ${redactTransportDetail(outcome.message).slice(0, PROBE_TRANSPORT_DETAIL_MAX)}`
+    );
   }
   return outcome.kind === "live" ? { live: true, ownerId: outcome.ownerId } : { live: false, ownerId: null };
 }
