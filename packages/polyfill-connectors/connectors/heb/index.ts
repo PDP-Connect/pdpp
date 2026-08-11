@@ -352,7 +352,16 @@ async function reportEmptyPageDiagnostics(
     stream: "orders",
     reason: classification.reason,
     message: `H-E-B list page ${pageNum}: empty page is not a proven terminal page (${classification.reason}).`,
-    diagnostics: { ...diag, max_page_resolution: maxPageResolution },
+    diagnostics: {
+      any_card: diag.any_card,
+      body_preview: "",
+      incapsula_block: diag.incapsula_block,
+      max_page_resolution: maxPageResolution,
+      order_cards: diag.order_cards,
+      password_form: diag.password_form,
+      title: "",
+      url: "",
+    },
   });
   return classification;
 }
@@ -919,16 +928,6 @@ async function loadListPage(
       diagnostics: { error_class: navigation.error instanceof Error ? "Error" : "unknown" },
     });
     throw new Error("heb_empty_list_page_navigation_failed", { cause: navigation.error });
-  }
-  if (navError) {
-    await emit({
-      type: "SKIP_RESULT",
-      stream: "orders",
-      reason: "list_page_navigation_failed",
-      message: `H-E-B list page ${pageNum}: navigation failed; refusing to parse stale page content or advance the cursor.`,
-      diagnostics: { error_class: navError instanceof Error ? "Error" : "unknown" },
-    });
-    throw new Error("heb_empty_list_page_navigation_failed", { cause: navError });
   }
   await (waitForHydration ?? hydrationWait)();
   await page

@@ -520,8 +520,8 @@ export async function emitExportFailure(
   let baseMessage = "USAA transaction export affordance was not found on the observed browser surface";
   if (!isNoExportAffordance) {
     baseMessage = lastDiag
-      ? `Export ladder exhausted (${outcome}): ${formatDiagnosticInfo(lastDiag)}`
-      : "Export dialog didn't produce a download across all ranges and the source never reported an empty account — outcome unknown (transient pressure or shifted selectors)";
+      ? `Export ladder exhausted (${outcome}); ${formatDiagnosticInfo(lastDiag)}`
+      : "Export dialog did not produce a download across all ranges; outcome unknown (transient pressure or shifted selectors)";
   }
   const ccSuffix = isCreditCard
     ? ' (credit-card export flow not verified live 2026-04-19 — see design-notes/usaa.md "Fallback path: DOM scrape")'
@@ -544,57 +544,58 @@ export async function emitExportFailure(
     ? noExportAffordanceDiagnostic(lastDiag, deps.browserSurface ?? "unknown")
     : null;
   const baseDiagnostics = !isNoExportAffordance && lastDiag ? sanitizeDiagnosticInfo(lastDiag) : null;
+  const durableDiagnostics: Record<string, unknown> = noExportDiagnostic
+    ? { browser_surface: noExportDiagnostic }
+    : { outcome };
+  if (baseDiagnostics) {
+    for (const [key, value] of Object.entries(baseDiagnostics)) {
+      durableDiagnostics[key] = value;
+    }
+  }
   await deps.emit({
     type: "SKIP_RESULT",
     stream: "transactions",
     reason,
     message: `${baseMessage}${ccSuffix}`,
-    diagnostics: noExportDiagnostic ? { browser_surface: noExportDiagnostic } : { outcome, ...(baseDiagnostics ?? {}) },
+    diagnostics: durableDiagnostics,
   });
 }
 
-function sanitizeDiagnosticInfo(diag: DiagnosticInfo): DiagnosticInfo {
-  const sanitized: DiagnosticInfo = {
-    ...diag,
-    diag: diag.diag
-      ? {
-          ...diag.diag,
-          dialog_html_preview: null,
-          export_candidates: diag.diag.export_candidates.map((candidate) => ({
-            ...candidate,
-            id: null,
-            text: "",
-          })),
-          nav_candidates: diag.diag.nav_candidates.map((candidate) => ({
-            ...candidate,
-            id: null,
-            text: "",
-          })),
-          title: "",
-          url: "",
-        }
-      : diag.diag,
-  };
-  if (diag.artifact !== undefined) {
-    sanitized.artifact = diag.artifact
-      ? {
-          ...diag.artifact,
-          candidates: diag.artifact.candidates.map((candidate) => ({
-            ...candidate,
-            contentDisposition: "",
-            url: "",
-          })),
-        }
-      : diag.artifact;
+function sanitizeDiagnosticInfo(diag: DiagnosticInfo): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = { phase: diag.phase };
+  if (diag.diag) {
+    sanitized.page = {
+      dialogs_open: diag.diag.dialogs_open,
+      export_candidate_count: diag.diag.export_candidates.length,
+      has_utility_bar: diag.diag.has_utility_bar,
+      nav_candidate_count: diag.diag.nav_candidates.length,
+    };
   }
-  if (diag.download !== undefined) {
-    sanitized.download = diag.download
-      ? {
-          ...diag.download,
-          suggestedFilename: null,
-          url: null,
-        }
-      : diag.download;
+  if (diag.artifact) {
+    const sourceCounts = { cdp: 0, playwright: 0 };
+    for (const candidate of diag.artifact.candidates) {
+      sourceCounts[candidate.source] += 1;
+    }
+    sanitized.artifact = {
+      body_error_count: diag.artifact.candidates.filter((candidate) => candidate.reason === "body_error").length,
+      candidate_count: diag.artifact.candidates.length,
+      cdp_error: diag.artifact.cdpError !== null,
+      cdp_ready: diag.artifact.cdpReady,
+      matched_count: diag.artifact.candidates.filter((candidate) => candidate.reason === "matched").length,
+      source_counts: sourceCounts,
+      status_codes: [...new Set(diag.artifact.candidates.map((candidate) => candidate.status))]
+        .filter((status) => Number.isInteger(status))
+        .slice(0, 8),
+    };
+  }
+  if (diag.download) {
+    sanitized.download = {
+      bytes: typeof diag.download.bytes === "number" ? diag.download.bytes : null,
+      has_download_failure: Boolean(diag.download.downloadFailure),
+      has_save_as_error: Boolean(diag.download.saveAsError),
+      has_stream_error: Boolean(diag.download.streamError),
+      source: diag.download.source ?? null,
+    };
   }
   return sanitized;
 }
@@ -611,21 +612,7 @@ function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
     `artifact cdpReady=${artifact.cdpReady ? "true" : "false"} candidates=${inspected} matched=${matched} bodyErrors=${bodyErrors}`,
   ];
   if (artifact.cdpError) {
-    parts.push(`cdpError=${artifact.cdpError.slice(0, ID_TEXT_SNIP)}`);
-  }
-  const [firstCandidate] = artifact.candidates;
-  if (firstCandidate) {
-    const firstParts = [
-      firstCandidate.source,
-      String(firstCandidate.status),
-      firstCandidate.reason,
-      `${firstCandidate.bodyBytes ?? 0}B`,
-      firstCandidate.contentType || "no-content-type",
-    ];
-    if (firstCandidate.bodyError) {
-      firstParts.push(`bodyError=${firstCandidate.bodyError.slice(0, ID_TEXT_SNIP)}`);
-    }
-    parts.push(`firstCandidate=${firstParts.join(",")}`);
+    parts.push("cdpError=true");
   }
   return parts.join(" ");
 }
@@ -643,13 +630,13 @@ function summarizeDownloadDiagnostics(diag: DiagnosticInfo): string | null {
     parts.push(`source=${dl.source}`);
   }
   if (dl.saveAsError) {
-    parts.push(`saveAsError=${dl.saveAsError.slice(0, ID_TEXT_SNIP)}`);
+    parts.push("hasSaveAsError=true");
   }
   if (dl.streamError) {
-    parts.push(`streamError=${dl.streamError.slice(0, ID_TEXT_SNIP)}`);
+    parts.push("hasStreamError=true");
   }
   if (dl.downloadFailure) {
-    parts.push(`downloadFailure=${dl.downloadFailure.slice(0, ID_TEXT_SNIP)}`);
+    parts.push("hasDownloadFailure=true");
   }
   return parts.length ? `download ${parts.join(",")}` : null;
 }
@@ -665,10 +652,24 @@ function formatDiagnosticInfo(diag: DiagnosticInfo): string {
   if (download) {
     parts.push(download);
   }
-  if (diag.error) {
-    parts.push(`error=${diag.error.slice(0, ID_TEXT_SNIP)}`);
-  }
   return parts.join("; ");
+}
+
+type UsaaFailureCode =
+  | "credit_card_billing_scrape_failed"
+  | "hydrate_crashed"
+  | "inbox_scrape_failed"
+  | "pdf_parse_failed"
+  | "statements_scrape_failed";
+
+function failureDiagnostic(
+  failureCode: UsaaFailureCode,
+  error: unknown
+): { error_class: "Error" | "unknown"; failure_code: UsaaFailureCode } {
+  return {
+    error_class: error instanceof Error ? "Error" : "unknown",
+    failure_code: failureCode,
+  };
 }
 
 /**
@@ -1775,12 +1776,11 @@ export async function runSingleLadderAttempt({
       onSessionDead();
       return { kind: "session_dead" };
     }
-    const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "export_error",
-      message: `Export error: account ${accountOrdinal}/${accountTotal}, window ${attemptOrdinal}/${attemptTotal}: ${msg.slice(0, ID_TEXT_SNIP)}`,
+      message: `Export error: account ${accountOrdinal}/${accountTotal}, window ${attemptOrdinal}/${attemptTotal}; retry by runtime`,
     });
     return { kind: "retry" };
   }
@@ -2422,12 +2422,12 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
       });
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "statements",
       reason: "hydrate_crashed",
-      message: msg.slice(0, ID_TEXT_SNIP),
+      message: "Statement PDF hydration failed; retry by runtime",
+      diagnostics: failureDiagnostic("hydrate_crashed", err),
     });
   }
   return { attempts, successes, results };
@@ -2490,12 +2490,12 @@ async function processPdfStatementRow(
     }
     counters.parsedStatements += 1;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "pdf_parse_failed",
-      message: `PDF statement parse failed at row ${row.rowIndex + 1}: ${msg.slice(0, ID_TEXT_SNIP)}`,
+      message: `PDF statement parse failed at row ${row.rowIndex + 1}; retry by runtime`,
+      diagnostics: failureDiagnostic("pdf_parse_failed", err),
     });
   }
 }
@@ -2602,16 +2602,12 @@ export async function runStatementsStream(
     }
     return true;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "statements",
       reason: "scrape_failed",
-      message: msg.slice(0, ID_TEXT_SNIP),
-      diagnostics: {
-        error_class: err instanceof Error ? err.constructor.name : "unknown",
-        message: msg.slice(0, ID_TEXT_SNIP),
-      },
+      message: "Statements scrape failed; retry by runtime",
+      diagnostics: failureDiagnostic("statements_scrape_failed", err),
     });
     return true;
   }
@@ -2747,16 +2743,12 @@ export async function runInboxStream(
     });
     return true;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "inbox_messages",
       reason: "scrape_failed",
-      message: msg.slice(0, ID_TEXT_SNIP),
-      diagnostics: {
-        error_class: err instanceof Error ? err.constructor.name : "unknown",
-        message: msg.slice(0, ID_TEXT_SNIP),
-      },
+      message: "Inbox scrape failed; retry by runtime",
+      diagnostics: failureDiagnostic("inbox_scrape_failed", err),
     });
     return true;
   }
@@ -3074,16 +3066,12 @@ export async function runCreditCardBillingStream(
       covered: cards.length - navFailedIds.size,
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "credit_card_billing",
       reason: "scrape_failed",
-      message: msg.slice(0, ID_TEXT_SNIP),
-      diagnostics: {
-        error_class: err instanceof Error ? err.constructor.name : "unknown",
-        message: msg.slice(0, ID_TEXT_SNIP),
-      },
+      message: "Credit-card billing scrape failed; retry by runtime",
+      diagnostics: failureDiagnostic("credit_card_billing_scrape_failed", err),
     });
   }
 }

@@ -239,8 +239,8 @@ async function consumeDownloadOrResponse({
         return {
           buffer: response.body,
           diag: {
-            ...structuralErrorDiagnostic(err),
             bytes: response.body.length,
+            error_class: structuralErrorClass(err),
             response_source: response.source,
           },
           suggestedFilename: response.suggestedFilename || result.download.suggestedFilename(),
@@ -261,7 +261,7 @@ async function consumeDownloadOrResponse({
     return {
       buffer: Buffer.alloc(0),
       diag: {
-        ...structuralErrorDiagnostic(err),
+        error_class: structuralErrorClass(err),
         response: summarizeUsaaStatementResponseDiagnostics(responseQueue.diagnostics()).response,
       },
       suggestedFilename: "statement.pdf",

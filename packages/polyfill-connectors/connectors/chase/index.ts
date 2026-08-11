@@ -217,7 +217,15 @@ export function chaseNoAccountsDiagnosticMessage(surface: ChaseAccountsSurface):
 
 /** Classify with the live page facts, but persist only structural counts. */
 export function redactChaseDashboardDiagnostics(diagnostics: DashboardDiagnostics | null): DashboardDiagnostics | null {
-  return diagnostics ? { ...diagnostics, body_preview: "", title: "", url: "" } : null;
+  return diagnostics
+    ? {
+        body_preview: "",
+        income_capture_description_count: diagnostics.income_capture_description_count,
+        income_capture_heading_count: diagnostics.income_capture_heading_count,
+        title: "",
+        url: "",
+      }
+    : null;
 }
 
 export type ChaseDurableFailureArtifact = "qfx" | "statement";

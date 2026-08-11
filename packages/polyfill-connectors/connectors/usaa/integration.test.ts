@@ -1019,11 +1019,19 @@ test("emitExportFailure: artifact diagnostics are summarized when page diagnosti
   assert.match(skip.message, /export_artifact_wait_failed/);
   assert.match(skip.message, /page=unavailable/);
   assert.match(skip.message, /artifact cdpReady=true candidates=2 matched=0 bodyErrors=1/);
-  assert.match(skip.message, /firstCandidate=cdp,200,not_expected_body,128B,text\/plain/);
+  assert.doesNotMatch(skip.message, /secure\.usaa\.com|text\/plain|not_expected_body/);
   assert.doesNotMatch(skip.message, /url=https?:\/\//);
-  assert.match(skip.message, /body_response_timeout/);
+  assert.doesNotMatch(skip.message, /body_response_timeout|Protocol error|secure\.usaa\.com/);
   const emittedDiag = skip.diagnostics as DiagnosticInfo;
-  assert.equal(emittedDiag.artifact?.candidates[0]?.url, "", "artifact candidate URL is redacted before emission");
+  assert.deepEqual(emittedDiag.artifact, {
+    body_error_count: 1,
+    candidate_count: 2,
+    cdp_error: false,
+    cdp_ready: true,
+    matched_count: 0,
+    source_counts: { cdp: 1, playwright: 1 },
+    status_codes: [200],
+  });
 });
 
 test("emitExportFailure: download diagnostics surface non-PII wait evidence when present", async () => {
@@ -1060,11 +1068,15 @@ test("emitExportFailure: download diagnostics surface non-PII wait evidence when
   assert.doesNotMatch(skip.message, /https?:\/\/|transaction_history\.csv/);
   assert.match(skip.message, /bytes=0/);
   assert.match(skip.message, /source=createReadStream/);
-  assert.match(skip.message, /saveAsError=saveAs_returned_zero_bytes/);
-  assert.match(skip.message, /downloadFailure=Download canceled by remote/);
+  assert.doesNotMatch(skip.message, /saveAs_returned_zero_bytes|Download canceled by remote/);
   const emittedDiag = skip.diagnostics as DiagnosticInfo;
-  assert.equal(emittedDiag.download?.url, null, "download URL is redacted before emission");
-  assert.equal(emittedDiag.download?.suggestedFilename, null, "download filename is redacted before emission");
+  assert.deepEqual(emittedDiag.download, {
+    bytes: 0,
+    has_download_failure: true,
+    has_save_as_error: true,
+    has_stream_error: false,
+    source: "createReadStream",
+  });
 });
 
 test("emitExportFailure: credit-card account uses credit_card_export_unverified reason", async () => {

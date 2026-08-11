@@ -1002,6 +1002,38 @@ test("runForwardScan: page 2's failed navigation cannot parse stale order cards 
   assert.doesNotMatch(JSON.stringify(protocolMessages), /private provider/);
 });
 
+test("runForwardScan: a falsy goto rejection cannot parse stale page content", async () => {
+  const { deps, emitted, protocolMessages } = makeRecordingDeps({ wantsItems: false });
+  const pageHtml = `<html><body><main>
+    <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 2 items</a>
+    <nav aria-label="Pagination"><a href="?page=1">1</a><a href="?page=2">2</a></nav>
+  </main></body></html>`;
+  let navigations = 0;
+  const page = Object.assign({} as Page, {
+    goto: (): Promise<null> => {
+      navigations += 1;
+      return navigations === 1 ? Promise.resolve(null) : Promise.reject(undefined);
+    },
+    waitForSelector: (): Promise<null> => Promise.resolve(null),
+    content: (): Promise<string> => Promise.resolve(pageHtml),
+    url: (): string => "https://www.heb.com/my-account/your-orders?page=2",
+  });
+
+  await assert.rejects(() => runForwardScan(page, deps, makeRunFlags(), null), /heb_empty_list_page_navigation_failed/);
+  assert.deepEqual(
+    emitted.filter((record) => record.stream === "orders").map((record) => record.data.id),
+    ["HEB1000000001"],
+    "a falsy rejected navigation must not re-ingest the prior page"
+  );
+  assert.equal(
+    protocolMessages.some((message) => message.type === "STATE"),
+    false
+  );
+  assert.deepEqual(protocolMessages.find((message) => message.type === "SKIP_RESULT")?.diagnostics, {
+    error_class: "unknown",
+  });
+});
+
 test("runForwardScan: a genuine single-page result (maxPage: 1, affirmatively asserted) completes without requesting page 2", async () => {
   // design.md Decision 3 / Stop Condition #3: an empty page 2 is no longer a
   // possible terminal signal when the source's own pagination metadata

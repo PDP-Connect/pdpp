@@ -272,6 +272,26 @@ test("Chase dashboard diagnostics retain interstitial counts but redact page tex
   assert.doesNotMatch(JSON.stringify(redacted), /CUSTOMER|1234|chase\.com|private/);
 });
 
+test("Chase dashboard redaction drops unknown provider diagnostic keys", () => {
+  const redacted = redactChaseDashboardDiagnostics({
+    body_preview: "private body",
+    income_capture_description_count: 1,
+    income_capture_heading_count: 1,
+    title: "private title",
+    url: "https://secure.chase.com/private",
+    provider_secret: "must not cross the durable boundary",
+  } as DashboardDiagnostics & { provider_secret: string });
+
+  assert.deepEqual(redacted, {
+    body_preview: "",
+    income_capture_description_count: 1,
+    income_capture_heading_count: 1,
+    title: "",
+    url: "",
+  });
+  assert.doesNotMatch(JSON.stringify(redacted), /provider_secret|private/);
+});
+
 test("Chase durable failure diagnostics keep only structural recovery facts", () => {
   const diagnostic = buildChaseDurableFailureDiagnostic(
     "qfx",
