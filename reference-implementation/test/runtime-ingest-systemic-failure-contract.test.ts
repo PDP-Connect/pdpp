@@ -170,6 +170,7 @@ async function issueOwnerToken(asUrl: string, subjectId = "owner_local"): Promis
 const nowIso = () => new Date().toISOString();
 
 const SYSTEMIC_FAILURE_RE = /already terminal|ingest_batch_storage_error|systemic\/retryable/;
+const RECEIPT_REQUIRED_RE = /ingest response|records_attempted|rejection|receipt/i;
 
 function validRecord(id: string) {
   return { data: { id, value: "ok" }, emitted_at: nowIso(), key: id, stream: "items", type: "RECORD" };
@@ -424,6 +425,97 @@ test("runtime-level: a malformed RECORD is a protocol violation, rejected before
     const itemsRecords = (itemsBody as { data?: unknown[]; records?: unknown[] }).data || [];
     assert.equal(itemsRecords.length, 0, "the malformed record must never land in durable storage");
   } finally {
+    cleanup();
+    await closeServer(server);
+  }
+});
+
+test("runtime-level: a count-only permanent rejection cannot advance the cursor without receipt evidence", async () => {
+  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const { asPort, rsPort } = server;
+  const asUrl = `http://localhost:${asPort}`;
+  const rsUrl = `http://localhost:${rsPort}`;
+  const connectorId = "runtime-permanent-rejection-receipt-required";
+  await registerManifest(asUrl, manifest(connectorId));
+  const ownerToken = await issueOwnerToken(asUrl);
+
+  const { connectorPath, cleanup } = createTestConnector([
+    {
+      data: { id: "canonical-id", value: "must remain recoverable" },
+      emitted_at: nowIso(),
+      key: "mismatched-wire-key",
+      stream: "items",
+      type: "RECORD",
+    },
+    { cursor: { cursor: "must_not_commit_without_receipt" }, stream: "items", type: "STATE" },
+    { records_emitted: 1, status: "succeeded", type: "DONE" },
+  ]);
+
+  // Preserve the real route, classifier, and SQLite write path. Only remove
+  // the additive receipt proof from its successful response, exactly as an
+  // older resource server would respond. A new runtime must fail closed on
+  // this count-only 2xx instead of treating `records_rejected` as permission
+  // to clear the batch and stage the following STATE.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const response = await realFetch(input, init);
+    const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+    if (url.pathname !== "/v1/ingest/items" || !response.ok) {
+      return response;
+    }
+    const body = (await response.json()) as {
+      errors?: unknown;
+      records_accepted?: unknown;
+      records_rejected?: unknown;
+      stream?: unknown;
+    };
+    return new Response(
+      JSON.stringify({
+        errors: body.errors,
+        records_accepted: body.records_accepted,
+        records_rejected: body.records_rejected,
+        stream: body.stream,
+      }),
+      { headers: { "Content-Type": "application/json" }, status: response.status }
+    );
+  };
+
+  try {
+    await assert.rejects(
+      () =>
+        runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
+          collectionMode: "full_refresh",
+          connectorId,
+          connectorPath,
+          manifest: manifest(connectorId),
+          onInteraction: async () => ({}),
+          ownerToken,
+          persistState: true,
+          rsUrl,
+          scope: { streams: [{ name: "items" }] },
+          state: null,
+        }),
+      RECEIPT_REQUIRED_RE
+    );
+
+    const state = (await loadSyncState(connectorId, ownerToken, { rsUrl })) as Record<
+      string,
+      { cursor?: string } | undefined
+    > | null;
+    assert.ok(
+      state?.items?.cursor !== "must_not_commit_without_receipt",
+      "count-only rejection evidence must not authorize the following cursor"
+    );
+
+    const { body: itemsBody } = await fetchJson(
+      `${rsUrl}/v1/streams/items/records?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
+    );
+    const itemsRecords = (itemsBody as { data?: unknown[] }).data || [];
+    assert.equal(itemsRecords.length, 0, "the permanently rejected record must not appear as accepted data");
+  } finally {
+    globalThis.fetch = realFetch;
     cleanup();
     await closeServer(server);
   }
