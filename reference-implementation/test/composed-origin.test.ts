@@ -862,9 +862,9 @@ test("composed browser origin carries metadata, owner session, console, device f
             access_mode: "single_use",
             purpose_code: "https://pdpp.dev/purpose/recommendation",
             purpose_description: "Review top artists",
-            retention: "P30D",
+            retention: { max_duration: "P30D", on_expiry: "delete" },
             source: { id: SPOTIFY_CONNECTOR_ID, kind: "connector" },
-            streams: [{ name: "top_artists" }],
+            streams: [{ instance_ids: [SPOTIFY_DEFAULT_CONNECTION_ID], name: "top_artists" }],
             type: "https://pdpp.dev/data-access",
           },
         ],
@@ -904,7 +904,7 @@ test("composed browser origin carries metadata, owner session, console, device f
     assert.equal(approvedGrant.resp.status, 200);
     const approvedGrantBody = approvedGrant.body as ApprovedGrantBody;
     assert.equal(typeof approvedGrantBody.token, "string");
-    assert.deepEqual(approvedGrantBody.grant.source, { id: SPOTIFY_CONNECTOR_KEY, kind: "connector" });
+    assert.deepEqual(approvedGrantBody.grant.source, { id: SPOTIFY_CONNECTOR_ID, kind: "connector" });
   } finally {
     // Withdraw the explicit guard handoff granted in startWebServer once the
     // console child is gone, so the port is not implicitly trusted afterward.

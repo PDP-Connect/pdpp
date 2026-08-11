@@ -1685,7 +1685,7 @@ test("GET /_ref/approvals surfaces pending provider-connect consents with grant 
     assert.ok(entry, "expected a consent approval entry");
     assert.equal(entry.client_id, "concert_recommendation_app");
     assert.ok(entry.grant_preview);
-    assert.deepEqual(entry.grant_preview.source, { id: SPOTIFY_CONNECTOR_KEY, kind: "connector" });
+    assert.deepEqual(entry.grant_preview.source, { id: spotifyManifest.connector_id, kind: "connector" });
     assert.equal(entry.grant_preview.access_mode, "single_use");
     assert.ok(Array.isArray(entry.grant_preview.streams));
   });

@@ -231,6 +231,20 @@ async function registerSpotify(asUrl: string): Promise<SpotifyManifest> {
   if (!resp.ok) {
     throw new Error(`connector registration failed (${resp.status})`);
   }
+  const connectorId = canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id;
+  const now = new Date().toISOString();
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId: "cin_agent_cli_spotify",
+    createdAt: now,
+    displayName: "Spotify",
+    ownerSubjectId: "owner_local",
+    sourceBinding: { kind: "test_account", label: "agent-cli-spotify" },
+    sourceBindingKey: "agent-cli-spotify",
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
   return manifest;
 }
 
