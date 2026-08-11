@@ -500,7 +500,7 @@ test("finding 3 — exact boundary: archive size exactly GMCLI_MAX_CHATS + 1 is 
   const messages = chats.map((c) =>
     msg({ message_id: `msg_${c.conversation_id}`, conversation_id: c.conversation_id, timestamp_ms: 1000 })
   );
-  const run = await runGoogleMessagesCustom(chats, messages, {}, { GMCLI_MAX_CHATS: String(maxChats) }, 60_000);
+  const run = await runGoogleMessagesCustom(chats, messages, {}, { GMCLI_MAX_CHATS: String(maxChats) });
   const emitted = records(run.messages, "messages");
   const emittedChatIds = new Set(emitted.map((r) => r.chat_id));
 
