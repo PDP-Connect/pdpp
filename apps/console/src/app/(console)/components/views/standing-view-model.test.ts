@@ -844,16 +844,23 @@ test("dashboard keeps unavailable source-work rows connector-keyed and navigable
       source_work: "bogus" as never,
     }),
     connector({ connection_id: "cin_unavailable", display_name: "Unavailable source", source_work: null as never }),
+    ...(["constructor", "toString", "__proto__"] as const).map((source_work, index) =>
+      connector({
+        connection_id: `cin_collision_${index}`,
+        display_name: `${source_work} source`,
+        source_work: source_work as never,
+      })
+    ),
     connector({ connection_id: "cin_none", display_name: "Calm source", source_work: "none" }),
     connector({ connection_id: "cin_working", display_name: "Working source", source_work: "working" }),
     connector({ connection_id: "cin_review", display_name: "Review source", source_work: "review" }),
   ];
 
-  const data = buildStandingData(baseInputs({ sourceCount: 6, sourceWork: sourceWorkFromConnectors(connectors) }));
+  const data = buildStandingData(baseInputs({ sourceCount: 9, sourceWork: sourceWorkFromConnectors(connectors) }));
   const unavailable = data.sourceWorkSections.find((section) => section.id === "unavailable");
 
   assert.ok(unavailable);
-  assert.equal(unavailable.countLabel, "3 sources");
+  assert.equal(unavailable.countLabel, "6 sources");
   assert.deepEqual(
     unavailable.rows.map((row) => ({ href: row.href, id: row.id, what: row.what })),
     [
@@ -863,6 +870,21 @@ test("dashboard keeps unavailable source-work rows connector-keyed and navigable
         href: "/sources/cin_unavailable",
         id: "unavailable:cin_unavailable",
         what: "Unavailable source status unavailable",
+      },
+      {
+        href: "/sources/cin_collision_0",
+        id: "unavailable:cin_collision_0",
+        what: "constructor source status unavailable",
+      },
+      {
+        href: "/sources/cin_collision_1",
+        id: "unavailable:cin_collision_1",
+        what: "toString source status unavailable",
+      },
+      {
+        href: "/sources/cin_collision_2",
+        id: "unavailable:cin_collision_2",
+        what: "__proto__ source status unavailable",
       },
     ]
   );

@@ -597,6 +597,12 @@ interface DashboardRenderedRow {
   text: string;
 }
 
+interface UnavailableSourceWork {
+  href: string;
+  label: string;
+  reason: string;
+}
+
 function renderedDashboardRows(html: string): DashboardRenderedRow[] {
   const root = parseResolvedDom(html);
   return visibleDomElements(root)
@@ -696,10 +702,10 @@ export interface DashboardSourceTrustOracle {
   overstatedHealthyAdvisories: readonly { forwardStatement: string; label: string }[];
   projectionDisagreements: readonly { label: string; reason: string }[];
   rawIssues: readonly { label: string; reason: string }[];
-  sourceWorkUnavailable: readonly { label: string; reason: string }[];
+  sourceWorkUnavailable: readonly UnavailableSourceWork[];
   unrepresentedMaterialIssues: readonly { forwardStatement: string; label: string }[];
   unrepresentedRawIssues: readonly { label: string; reason: string }[];
-  unrepresentedSourceWorkUnavailable: readonly { label: string; reason: string }[];
+  unrepresentedSourceWorkUnavailable: readonly UnavailableSourceWork[];
   unsupportedAllClearClaim: string | null;
 }
 
@@ -735,7 +741,14 @@ export function evaluateDashboardSourceTrust(
   }));
   const sourceWorkUnavailable = connectors
     .filter((connector) => !(connector.revoked_at || serverSourceWork(connector)))
-    .map((connector) => ({ label: connectorLabel(connector), reason: "source_work missing or unavailable" }));
+    .map((connector) => {
+      const routeId = connectorRouteId(connector);
+      return {
+        href: routeId === null ? "" : `/sources/${encodeURIComponent(routeId)}`,
+        label: connectorLabel(connector),
+        reason: "source_work missing or unavailable",
+      };
+    });
   const projectionDisagreements = rawIssues
     .map((issue) => {
       const connector = connectors.find((candidate) => connectorLabel(candidate) === issue.label);
@@ -770,7 +783,8 @@ export function evaluateDashboardSourceTrust(
     unrepresentedMaterialIssues: materialIssues.filter((issue) => !rows.some((row) => rowRepresents(row, issue))),
     unrepresentedRawIssues: rawIssues.filter((issue) => !rows.some((row) => row.text.includes(issue.label))),
     unrepresentedSourceWorkUnavailable: sourceWorkUnavailable.filter(
-      (issue) => !rows.some((row) => row.text.includes(issue.label))
+      (issue) =>
+        !rows.some((row) => row.text.includes(issue.label) && row.anchors.some((anchor) => anchor.href === issue.href))
     ),
   };
 }

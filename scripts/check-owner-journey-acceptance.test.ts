@@ -711,35 +711,60 @@ test("dashboard source-trust oracle covers zero, multiple, stale-projection, and
   );
 });
 
-test("dashboard source-trust oracle fails closed when server source_work is unavailable", () => {
-  const result = evaluateDashboardSourceTrust(
-    [
-      {
-        connection_id: "cin_unknown",
-        display_name: "Unresolved source",
-        rendered_verdict: {
-          channel: "calm",
-          forward_statement: "Collection is current.",
-          pill: { label: "Healthy", tone: "green" },
-          required_actions: [],
-        },
-      },
-    ],
-    "All assessed sources are healthy."
+test("dashboard source-trust oracle binds unavailable source work to exact encoded routes", () => {
+  const unavailableConnectors = [
+    { connection_id: "cin_absent", display_name: "Absent source" },
+    { connection_id: "cin_null", display_name: "Null source", source_work: null },
+    { connection_id: "cin_unknown", display_name: "Unknown source", source_work: "bogus" },
+    ...(["constructor", "toString", "__proto__"] as const).map((source_work, index) => ({
+      connection_id: `cin_collision_${index}`,
+      display_name: `${source_work} source`,
+      source_work,
+    })),
+  ];
+  const renderedRows = unavailableConnectors
+    .map(
+      (connector) =>
+        `<div class="rr-attn__row"><a href="/sources/${encodeURIComponent(connector.connection_id)}">${connector.display_name}</a></div>`
+    )
+    .join("");
+  const result = evaluateDashboardSourceTrust(unavailableConnectors, renderedRows);
+  assert.deepEqual(
+    result.sourceWorkUnavailable.map(({ label, href }) => ({ label, href })),
+    unavailableConnectors.map((connector) => ({
+      label: connector.display_name,
+      href: `/sources/${encodeURIComponent(connector.connection_id)}`,
+    }))
   );
-  assert.deepEqual(result.sourceWorkUnavailable, [
-    { label: "Unresolved source", reason: "source_work missing or unavailable" },
-  ]);
-  assert.deepEqual(result.unrepresentedSourceWorkUnavailable, [
-    { label: "Unresolved source", reason: "source_work missing or unavailable" },
-  ]);
+  assert.deepEqual(result.unrepresentedSourceWorkUnavailable, []);
+
+  const wrongRoute = evaluateDashboardSourceTrust(
+    unavailableConnectors,
+    renderedRows.replace("cin_absent", "wrong-route")
+  );
+  assert.deepEqual(
+    wrongRoute.unrepresentedSourceWorkUnavailable.map((issue) => issue.label),
+    ["Absent source"]
+  );
+
+  const duplicateLabel = evaluateDashboardSourceTrust(
+    [{ connection_id: "cin_duplicate", display_name: "Absent source" }, ...unavailableConnectors],
+    `${renderedRows}<div class="rr-attn__row"><a href="/sources/cin_duplicate">Absent source</a></div>`.replace(
+      "/sources/cin_absent",
+      "/sources/wrong-route"
+    )
+  );
+  assert.deepEqual(
+    duplicateLabel.unrepresentedSourceWorkUnavailable.map((issue) => issue.label),
+    ["Absent source"]
+  );
   assert.deepEqual(
     result.materialIssues.map((issue) => issue.label),
-    ["Unresolved source"]
+    unavailableConnectors.map((connector) => connector.display_name)
   );
   assert.deepEqual(
     result.unrepresentedMaterialIssues.map((issue) => issue.label),
-    ["Unresolved source"]
+    []
   );
   assert.deepEqual(result.healthyRefreshAdvisories, []);
 });

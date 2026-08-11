@@ -630,7 +630,7 @@ test("source actionability headline counts only needs-owner work and exposes sta
   });
 });
 
-test("source actionability retains absent, malformed, and unavailable source_work without changing normal counterweights", () => {
+test("source actionability fails closed for absent, malformed, and collision-key source_work values", () => {
   const groups = sourceWorkFromConnectors([
     connector({ connection_id: "cin_absent", display_name: "Absent source", source_work: undefined }),
     connector({
@@ -639,6 +639,13 @@ test("source actionability retains absent, malformed, and unavailable source_wor
       source_work: "bogus" as never,
     }),
     connector({ connection_id: "cin_unavailable", display_name: "Unavailable source", source_work: null as never }),
+    ...(["constructor", "toString", "__proto__"] as const).map((source_work, index) =>
+      connector({
+        connection_id: `cin_collision_${index}`,
+        display_name: `${source_work} source`,
+        source_work: source_work as never,
+      })
+    ),
     connector({ connection_id: "cin_none", display_name: "Calm source", source_work: "none" }),
     connector({ connection_id: "cin_working", display_name: "Working source", source_work: "working" }),
     connector({ connection_id: "cin_review", display_name: "Review source", source_work: "review" }),
@@ -650,6 +657,9 @@ test("source actionability retains absent, malformed, and unavailable source_wor
       ["test", "cin_absent"],
       ["test", "cin_malformed"],
       ["test", "cin_unavailable"],
+      ["test", "cin_collision_0"],
+      ["test", "cin_collision_1"],
+      ["test", "cin_collision_2"],
     ]
   );
   assert.equal(groups.working.length, 1);

@@ -178,6 +178,13 @@ const UI_GROUP_BY_SERVER_GROUP: Readonly<Record<RefSourceWorkGroup, SourceWorkGr
   working: "working",
 };
 
+function sourceWorkGroupFromServerValue(value: unknown): SourceWorkGroupId {
+  if (typeof value !== "string" || !Object.hasOwn(UI_GROUP_BY_SERVER_GROUP, value)) {
+    return "unavailable";
+  }
+  return UI_GROUP_BY_SERVER_GROUP[value as RefSourceWorkGroup] ?? "unavailable";
+}
+
 const SERVER_GROUP_STATUS_LABEL: Readonly<Record<Exclude<RefSourceWorkGroup, "none">, string>> = {
   needs_owner: "needs you",
   not_measured: "is not measured",
@@ -504,10 +511,7 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
   const verdict = connector.rendered_verdict;
   const ownerAction = primaryOwnerSatisfiableAction(verdict);
   const serverGroup = connector.source_work;
-  const group =
-    serverGroup === undefined || serverGroup === null
-      ? "unavailable"
-      : (UI_GROUP_BY_SERVER_GROUP[serverGroup as RefSourceWorkGroup] ?? "unavailable");
+  const group = sourceWorkGroupFromServerValue(serverGroup);
   if (serverGroup === "none") {
     return null;
   }
