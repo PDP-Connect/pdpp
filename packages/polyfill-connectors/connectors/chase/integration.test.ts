@@ -54,6 +54,7 @@ import type { CaptureSession } from "../../src/fixture-capture.ts";
 import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  buildChaseDurableFailureDiagnostic,
   CHASE_CURRENT_ACTIVITY_ROW_SELECTOR,
   CHASE_QFX_ACTIVITY_SELECT_SELECTOR,
   CHASE_QFX_ACTIVITY_SELECT_SELECTORS,
@@ -75,6 +76,7 @@ import {
   isLikelyChaseQfxResponse,
   isLikelyPdfResponseBody,
   runCurrentActivity,
+  runTransactionsAndBalances,
   snapshotDashboardHtmlForCurrentActivity,
   statementRowOutsideTimeRange,
 } from "./index.ts";
@@ -249,6 +251,75 @@ test("zero-account collection captures the interstitial checkpoint before emitti
   assert.deepEqual(skip.diagnostics, evaluation.diagnostics);
   assert.equal(evaluation.diagnostics?.income_capture_heading_count, 1);
   assert.equal(evaluation.diagnostics?.income_capture_description_count, 1);
+});
+
+test("Chase dashboard diagnostics retain interstitial counts but redact page text, title, and URL", () => {
+  const redacted = redactChaseDashboardDiagnostics({
+    body_preview: "CUSTOMER NAME and account ending 1234",
+    income_capture_description_count: 1,
+    income_capture_heading_count: 2,
+    title: "Income for Customer Name",
+    url: "https://secure.chase.com/dashboard?account=private",
+  });
+
+  assert.deepEqual(redacted, {
+    body_preview: "",
+    income_capture_description_count: 1,
+    income_capture_heading_count: 2,
+    title: "",
+    url: "",
+  });
+  assert.doesNotMatch(JSON.stringify(redacted), /CUSTOMER|1234|chase\.com|private/);
+});
+
+test("Chase durable failure diagnostics keep only structural recovery facts", () => {
+  const diagnostic = buildChaseDurableFailureDiagnostic(
+    "qfx",
+    "qfx_download_failed",
+    new Error("https://secure.chase.com/private/path?account=owner; header=private label")
+  );
+
+  assert.deepEqual(diagnostic, {
+    artifact: "qfx",
+    error_class: "Error",
+    failure_code: "qfx_download_failed",
+  });
+  assert.doesNotMatch(JSON.stringify(diagnostic), /secure\.chase\.com|private\/path|account=owner|header=private/);
+});
+
+test("runTransactionsAndBalances: QFX failure emits only the allowlisted durable diagnostic", async () => {
+  const { deps, messages } = makeHarness();
+  const privateError = "https://secure.chase.com/private/path?account=owner; header=private label";
+  const page = {
+    getByRole: () => ({
+      first: () => ({
+        click: async (): Promise<never> => Promise.reject(new Error(privateError)),
+      }),
+    }),
+    goto: async (): Promise<null> => null,
+    locator: () => ({
+      first: () => ({
+        click: async (): Promise<never> => Promise.reject(new Error(privateError)),
+        waitFor: async (): Promise<void> => undefined,
+      }),
+    }),
+  } as never;
+
+  await runTransactionsAndBalances(deps, page, [makeAccount()]);
+
+  const skip = messages.find(
+    (message): message is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      message.type === "SKIP_RESULT" && message.reason === "qfx_download_failed"
+  );
+  assert.ok(skip);
+  assert.deepEqual(skip.diagnostics, {
+    account_index: 1,
+    account_total: 1,
+    artifact: "qfx",
+    error_class: "unknown",
+    failure_code: "qfx_download_failed",
+  });
+  assert.doesNotMatch(JSON.stringify(messages), /secure\.chase\.com|private\/path|account=owner|header=private/);
 });
 
 test("income-capture checkpoint probes only observed structure and never guesses an action", () => {

@@ -943,6 +943,65 @@ test("runForwardScan: page 2's goto() rejecting must not be classified as termin
   );
 });
 
+test("runForwardScan: page 2's failed navigation cannot parse stale order cards or emit progress", async () => {
+  const { deps, emitted, protocolMessages } = makeRecordingDeps({ wantsItems: false });
+  const paginationNav = `<nav aria-label="Pagination"><a href="?page=1">1</a><a href="?page=2">2</a></nav>`;
+  const page1Html = `<html><body><main>
+    <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 2 items</a>
+    ${paginationNav}
+  </main></body></html>`;
+  const staleCardHtml = `<html><body><main>
+    <a href="/my-account/order-history/HEB1000000002">July 12, 2026 $21.00, 1 item</a>
+    ${paginationNav}
+  </main></body></html>`;
+  let lastContent = "";
+  const page = new Proxy(
+    {},
+    {
+      get(_target, prop): unknown {
+        if (prop === "goto") {
+          return (url: string): Promise<null> => {
+            const pageNum = Number(/your-orders\?page=(\d+)/.exec(url)?.[1] ?? 1);
+            if (pageNum === 1) {
+              lastContent = page1Html;
+              return Promise.resolve(null);
+            }
+            lastContent = staleCardHtml;
+            return Promise.reject(new Error("private provider path and stale page"));
+          };
+        }
+        if (prop === "waitForSelector") {
+          return (): Promise<null> => Promise.resolve(null);
+        }
+        if (prop === "content") {
+          return (): Promise<string> => Promise.resolve(lastContent);
+        }
+        if (prop === "url") {
+          return (): string => "https://www.heb.com/my-account/your-orders?page=2";
+        }
+        throw new Error(`unexpected page.${String(prop)} in stale-card test stub`);
+      },
+    }
+  ) as Page;
+
+  await assert.rejects(() => runForwardScan(page, deps, makeRunFlags(), null), /heb_empty_list_page_navigation_failed/);
+
+  assert.deepEqual(
+    emitted.filter((record) => record.stream === "orders").map((record) => record.data.id),
+    ["HEB1000000001"],
+    "stale page cards must not enter the current run"
+  );
+  const skip = protocolMessages.find((message) => message.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip?.reason, "list_page_navigation_failed");
+  assert.equal(
+    protocolMessages.some((message) => message.type === "STATE" || message.type === "DETAIL_COVERAGE"),
+    false,
+    "failed navigation must not advance durable progress or coverage"
+  );
+  assert.doesNotMatch(JSON.stringify(protocolMessages), /private provider/);
+});
+
 test("runForwardScan: a genuine single-page result (maxPage: 1, affirmatively asserted) completes without requesting page 2", async () => {
   // design.md Decision 3 / Stop Condition #3: an empty page 2 is no longer a
   // possible terminal signal when the source's own pagination metadata

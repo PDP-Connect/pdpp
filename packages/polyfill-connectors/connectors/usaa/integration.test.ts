@@ -45,6 +45,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { BrowserContext, Page } from "playwright";
+import type { BodyResponseDiagnostics } from "../../src/browser-artifact-response.ts";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
@@ -68,6 +69,11 @@ import {
   type UsaaRunState,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
+import {
+  buildUsaaStatementMenuDiagnostic,
+  hydrateStatementPdfs,
+  summarizeUsaaStatementResponseDiagnostics,
+} from "./statement-pdfs.ts";
 import type {
   DashboardAccount,
   DiagnosticInfo,
@@ -855,6 +861,123 @@ test("unknown PDF template diagnostics keep structural recovery facts but never 
     year: 2026,
   });
   assert.doesNotMatch(JSON.stringify(diagnostics), /OWNER NAME|MERCHANT NAME|9,999\.99|1234\.56/);
+});
+
+test("statement PDF download diagnostics keep only allowlisted menu and response structure", () => {
+  const menu = buildUsaaStatementMenuDiagnostic({
+    downloadCandidateCount: 0,
+    menuActionCount: 3,
+    menuItemCount: 2,
+    menuPresent: true,
+  });
+  const responseDiagnostics: BodyResponseDiagnostics = {
+    candidates: [
+      {
+        bodyError: "private response header and owner label",
+        contentDisposition: 'attachment; filename="PRIVATE-OWNER.pdf"',
+        contentType: "text/html; private-label",
+        method: "POST",
+        reason: "body_error",
+        source: "playwright",
+        status: 500,
+        url: "https://www.usaa.com/private/path?account=owner",
+      },
+    ],
+    cdpError: "private cdp endpoint",
+    cdpReady: true,
+  };
+  const response = summarizeUsaaStatementResponseDiagnostics(responseDiagnostics);
+
+  assert.deepEqual(menu, {
+    menu: {
+      action_count: 3,
+      download_candidate_count: 0,
+      item_count: 2,
+      present: true,
+    },
+  });
+  assert.deepEqual(response, {
+    response: {
+      body_error_count: 1,
+      candidate_count: 1,
+      cdp_error: true,
+      cdp_ready: true,
+      matched_count: 0,
+      source_counts: { cdp: 0, playwright: 1 },
+      status_codes: [500],
+    },
+  });
+  assert.doesNotMatch(
+    JSON.stringify({ menu, response }),
+    /menu_html|PRIVATE-OWNER|private response|usaa\.com|private\/path|account=owner|content-disposition|POST/
+  );
+});
+
+test("hydrateStatementPdfs: missing Download menuitem emits structural menu facts only", async () => {
+  const locator = (count: number) => ({
+    click: async (): Promise<void> => undefined,
+    count: async (): Promise<number> => count,
+    filter: () => locator(0),
+    first: () => locator(count),
+    last: () => locator(count),
+    locator: () => locator(count),
+    nth: () => locator(count),
+  });
+  const page = {
+    keyboard: { press: async (): Promise<void> => undefined },
+    locator: (selector: string, options?: unknown) => {
+      if (options) {
+        return locator(0);
+      }
+      if (selector === '[role="menu"]') {
+        return locator(1);
+      }
+      if (selector === "tbody tr") {
+        return locator(1);
+      }
+      if (selector === '[role="menu"] [role="menuitem"]') {
+        return locator(2);
+      }
+      if (selector === '[role="menu"] a, [role="menu"] button') {
+        return locator(3);
+      }
+      return locator(0);
+    },
+    url: (): string => "https://www.usaa.com/my/documents",
+  } as never;
+  const skipped: Array<{ diag: unknown; reason: string }> = [];
+
+  const hydrated = await hydrateStatementPdfs({
+    page,
+    statements: [
+      {
+        account_id: null,
+        date_delivered: "2026-04-01",
+        id: "opaque-statement-id",
+        rowIndex: 0,
+        title: null,
+      },
+    ],
+    onSkip: ({ diag, reason }) => {
+      skipped.push({ diag, reason });
+    },
+  });
+
+  assert.deepEqual(hydrated, []);
+  assert.deepEqual(skipped, [
+    {
+      diag: {
+        menu: {
+          action_count: 3,
+          download_candidate_count: 0,
+          item_count: 2,
+          present: true,
+        },
+      },
+      reason: "no_download_menuitem",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(skipped), /menu_html|innerHTML|usaa\.com|opaque-statement-id/);
 });
 
 test("emitExportFailure: artifact diagnostics are summarized when page diagnostics are unavailable", async () => {

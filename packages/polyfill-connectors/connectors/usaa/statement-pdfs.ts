@@ -29,6 +29,7 @@ import { join } from "node:path";
 import type { Locator, Page } from "playwright";
 import {
   attachBodyResponseQueue,
+  type BodyResponseDiagnostics,
   type BodyResponseQueue,
   isLikelyPdfResponseBody,
   waitForOptionalBodyResponse,
@@ -60,6 +61,8 @@ import type {
   ParsedStatementTxn,
   ParseMeta,
   StatementClosing,
+  StatementDownloadDiagnostic,
+  StatementResponseDiagnostic,
   StatementRow,
   StatementTxnRecord,
 } from "./types.ts";
@@ -76,7 +79,6 @@ const OPTIONS_BUTTON_TEXT_RE = /^\s*(Options|More|\.{3})\s*$/i;
 const DOWNLOAD_MENU_ITEM_RE = /download/i;
 const DOWNLOAD_BUTTON_TEXT_RE = /^\s*Download( PDF)?\s*$/i;
 const DOCUMENTS_PATH_RE = /\/my\/documents/;
-const MENU_WS_RE = /\s+/g;
 const CHECK_NUMBER_RE = /CHECK\s*#?\s*0*(\d+)/i;
 
 // ─── Timing constants ────────────────────────────────────────────────────
@@ -87,8 +89,6 @@ const DOCUMENTS_RELOAD_SETTLE_MS = 5000;
 const CLICK_TIMEOUT_MS = 5000;
 const OPTIONS_MENU_SETTLE_MS = 500;
 const ROW_JITTER_MS = 400;
-const MAX_ERROR_MSG = 160;
-const MAX_MENU_HTML_SAMPLE = 500;
 
 // ─── Tiny helpers ────────────────────────────────────────────────────────
 
@@ -96,8 +96,55 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function errMsg(err: unknown): string {
-  return (err instanceof Error ? err.message : String(err)).slice(0, MAX_ERROR_MSG);
+function structuralErrorClass(error: unknown): "Error" | "unknown" {
+  return error instanceof Error ? "Error" : "unknown";
+}
+
+function structuralErrorDiagnostic(error: unknown): StatementDownloadDiagnostic {
+  return { error_class: structuralErrorClass(error) };
+}
+
+export function buildUsaaStatementMenuDiagnostic({
+  downloadCandidateCount,
+  menuActionCount,
+  menuItemCount,
+  menuPresent,
+}: {
+  downloadCandidateCount: number;
+  menuActionCount: number;
+  menuItemCount: number;
+  menuPresent: boolean;
+}): StatementDownloadDiagnostic {
+  return {
+    menu: {
+      action_count: menuActionCount,
+      download_candidate_count: downloadCandidateCount,
+      item_count: menuItemCount,
+      present: menuPresent,
+    },
+  };
+}
+
+export function summarizeUsaaStatementResponseDiagnostics(diagnostics: BodyResponseDiagnostics): {
+  response: StatementResponseDiagnostic;
+} {
+  const sourceCounts = { cdp: 0, playwright: 0 };
+  for (const candidate of diagnostics.candidates) {
+    sourceCounts[candidate.source] += 1;
+  }
+  return {
+    response: {
+      body_error_count: diagnostics.candidates.filter((candidate) => candidate.reason === "body_error").length,
+      candidate_count: diagnostics.candidates.length,
+      cdp_error: diagnostics.cdpError !== null,
+      cdp_ready: diagnostics.cdpReady,
+      matched_count: diagnostics.candidates.filter((candidate) => candidate.reason === "matched").length,
+      source_counts: sourceCounts,
+      status_codes: [...new Set(diagnostics.candidates.map((candidate) => candidate.status))]
+        .filter((status) => Number.isInteger(status))
+        .slice(0, 8),
+    },
+  };
 }
 
 function attachPdfResponseQueue(page: Page): BodyResponseQueue {
@@ -166,7 +213,7 @@ async function consumeDownloadOrResponse({
 }: {
   downloadQueue: DownloadQueue;
   responseQueue: BodyResponseQueue;
-}): Promise<{ buffer: Buffer; diag?: Record<string, unknown>; suggestedFilename: string } | null> {
+}): Promise<{ buffer: Buffer; diag?: StatementDownloadDiagnostic; suggestedFilename: string } | null> {
   const responsePromise = responseQueue.waitForNextResponse({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
   const downloadPromise = downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
   try {
@@ -191,7 +238,11 @@ async function consumeDownloadOrResponse({
       if (response) {
         return {
           buffer: response.body,
-          diag: { download_error: errMsg(err), response_source: response.source },
+          diag: {
+            ...structuralErrorDiagnostic(err),
+            bytes: response.body.length,
+            response_source: response.source,
+          },
           suggestedFilename: response.suggestedFilename || result.download.suggestedFilename(),
         };
       }
@@ -201,7 +252,7 @@ async function consumeDownloadOrResponse({
     if (response) {
       return {
         buffer: response.body,
-        diag: { download_empty: true, response_source: response.source },
+        diag: { bytes: response.body.length, download_empty: true, response_source: response.source },
         suggestedFilename: response.suggestedFilename || result.download.suggestedFilename(),
       };
     }
@@ -210,8 +261,8 @@ async function consumeDownloadOrResponse({
     return {
       buffer: Buffer.alloc(0),
       diag: {
-        error: errMsg(err),
-        response_diagnostics: responseQueue.diagnostics(),
+        ...structuralErrorDiagnostic(err),
+        response: summarizeUsaaStatementResponseDiagnostics(responseQueue.diagnostics()).response,
       },
       suggestedFilename: "statement.pdf",
     };
@@ -243,7 +294,7 @@ async function downloadViaDirectLink(page: Page, row: Locator): Promise<Download
     return {
       ok: false,
       reason: "direct_link_failed",
-      diag: { error: errMsg(err) },
+      diag: structuralErrorDiagnostic(err),
     };
   } finally {
     downloadQueue.detach();
@@ -260,27 +311,42 @@ async function openOptionsMenu(optBtn: Locator): Promise<DownloadFail | null> {
     return {
       ok: false,
       reason: "options_click_failed",
-      diag: { error: errMsg(err) },
+      diag: structuralErrorDiagnostic(err),
     };
   }
 }
 
-/** Capture menu HTML + dismiss the menu when no Download menuitem was found. */
+/** Capture structural menu facts + dismiss the menu when no Download menuitem was found. */
 async function noDownloadMenuitemFailure(page: Page): Promise<DownloadFail> {
-  const menuHtml = await page
+  const menuCount = await page
     .locator('[role="menu"]')
-    .first()
-    .innerHTML()
-    .catch(() => null);
+    .count()
+    .catch(() => 0);
+  const menuItemCount = await page
+    .locator('[role="menu"] [role="menuitem"]')
+    .count()
+    .catch(() => 0);
+  const menuActionCount = await page
+    .locator('[role="menu"] a, [role="menu"] button')
+    .count()
+    .catch(() => 0);
+  const downloadCandidateCount = await page
+    .locator('[role="menu"] [role="menuitem"], [role="menu"] a, [role="menu"] button')
+    .filter({ hasText: DOWNLOAD_MENU_ITEM_RE })
+    .count()
+    .catch(() => 0);
   await page.keyboard.press("Escape").catch(() => {
     /* ignore */
   });
   return {
     ok: false,
     reason: "no_download_menuitem",
-    diag: {
-      menu_html: menuHtml ? menuHtml.replace(MENU_WS_RE, " ").slice(0, MAX_MENU_HTML_SAMPLE) : null,
-    },
+    diag: buildUsaaStatementMenuDiagnostic({
+      downloadCandidateCount,
+      menuActionCount,
+      menuItemCount,
+      menuPresent: menuCount > 0,
+    }),
   };
 }
 
@@ -300,7 +366,7 @@ async function clickDownloadAndConsume(page: Page, dlItem: Locator): Promise<Dow
     return {
       ok: false,
       reason: "download_click_failed",
-      diag: { error: errMsg(err) },
+      diag: structuralErrorDiagnostic(err),
     };
   }
   try {
@@ -322,7 +388,7 @@ async function clickDownloadAndConsume(page: Page, dlItem: Locator): Promise<Dow
     return {
       ok: false,
       reason: "download_timeout",
-      diag: { error: errMsg(err) },
+      diag: structuralErrorDiagnostic(err),
     };
   } finally {
     downloadQueue.detach();
@@ -408,7 +474,7 @@ async function ensureOnDocumentsPage(page: Page): Promise<void> {
 interface HydrateCallbacks {
   onProgress?: ((p: { index: number; total: number; title: string | null }) => void) | undefined;
   onSkip?:
-    | ((p: { statement: StatementRow; reason: DownloadFailReason; diag: Record<string, unknown> | null }) => void)
+    | ((p: { statement: StatementRow; reason: DownloadFailReason; diag: StatementDownloadDiagnostic | null }) => void)
     | undefined;
 }
 
@@ -438,7 +504,7 @@ async function persistHydratedStatement(
       onSkip({
         statement,
         reason: "persist_failed",
-        diag: { error: errMsg(err) },
+        diag: structuralErrorDiagnostic(err),
       });
     }
   }
@@ -495,7 +561,11 @@ export async function hydrateStatementPdfs({
   page: Page;
   statements: StatementRow[];
   onProgress?: (p: { index: number; total: number; title: string | null }) => void;
-  onSkip?: (p: { statement: StatementRow; reason: DownloadFailReason; diag: Record<string, unknown> | null }) => void;
+  onSkip?: (p: {
+    statement: StatementRow;
+    reason: DownloadFailReason;
+    diag: StatementDownloadDiagnostic | null;
+  }) => void;
 }): Promise<HydratedStatement[]> {
   const hydrated: HydratedStatement[] = [];
   if (!statements.length) {

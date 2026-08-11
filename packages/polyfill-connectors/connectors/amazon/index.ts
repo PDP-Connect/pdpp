@@ -1082,8 +1082,9 @@ async function extractAndShapeCheckOrders(page: Page, emit: EmitFn): Promise<Lis
  * selectors matched nothing.
  */
 async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: number, emit: EmitFn): Promise<void> {
-  const diag = await page
-    .evaluate((noOrdersTextPattern): ListPageDiagnostics => {
+  let diag: ListPageDiagnostics;
+  try {
+    diag = await page.evaluate((noOrdersTextPattern): ListPageDiagnostics => {
       // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
       const CAPTCHA_RE = /captcha|robot|unusual traffic/i;
       const NO_ORDERS_RE = new RegExp(noOrdersTextPattern, "i");
@@ -1100,8 +1101,17 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
         no_orders_text: NO_ORDERS_RE.test(document.body?.innerText || "").toString(),
         body_preview: (document.body?.innerText || "").replace(WS, " ").slice(0, 240),
       };
-    }, AMAZON_NO_ORDERS_TEXT_PATTERN)
-    .catch((): ListPageDiagnostics | null => null);
+    }, AMAZON_NO_ORDERS_TEXT_PATTERN);
+  } catch (error) {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: "renderer_diagnostics_failed",
+      message: `Amazon year ${year} startIndex=${startIndex}: renderer diagnostics failed; refusing to advance the cursor.`,
+      diagnostics: { error_class: error instanceof Error ? "Error" : "unknown" },
+    });
+    throw new Error("amazon_empty_list_page_renderer_diagnostics_failed", { cause: error });
+  }
   const classification = classifyEmptyListPageDiagnostics(diag, startIndex);
   if (classification.action === "terminal") {
     return;
@@ -1140,9 +1150,7 @@ export function classifyEmptyListPageDiagnostics(
   startIndex: number
 ): EmptyListPageClassification {
   if (!diag) {
-    return startIndex > 0
-      ? { action: "terminal", reason: "pagination_exhausted" }
-      : { action: "abort", reason: "empty_first_page_without_diagnostics" };
+    return { action: "abort", reason: "renderer_diagnostics_failed" };
   }
   const captcha = diag.captcha === "true";
   if (diag.sign_in_form || captcha || SIGNIN_URL_RE.test(diag.url)) {

@@ -906,10 +906,30 @@ async function loadListPage(
   waitForHydration?: () => Promise<void>
 ): Promise<LoadedListPage | "terminal"> {
   const url = `https://www.heb.com/my-account/your-orders?page=${pageNum}`;
-  const navError = await page
+  const navigation = await page
     .goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS })
-    .then((): undefined => undefined)
-    .catch((e: unknown): unknown => e);
+    .then(() => ({ ok: true as const }))
+    .catch((error: unknown) => ({ error, ok: false as const }));
+  if (!navigation.ok) {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: "list_page_navigation_failed",
+      message: `H-E-B list page ${pageNum}: navigation failed; refusing to parse stale page content or advance the cursor.`,
+      diagnostics: { error_class: navigation.error instanceof Error ? "Error" : "unknown" },
+    });
+    throw new Error("heb_empty_list_page_navigation_failed", { cause: navigation.error });
+  }
+  if (navError) {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: "list_page_navigation_failed",
+      message: `H-E-B list page ${pageNum}: navigation failed; refusing to parse stale page content or advance the cursor.`,
+      diagnostics: { error_class: navError instanceof Error ? "Error" : "unknown" },
+    });
+    throw new Error("heb_empty_list_page_navigation_failed", { cause: navError });
+  }
   await (waitForHydration ?? hydrationWait)();
   await page
     .waitForSelector('a[href*="/my-account/order-history/HEB"]', {
@@ -935,17 +955,6 @@ async function loadListPage(
       throw new Error(`heb_empty_list_page_${reason}`);
     }
     return { maxPage: maxPageResolution.value, orders };
-  }
-  if (navError) {
-    const message = navError instanceof Error ? navError.message : String(navError);
-    await emit({
-      type: "SKIP_RESULT",
-      stream: "orders",
-      reason: "list_page_navigation_failed",
-      message: `H-E-B list page ${pageNum}: goto() failed (${message}) and the page then had no order cards; refusing to treat this as end-of-history.`,
-      diagnostics: { navError: message },
-    });
-    throw new Error("heb_empty_list_page_navigation_failed");
   }
   const classification = await reportEmptyPageDiagnostics(page, pageNum, emit);
   if (classification.action === "terminal") {

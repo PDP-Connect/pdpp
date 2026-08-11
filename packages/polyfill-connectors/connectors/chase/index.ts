@@ -125,7 +125,6 @@ const DATE_REFLECT_WAIT_MS = 3000;
 const DATE_KEY_DELAY_MS = 40;
 const ERROR_MESSAGE_SLICE = 120;
 const ERROR_MESSAGE_SLICE_LONG = 160;
-const ERROR_MESSAGE_SLICE_MAX = 200;
 const HASH_SHORT_LEN = 16;
 const DOWNLOAD_RESPONSE_HINT_RE = /filename|attachment|octet-stream|x-ofx|qfx/iu;
 const CHASE_DOWNLOAD_ROUTE_RE = /downloadAccountTransactions|confirmDownloadAccountActivity/iu;
@@ -214,6 +213,35 @@ export function chaseNoAccountsDiagnosticMessage(surface: ChaseAccountsSurface):
     return "Chase redirected the accounts overview to its authenticated income-capture interstitial. No evidence-backed dismiss or defer control is configured; account discovery cannot proceed without a captured action selector.";
   }
   return "No accounts discovered from dashboard. Selectors need calibration against live DOM.";
+}
+
+/** Classify with the live page facts, but persist only structural counts. */
+export function redactChaseDashboardDiagnostics(diagnostics: DashboardDiagnostics | null): DashboardDiagnostics | null {
+  return diagnostics ? { ...diagnostics, body_preview: "", title: "", url: "" } : null;
+}
+
+export type ChaseDurableFailureArtifact = "qfx" | "statement";
+export type ChaseDurableFailureCode =
+  | "qfx_download_failed"
+  | "qfx_parse_failed"
+  | "row_exception"
+  | "statements_scrape_failed";
+
+/** Durable failure evidence is a closed structural shape; error text stays local. */
+export function buildChaseDurableFailureDiagnostic(
+  artifact: ChaseDurableFailureArtifact,
+  failureCode: ChaseDurableFailureCode,
+  error: unknown
+): {
+  artifact: ChaseDurableFailureArtifact;
+  error_class: "Error" | "unknown";
+  failure_code: ChaseDurableFailureCode;
+} {
+  return {
+    artifact,
+    error_class: error instanceof Error ? "Error" : "unknown",
+    failure_code: failureCode,
+  };
 }
 
 // ─── Dashboard scrape: enumerate accounts ─────────────────────────────────
@@ -1924,10 +1952,10 @@ async function processAccountDownload(
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "qfx_download_failed",
-      message: `QFX download failed for account ${progressLabel}: ${result.error}`,
+      message: `QFX download failed for account ${progressLabel}; retry by runtime`,
       recovery_hint: "retry_by_runtime",
       diagnostics: {
-        error: result.error,
+        ...buildChaseDurableFailureDiagnostic("qfx", "qfx_download_failed", result.error),
         ...accountProgressDiagnostic(accountProgress),
       },
     });
@@ -1947,12 +1975,10 @@ async function processAccountDownload(
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "qfx_parse_failed",
-      message: `QFX parse failed for account ${progressLabel}: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG)}`,
+      message: `QFX parse failed for account ${progressLabel}; retry by runtime`,
       recovery_hint: "retry_by_runtime",
       diagnostics: {
-        error_class: err instanceof Error ? err.constructor.name : "unknown",
-        message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG),
-        artifact: "qfx",
+        ...buildChaseDurableFailureDiagnostic("qfx", "qfx_parse_failed", err),
       },
     });
     return {
@@ -2402,11 +2428,8 @@ async function processStatementRow(
       type: "SKIP_RESULT",
       stream: "statements",
       reason: "row_exception",
-      message: `Statement row processing failed: ${truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG)}`,
-      diagnostics: {
-        error_class: rowErr instanceof Error ? rowErr.constructor.name : "unknown",
-        message: truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG),
-      },
+      message: "Statement row processing failed; retry by runtime",
+      diagnostics: buildChaseDurableFailureDiagnostic("statement", "row_exception", rowErr),
     });
     return null;
   }
@@ -2490,11 +2513,8 @@ async function runStatements(
       type: "SKIP_RESULT",
       stream: "statements",
       reason: "statements_scrape_failed",
-      message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_MAX),
-      diagnostics: {
-        error_class: err instanceof Error ? err.constructor.name : "unknown",
-        message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_MAX),
-      },
+      message: "Statements scrape failed; retry by runtime",
+      diagnostics: buildChaseDurableFailureDiagnostic("statement", "statements_scrape_failed", err),
     });
   }
 }

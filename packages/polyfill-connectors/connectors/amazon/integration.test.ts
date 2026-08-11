@@ -503,6 +503,80 @@ test("classifyEmptyListPageDiagnostics: current empty-year copy is terminal desp
   );
 });
 
+test("Amazon empty-page diagnostics retain structural facts but redact page text, title, and URL", () => {
+  const redacted = redactAmazonListPageDiagnostics(
+    makeEmptyPageDiagnostics({
+      body_preview: "RECIPIENT NAME 123 Main Street",
+      title: "Orders for Recipient Name",
+      url: "https://www.amazon.com/your-orders?account=private",
+    })
+  );
+
+  assert.deepEqual(redacted, {
+    ...makeEmptyPageDiagnostics(),
+    body_preview: "",
+    title: "",
+    url: "",
+  });
+  assert.doesNotMatch(JSON.stringify(redacted), /RECIPIENT|123 Main Street|amazon\.com|private/);
+});
+
+test("scrapeListPage: a failed list navigation cannot reuse the prior page as a successful page", async () => {
+  const staleListHtml = readFileSync(new URL("./__fixtures__/orders-list-minimal.html", import.meta.url), "utf8");
+  const messages: EmittedMessage[] = [];
+  const page = Object.assign({} as Page, {
+    content: (): Promise<string> => Promise.resolve(staleListHtml),
+    goto: (): Promise<null> => Promise.reject(new Error("net::ERR_CONNECTION_RESET")),
+    locator: (): { first: () => { waitFor: () => Promise<null> } } => ({
+      first: () => ({ waitFor: (): Promise<null> => Promise.resolve(null) }),
+    }),
+  });
+
+  await assert.rejects(
+    scrapeListPage(page, null, 2026, 10, (message) => {
+      messages.push(message);
+      return Promise.resolve();
+    }),
+    /amazon_list_page_navigation_failed/
+  );
+
+  const skip = messages.find((message) => message.type === "SKIP_RESULT");
+  assert.ok(skip, "navigation failure must produce a durable diagnostic");
+  assert.equal(skip?.reason, "list_page_navigation_failed");
+  assert.doesNotMatch(JSON.stringify(messages), /orders-list-minimal|B0/);
+});
+
+test("scrapeListPage: a page-2 renderer diagnostic failure aborts without STATE or coverage", async () => {
+  const messages: EmittedMessage[] = [];
+  const page = Object.assign({} as Page, {
+    content: (): Promise<string> => Promise.resolve("<html><body></body></html>"),
+    evaluate: (): Promise<never> => Promise.reject(new Error("private renderer URL and owner label")),
+    goto: (): Promise<null> => Promise.resolve(null),
+    locator: (): { first: () => { waitFor: () => Promise<null> } } => ({
+      first: () => ({ waitFor: (): Promise<null> => Promise.resolve(null) }),
+    }),
+  });
+
+  await assert.rejects(
+    scrapeListPage(page, null, 2026, 10, (message) => {
+      messages.push(message);
+      return Promise.resolve();
+    }),
+    /amazon_empty_list_page_renderer_diagnostics_failed/
+  );
+
+  const skip = messages.find((message) => message.type === "SKIP_RESULT");
+  assert.ok(skip, "renderer failure must produce a structural diagnostic");
+  assert.equal(skip?.reason, "renderer_diagnostics_failed");
+  assert.deepEqual(skip?.diagnostics, { error_class: "Error" });
+  assert.equal(
+    messages.some((message) => message.type === "STATE" || message.type === "DETAIL_COVERAGE"),
+    false,
+    "renderer failure must not emit durable progress or coverage"
+  );
+  assert.doesNotMatch(JSON.stringify(messages), /private renderer|owner label|amazon\.com/);
+});
+
 // ─── planIncrementalYears ─────────────────────────────────────────────────
 
 test("planIncrementalYears: no prior state → all discovered years planned (initial backfill)", () => {
