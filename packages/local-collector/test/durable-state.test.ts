@@ -109,6 +109,34 @@ test("explicit queue paths preserve valid path bytes", () => {
   );
 });
 
+test("explicit environment and profile queue paths preserve leading and trailing spaces", { concurrency: false }, () => {
+  withTempRoot("pdpp-durable-state-whitespace-", (root) => {
+    const profileDirectory = join(root, "profiles");
+    const profileQueuePath = ` ${join(root, "profile queue.sqlite")} `;
+    const environmentQueuePath = ` ${join(root, "environment queue.sqlite")} `;
+    mkdirSync(profileDirectory, { recursive: true });
+    writeFileSync(
+      join(profileDirectory, "profile.env"),
+      `PDPP_CONNECTION_ID=${SOURCE_A}\nPDPP_COLLECTOR_QUEUE="${profileQueuePath}"\n`
+    );
+    const previousProfileDirectory = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+    const previousQueuePath = process.env.PDPP_COLLECTOR_QUEUE;
+    process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDirectory;
+    process.env.PDPP_COLLECTOR_QUEUE = environmentQueuePath;
+    try {
+      assert.equal(parseArgs(["status"]).queuePath, environmentQueuePath);
+      delete process.env.PDPP_COLLECTOR_QUEUE;
+      const options = resolveInspectionOptions(parseArgs(["status", "--source-instance-id", SOURCE_A]));
+      assert.equal(options.queuePath, profileQueuePath);
+    } finally {
+      if (previousProfileDirectory === undefined) delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+      else process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = previousProfileDirectory;
+      if (previousQueuePath === undefined) delete process.env.PDPP_COLLECTOR_QUEUE;
+      else process.env.PDPP_COLLECTOR_QUEUE = previousQueuePath;
+    }
+  });
+});
+
 test("the same source resolves to the same state across cwd and install roots", { concurrency: false }, () => {
   withTempRoot("pdpp-durable-state-stable-", (root) => {
     const stateRoot = join(root, "user-state");
@@ -249,7 +277,7 @@ test("a unique legacy stable-state store remains discoverable in place and stays
   });
 });
 
-test("a unique package-local legacy store is copied atomically to stable state without deleting the old store", () => {
+test("a unique package-local legacy store is handed off atomically without deleting the old pathname", () => {
   withTempRoot("pdpp-durable-state-migrate-", (root) => {
     const stateRoot = join(root, "user-state");
     const installRoot = join(root, "npx-temp-package");
@@ -299,6 +327,32 @@ test("migration reconciles a legacy write that lands after the snapshot", () => 
 
     assert.equal(resolved, canonicalPath);
     assert.equal(sourceSummary(canonicalPath, SOURCE_A), 2);
+  });
+});
+
+test("migration keeps a causal legacy write after canonical installation visible", () => {
+  withTempRoot("pdpp-durable-state-handoff-", (root) => {
+    const stateRoot = join(root, "user-state");
+    const installRoot = join(root, "npx-temp-package");
+    const legacyPath = packageLegacyPath(installRoot, "collector-runner-queue.sqlite");
+    const canonicalPath = canonicalCollectorQueuePath({
+      connectorId: "claude_code",
+      sourceInstanceId: SOURCE_A,
+      stateRoot,
+    });
+    seedOutbox(legacyPath, SOURCE_A, "before-handoff");
+
+    const resolved = resolveCollectorQueuePath({
+      connectorId: "claude_code",
+      moduleUrl: modulePath(installRoot),
+      sourceInstanceId: SOURCE_A,
+      stateRoot,
+      afterMigrationInstall: () => seedOutbox(legacyPath, SOURCE_A, "after-canonical-install"),
+    });
+
+    assert.equal(resolved, canonicalPath);
+    assert.equal(sourceSummary(canonicalPath, SOURCE_A), 2);
+    assert.equal(sourceSummary(legacyPath, SOURCE_A), 2);
   });
 });
 

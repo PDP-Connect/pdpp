@@ -2404,7 +2404,7 @@ function applyProfileEnv(options: CliOptions, profile: LocalCollectorProfile): C
   const explicit = options.explicitOptions;
   const keep = (flag: string): boolean => explicit?.has(flag) === true;
   // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches the established profile-env idiom.
-  const profileQueuePath = env.PDPP_COLLECTOR_QUEUE?.trim();
+  const profileQueuePath = env.PDPP_COLLECTOR_QUEUE?.trim() ? env.PDPP_COLLECTOR_QUEUE : undefined;
   const configuredQueuePath = hasExplicitQueuePath(options);
   const next: CliOptions = {
     ...options,
@@ -3074,7 +3074,9 @@ export function parseArgs(args: string[]): CliOptions {
       "usage: pdpp-local-collector <setup|connect|run|status|doctor|logout|connectors|advertise|enroll|recover|retry-dead-letters|prune-sent|compact> --base-url <url> [options]"
     );
   }
-  const configuredQueuePath = process.env.PDPP_COLLECTOR_QUEUE?.trim();
+  const configuredQueuePath = process.env.PDPP_COLLECTOR_QUEUE?.trim()
+    ? process.env.PDPP_COLLECTOR_QUEUE
+    : undefined;
   const options: CliOptions = {
     baseUrl: process.env.PDPP_REFERENCE_BASE_URL ?? "http://127.0.0.1:7662",
     command,

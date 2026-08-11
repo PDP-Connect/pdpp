@@ -42,6 +42,8 @@ export interface CollectorStatePathInput {
   stateRoot?: string | undefined;
   /** Test hook that simulates a legacy collector write after the first snapshot. */
   beforeMigrationReconcile?: (() => void) | undefined;
+  /** Test hook that simulates a legacy collector write after canonical installation. */
+  afterMigrationInstall?: (() => void) | undefined;
 }
 
 export class CollectorStateResolutionError extends Error {
@@ -112,8 +114,9 @@ export function canonicalCollectorQueuePath(input: {
  * Explicit paths are returned before any default lookup. For an unconfigured
  * source-aware default, the resolver first uses the canonical user-state path,
  * then looks through a small set of known legacy roots. A stable legacy store
- * is used in place; a package-local legacy store is copied into the canonical
- * root through a consistent SQLite snapshot. Old files are never removed.
+ * is used in place; a package-local legacy store is reconciled into a
+ * consistent SQLite snapshot and the canonical path is hard-linked to the
+ * retained legacy inode. Old pathnames are never removed.
  */
 export function resolveCollectorQueuePath(input: CollectorStatePathInput = {}): string {
   const configuredPath = input.configuredPath;
@@ -187,7 +190,13 @@ export function resolveCollectorQueuePath(input: CollectorStatePathInput = {}): 
   if (isWithin(stateDirectory, legacyPath)) {
     return legacyPath;
   }
-  return migrateLegacyStore(legacyPath, canonicalPath, sourceInstanceId, input.beforeMigrationReconcile);
+  return migrateLegacyStore(
+    legacyPath,
+    canonicalPath,
+    sourceInstanceId,
+    input.beforeMigrationReconcile,
+    input.afterMigrationInstall
+  );
 }
 
 function legacyRoots(input: {
@@ -327,7 +336,8 @@ function migrateLegacyStore(
   legacyPath: string,
   canonicalPath: string,
   sourceInstanceId: string,
-  beforeReconcile?: (() => void) | undefined
+  beforeReconcile?: (() => void) | undefined,
+  afterInstall?: (() => void) | undefined
 ): string {
   mkdirSync(dirname(canonicalPath), { mode: 0o700, recursive: true });
   const temporaryPath = `${canonicalPath}.migration-${process.pid}-${randomUUID()}.tmp`;
@@ -344,7 +354,7 @@ function migrateLegacyStore(
     }
 
     beforeReconcile?.();
-    reconcileLegacyWrites(legacyPath, temporaryPath, sourceInstanceId);
+    reconcileLegacyWrites(legacyPath, temporaryPath, canonicalPath, sourceInstanceId);
 
     const snapshotFd = openSync(temporaryPath, "r");
     try {
@@ -353,21 +363,7 @@ function migrateLegacyStore(
       closeSync(snapshotFd);
     }
 
-    try {
-      // link() creates the destination atomically without replacing a target
-      // installed concurrently by another collector process.
-      linkSync(temporaryPath, canonicalPath);
-      if (process.platform !== "win32") {
-        chmodSync(canonicalPath, 0o600);
-      }
-    } catch (error) {
-      if (!isAlreadyExistsError(error)) {
-        throw error;
-      }
-      if (!containsSourceRows(canonicalPath, sourceInstanceId)) {
-        throw new Error("a concurrent canonical state file does not contain the requested source", { cause: error });
-      }
-    }
+    afterInstall?.();
     rmSync(temporaryPath, { force: true });
     return canonicalPath;
   } catch (error) {
@@ -388,11 +384,17 @@ function migrateLegacyStore(
 /**
  * Fence the still-running legacy collector while reconciling writes that
  * landed after VACUUM INTO's snapshot. BEGIN IMMEDIATE waits for any current
- * writer, then prevents another writer until the rows are copied into the
- * temporary canonical database. The old database is retained, so a failed
- * migration remains recoverable with --queue.
+ * writer, then prevents another writer until the rows are copied and the
+ * canonical pathname is installed. The canonical pathname is a hard link to
+ * the legacy database, so writes through an already-running legacy process
+ * remain visible after the handoff. The old pathname is retained deliberately.
  */
-function reconcileLegacyWrites(legacyPath: string, temporaryPath: string, sourceInstanceId: string): void {
+function reconcileLegacyWrites(
+  legacyPath: string,
+  temporaryPath: string,
+  canonicalPath: string,
+  sourceInstanceId: string
+): void {
   let source: DatabaseSync | undefined;
   try {
     source = new DatabaseSync(legacyPath);
@@ -422,6 +424,22 @@ function reconcileLegacyWrites(legacyPath: string, temporaryPath: string, source
           FROM main.local_device_observed_stream
          WHERE source_instance_id = '${sourceInstanceId.replaceAll("'", "''")}'
       `);
+    }
+    try {
+      // Install an alias to the legacy inode while its writer fence is held.
+      // This makes the handoff durable for old collectors that continue to
+      // write through the legacy pathname after this process returns.
+      linkSync(legacyPath, canonicalPath);
+      if (process.platform !== "win32") {
+        chmodSync(canonicalPath, 0o600);
+      }
+    } catch (error) {
+      if (!isAlreadyExistsError(error)) {
+        throw error;
+      }
+      if (!containsSourceRows(canonicalPath, sourceInstanceId)) {
+        throw new Error("a concurrent canonical state file does not contain the requested source", { cause: error });
+      }
     }
     source.exec("COMMIT");
     source.exec("DETACH DATABASE migrated");
