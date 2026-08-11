@@ -56,6 +56,7 @@ export type HebAuthSurface =
 interface EnsureHebSessionArgs {
   capture?: CaptureSession | null;
   checkpoint?: SessionCheckpointFn;
+  onCredentialSubmit?: () => void;
   page: Page;
   postSubmitWaitClock?: PostSubmitWaitClock;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
@@ -379,6 +380,7 @@ async function handOffToOwner({
 async function handleVerifiedLoginFormSubmission({
   capture,
   checkpoint,
+  onCredentialSubmit,
   page,
   postSubmitWaitClock,
   password,
@@ -389,6 +391,7 @@ async function handleVerifiedLoginFormSubmission({
   readonly capture?: CaptureSession | null | undefined;
   readonly checkpoint?: SessionCheckpointFn | undefined;
   readonly loginFormRoot: Locator;
+  readonly onCredentialSubmit?: (() => void) | undefined;
   readonly postSubmitWaitClock?: PostSubmitWaitClock | undefined;
   readonly password: string;
   readonly username: string;
@@ -398,6 +401,7 @@ async function handleVerifiedLoginFormSubmission({
   if (!submitted) {
     return false;
   }
+  onCredentialSubmit?.();
 
   const postSubmitSurface = await waitForPostSubmitAuthSurface(
     page,
@@ -604,6 +608,7 @@ export async function probeHebSession(page: Page): Promise<boolean> {
 export async function ensureHebSession({
   capture,
   checkpoint,
+  onCredentialSubmit,
   page,
   postSubmitWaitClock,
   sendInteraction,
@@ -624,6 +629,7 @@ export async function ensureHebSession({
       capture,
       checkpoint,
       loginFormRoot,
+      onCredentialSubmit,
       page,
       postSubmitWaitClock,
       password,

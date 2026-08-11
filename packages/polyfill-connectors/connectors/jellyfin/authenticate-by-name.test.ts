@@ -351,6 +351,37 @@ test("e2e: failed AuthenticateByName surfaces the real 401, never a fabricated i
   }
 });
 
+test("e2e: a transport fault during the FIRST AuthenticateByName is forced non-retryable, even though its message matches every retryable transport pattern", async () => {
+  // The stored password goes out over the wire the instant fetch() is called;
+  // an ECONNREFUSED/fetch-failed here cannot be told apart from "reached the
+  // server". A retryable classification would let a fresh process redispatch
+  // and resend the identical password (mode 1). This is jellyfin's non-browser
+  // equivalent of the browser connectors' onCredentialSubmit marker.
+  const server = new FakeJellyfinAuthServer();
+  const baseUrl = await server.start();
+  await server.stop(); // now unreachable: fetch throws a bare transport error
+
+  const { ctx } = makeContext({
+    credentials: { base_url: baseUrl, username: "alice", password: "stored-password" },
+    streams: [{ name: "libraries" }],
+  });
+
+  await assert.rejects(
+    () => collect(ctx),
+    (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /jellyfin_session_failed/);
+      assert.equal(
+        (err as { retryable?: boolean }).retryable,
+        false,
+        "first-auth transport faults must be non-retryable — the password was already sent"
+      );
+      assert.equal((err as { code?: string }).code, "jellyfin_session_failed");
+      return true;
+    }
+  );
+});
+
 test("e2e: AuthenticateByName response missing AccessToken fails the run rather than proceeding without a credential", async () => {
   const server = new FakeJellyfinAuthServer();
   const baseUrl = await server.start();

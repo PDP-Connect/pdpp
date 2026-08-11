@@ -656,6 +656,12 @@ test("ChatGPT rejected stored password fails before push approval or browser ass
         waitForTimeout: async () => undefined,
       };
 
+      // The rejection throw below is the canonical post-submit failure: the
+      // stored password already went out, so the marker must have fired —
+      // exactly once, and only after the submit click (the email-continue
+      // click also matches the fixture's submit selectors, but must not fire
+      // the marker: only the password-submit call site does).
+      let markerCount = 0;
       await assert.rejects(
         ensureChatGptSession({
           assist: async () => {
@@ -663,6 +669,10 @@ test("ChatGPT rejected stored password fails before push approval or browser ass
             throw new Error("rejected stored password must not request owner assistance");
           },
           context: {} as never,
+          onCredentialSubmit: () => {
+            markerCount += 1;
+            assert.equal(passwordSubmitted, true, "marker must fire only after the password submit click");
+          },
           page: page as never,
           progress: () => Promise.resolve(),
           sendInteraction: async () => {
@@ -672,6 +682,7 @@ test("ChatGPT rejected stored password fails before push approval or browser ass
         }),
         new RegExp(CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE)
       );
+      assert.equal(markerCount, 1, "one stored-credential attempt — the runtime must hear exactly one submit");
     }
   );
 });

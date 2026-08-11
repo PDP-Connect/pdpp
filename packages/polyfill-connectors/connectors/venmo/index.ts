@@ -471,10 +471,11 @@ if (isMainModule(import.meta.url)) {
     // hand off to the browser — see /tmp/venmo-provider-path-audit-0810.md
     // and the reddit/amazon precedent this connector now follows.
     browser: { profileName: "venmo" },
-    async ensureSession({ capture, checkpoint, page, sendInteraction }): Promise<void> {
+    async ensureSession({ capture, checkpoint, onCredentialSubmit, page, sendInteraction }): Promise<void> {
       await ensureVenmoSession({
         ...(capture ? { capture } : {}),
         checkpoint,
+        onCredentialSubmit,
         page,
         sendInteraction,
       });

@@ -70,6 +70,7 @@ import {
   buildDetailCoverageMessage,
   buildFullScanCoverageMessage,
   type CollectContext,
+  createConnectorFailure,
   nowIso,
   type RecordData,
   runConnector,
@@ -931,7 +932,25 @@ async function resolveConnection(
   if (username && password) {
     await progress("Signing in to Jellyfin with username and password");
     const deviceId = deriveStableDeviceId(`${baseUrl} ${username}`);
-    const { accessToken, userId } = await authenticateByName(baseUrl, username, password, deviceId);
+    // The POST below sends Username/Pw over the wire the instant fetch() is
+    // called — a transport fault here (e.g. ECONNRESET) can't be told apart
+    // from "reached the server". This is the run's FIRST auth attempt: no
+    // budget/flag exists yet to stop a fresh process from redispatching and
+    // resending the identical stored password (mode 1). Force non-retryable
+    // regardless of message text, exactly like every browser connector's
+    // onCredentialSubmit marker — do NOT wrap the mid-run `reauth` call below,
+    // which is already bounded by `repairBudget` (mode 2, untouched).
+    let accessToken: string;
+    let userId: string;
+    try {
+      ({ accessToken, userId } = await authenticateByName(baseUrl, username, password, deviceId));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw createConnectorFailure("jellyfin_session_failed", `jellyfin_session_failed: ${message}`, {
+        cause: err,
+        retryable: false,
+      });
+    }
     await progress("Signed in to Jellyfin");
 
     const conn: JellyfinConn = { baseUrl, apiKey: accessToken, userId };

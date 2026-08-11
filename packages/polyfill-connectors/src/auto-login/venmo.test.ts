@@ -330,6 +330,38 @@ test("ensureVenmoSession: fills saved credentials and completes login without an
   });
 });
 
+test("ensureVenmoSession: onCredentialSubmit fires exactly once when the saved password is submitted", async () => {
+  await withVenmoCredentials(async () => {
+    const { page } = makePageWithWorkingLoginForm();
+    const { sendInteraction } = recordingSendInteraction();
+    let markerCount = 0;
+    const result = await ensureVenmoSession({
+      onCredentialSubmit: () => {
+        markerCount += 1;
+      },
+      page,
+      sendInteraction,
+    });
+    assert.equal(result.live, true);
+    assert.equal(markerCount, 1, "one login attempt submitted one credential — the runtime must hear about it once");
+  });
+});
+
+test("ensureVenmoSession: onCredentialSubmit does NOT fire on session reuse — no credential went out, so pre-submit faults must keep their ordinary retry classification", async () => {
+  const { page } = makeProbePage(true);
+  const { sendInteraction } = recordingSendInteraction();
+  let markerCount = 0;
+  const result = await ensureVenmoSession({
+    onCredentialSubmit: () => {
+      markerCount += 1;
+    },
+    page,
+    sendInteraction,
+  });
+  assert.equal(result.live, true);
+  assert.equal(markerCount, 0);
+});
+
 // ─── OTP handoff ─────────────────────────────────────────────────────────
 
 test("ensureVenmoSession: an OTP input drives sendInteraction with kind=otp, never asking for the password again", async () => {

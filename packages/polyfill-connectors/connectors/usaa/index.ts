@@ -3139,17 +3139,20 @@ if (isMainModule(import.meta.url)) {
     async ensureSession({
       capture,
       context,
+      onCredentialSubmit,
       page,
       sendInteraction,
     }: {
       capture?: EmitDeps["capture"];
       context: BrowserContext;
+      onCredentialSubmit: () => void;
       page: Page;
       sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
     }): Promise<void> {
       await ensureUsaaSession({
         capture: capture ?? null,
         context,
+        onCredentialSubmit,
         page,
         sendInteraction,
       });

@@ -4463,13 +4463,24 @@ if (isMainModule(import.meta.url)) {
     // page-level (child) and process-level (reference lease caller) retention
     // facts stay a single source of truth. `profileName` stays connector-local.
     browser: { ...browserConfigPreservationFor("chatgpt"), profileName: "chatgpt" },
-    async ensureSession({ assist, capture, checkpoint, completeAssistance, context, page, progress, sendInteraction }) {
+    async ensureSession({
+      assist,
+      capture,
+      checkpoint,
+      completeAssistance,
+      context,
+      onCredentialSubmit,
+      page,
+      progress,
+      sendInteraction,
+    }) {
       await ensureChatGptSession({
         assist,
         capture,
         checkpoint,
         completeAssistance,
         context,
+        onCredentialSubmit,
         page,
         progress,
         sendInteraction,

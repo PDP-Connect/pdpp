@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BrowserContext, Locator, Page } from "playwright";
+import { REDDIT_RETRYABLE_PATTERN } from "../../connectors/reddit/index.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import { ensureRedditSession } from "./reddit.ts";
 
@@ -375,4 +376,49 @@ test("ensureRedditSession accepts browser-completed OTP when the session is live
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.kind, "otp");
   });
+});
+
+// ─── B5-shaped regression: Reddit's retryablePattern has no naming collision ─
+//
+// Reddit has no `onCredentialSubmit` marker wired (see the audit: every
+// post-submit throw here is already non-colliding, confirmed by execution
+// below — not by inference). That safety property is currently an accident
+// of which words these five message literals happen to contain. This test
+// makes it an enforced invariant: it feeds every post-submit throw string
+// `reddit.ts` can actually produce, plus the runtime's own
+// `${name}_session_failed:` wrapping (the shape every session-establishment
+// failure carries once `connector-runtime.ts` wraps it — see
+// `buildSessionEstablishTerminalError`), through the real exported
+// `REDDIT_RETRYABLE_PATTERN` and asserts none match. A future edit that adds
+// a bare transport term (as USAA's `source_unavailable` did) breaks this
+// test immediately instead of silently reopening the mode-1 defect class.
+const REDDIT_POST_SUBMIT_THROW_MESSAGES = [
+  "reddit_login_submit_missing",
+  "reddit_2fa_cancelled",
+  "reddit_login_post_submit_failed",
+] as const;
+
+test("REDDIT_RETRYABLE_PATTERN does not match any post-submit throw message reddit.ts can produce", () => {
+  for (const message of REDDIT_POST_SUBMIT_THROW_MESSAGES) {
+    assert.equal(
+      REDDIT_RETRYABLE_PATTERN.test(message),
+      false,
+      `${message} must not match REDDIT_RETRYABLE_PATTERN — a match here would let a post-submit fault redispatch and resubmit the saved password`
+    );
+  }
+});
+
+test("REDDIT_RETRYABLE_PATTERN does not match the runtime's session_failed-wrapped form of any post-submit throw", () => {
+  for (const message of REDDIT_POST_SUBMIT_THROW_MESSAGES) {
+    const wrapped = `reddit_session_failed: ${message}`;
+    assert.equal(REDDIT_RETRYABLE_PATTERN.test(wrapped), false, `${wrapped} must not match REDDIT_RETRYABLE_PATTERN`);
+  }
+});
+
+test("REDDIT_RETRYABLE_PATTERN still matches its intended legitimate pre-submit retry vocabulary (COUNTERWEIGHT)", () => {
+  // Proves the non-collision tests above aren't vacuously true because the
+  // pattern matches nothing at all.
+  for (const message of ["ECONNRESET", "ETIMEDOUT", "fetch failed: network error", "reddit_rate_limited"]) {
+    assert.equal(REDDIT_RETRYABLE_PATTERN.test(message), true, `${message} should still be retryable`);
+  }
 });

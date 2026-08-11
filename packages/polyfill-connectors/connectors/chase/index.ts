@@ -2513,9 +2513,10 @@ if (isMainModule(import.meta.url)) {
     // `design-notes/chase-anti-bot.md`. Isolated-per-connector profile works.
     browser: { profileName: "chase" },
     timeRangeField: chaseTimeRangeField,
-    async ensureSession({ context, page, sendInteraction }): Promise<void> {
+    async ensureSession({ context, onCredentialSubmit, page, sendInteraction }): Promise<void> {
       await ensureChaseSession({
         context,
+        onCredentialSubmit,
         page,
         sendInteraction,
       });

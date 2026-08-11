@@ -1562,11 +1562,12 @@ if (isMainModule(import.meta.url)) {
     // Persistent profile keeps cookies and session state across runs; browser
     // mode is selected by the deployment, not by this connector.
     browser: { profileName: "amazon" },
-    async ensureSession({ capture, checkpoint, context, page, sendInteraction }): Promise<void> {
+    async ensureSession({ capture, checkpoint, context, onCredentialSubmit, page, sendInteraction }): Promise<void> {
       await ensureAmazonSession({
         ...(capture ? { capture } : {}),
         checkpoint,
         context,
+        onCredentialSubmit,
         page,
         sendInteraction,
       });

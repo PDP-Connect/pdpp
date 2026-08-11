@@ -1060,8 +1060,8 @@ if (isMainModule(import.meta.url)) {
       }
       return true;
     },
-    async ensureSession({ page, sendInteraction, capture, checkpoint }): Promise<void> {
-      const ok = await ensureHebSession({ capture, checkpoint, page, sendInteraction });
+    async ensureSession({ page, sendInteraction, capture, checkpoint, onCredentialSubmit }): Promise<void> {
+      const ok = await ensureHebSession({ capture, checkpoint, onCredentialSubmit, page, sendInteraction });
       if (!ok) {
         throw new Error("heb_session_required");
       }

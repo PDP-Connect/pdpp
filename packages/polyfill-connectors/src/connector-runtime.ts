@@ -249,6 +249,18 @@ export interface EnsureSessionArgs {
   checkpoint: SessionCheckpointFn;
   completeAssistance: BaseCollectContext["completeAssistance"];
   context: BrowserContext;
+  /**
+   * Call this at the exact line `ensureSession` submits a saved credential to
+   * the provider's real sign-in form (the `.click()`/`.fill()` that sends the
+   * password) — not before, not after. Once called, any error `ensureSession`
+   * subsequently throws is forced non-retryable by the runtime regardless of
+   * `retryablePattern`: a fault that happens after a password has already
+   * been typed into a live form must never cause a fresh process to redispatch
+   * and resubmit that same password. Calling this has no effect on errors
+   * thrown BEFORE the call — those still go through the ordinary
+   * `retryablePattern` classification untouched.
+   */
+  onCredentialSubmit: () => void;
   page: Page;
   progress: BaseCollectContext["progress"];
   sendInteraction: BaseCollectContext["sendInteraction"];
@@ -2185,16 +2197,30 @@ function retryablePatternMatches(pattern: RegExp, value: string): boolean {
   return matched;
 }
 
+/**
+ * `postSubmit` forces `retryable: false` unconditionally, WITHOUT consulting
+ * `retryablePattern` at all — a saved credential was already submitted to the
+ * provider's real sign-in form, so a fault occurring after that point can
+ * never be safely retried from a fresh process, no matter what vocabulary the
+ * error message happens to share with the connector's legitimate pre-submit
+ * retry patterns (e.g. a bare "timeout" or a shared transport-error term).
+ * This is the single point that closes the naming-collision defect class: it
+ * decides "did the credential already go out" once, centrally, instead of
+ * leaving every connector's regex to (fail to) encode that distinction.
+ */
 export function buildSessionEstablishTerminalError(
   name: string,
   message: string,
-  retryablePattern: RegExp = DEFAULT_RETRYABLE_PATTERN
+  retryablePattern: RegExp = DEFAULT_RETRYABLE_PATTERN,
+  postSubmit = false
 ): TerminalErrorDetails {
   const terminalMessage = `${name}_session_failed: ${message}`;
   return {
     message: terminalMessage,
     retryable:
-      retryablePatternMatches(retryablePattern, message) || retryablePatternMatches(retryablePattern, terminalMessage),
+      !postSubmit &&
+      (retryablePatternMatches(retryablePattern, message) ||
+        retryablePatternMatches(retryablePattern, terminalMessage)),
   };
 }
 
@@ -2208,8 +2234,12 @@ export function buildSessionEstablishTerminalError(
  * The runtime frames the window with a `begin` checkpoint before delegating
  * and a `probe` checkpoint around the read-only probe path so the watchdog
  * has progress markers even for connectors that do not checkpoint themselves.
+ *
+ * Exported so tests can prove the `onCredentialSubmit` → `credentialSubmitted`
+ * → `buildSessionEstablishTerminalError(postSubmit)` wiring end-to-end, not
+ * just the classifier in isolation.
  */
-async function establishSession(
+export async function establishSession(
   hooks: {
     ensureSession: ((args: EnsureSessionArgs) => Promise<void>) | undefined;
     probeSession: ((args: ProbeSessionArgs) => Promise<boolean>) | undefined;
@@ -2233,6 +2263,13 @@ async function establishSession(
   await checkpoint("session-establish:begin");
 
   if (typeof ensureSession === "function") {
+    // Set once `ensureSession` reports it has submitted a saved credential to
+    // the provider's real sign-in form. Scoped to this one establishSession()
+    // call — a fresh process gets a fresh `false`, which is correct: the
+    // credential wasn't submitted yet IN THIS process, even if a prior
+    // process's submission is what's being retried. That's exactly the case
+    // this primitive exists to stop: this call is the resubmission risk.
+    let credentialSubmitted = false;
     try {
       await ensureSession({
         assist,
@@ -2240,6 +2277,9 @@ async function establishSession(
         checkpoint,
         completeAssistance,
         context,
+        onCredentialSubmit: () => {
+          credentialSubmitted = true;
+        },
         page,
         sendInteraction,
         progress,
@@ -2247,7 +2287,7 @@ async function establishSession(
       return;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const terminalError = buildSessionEstablishTerminalError(name, message, retryablePattern);
+      const terminalError = buildSessionEstablishTerminalError(name, message, retryablePattern, credentialSubmitted);
       throw new TerminalError(terminalError.message, { retryable: terminalError.retryable, cause: err });
     }
   }

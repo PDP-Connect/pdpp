@@ -646,6 +646,41 @@ test("ensureHebSession fills the verified login form, submits, and waits for the
   });
 });
 
+test("ensureHebSession fires onCredentialSubmit exactly once, and only when the verified form was actually submitted", async () => {
+  await withHebCredentials(async () => {
+    const page = makePage({ html: SIGNIN_HTML, live: false, url: SIGNIN_URL, view: "login" });
+    const harness = makeInteractionHarness();
+    let markerCount = 0;
+    const ok = await ensureHebSession({
+      onCredentialSubmit: () => {
+        markerCount += 1;
+        assert.equal(state.submitClicks, 1, "the marker must fire after the submit click, never before it");
+      },
+      page,
+      postSubmitWaitClock: makePostSubmitWaitClock(page),
+      sendInteraction: harness.sendInteraction,
+    });
+    assert.equal(ok, true);
+    assert.equal(markerCount, 1);
+  });
+});
+
+test("ensureHebSession does NOT fire onCredentialSubmit on the authenticated fast path — no credential went out", async () => {
+  const page = makePage({ html: LIVE_HTML, live: false, url: ORDERS_URL, view: "unknown" });
+  const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });
+  let markerCount = 0;
+  const ok = await ensureHebSession({
+    onCredentialSubmit: () => {
+      markerCount += 1;
+    },
+    page,
+    postSubmitWaitClock: makePostSubmitWaitClock(page),
+    sendInteraction: harness.sendInteraction,
+  });
+  assert.equal(ok, true);
+  assert.equal(markerCount, 0);
+});
+
 test("ensureHebSession does not fast-path a loading orders page as a live session", async () => {
   const page = makePage({ html: LOADING_HTML, live: false, url: ORDERS_URL, view: "unknown" });
   const harness = makeInteractionHarness({ makeSessionLiveOnManualAction: false });

@@ -57,6 +57,7 @@ const STACK_TRACE_LOCATION_SUFFIX_RE = /\s+at\s+https?:\/\/\S+$/i;
 interface EnsureUsaaSessionArgs {
   capture?: CaptureSession | null;
   context: BrowserContext;
+  onCredentialSubmit?: () => void;
   page: Page;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
 }
@@ -407,6 +408,7 @@ async function handlePasswordFieldStall(
 export async function ensureUsaaSession({
   capture,
   context,
+  onCredentialSubmit,
   page,
   sendInteraction,
 }: EnsureUsaaSessionArgs): Promise<boolean> {
@@ -462,6 +464,10 @@ export async function ensureUsaaSession({
   await page.fill('input[name="password"]', password);
   await page.waitForTimeout(500);
   await page.click("#next-button");
+  // The password just went out to USAA's real sign-in form. From this line
+  // on, ANY throw (OTP failure, verify failure, the final diagnostic below)
+  // must be non-retryable — a redispatch would resubmit the saved password.
+  onCredentialSubmit?.();
   await page.waitForTimeout(5000);
 
   const bodyText = (await page.locator("body").innerText()).slice(0, 1000);

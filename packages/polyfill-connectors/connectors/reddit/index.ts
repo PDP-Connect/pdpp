@@ -78,6 +78,17 @@ import type { RedditChild, RedditFetchResult, RedditListing } from "./types.ts";
 
 const USER_AGENT = "pdpp-reddit-connector/0.2 (polyfill; +https://pdpp.org)";
 const PAGE_DELAY_MS = 500;
+/**
+ * Exported (not just inline in `runConnector`) so a regression test can
+ * assert every post-submit throw `src/auto-login/reddit.ts` can produce
+ * fails to match this exact pattern — the same object the scheduler
+ * classifier actually consults, not a duplicated literal that could drift.
+ * Reddit currently has no post-submit/pre-submit collision (unlike USAA's
+ * deliberate `source_unavailable` term), and this pattern must stay that way:
+ * a future edit that adds a bare transport term here would silently reopen
+ * the naming-collision defect class with no test to catch it.
+ */
+export const REDDIT_RETRYABLE_PATTERN = /ECONN|ETIMEDOUT|fetch failed|reddit_rate_limited/i;
 
 interface ProgressExtra {
   cursor_present?: boolean;
@@ -490,7 +501,7 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "reddit",
     validateRecord,
-    retryablePattern: /ECONN|ETIMEDOUT|fetch failed|reddit_rate_limited/i,
+    retryablePattern: REDDIT_RETRYABLE_PATTERN,
     auth: { kind: "env", required: ["REDDIT_USERNAME", "REDDIT_PASSWORD"] },
     browser: { profileName: "reddit" },
     timeRangeField: "created_utc",

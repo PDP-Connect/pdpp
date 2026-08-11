@@ -109,6 +109,7 @@ const noopCheckpoint: SessionCheckpointFn = () => Promise.resolve();
 interface EnsureVenmoSessionArgs {
   capture?: CaptureSession | null;
   checkpoint?: SessionCheckpointFn;
+  onCredentialSubmit?: () => void;
   page: Page;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
 }
@@ -400,12 +401,14 @@ async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<VenmoAccoun
 async function loginWithSavedCredentials({
   capture,
   checkpoint,
+  onCredentialSubmit,
   page,
   sendInteraction,
   username,
   password,
 }: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction"> & {
   checkpoint: SessionCheckpointFn;
+  onCredentialSubmit?: () => void;
   password: string;
   username: string;
 }): Promise<VenmoAccountProbeResult> {
@@ -439,6 +442,7 @@ async function loginWithSavedCredentials({
     await captureLoginState(capture, page, "venmo-login-submit-missing");
     throw new Error("venmo_login_submit_missing");
   }
+  onCredentialSubmit?.();
   await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch((): null => null);
   await captureLoginState(capture, page, "venmo-login-after-submit");
   await checkpoint("venmo-2fa-decision");
@@ -470,6 +474,7 @@ async function loginWithSavedCredentials({
 export async function ensureVenmoSession({
   capture,
   checkpoint = noopCheckpoint,
+  onCredentialSubmit,
   page,
   sendInteraction,
 }: EnsureVenmoSessionArgs): Promise<VenmoAccountProbeResult> {
@@ -494,6 +499,7 @@ export async function ensureVenmoSession({
   const result = await loginWithSavedCredentials({
     ...(capture ? { capture } : {}),
     checkpoint,
+    ...(onCredentialSubmit ? { onCredentialSubmit } : {}),
     page,
     sendInteraction,
     username,
