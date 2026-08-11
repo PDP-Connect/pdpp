@@ -55,6 +55,9 @@ const CONNECTOR_CONFORMANCE_GATE_RAN_PATTERN =
   /shipped manifest root or this gate changed — running the connector-conformance gate/;
 const STREAM_EVIDENCE_INVENTORY_GATE_RAN_PATTERN =
   /shipped manifest root or stream-evidence inventory input changed — running the inventory check/;
+const ZERO_CONNECTOR_KNOWLEDGE_GATE_RAN_PATTERN =
+  /RI production code or a shipped manifest root changed — running the zero-connector-knowledge guard/;
+const HARDCODED_CONNECTOR_IDENTITY_VIOLATION_PATTERN = /hardcoded-connector-identity-literal/;
 
 function fixtureRuleset() {
   return {
@@ -333,15 +336,37 @@ test("streamEvidenceInventoryGateRequired covers both shipped roots and only the
  * "origin" remote so isCleanAndPushed's @{push} + --base origin/main both
  * resolve honestly instead of faking a ref). Never touches the real repo's
  * git state — no stash, no shared worktree risk.
+ *
+ * Includes the real RI production tree (RI_PRODUCTION_PATH_PREFIXES) and the
+ * zero-connector-knowledge guard's own test + helpers, so
+ * runZeroConnectorKnowledgeGate runs the actual guard against actual
+ * production code inside the fixture instead of failing to find its test
+ * file. This is bounded to exactly the guard's own declared scan scope
+ * (RI_PRODUCTION_PATH_PREFIXES) plus its test harness — never the whole
+ * repository — so the fixture stays a faithful, narrow slice of what real
+ * signoff exercises rather than a copy of everything.
  */
+const TRAILING_SLASH_PATTERN = /\/$/;
+
 function copySignoffGateFixtureFiles(dir: string) {
-  const copy = (from: string, to: string) => cpSync(join(REPOSITORY_ROOT, from), join(dir, to), { recursive: true });
-  copy("packages/polyfill-connectors/src", "packages/polyfill-connectors/src");
-  copy("packages/polyfill-connectors/manifests", "packages/polyfill-connectors/manifests");
-  copy("packages/polyfill-connectors/connectors", "packages/polyfill-connectors/connectors");
-  copy("reference-implementation/manifests", "reference-implementation/manifests");
-  copy("scripts/stream-evidence-inventory.ts", "scripts/stream-evidence-inventory.ts");
-  copy("docs/reference/stream-evidence-inventory.md", "docs/reference/stream-evidence-inventory.md");
+  const copy = (relativePath: string) =>
+    cpSync(join(REPOSITORY_ROOT, relativePath), join(dir, relativePath), { recursive: true });
+  copy("packages/polyfill-connectors/src");
+  copy("packages/polyfill-connectors/manifests");
+  copy("packages/polyfill-connectors/connectors");
+  copy("reference-implementation/manifests");
+  copy("reference-implementation/package.json");
+  copy("reference-implementation/tsconfig.json");
+  for (const prefix of RI_PRODUCTION_PATH_PREFIXES) {
+    copy(prefix.replace(TRAILING_SLASH_PATTERN, ""));
+  }
+  copy(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE}`);
+  copy("reference-implementation/test/helpers/ri-zero-connector-knowledge-ast-shared.ts");
+  copy(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE}`);
+  copy(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_DATA_LOAD_HELPER_FILE}`);
+  copy(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_IDENTITY_HELPER_FILE}`);
+  copy("scripts/stream-evidence-inventory.ts");
+  copy("docs/reference/stream-evidence-inventory.md");
 }
 
 function initSignoffFixtureRepo({ withSignoffGateFiles = false } = {}) {
@@ -517,6 +542,51 @@ test("signoff recognizes Unicode and embedded-newline paths under both protected
     assert.match(output, CONNECTOR_CONFORMANCE_GATE_RAN_PATTERN);
     assert.match(output, STREAM_EVIDENCE_INVENTORY_GATE_RAN_PATTERN);
     assert.equal(existsSync(fakeGh.marker), true, "fake gh proves the protected paths reached the signoff gate");
+  } finally {
+    cleanupSignoffFixtureRepo(fixture);
+  }
+});
+
+test("signoff cannot post success when RI production code carries a real hardcoded connector-identity violation", () => {
+  // Negative discriminator for the fixture above: it proves the
+  // zero-connector-knowledge gate is not merely selected but must actually
+  // SUCCEED. A fixture bug that made the gate a no-op (e.g. an empty
+  // production scan root) would still let the Unicode-paths test above pass,
+  // since that test only asserts the gate ran, not that it enforces
+  // anything. Planting a real violation and proving it blocks the gh post
+  // closes that gap.
+  const fixture = initSignoffFixtureRepo({ withSignoffGateFiles: true });
+  try {
+    const violationPath = join(fixture.dir, "reference-implementation/server/synthetic-signoff-violation.ts");
+    writeFileSync(
+      violationPath,
+      [
+        "export function isFirstParty(connectorId: string): boolean {",
+        '  return connectorId === "gmail" || connectorId === "slack";',
+        "}",
+        "",
+      ].join("\n")
+    );
+    fixture.run(["add", "reference-implementation/server/synthetic-signoff-violation.ts"]);
+    fixture.run(["commit", "--quiet", "-m", "plant a hardcoded connector-identity violation"]);
+    fixture.run(["push", "--quiet"]);
+
+    const fakeGh = createFakeGh(fixture.dir);
+    let error: (Error & { stdout?: string; stderr?: string }) | undefined;
+    try {
+      runSignoffCli(fixture.dir, [], { env: fakeGh.env });
+    } catch (caught) {
+      error = caught as Error & { stdout?: string; stderr?: string };
+    }
+    assert.ok(error, "a real hardcoded connector-identity violation must make signoff fail");
+    const combinedOutput = `${error?.stdout ?? ""}${error?.stderr ?? ""}`;
+    assert.match(combinedOutput, ZERO_CONNECTOR_KNOWLEDGE_GATE_RAN_PATTERN);
+    assert.match(combinedOutput, HARDCODED_CONNECTOR_IDENTITY_VIOLATION_PATTERN);
+    assert.equal(
+      existsSync(fakeGh.marker),
+      false,
+      "a selected zero-connector-knowledge gate failure must prevent the gh status post"
+    );
   } finally {
     cleanupSignoffFixtureRepo(fixture);
   }

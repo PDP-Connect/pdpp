@@ -552,10 +552,31 @@ export function zeroConnectorKnowledgeGateRequired(changedFiles: string[]): bool
   );
 }
 
+/**
+ * Node's test runner marks every process it spawns with `NODE_TEST_CONTEXT`
+ * so a subprocess can tell it is running inside a `node --test` harness.
+ * That env var is inherited by any further child process, so when signoff
+ * itself is invoked from within a `node --test` run (e.g. this file's own
+ * `runSignoffCli` fixture harness, or any CI wrapper that shells out to
+ * signoff from a Node test), a nested `node --test` gate below sees its
+ * parent's marker, silently skips running its files ("run() is being called
+ * recursively"), and exits 0 — turning a required gate into a no-op that
+ * still reports success. Scrubbing the var before every gate spawn makes
+ * each gate a genuine, isolated test run regardless of what process tree
+ * invoked signoff — the fix belongs at the spawn boundary, not in the
+ * fixture, since production signoff has exactly the same exposure.
+ */
+function gateSpawnEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  Reflect.deleteProperty(env, "NODE_TEST_CONTEXT");
+  return env;
+}
+
 function runConnectorConformanceGate(): void {
   console.log("a shipped manifest root or this gate changed — running the connector-conformance gate...");
   execFileSync("node", ["--test", "--test-timeout=30000", "--import", "tsx", ...CONNECTOR_CONFORMANCE_TEST_FILES], {
     cwd: "packages/polyfill-connectors",
+    env: gateSpawnEnv(),
     stdio: "inherit",
   });
 }
@@ -564,18 +585,25 @@ function runZeroConnectorKnowledgeGate(): void {
   console.log("RI production code or a shipped manifest root changed — running the zero-connector-knowledge guard...");
   execFileSync("node", ["--test", "--test-timeout=30000", ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE], {
     cwd: "reference-implementation",
+    env: gateSpawnEnv(),
     stdio: "inherit",
   });
 }
 
 function runStreamEvidenceInventoryGate(): void {
   console.log("a shipped manifest root or stream-evidence inventory input changed — running the inventory check...");
-  execFileSync("node", ["--import", "tsx", "scripts/stream-evidence-inventory.ts", "--check"], { stdio: "inherit" });
+  execFileSync("node", ["--import", "tsx", "scripts/stream-evidence-inventory.ts", "--check"], {
+    env: gateSpawnEnv(),
+    stdio: "inherit",
+  });
 }
 
 function runCiModeSelfTest(): void {
   console.log("this gate changed — running ci:mode:test...");
-  execFileSync("node", ["--test", "--import", "tsx", "scripts/ci-mode.test.ts"], { stdio: "inherit" });
+  execFileSync("node", ["--test", "--import", "tsx", "scripts/ci-mode.test.ts"], {
+    env: gateSpawnEnv(),
+    stdio: "inherit",
+  });
 }
 
 function signoff(args: string[]): void {
