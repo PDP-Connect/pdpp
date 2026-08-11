@@ -30,6 +30,8 @@ const TOP_LEVEL_REGEX_26 =
   /capabilities\.proven\.provider_auth_lifecycle=true requires setup\.modality "provider_authorization"/;
 const TOP_LEVEL_REGEX_27 =
   /capabilities\.proven\.local_collector=true requires runtime_requirements\.bindings\.filesystem/;
+const TOP_LEVEL_REGEX_28 = /credential_capture field 'password' is a secret field .* with no label/;
+const TOP_LEVEL_REGEX_29 = /credential_capture field 'password' is a secret field with zero env aliases/;
 
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
@@ -39,7 +41,8 @@ const TOP_LEVEL_REGEX_27 =
  * validator.
  *
  * connector-manifest-validation.ts is a pure module (imports only
- * connector-key.js). Only resolveManifestSensitivity is covered elsewhere
+ * connector-key.js and the shared static-secret-credential-capture
+ * normalizer). Only resolveManifestSensitivity is covered elsewhere
  * (manifest-sensitivity.test.js); the schema-predicate classifiers and the
  * blob_ref shape validator were unpinned. All functions here are pure.
  * Coverage:
@@ -588,4 +591,43 @@ test("validateProvenCapability rejects local_collector=false paired with an unre
   assert.doesNotThrow(() =>
     validateProvenCapability(manifestWithCapabilities({ proven: { local_collector: false } }), "invalid_request")
   );
+});
+
+function manifestWithCredentialCapture(field = {}) {
+  return {
+    ...manifestWithStream({}),
+    setup: {
+      credential_capture: {
+        credential_kind: "static_secret",
+        fields: [{ name: "password", secret: true, ...field }],
+      },
+    },
+  };
+}
+
+test("validateConnectorManifest rejects a secret credential_capture field missing label at registration", () => {
+  // P2-2 (see final-combined-uat-redteam-0811.md): this contract violation
+  // must fail here, at registration, not later as a runtime 500 when setup
+  // or runtime injection reads the same manifest.
+  assert.throws(
+    () => validateConnectorManifest(manifestWithCredentialCapture({ env: ["TEST_PASSWORD"], label: undefined })),
+    TOP_LEVEL_REGEX_28
+  );
+});
+
+test("validateConnectorManifest rejects a secret credential_capture field with zero env aliases at registration", () => {
+  assert.throws(
+    () => validateConnectorManifest(manifestWithCredentialCapture({ env: [], label: "Password" })),
+    TOP_LEVEL_REGEX_29
+  );
+});
+
+test("validateConnectorManifest accepts a well-formed secret credential_capture field", () => {
+  assert.doesNotThrow(() =>
+    validateConnectorManifest(manifestWithCredentialCapture({ env: ["TEST_PASSWORD"], label: "Password" }))
+  );
+});
+
+test("validateConnectorManifest accepts a manifest with no credential_capture at all", () => {
+  assert.doesNotThrow(() => validateConnectorManifest(manifestWithStream({})));
 });

@@ -377,7 +377,16 @@ export function mountOwnerConnectorTemplates(app: AppLike, ctx: MountOwnerConnec
         ]);
         res.json({
           data: templates
-            .map((manifest) => projectTemplate(ctx, manifest, connections, resource))
+            .map((manifest) => {
+              // A malformed registered manifest should not blank every other
+              // template from an owner agent — same isolation as the read loop
+              // in collectConnectorTemplates above.
+              try {
+                return projectTemplate(ctx, manifest, connections, resource);
+              } catch {
+                return null;
+              }
+            })
             .filter((item): item is Record<string, unknown> => Boolean(item)),
           object: "list",
         });

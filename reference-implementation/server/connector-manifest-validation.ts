@@ -10,6 +10,11 @@
  * logic.
  */
 
+import {
+  normalizeStaticSecretCredentialCapture,
+  StaticSecretCredentialCaptureError,
+  type StaticSecretCredentialCaptureLike,
+} from "../../packages/polyfill-connectors/src/static-secret-credential-capture.ts";
 import { canonicalConnectorKey, isConnectorKey } from "./connector-key.ts";
 
 // Inline copy — isNonEmptyString is used 30+ times in auth.js so moving it
@@ -172,6 +177,26 @@ export function invalidConnectorManifest(message: string, code = "invalid_reques
   const err = new Error(message) as Error & { code: string };
   err.code = code;
   return err;
+}
+
+/**
+ * Registration-time gate for `setup.credential_capture`: a secret field
+ * missing `label` or `env` aliases is a manifest contract violation (see
+ * static-secret-credential-capture.ts's module doc), so it must fail here —
+ * where every manifest is normalized before any request can observe it —
+ * rather than surface later as a runtime 500 when setup or injection reads it.
+ */
+export function validateStaticSecretCredentialCapture(manifest: Record<string, unknown>, code: string): void {
+  const connectorKey = String(manifest.connector_key ?? manifest.connector_id ?? "unknown");
+  const setup = manifest.setup as { credential_capture?: StaticSecretCredentialCaptureLike | null } | null | undefined;
+  try {
+    normalizeStaticSecretCredentialCapture(connectorKey, setup?.credential_capture);
+  } catch (err) {
+    if (!(err instanceof StaticSecretCredentialCaptureError)) {
+      throw err;
+    }
+    throw invalidConnectorManifest(err.message, code);
+  }
 }
 
 export function isPositiveInteger(value: unknown): boolean {
@@ -1908,6 +1933,7 @@ export function validateConnectorManifest(
   validateProvenCapability(manifest, code);
   validateManifestSensitivity(manifest, code);
   validateManifestIcon(manifest, code);
+  validateStaticSecretCredentialCapture(manifest, code);
 
   const streams = manifest.streams as unknown[];
   const manifestStreamsByName = new Map<string, Record<string, unknown>>(
