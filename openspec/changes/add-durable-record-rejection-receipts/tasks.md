@@ -6,11 +6,11 @@
 
 ## 2. Add the durable quarantine store
 
-- [ ] 2.1 Add additive SQLite and PostgreSQL migrations for owner/connection-bound pending rejection metadata, exact bounded payload bytes, replay key, quota accounting, and indexes.
-- [ ] 2.2 Implement the narrow backend-parity store for fenced insert-or-replay, lookup, bounded cursor-paginated listing, concurrency-safe byte-quota admission, and connection-delete cleanup.
-- [ ] 2.3 Prove exact replay, byte accounting, quota refusal, concurrent duplicate admission, restart persistence, cross-owner isolation, and deletion on real SQLite.
-- [ ] 2.4 Run the same store contract against real PostgreSQL when configured and record an explicit skip when it is unavailable.
-- [ ] 2.5 Add migration-upgrade and retained-table rollback oracles; verify no existing owner records require or receive fabricated backfill receipts.
+- [x] 2.1 Add additive SQLite and PostgreSQL migrations for owner/connection-bound pending rejection metadata, exact bounded payload bytes, replay key, quota accounting, and indexes.
+- [x] 2.2 Implement the narrow backend-parity store for fenced insert-or-replay, lookup, bounded cursor-paginated listing, concurrency-safe byte-quota admission, and connection-delete cleanup.
+- [x] 2.3 Prove exact replay, byte accounting, quota refusal, concurrent duplicate admission, restart persistence, cross-owner isolation, and deletion on real SQLite.
+- [x] 2.4 Run the same store contract against real PostgreSQL when configured and record an explicit skip when it is unavailable.
+- [x] 2.5 Add migration-upgrade and retained-table rollback oracles; verify no existing owner records require or receive fabricated backfill receipts.
 
 ## 3. Persist hosted ingest rejections before acknowledgement
 

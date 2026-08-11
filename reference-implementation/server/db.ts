@@ -542,6 +542,38 @@ CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_connector_status
 CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_identity_page
   ON connector_instances(owner_subject_id, connector_id, created_at, connector_instance_id);
 
+CREATE TABLE IF NOT EXISTS record_rejection_quota (
+  owner_subject_id      TEXT PRIMARY KEY,
+  pending_payload_bytes INTEGER NOT NULL DEFAULT 0 CHECK (pending_payload_bytes >= 0),
+  updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS record_rejections (
+  receipt_id            TEXT PRIMARY KEY,
+  owner_subject_id      TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
+  connector_id          TEXT NOT NULL,
+  stream                TEXT NOT NULL,
+  run_id                TEXT,
+  first_input_index     INTEGER NOT NULL CHECK (first_input_index >= 0),
+  latest_input_index    INTEGER NOT NULL CHECK (latest_input_index >= 0),
+  reason_code           TEXT NOT NULL,
+  payload_text          TEXT NOT NULL,
+  payload_sha256        TEXT NOT NULL,
+  payload_bytes         INTEGER NOT NULL CHECK (payload_bytes >= 0),
+  replay_key            TEXT NOT NULL UNIQUE,
+  replay_count          INTEGER NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
+  status                TEXT NOT NULL DEFAULT 'pending' CHECK (status = 'pending'),
+  created_at            TEXT NOT NULL,
+  last_seen_at          TEXT NOT NULL,
+  FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+  FOREIGN KEY(owner_subject_id) REFERENCES record_rejection_quota(owner_subject_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_record_rejections_connection_page
+  ON record_rejections(owner_subject_id, connector_instance_id, created_at, receipt_id);
+CREATE INDEX IF NOT EXISTS idx_record_rejections_connection_receipt
+  ON record_rejections(owner_subject_id, connector_instance_id, receipt_id);
+
 -- Durable record that a connector-instance IDENTITY was owner-deleted.
 -- connector_instance_id is deterministic (hash of owner + connector +
 -- source_kind + source_binding_key), so once deleteConnection removes the

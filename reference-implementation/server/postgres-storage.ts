@@ -819,6 +819,36 @@ export async function bootstrapPostgresSchema({
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instances_owner_identity_page
         ON connector_instances(owner_subject_id, connector_id, created_at, connector_instance_id);
 
+      CREATE TABLE IF NOT EXISTS record_rejection_quota (
+        owner_subject_id TEXT PRIMARY KEY,
+        pending_payload_bytes BIGINT NOT NULL DEFAULT 0 CHECK (pending_payload_bytes >= 0),
+        updated_at TEXT NOT NULL DEFAULT (now() AT TIME ZONE 'utc')::text
+      );
+
+      CREATE TABLE IF NOT EXISTS record_rejections (
+        receipt_id TEXT PRIMARY KEY,
+        owner_subject_id TEXT NOT NULL REFERENCES record_rejection_quota(owner_subject_id) ON DELETE RESTRICT,
+        connector_instance_id TEXT NOT NULL REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+        connector_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        run_id TEXT,
+        first_input_index BIGINT NOT NULL CHECK (first_input_index >= 0),
+        latest_input_index BIGINT NOT NULL CHECK (latest_input_index >= 0),
+        reason_code TEXT NOT NULL,
+        payload_text TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        payload_bytes BIGINT NOT NULL CHECK (payload_bytes >= 0),
+        replay_key TEXT NOT NULL UNIQUE,
+        replay_count BIGINT NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status = 'pending'),
+        created_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_record_rejections_connection_page
+        ON record_rejections(owner_subject_id, connector_instance_id, created_at, receipt_id);
+      CREATE INDEX IF NOT EXISTS idx_pg_record_rejections_connection_receipt
+        ON record_rejections(owner_subject_id, connector_instance_id, receipt_id);
+
       -- Durable record that a connector-instance IDENTITY was owner-deleted.
       -- See the SQLite arm (server/db.js) for the full rationale: the
       -- deterministic connector_instance_id/binding key would otherwise let a

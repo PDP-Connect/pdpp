@@ -200,6 +200,11 @@
     "date": "2026-08-10",
     "reason": "Zero-connector-knowledge terminal invariant (ri-zero-knowledge-terminal-revise-0810): resolveCompactionClasses batches every distinct (connector, stream) pair's manifest-declared compaction_class once per request (one getConnectorManifest call per distinct connector, never per row) so version-disposition.ts's classifiers stay zero-I/O; resolveVersionDispositionAndRemediation was split out of the per-row map closure to keep it under the complexity budget. The added mass is this batching/lookup machinery replacing what was previously a hardcoded connector/stream list read inside version-disposition.ts itself."
   },
+  "server/stores/record-rejection-store.ts": {
+    "allowed_mass": 1,
+    "date": "2026-08-11",
+    "reason": "Durable rejection receipt store (2026-08-11): the single measured mass point is the backend selector in createRecordRejectionStore, which keeps SQLite and PostgreSQL behind one narrow receipt-store interface for route/runtime callers. Backend-local implementations remain separate because their required serialization mechanisms differ: SQLite uses BEGIN IMMEDIATE before fence/quota reads, while PostgreSQL uses transaction row/advisory locks. Removing the branch would expose backend selection to every caller or hide materially different transaction semantics in a generic unit-of-work abstraction forbidden by the accepted design. Proven by record-rejection-store.test.ts: real SQLite exact replay, two-process near-quota contention, draft/paused and run-history fences, restart/owner isolation, drift-free delete, rollback, migration/idempotence, plus the same contract and concurrent exact replay on PostgreSQL when PDPP_TEST_POSTGRES_URL is configured."
+  },
   "server/records.ts": {
     "allowed_mass": 518,
     "date": "2026-08-10",
