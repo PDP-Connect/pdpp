@@ -86,13 +86,16 @@ export function registerPilotFixtureTests(args: PilotFixtureTestArgs & { expectM
     return;
   }
 
-  const filenames = readdirSync(recordsDir)
+  // Compare canonical stream names, not filenames. Sorting the suffix-bearing
+  // names makes `user.jsonl`/`user_stats.jsonl` order differently from the
+  // manifest's stream names because punctuation participates in collation.
+  const fixtureStreams = readdirSync(recordsDir)
     .filter((f) => f.endsWith(".jsonl"))
+    .map((filename) => filename.replace(JSONL_EXT_RE, ""))
     .sort((left, right) => left.localeCompare(right));
   const declaredStreams = readManifestStreamNames(connector).sort((left, right) => left.localeCompare(right));
 
   test(`pilot-real-shape/${connector}/${evidence}: fixture inventory matches manifest`, () => {
-    const fixtureStreams = filenames.map((filename) => filename.replace(JSONL_EXT_RE, ""));
     assert.deepEqual(
       fixtureStreams,
       declaredStreams,
@@ -105,15 +108,15 @@ export function registerPilotFixtureTests(args: PilotFixtureTestArgs & { expectM
     );
   });
 
-  if (filenames.length === 0) {
+  if (fixtureStreams.length === 0) {
     test(`pilot-real-shape/${connector}/${evidence}: at least one stream fixture exists`, () => {
       assert.fail(`expected ≥1 .jsonl file under ${recordsDir}, found 0`);
     });
     return;
   }
 
-  for (const filename of filenames) {
-    const stream = filename.replace(JSONL_EXT_RE, "");
+  for (const stream of fixtureStreams) {
+    const filename = `${stream}.jsonl`;
     const filePath = join(recordsDir, filename);
     test(`pilot-real-shape/${connector}/${stream}: ${evidence} record shape passes validateRecord`, () => {
       const lines = readFileSync(filePath, "utf8")
