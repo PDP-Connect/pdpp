@@ -270,6 +270,7 @@ export type IsManagedConnectorHandler = (connectorId: string) => boolean;
 export type ResolveStaticSecretRunEnv = (args: {
   connectorId: string;
   connectorInstanceId: string;
+  ownerSubjectId: string;
 }) => Promise<Record<string, string> | null>;
 
 /**

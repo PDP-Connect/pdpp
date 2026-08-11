@@ -399,7 +399,7 @@ test("scheduled runs inject store credentials env-absent for every static-secret
       const { connectorPath, snapshotPath } = writeEnvSnapshotConnector(tmpDir, connectorId, envVarNames);
       const completedRuns: RunRecord[] = [];
       const interactions: EscalationInteraction[] = [];
-      const resolverCalls: { connectorId: string; connectorInstanceId: string }[] = [];
+      const resolverCalls: { connectorId: string; connectorInstanceId: string; ownerSubjectId: string }[] = [];
 
       const scheduler = createScheduler({
         admitRunConnection: (input) =>
@@ -415,6 +415,7 @@ test("scheduled runs inject store credentials env-absent for every static-secret
             connectorPath,
             intervalMs: 60_000,
             manifest: BACKGROUND_SAFE_MANIFEST,
+            ownerSubjectId: "scheduler_static_secret_user",
             ownerToken,
           },
         ],
@@ -452,7 +453,9 @@ test("scheduled runs inject store credentials env-absent for every static-secret
       assert.ok(record, `${connectorId}: a completed run record was captured`);
       assert.equal(record.status, "succeeded", `${connectorId}: scheduled run must succeed from the store row`);
       assert.deepEqual(interactions, [], `${connectorId}: no credentials_required interaction may surface`);
-      assert.deepEqual(resolverCalls, [{ connectorId, connectorInstanceId }]);
+      assert.deepEqual(resolverCalls, [
+        { connectorId, connectorInstanceId, ownerSubjectId: "scheduler_static_secret_user" },
+      ]);
 
       const childEnv = JSON.parse(readFileSync(snapshotPath, "utf8"));
       assert.deepEqual(
