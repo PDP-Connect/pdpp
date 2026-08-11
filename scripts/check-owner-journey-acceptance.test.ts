@@ -730,6 +730,9 @@ test("dashboard source-trust oracle fails closed when server source_work is unav
   assert.deepEqual(result.sourceWorkUnavailable, [
     { label: "Unresolved source", reason: "source_work missing or unavailable" },
   ]);
+  assert.deepEqual(result.unrepresentedSourceWorkUnavailable, [
+    { label: "Unresolved source", reason: "source_work missing or unavailable" },
+  ]);
   assert.deepEqual(
     result.materialIssues.map((issue) => issue.label),
     ["Unresolved source"]

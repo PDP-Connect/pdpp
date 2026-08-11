@@ -835,6 +835,46 @@ test("dashboard cross-surface: every source-work section count equals its render
   }
 });
 
+test("dashboard keeps unavailable source-work rows connector-keyed and navigable", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({ connection_id: "cin_absent", display_name: "Absent source", source_work: undefined }),
+    connector({
+      connection_id: "cin_malformed",
+      display_name: "Malformed source",
+      source_work: "bogus" as never,
+    }),
+    connector({ connection_id: "cin_unavailable", display_name: "Unavailable source", source_work: null as never }),
+    connector({ connection_id: "cin_none", display_name: "Calm source", source_work: "none" }),
+    connector({ connection_id: "cin_working", display_name: "Working source", source_work: "working" }),
+    connector({ connection_id: "cin_review", display_name: "Review source", source_work: "review" }),
+  ];
+
+  const data = buildStandingData(baseInputs({ sourceCount: 6, sourceWork: sourceWorkFromConnectors(connectors) }));
+  const unavailable = data.sourceWorkSections.find((section) => section.id === "unavailable");
+
+  assert.ok(unavailable);
+  assert.equal(unavailable.countLabel, "3 sources");
+  assert.deepEqual(
+    unavailable.rows.map((row) => ({ href: row.href, id: row.id, what: row.what })),
+    [
+      { href: "/sources/cin_absent", id: "unavailable:cin_absent", what: "Absent source status unavailable" },
+      { href: "/sources/cin_malformed", id: "unavailable:cin_malformed", what: "Malformed source status unavailable" },
+      {
+        href: "/sources/cin_unavailable",
+        id: "unavailable:cin_unavailable",
+        what: "Unavailable source status unavailable",
+      },
+    ]
+  );
+  assert.equal(data.sourceWorkSections.find((section) => section.id === "working")?.rows.length, 1);
+  assert.equal(data.sourceWorkSections.find((section) => section.id === "review")?.rows.length, 1);
+  assert.equal(
+    data.sourceWorkSections.find((section) => section.id === "needsOwner"),
+    undefined
+  );
+  assert.equal(data.healthySourceCount, 1);
+});
+
 test("dashboard cross-surface: an inactive queued recovery row is passive progress, never a Checking or degraded row", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
@@ -1220,6 +1260,7 @@ test("a locally alarming source row cannot override a healthy server fleet verdi
         notMeasured: [],
         review: [],
         systemIssues: [],
+        unavailable: [],
         working: [],
       },
     })
@@ -1249,6 +1290,7 @@ test("overview counts healthy sources without adding them to the attention group
           },
         ],
         systemIssues: [],
+        unavailable: [],
         working: [],
       },
     })

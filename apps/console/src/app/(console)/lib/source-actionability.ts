@@ -14,7 +14,7 @@ import type {
   RefVerdictTone,
 } from "./ref-client.ts";
 
-export type SourceWorkGroupId = "needsOwner" | "notMeasured" | "review" | "systemIssue" | "working";
+export type SourceWorkGroupId = "needsOwner" | "notMeasured" | "review" | "systemIssue" | "unavailable" | "working";
 
 export type SourceStatusKind = "blocked" | "degraded" | "healthy" | "pending" | "revoked" | "unknown";
 
@@ -61,6 +61,7 @@ export interface SourceWorkGroups {
   notMeasured: SourceWorkItem[];
   review: SourceWorkItem[];
   systemIssues: SourceWorkItem[];
+  unavailable: SourceWorkItem[];
   working: SourceWorkItem[];
 }
 
@@ -83,6 +84,7 @@ export const EMPTY_SOURCE_WORK_GROUPS: SourceWorkGroups = {
   notMeasured: [],
   review: [],
   systemIssues: [],
+  unavailable: [],
   working: [],
 };
 
@@ -111,6 +113,10 @@ export const SOURCE_WORK_GROUP_COPY: Record<SourceWorkGroupId, { label: string; 
   systemIssue: {
     label: "System or connector issue",
     note: "PDPP needs to fix or retry this; no account action is needed from you.",
+  },
+  unavailable: {
+    label: "Status unavailable",
+    note: "This source is still listed, but its server-owned work status could not be read.",
   },
   working: {
     label: "PDPP is working",
@@ -498,9 +504,18 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
   const verdict = connector.rendered_verdict;
   const ownerAction = primaryOwnerSatisfiableAction(verdict);
   const serverGroup = connector.source_work;
-  const group = serverGroup ? UI_GROUP_BY_SERVER_GROUP[serverGroup] : null;
-  if (!serverGroup || serverGroup === "none" || !group) {
+  const group =
+    serverGroup === undefined || serverGroup === null
+      ? "unavailable"
+      : (UI_GROUP_BY_SERVER_GROUP[serverGroup as RefSourceWorkGroup] ?? "unavailable");
+  if (serverGroup === "none") {
     return null;
+  }
+  if (group === "unavailable") {
+    return itemFromConnector(connector, group, {
+      statusLabel: "is unavailable",
+      what: "Source-work status is unavailable. Open source details to inspect this connection.",
+    });
   }
   const actionLabel = ownerAction ? ownerAction.cta : null;
   const deviceLocal = Boolean(ownerAction?.remediation && ownerAction.remediation.target.kind === "local_device");
@@ -508,7 +523,7 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
   return itemFromConnector(connector, group, {
     actionLabel,
     deviceLocal,
-    statusLabel: SERVER_GROUP_STATUS_LABEL[serverGroup],
+    statusLabel: SERVER_GROUP_STATUS_LABEL[serverGroup as Exclude<RefSourceWorkGroup, "none">],
     what,
   });
 }
@@ -558,6 +573,7 @@ export function sourceWorkFromConnectors(connectors: readonly RefConnectorSummar
     notMeasured: [],
     review: [],
     systemIssues: [],
+    unavailable: [],
     working: [],
   };
   const seen = new Set<string>();
@@ -577,6 +593,9 @@ export function sourceWorkFromConnectors(connectors: readonly RefConnectorSummar
         break;
       case "systemIssue":
         groups.systemIssues.push(item);
+        break;
+      case "unavailable":
+        groups.unavailable.push(item);
         break;
       case "working":
         groups.working.push(item);

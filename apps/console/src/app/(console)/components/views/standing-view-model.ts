@@ -931,6 +931,8 @@ function sourceWorkRow(item: SourceWorkItem, hrefs: StandingHrefs): AttentionRow
     what = `${item.label}: action available`;
   } else if (item.group === "working" || item.group === "notMeasured") {
     what = `${item.label}: ${item.what}`;
+  } else if (item.group === "unavailable") {
+    what = `${item.label} status unavailable`;
   } else {
     what = `${item.label} ${item.statusLabel}`;
   }
@@ -999,6 +1001,16 @@ function toSourceWorkSections(
       note: SOURCE_WORK_GROUP_COPY.notMeasured.note,
       rows: groups.notMeasured.map((item) => sourceWorkRow(item, hrefs)),
       title: SOURCE_WORK_GROUP_COPY.notMeasured.label,
+      tone: "muted",
+    });
+  }
+  if (groups.unavailable.length > 0) {
+    sections.push({
+      countLabel: pluralSource(groups.unavailable.length),
+      id: "unavailable",
+      note: SOURCE_WORK_GROUP_COPY.unavailable.note,
+      rows: groups.unavailable.map((item) => sourceWorkRow(item, hrefs)),
+      title: SOURCE_WORK_GROUP_COPY.unavailable.label,
       tone: "muted",
     });
   }

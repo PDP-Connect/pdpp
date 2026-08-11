@@ -598,6 +598,7 @@ test("source actionability headline counts only needs-owner work and exposes sta
   assert.equal(groups.needsOwner.length, 2);
   assert.equal(groups.review.length, 1);
   assert.equal(groups.systemIssues.length, 1);
+  assert.equal(groups.unavailable.length, 0);
   assert.equal(groups.notMeasured.length, 1);
   assert.equal(groups.working.length, 1);
   assert.equal(sourceAttentionHeadline(groups).needsYou, 2);
@@ -618,11 +619,46 @@ test("source actionability headline counts only needs-owner work and exposes sta
       label: "System or connector issue",
       note: "PDPP needs to fix or retry this; no account action is needed from you.",
     },
+    unavailable: {
+      label: "Status unavailable",
+      note: "This source is still listed, but its server-owned work status could not be read.",
+    },
     working: {
       label: "PDPP is working",
       note: "Collection, recovery, or a bounded check is active.",
     },
   });
+});
+
+test("source actionability retains absent, malformed, and unavailable source_work without changing normal counterweights", () => {
+  const groups = sourceWorkFromConnectors([
+    connector({ connection_id: "cin_absent", display_name: "Absent source", source_work: undefined }),
+    connector({
+      connection_id: "cin_malformed",
+      display_name: "Malformed source",
+      source_work: "bogus" as never,
+    }),
+    connector({ connection_id: "cin_unavailable", display_name: "Unavailable source", source_work: null as never }),
+    connector({ connection_id: "cin_none", display_name: "Calm source", source_work: "none" }),
+    connector({ connection_id: "cin_working", display_name: "Working source", source_work: "working" }),
+    connector({ connection_id: "cin_review", display_name: "Review source", source_work: "review" }),
+  ]);
+
+  assert.deepEqual(
+    groups.unavailable.map((item) => [item.connectorKey, item.routeId]),
+    [
+      ["test", "cin_absent"],
+      ["test", "cin_malformed"],
+      ["test", "cin_unavailable"],
+    ]
+  );
+  assert.equal(groups.working.length, 1);
+  assert.equal(groups.review.length, 1);
+  assert.equal(groups.needsOwner.length, 0);
+  assert.equal(groups.systemIssues.length, 0);
+  assert.equal(groups.notMeasured.length, 0);
+  assert.equal(groups.unavailable[0]?.statusLabel, "is unavailable");
+  assert.match(groups.unavailable[0]?.what, SOURCE_DETAILS_RE);
 });
 
 test("source actionability groups a Needs refresh connection under review, never systemIssue or the needs-you headline", () => {
@@ -654,6 +690,7 @@ test("source actionability groups a Needs refresh connection under review, never
 // ─── Recovery-state grouping (connector-neutral recovery governor UI tranche) ──
 
 const RECOVERY_CHECKING_RE = /checking/i;
+const SOURCE_DETAILS_RE = /Open source details/;
 const RECOVERY_SYNCING_RE = /syncing details/i;
 const RECOVERY_CATCHING_UP_RE = /catching up/i;
 

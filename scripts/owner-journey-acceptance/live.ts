@@ -699,6 +699,7 @@ export interface DashboardSourceTrustOracle {
   sourceWorkUnavailable: readonly { label: string; reason: string }[];
   unrepresentedMaterialIssues: readonly { forwardStatement: string; label: string }[];
   unrepresentedRawIssues: readonly { label: string; reason: string }[];
+  unrepresentedSourceWorkUnavailable: readonly { label: string; reason: string }[];
   unsupportedAllClearClaim: string | null;
 }
 
@@ -768,6 +769,9 @@ export function evaluateDashboardSourceTrust(
     unsupportedAllClearClaim,
     unrepresentedMaterialIssues: materialIssues.filter((issue) => !rows.some((row) => rowRepresents(row, issue))),
     unrepresentedRawIssues: rawIssues.filter((issue) => !rows.some((row) => row.text.includes(issue.label))),
+    unrepresentedSourceWorkUnavailable: sourceWorkUnavailable.filter(
+      (issue) => !rows.some((row) => row.text.includes(issue.label))
+    ),
   };
 }
 
@@ -1064,7 +1068,7 @@ async function runLiveSemanticChecks({
     overstatedHealthyAdvisories,
     rawIssues: rawSourceIssues,
     projectionDisagreements,
-    sourceWorkUnavailable,
+    unrepresentedSourceWorkUnavailable,
     unsupportedAllClearClaim,
     unrepresentedMaterialIssues,
     unrepresentedRawIssues,
@@ -1168,18 +1172,18 @@ async function runLiveSemanticChecks({
     });
   }
 
-  if (sourceWorkUnavailable.length > 0) {
+  if (unrepresentedSourceWorkUnavailable.length > 0) {
     findings.push({
       ruleId: "dashboard-source-work-unavailable",
       class: "dashboard-trust-claim",
       path: "live:/_ref/connectors",
       line: 0,
-      excerpt: sourceWorkUnavailable
+      excerpt: unrepresentedSourceWorkUnavailable
         .map((issue) => issue.label)
         .slice(0, 5)
         .join(", "),
       rationale:
-        "The server-owned source_work projection is missing or invalid. The acceptance oracle must fail closed and retain the source as an unresolved material issue; it must never silently classify the source as healthy from a connector-specific fallback.",
+        "The server-owned source_work projection is missing or invalid. The dashboard must retain that source as an explicit unavailable row; it must never silently drop the connector or classify it as healthy from a connector-specific fallback.",
     });
   }
 

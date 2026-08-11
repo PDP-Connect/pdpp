@@ -222,7 +222,7 @@ function PendingSetupCardPanel({ card }: { card: PendingSetupCard }) {
 }
 
 function failureSectionForCard(card: FailureCard): FailureSection {
-  if (card.work?.group) {
+  if (card.work?.group && card.work.group !== "unavailable") {
     return card.work.group;
   }
   return card.summary.ownerActionRequired ? "needsOwner" : "other";

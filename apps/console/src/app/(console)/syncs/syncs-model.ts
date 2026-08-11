@@ -725,6 +725,8 @@ function groupPriority(projection: SyncProjection): number {
       return 3;
     case "notMeasured":
       return 4;
+    case "unavailable":
+      return 4;
     case undefined:
       break;
     default: {
