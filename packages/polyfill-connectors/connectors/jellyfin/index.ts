@@ -245,7 +245,15 @@ async function fetchJellyfin(
   };
 }
 
-async function jellyfinRequest<T>(baseUrl: string, path: string, apiKey: string): Promise<T> {
+/**
+ * Re-authenticate once and hand back a fresh AccessToken, or `undefined` if
+ * re-authentication is not available (API-key path) or did not produce a
+ * genuinely different token. Only the primary username/password path can
+ * self-heal this way — an API key is a static credential with no "refresh".
+ */
+type ReauthFn = () => Promise<string | undefined>;
+
+async function jellyfinRequest<T>(baseUrl: string, path: string, apiKey: string, onReauth?: ReauthFn): Promise<T> {
   const base = validateBaseUrl(baseUrl);
   const url = new URL(path, base);
 
@@ -262,6 +270,30 @@ async function jellyfinRequest<T>(baseUrl: string, path: string, apiKey: string)
   );
 
   if (result.value.status === 401 || result.value.status === 403) {
+    // A 401/403 partway through a run (after this same run already proved the
+    // credential valid at sign-in) is far more often a rotated/expired session
+    // token than a genuinely wrong password — see jellyfin/jellyfin session
+    // lifecycle. Self-heal ONCE: mint a fresh token and retry this exact
+    // request, but only if the new token actually differs from the one that
+    // just failed (an identical token means the server really is rejecting
+    // this credential, so retrying would just loop). Mirrors the ChatGPT
+    // connector's stale-token self-heal (chatgpt/index.ts fetchOnce).
+    const freshToken = await onReauth?.();
+    if (freshToken && freshToken !== apiKey) {
+      const retryResult = await httpGovernor.request<
+        { body: string; status: number },
+        { body: string; status: number }
+      >(
+        () => fetchJellyfin(url, freshToken),
+        (raw) => ({ status: raw.status, value: raw })
+      );
+      if (retryResult.value.status !== 401 && retryResult.value.status !== 403) {
+        if (retryResult.value.status < 200 || retryResult.value.status >= 300) {
+          throw new Error(`jellyfin_http_${String(retryResult.value.status)}: ${retryResult.value.body.slice(0, 200)}`);
+        }
+        return JSON.parse(retryResult.value.body) as T;
+      }
+    }
     throw new Error("jellyfin_auth_failed");
   }
   if (result.value.status < 200 || result.value.status >= 300) {
@@ -532,6 +564,12 @@ function openLibraryCursor(state: Record<string, unknown>): FingerprintCursor {
 interface JellyfinConn {
   apiKey: string;
   baseUrl: string;
+  /**
+   * Present only for the primary (username/password) path — mints a fresh
+   * AccessToken via AuthenticateByName for mid-run 401/403 self-heal. Absent
+   * for the API-key path, where there is no credential to refresh.
+   */
+  reauth?: ReauthFn;
   userId: string;
 }
 
@@ -665,7 +703,8 @@ async function fetchLibraries(conn: JellyfinConn): Promise<Record<string, unknow
   const viewsResp = await jellyfinRequest<{ Items?: unknown[] }>(
     conn.baseUrl,
     `Users/${conn.userId}/Views`,
-    conn.apiKey
+    conn.apiKey,
+    conn.reauth
   );
   const validatedViews = validateViewsResponse(viewsResp);
   return (validatedViews.Items ?? []) as Record<string, unknown>[];
@@ -729,7 +768,8 @@ async function collectItemsForLibrary(
     const itemsResp = await jellyfinRequest<{ Items?: unknown[]; TotalRecordCount?: unknown }>(
       conn.baseUrl,
       itemsPath,
-      conn.apiKey
+      conn.apiKey,
+      conn.reauth
     );
     const validatedItems = validateItemsResponse(itemsResp);
 
@@ -888,7 +928,17 @@ async function resolveConnection(
     const deviceId = deriveStableDeviceId(`${baseUrl} ${username}`);
     const { accessToken, userId } = await authenticateByName(baseUrl, username, password, deviceId);
     await progress("Signed in to Jellyfin");
-    return { baseUrl, apiKey: accessToken, userId };
+
+    const conn: JellyfinConn = { baseUrl, apiKey: accessToken, userId };
+    // Re-authenticate once and remember the fresh token on `conn` so later
+    // requests in this same run (further pagination pages, the next library)
+    // do not immediately hit the same stale token again.
+    conn.reauth = async () => {
+      const refreshed = await authenticateByName(baseUrl, username, password, deviceId);
+      conn.apiKey = refreshed.accessToken;
+      return refreshed.accessToken;
+    };
+    return conn;
   }
 
   if (apiKey) {
