@@ -258,7 +258,7 @@ test("google_maps rejects scalar, empty, and unknown-key-only roots without zero
     JSON.stringify({ archive_jobs: [] }),
     JSON.stringify({ archive_jobs: [EXPORT_FIXTURE] }),
   ];
-  for (const content of cases) {
+  const runCase = async (content: string): Promise<void> => {
     const importRoot = await mkdtemp(join(tmpdir(), "pdpp-google-maps-root-shape-"));
     try {
       await writeFile(join(importRoot, "Timeline.json"), content);
@@ -299,7 +299,8 @@ test("google_maps rejects scalar, empty, and unknown-key-only roots without zero
     } finally {
       await rm(importRoot, { force: true, recursive: true });
     }
-  }
+  };
+  await Promise.all(cases.map(runCase));
 });
 
 test("google_maps keeps a recognized empty array as a valid empty counterweight", async () => {
