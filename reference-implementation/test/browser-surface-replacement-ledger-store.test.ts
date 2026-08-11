@@ -123,6 +123,89 @@ function receiptSequence(connectionId: string, subjectId: string) {
   return { completed, started };
 }
 
+async function assertDurableReceiptReplayMutationMatrix(
+  store: BrowserSurfaceReplacementReceiptStore,
+  started: ReplacementReceipt,
+  completed: ReplacementReceipt
+): Promise<void> {
+  const canonicalized: readonly [string, ReplacementReceipt][] = [
+    ["event_seq", { ...started, event_seq: started.event_seq + 1000 }],
+    ["observed_at", { ...started, observed_at: "2099-01-01T00:00:00.000Z" }],
+    ["run_id", { ...started, run_id: "replay-observer-b" }],
+  ];
+  await Promise.all(
+    canonicalized.map(async ([field, replay]) => {
+      const authoritative = await store.append(replay);
+      assert.equal(authoritative.event_seq, started.event_seq, `${field} must return the canonical started receipt`);
+      assert.equal(authoritative.observed_at, started.observed_at, `${field} must not rewrite the started receipt`);
+      assert.equal(authoritative.run_id, started.run_id, `${field} must retain first-observer attribution`);
+    })
+  );
+
+  const startedRejected: readonly [string, ReplacementReceipt][] = [
+    ["replacement_id", { ...started, replacement_id: "other-started-replacement" }],
+    ["idempotency_key", { ...started, idempotency_key: "other-started-key" }],
+    ["scope", { ...started, scope: "other-scope" }],
+    ["connection_id", { ...started, connection_id: "other-connection" }],
+    ["connector_id", { ...started, connector_id: "other-connector" }],
+    ["profile_key", { ...started, profile_key: "other-profile" }],
+    ["surface_subject_id", { ...started, surface_subject_id: "other-subject" }],
+    ["lease_id", { ...started, lease_id: "other-lease" }],
+    ["surface_id", { ...started, surface_id: "other-surface" }],
+    ["previous_generation_hash", { ...started, previous_generation_hash: "c".repeat(64) }],
+    ["next_generation_hash", { ...started, next_generation_hash: "d".repeat(64) }],
+    ["cause", { ...started, cause: "idle_ttl" }],
+  ];
+  await Promise.all(
+    startedRejected.map(([field, replay]) =>
+      assert.rejects(
+        () => store.append(replay),
+        ReplacementReplayConflictError,
+        `${field} mutation must be rejected for a started receipt replay`
+      )
+    )
+  );
+
+  const completedCanonicalized: readonly [string, ReplacementReceipt][] = [
+    ["event_seq", { ...completed, event_seq: completed.event_seq + 1000 }],
+    ["observed_at", { ...completed, observed_at: "2099-01-01T00:00:01.000Z" }],
+    ["run_id", { ...completed, run_id: "replay-observer-c" }],
+  ];
+  await Promise.all(
+    completedCanonicalized.map(async ([field, replay]) => {
+      const authoritative = await store.append(replay);
+      assert.equal(authoritative.event_seq, completed.event_seq, `${field} must return the canonical completion`);
+      assert.equal(authoritative.observed_at, completed.observed_at, `${field} must not rewrite the completion`);
+      assert.equal(authoritative.run_id, completed.run_id, `${field} must retain first-observer attribution`);
+    })
+  );
+
+  const completedRejected: readonly [string, ReplacementReceipt][] = [
+    ["replacement_id", { ...completed, replacement_id: "other-completed-replacement" }],
+    ["idempotency_key", { ...completed, idempotency_key: "other-completed-key" }],
+    ["scope", { ...completed, scope: "other-completed-scope" }],
+    ["connection_id", { ...completed, connection_id: "other-completed-connection" }],
+    ["connector_id", { ...completed, connector_id: "other-completed-connector" }],
+    ["profile_key", { ...completed, profile_key: "other-completed-profile" }],
+    ["surface_subject_id", { ...completed, surface_subject_id: "other-completed-subject" }],
+    ["lease_id", { ...completed, lease_id: "other-completed-lease" }],
+    ["surface_id", { ...completed, surface_id: "other-completed-surface" }],
+    ["previous_generation_hash", { ...completed, previous_generation_hash: "c".repeat(64) }],
+    ["next_generation_hash", { ...completed, next_generation_hash: "d".repeat(64) }],
+    ["cause", { ...completed, cause: "idle_ttl" }],
+    ["terminal_outcome", { ...completed, terminal_outcome: "failed" }],
+  ];
+  await Promise.all(
+    completedRejected.map(([field, replay]) =>
+      assert.rejects(
+        () => store.append(replay),
+        ReplacementReplayConflictError,
+        `${field} mutation must be rejected for a completed receipt replay`
+      )
+    )
+  );
+}
+
 async function assertStoreContract(store: BrowserSurfaceReplacementReceiptStore, sqliteAuditFault = false) {
   const namespace = `store-contract-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const id = (value: string) => `${namespace}:${value}`;
@@ -132,6 +215,7 @@ async function assertStoreContract(store: BrowserSurfaceReplacementReceiptStore,
   const replayedStart = await store.append(first.started);
   const observerReplay = await store.append({ ...first.started, run_id: "run-store-observer-b" });
   const storedCompletion = await store.append(first.completed);
+  await assertDurableReceiptReplayMutationMatrix(store, storedStart, storedCompletion);
   await store.append(second.started);
   const concurrentReplays = await Promise.all(Array.from({ length: 8 }, () => store.append(first.started)));
 

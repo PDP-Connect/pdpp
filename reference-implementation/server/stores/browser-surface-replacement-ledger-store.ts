@@ -9,6 +9,8 @@ import {
   writeTransaction,
 } from "../../lib/db.ts";
 import {
+  assertCanonicalReceiptReplay,
+  assertCanonicalTransitionIdentity,
   type ReplacementReceipt,
   ReplacementReplayConflictError,
   selectCurrentReplacementReceipt,
@@ -349,38 +351,7 @@ function mapRow(row: ReplacementReceiptRow): ReplacementReceipt {
 }
 
 function assertSameEvent(existing: ReplacementReceipt, incoming: ReplacementReceipt): void {
-  // run_id is retained as first-observer audit attribution, but it is not
-  // part of the durable transition identity. A concurrent observer may use a
-  // different run id and must receive the committed authoritative receipt.
-  const immutableFields: readonly (keyof ReplacementReceipt)[] = [
-    "replacement_id",
-    "idempotency_key",
-    "scope",
-    "connection_id",
-    "connector_id",
-    "profile_key",
-    "surface_subject_id",
-    "lease_id",
-    "surface_id",
-    "previous_generation_hash",
-    "next_generation_hash",
-    "cause",
-    "phase",
-    "terminal_outcome",
-  ];
-  for (const field of immutableFields) {
-    assertSameEventField(existing, incoming, field);
-  }
-}
-
-function assertSameEventField(
-  existing: ReplacementReceipt,
-  incoming: ReplacementReceipt,
-  field: keyof ReplacementReceipt
-): void {
-  if (existing[field] !== incoming[field]) {
-    throw new ReplacementReplayConflictError(`replacement replay changed immutable field ${field}`);
-  }
+  assertCanonicalReceiptReplay(existing, incoming);
 }
 
 function params(receipt: ReplacementReceipt): readonly (string | number | null)[] {
@@ -1992,25 +1963,7 @@ function selectSystemActionableForScope(
 }
 
 function assertSameEventIdentity(previous: ReplacementReceipt, incoming: ReplacementReceipt): void {
-  const fields: readonly (keyof ReplacementReceipt)[] = [
-    "replacement_id",
-    "scope",
-    "connection_id",
-    "connector_id",
-    "profile_key",
-    "surface_subject_id",
-    "lease_id",
-    "surface_id",
-    "previous_generation_hash",
-    "cause",
-  ];
-  for (const field of fields) {
-    if (previous[field] !== incoming[field]) {
-      throw new ReplacementReplayConflictError(
-        `replacement ${previous.replacement_id} immutable field ${field} changed`
-      );
-    }
-  }
+  assertCanonicalTransitionIdentity(previous, incoming);
 }
 
 function assertNoOppositeResolution(previous: ReplacementReceipt, incoming: ReplacementReceipt): void {

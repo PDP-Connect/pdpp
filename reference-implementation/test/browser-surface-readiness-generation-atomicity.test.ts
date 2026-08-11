@@ -39,21 +39,35 @@ const INJECTED_FAILURE = /injected: browser generation hash persistence failed/;
 const MISSING_UOW = /browser-surface readiness replacement requires a persistence unit of work/;
 const OWNER_RUN_IDS = ["run-readiness-owner-a", "run-readiness-owner-b"] as const;
 
-function surface(): BrowserSurfaceWithPersistenceMetadata {
+function surfaceFor(
+  surfaceId: string,
+  connectorId: string,
+  profileKey: string,
+  surfaceSubjectId: string
+): BrowserSurfaceWithPersistenceMetadata {
   return {
     backend: "neko",
     browser_generation_hash: OLD_GENERATION_HASH,
     cdp_url: "http://neko:9222",
-    connector_id: "connector-readiness-atomicity",
+    connector_id: connectorId,
     container_id: "container-readiness-atomicity",
     created_at: NOW,
     health: "ready",
     last_used_at: NOW,
-    profile_key: "profile-readiness-atomicity",
+    profile_key: profileKey,
     stream_base_url: "http://neko:8080",
-    surface_id: SURFACE_ID,
-    surface_subject_id: "subject-readiness-atomicity",
+    surface_id: surfaceId,
+    surface_subject_id: surfaceSubjectId,
   };
+}
+
+function surface(): BrowserSurfaceWithPersistenceMetadata {
+  return surfaceFor(
+    SURFACE_ID,
+    "connector-readiness-atomicity",
+    "profile-readiness-atomicity",
+    "subject-readiness-atomicity"
+  );
 }
 
 function lease(): BrowserSurfaceLease {
@@ -383,6 +397,84 @@ test("a failed concurrent readiness observer rolls back before the SQLite succes
   );
 });
 
+async function assertUnrelatedSurfaceUnitOfWorkBehavior(
+  firstLeaseStore: BrowserSurfaceLeaseStore,
+  secondLeaseStore: BrowserSurfaceLeaseStore,
+  receiptStore: BrowserSurfaceReplacementReceiptStore,
+  firstSurface: BrowserSurfaceWithPersistenceMetadata,
+  secondSurface: BrowserSurfaceWithPersistenceMetadata,
+  expectedSecondStatus: "fulfilled" | "pending"
+): Promise<void> {
+  const firstGenerationHash = "c".repeat(64);
+  const secondGenerationHash = "d".repeat(64);
+  await firstLeaseStore.upsertSurface(firstSurface);
+  await firstLeaseStore.upsertSurface(secondSurface);
+
+  let releaseFirst: () => void = () => {
+    throw new Error("first transaction gate was not initialized");
+  };
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let resolveFirstStarted: () => void = () => {
+    throw new Error("first transaction start gate was not initialized");
+  };
+  const firstStarted = new Promise<void>((resolve) => {
+    resolveFirstStarted = resolve;
+  });
+  const first = firstLeaseStore.withPersistenceUnitOfWork(receiptStore, async (stores) => {
+    await stores.leaseStore.updateBrowserGenerationHash(firstSurface.surface_id, firstGenerationHash);
+    resolveFirstStarted();
+    await firstGate;
+  });
+  await firstStarted;
+
+  const second = secondLeaseStore.withPersistenceUnitOfWork(receiptStore, (stores) =>
+    stores.leaseStore.updateBrowserGenerationHash(secondSurface.surface_id, secondGenerationHash)
+  );
+  let secondStatus: "fulfilled" | "pending" | "rejected";
+  try {
+    secondStatus = await Promise.race([
+      second.then(
+        () => "fulfilled" as const,
+        () => "rejected" as const
+      ),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 500)),
+    ]);
+  } finally {
+    releaseFirst();
+  }
+  await Promise.all([first, second]);
+  assert.equal(
+    secondStatus,
+    expectedSecondStatus,
+    "unrelated surfaces must share the SQLite transaction queue but retain PostgreSQL row concurrency"
+  );
+
+  assert.equal(
+    (await firstLeaseStore.getSurface(firstSurface.surface_id))?.browser_generation_hash,
+    firstGenerationHash
+  );
+  assert.equal(
+    (await firstLeaseStore.getSurface(secondSurface.surface_id))?.browser_generation_hash,
+    secondGenerationHash
+  );
+}
+
+test("SQLite serializes unrelated browser-surface units at the shared connection authority", async (t) => {
+  closeDb();
+  initDb(makeTemporaryDbPath("browser-surface-unrelated-unit-of-work"));
+  t.after(() => closeDb());
+  await assertUnrelatedSurfaceUnitOfWorkBehavior(
+    createSqliteBrowserSurfaceLeaseStore(),
+    createSqliteBrowserSurfaceLeaseStore(),
+    createSqliteBrowserSurfaceReplacementReceiptStore(),
+    surfaceFor("unrelated-surface-a", "connector-unrelated-a", "profile-unrelated-a", "subject-unrelated-a"),
+    surfaceFor("unrelated-surface-b", "connector-unrelated-b", "profile-unrelated-b", "subject-unrelated-b"),
+    "pending"
+  );
+});
+
 test("readiness-generation receipt and browser hash are atomic on disposable PostgreSQL", {
   skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
 }, async (t) => {
@@ -446,5 +538,40 @@ test("a failed concurrent readiness observer rolls back before the PostgreSQL su
     createPostgresBrowserSurfaceReplacementReceiptStore(),
     createPostgresBrowserSurfaceReplacementReceiptStore(),
     createPostgresBrowserSurfaceReplacementReceiptStore()
+  );
+});
+
+test("PostgreSQL preserves unrelated browser-surface unit-of-work concurrency", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async (t) => {
+  assert.ok(POSTGRES_URL);
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+  const namespace = `unrelated-uow-${process.pid}-${Date.now()}`;
+  const firstSurface = surfaceFor(
+    `${namespace}-a`,
+    `${namespace}-connector-a`,
+    `${namespace}-profile-a`,
+    `${namespace}-subject-a`
+  );
+  const secondSurface = surfaceFor(
+    `${namespace}-b`,
+    `${namespace}-connector-b`,
+    `${namespace}-profile-b`,
+    `${namespace}-subject-b`
+  );
+  t.after(async () => {
+    await postgresQuery("DELETE FROM browser_surfaces WHERE surface_id IN ($1, $2)", [
+      firstSurface.surface_id,
+      secondSurface.surface_id,
+    ]);
+    await closePostgresStorage();
+  });
+  await assertUnrelatedSurfaceUnitOfWorkBehavior(
+    createPostgresBrowserSurfaceLeaseStore(),
+    createPostgresBrowserSurfaceLeaseStore(),
+    createPostgresBrowserSurfaceReplacementReceiptStore(),
+    firstSurface,
+    secondSurface,
+    "fulfilled"
   );
 });

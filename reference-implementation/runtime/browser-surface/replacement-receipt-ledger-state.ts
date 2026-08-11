@@ -109,6 +109,58 @@ type StartIdentity = Pick<ReplacementReceipt, "connection_id" | "profile_key" | 
     >
   >;
 
+const TRANSITION_IDENTITY_FIELDS = [
+  "replacement_id",
+  "scope",
+  "connection_id",
+  "connector_id",
+  "profile_key",
+  "surface_subject_id",
+  "lease_id",
+  "surface_id",
+  "previous_generation_hash",
+  "cause",
+] as const satisfies readonly (keyof ReplacementReceipt)[];
+
+// event_seq is database-generated metadata. observed_at is chosen by the
+// first committed observer because independent observers have independent
+// clocks. run_id is observer-local attribution. Every other persisted receipt
+// field is the canonical transition identity and must match on replay.
+const RECEIPT_REPLAY_FIELDS = [
+  "replacement_id",
+  "idempotency_key",
+  "scope",
+  "connection_id",
+  "connector_id",
+  "profile_key",
+  "surface_subject_id",
+  "lease_id",
+  "surface_id",
+  "previous_generation_hash",
+  "next_generation_hash",
+  "cause",
+  "phase",
+  "terminal_outcome",
+] as const satisfies readonly (keyof ReplacementReceipt)[];
+
+export function assertCanonicalTransitionIdentity(previous: ReplacementReceipt, incoming: ReplacementReceipt): void {
+  for (const field of TRANSITION_IDENTITY_FIELDS) {
+    if (previous[field] !== incoming[field]) {
+      throw new ReplacementReplayConflictError(
+        `replacement ${previous.replacement_id} immutable field ${field} changed`
+      );
+    }
+  }
+}
+
+export function assertCanonicalReceiptReplay(existing: ReplacementReceipt, incoming: ReplacementReceipt): void {
+  for (const field of RECEIPT_REPLAY_FIELDS) {
+    if (existing[field] !== incoming[field]) {
+      throw new ReplacementReplayConflictError(`replacement replay changed immutable field ${field}`);
+    }
+  }
+}
+
 export class ReplacementReplayConflictError extends Error {
   readonly code = "replacement_replay_conflict";
 
@@ -252,10 +304,11 @@ export function createBrowserSurfaceReplacementLedger(
     input: ReplacementCompletionInput,
     phase: "completed" | "terminal"
   ): ReplacementReceipt | undefined {
-    const events = input.idempotency_key
-      ? byIdempotency.get(input.idempotency_key)
-      : byReplacement.get(input.replacement_id);
-    return events?.find((row) => row.phase === phase);
+    const replacementEvents = byReplacement.get(input.replacement_id);
+    return (
+      replacementEvents?.find((row) => row.phase === phase) ??
+      (input.idempotency_key ? byIdempotency.get(input.idempotency_key)?.find((row) => row.phase === phase) : undefined)
+    );
   }
 
   function replayResolution(input: ReplacementCompletionInput, replay: ReplacementReceipt): ReplacementReceipt {
@@ -479,10 +532,22 @@ function assertInputReplayCompatible(
   existing: ReplacementReceipt
 ): void {
   assertReplayIdentity(input, existing);
+  assertReplayIdempotencyKey(input, existing);
   assertOptionalFieldsMatch(input, existing);
   assertReplayCause(input, existing);
   assertReplayGeneration(input, existing);
   assertReplayOutcome(input, existing);
+}
+
+function assertReplayIdempotencyKey(
+  input: ReplacementCompletionInput | ReplacementTerminalInput,
+  existing: ReplacementReceipt
+): void {
+  if (input.idempotency_key !== undefined && input.idempotency_key !== existing.idempotency_key) {
+    throw new ReplacementReplayConflictError(
+      `replacement ${existing.replacement_id} replay changed immutable field idempotency_key`
+    );
+  }
 }
 
 function assertReplayIdentity(input: ReplacementCompletionInput, existing: ReplacementReceipt): void {
@@ -524,47 +589,11 @@ function assertReplayOutcome(
 }
 
 function assertReplayCompatible(existing: ReplacementReceipt, incoming: ReplacementReceipt): void {
-  const fields: readonly (keyof ReplacementReceipt)[] = [
-    "replacement_id",
-    "scope",
-    "connection_id",
-    "connector_id",
-    "profile_key",
-    "surface_subject_id",
-    "lease_id",
-    "surface_id",
-    "previous_generation_hash",
-    "next_generation_hash",
-    "cause",
-    "phase",
-    "terminal_outcome",
-  ];
-  for (const field of fields) {
-    if (existing[field] !== incoming[field]) {
-      throw new ReplacementReplayConflictError(`replacement replay changed immutable field ${field}`);
-    }
-  }
+  assertCanonicalReceiptReplay(existing, incoming);
 }
 
 function assertImmutableIdentity(previous: ReplacementReceipt, incoming: ReplacementReceipt): void {
-  for (const field of [
-    "replacement_id",
-    "scope",
-    "connection_id",
-    "connector_id",
-    "profile_key",
-    "surface_subject_id",
-    "lease_id",
-    "surface_id",
-    "previous_generation_hash",
-    "cause",
-  ] as const) {
-    if (previous[field] !== incoming[field]) {
-      throw new ReplacementReplayConflictError(
-        `replacement ${previous.replacement_id} immutable field ${field} changed`
-      );
-    }
-  }
+  assertCanonicalTransitionIdentity(previous, incoming);
 }
 
 function assertCause(value: ReplacementCause | string): ReplacementCause {
