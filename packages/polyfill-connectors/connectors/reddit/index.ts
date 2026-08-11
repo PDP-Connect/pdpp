@@ -139,6 +139,41 @@ function assertListingOk(status: number, json: RedditListing | null, endpoint: s
  */
 export type RedditListingFetch = (path: string) => Promise<RedditFetchResult>;
 
+/**
+ * Re-run the connector's existing session-establishment flow
+ * (`ensureRedditSession`) and report whether the session is live afterward.
+ * `ensureRedditSession` already no-ops when the current cookie is live, so
+ * calling it speculatively mid-run is safe — it only does login work when
+ * the cookie is actually gone or stale.
+ */
+export type RedditReauthFn = () => Promise<boolean>;
+
+async function fetchListingPage(
+  fetchPath: RedditListingFetch,
+  path: string,
+  onAuthFailed: RedditReauthFn | undefined,
+  attemptedReauth: { done: boolean }
+): Promise<RedditFetchResult> {
+  const result = await fetchPath(path);
+  const klass = classifyListingStatus(result.status);
+  if (klass !== "auth_failed" || !onAuthFailed || attemptedReauth.done) {
+    return result;
+  }
+  // A 401/403 after this run's session was already live at least once
+  // (ensureSession succeeded, prior pages in this stream/run succeeded) is
+  // far more often a rotated/expired session cookie than a genuinely dead
+  // login — re-establish the session ONCE and retry this exact request. A
+  // second 401/403 (session repair failed, or the fresh session still gets
+  // rejected) falls through to the real reddit_auth_failed below rather
+  // than looping.
+  attemptedReauth.done = true;
+  const recovered = await onAuthFailed();
+  if (!recovered) {
+    return result;
+  }
+  return fetchPath(path);
+}
+
 export async function paginate(
   fetchPath: RedditListingFetch,
   endpoint: string,
@@ -146,11 +181,13 @@ export async function paginate(
   capture: CaptureSession | null,
   delay: (ms: number) => Promise<void> = politeDelay,
   progress?: (message: string, extra?: ProgressExtra) => Promise<void>,
-  streamName?: string
+  streamName?: string,
+  onAuthFailed?: RedditReauthFn
 ): Promise<RedditChild[]> {
   const all: RedditChild[] = [];
   let after: string | null = null;
   const streamExtra = streamName ? { stream: streamName } : {};
+  const attemptedReauth = { done: false };
 
   for (let guard = 0; guard < MAX_PAGES; guard += 1) {
     await progress?.("Fetching Reddit listing page", {
@@ -161,7 +198,7 @@ export async function paginate(
       cursor_present: Boolean(after),
     });
     const path = pagePath(endpoint, after);
-    const { status, json } = await fetchPath(path);
+    const { status, json } = await fetchListingPage(fetchPath, path, onAuthFailed, attemptedReauth);
     if (status === 429) {
       await progress?.("Reddit listing page rate limited", {
         ...streamExtra,
@@ -226,6 +263,10 @@ export interface CollectStreamArgs {
   emit: (msg: EmittedMessage) => Promise<void>;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   fetchPath: RedditListingFetch;
+  /** Re-establish the session once on a mid-stream 401/403. Absent in tests
+   *  that don't exercise the repair path — a 401/403 then fails immediately,
+   *  matching pre-fix behavior. */
+  onAuthFailed?: RedditReauthFn;
   progress: (message: string, extra?: ProgressExtra) => Promise<void>;
   state: Record<string, unknown>;
   stream: RedditStreamConfig;
@@ -237,11 +278,20 @@ interface CollectStreamResult {
 }
 
 export async function collectStream(args: CollectStreamArgs): Promise<CollectStreamResult> {
-  const { capture, delay, emit, emitRecord, fetchPath, progress, state, stream } = args;
+  const { capture, delay, emit, emitRecord, fetchPath, onAuthFailed, progress, state, stream } = args;
   await progress(stream.progressMessage, { stream: stream.name });
 
   const sinceEpoch = sinceFromState(state, stream.name);
-  const items = await paginate(fetchPath, stream.endpoint, sinceEpoch, capture, delay, progress, stream.name);
+  const items = await paginate(
+    fetchPath,
+    stream.endpoint,
+    sinceEpoch,
+    capture,
+    delay,
+    progress,
+    stream.name,
+    onAuthFailed
+  );
 
   const latestEpoch = maxCreatedEpoch(items, sinceEpoch ?? 0);
   let covered = 0;
@@ -325,6 +375,29 @@ function makePageFetch(page: Page): RedditListingFetch {
 
 // ─── Exported collect for testing ────────────────────────────────────────
 
+/**
+ * Build the mid-run reauth hook bound to a live browser context. Delegates
+ * to `ensureRedditSession` — the same session-establishment flow already run
+ * once at connector start — which no-ops when the cookie is still live, so
+ * this is safe to invoke speculatively on a 401/403 rather than only at
+ * startup. Returns whether the session is live afterward.
+ */
+function makeReauth(ctx: BrowserCollectContext): RedditReauthFn {
+  return async () => {
+    try {
+      await ensureRedditSession({
+        capture: ctx.capture,
+        context: ctx.context,
+        page: ctx.page,
+        sendInteraction: ctx.sendInteraction,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+}
+
 export async function collectAllStreams(ctx: BrowserCollectContext): Promise<void> {
   const { capture, credentials, emit, emitRecord, emittedAt, page, progress, requested, state } = ctx;
 
@@ -334,6 +407,7 @@ export async function collectAllStreams(ctx: BrowserCollectContext): Promise<voi
   }
   const userPath = `/user/${encodeURIComponent(user)}`;
   const fetchPath = makePageFetch(page);
+  const onAuthFailed = makeReauth(ctx);
 
   for (const stream of buildStreamTable(userPath, emittedAt)) {
     if (!requested.has(stream.name)) {
@@ -346,6 +420,7 @@ export async function collectAllStreams(ctx: BrowserCollectContext): Promise<voi
       emit,
       emitRecord,
       progress,
+      onAuthFailed,
       capture,
     });
     await emit(

@@ -290,6 +290,147 @@ test("paginate: 500 → generic http_error", async () => {
   await assert.rejects(paginate(fetch, `${USER_PATH}/submitted.json`, null, null, NO_DELAY), /reddit_http_500/);
 });
 
+// ─── Invariant 6b: mid-run stale-session self-heal (401/403) ────────────
+
+test("paginate: page 1 succeeds, page 2 401s, repair succeeds, retry of the SAME page succeeds", async () => {
+  const { fetch, calls } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [
+      okResult(listing([makePost("t3_a", 300)], "t3_a")),
+      { status: 401, json: null },
+      okResult(listing([makePost("t3_b", 200)], null)),
+    ],
+  });
+  let reauthCalls = 0;
+  // biome-ignore lint/suspicious/useAwait: mock matches RedditReauthFn's Promise-returning signature
+  const onAuthFailed = async (): Promise<boolean> => {
+    reauthCalls += 1;
+    return true;
+  };
+
+  const out = await paginate(
+    fetch,
+    `${USER_PATH}/submitted.json`,
+    null,
+    null,
+    NO_DELAY,
+    undefined,
+    "submitted",
+    onAuthFailed
+  );
+
+  assert.equal(reauthCalls, 1, "repair must be attempted exactly once");
+  assert.equal(calls.length, 3, "page 1, failed page 2, retried page 2 — no extra calls");
+  assert.deepEqual(calls[1], calls[2], "the retry after repair must hit the EXACT SAME path as the failed request");
+  assert.deepEqual(
+    out.map((c) => c.data.name),
+    ["t3_a", "t3_b"],
+    "both pre- and post-repair pages contribute records"
+  );
+});
+
+test("paginate: 401 persists after repair succeeds → still terminal auth_failed, exactly one retry attempted", async () => {
+  const { fetch, calls } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [
+      { status: 401, json: null },
+      { status: 401, json: null },
+    ],
+  });
+  let reauthCalls = 0;
+  // biome-ignore lint/suspicious/useAwait: mock matches RedditReauthFn's Promise-returning signature
+  const onAuthFailed = async (): Promise<boolean> => {
+    reauthCalls += 1;
+    return true;
+  };
+
+  await assert.rejects(
+    paginate(fetch, `${USER_PATH}/submitted.json`, null, null, NO_DELAY, undefined, "submitted", onAuthFailed),
+    /reddit_auth_failed/
+  );
+  assert.equal(reauthCalls, 1, "repair must not be retried in a loop");
+  assert.equal(calls.length, 2, "exactly one retry of the failed request, then give up");
+});
+
+test("paginate: repair itself fails (returns false) → terminal auth_failed, no retry request sent", async () => {
+  const { fetch, calls } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [{ status: 403, json: null }],
+  });
+  let reauthCalls = 0;
+  // biome-ignore lint/suspicious/useAwait: mock matches RedditReauthFn's Promise-returning signature
+  const onAuthFailed = async (): Promise<boolean> => {
+    reauthCalls += 1;
+    return false;
+  };
+
+  await assert.rejects(
+    paginate(fetch, `${USER_PATH}/submitted.json`, null, null, NO_DELAY, undefined, "submitted", onAuthFailed),
+    /reddit_auth_failed/
+  );
+  assert.equal(reauthCalls, 1, "repair is attempted once even though it fails");
+  assert.equal(calls.length, 1, "a failed repair must not spend a retry request");
+});
+
+test("paginate: repair is attempted at most once across the whole pagination loop, not once per page", async () => {
+  const { fetch, calls } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [
+      { status: 401, json: null },
+      okResult(listing([makePost("t3_a", 300)], "t3_a")),
+      { status: 401, json: null },
+    ],
+  });
+  let reauthCalls = 0;
+  // biome-ignore lint/suspicious/useAwait: mock matches RedditReauthFn's Promise-returning signature
+  const onAuthFailed = async (): Promise<boolean> => {
+    reauthCalls += 1;
+    return true;
+  };
+
+  await assert.rejects(
+    paginate(fetch, `${USER_PATH}/submitted.json`, null, null, NO_DELAY, undefined, "submitted", onAuthFailed),
+    /reddit_auth_failed/
+  );
+  assert.equal(reauthCalls, 1, "the one-shot repair budget is per paginate() call, not per page");
+  assert.equal(calls.length, 3, "page1-failed, page1-retry-ok, page2-failed (no second repair)");
+});
+
+test("paginate: no onAuthFailed hook supplied → 401 fails immediately (pre-fix behavior unchanged)", async () => {
+  const { fetch, calls } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [{ status: 401, json: null }],
+  });
+
+  await assert.rejects(paginate(fetch, `${USER_PATH}/submitted.json`, null, null, NO_DELAY), /reddit_auth_failed/);
+  assert.equal(calls.length, 1, "no hook means no retry attempt");
+});
+
+test("collectStream: threads onAuthFailed through to paginate and self-heals a mid-stream 401", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [{ status: 401, json: null }, okResult(listing([makePost("t3_a", 300)]))],
+  });
+  const stream = buildStreamTable(USER_PATH, EMITTED_AT).find((s) => s.name === "submitted");
+  assert.ok(stream);
+  let reauthCalls = 0;
+
+  const result = await collectStream({
+    stream,
+    fetchPath: fetch,
+    state: {},
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: async () => undefined,
+    capture: null,
+    delay: NO_DELAY,
+    // biome-ignore lint/suspicious/useAwait: mock matches RedditReauthFn's Promise-returning signature
+    onAuthFailed: async () => {
+      reauthCalls += 1;
+      return true;
+    },
+  });
+
+  assert.equal(reauthCalls, 1);
+  assert.equal(result.considered, 1, "the record from the post-repair retry is collected");
+  assert.equal(harness.emitted.length, 1);
+});
+
 // ─── Invariant 7: every stream in the stream table passes its schema ────
 
 test("buildStreamTable: records from every stream pass their zod schema", async () => {
