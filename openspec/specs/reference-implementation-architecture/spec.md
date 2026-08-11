@@ -4911,7 +4911,7 @@ Required headers:
 | `PDPP-Webhook-Event-Id` | Non-empty opaque string | Idempotency key component |
 | `PDPP-Webhook-Signature` | `sha256=<lowercase-hex>` | HMAC-SHA256 authenticity |
 
-The signed material SHALL be `"${timestamp}.${body}"` where `timestamp` is the value of the `PDPP-Webhook-Timestamp` header and `body` is the raw UTF-8 request body. The expected signature SHALL be `sha256=` followed by the lowercase hex encoding of `HMAC-SHA256(secret, signed_material)` where `secret` is the per-source HMAC secret. Signature comparison SHALL use a timing-safe equality check.
+The signed material SHALL be `"${event_id}.${timestamp}.${body}"` where `event_id` is the value of the `PDPP-Webhook-Event-Id` header, `timestamp` is the value of the `PDPP-Webhook-Timestamp` header, and `body` is the raw UTF-8 request body. The expected signature SHALL be `sha256=` followed by the lowercase hex encoding of `HMAC-SHA256(secret, signed_material)` where `secret` is the per-source HMAC secret. Signature comparison SHALL use a timing-safe equality check.
 
 HTTP header names are case-insensitive. The header names above are the canonical documentation casing; adapters MAY receive or normalize them in lowercase.
 
@@ -4919,7 +4919,7 @@ These header names are intentionally PDPP-prefixed rather than the Standard Webh
 
 #### Scenario: All required headers are present and signature matches
 - **WHEN** a caller posts a request with valid `PDPP-Webhook-Timestamp`, `PDPP-Webhook-Event-Id`, and `PDPP-Webhook-Signature` headers
-- **AND** the signature matches `sha256=hex(HMAC-SHA256(secret, "${timestamp}.${body}"))` using the configured per-source secret
+- **AND** the signature matches `sha256=hex(HMAC-SHA256(secret, "${event_id}.${timestamp}.${body}"))` using the configured per-source secret
 - **AND** the timestamp is within the accepted tolerance window
 - **THEN** the reference SHALL proceed to idempotency checking and payload processing
 
@@ -4929,7 +4929,7 @@ These header names are intentionally PDPP-prefixed rather than the Standard Webh
 - **AND** the error code SHALL identify which header is missing (`missing_timestamp`, `missing_event_id`, or `missing_signature`)
 
 #### Scenario: The signature does not match
-- **WHEN** the `PDPP-Webhook-Signature` header is present but does not match the expected HMAC for the given body, timestamp, and per-source secret
+- **WHEN** the `PDPP-Webhook-Signature` header is present but does not match the expected HMAC for the given body, event id, timestamp, and per-source secret
 - **THEN** the reference SHALL reject the request with HTTP 401 and error code `invalid_signature`
 
 ### Requirement: Source webhook ingress enforces a timestamp tolerance window
@@ -11949,4 +11949,3 @@ The repository SHALL provide an executable test that scans `reference-implementa
 - **WHEN** a change edits the guard's own allowlist, detection patterns, or exemption list to make a real violation pass
 - **THEN** the change SHALL state that widening explicitly in its proposal
 - **AND** reviewers SHALL treat an unexplained narrowing of the guard's detection surface as a regression, not a passing gate
-
