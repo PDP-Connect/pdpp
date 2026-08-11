@@ -237,6 +237,13 @@ rl.on('line', (line) => {
           if (runIsActive) {
             probeCallsWhileRunning += 1;
           }
+          // Deliberately caught and counted here, not left to propagate: the
+          // real dispatch-governor.ts probeForwardEvidenceDebt call site
+          // swallows any throw from getForwardEvidenceDebt (fail-closed). If
+          // this admission error were allowed to propagate instead, the
+          // governor's catch would eat it silently and admissionErrors would
+          // stay empty regardless of whether the guard held — the oracle
+          // would go vacuous in exactly the way it must not.
           try {
             await withConnectorInstanceWrite(connectorInstanceId, async () => undefined);
           } catch (err) {
@@ -244,6 +251,12 @@ rl.on('line', (line) => {
           }
           return false;
         },
+        // The forward-evidence-debt probe is only reached when non-pressure
+        // recovery is otherwise eligible (dispatch-governor.ts's
+        // `probeForwardEvidenceDebt` call site) — a non-zero backlog here is
+        // required to actually exercise the probe this test is discriminating
+        // on, matching the live incident's connection (which had real pending
+        // gaps driving its own recovery/debt evaluation every tick).
         getNonPressureRecoverableCount: async () => 1,
         getState: async () => null,
         onInteraction: async (interaction: unknown) => ({
@@ -272,6 +285,17 @@ rl.on('line', (line) => {
         // (and its write-coordinator lock) is still held.
         await new Promise((resolve) => setTimeout(resolve, RUN_HOLD_MS - 150));
 
+        // Guard against the one genuine flake vector: if the run had already
+        // completed by measurement time (e.g. under load), activeRuns would
+        // have cleared and a probe would legitimately fire — that would fail
+        // the assertion below for a reason unrelated to the guard. Assert the
+        // run is still in flight so a failure below can only mean the guard
+        // let a probe through against a genuinely active run.
+        assert.equal(
+          completedRuns.length,
+          0,
+          "the run must still be in flight at measurement time, or the assertions below are meaningless"
+        );
         assert.equal(
           probeCallsWhileRunning,
           0,
