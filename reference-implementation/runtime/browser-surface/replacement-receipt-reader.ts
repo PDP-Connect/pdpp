@@ -93,7 +93,7 @@ export async function readCurrentReplacementReceipt(input: {
   if (!input.reader) {
     return { receipt: null, state: "unavailable" };
   }
-  return readScopedReceipt(
+  return await readScopedReceipt(
     () =>
       input.reader?.selectCurrent({
         connection_id: input.connection_id,
@@ -115,7 +115,7 @@ export async function readSystemActionableReplacementReceipt(input: {
   if (!reader?.selectSystemActionable) {
     return { receipt: null, state: reader ? "available" : "unavailable" };
   }
-  return readScopedReceipt(
+  return await readScopedReceipt(
     () =>
       reader.selectSystemActionable?.({
         connection_id: input.connection_id,
