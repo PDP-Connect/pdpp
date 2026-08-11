@@ -35,13 +35,24 @@
 
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
-import type { Page } from "playwright";
-import type { DetailCoverageMessage, DetailGapMessage, EmittedMessage } from "../../src/connector-runtime.ts";
+import type { BrowserContext, Page } from "playwright";
+import type {
+  BrowserCollectContext,
+  DetailCoverageMessage,
+  DetailGapMessage,
+  EmittedMessage,
+} from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
 import { type EmitDeps, runCreditCardBillingStream, runInboxStream } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { DashboardAccount, InboxRow } from "./types.ts";
+
+const FAKE_CONTEXT = {} as BrowserContext;
+// biome-ignore lint/suspicious/useAwait: mock throws to prove the happy-path tests never reach a reauth attempt
+const NEVER_CALLED_SEND_INTERACTION: BrowserCollectContext["sendInteraction"] = async () => {
+  throw new Error("sendInteraction must not be called on the happy path — no session-death signal was produced");
+};
 
 function makeHarness(): {
   deps: EmitDeps;
@@ -105,6 +116,7 @@ function makeCard(overrides: Partial<DashboardAccount> = {}): DashboardAccount {
 function makeInboxPage(rows: InboxRow[] | (() => InboxRow[]), gotoFails = false): Page {
   return Object.assign({} as Page, {
     goto: () => (gotoFails ? Promise.reject(new Error("net::ERR_CONNECTION_RESET")) : Promise.resolve(null)),
+    url: () => "https://www.usaa.com/my/inbox",
     evaluate: () => Promise.resolve(typeof rows === "function" ? rows() : rows),
   });
 }
@@ -116,7 +128,7 @@ test("wiring: runInboxStream emits DETAIL_COVERAGE with considered/covered after
       { status: "Read", date_short: "6/1", preview: "Statement ready" },
       { status: "Unread", date_short: "6/2", preview: "New alert" },
     ]);
-    await runInboxStream(run.deps, page, {});
+    await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {});
 
     assert.equal(run.emitted.filter((e) => e.stream === "inbox_messages").length, 2, "both rows emitted");
     const cov = coverageFor(run.messages, "inbox_messages");
@@ -131,7 +143,7 @@ test("wiring: runInboxStream emits SKIP_RESULT and NO coverage when page.goto th
   await withFastTimers(async () => {
     const run = makeHarness();
     const page = makeInboxPage([{ status: "Read", date_short: "6/1", preview: "x" }], /* gotoFails */ true);
-    await runInboxStream(run.deps, page, {});
+    await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {});
 
     assert.equal(run.emitted.filter((e) => e.stream === "inbox_messages").length, 0, "no records on a nav failure");
     const skips = skipsFor(run.messages, "inbox_messages");
@@ -150,9 +162,10 @@ test("wiring: runInboxStream emits SKIP_RESULT and NO coverage when the scrape i
     const run = makeHarness();
     const page = Object.assign({} as Page, {
       goto: () => Promise.resolve(null),
+      url: () => "https://www.usaa.com/my/inbox",
       evaluate: () => Promise.reject(new Error("page crashed mid-scrape")),
     });
-    await runInboxStream(run.deps, page, {});
+    await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {});
 
     const skips = skipsFor(run.messages, "inbox_messages");
     assert.equal(skips.length, 1, "a caught scrape failure emits exactly one SKIP_RESULT");
@@ -168,7 +181,7 @@ test("wiring: runInboxStream on a genuinely empty inbox proves verified-empty vi
   await withFastTimers(async () => {
     const run = makeHarness();
     const page = makeInboxPage([]);
-    await runInboxStream(run.deps, page, {});
+    await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {});
 
     assert.equal(run.emitted.length, 0);
     const cov = coverageFor(run.messages, "inbox_messages");
@@ -206,6 +219,7 @@ function makeCreditCardPage(failUrls: Set<string> = new Set()): {
       currentUrl = url;
       return Promise.resolve(null);
     },
+    url: () => currentUrl,
     evaluate: () => Promise.resolve(billingByUrl[currentUrl] ?? {}),
   });
   return { billingByUrl, gotoCalls, page };
@@ -223,7 +237,7 @@ test("wiring: runCreditCardBillingStream emits DETAIL_COVERAGE for both streams 
 
     const run = makeHarness();
     const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
-    await runCreditCardBillingStream(run.deps, page, cards, {
+    await runCreditCardBillingStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, cards, {
       emitEntity: true,
       emitStats: true,
       fingerprintCursor,
@@ -257,12 +271,13 @@ test("wiring: runCreditCardBillingStream emits SKIP_RESULT and NO coverage when 
     const cards = [makeCard({ account_id_raw: "CC1" })];
     const page = Object.assign({} as Page, {
       goto: () => Promise.resolve(null),
+      url: () => "https://www.usaa.com/my/credit-card?accountId=ACCT-CC-0001",
       evaluate: () => Promise.reject(new Error("page crashed mid-scrape")),
     });
 
     const run = makeHarness();
     const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
-    await runCreditCardBillingStream(run.deps, page, cards, {
+    await runCreditCardBillingStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, cards, {
       emitEntity: true,
       emitStats: true,
       fingerprintCursor,
@@ -289,7 +304,7 @@ test("wiring: a card whose navigation fails does NOT scrape/attribute the wrong 
 
     const run = makeHarness();
     const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
-    await runCreditCardBillingStream(run.deps, page, [cc1, cc2], {
+    await runCreditCardBillingStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, [cc1, cc2], {
       emitEntity: true,
       emitStats: true,
       fingerprintCursor,
@@ -322,5 +337,123 @@ test("wiring: a card whose navigation fails does NOT scrape/attribute the wrong 
     assert.equal(entityCov?.covered, 1, "covered excludes the failed-navigation card — never a false complete");
     assert.equal(statsCov?.considered, 2);
     assert.equal(statsCov?.covered, 1);
+  });
+});
+
+// ─── logon-bounce (not a rejected .goto — a "successful" nav that LANDS on
+//     the logon page) mid-run stale-session self-heal ───────────────────
+
+/** Unlike `makeCreditCardPage`'s `failUrls` (a rejected `.goto` promise —
+ *  network error), this simulates USAA's actual session-death signal: a
+ *  `.goto` that RESOLVES normally but lands on `/my/logon` instead of the
+ *  requested card URL — the pre-fix defect this test guards against is
+ *  scraping that logon page's DOM and misattributing it as this card's
+ *  billing data. */
+function makeLogonBouncingCreditCardPage(bounceOnce: Set<string>): {
+  billingByUrl: Record<string, Record<string, string>>;
+  gotoCalls: string[];
+  page: Page;
+} {
+  const gotoCalls: string[] = [];
+  const bounced = new Set<string>();
+  let currentUrl = "https://www.usaa.com/my/usaa";
+  const billingByUrl: Record<string, Record<string, string>> = {};
+  const page = Object.assign({} as Page, {
+    goto: (url: string) => {
+      gotoCalls.push(url);
+      if (bounceOnce.has(url) && !bounced.has(url)) {
+        bounced.add(url);
+        currentUrl = "https://www.usaa.com/my/logon";
+        return Promise.resolve(null);
+      }
+      currentUrl = url;
+      return Promise.resolve(null);
+    },
+    url: () => currentUrl,
+    evaluate: () => Promise.resolve(billingByUrl[currentUrl] ?? {}),
+  });
+  return { billingByUrl, gotoCalls, page };
+}
+
+test("wiring: a card's navigation lands on the USAA logon page (session died mid-run) → repair succeeds → retried nav scrapes the real card, not the logon page", async () => {
+  await withFastTimers(async () => {
+    const cc1 = makeCard({ account_id_raw: "CC1", account_url: "/my/credit-card?accountId=CC1", last_four: "0001" });
+    const cc1Url = `https://www.usaa.com${cc1.account_url}`;
+    const { page, billingByUrl, gotoCalls } = makeLogonBouncingCreditCardPage(new Set([cc1Url]));
+    billingByUrl[cc1Url] = { "Current Balance": "$75.00" };
+
+    let reauthCalls = 0;
+    const run = makeHarness();
+    // biome-ignore lint/suspicious/useAwait: mock matches EmitDeps["reauthenticate"]'s Promise-returning signature
+    run.deps.reauthenticate = async () => {
+      reauthCalls += 1;
+    };
+    const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
+    await runCreditCardBillingStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, [cc1], {
+      emitEntity: true,
+      emitStats: true,
+      fingerprintCursor,
+      observedOn: "2026-06-01",
+    });
+
+    assert.equal(reauthCalls, 1, "repair attempted exactly once");
+    assert.deepEqual(
+      gotoCalls,
+      [cc1Url, cc1Url],
+      "the retry navigates to the EXACT SAME card url, not a different one"
+    );
+    const entityEmitted = run.emitted.filter((e) => e.stream === "credit_card_billing");
+    assert.equal(entityEmitted.length, 1, "the card is scraped normally after the repaired retry");
+    const statsEmitted = run.emitted.filter((e) => e.stream === "credit_card_billing_stats");
+    assert.equal(
+      (statsEmitted[0]?.data as { current_balance_cents?: number } | undefined)?.current_balance_cents,
+      7500,
+      "the card's OWN balance from the post-repair retry, never the logon page's absent/zeroed fields"
+    );
+    assert.equal(gapsFor(run.messages, "credit_card_billing").length, 0, "a repaired session must not gap the card");
+  });
+});
+
+test("wiring: a card's navigation lands on the logon page and repair fails → gapped exactly like a network-error nav failure, never scraped", async () => {
+  await withFastTimers(async () => {
+    const cc1 = makeCard({ account_id_raw: "CC1", account_url: "/my/credit-card?accountId=CC1", last_four: "0001" });
+    const cc1Url = `https://www.usaa.com${cc1.account_url}`;
+    const { page, billingByUrl } = makeLogonBouncingCreditCardPage(new Set([cc1Url, cc1Url]));
+    // Every nav to CC1's url bounces (including the retry inside
+    // gotoOrRepairSession) — session death that repair cannot fix.
+    Object.assign(page, {
+      goto: () => {
+        Object.assign(page, { url: () => "https://www.usaa.com/my/logon" });
+        return Promise.resolve(null);
+      },
+    });
+    billingByUrl[cc1Url] = { "Current Balance": "$75.00" };
+
+    const run = makeHarness();
+    // biome-ignore lint/suspicious/useAwait: mock matches EmitDeps["reauthenticate"]'s Promise-returning signature
+    run.deps.reauthenticate = async () => {
+      throw new Error("usaa_login_failed");
+    };
+    const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
+    await runCreditCardBillingStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, [cc1], {
+      emitEntity: true,
+      emitStats: true,
+      fingerprintCursor,
+      observedOn: "2026-06-01",
+    });
+
+    const entityEmitted = run.emitted.filter((e) => e.stream === "credit_card_billing");
+    assert.equal(
+      entityEmitted.length,
+      0,
+      "the logon page must never be scraped/attributed as this card's billing data"
+    );
+    const entityGaps = gapsFor(run.messages, "credit_card_billing");
+    assert.equal(
+      entityGaps.length,
+      1,
+      "an unrepairable session-death bounce gets the same DETAIL_GAP as a network failure"
+    );
+    assert.equal(entityGaps[0]?.reason, "temporary_unavailable");
   });
 });

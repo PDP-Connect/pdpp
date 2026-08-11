@@ -896,11 +896,33 @@ export function readPriorInboxMessageFingerprints(state: Record<string, unknown>
 
 // ─── Account extraction from the /my/usaa dashboard ───────────────────────
 
-async function extractAccounts(page: Page): Promise<DashboardAccount[]> {
-  await page.goto("https://www.usaa.com/my/usaa", {
-    waitUntil: "domcontentloaded",
-    timeout: DASHBOARD_NAV_TIMEOUT_MS,
-  });
+/** Exported purely so its mid-run session-repair wiring is directly
+ *  testable with a mocked Page/BrowserContext. See
+ *  singleton-checkpoint-coverage-wiring.test.ts. */
+export async function extractAccounts(
+  deps: EmitDeps,
+  context: BrowserContext,
+  page: Page,
+  sendInteraction: BrowserCollectContext["sendInteraction"]
+): Promise<DashboardAccount[]> {
+  const nav = await gotoOrRepairSession(
+    deps,
+    context,
+    page,
+    sendInteraction,
+    "https://www.usaa.com/my/usaa",
+    { timeout: DASHBOARD_NAV_TIMEOUT_MS },
+    "accounts"
+  );
+  if (!nav.ok) {
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "accounts",
+      reason: "session_dead_reauth_failed",
+      message: "USAA session expired before accounts could be extracted and re-auth failed.",
+    });
+    return [];
+  }
   await page
     .waitForSelector(DASHBOARD_SELECTOR_WAIT, {
       timeout: DASHBOARD_SELECTOR_TIMEOUT_MS,
@@ -1492,6 +1514,15 @@ interface TransactionsStreamState {
   sessionDeadMidRun: boolean;
 }
 
+/** Latch `streamState.sessionDeadMidRun` from a stream's session-alive
+ *  result. Extracted so `collect()`'s per-stream gating reads as one call
+ *  per stream instead of a repeated inline `if (!x) { ...= true }`. */
+function latchSessionDead(streamState: TransactionsStreamState, sessionAlive: boolean): void {
+  if (!sessionAlive) {
+    streamState.sessionDeadMidRun = true;
+  }
+}
+
 async function reauthAfterSessionLapse(
   deps: EmitDeps,
   context: BrowserContext,
@@ -1528,6 +1559,60 @@ async function reauthAfterSessionLapse(
     });
     return false;
   }
+}
+
+/**
+ * Navigate to `url`; if the final URL bounces to USAA's logon/OAuth-authorize
+ * flow (`LOGON_REDIRECT_RE`) — the same mid-run session-death signal the
+ * transactions export ladder already detects (`SessionDeadRedirectError`,
+ * above) — re-run the connector's existing session-establishment flow
+ * exactly once (`ensureUsaaSession`, idempotent: no-ops when the cookie is
+ * still live) and retry the SAME navigation exactly once. A second redirect,
+ * or a failed repair, reports session death to the caller instead of looping
+ * or silently scraping the logon page as if it were data.
+ *
+ * Distinct from `SessionDeadRedirectError`/`reauthAfterSessionLapse` above
+ * (which is transactions-specific and threads a `NoExportAffordanceObservation`
+ * for its own diagnostic) — this is the shared, stream-agnostic version used
+ * by accounts/statements/inbox/credit-card navigation, which have no
+ * equivalent export-dialog diagnostic to capture.
+ */
+export async function gotoOrRepairSession(
+  deps: EmitDeps,
+  context: BrowserContext,
+  page: Page,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
+  url: string,
+  navOptions: { timeout: number },
+  streamForProgress: string,
+  /** Set when the caller already navigated to `url` and confirmed the
+   *  logon bounce itself (e.g. `navigateToCardOrGap`, which needs the
+   *  distinct "goto rejected" vs "goto landed on logon" cases either way) —
+   *  skips this function's own redundant first navigation. */
+  alreadyLandedOnLogon = false
+): Promise<{ ok: true } | { ok: false }> {
+  if (!alreadyLandedOnLogon) {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: navOptions.timeout });
+    if (!LOGON_REDIRECT_RE.test(page.url())) {
+      return { ok: true };
+    }
+  }
+  await deps.emit({
+    type: "PROGRESS",
+    stream: streamForProgress,
+    message: "Session lapsed mid-run; re-authenticating before retry",
+  });
+  try {
+    if (deps.reauthenticate) {
+      await deps.reauthenticate({ context, page, sendInteraction });
+    } else {
+      await ensureUsaaSession({ capture: deps.capture ?? null, context, page, sendInteraction });
+    }
+  } catch {
+    return { ok: false };
+  }
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: navOptions.timeout });
+  return LOGON_REDIRECT_RE.test(page.url()) ? { ok: false } : { ok: true };
 }
 
 interface ExportLadderResult {
@@ -2360,24 +2445,43 @@ async function emitPdfStatementTransactions(
   });
 }
 
-async function runStatementsStream(
+/** Exported purely so its mid-run session-repair wiring is directly
+ *  testable with a mocked Page/BrowserContext. See
+ *  singleton-checkpoint-coverage-wiring.test.ts. */
+export async function runStatementsStream(
   deps: StatementsSubDeps,
+  context: BrowserContext,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
   accounts: readonly DashboardAccount[],
   requested: BrowserCollectContext["requested"],
   statementsFingerprintCursor?: FingerprintCursor,
   transactionsFingerprintCursor?: FingerprintCursor,
   statementsHydrationCursor?: StatementHydrationCursor
-): Promise<void> {
+): Promise<boolean> {
   try {
     await deps.emit({
       type: "PROGRESS",
       stream: "statements",
       message: "Fetching statements index",
     });
-    await deps.page.goto("https://www.usaa.com/my/documents", {
-      waitUntil: "domcontentloaded",
-      timeout: DOCUMENTS_NAV_TIMEOUT_MS,
-    });
+    const nav = await gotoOrRepairSession(
+      deps,
+      context,
+      deps.page,
+      sendInteraction,
+      "https://www.usaa.com/my/documents",
+      { timeout: DOCUMENTS_NAV_TIMEOUT_MS },
+      "statements"
+    );
+    if (!nav.ok) {
+      await deps.emit({
+        type: "SKIP_RESULT",
+        stream: "statements",
+        reason: "session_dead_reauth_failed",
+        message: "USAA session expired mid-run and re-auth failed. Statements skipped.",
+      });
+      return false;
+    }
     await politeDelay(DOCUMENTS_SETTLE_DELAY_MS);
 
     const docs = await scrapeStatementsIndex(deps.page);
@@ -2402,6 +2506,7 @@ async function runStatementsStream(
     if (requested.has("transactions")) {
       await emitPdfStatementTransactions(deps, indexRows, summary.results, accounts, transactionsFingerprintCursor);
     }
+    return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
@@ -2414,6 +2519,7 @@ async function runStatementsStream(
         message: msg.slice(0, ID_TEXT_SNIP),
       },
     });
+    return true;
   }
 }
 
@@ -2450,17 +2556,37 @@ function scrapeInboxRows(page: Page): Promise<InboxRow[]> {
  *  DETAIL_COVERAGE emit-path wiring is directly testable with a mocked Page —
  *  never emit coverage after a caught scrape failure, only after a
  *  successful enumeration. See singleton-checkpoint-coverage.test.ts. */
-export async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, unknown>): Promise<void> {
+export async function runInboxStream(
+  deps: EmitDeps,
+  context: BrowserContext,
+  page: Page,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
+  state: Record<string, unknown>
+): Promise<boolean> {
   try {
     await deps.emit({
       type: "PROGRESS",
       stream: "inbox_messages",
       message: "Fetching inbox",
     });
-    await page.goto("https://www.usaa.com/my/inbox", {
-      waitUntil: "domcontentloaded",
-      timeout: INBOX_NAV_TIMEOUT_MS,
-    });
+    const nav = await gotoOrRepairSession(
+      deps,
+      context,
+      page,
+      sendInteraction,
+      "https://www.usaa.com/my/inbox",
+      { timeout: INBOX_NAV_TIMEOUT_MS },
+      "inbox_messages"
+    );
+    if (!nav.ok) {
+      await deps.emit({
+        type: "SKIP_RESULT",
+        stream: "inbox_messages",
+        reason: "session_dead_reauth_failed",
+        message: "USAA session expired mid-run and re-auth failed. Inbox skipped.",
+      });
+      return false;
+    }
     await politeDelay(DOCUMENTS_SETTLE_DELAY_MS);
     const msgs = await scrapeInboxRows(page);
     await deps.emit({
@@ -2517,6 +2643,7 @@ export async function runInboxStream(deps: EmitDeps, page: Page, state: Record<s
       considered: inboxCoverage.considered,
       covered: inboxCoverage.covered,
     });
+    return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
@@ -2529,6 +2656,7 @@ export async function runInboxStream(deps: EmitDeps, page: Page, state: Record<s
         message: msg.slice(0, ID_TEXT_SNIP),
       },
     });
+    return true;
   }
 }
 
@@ -2624,29 +2752,50 @@ async function emitCreditCardNavFailureGaps(
   }
 }
 
-/** Navigate to one card's page. Returns `true` on success. On failure,
- *  reports the failure as a retryable DETAIL_GAP and returns `false` — the
- *  caller must NOT proceed to scrape on a failed navigation, since that
- *  would attribute whatever page happens to be loaded (the prior card, the
- *  dashboard, an error page) to this card's id. */
+/** Navigate to one card's page. Returns `true` on success. On failure —
+ *  including a session-death bounce to USAA's logon page, which a bare
+ *  `page.goto` resolve does NOT surface as a rejection — reports the
+ *  failure as a retryable DETAIL_GAP and returns `false`. The caller must
+ *  NOT proceed to scrape on a failed navigation, since that would attribute
+ *  whatever page happens to be loaded (the prior card, the dashboard, the
+ *  USAA logon page, an error page) to this card's id. A logon-page bounce
+ *  triggers the same one-shot repair-and-retry as the other USAA streams
+ *  (`gotoOrRepairSession`) before falling back to the gap. */
 async function navigateToCardOrGap(
   deps: EmitDeps,
+  context: BrowserContext,
   page: Page,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
   a: DashboardAccount,
   cardId: string,
   options: Pick<CreditCardBillingEmitOptions, "emitEntity" | "emitStats">
 ): Promise<boolean> {
+  const url = `https://www.usaa.com${a.account_url}`;
   const navigated = await page
-    .goto(`https://www.usaa.com${a.account_url}`, {
-      waitUntil: "domcontentloaded",
-      timeout: ACCOUNT_NAV_TIMEOUT_MS,
-    })
+    .goto(url, { waitUntil: "domcontentloaded", timeout: ACCOUNT_NAV_TIMEOUT_MS })
     .then((): true => true)
     .catch((): false => false);
-  if (!navigated) {
-    await emitCreditCardNavFailureGaps(deps, cardId, options);
+  const landedOnLogon = navigated && LOGON_REDIRECT_RE.test(page.url());
+  if (navigated && !landedOnLogon) {
+    return true;
   }
-  return navigated;
+  if (landedOnLogon) {
+    const nav = await gotoOrRepairSession(
+      deps,
+      context,
+      page,
+      sendInteraction,
+      url,
+      { timeout: ACCOUNT_NAV_TIMEOUT_MS },
+      "credit_card_billing",
+      /* alreadyLandedOnLogon */ true
+    );
+    if (nav.ok) {
+      return true;
+    }
+  }
+  await emitCreditCardNavFailureGaps(deps, cardId, options);
+  return false;
 }
 
 /** Scrape and emit one successfully-navigated card's billing detail onto
@@ -2685,7 +2834,9 @@ async function emitCreditCardBillingForCard(
  *  successful enumeration. See singleton-checkpoint-coverage.test.ts. */
 export async function runCreditCardBillingStream(
   deps: EmitDeps,
+  context: BrowserContext,
   page: Page,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
   accounts: readonly DashboardAccount[],
   options: CreditCardBillingEmitOptions
 ): Promise<void> {
@@ -2702,7 +2853,10 @@ export async function runCreditCardBillingStream(
     const navFailedIds = new Set<string>();
     for (const a of cards) {
       const cardId = creditCardId(a);
-      const navigated = await navigateToCardOrGap(deps, page, a, cardId, { emitEntity, emitStats });
+      const navigated = await navigateToCardOrGap(deps, context, page, sendInteraction, a, cardId, {
+        emitEntity,
+        emitStats,
+      });
       if (!navigated) {
         navFailedIds.add(cardId);
         continue;
@@ -2793,7 +2947,9 @@ export async function runCreditCardBillingStream(
  *  budget. */
 async function maybeRunCreditCardBillingStreams(
   deps: EmitDeps,
+  context: BrowserContext,
   page: Page,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
   accounts: readonly DashboardAccount[],
   state: Record<string, unknown>,
   requested: RequestedScopes,
@@ -2810,7 +2966,7 @@ async function maybeRunCreditCardBillingStreams(
         priorFingerprints: readPriorCreditCardBillingFingerprints(state),
       })
     : undefined;
-  await runCreditCardBillingStream(deps, page, accounts, {
+  await runCreditCardBillingStream(deps, context, page, sendInteraction, accounts, {
     emitEntity: wantsCardBilling,
     emitStats: wantsCardBillingStats,
     fingerprintCursor: billingFingerprintCursor,
@@ -2876,7 +3032,7 @@ if (isMainModule(import.meta.url)) {
       if (capture) {
         await capture.captureDom(page, "dashboard-accounts");
       }
-      const accounts = await extractAccounts(page);
+      const accounts = await extractAccounts(deps, context, page, sendInteraction);
       await progress(`Found ${accounts.length} account(s)`);
 
       await maybeRunAccountsStreams(deps, accounts, state, requested, emittedAt);
@@ -2944,13 +3100,18 @@ if (isMainModule(import.meta.url)) {
         const statementsHydrationCursor = requested.has("statements")
           ? openStatementHydrationCursor(readPriorStatementHydration(state.statements))
           : undefined;
-        await runStatementsStream(
-          { ...deps, page },
-          accounts,
-          requested,
-          statementsFingerprintCursor,
-          transactionsFingerprintCursor,
-          statementsHydrationCursor
+        latchSessionDead(
+          streamState,
+          await runStatementsStream(
+            { ...deps, page },
+            context,
+            sendInteraction,
+            accounts,
+            requested,
+            statementsFingerprintCursor,
+            transactionsFingerprintCursor,
+            statementsHydrationCursor
+          )
         );
       }
 
@@ -2971,14 +3132,23 @@ if (isMainModule(import.meta.url)) {
 
       // INBOX_MESSAGES — scrape /my/inbox.
       if (requested.has("inbox_messages") && !streamState.sessionDeadMidRun) {
-        await runInboxStream(deps, page, state);
+        latchSessionDead(streamState, await runInboxStream(deps, context, page, sendInteraction, state));
       }
 
       // CREDIT_CARD_BILLING — entity (identity/settings) + optional
       // `credit_card_billing_stats` observation. See
       // `maybeRunCreditCardBillingStreams`.
       if (!streamState.sessionDeadMidRun) {
-        await maybeRunCreditCardBillingStreams(deps, page, accounts, state, requested, emittedAt);
+        await maybeRunCreditCardBillingStreams(
+          deps,
+          context,
+          page,
+          sendInteraction,
+          accounts,
+          state,
+          requested,
+          emittedAt
+        );
       }
 
       await emitDeferredStreams(emit, requested);
