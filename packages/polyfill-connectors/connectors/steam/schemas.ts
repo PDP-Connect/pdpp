@@ -66,7 +66,7 @@ const friendSchema = z.object({
 const steamLevelSchema = z.object({
   id: z.string(),
   steamid: z.string(),
-  player_level: z.number(),
+  player_level: z.number().nullable(),
 });
 
 export const SCHEMAS: SchemaRegistry = {

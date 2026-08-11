@@ -22,8 +22,10 @@
  *   }
  *
  * Rate limit: Steam publishes no official numeric limits. PDPP policy: use
- * 250ms per-request floor with adaptive backoff on 429/403. Manifest declares
- * 1-hour polling interval as infrastructure policy (separate from API pacing).
+ * 250ms per-request floor with adaptive backoff on provider throttles. A 403
+ * is classified as an authorization/visibility failure, not silently retried.
+ * Manifest declares 1-hour polling interval as infrastructure policy (separate
+ * from API pacing).
  */
 
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
@@ -150,7 +152,7 @@ type ProgressFn = (
  * (see runConnector below). steam_rate_limited must stay listed here or 429s
  * become terminal instead of retried.
  */
-export const STEAM_RETRYABLE_PATTERN = /ECONN|ETIMEDOUT|fetch failed|steam_rate_limited/i;
+export const STEAM_RETRYABLE_PATTERN = /ECONN|ETIMEDOUT|fetch failed|steam_rate_limited|retryable status \d+/i;
 
 export type SteamHttpClassification = { kind: "ok" } | { kind: "error"; message: string };
 
@@ -172,6 +174,12 @@ export function classifySteamHttpResponse(status: number, body: string): SteamHt
   return { kind: "ok" };
 }
 
+interface SteamRawResponse {
+  body: string;
+  headers?: Record<string, string | undefined>;
+  status: number;
+}
+
 async function steamApiRequest<T>(
   path: string,
   apiKey: string,
@@ -186,15 +194,21 @@ async function steamApiRequest<T>(
   }
 
   try {
-    const r = await httpGovernor.request<{ body: string; status: number }, { body: string; status: number }>(
+    const r = await httpGovernor.request<SteamRawResponse, SteamRawResponse>(
       async () => {
         const res = await fetch(url, { headers: { Accept: "application/json" } });
+        const retryAfter = res.headers.get("retry-after");
         return {
           body: await res.text().catch((): string => ""),
+          ...(retryAfter === null ? {} : { headers: { "retry-after": retryAfter } }),
           status: res.status,
-        } as { body: string; status: number };
+        };
       },
-      (raw) => ({ status: raw.status, value: raw })
+      (raw) => ({
+        status: raw.status,
+        ...(raw.headers === undefined ? {} : { headers: raw.headers }),
+        value: raw,
+      })
     );
     const result = r.value;
 
@@ -308,7 +322,7 @@ function friendRecord(friend: SteamFriend, steamid: string): RecordData {
   };
 }
 
-function steamLevelRecord(steamid: string, level: number): RecordData {
+function steamLevelRecord(steamid: string, level: number | null): RecordData {
   return {
     id: steamid,
     steamid,
@@ -327,6 +341,40 @@ interface StreamDeps {
   progress: (message: string, extra?: ProgressExtra) => Promise<void>;
 }
 
+export interface SteamSnapshotCoverage {
+  considered: number;
+  covered: number;
+  emitted: number;
+}
+
+/**
+ * Account for every record in a full Steam snapshot independently of the
+ * fingerprint cursor's changed-record emission decision. An unchanged record
+ * is still covered because the source returned it and the cursor confirmed
+ * that its prior state is identical. Invalid records remain a real coverage
+ * shortfall instead of being counted from the raw API length.
+ */
+export async function emitSteamSnapshotRecords(
+  stream: string,
+  records: readonly RecordData[],
+  cursor: ReturnType<typeof openFingerprintCursor>,
+  emitRecord: (stream: string, data: RecordData) => Promise<void>
+): Promise<SteamSnapshotCoverage> {
+  let covered = 0;
+  let emitted = 0;
+  for (const record of records) {
+    if (!validateRecord(stream, record).ok) {
+      continue;
+    }
+    covered += 1;
+    if (cursor.shouldEmit(record)) {
+      await emitRecord(stream, record);
+      emitted += 1;
+    }
+  }
+  return { considered: records.length, covered, emitted };
+}
+
 async function collectProfile(
   deps: StreamDeps,
   apiKey: string,
@@ -343,7 +391,20 @@ async function collectProfile(
   await deps.progress("Fetched Steam profile", { stream: "profile" });
   const [player] = profileRes.response.players;
   if (player) {
-    await deps.emitRecord("profile", profileRecord(player));
+    const record = profileRecord(player);
+    const covered = validateRecord("profile", record).ok ? 1 : 0;
+    await deps.emitRecord("profile", record);
+    await emitDetailCoverage(
+      { emit: deps.emit },
+      {
+        stream: "profile",
+        stateStream: "profile",
+        requiredKeys: [],
+        hydratedKeys: [],
+        considered: 1,
+        covered,
+      }
+    );
   }
   newState.profile = { fetched_at: nowIso() };
   await deps.emit({ type: "STATE", stream: "profile", cursor: newState.profile });
@@ -367,14 +428,12 @@ async function collectOwnedGames(
   await deps.progress("Fetched owned games", { stream: "owned_games", count: games.length });
 
   const gamesCursor = openFingerprintCursor((newState.owned_games as unknown) ?? {});
-  let emittedCount = 0;
-  for (const game of games) {
-    const record = ownedGameRecord(game, steamid);
-    if (gamesCursor.shouldEmit(record)) {
-      await deps.emitRecord("owned_games", record);
-      emittedCount += 1;
-    }
-  }
+  const coverage = await emitSteamSnapshotRecords(
+    "owned_games",
+    games.map((game) => ownedGameRecord(game, steamid)),
+    gamesCursor,
+    deps.emitRecord
+  );
   gamesCursor.pruneStale();
   newState.owned_games = { fetched_at: nowIso(), fingerprints: gamesCursor.toState() };
   await deps.emit({ type: "STATE", stream: "owned_games", cursor: newState.owned_games });
@@ -386,8 +445,8 @@ async function collectOwnedGames(
       stateStream: "owned_games",
       requiredKeys: [],
       hydratedKeys: [],
-      considered: games.length,
-      covered: emittedCount,
+      considered: coverage.considered,
+      covered: coverage.covered,
     }
   );
 }
@@ -413,14 +472,12 @@ async function collectRecentlyPlayed(
   });
 
   const recentCursor = openFingerprintCursor((newState.recently_played_games as unknown) ?? {});
-  let emittedCount = 0;
-  for (const game of recentGames) {
-    const record = recentlyPlayedRecord(game, steamid);
-    if (recentCursor.shouldEmit(record)) {
-      await deps.emitRecord("recently_played_games", record);
-      emittedCount += 1;
-    }
-  }
+  const coverage = await emitSteamSnapshotRecords(
+    "recently_played_games",
+    recentGames.map((game) => recentlyPlayedRecord(game, steamid)),
+    recentCursor,
+    deps.emitRecord
+  );
   recentCursor.pruneStale();
   newState.recently_played_games = { fetched_at: nowIso(), fingerprints: recentCursor.toState() };
   await deps.emit({ type: "STATE", stream: "recently_played_games", cursor: newState.recently_played_games });
@@ -432,8 +489,8 @@ async function collectRecentlyPlayed(
       stateStream: "recently_played_games",
       requiredKeys: [],
       hydratedKeys: [],
-      considered: recentGames.length,
-      covered: emittedCount,
+      considered: coverage.considered,
+      covered: coverage.covered,
     }
   );
 }
@@ -456,14 +513,12 @@ async function collectFriends(
   await deps.progress("Fetched friends list", { stream: "friends", count: friends.length });
 
   const friendsCursor = openFingerprintCursor((newState.friends as unknown) ?? {});
-  let emittedCount = 0;
-  for (const friend of friends) {
-    const record = friendRecord(friend, steamid);
-    if (friendsCursor.shouldEmit(record)) {
-      await deps.emitRecord("friends", record);
-      emittedCount += 1;
-    }
-  }
+  const coverage = await emitSteamSnapshotRecords(
+    "friends",
+    friends.map((friend) => friendRecord(friend, steamid)),
+    friendsCursor,
+    deps.emitRecord
+  );
   friendsCursor.pruneStale();
   newState.friends = { fetched_at: nowIso(), fingerprints: friendsCursor.toState() };
   await deps.emit({ type: "STATE", stream: "friends", cursor: newState.friends });
@@ -475,8 +530,8 @@ async function collectFriends(
       stateStream: "friends",
       requiredKeys: [],
       hydratedKeys: [],
-      considered: friends.length,
-      covered: emittedCount,
+      considered: coverage.considered,
+      covered: coverage.covered,
     }
   );
 }
@@ -496,10 +551,21 @@ async function collectSteamLevel(
     { stream: "steam_level" }
   );
   await deps.progress("Fetched Steam level", { stream: "steam_level" });
-  const level = levelRes.response.player_level ?? 0;
+  const level = levelRes.response.player_level ?? null;
   await deps.emitRecord("steam_level", steamLevelRecord(steamid, level));
   newState.steam_level = { fetched_at: nowIso() };
   await deps.emit({ type: "STATE", stream: "steam_level", cursor: newState.steam_level });
+  await emitDetailCoverage(
+    { emit: deps.emit },
+    {
+      stream: "steam_level",
+      stateStream: "steam_level",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: 1,
+      covered: 1,
+    }
+  );
 }
 
 // STEAM_USER_ID is a non-secret setup field (the owner's SteamID64 or vanity

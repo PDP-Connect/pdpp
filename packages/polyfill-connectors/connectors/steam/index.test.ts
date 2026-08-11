@@ -369,6 +369,10 @@ test("STEAM_RETRYABLE_PATTERN - matches network-transport failure classes", () =
   assert.match("fetch failed", STEAM_RETRYABLE_PATTERN);
 });
 
+test("STEAM_RETRYABLE_PATTERN - matches exhausted retryable HTTP statuses", () => {
+  assert.match("HTTP request got retryable status 503 after retry budget was exhausted", STEAM_RETRYABLE_PATTERN);
+});
+
 test("STEAM_RETRYABLE_PATTERN - does not match terminal auth failure", () => {
   assert.doesNotMatch("steam_auth_failed", STEAM_RETRYABLE_PATTERN);
 });

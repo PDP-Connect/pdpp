@@ -55,7 +55,7 @@
       "rate_limit_sensitivity": "high",
       "bot_detection_sensitivity": "low",
       "background_safe": false,
-      "rationale": "Steam Web API does not publish rate limits. PDPP policy: start at 250ms per-request floor; adaptive backoff applies 429/403 throttling. 1-hour polling is conservative to avoid community-reported multi-hour lockouts. recommended_mode stays manual and background_safe stays false while listed:false/status:unproven — an unlisted connector must not be scheduled unattended before an operator has proven a live run."
+      "rationale": "Steam Web API does not publish rate limits. PDPP policy: start at a 250ms per-request floor, honor Retry-After when supplied, and preserve 429/throttled transient failures for recovery; 403 is treated as an authorization or visibility failure. 1-hour polling is conservative to avoid community-reported multi-hour lockouts. recommended_mode stays manual and background_safe stays false while listed:false/status:unproven — an unlisted connector must not be scheduled unattended before an operator has proven a live run."
     },
     "public_listing": {
       "listed": false,
@@ -73,7 +73,7 @@
       "semantics": "mutable_state",
       "primary_key": ["steamid"],
       "required": false,
-      "coverage_strategy": "full_inventory",
+      "coverage_strategy": "singleton_presence",
       "freshness_strategy": "scheduled_window",
       "schema": {
         "type": "object",
@@ -136,10 +136,10 @@
     },
     {
       "name": "owned_games",
-      "description": "Games owned by the account.",
+      "description": "Games in the Steam owned-game response visible to this API key. Steam privacy settings can hide games or make playtime appear as zero, so this is not a complete ownership or playtime proof.",
       "display": {
         "label": "Your owned games",
-        "detail": "List of games in your Steam library: name, total playtime, platform playtimes, last-played timestamp (where available), community stats availability."
+        "detail": "Steam-returned games: name, provider-reported total playtime, platform playtimes, last-played timestamp (where available), and community stats availability. Visibility limits are preserved as provider response semantics."
       },
       "semantics": "mutable_state",
       "primary_key": ["id"],
@@ -204,10 +204,10 @@
     },
     {
       "name": "recently_played_games",
-      "description": "Recently played games (last 100).",
+      "description": "Recently played games returned by Steam for the provider-defined recent-play window.",
       "display": {
         "label": "Your recently played games",
-        "detail": "Games played in the last 2 weeks: name, 2-week and total playtime, platform playtimes, last-played timestamp."
+        "detail": "Steam-returned recent games: name, 2-week and provider-reported total playtime, platform playtimes, and last-played timestamp. Visibility limits are preserved as provider response semantics."
       },
       "semantics": "mutable_state",
       "primary_key": ["id"],
@@ -330,7 +330,7 @@
             "x_pdpp_role": "primary-title"
           },
           "player_level": {
-            "type": "integer"
+            "type": ["integer", "null"]
           }
         },
         "required": ["id", "steamid", "player_level"]
