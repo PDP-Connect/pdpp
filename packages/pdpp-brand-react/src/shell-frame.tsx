@@ -44,6 +44,14 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import "./components.css";
+import {
+  IcDialog,
+  IcDialogBackdrop,
+  IcDialogClose,
+  IcDialogPopup,
+  IcDialogPortal,
+  IcDialogTrigger,
+} from "./dialog.tsx";
 import "./shell.css";
 
 // SYNCS_NOTE: the owner-facing "Syncs" group item has no dedicated real route;
@@ -265,87 +273,72 @@ export function RecordroomShell({
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
-  const openDrawer = useCallback(() => setDrawerOpen(true), []);
-
-  // Escape closes the mobile drawer. The ⌘K / Ctrl+K palette shortcut is owned
-  // by EXACTLY ONE listener — the command-palette provider that wraps the
-  // dashboard — so this shell no longer registers its own ⌘K keydown. When both
-  // this shell and the provider listened, a single ⌘K flipped the palette state
-  // twice (net no-op: the palette appeared not to open and never took focus).
-  // The header Jump button still calls `onJump` directly; keyboard toggling is
-  // the provider's job.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        setDrawerOpen(false);
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
 
   return (
-    <div className="rr-app">
-      {/* ─── Desktop sidebar ─── */}
-      <aside className="rr-side">
-        <div className="rr-side__brand">
-          <BrandMark />
-          <span className="rr-side__name">PDPP</span>
-        </div>
-        <nav aria-label="Primary" className="rr-side__nav">
-          <NavList pathname={pathname} />
-        </nav>
-        <div className="rr-side__spacer" />
-        <FootBlock build={build} host={host} />
-      </aside>
-
-      {/* ─── Main column ─── */}
-      <main className="rr-main">
-        <header className="rr-head">
-          <span className="rr-head__brand">
+    <IcDialog modal onOpenChange={setDrawerOpen} open={drawerOpen}>
+      <div className="rr-app">
+        {/* ─── Desktop sidebar ─── */}
+        <aside className="rr-side">
+          <div className="rr-side__brand">
             <BrandMark />
-            <span>PDPP</span>
-          </span>
-          {/* The `{host} · {build}` crumb renders in exactly ONE owner-facing
+            <span className="rr-side__name">PDPP</span>
+          </div>
+          <nav aria-label="Primary" className="rr-side__nav">
+            <NavList pathname={pathname} />
+          </nav>
+          <div className="rr-side__spacer" />
+          <FootBlock build={build} host={host} />
+        </aside>
+
+        {/* ─── Main column ─── */}
+        <main className="rr-main">
+          <header className="rr-head">
+            <span className="rr-head__brand">
+              <BrandMark />
+              <span>PDPP</span>
+            </span>
+            {/* The `{host} · {build}` crumb renders in exactly ONE owner-facing
               place: the sidebar/drawer FootBlock. It used to also render here in
               the header, so the owner saw it twice (top and bottom). Keeping it
               only in the nav footer removes the duplication. */}
-          <div className="rr-head__actions">
-            {/* Jump (⌘K) renders ONLY when a caller wires onJump — no dead
+            <div className="rr-head__actions">
+              {/* Jump (⌘K) renders ONLY when a caller wires onJump — no dead
                 affordance. The ⌘K shortcut itself is owned by the palette
                 provider, not this shell. Pages that mount a command palette
                 pass onJump so the button and the shortcut open the same one. */}
-            {onJump ? (
-              <button className="rr-chrome-btn" onClick={onJump} type="button">
-                Jump <span className="rr-kbd">⌘K</span>
-              </button>
-            ) : null}
-            <button aria-expanded={drawerOpen} className="rr-chrome-btn rr-menu-btn" onClick={openDrawer} type="button">
-              Menu
-            </button>
-          </div>
-        </header>
-        <div className="rr-content">{children}</div>
-      </main>
+              {onJump ? (
+                <button className="rr-chrome-btn" onClick={onJump} type="button">
+                  Jump <span className="rr-kbd">⌘K</span>
+                </button>
+              ) : null}
+              <IcDialogTrigger className="rr-chrome-btn rr-menu-btn" type="button">
+                Menu
+              </IcDialogTrigger>
+            </div>
+          </header>
+          <div className="rr-content">{children}</div>
+        </main>
 
-      {/* ─── Mobile drawer ─── */}
-      {drawerOpen && (
-        <div className="rr-drawer-overlay">
-          {/* A real button is the backdrop so keyboard users get a focusable
-              close affordance; Escape also closes (wired globally above). */}
-          <button aria-label="Close menu" className="rr-drawer-scrim" onClick={closeDrawer} type="button" />
-          <nav aria-label="Primary" className="rr-drawer">
-            <div className="rr-side__brand">
-              <BrandMark />
-              <span className="rr-side__name">PDPP</span>
-            </div>
-            <div className="rr-drawer__nav">
-              <NavList onNavigate={closeDrawer} pathname={pathname} />
-            </div>
-            <FootBlock build={build} host={host} />
-          </nav>
-        </div>
-      )}
-    </div>
+        {/* ─── Mobile drawer ─── */}
+        <IcDialogPortal>
+          <IcDialogBackdrop className="rr-drawer-overlay" />
+          <IcDialogPopup aria-label="Primary navigation" className="rr-drawer">
+            <nav aria-label="Primary">
+              <div className="rr-side__brand">
+                <BrandMark />
+                <span className="rr-side__name">PDPP</span>
+                <IcDialogClose aria-label="Close navigation" className="rr-drawer__close rr-chrome-btn" type="button">
+                  Close
+                </IcDialogClose>
+              </div>
+              <div className="rr-drawer__nav">
+                <NavList onNavigate={closeDrawer} pathname={pathname} />
+              </div>
+              <FootBlock build={build} host={host} />
+            </nav>
+          </IcDialogPopup>
+        </IcDialogPortal>
+      </div>
+    </IcDialog>
   );
 }

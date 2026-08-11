@@ -249,22 +249,10 @@
   width: 100vw;
   height: 100dvh;
   overflow: hidden;
-}
-/* The backdrop is a real button (focusable close affordance), filling the
-   overlay behind the drawer. */
-.rr-drawer-scrim {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  padding: 0;
-  margin: 0;
-  cursor: pointer;
   background: oklch(0 0 0 / 0.5);
-  border: 0;
 }
 @media (prefers-reduced-motion: no-preference) {
-  .rr-drawer-scrim {
+  .rr-drawer-overlay {
     animation: rr-fade-in var(--duration-fast) ease both;
   }
 }
@@ -273,6 +261,7 @@
   top: 0;
   bottom: 0;
   left: 0;
+  z-index: 71;
   display: flex;
   flex-direction: column;
   width: min(300px, 84vw);
@@ -280,6 +269,14 @@
   overflow-y: auto;
   background: color-mix(in oklab, var(--background) 88%, oklch(0 0 0));
   border-right: 1px solid var(--border-strong);
+}
+.rr-drawer > nav {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.rr-drawer__close {
+  margin-left: auto;
 }
 @media (prefers-reduced-motion: no-preference) {
   .rr-drawer {
