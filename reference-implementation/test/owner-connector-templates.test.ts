@@ -117,7 +117,12 @@ async function issueOwnerToken(asUrl: string, subjectId: string = OWNER_SUBJECT_
   return String(tok.access_token);
 }
 
-async function approveClientGrant(asUrl: string, connectorId: string, streamName: string): Promise<string> {
+async function approveClientGrant(
+  asUrl: string,
+  sourceId: string,
+  streamName: string,
+  instanceId: string
+): Promise<string> {
   const par = asRecord(
     (
       await fetchJson(`${asUrl}/oauth/par`, {
@@ -127,8 +132,8 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
               access_mode: "continuous",
               purpose_code: "https://pdpp.dev/purpose/analytics",
               purpose_description: "owner-connector-template boundary test",
-              source: { id: connectorId, kind: "connector" },
-              streams: [{ fields: ["id"], name: streamName }],
+              source: { id: sourceId, kind: "connector" },
+              streams: [{ fields: ["id"], instance_ids: [instanceId], name: streamName }],
               type: "https://pdpp.dev/data-access",
             },
           ],
@@ -299,7 +304,18 @@ test("client grant bearer cannot list owner connector templates", async () => {
     const manifest = await registerConnector(asUrl, loadManifest("spotify"));
     const connectorKey = canonicalConnectorKey(manifest.connector_id);
     assert.ok(connectorKey, "spotify manifest must resolve a canonical connector key");
-    const clientToken = await approveClientGrant(asUrl, connectorKey, "saved_tracks");
+    await seedInstance({
+      connectorId: connectorKey,
+      connectorInstanceId: "cin_spotify_template_auth",
+      displayName: "Spotify auth fixture",
+      sourceBindingKey: "the owner@example.com",
+    });
+    const clientToken = await approveClientGrant(
+      asUrl,
+      String(manifest.connector_id),
+      "saved_tracks",
+      "cin_spotify_template_auth"
+    );
     const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
       headers: { Authorization: `Bearer ${clientToken}` },
     });

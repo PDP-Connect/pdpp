@@ -139,7 +139,12 @@ async function issueOwnerToken(asUrl: string, subjectId: string = OWNER_SUBJECT_
 
 // PAR + consent yields a grant-scoped client-kind bearer (pdpp_token_kind:
 // "client"). These must NOT reach the owner-agent control surface.
-async function approveClientGrant(asUrl: string, connectorId: string, streamName: string): Promise<string> {
+async function approveClientGrant(
+  asUrl: string,
+  sourceId: string,
+  streamName: string,
+  instanceId: string
+): Promise<string> {
   const par = asRecord(
     (
       await fetchJson(`${asUrl}/oauth/par`, {
@@ -149,8 +154,8 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
               access_mode: "continuous",
               purpose_code: "https://pdpp.dev/purpose/analytics",
               purpose_description: "owner-connections boundary test",
-              source: { id: connectorId, kind: "connector" },
-              streams: [{ fields: ["id"], name: streamName }],
+              source: { id: sourceId, kind: "connector" },
+              streams: [{ fields: ["id"], instance_ids: [instanceId], name: streamName }],
               type: "https://pdpp.dev/data-access",
             },
           ],
@@ -570,7 +575,12 @@ test("owner-agent connection listing rejects a client grant token with 403", asy
     // A client grant needs a stream to scope to; amazon's first stream suffices.
     const { streams } = manifest;
     const streamName = String(asRecord(asArray(streams)[0]).name);
-    const clientToken = await approveClientGrant(asUrl, connectorKey, streamName);
+    const clientToken = await approveClientGrant(
+      asUrl,
+      String(manifest.connector_id),
+      streamName,
+      "cin_amazon_personal"
+    );
 
     const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connections`, {
       headers: { Authorization: `Bearer ${clientToken}` },

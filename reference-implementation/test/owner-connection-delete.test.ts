@@ -162,7 +162,12 @@ async function issueOwnerToken(asUrl: string, subjectId = OWNER_SUBJECT_ID): Pro
   return tok.access_token;
 }
 
-async function approveClientGrant(asUrl: string, connectorId: string, streamName: string): Promise<string> {
+async function approveClientGrant(
+  asUrl: string,
+  sourceId: string,
+  streamName: string,
+  instanceId: string
+): Promise<string> {
   const par = (
     await fetchJson(`${asUrl}/oauth/par`, {
       body: JSON.stringify({
@@ -171,8 +176,8 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
             access_mode: "continuous",
             purpose_code: "https://pdpp.dev/purpose/analytics",
             purpose_description: "owner-connection delete boundary test",
-            source: { id: connectorId, kind: "connector" },
-            streams: [{ fields: ["id"], name: streamName }],
+            source: { id: sourceId, kind: "connector" },
+            streams: [{ fields: ["id"], instance_ids: [instanceId], name: streamName }],
             type: "https://pdpp.dev/data-access",
           },
         ],
@@ -853,7 +858,7 @@ test("owner-agent delete leaves disclosure grants untouched (I10)", async () => 
       displayName: "Grantable",
       sourceBindingKey: "g@example.com",
     });
-    await approveClientGrant(asUrl, connectorKey, stream);
+    await approveClientGrant(asUrl, manifest.connector_id, stream, "cin_grantable");
     // The PAR/consent flow records a row in `grants` (status + scope + members
     // live there); delete must not touch it.
     const grantsBefore = getDb().prepare("SELECT grant_id, status FROM grants WHERE status = 'active'").all() as {
@@ -940,7 +945,7 @@ test("owner-agent delete rejects a client grant token with 403 and audits it", a
     // biome-ignore lint/style/useDestructuring: index access documents the asserted ordered position
     const firstStream = manifest.streams[0];
     assert.ok(firstStream, "expected the manifest to declare at least one stream");
-    const clientToken = await approveClientGrant(asUrl, connectorKey, firstStream.name);
+    const clientToken = await approveClientGrant(asUrl, manifest.connector_id, firstStream.name, "cin_cli");
 
     const { status, body: rawBody, resp } = await deleteConnection(rsUrl, clientToken, "/v1/owner/connections/cin_cli");
     const body = rawBody as DeleteResponseBody;

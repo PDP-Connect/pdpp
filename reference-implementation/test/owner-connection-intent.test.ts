@@ -137,7 +137,12 @@ async function issueOwnerToken(asUrl: string, subjectId = OWNER_SUBJECT_ID): Pro
 
 // PAR + consent yields a grant-scoped client-kind bearer (pdpp_token_kind:
 // "client"). These must NOT reach the owner-agent control surface.
-async function approveClientGrant(asUrl: string, connectorId: string, streamName: string): Promise<string> {
+async function approveClientGrant(
+  asUrl: string,
+  sourceId: string,
+  streamName: string,
+  instanceId: string
+): Promise<string> {
   const par = (
     await fetchJson(`${asUrl}/oauth/par`, {
       body: JSON.stringify({
@@ -146,8 +151,8 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
             access_mode: "continuous",
             purpose_code: "https://pdpp.dev/purpose/analytics",
             purpose_description: "owner-connection intent boundary test",
-            source: { id: connectorId, kind: "connector" },
-            streams: [{ fields: ["id"], name: streamName }],
+            source: { id: sourceId, kind: "connector" },
+            streams: [{ fields: ["id"], instance_ids: [instanceId], name: streamName }],
             type: "https://pdpp.dev/data-access",
           },
         ],
@@ -864,8 +869,14 @@ test("owner-agent intent rejects a client grant token with 403 and audits the fa
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
+    await seedInstance({
+      connectorId: "codex",
+      connectorInstanceId: "cin_codex_client_auth",
+      displayName: "Codex auth fixture",
+      sourceBindingKey: "the owner@example.com",
+    });
     const streamName = manifest.streams?.[0]?.name || "sessions";
-    const clientToken = await approveClientGrant(asUrl, "codex", streamName);
+    const clientToken = await approveClientGrant(asUrl, manifest.connector_id, streamName, "cin_codex_client_auth");
 
     const { status, body: rawBody, resp } = await createIntent(rsUrl, clientToken, { connector_id: "codex" });
     const body = rawBody as IntentResponseBody;
