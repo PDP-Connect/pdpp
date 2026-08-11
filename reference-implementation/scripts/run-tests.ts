@@ -24,6 +24,7 @@ import {
   isDedicatedPostgresTestDatabaseName,
 } from "../test/helpers/dedicated-postgres-test-url.ts";
 import { deriveDedicatedPostgresDbNameForFile } from "./dedicated-postgres-db-name.ts";
+import { startFileProcessWatchdog } from "./file-process-watchdog.ts";
 import type { ProcessEnvLike } from "./test-env.ts";
 import { buildScrubbedTestEnv } from "./test-env.ts";
 import { storageProfileEnvironment } from "./test-profile-env.ts";
@@ -62,10 +63,36 @@ const forwardedArgs =
 // fully green file. Bounded termination for a genuinely hung file (a leaked
 // handle after every test has already finished) is instead enforced by this
 // runner's own watchdog in runNodeTest(), which lets a normal run exit on
-// its own (draining reporter output completely) and only signals a child
-// that fails to exit within PER_FILE_TIMEOUT_MS.
+// its own (draining reporter output completely) and signals a child that
+// either stops producing output or exceeds a separate absolute deadline.
 const effectiveArgs = forwardedArgs;
-const PER_FILE_TIMEOUT_MS = Number.parseInt(process.env.PDPP_TEST_FILE_TIMEOUT_MS || "", 10) || 120_000;
+const DEFAULT_PER_FILE_IDLE_TIMEOUT_MS = 120_000;
+// cli.test.ts took about 343s in isolation, and collection-profile.test.ts
+// exceeded the former 480s wall-clock limit while still producing reporter
+// events. Fifteen minutes leaves measured headroom and remains below one
+// third of the 45-minute CI job limit.
+const DEFAULT_PER_FILE_HARD_TIMEOUT_MS = 900_000;
+
+function readPositiveTimeout(name: string, fallbackMs: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") {
+    return fallbackMs;
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive safe integer number of milliseconds`);
+  }
+  return value;
+}
+
+const PER_FILE_IDLE_TIMEOUT_MS = readPositiveTimeout("PDPP_TEST_FILE_TIMEOUT_MS", DEFAULT_PER_FILE_IDLE_TIMEOUT_MS);
+const PER_FILE_HARD_TIMEOUT_MS = readPositiveTimeout(
+  "PDPP_TEST_FILE_HARD_TIMEOUT_MS",
+  DEFAULT_PER_FILE_HARD_TIMEOUT_MS
+);
+if (PER_FILE_HARD_TIMEOUT_MS < PER_FILE_IDLE_TIMEOUT_MS) {
+  throw new Error("PDPP_TEST_FILE_HARD_TIMEOUT_MS must be greater than or equal to PDPP_TEST_FILE_TIMEOUT_MS");
+}
 if (!effectiveArgs.some((arg) => arg === "--test-reporter" || arg.startsWith("--test-reporter="))) {
   effectiveArgs.push(
     `--test-reporter=${fileURLToPath(new URL("../../scripts/test-accounting/node-reporter.ts", import.meta.url))}`
@@ -294,31 +321,26 @@ async function runNodeTest(filePath: string, extraArgs: string[]): Promise<NodeT
       stdio: ["ignore", "pipe", "pipe"],
     });
     let output = "";
-    let timedOut = false;
 
-    // Watchdog: a normal run drains its reporter stream and exits on its
-    // own well within this window, so the timer never fires and never
-    // touches the child. It only acts on a file that is genuinely stuck
-    // (e.g. a leaked handle keeping the event loop alive after every test
-    // already finished) — the case --test-force-exit used to (mis)handle by
-    // truncating the reporter's event stream for every run, not just hung
-    // ones. SIGKILL (not SIGTERM) because a hang implies the process isn't
-    // responding to its own event loop, so a graceful signal isn't reliable.
-    const watchdog = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, PER_FILE_TIMEOUT_MS);
-    watchdog.unref?.();
+    // Reporter output proves that a long file is still making progress. The
+    // hard deadline separately bounds a chatty process that never exits.
+    const watchdog = startFileProcessWatchdog({
+      hardDeadlineMs: PER_FILE_HARD_TIMEOUT_MS,
+      idleBudgetMs: PER_FILE_IDLE_TIMEOUT_MS,
+      kill: () => child.kill("SIGKILL"),
+    });
 
     child.stdout?.on("data", (chunk: Buffer) => {
+      watchdog.markProgress();
       output += chunk.toString();
     });
     child.stderr?.on("data", (chunk: Buffer) => {
+      watchdog.markProgress();
       output += chunk.toString();
     });
 
     child.on("error", (err) => {
-      clearTimeout(watchdog);
+      watchdog.clear();
       if (allocation) {
         allocation.release().finally(() => reject(err));
       } else {
@@ -326,10 +348,23 @@ async function runNodeTest(filePath: string, extraArgs: string[]): Promise<NodeT
       }
     });
     child.on("exit", (code, signal) => {
-      clearTimeout(watchdog);
+      watchdog.clear();
       const finish = () => {
-        if (timedOut) {
-          reject(new Error(`Test process for ${filePath} timed out after ${PER_FILE_TIMEOUT_MS}ms and was killed`));
+        const timeoutReason = watchdog.timeoutReason();
+        if (timeoutReason === "idle") {
+          reject(
+            new Error(
+              `Test process for ${filePath} timed out after ${PER_FILE_IDLE_TIMEOUT_MS}ms without child output and was killed`
+            )
+          );
+          return;
+        }
+        if (timeoutReason === "hard") {
+          reject(
+            new Error(
+              `Test process for ${filePath} exceeded the ${PER_FILE_HARD_TIMEOUT_MS}ms hard deadline and was killed`
+            )
+          );
           return;
         }
         if (signal) {
