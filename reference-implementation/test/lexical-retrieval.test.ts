@@ -42,6 +42,7 @@ import test from "node:test";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { closePostgresStorage } from "../server/postgres-storage.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { buildSearchPlanForGrant, parseSearchParams } from "../server/search.ts";
 
 // ─── harness ────────────────────────────────────────────────────────────────
@@ -206,14 +207,32 @@ interface ParInitiateResponse {
 }
 
 interface ApprovedGrantResponse {
+  grant?: { streams?: Array<{ fields?: string[]; name?: string }> };
   token: string;
+}
+
+function withCoreSourceDeclaration<
+  T extends { connector_id: string; display_name: string; protocol_version: string; streams: unknown[] },
+>(manifest: T) {
+  return {
+    ...manifest,
+    manifest_uri: `https://implementations.example/connectors/${manifest.connector_id}`,
+    source_declaration: {
+      declaration_version: `${manifest.connector_id}-declaration-v1`,
+      display: { name: manifest.display_name },
+      protocol_version: manifest.protocol_version,
+      publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
+      source: { id: `https://registry.pdpp.dev/connectors/${manifest.connector_id}`, kind: "connector" },
+      streams: manifest.streams,
+    },
+  };
 }
 
 // Two manifests with declared lexical_fields, designed to exercise
 // cross-connector owner mode AND a stream name shared across both
 // connectors. These are inline so the tests don't depend on any seed
 // manifest beyond what they explicitly install.
-const REDDITISH_MANIFEST_A = {
+const REDDITISH_MANIFEST_A = withCoreSourceDeclaration({
   capabilities: { human_interaction: ["credentials"] },
   connector_id: "redditish-a",
   display_name: "Redditish A",
@@ -240,7 +259,7 @@ const REDDITISH_MANIFEST_A = {
           subreddit: { type: "string" },
           title: { type: "string" },
         },
-        required: ["id", "title"],
+        required: ["id"],
         type: "object",
       },
       selection: { fields: true, resources: false },
@@ -284,9 +303,9 @@ const REDDITISH_MANIFEST_A = {
     },
   ],
   version: "1.0.0",
-};
+});
 
-const REDDITISH_MANIFEST_B = {
+const REDDITISH_MANIFEST_B = withCoreSourceDeclaration({
   capabilities: { human_interaction: ["credentials"] },
   connector_id: "redditish-b",
   display_name: "Redditish B",
@@ -320,7 +339,7 @@ const REDDITISH_MANIFEST_B = {
     },
   ],
   version: "1.0.0",
-};
+});
 
 async function issueOwnerToken(asUrl: string, subjectId = "owner_local"): Promise<string> {
   const clientId = "cli_longview";
@@ -351,22 +370,22 @@ async function issueOwnerToken(asUrl: string, subjectId = "owner_local"): Promis
 interface ApproveClientGrantParams {
   access_mode: string;
   client_id: string;
-  connector_id: string;
   purpose_code: string;
   purpose_description: string;
+  source_id: string;
   streams: Array<{ fields?: string[]; name: string }>;
   subject_id?: string;
 }
 
 async function approveClientGrant(asUrl: string, params: ApproveClientGrantParams): Promise<ApprovedGrantResponse> {
-  const { body: initiate } = await fetchJson<ParInitiateResponse>(`${asUrl}/oauth/par`, {
+  const { body: initiate, status: initiateStatus } = await fetchJson<ParInitiateResponse>(`${asUrl}/oauth/par`, {
     body: JSON.stringify({
       authorization_details: [
         {
           access_mode: params.access_mode,
           purpose_code: params.purpose_code,
           purpose_description: params.purpose_description,
-          source: { id: params.connector_id, kind: "connector" },
+          source: { id: params.source_id, kind: "connector" },
           streams: params.streams,
           type: "https://pdpp.dev/data-access",
         },
@@ -376,13 +395,19 @@ async function approveClientGrant(asUrl: string, params: ApproveClientGrantParam
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
+  assert.equal(initiateStatus, 201, JSON.stringify(initiate));
   assert.ok(initiate, "PAR initiate response body");
-  const { body: approved } = await fetchJson<ApprovedGrantResponse>(`${asUrl}/consent/approve`, {
-    body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: params.subject_id || "owner_local" }),
-    headers: { "Content-Type": "application/json" },
-    method: "POST",
-  });
+  const { body: approved, status: approvalStatus } = await fetchJson<ApprovedGrantResponse>(
+    `${asUrl}/consent/approve`,
+    {
+      body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: params.subject_id || "owner_local" }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    }
+  );
+  assert.equal(approvalStatus, 200, JSON.stringify(approved));
   assert.ok(approved, "consent approve response body");
+  assert.ok(approved.token, "consent approval token");
   return approved;
 }
 
@@ -454,6 +479,12 @@ async function withHarness(opts: WithHarnessOpts, fn: (ctx: HarnessContext) => P
         method: "POST",
       });
       assert.equal(reg.status, 201, `register ${manifest.connector_id}`);
+      await createRequestConnectorInstanceStore().ensureDefaultAccountConnection({
+        connectorId: manifest.connector_id,
+        displayName: `${manifest.display_name} test account`,
+        now: new Date().toISOString(),
+        ownerSubjectId: "owner_local",
+      });
     }
     await fn({ asUrl, rsUrl, server });
   } finally {
@@ -917,9 +948,9 @@ test("filtered lexical search rejects invalid filter shapes and still-forbidden 
     const approved = await approveClientGrant(asUrl, {
       access_mode: "continuous",
       client_id: "longview",
-      connector_id: connectorA,
       purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "lexical filtered retrieval test",
+      source_id: REDDITISH_MANIFEST_A.source_declaration.source.id,
       streams: [{ fields: ["id", "title", "source_created_at"], name: "posts" }],
     });
     const unauthorized = await fetchJson<ErrorEnvelopeResponse>(
@@ -984,9 +1015,9 @@ test("client-token streams[] not in grant returns grant_stream_not_allowed", asy
     const approved = await approveClientGrant(asUrl, {
       access_mode: "continuous",
       client_id: "longview",
-      connector_id: connectorA,
       purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "lexical retrieval test",
+      source_id: REDDITISH_MANIFEST_A.source_declaration.source.id,
       streams: [{ fields: ["id", "title"], name: "posts" }], // posts only
     });
 
@@ -1000,14 +1031,14 @@ test("client-token streams[] not in grant returns grant_stream_not_allowed", asy
   });
 });
 
-test("a persisted client grant for a removed stream closes every retrieval route before its adapter", async () => {
+test("a current manifest without a granted stream returns typed not found on every retrieval route", async () => {
   await withHarness({}, async ({ asUrl, rsUrl }) => {
     const approved = await approveClientGrant(asUrl, {
       access_mode: "continuous",
       client_id: "longview",
-      connector_id: REDDITISH_MANIFEST_A.connector_id,
       purpose_code: "https://pdpp.dev/purpose/analytics",
-      purpose_description: "stale grant authority regression",
+      purpose_description: "current serving metadata regression",
+      source_id: REDDITISH_MANIFEST_A.source_declaration.source.id,
       streams: [{ fields: ["id", "title"], name: "posts" }],
     });
     const currentManifest = {
@@ -1030,9 +1061,9 @@ test("a persisted client grant for a removed stream closes every retrieval route
       const { status, body } = await fetchJson<ErrorEnvelopeResponse>(`${rsUrl}${path}`, {
         headers: { Authorization: `Bearer ${approved.token}` },
       });
-      assert.equal(status, 403, path);
+      assert.equal(status, 404, `${path}: ${JSON.stringify(body)}`);
       assert.ok(body, `error response body for ${path}`);
-      assert.equal(body.error.code, "grant_invalid", path);
+      assert.equal(body.error.code, "stream_not_declared", path);
     }
   });
 });
@@ -1110,9 +1141,9 @@ test("client grant authorizing only one of two declared lexical_fields restricts
     const approved = await approveClientGrant(asUrl, {
       access_mode: "continuous",
       client_id: "longview",
-      connector_id: connectorA,
       purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "lexical retrieval test",
+      source_id: REDDITISH_MANIFEST_A.source_declaration.source.id,
       streams: [{ fields: ["id", "title"], name: "posts" }],
     });
 
@@ -1197,11 +1228,12 @@ test("grant with zero overlap on searchable fields contributes zero hits and no 
     const approved = await approveClientGrant(asUrl, {
       access_mode: "continuous",
       client_id: "longview",
-      connector_id: connectorA,
       purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "lexical retrieval test",
+      source_id: REDDITISH_MANIFEST_A.source_declaration.source.id,
       streams: [{ fields: ["id"], name: "posts" }],
     });
+    assert.deepEqual(approved.grant?.streams?.[0]?.fields, ["id"], "issued grant keeps the approved field boundary");
     const { status, body } = await fetchJson<SearchListResponse>(`${rsUrl}/v1/search?q=apricot`, {
       headers: { Authorization: `Bearer ${approved.token}` },
     });
