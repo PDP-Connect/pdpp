@@ -128,8 +128,8 @@ function requireNonEmpty(value: string | null | undefined, code: string, label: 
   return value.trim();
 }
 
-function verifySignature(secret: string, timestamp: string, body: string, signature: string): void {
-  const expected = `sha256=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}`;
+function verifySignature(secret: string, eventId: string, timestamp: string, body: string, signature: string): void {
+  const expected = `sha256=${createHmac("sha256", secret).update(`${eventId}.${timestamp}.${body}`).digest("hex")}`;
   const expectedBuffer = Buffer.from(expected);
   const actualBuffer = Buffer.from(signature);
   if (expectedBuffer.length !== actualBuffer.length || !timingSafeEqual(expectedBuffer, actualBuffer)) {
@@ -172,7 +172,7 @@ export async function executeSourceWebhook(
     throw new SourceWebhookError("stale_timestamp", "webhook timestamp is outside the accepted window", 401);
   }
 
-  verifySignature(secret, timestamp, input.body, signature);
+  verifySignature(secret, eventId, timestamp, input.body, signature);
   const payload = parseBody(input.body);
   const resolvedConnectorId = deps.resolveConnectorId?.(sourceId) || sourceId;
   // Canonicalize at the operation boundary: the configured connector id (from
