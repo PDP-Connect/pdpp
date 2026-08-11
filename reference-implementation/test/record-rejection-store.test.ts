@@ -25,9 +25,9 @@ import {
   deletePostgresRecordRejectionsForConnectionWithClient,
   deleteSqliteRecordRejectionsForConnectionWithinTransaction,
   insertOrReplaySqliteRecordRejection,
-  recordRejectionOwnerQuotaBytes,
   RECORD_REJECTION_OWNER_QUOTA_ENV,
   RecordRejectionStoreError,
+  recordRejectionOwnerQuotaBytes,
 } from "../server/stores/record-rejection-store.ts";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
