@@ -21,15 +21,30 @@ import {
 } from "../server/postgres-storage.ts";
 import {
   createRecordRejectionStore,
+  DEFAULT_RECORD_REJECTION_OWNER_QUOTA_BYTES,
   deletePostgresRecordRejectionsForConnectionWithClient,
   deleteSqliteRecordRejectionsForConnectionWithinTransaction,
   insertOrReplaySqliteRecordRejection,
+  recordRejectionOwnerQuotaBytes,
+  RECORD_REJECTION_OWNER_QUOTA_ENV,
   RecordRejectionStoreError,
 } from "../server/stores/record-rejection-store.ts";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 const execFileAsync = promisify(execFile);
 const SHA256_HEX_RE = /^[a-f0-9]{64}$/;
+
+test("deployment quota configuration is explicit, byte-based, and fails closed when malformed", () => {
+  assert.equal(recordRejectionOwnerQuotaBytes({}), DEFAULT_RECORD_REJECTION_OWNER_QUOTA_BYTES);
+  assert.equal(recordRejectionOwnerQuotaBytes({ [RECORD_REJECTION_OWNER_QUOTA_ENV]: "0" }), 0);
+  assert.equal(recordRejectionOwnerQuotaBytes({ [RECORD_REJECTION_OWNER_QUOTA_ENV]: "1048576" }), 1_048_576);
+  for (const configured of ["-1", "1.5", "Infinity", "ten-megabytes"]) {
+    assert.throws(
+      () => recordRejectionOwnerQuotaBytes({ [RECORD_REJECTION_OWNER_QUOTA_ENV]: configured }),
+      (error) => error instanceof RecordRejectionStoreError && error.code === "invalid_quota"
+    );
+  }
+});
 
 function now() {
   return new Date().toISOString();

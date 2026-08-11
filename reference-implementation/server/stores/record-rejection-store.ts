@@ -8,7 +8,8 @@ import { HOSTED_INGEST_MAX_LINE_BYTES } from "../hosted-ingest-limits.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
 
 export const RECORD_REJECTION_GENERATION = "record-rejection-v1";
-const DEFAULT_OWNER_QUOTA_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_RECORD_REJECTION_OWNER_QUOTA_BYTES = 10 * 1024 * 1024;
+export const RECORD_REJECTION_OWNER_QUOTA_ENV = "PDPP_RECORD_REJECTION_OWNER_QUOTA_BYTES";
 const MAX_PAGE_SIZE = 100;
 
 export class RecordRejectionStoreError extends Error {
@@ -110,9 +111,27 @@ function newReceiptId(): string {
   return `rr_${randomBytes(18).toString("base64url")}`;
 }
 
+export function recordRejectionOwnerQuotaBytes(
+  env: Readonly<Record<string, string | undefined>> = process.env
+): number {
+  const raw = env[RECORD_REJECTION_OWNER_QUOTA_ENV];
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_RECORD_REJECTION_OWNER_QUOTA_BYTES;
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RecordRejectionStoreError(
+      "invalid_quota",
+      `${RECORD_REJECTION_OWNER_QUOTA_ENV} must be a non-negative safe integer byte count.`,
+      { retryable: false }
+    );
+  }
+  return value;
+}
+
 function normalizeQuota(value: number | undefined): number {
   if (value === undefined) {
-    return DEFAULT_OWNER_QUOTA_BYTES;
+    return recordRejectionOwnerQuotaBytes();
   }
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new RecordRejectionStoreError(
