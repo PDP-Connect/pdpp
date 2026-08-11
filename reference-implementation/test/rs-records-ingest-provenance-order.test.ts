@@ -127,7 +127,9 @@ test("rs.records.ingest preserves store/provenance order inside a batch", async 
   assert.deepEqual(response.body, {
     errors: [],
     records_accepted: 2,
+    records_attempted: 2,
     records_rejected: 0,
+    rejections: [],
     stream: "messages",
   });
 });

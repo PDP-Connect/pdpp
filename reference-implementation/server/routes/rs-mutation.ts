@@ -75,11 +75,13 @@ import {
 import {
   executeRecordsIngest,
   type IngestLineFailure,
+  type InsertOrReplayRejectionInput,
   type RecordsIngestDependencies,
   RecordsIngestInvalidRequestError,
   RecordsIngestNotFoundError,
   type RecordsIngestOutput,
   RecordsIngestSystemicFailureError,
+  type RejectionReceipt,
 } from "../../operations/rs-records-ingest/index.ts";
 import { canonicalConnectorKey } from "../connector-key.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
@@ -265,9 +267,13 @@ function batchOutcomeError(outcome: unknown): IngestLineFailure | null {
   }
   const result = outcome as { accepted?: unknown; error?: unknown };
   if (result.error && typeof result.error === "object") {
-    const structured = result.error as { message?: unknown; retryable?: unknown };
+    const structured = result.error as { code?: unknown; message?: unknown; retryable?: unknown };
     if (typeof structured.message === "string") {
-      return { message: structured.message, retryable: structured.retryable !== false };
+      return {
+        ...(typeof structured.code === "string" ? { code: structured.code } : {}),
+        message: structured.message,
+        retryable: structured.retryable !== false,
+      };
     }
   }
   if (typeof result.error === "string") {
@@ -425,6 +431,7 @@ export interface MountRsMutationContext {
   readonly getLatestAcquisitionBatchForConnection?: (
     connectorInstanceId: string
   ) => Promise<AcquisitionBatchLike | null> | AcquisitionBatchLike | null;
+  readonly getOwnerTokenSubjectId?: (req: RouteRequest) => string;
   readonly getSyncState: (target: StorageTargetLike, args: unknown) => Promise<unknown>;
 
   // Capability: error handler for untyped errors
@@ -445,6 +452,16 @@ export interface MountRsMutationContext {
     afterRecord?: (record: unknown, outcome: unknown) => Promise<void>,
     options?: { requireConnectionAdmission?: boolean; runId?: string | null }
   ) => Promise<readonly unknown[]>;
+  readonly insertOrReplayRecordRejection?: (input: {
+    code: string;
+    connectorId: string;
+    connectorInstanceId: string;
+    inputIndex: number;
+    ownerSubjectId: string;
+    rawLine: string;
+    runId?: string | null;
+    stream: string;
+  }) => Promise<RejectionReceipt> | RejectionReceipt;
   // Every other owner-connection mutation route (revoke, reactivate,
   // schedule, run, rename, delete — see routes/owner-connection-*.ts,
   // ref-connectors.ts) invalidates the dashboard/Sources/Syncs summary cache
@@ -519,6 +536,35 @@ export interface MountRsMutationContext {
 
   // Capability: format the state response
   readonly toPublicConnectorStateProjection: (state: unknown) => unknown;
+}
+
+function insertHostedRejectionReceipt(
+  ctx: MountRsMutationContext,
+  req: RouteRequest,
+  input: InsertOrReplayRejectionInput,
+  namespace: ConnectorNamespaceLike,
+  runId: string | null
+): Promise<RejectionReceipt> | RejectionReceipt {
+  if (!ctx.insertOrReplayRecordRejection) {
+    throw new Error("hosted rejection receipt persistence is not configured");
+  }
+  const ownerSubjectId = ctx.getOwnerTokenSubjectId?.(req) ?? req.tokenInfo?.subject_id;
+  if (!ownerSubjectId) {
+    throw new Error("owner-token subject is not available for rejection receipt persistence");
+  }
+  if (!namespace.connectorInstanceId) {
+    throw new Error("connector instance is required for rejection receipt persistence");
+  }
+  return ctx.insertOrReplayRecordRejection({
+    code: input.code,
+    connectorId: namespace.connectorId ?? input.connectorId,
+    connectorInstanceId: namespace.connectorInstanceId,
+    inputIndex: input.inputIndex,
+    ownerSubjectId,
+    rawLine: input.rawLine,
+    runId,
+    stream: input.stream,
+  });
 }
 
 // POST /v1/blobs
@@ -1196,6 +1242,15 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
               },
             }
           : {}),
+        insertOrReplayRejection: async (input) => {
+          const namespace =
+            storageNamespace ??
+            (await ctx.resolveOwnerConnectorNamespace(req, input.connectorId, {
+              ...draftAdmission(connectorInstanceId),
+              connectorInstanceId,
+            }));
+          return insertHostedRejectionReceipt(ctx, req, input, namespace, runId);
+        },
       };
       let output: RecordsIngestOutput;
       try {
@@ -1209,6 +1264,8 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
             body: rawBody,
             connectorId,
             connectorInstanceId,
+            hostedRejectionReceipts: true,
+            runId,
             // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
             streamName: req.params.stream ?? "",
           },
