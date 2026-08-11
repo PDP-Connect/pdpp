@@ -468,6 +468,23 @@ function buildCredentialResolutionFailure(
   };
 }
 
+function buildRunAdmissionFailure(connectorId: string, message: string, connectorInstanceId?: string): RunRecord {
+  return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt: nowIso(),
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    error: `run_connection_admission_failed: ${message}`,
+    failureReason: "permission_error",
+    knownGaps: [],
+    recordsEmitted: 0,
+    source: buildScheduledRunSource(connectorId),
+    startedAt: nowIso(),
+    status: "failed",
+  };
+}
+
 const OWNER_REPAIR_CREDENTIAL_CODES = new Set(["credential_not_found", "credential_revoked", "credential_rejected"]);
 
 function ownerRepairCredentialCode(err: unknown): string | null {
@@ -1132,13 +1149,14 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   async function resolveLaunchCredentials(
     connectorId: string,
     connectorInstanceId: string,
+    ownerSubjectId: string,
     isManual: boolean
   ): Promise<{ env: Record<string, string> | null } | { earlyReturn: RunRecord }> {
     if (!resolveStaticSecretRunEnv) {
       return { env: null };
     }
     try {
-      return { env: await resolveStaticSecretRunEnv({ connectorId, connectorInstanceId }) };
+      return { env: await resolveStaticSecretRunEnv({ connectorId, connectorInstanceId, ownerSubjectId }) };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       persistLastRunTime(connectorId, connectorInstanceId, Date.now());
@@ -1155,6 +1173,31 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         };
       }
       return { earlyReturn: buildCredentialResolutionFailure(connectorId, message, connectorInstanceId) };
+    }
+  }
+
+  async function admitScheduledRunConnection(
+    connectorId: string,
+    connectorInstanceId: string,
+    ownerSubjectId: string
+  ): Promise<void> {
+    if (!admitRunConnection) {
+      if (resolveStaticSecretRunEnv) {
+        throw new Error("scheduler run connection admission is required before credential resolution");
+      }
+      return;
+    }
+    const admittedConnection = await admitRunConnection({
+      connectorId,
+      connectorInstanceId,
+      ownerSubjectId,
+    });
+    if (
+      admittedConnection.connectorId !== connectorId ||
+      admittedConnection.connectorInstanceId !== connectorInstanceId ||
+      admittedConnection.ownerSubjectId !== ownerSubjectId
+    ) {
+      throw new Error("scheduler run admission did not authorize the claimed owner connection");
     }
   }
 
@@ -1234,7 +1277,14 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     } = schedule;
     const persistState = grantAccessMode !== "single_use";
 
-    const credentials = await resolveLaunchCredentials(connectorId, connectorInstanceId, isManual);
+    try {
+      await admitScheduledRunConnection(connectorId, connectorInstanceId, ownerSubjectId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return recordAndNotify(buildRunAdmissionFailure(connectorId, message, connectorInstanceId));
+    }
+
+    const credentials = await resolveLaunchCredentials(connectorId, connectorInstanceId, ownerSubjectId, isManual);
     if ("earlyReturn" in credentials) {
       return recordAndNotify(credentials.earlyReturn);
     }

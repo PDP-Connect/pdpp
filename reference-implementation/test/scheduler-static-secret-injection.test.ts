@@ -617,6 +617,12 @@ test("scheduled launch defers for owner repair when source-scoped credential is 
   const completedRuns: RunRecord[] = [];
 
   const scheduler = createScheduler({
+    admitRunConnection: (input) =>
+      Promise.resolve({
+        connectorId: input.connectorId,
+        connectorInstanceId: input.connectorInstanceId ?? "cin_github_missing",
+        ownerSubjectId: input.ownerSubjectId ?? "owner_local",
+      }),
     connectors: [
       {
         connectorId: "github",

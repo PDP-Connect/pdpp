@@ -187,6 +187,7 @@ export interface MountRefStaticSecretCredentialsContext {
         status: string | null;
       };
     };
+    ownerSubjectId: string;
     requiredActions: readonly AutoResumeRequiredAction[];
   }) => Promise<AutoResumeResult> | AutoResumeResult;
   // Canonicalize a connector id/key (strip the registry prefix) so the probe
@@ -296,7 +297,8 @@ function credentialRepairAction(): AutoResumeRequiredAction {
 async function autoResumeAfterCredentialCapture(
   ctx: MountRefStaticSecretCredentialsContext,
   namespace: ConnectorNamespace,
-  credential: CredentialMetadata
+  credential: CredentialMetadata,
+  ownerSubjectId: string
 ): Promise<AutoResumeResult | null> {
   if (typeof ctx.autoResumeSatisfiedActions !== "function") {
     return null;
@@ -313,6 +315,7 @@ async function autoResumeAfterCredentialCapture(
           status: credential.status ?? null,
         },
       },
+      ownerSubjectId,
       requiredActions: [credentialRepairAction()],
     });
   } catch (err) {
@@ -940,7 +943,7 @@ async function storeAndRespond(
     credentialKind: string | null;
     deduplicated?: boolean;
     namespace: ConnectorNamespace;
-    ownerSubjectId: string | null;
+    ownerSubjectId: string;
     probedIdentity: { detail: string | null; identity: string } | null;
     secret: string;
   }
@@ -952,11 +955,11 @@ async function storeAndRespond(
     connectorInstanceId: args.namespace.connectorInstanceId,
     credentialKind: args.credentialKind ?? "",
     now,
-    ownerSubjectId: args.ownerSubjectId ?? "",
+    ownerSubjectId: args.ownerSubjectId,
     secret: args.secret,
   });
   const rotated = Boolean(previous);
-  const autoResume = await autoResumeAfterCredentialCapture(ctx, args.namespace, metadata);
+  const autoResume = await autoResumeAfterCredentialCapture(ctx, args.namespace, metadata, args.ownerSubjectId);
   await emitCaptureAudit(ctx, req, res, {
     connectionId: args.namespace.connectorInstanceId,
     connectorId: args.namespace.connectorId,

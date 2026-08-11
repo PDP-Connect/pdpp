@@ -288,6 +288,7 @@ export interface AutoResumeSatisfiedActionsInput {
   connectorInstanceId?: string;
   evidence: SatisfactionEvidenceBag;
   manifest?: ConnectorManifest;
+  ownerSubjectId: string;
   ownerToken?: string;
   requiredActions: readonly RequiredAction[];
   rsUrl?: string;
@@ -312,6 +313,7 @@ function buildAutoResumeRunNowOptions(
 ): RunNowOptions {
   const options: RunNowOptions = {
     connectorInstanceId,
+    ownerSubjectId: input.ownerSubjectId,
     priorityClass: "interactive",
     // Credential capture is an owner-session setup operation. Its exact draft
     // is intentionally admitted through the setup capability before the run

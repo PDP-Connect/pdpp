@@ -30,6 +30,11 @@ import {
   createPostgresConnectorInstanceCredentialStore,
   createSqliteConnectorInstanceCredentialStore,
 } from "../server/stores/connector-instance-credential-store.ts";
+import {
+  admitOwnerRunConnection,
+  createPostgresConnectorInstanceStore,
+  createSqliteConnectorInstanceStore,
+} from "../server/stores/connector-instance-store.ts";
 import { resolveStaticSecretRunEnv } from "../server/stores/static-secret-run-credentials.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
@@ -55,6 +60,7 @@ const BACKGROUND_SAFE_MANIFEST = {
 type CredentialStore =
   | ReturnType<typeof createPostgresConnectorInstanceCredentialStore>
   | ReturnType<typeof createSqliteConnectorInstanceCredentialStore>;
+type OwnerIsolationConnectorInstanceStore = Parameters<typeof admitOwnerRunConnection>[0]["connectorInstanceStore"];
 
 interface SeedConnection {
   connectorInstanceId: string;
@@ -173,22 +179,30 @@ function makeSchedule(
 async function runSchedules({
   connectors,
   credentialStore,
+  connectorInstanceStore,
 }: {
   connectors: readonly ConnectorSchedule[];
+  connectorInstanceStore: OwnerIsolationConnectorInstanceStore;
   credentialStore: CredentialStore;
 }): Promise<OwnerScenarioResult> {
   const records: RunRecord[] = [];
   const resolverCalls: OwnerScenarioResult["resolverCalls"] = [];
   const scheduler = createScheduler({
-    admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
+    admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
       if (typeof ownerSubjectId !== "string") {
         throw new Error("test admission requires a scheduler ownerSubjectId");
       }
-      return Promise.resolve({
+      const namespace = await admitOwnerRunConnection({
         connectorId,
-        connectorInstanceId: connectorInstanceId ?? connectors[0]?.connectorInstanceId ?? CONNECTOR_ID,
+        connectorInstanceId,
+        connectorInstanceStore,
         ownerSubjectId,
       });
+      return {
+        connectorId: namespace.connectorId,
+        connectorInstanceId: namespace.connectorInstanceId,
+        ownerSubjectId: namespace.ownerSubjectId,
+      };
     },
     connectors,
     getState: async () => null,
@@ -221,7 +235,10 @@ async function runSchedules({
   }
 }
 
-async function assertOwnerIsolation(credentialStore: CredentialStore): Promise<void> {
+async function assertOwnerIsolation(
+  credentialStore: CredentialStore,
+  connectorInstanceStore: OwnerIsolationConnectorInstanceStore
+): Promise<void> {
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-owner-isolation-"));
   try {
     const snapshotA = join(tmpDir, "owner-a.json");
@@ -229,6 +246,7 @@ async function assertOwnerIsolation(credentialStore: CredentialStore): Promise<v
     const connectorA = writeSnapshotConnector(tmpDir, "owner-a", snapshotA, join(tmpDir, "owner-a.spawned"));
     const connectorB = writeSnapshotConnector(tmpDir, "owner-b", snapshotB, join(tmpDir, "owner-b.spawned"));
     const result = await runSchedules({
+      connectorInstanceStore,
       connectors: [makeSchedule(INSTANCE_A, OWNER_A, connectorA), makeSchedule(INSTANCE_B, OWNER_B, connectorB)],
       credentialStore,
     });
@@ -262,13 +280,17 @@ async function assertOwnerIsolation(credentialStore: CredentialStore): Promise<v
   }
 }
 
-async function assertBlankOwnerFailsBeforeResolveAndSpawn(credentialStore: CredentialStore): Promise<void> {
+async function assertBlankOwnerFailsBeforeResolveAndSpawn(
+  credentialStore: CredentialStore,
+  connectorInstanceStore: OwnerIsolationConnectorInstanceStore
+): Promise<void> {
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-owner-blank-"));
   const snapshotPath = join(tmpDir, "blank.json");
   const spawnMarkerPath = join(tmpDir, "blank.spawned");
   try {
     const connectorPath = writeSnapshotConnector(tmpDir, "blank-owner", snapshotPath, spawnMarkerPath);
     const result = await runSchedules({
+      connectorInstanceStore,
       connectors: [makeSchedule(INSTANCE_A, "   ", connectorPath)],
       credentialStore,
     });
@@ -283,7 +305,10 @@ async function assertBlankOwnerFailsBeforeResolveAndSpawn(credentialStore: Crede
   }
 }
 
-async function assertWrongOwnerFailsBeforeDecryptAndSpawn(credentialStore: CredentialStore): Promise<void> {
+async function assertWrongOwnerFailsBeforeDecryptAndSpawn(
+  credentialStore: CredentialStore,
+  connectorInstanceStore: OwnerIsolationConnectorInstanceStore
+): Promise<void> {
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-owner-wrong-"));
   const snapshotPath = join(tmpDir, "wrong.json");
   const spawnMarkerPath = join(tmpDir, "wrong.spawned");
@@ -298,11 +323,12 @@ async function assertWrongOwnerFailsBeforeDecryptAndSpawn(credentialStore: Crede
         (error as { code?: unknown }).code === "credential_owner_mismatch"
     );
     const result = await runSchedules({
+      connectorInstanceStore,
       connectors: [makeSchedule(INSTANCE_A, OWNER_B, connectorPath)],
       credentialStore,
     });
 
-    assert.deepEqual(result.resolverCalls, [{ connectorInstanceId: INSTANCE_A, ownerSubjectId: OWNER_B }]);
+    assert.deepEqual(result.resolverCalls, [], "wrong owner must be rejected before the credential resolver");
     assert.equal(result.records[0]?.status, "failed");
     assert.match(result.records[0]?.error ?? "", OWNER_MISMATCH_FAILURE_RE);
     assert.doesNotMatch(result.records[0]?.error ?? "", DECRYPT_FAILURE_RE);
@@ -314,16 +340,18 @@ async function assertWrongOwnerFailsBeforeDecryptAndSpawn(credentialStore: Crede
 }
 
 async function runBackendOwnerIsolationScenarios({
+  connectorInstanceStore,
   credentialStore,
   wrongKeyCredentialStore,
 }: {
+  connectorInstanceStore: OwnerIsolationConnectorInstanceStore;
   credentialStore: CredentialStore;
   wrongKeyCredentialStore: CredentialStore;
 }): Promise<void> {
   await captureTwoOwnerSecrets(credentialStore);
-  await assertOwnerIsolation(credentialStore);
-  await assertBlankOwnerFailsBeforeResolveAndSpawn(credentialStore);
-  await assertWrongOwnerFailsBeforeDecryptAndSpawn(wrongKeyCredentialStore);
+  await assertOwnerIsolation(credentialStore, connectorInstanceStore);
+  await assertBlankOwnerFailsBeforeResolveAndSpawn(credentialStore, connectorInstanceStore);
+  await assertWrongOwnerFailsBeforeDecryptAndSpawn(wrongKeyCredentialStore, connectorInstanceStore);
 }
 
 test("scheduler owner identity isolates distinct encrypted secrets on SQLite", async () => {
@@ -332,6 +360,7 @@ test("scheduler owner identity isolates distinct encrypted secrets on SQLite", a
     seedSqliteConnection({ connectorInstanceId: INSTANCE_A, ownerSubjectId: OWNER_A });
     seedSqliteConnection({ connectorInstanceId: INSTANCE_B, ownerSubjectId: OWNER_B });
     await runBackendOwnerIsolationScenarios({
+      connectorInstanceStore: createSqliteConnectorInstanceStore(),
       credentialStore: createSqliteConnectorInstanceCredentialStore({ env: credentialEnv() }),
       wrongKeyCredentialStore: createSqliteConnectorInstanceCredentialStore({
         env: credentialEnv(WRONG_CREDENTIAL_KEY),
@@ -372,6 +401,7 @@ test("scheduler owner identity isolates distinct encrypted secrets on disposable
         await seedPostgresConnection({ connectorInstanceId: INSTANCE_A, ownerSubjectId: OWNER_A });
         await seedPostgresConnection({ connectorInstanceId: INSTANCE_B, ownerSubjectId: OWNER_B });
         await runBackendOwnerIsolationScenarios({
+          connectorInstanceStore: createPostgresConnectorInstanceStore(),
           credentialStore: createPostgresConnectorInstanceCredentialStore({ env: credentialEnv() }),
           wrongKeyCredentialStore: createPostgresConnectorInstanceCredentialStore({
             env: credentialEnv(WRONG_CREDENTIAL_KEY),

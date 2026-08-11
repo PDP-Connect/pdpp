@@ -54,6 +54,11 @@
     "date": "2026-08-10",
     "reason": "Zero-connector-knowledge terminal invariant (ri-zero-knowledge-terminal-revise-0810): the strengthened AST scanner caught COOLDOWN_PROFILES's hardcoded { chatgpt: CHATGPT_COOLDOWN_PROFILE } dispatch table. cooldownProfileForConnector now resolves the per-connector max_cooldown_cycles override generically via the connector's own manifest (capabilities.refresh_policy.max_cooldown_cycles) instead of a connector-keyed literal, then clamps whatever the manifest declares to RI_MAX_COOLDOWN_CYCLES_CEILING before returning it -- a defense-in-depth ceiling independent of connector-manifest-validation.ts's own range check, so a malformed/malicious manifest value can never suppress the §10-B no-progress escalation past a bounded ceiling. The +1 mass is the added clamp branch; the function became async (a disclosed change to this module's prior \"pure, no I/O\" posture, documented in its own header) since the manifest read now goes through the real, DB-backed getConnectorManifest helper this codebase already uses elsewhere at request time."
   },
+  "runtime/scheduler/run-executor.ts": {
+    "allowed_mass": 70,
+    "date": "2026-08-11",
+    "reason": "Owner-isolation terminal close: scheduled runs must perform exact owner/connection admission before static-secret credential resolution. The +8 mass is the fail-closed admission bridge, returned-namespace equality check, and typed permission failure record. Removing any branch either allows a missing admission seam to resolve credentials or lets a mismatched owner proceed. Proven by scheduler-owner-isolation.test.ts on SQLite and disposable PostgreSQL, including blank/wrong-owner no-resolver, no-decrypt, and no-child cases."
+  },
   "runtime/scheduler.ts": {
     "allowed_mass": 50,
     "date": "2026-08-11",

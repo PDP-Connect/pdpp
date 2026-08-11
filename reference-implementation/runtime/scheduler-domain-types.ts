@@ -353,6 +353,17 @@ export interface SchedulerOptions {
   }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>;
   connectors: readonly ConnectorSchedule[];
   /**
+   * Deadline on `executeRun`'s pre-run gate (`readinessChecker`/`getState`),
+   * which runs BEFORE `runExecutor.launchRun` and has no built-in timeout of
+   * its own. On timeout, `executeRun` emits one typed
+   * `scheduler_dispatch_wedged` failed record and returns; its `finally`
+   * clears `runtime.activeRuns` normally.
+   *
+   * Defaults to `PDPP_DISPATCH_LIVENESS_CEILING_MS` when set, otherwise 30
+   * minutes. `0` or `Infinity` disables the deadline.
+   */
+  dispatchLivenessCeilingMs?: number;
+  /**
    * Durable cross-path "latest successful run at" projection. Lets the back-off
    * gate clear a stale failure streak when a genuine success (any trigger,
    * including manual `controller.runNow`) has occurred since the streak's newest
@@ -365,17 +376,6 @@ export interface SchedulerOptions {
   getSourcePressureGaps?: GetSourcePressureGapsHandler;
   getState?: GetStateHandler;
   hasUnresolvedAttention?: HasUnresolvedAttentionHandler;
-  /**
-   * Deadline on `executeRun`'s pre-run gate (`readinessChecker`/`getState`),
-   * which runs BEFORE `runExecutor.launchRun` and has no built-in timeout of
-   * its own. On timeout, `executeRun` emits one typed
-   * `scheduler_dispatch_wedged` failed record and returns; its `finally`
-   * clears `runtime.activeRuns` normally.
-   *
-   * Defaults to `PDPP_DISPATCH_LIVENESS_CEILING_MS` when set, otherwise 30
-   * minutes. `0` or `Infinity` disables the deadline.
-   */
-  dispatchLivenessCeilingMs?: number;
   /**
    * Predicate: is this connector managed (browser-surface-leased)? Used to DEFER
    * a managed connector's scheduled tick when the managed-routing seam is not
