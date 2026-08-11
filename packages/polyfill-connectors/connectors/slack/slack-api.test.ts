@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { afterEach, before, test } from "node:test";
 import {
   buildSlackSessionCookieHeader,
+  encodeSlackCookieValue,
   fetchAllReminders,
   fetchAllStars,
   fetchAllUserGroups,
@@ -243,6 +244,69 @@ test("fetchDmReadStates uses Authorization: Bearer for the GET call", async () =
     }
     assert.equal(seenAuth.authorization, `Bearer ${TOKEN}`);
     assert.equal(seenAuth.cookie, buildSlackSessionCookieHeader(COOKIE));
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+// ─── Cookie wire-format encoding ────────────────────────────────────────
+//
+// Root-caused 2026-08-10 against a live workspace: the connector's captured
+// `d` cookie values routinely contain characters outside slackdump's own
+// `urlsafe()` set, and slackdump's Go client (`makeCookie`/`url.QueryEscape`)
+// always percent-encodes those before putting the value on the wire.
+// Sending the raw, un-encoded value instead (this module's prior behavior)
+// makes Slack's session lookup fail to resolve the cookie to a valid
+// session — a clean, well-formed `invalid_auth`, indistinguishable at the
+// HTTP layer from a genuinely dead credential. Live-verified: the identical
+// stored credential that failed `auth.test` with the raw cookie value
+// succeeded once percent-encoded this way.
+
+// Shaped like a real captured Slack `d` cookie: base64-like alphabet
+// including `+` and `/`, both outside slackdump's URL-safe set and
+// therefore requiring encoding on the wire.
+const UNSAFE_COOKIE = "xoxd-abc+123/def==ghi";
+
+test("encodeSlackCookieValue: a value with unsafe characters (+, /, =) is percent-encoded", () => {
+  const encoded = encodeSlackCookieValue(UNSAFE_COOKIE);
+  assert.notEqual(encoded, UNSAFE_COOKIE);
+  assert.equal(encoded, encodeURIComponent(UNSAFE_COOKIE));
+  assert.equal(decodeURIComponent(encoded), UNSAFE_COOKIE);
+});
+
+test("encodeSlackCookieValue: an already-URL-safe value is returned unchanged", () => {
+  // Matches slackdump's own urlsafe() short-circuit: a value already inside
+  // [-._~%a-zA-Z0-9] (letters, digits, -._~ and any %XX escape) is not
+  // re-encoded.
+  assert.equal(encodeSlackCookieValue("xoxd-abc123-def_ghi.jkl~mno"), "xoxd-abc123-def_ghi.jkl~mno");
+});
+
+test("encodeSlackCookieValue: a value already containing a valid %XX escape is left unchanged (matches urlsafe()'s % inclusion)", () => {
+  const alreadyEncoded = "xoxd-abc%2Fdef";
+  assert.equal(encodeSlackCookieValue(alreadyEncoded), alreadyEncoded);
+});
+
+test("buildSlackSessionCookieHeader: percent-encodes an unsafe cookie value in the wire header", () => {
+  const header = buildSlackSessionCookieHeader(UNSAFE_COOKIE, 1_714_032_910);
+  assert.equal(header, `d=${encodeURIComponent(UNSAFE_COOKIE)}; d-s=1714032900`);
+  // The raw, un-encoded value must never appear verbatim in the header —
+  // that was exactly the live-reproduced defect.
+  assert.equal(header.includes(UNSAFE_COOKIE), false);
+});
+
+test("fetchAllStars sends the wire-encoded (not raw) cookie value when the cookie contains unsafe characters", async () => {
+  const seen: { cookie: string | null } = { cookie: null };
+  const originalNow = Date.now;
+  Date.now = () => 1_714_032_910_000;
+  globalThis.fetch = (_url, init) => {
+    const headers = new Headers(init?.headers);
+    seen.cookie = headers.get("Cookie");
+    return Promise.resolve(jsonResponse({ ok: true, items: [] }));
+  };
+  try {
+    await fetchAllStars(TOKEN, UNSAFE_COOKIE);
+    assert.equal(seen.cookie, buildSlackSessionCookieHeader(UNSAFE_COOKIE, 1_714_032_910));
+    assert.equal((seen.cookie ?? "").includes(UNSAFE_COOKIE), false);
   } finally {
     Date.now = originalNow;
   }

@@ -71,6 +71,44 @@ export class SlackApiAuthError extends Error {
   }
 }
 
+// Characters `rusq/slackdump`'s `makeCookie` (auth/value.go) treats as
+// already URL-safe for a cookie value — including a literal `%`, so an
+// already-percent-encoded input passes through unchanged. Anything outside
+// this set means the raw value is escaped in full before being placed on
+// the wire. Mirrors the Go source's `reURLsafe` character class exactly
+// (see `SLACKDUMP_COOKIE_URL_SAFE_RE` below and the research citation on
+// `encodeSlackCookieValue`).
+const SLACKDUMP_COOKIE_URL_SAFE_RE = /^[-._~%a-zA-Z0-9]*$/;
+
+/**
+ * Percent-encode a `d` cookie value exactly the way slackdump's own Go
+ * client does before sending it on the wire (`auth/value.go`'s
+ * `makeCookie`/`urlsafe`, verified against `rusq/slackdump` source).
+ *
+ * The credential the connector stores/passes around is the RAW value an
+ * operator copy-pastes from browser devtools (per `normalizeSlackCookie` in
+ * `index.ts`, which explicitly keeps it opaque/un-encoded) — it is NOT
+ * pre-encoded for the wire. Sending that raw value directly as the `Cookie`
+ * header byte sequence, as this module previously did, produces a
+ * different session-lookup key than the encoded value Slack's edge expects
+ * whenever the cookie contains characters outside the URL-safe set (which
+ * this connector's real captured cookies routinely do). Slack's session
+ * store then can't resolve it to a valid session and returns a clean,
+ * well-formed `invalid_auth` — indistinguishable at the HTTP/TLS layer from
+ * a genuinely dead credential, which is what made this defect look like a
+ * transport-layer or credential-validity problem rather than a wire-format
+ * bug. Live-verified 2026-08-10 against a real workspace: the identical
+ * credential that failed `auth.test` with the raw cookie value succeeded
+ * once percent-encoded this way.
+ *
+ * A value that is already fully URL-safe (including one that already
+ * contains valid `%XX` escapes) is returned unchanged — matching the Go
+ * source's `urlsafe()` short-circuit, not blindly re-encoding on every call.
+ */
+export function encodeSlackCookieValue(value: string): string {
+  return SLACKDUMP_COOKIE_URL_SAFE_RE.test(value) ? value : encodeURIComponent(value);
+}
+
 /**
  * Mirror slackdump's client-token cookie shape.
  *
@@ -79,7 +117,7 @@ export class SlackApiAuthError extends Error {
  * Unix timestamp and acts as an expected session freshness marker.
  */
 export function buildSlackSessionCookieHeader(cookie: string, nowSeconds = Math.floor(Date.now() / 1000)): string {
-  return `d=${cookie}; d-s=${String(nowSeconds - 10)}`;
+  return `d=${encodeSlackCookieValue(cookie)}; d-s=${String(nowSeconds - 10)}`;
 }
 
 let httpGovernor: ConnectorHttpGovernor = createConnectorHttpGovernor({
