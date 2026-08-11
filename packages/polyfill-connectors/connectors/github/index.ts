@@ -26,6 +26,7 @@
 import {
   buildCollectionRateProgress,
   buildPacingStateFields,
+  type ConnectorHttpGovernor,
   createConnectorHttpGovernor,
   readPersistedPacingInterval,
 } from "../../src/connector-http-governor.ts";
@@ -89,12 +90,20 @@ const USER_AGENT = "pdpp-connector-github/0.1";
 // 60 req/min, ~72% of the 5000/hr primary limit; WI-1b). NOT a borrow of
 // ChatGPT's 250ms. See src/provider-profile.ts → githubPacingProfile and
 // docs/research/per-connector-rate-profiles-2026-06-13.md for the derivation.
-let httpGovernor = createConnectorHttpGovernor({
-  name: "github",
-  maxAttempts: 4,
-  profile: githubPacingProfile(),
-  retryBudget: new RetryBudget({ capacity: 8, initialTokens: 2, refillPerSuccess: 0.25 }),
-});
+let githubHttpSleep: ((ms: number) => void | Promise<void>) | undefined;
+
+function createGithubHttpGovernor(restoredIntervalMs?: number): ConnectorHttpGovernor {
+  return createConnectorHttpGovernor({
+    name: "github",
+    maxAttempts: 4,
+    profile: githubPacingProfile(),
+    retryBudget: new RetryBudget({ capacity: 8, initialTokens: 2, refillPerSuccess: 0.25 }),
+    ...(githubHttpSleep === undefined ? {} : { sleep: githubHttpSleep }),
+    ...(restoredIntervalMs === undefined ? {} : { restoredIntervalMs }),
+  });
+}
+
+let httpGovernor: ConnectorHttpGovernor = createGithubHttpGovernor();
 
 const DEFAULT_GITHUB_MAX_LIST_PAGES = 200;
 let maxGithubListPages = DEFAULT_GITHUB_MAX_LIST_PAGES;
@@ -105,12 +114,13 @@ export const GITHUB_RETRYABLE_PATTERN =
 
 /** Test-only reset for direct collector tests that bypass the runtime's collect hook. */
 export function __resetGithubHttpGovernorForTests(): void {
-  httpGovernor = createConnectorHttpGovernor({
-    name: "github",
-    maxAttempts: 4,
-    profile: githubPacingProfile(),
-    retryBudget: new RetryBudget({ capacity: 8, initialTokens: 2, refillPerSuccess: 0.25 }),
-  });
+  httpGovernor = createGithubHttpGovernor();
+}
+
+/** Test-only request-sleep seam; production leaves the shared default intact. */
+export function __setGithubHttpSleepForTests(sleep: ((ms: number) => void | Promise<void>) | undefined): void {
+  githubHttpSleep = sleep;
+  __resetGithubHttpGovernorForTests();
 }
 
 /** Test-only cap injection; production keeps the bounded default. */
@@ -129,13 +139,7 @@ export function __setMaxGithubListPages(maxPages: number): void {
 function restoreGithubPacing(state: Record<string, unknown>): void {
   const userCursor = state.user as Record<string, unknown> | undefined;
   const restoredIntervalMs = readPersistedPacingInterval(userCursor);
-  httpGovernor = createConnectorHttpGovernor({
-    name: "github",
-    maxAttempts: 4,
-    profile: githubPacingProfile(),
-    retryBudget: new RetryBudget({ capacity: 8, initialTokens: 2, refillPerSuccess: 0.25 }),
-    ...(restoredIntervalMs === null ? {} : { restoredIntervalMs }),
-  });
+  httpGovernor = createGithubHttpGovernor(restoredIntervalMs === null ? undefined : restoredIntervalMs);
 }
 
 interface ProgressExtra {
@@ -212,6 +216,17 @@ async function gh<T>(
   const data = JSON.parse(raw.body) as T;
   const nextUrl = parseNextLink(raw.link);
   return { data, nextUrl };
+}
+
+function parseGithubListResponse<T>(data: unknown, stream: string): T[] {
+  if (!Array.isArray(data)) {
+    throw createConnectorFailure(
+      "github_malformed_response",
+      `GitHub ${stream} list returned a malformed 200 response; collection is incomplete`,
+      { retryable: true }
+    );
+  }
+  return data as T[];
 }
 
 // ─── Stream collectors ──────────────────────────────────────────────────
@@ -431,17 +446,18 @@ export async function collectRepositories(ctx: StreamCtx): Promise<void> {
       cursor_present: pageIndex > 0,
     };
     await ctx.progress("Fetching GitHub repositories page", pageExtra);
-    const page: GhResult<GitHubRepo[]> = await gh<GitHubRepo[]>(path, ctx.token, {}, ctx.progress, pageExtra);
-    totalSeen += page.data.length;
+    const page: GhResult<unknown> = await gh<unknown>(path, ctx.token, {}, ctx.progress, pageExtra);
+    const items = parseGithubListResponse<GitHubRepo>(page.data, "repositories");
+    totalSeen += items.length;
     await ctx.progress("Fetched GitHub repositories page", {
       stream: "repositories",
       phase: "page",
       page_index: pageIndex,
-      item_count: page.data.length,
+      item_count: items.length,
       total_seen: totalSeen,
       cursor_present: Boolean(page.nextUrl),
     });
-    const result = await emitRepositoriesPage(ctx, page.data, priorPushed, latestPushed);
+    const result = await emitRepositoriesPage(ctx, items, priorPushed, latestPushed);
     latestPushed = result.latest;
     ({ stop } = result);
     totalEvaluated += result.evaluated;
@@ -528,7 +544,7 @@ export async function collectStarred(ctx: StreamCtx): Promise<void> {
       cursor_present: pageIndex > 0,
     };
     await ctx.progress("Fetching GitHub starred page", pageExtra);
-    const page: GhResult<GitHubStarredEntry[]> = await gh<GitHubStarredEntry[]>(
+    const page: GhResult<unknown> = await gh<unknown>(
       path,
       ctx.token,
       {
@@ -537,16 +553,17 @@ export async function collectStarred(ctx: StreamCtx): Promise<void> {
       ctx.progress,
       pageExtra
     );
-    totalSeen += page.data.length;
+    const entries = parseGithubListResponse<GitHubStarredEntry>(page.data, "starred");
+    totalSeen += entries.length;
     await ctx.progress("Fetched GitHub starred page", {
       stream: "starred",
       phase: "page",
       page_index: pageIndex,
-      item_count: page.data.length,
+      item_count: entries.length,
       total_seen: totalSeen,
       cursor_present: Boolean(page.nextUrl),
     });
-    const result = await emitStarredPage(ctx, page.data, priorStarred, latestStarred);
+    const result = await emitStarredPage(ctx, entries, priorStarred, latestStarred);
     latestStarred = result.latest;
     ({ stop } = result);
     droppedTotal += result.dropped;
@@ -625,17 +642,18 @@ export async function collectIssues(ctx: StreamCtx): Promise<void> {
       cursor_present: pageIndex > 0 || Boolean(sinceParam),
     };
     await ctx.progress("Fetching GitHub issues page", pageExtra);
-    const page: GhResult<GitHubIssue[]> = await gh<GitHubIssue[]>(path, ctx.token, {}, ctx.progress, pageExtra);
-    totalSeen += page.data.length;
+    const page: GhResult<unknown> = await gh<unknown>(path, ctx.token, {}, ctx.progress, pageExtra);
+    const items = parseGithubListResponse<GitHubIssue>(page.data, "issues");
+    totalSeen += items.length;
     await ctx.progress("Fetched GitHub issues page", {
       stream: "issues",
       phase: "page",
       page_index: pageIndex,
-      item_count: page.data.length,
+      item_count: items.length,
       total_seen: totalSeen,
       cursor_present: Boolean(page.nextUrl),
     });
-    latestUpdated = await emitIssuesPage(ctx, page.data, until, latestUpdated);
+    latestUpdated = await emitIssuesPage(ctx, items, until, latestUpdated);
     path = page.nextUrl;
     pageIndex += 1;
   }
@@ -686,21 +704,31 @@ const PR_ERROR_BUBBLE_PATTERN = /rate_limited|auth_failed|ECONN|fetch failed|ret
 // reported total exceeds this as cap-truncated and surface it as a gap.
 const PR_SEARCH_RESULT_CAP = 1000;
 
-function parsePrSearchResponse(data: GitHubSearchResponse): { items: GitHubIssue[]; total_count: number } {
-  if (
-    !data ||
-    typeof data !== "object" ||
-    !Array.isArray(data.items) ||
-    !Number.isInteger(data.total_count) ||
-    (data.total_count as number) < 0
-  ) {
+function parsePrSearchResponse(data: unknown): { items: GitHubIssue[]; total_count: number } {
+  if (!data || typeof data !== "object") {
     throw createConnectorFailure(
       "github_malformed_response",
       "GitHub pull-request search returned a malformed 200 response; collection is incomplete",
       { retryable: true }
     );
   }
-  return { items: data.items, total_count: data.total_count as number };
+  const { items, total_count: totalCount } = data as { items?: unknown; total_count?: unknown };
+  if (!(Array.isArray(items) && Number.isInteger(totalCount))) {
+    throw createConnectorFailure(
+      "github_malformed_response",
+      "GitHub pull-request search returned a malformed 200 response; collection is incomplete",
+      { retryable: true }
+    );
+  }
+  const count = totalCount as number;
+  if (count < 0 || count < items.length || (count > 0 && items.length === 0)) {
+    throw createConnectorFailure(
+      "github_malformed_response",
+      "GitHub pull-request search returned a malformed 200 response; collection is incomplete",
+      { retryable: true }
+    );
+  }
+  return { items: items as GitHubIssue[], total_count: count };
 }
 
 interface PullDetailResult {
@@ -1099,17 +1127,18 @@ export async function collectGists(ctx: StreamCtx): Promise<void> {
       cursor_present: pageIndex > 0 || Boolean(sinceParam),
     };
     await ctx.progress("Fetching GitHub gists page", pageExtra);
-    const page: GhResult<GitHubGist[]> = await gh<GitHubGist[]>(path, ctx.token, {}, ctx.progress, pageExtra);
-    totalSeen += page.data.length;
+    const page: GhResult<unknown> = await gh<unknown>(path, ctx.token, {}, ctx.progress, pageExtra);
+    const items = parseGithubListResponse<GitHubGist>(page.data, "gists");
+    totalSeen += items.length;
     await ctx.progress("Fetched GitHub gists page", {
       stream: "gists",
       phase: "page",
       page_index: pageIndex,
-      item_count: page.data.length,
+      item_count: items.length,
       total_seen: totalSeen,
       cursor_present: Boolean(page.nextUrl),
     });
-    latestUpdated = await emitGistsPage(ctx, page.data, until, latestUpdated);
+    latestUpdated = await emitGistsPage(ctx, items, until, latestUpdated);
     path = page.nextUrl;
     pageIndex += 1;
   }

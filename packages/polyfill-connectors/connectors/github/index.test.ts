@@ -8,6 +8,7 @@ import { buildPacingStateFields, readPersistedPacingInterval } from "../../src/c
 import type { StreamScope } from "../../src/connector-runtime.ts";
 import {
   __resetGithubHttpGovernorForTests,
+  __setGithubHttpSleepForTests,
   __setMaxGithubListPages,
   collectGists,
   collectIssues,
@@ -56,6 +57,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __setGithubHttpSleepForTests(undefined);
   globalThis.fetch = ORIGINAL_FETCH;
 });
 
@@ -111,11 +113,13 @@ function makeCtx(
   records: Array<{ stream: string; data: Record<string, unknown> }>;
   skips: CapturedSkip[];
   states: Array<{ stream: string; cursor: unknown }>;
+  progresses: Array<{ message: string; extra?: { phase?: string } }>;
 } {
   const records: Array<{ stream: string; data: Record<string, unknown> }> = [];
   const states: Array<{ stream: string; cursor: unknown }> = [];
   const skips: CapturedSkip[] = [];
   const coverages: CapturedCoverage[] = [];
+  const progresses: Array<{ message: string; extra?: { phase?: string } }> = [];
   const requested = new Map<string, StreamScope>(requestedStreams.map((name) => [name, { name }]));
   return {
     ctx: {
@@ -146,7 +150,10 @@ function makeCtx(
         records.push({ stream, data });
         return Promise.resolve();
       },
-      progress: () => Promise.resolve(),
+      progress: (message, extra) => {
+        progresses.push({ message, ...(extra?.phase === undefined ? {} : { extra: { phase: extra.phase } }) });
+        return Promise.resolve();
+      },
       requested,
       state,
       token: "fake-token",
@@ -155,6 +162,7 @@ function makeCtx(
     records,
     skips,
     states,
+    progresses,
   };
 }
 
@@ -1062,6 +1070,23 @@ for (const { collect, name, stream } of githubListCollectors) {
   });
 }
 
+for (const { collect, name, stream: entryStream } of githubListCollectors.filter(
+  ({ stream }) => stream !== "pull_requests"
+)) {
+  test(`GitHub ${name}: object list envelope fails closed without coverage or state`, async () => {
+    globalThis.fetch = () => Promise.resolve(jsonResponse({ items: [] }));
+    const { ctx, coverages, states } = makeCtx([entryStream]);
+
+    await assert.rejects(
+      () => collect(ctx),
+      (error: unknown) =>
+        error instanceof Error && (error as Error & { code?: string }).code === "github_malformed_response"
+    );
+    assert.equal(coverages.length, 0, `${entryStream} malformed envelope must not emit coverage`);
+    assert.equal(states.length, 0, `${entryStream} malformed envelope must not advance state`);
+  });
+}
+
 test("GitHub repositories: fresh next links stop at the bounded page cap with a retryable gap", async () => {
   __setMaxGithubListPages(2);
   let calls = 0;
@@ -1122,6 +1147,26 @@ test("collectPullRequests: malformed search 200 fails closed without 0/0 coverag
   assert.equal(states.length, 0, "malformed search must not advance the PR cursor");
 });
 
+test("collectPullRequests: positive total_count with empty items fails closed", async () => {
+  globalThis.fetch = (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.endsWith("/user")) {
+      return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
+    }
+    return Promise.resolve(jsonResponse({ total_count: 1, items: [] }));
+  };
+  const { ctx, coverages, states, records } = makeCtx(["pull_requests"]);
+
+  await assert.rejects(
+    () => collectPullRequests(ctx),
+    (error: unknown) =>
+      error instanceof Error && (error as Error & { code?: string }).code === "github_malformed_response"
+  );
+  assert.equal(records.length, 0, "an impossible empty page must not emit a degraded PR record");
+  assert.equal(coverages.length, 0, "an impossible empty page must not emit 0/0 coverage");
+  assert.equal(states.length, 0, "an impossible empty page must not advance the PR cursor");
+});
+
 test("collectPullRequests: invalid JSON search 200 also fails closed without state", async () => {
   globalThis.fetch = (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -1142,6 +1187,10 @@ test("collectPullRequests: invalid JSON search 200 also fails closed without sta
 });
 
 test("collectPullRequests: shared Retry-After retry recovers a transient search 429", async () => {
+  const sleeps: number[] = [];
+  __setGithubHttpSleepForTests((ms) => {
+    sleeps.push(ms);
+  });
   let searchCalls = 0;
   globalThis.fetch = (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -1152,7 +1201,7 @@ test("collectPullRequests: shared Retry-After retry recovers a transient search 
       searchCalls += 1;
       return Promise.resolve(
         searchCalls === 1
-          ? jsonResponse({}, { status: 429, headers: { "Retry-After": "1" } })
+          ? jsonResponse({}, { status: 429, headers: { "Retry-After": "2" } })
           : jsonResponse({ total_count: 0, items: [] })
       );
     }
@@ -1162,6 +1211,7 @@ test("collectPullRequests: shared Retry-After retry recovers a transient search 
 
   await collectPullRequests(ctx);
   assert.equal(searchCalls, 2, "Retry-After must trigger one bounded real retry");
+  assert.equal(sleeps.filter((ms) => ms === 2000).length, 1, "GitHub request seam must honor Retry-After exactly once");
   assert.equal(states.length, 1, "state is emitted only after the retried search completes");
 });
 
@@ -1212,3 +1262,55 @@ for (const status of [502, 504]) {
     assert.equal(states.length, 0, `${status} detail failure must not advance state`);
   });
 }
+
+test("collectPullRequests: PR-detail 429 is terminal without progress, coverage, records, or state", async () => {
+  globalThis.fetch = (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.endsWith("/user")) {
+      return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
+    }
+    if (url.includes("/search/issues")) {
+      return Promise.resolve(jsonResponse({ total_count: 1, items: [prSearchItem(1, "owner/a")] }));
+    }
+    if (/\/repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(url)) {
+      return Promise.resolve(new Response("rate limited", { status: 429, headers: { "Retry-After": "0" } }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  };
+  const { ctx, coverages, records, states, progresses } = makeCtx(["pull_requests"]);
+
+  await assert.rejects(
+    () => collectPullRequests(ctx),
+    (error: unknown) => error instanceof Error && error.message === "github_rate_limited"
+  );
+  assert.equal(records.length, 0);
+  assert.equal(coverages.length, 0);
+  assert.equal(states.length, 0);
+  assert.equal(progresses.filter(({ extra }) => extra?.phase === "page").length, 0);
+});
+
+test("collectPullRequests: PR-detail transport failure is terminal without progress, coverage, records, or state", async () => {
+  globalThis.fetch = (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.endsWith("/user")) {
+      return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
+    }
+    if (url.includes("/search/issues")) {
+      return Promise.resolve(jsonResponse({ total_count: 1, items: [prSearchItem(1, "owner/a")] }));
+    }
+    if (/\/repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(url)) {
+      return Promise.reject(new Error("fetch failed", { cause: new Error("socket reset ECONNRESET") }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  };
+  const { ctx, coverages, records, states, progresses } = makeCtx(["pull_requests"]);
+
+  await assert.rejects(
+    () => collectPullRequests(ctx),
+    (error: unknown) => error instanceof Error && /fetch failed|ECONNRESET/i.test(error.message)
+  );
+  assert.equal(records.length, 0);
+  assert.equal(coverages.length, 0);
+  assert.equal(states.length, 0);
+  assert.equal(progresses.filter(({ extra }) => extra?.phase === "page").length, 0);
+});
