@@ -6,8 +6,9 @@
  * per docs/reference/connector-authoring-guide.md §3: records that don't match the
  * schema become SKIP_RESULT events instead of RECORD events.
  *
- * Jellyfin v10.11.11+ REST API shapes: User can query libraries (Views) and items
- * within libraries, with playback metadata (LastPlayedDate, PlayCount, Played boolean).
+ * Jellyfin REST API shapes: User can query libraries (Views) and items
+ * within libraries, with playback metadata (LastPlayedDate, PlayCount, Played;
+ * playback fields are nullable when Jellyfin omits UserData).
  * No session-level history in core API; PlaybackReporting plugin optional for history.
  */
 
@@ -32,8 +33,8 @@ export const librariesSchema = z.object({
  * Jellyfin items — media files (movies, TV episodes, songs, etc.) with playback metadata.
  *
  * last_played_date can be null (never played).
- * play_count is an integer aggregate (0 if never played).
- * played is a boolean reflecting playback state.
+ * play_count and played are nullable when Jellyfin omits UserData; absence is
+ * not evidence of zero playback.
  * image_url is optional for cover art; constructed from Jellyfin image endpoints.
  * provider_ids are external identifiers (IMDb, TVDB, TMDB) from Jellyfin's ProviderIds.
  */
@@ -42,8 +43,8 @@ export const itemsSchema = z.object({
   library_id: z.string(),
   name: z.string(),
   type: z.string().nullable(),
-  played: z.boolean(),
-  play_count: z.number().int().nonnegative("play_count must be non-negative integer"),
+  played: z.boolean().nullable(),
+  play_count: z.number().int().nonnegative("play_count must be non-negative integer").nullable(),
   last_played_date: z.string().regex(ISO_DATETIME_RE, "last_played_date must be ISO-8601 datetime").nullable(),
   image_url: z.string().nullable(),
   genres: z.array(z.string()),

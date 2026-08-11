@@ -5,7 +5,8 @@
 /**
  * PDPP Jellyfin Connector (v0.1.0)
  *
- * Polyfills Jellyfin's v10.11.11+ REST API into the PDPP Collection Profile.
+ * Polyfills the Jellyfin REST API shape used by the connector into the PDPP
+ * Collection Profile. Version capability remains a deployment-time proof item.
  *
  * Two coexisting auth paths, resolved in collect():
  *   PRIMARY (JELLYFIN_USERNAME + JELLYFIN_PASSWORD): POST
@@ -85,6 +86,13 @@ import { validateItemsResponse, validateRecord, validateSystemInfo, validateView
 
 let MAX_JSON_BYTES = 50 * 1024 * 1024; // 50MB per response (streaming byte cap, injectable for testing)
 let MAX_PAGES_PER_STREAM = 1000; // Guard against infinite pagination (injectable for testing)
+
+// A bounded in-run retry budget can still end in a transient provider error.
+// Keep those errors eligible for the runtime's cross-run recovery path while
+// leaving credential failures terminal. The first username/password attempt is
+// explicitly marked non-retryable by resolveConnection before this pattern is
+// consulted.
+export const JELLYFIN_RETRYABLE_PATTERN = /jellyfin_rate_limited|retryable status \d+|ECONN|ETIMEDOUT|fetch failed/i;
 
 // Accepts an exact bare date, or a bare date followed by a structurally
 // valid ISO-8601 time-of-day suffix (same time-component shape the
@@ -221,10 +229,7 @@ function rejectOversizedContentLengthHeader(res: Response): void {
   }
 }
 
-async function fetchJellyfin(
-  url: URL,
-  apiKey: string
-): Promise<{ body: string; headers?: { "retry-after": string }; status: number }> {
+async function fetchJellyfin(url: URL, apiKey: string): Promise<JellyfinRawResponse> {
   const res = await fetch(url.toString(), {
     headers: {
       Accept: "application/json",
@@ -247,6 +252,12 @@ async function fetchJellyfin(
   };
 }
 
+interface JellyfinRawResponse {
+  body: string;
+  headers?: Record<string, string | undefined>;
+  status: number;
+}
+
 /**
  * Re-authenticate once and hand back a fresh AccessToken, or `undefined` if
  * re-authentication is not available (API-key path) or did not produce a
@@ -266,9 +277,13 @@ async function jellyfinRequest<T>(baseUrl: string, path: string, apiKey: string,
   }
 
   // Use X-Emby-Token header instead of query param to avoid credential log-leakage
-  const result = await httpGovernor.request<{ body: string; status: number }, { body: string; status: number }>(
+  const result = await httpGovernor.request<JellyfinRawResponse, JellyfinRawResponse>(
     () => fetchJellyfin(url, apiKey),
-    (raw) => ({ status: raw.status, value: raw })
+    (raw) => ({
+      status: raw.status,
+      ...(raw.headers === undefined ? {} : { headers: raw.headers }),
+      value: raw,
+    })
   );
 
   if (result.value.status === 401 || result.value.status === 403) {
@@ -285,12 +300,13 @@ async function jellyfinRequest<T>(baseUrl: string, path: string, apiKey: string,
     // below and surface as a generic, unclassified connector error instead.
     const freshToken = await onReauth?.().catch(() => undefined);
     if (freshToken && freshToken !== apiKey) {
-      const retryResult = await httpGovernor.request<
-        { body: string; status: number },
-        { body: string; status: number }
-      >(
+      const retryResult = await httpGovernor.request<JellyfinRawResponse, JellyfinRawResponse>(
         () => fetchJellyfin(url, freshToken),
-        (raw) => ({ status: raw.status, value: raw })
+        (raw) => ({
+          status: raw.status,
+          ...(raw.headers === undefined ? {} : { headers: raw.headers }),
+          value: raw,
+        })
       );
       if (retryResult.value.status !== 401 && retryResult.value.status !== 403) {
         if (retryResult.value.status < 200 || retryResult.value.status >= 300) {
@@ -506,14 +522,40 @@ function normalizeReleaseDate(premiereDate: unknown): string | null {
   return `${yearStr}-${monthStr}-${dayStr}`;
 }
 
+interface JellyfinPlaybackState {
+  playCount: number | null;
+  played: boolean | null;
+}
+
+function normalizePlaybackState(userData: Record<string, unknown> | undefined): JellyfinPlaybackState {
+  const rawPlayCount = userData?.PlayCount;
+  let playCount: number | null = null;
+  if (typeof rawPlayCount === "number" && Number.isInteger(rawPlayCount) && rawPlayCount >= 0) {
+    playCount = rawPlayCount;
+  }
+
+  const rawPlayed = userData?.Played;
+  let played: boolean | null = null;
+  if (typeof rawPlayed === "boolean") {
+    played = rawPlayed;
+  } else if (playCount !== null) {
+    played = playCount > 0;
+  }
+
+  return { playCount, played };
+}
+
 /**
  * Build an items record from a Jellyfin Item with UserData and library_id.
  */
-function itemRecord(item: Record<string, unknown>, libraryId: string): RecordData {
-  const userData = (item.UserData as Record<string, unknown> | null | undefined) ?? {};
-  const playCount = (userData.PlayCount as number) ?? 0;
-  const played = (userData.Played as boolean) ?? playCount > 0;
-  const lastPlayedDate = (userData.LastPlayedDate as string | null | undefined) ?? null;
+export function itemRecord(item: Record<string, unknown>, libraryId: string): RecordData {
+  const rawUserData = item.UserData;
+  const userData =
+    rawUserData !== null && typeof rawUserData === "object" && !Array.isArray(rawUserData)
+      ? (rawUserData as Record<string, unknown>)
+      : undefined;
+  const playback = normalizePlaybackState(userData);
+  const lastPlayedDate = (userData?.LastPlayedDate as string | null | undefined) ?? null;
 
   // Build image URL if PrimaryImage tag exists
   let imageUrl: string | null = null;
@@ -541,8 +583,8 @@ function itemRecord(item: Record<string, unknown>, libraryId: string): RecordDat
     library_id: libraryId,
     name: item.Name as string,
     type: (item.Type ?? null) as string | null,
-    played,
-    play_count: playCount,
+    played: playback.played,
+    play_count: playback.playCount,
     last_played_date: lastPlayedDate,
     image_url: imageUrl,
     genres: (item.Genres as string[]) ?? [],
@@ -753,7 +795,7 @@ async function collectItemsForLibrary(
   conn: JellyfinConn,
   libraryId: string,
   ctx: Pick<CollectContext, "emitRecord">
-): Promise<{ considered: number; emitted: number }> {
+): Promise<{ considered: number; covered: number }> {
   const { emitRecord } = ctx;
   let startIndex = 0;
   const pageSize = 500;
@@ -761,7 +803,7 @@ async function collectItemsForLibrary(
   let pageCount = 0;
   let priorTotal: number | undefined;
   let lastPageFingerprint: string | undefined; // Full ordered-ID fingerprint of the previous page
-  let emitted = 0;
+  let covered = 0;
 
   while (hasMore) {
     // Guard against infinite pagination (max pages configurable for testing)
@@ -799,8 +841,10 @@ async function collectItemsForLibrary(
 
     for (const item of pageItems) {
       const rec = itemRecord(item as Record<string, unknown>, libraryId);
+      if (validateRecord("items", rec).ok) {
+        covered += 1;
+      }
       await emitRecord("items", rec);
-      emitted += 1;
     }
 
     lastPageFingerprint = currentPageFingerprint;
@@ -815,7 +859,7 @@ async function collectItemsForLibrary(
   // stop above. A library that paginated at least once always has it; the
   // `?? 0` only covers the unreachable no-page case (the loop runs at least
   // once and throws when the field is missing).
-  return { considered: priorTotal ?? 0, emitted };
+  return { considered: priorTotal ?? 0, covered };
 }
 
 async function collectItems(
@@ -831,7 +875,7 @@ async function collectItems(
   }
 
   const views = await fetchLibraries(conn);
-  let totalItemsEmitted = 0;
+  let totalItemsCovered = 0;
   let totalItemsConsidered = 0;
 
   for (const view of views) {
@@ -842,7 +886,7 @@ async function collectItems(
 
     await progress("Fetching items from library", { stream: "items" });
     const library = await collectItemsForLibrary(conn, libraryId, ctx);
-    totalItemsEmitted += library.emitted;
+    totalItemsCovered += library.covered;
     totalItemsConsidered += library.considered;
 
     (state.items as Record<string, Record<string, unknown>>)[libraryId] = { last_fetched_at: now };
@@ -852,8 +896,9 @@ async function collectItems(
   // The denominator is the sum of each library's source-reported
   // `TotalRecordCount`, measured at the pagination site and independent of what
   // was emitted. `items` has no unchanged-suppression lane — every paged item is
-  // emitted — so `emitted` is the honest covered numerator, and a library that
-  // reported more items than it served reads partial rather than complete.
+  // emitted — so the schema-valid count is the honest covered numerator, and a
+  // library that reported more items than it served reads partial rather than
+  // complete.
   await emit(
     buildDetailCoverageMessage({
       stream: "items",
@@ -861,12 +906,12 @@ async function collectItems(
       requiredKeys: [],
       hydratedKeys: [],
       considered: totalItemsConsidered,
-      covered: totalItemsEmitted,
+      covered: totalItemsCovered,
     })
   );
-  await progress(`Fetched ${totalItemsEmitted} items across all libraries`, {
+  await progress(`Fetched ${totalItemsCovered} valid items across all libraries`, {
     stream: "items",
-    count: totalItemsEmitted,
+    count: totalItemsCovered,
   });
 }
 
@@ -1028,7 +1073,12 @@ async function collect(ctx: CollectContext): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  runConnector({ name: "jellyfin", collect, validateRecord });
+  runConnector({
+    name: "jellyfin",
+    collect,
+    validateRecord,
+    retryablePattern: JELLYFIN_RETRYABLE_PATTERN,
+  });
 }
 
 export { collect };
