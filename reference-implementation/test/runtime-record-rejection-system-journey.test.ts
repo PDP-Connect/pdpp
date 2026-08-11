@@ -18,6 +18,29 @@ const OWNER_PASSWORD = "runtime-record-rejection-password";
 const CSRF_RE = /<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/;
 const SIMULATED_RESPONSE_LOSS_RE = /simulated response loss/;
 
+function capturedLogger() {
+  const entries: unknown[][] = [];
+  const capture = (...args: unknown[]) => entries.push(args);
+  const logger: Record<string, unknown> = {
+    child: () => logger,
+    debug: capture,
+    error: capture,
+    fatal: capture,
+    info: capture,
+    level: "trace",
+    silent: () => undefined,
+    trace: capture,
+    warn: capture,
+  };
+  return {
+    logger: logger as never,
+    output: () =>
+      JSON.stringify(entries, (_key, value) =>
+        value instanceof Error ? { message: value.message, name: value.name, stack: value.stack } : value
+      ),
+  };
+}
+
 interface ClosableServer {
   abortStartupBackfill?: (reason: string) => void;
   asPort: number;
@@ -291,7 +314,16 @@ test("runtime/server SQLite journey durably receipts invalid identity rejections
   const acceptedRecord = { data: { id: "ok1", value: "ok" }, emitted_at: okEmittedAt, key: "ok1" };
   const rejectedRecord = { data: { id: "bad-data", value: "bad" }, emitted_at: badEmittedAt, key: "bad-key" };
   const rejectedPayloadLine = JSON.stringify(rejectedRecord);
-  const forbiddenPayloadNeedles = [rejectedPayloadLine, "bad-key", "bad-data"];
+  const forbiddenPayloadNeedles = [
+    rejectedPayloadLine,
+    "bad-key",
+    "bad-data",
+    "key and data.id disagree",
+    "storage exploded",
+    "parser exploded",
+  ];
+  const serverALogs = capturedLogger();
+  const serverBLogs = capturedLogger();
   let serverA: ClosableServer | null = null;
   let serverB: ClosableServer | null = null;
 
@@ -299,6 +331,7 @@ test("runtime/server SQLite journey durably receipts invalid identity rejections
     serverA = await startServer({
       asPort: 0,
       dbPath,
+      logger: serverALogs.logger,
       ownerAuthPassword: OWNER_PASSWORD,
       ownerAuthSubjectId: OWNER_SUBJECT_ID,
       quiet: true,
@@ -421,12 +454,80 @@ test("runtime/server SQLite journey durably receipts invalid identity rejections
     const spineEvidence = getDb().prepare("SELECT data_json FROM spine_events ORDER BY event_seq").all();
     assertOmitsPrivatePayload("spine timeline and mutation audit", spineEvidence, forbiddenPayloadNeedles);
 
+    const auditEvent = getDb()
+      .prepare(
+        `SELECT actor_id, actor_type, data_json, event_type, object_id, object_type, trace_id
+           FROM spine_events
+          WHERE event_type = 'record_rejection.quarantined'`
+      )
+      .get<{
+        actor_id: string;
+        actor_type: string;
+        data_json: string;
+        event_type: string;
+        object_id: string;
+        object_type: string;
+        trace_id: string;
+      }>();
+    assert.ok(auditEvent, "quarantine insert must commit its audit fact atomically");
+    assert.equal(auditEvent.actor_id, OWNER_SUBJECT_ID);
+    assert.equal(auditEvent.actor_type, "subject");
+    assert.equal(auditEvent.object_id, row.receipt_id);
+    assert.equal(auditEvent.object_type, "record_rejection");
+    const auditData = JSON.parse(auditEvent.data_json) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(auditData).sort(), [
+      "connection_id",
+      "created_at",
+      "last_seen_at",
+      "payload_bytes",
+      "payload_sha256",
+      "reason_code",
+      "receipt_id",
+      "stream",
+    ]);
+    assert.equal(auditData.connection_id, connectorInstanceId);
+    assert.equal(auditData.receipt_id, row.receipt_id);
+    assert.equal(auditData.stream, "items");
+    assert.equal(auditData.reason_code, "invalid_record_identity");
+    assert.equal(auditData.payload_bytes, Buffer.byteLength(rejectedPayloadLine));
+    assert.equal(auditData.payload_sha256, row.payload_sha256);
+    assertOmitsPrivatePayload("fixed-field quarantine audit fact", auditData, forbiddenPayloadNeedles);
+
+    const { body: runTimeline, status: runTimelineStatus } = await fetchJson(
+      `${asUrlA}/_ref/runs/${encodeURIComponent(runId)}/timeline`,
+      { headers: { Cookie: ownerSessionA } }
+    );
+    assert.equal(runTimelineStatus, 200);
+    assertOmitsPrivatePayload("owner run timeline", runTimeline, forbiddenPayloadNeedles);
+
+    const { body: auditTrace, status: auditTraceStatus } = await fetchJson(
+      `${asUrlA}/_ref/traces/${encodeURIComponent(auditEvent.trace_id)}`,
+      { headers: { Cookie: ownerSessionA } }
+    );
+    assert.equal(auditTraceStatus, 200);
+    assertOmitsPrivatePayload("owner audit trace", auditTrace, forbiddenPayloadNeedles);
+
+    const mutationEvents = getDb()
+      .prepare("SELECT data_json FROM spine_events WHERE trace_id = ? AND event_type LIKE 'mutation.%'")
+      .all(auditEvent.trace_id);
+    assert.ok(mutationEvents.length >= 2, "ingest trace must include requested and completed mutation evidence");
+    assertOmitsPrivatePayload("mutation evidence", mutationEvents, forbiddenPayloadNeedles);
+
+    const { body: healthBody, status: healthStatus } = await fetchJson(
+      `${asUrlA}/_ref/connectors/${encodeURIComponent(connectorId)}`,
+      { headers: { Cookie: ownerSessionA } }
+    );
+    assert.equal(healthStatus, 200);
+    assertOmitsPrivatePayload("connector health projection", healthBody, forbiddenPayloadNeedles);
+    assertOmitsPrivatePayload("captured server logger", serverALogs.output(), forbiddenPayloadNeedles);
+
     await closeServer(serverA);
     serverA = null;
 
     serverB = await startServer({
       asPort: 0,
       dbPath,
+      logger: serverBLogs.logger,
       ownerAuthPassword: OWNER_PASSWORD,
       ownerAuthSubjectId: OWNER_SUBJECT_ID,
       quiet: true,
@@ -475,6 +576,7 @@ test("runtime/server SQLite journey durably receipts invalid identity rejections
     assert.equal(detail.payload_text, rejectedPayloadLine);
     assert.equal(JSON.stringify(detail).includes("storage exploded"), false);
     assert.equal(JSON.stringify(detail).includes("parser exploded"), false);
+    assertOmitsPrivatePayload("captured restarted-server logger", serverBLogs.output(), forbiddenPayloadNeedles);
   } finally {
     if (serverB) {
       await closeServer(serverB);
@@ -680,6 +782,28 @@ test("runtime/server SQLite response loss replays the same durable rejection rec
         .get<{ count: number }>(connectorInstanceId)?.count,
       1
     );
+
+    const replayAuditEvents = getDb()
+      .prepare(
+        `SELECT actor_id, data_json, event_type
+           FROM spine_events
+          WHERE object_type = 'record_rejection' AND object_id = ?
+          ORDER BY event_seq`
+      )
+      .all<{ actor_id: string; data_json: string; event_type: string }>(rowAfterReplay.receipt_id);
+    assert.deepEqual(
+      replayAuditEvents.map((event) => event.event_type),
+      ["record_rejection.quarantined", "record_rejection.replayed"]
+    );
+    for (const event of replayAuditEvents) {
+      assert.equal(event.actor_id, OWNER_SUBJECT_ID);
+      assertOmitsPrivatePayload("response-loss quarantine audit", JSON.parse(event.data_json), [
+        rejectedPayloadLine,
+        "bad-key",
+        "bad-data",
+        "key and data.id disagree",
+      ]);
+    }
 
     const stateAfterReplay = (await loadSyncState(connectorId, ownerToken, { connectorInstanceId, rsUrl })) as Record<
       string,

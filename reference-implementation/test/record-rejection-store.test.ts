@@ -33,6 +33,7 @@ import {
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 const execFileAsync = promisify(execFile);
 const SHA256_HEX_RE = /^[a-f0-9]{64}$/;
+const SIMULATED_AUDIT_WRITE_FAILURE_RE = /simulated audit write failure/;
 
 test("deployment quota configuration is explicit, byte-based, and fails closed when malformed", () => {
   assert.equal(recordRejectionOwnerQuotaBytes({}), DEFAULT_RECORD_REJECTION_OWNER_QUOTA_BYTES);
@@ -203,6 +204,94 @@ test("SQLite record rejection store replays exact inputs and keeps payload metad
     .get<{ pending_payload_bytes: number }>("owner_a");
   assert.equal(quota?.pending_payload_bytes, Buffer.byteLength(input.rawLine));
   assertSqliteQuotaMatchesRows("owner_a");
+
+  const auditEvents = getDb()
+    .prepare(
+      `SELECT actor_id, actor_type, data_json, event_type, object_id, object_type
+         FROM spine_events
+        WHERE event_type LIKE 'record_rejection.%'
+        ORDER BY event_seq`
+    )
+    .all<{
+      actor_id: string;
+      actor_type: string;
+      data_json: string;
+      event_type: string;
+      object_id: string;
+      object_type: string;
+    }>();
+  assert.equal(auditEvents.length, 2);
+  assert.deepEqual(
+    auditEvents.map((event) => event.event_type),
+    ["record_rejection.quarantined", "record_rejection.replayed"]
+  );
+  for (const event of auditEvents) {
+    assert.equal(event.actor_id, "pdpp_reference");
+    assert.equal(event.actor_type, "system");
+    assert.equal(event.object_id, first.receiptId);
+    assert.equal(event.object_type, "record_rejection");
+    const data = JSON.parse(event.data_json) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(data).sort(), [
+      "connection_id",
+      "created_at",
+      "last_seen_at",
+      "payload_bytes",
+      "payload_sha256",
+      "reason_code",
+      "receipt_id",
+      "stream",
+    ]);
+    assert.equal(data.receipt_id, first.receiptId);
+    assert.equal(data.connection_id, "cin_test");
+    assert.equal(data.stream, "items");
+    assert.equal(data.reason_code, "invalid_record_identity");
+    assert.equal(data.payload_bytes, Buffer.byteLength(input.rawLine));
+    assert.equal(data.payload_sha256, detail.payloadSha256);
+    assert.equal(JSON.stringify(data).includes(input.rawLine), false);
+  }
+});
+
+test("SQLite record rejection receipt and audit fact roll back together", () => {
+  initDb();
+  seedSqliteConnection();
+  getDb()
+    .prepare(
+      `CREATE TRIGGER reject_record_rejection_audit
+       BEFORE INSERT ON spine_events
+       WHEN NEW.event_type LIKE 'record_rejection.%'
+       BEGIN
+         SELECT RAISE(ABORT, 'simulated audit write failure');
+       END`
+    )
+    .run();
+
+  assert.throws(
+    () =>
+      insertOrReplaySqliteRecordRejection({
+        connectorId: "test_connector",
+        connectorInstanceId: "cin_test",
+        inputIndex: 0,
+        ownerSubjectId: "owner_a",
+        rawLine: '{"id":null}',
+        reasonCode: "invalid_record_identity",
+        runId: "run_1",
+        stream: "items",
+      }),
+    SIMULATED_AUDIT_WRITE_FAILURE_RE
+  );
+  assert.equal(getDb().prepare("SELECT COUNT(*) AS count FROM record_rejections").get<{ count: number }>()?.count, 0);
+  assert.equal(
+    getDb()
+      .prepare("SELECT pending_payload_bytes FROM record_rejection_quota WHERE owner_subject_id = 'owner_a'")
+      .get<{ pending_payload_bytes: number }>()?.pending_payload_bytes ?? 0,
+    0
+  );
+  assert.equal(
+    getDb()
+      .prepare("SELECT COUNT(*) AS count FROM spine_events WHERE event_type LIKE 'record_rejection.%'")
+      .get<{ count: number }>()?.count,
+    0
+  );
 });
 
 test("SQLite record rejection store refuses quota exhaustion without acknowledging progress", () => {

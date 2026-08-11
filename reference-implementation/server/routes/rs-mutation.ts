@@ -453,6 +453,9 @@ export interface MountRsMutationContext {
     options?: { requireConnectionAdmission?: boolean; runId?: string | null }
   ) => Promise<readonly unknown[]>;
   readonly insertOrReplayRecordRejection?: (input: {
+    auditActorId: string;
+    auditActorType: string;
+    auditTraceId: string | null;
     code: string;
     connectorId: string;
     connectorInstanceId: string;
@@ -543,7 +546,8 @@ function insertHostedRejectionReceipt(
   req: RouteRequest,
   input: InsertOrReplayRejectionInput,
   namespace: ConnectorNamespaceLike,
-  runId: string | null
+  runId: string | null,
+  traceId: string | null
 ): Promise<RejectionReceipt> | RejectionReceipt {
   if (!ctx.insertOrReplayRecordRejection) {
     throw new Error("hosted rejection receipt persistence is not configured");
@@ -556,6 +560,9 @@ function insertHostedRejectionReceipt(
     throw new Error("connector instance is required for rejection receipt persistence");
   }
   return ctx.insertOrReplayRecordRejection({
+    auditActorId: ownerSubjectId,
+    auditActorType: "subject",
+    auditTraceId: traceId,
     code: input.code,
     connectorId: namespace.connectorId ?? input.connectorId,
     connectorInstanceId: namespace.connectorInstanceId,
@@ -1249,7 +1256,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
               ...draftAdmission(connectorInstanceId),
               connectorInstanceId,
             }));
-          return insertHostedRejectionReceipt(ctx, req, input, namespace, runId);
+          return insertHostedRejectionReceipt(ctx, req, input, namespace, runId, mutationContext.traceId);
         },
       };
       let output: RecordsIngestOutput;
