@@ -47,6 +47,7 @@ import {
   normalizeSourceRoots,
   validateSinceLocally,
 } from "../src/connect-scope.ts";
+import { resolveCollectorQueuePath } from "../src/durable-state.ts";
 import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError } from "../src/errors.ts";
 import {
   type BundledConnectorEntry,
@@ -123,12 +124,6 @@ export function getBundledConnector(connectorId: string): BundledConnectorEntry 
  */
 const COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
 
-const DEFAULT_QUEUE_PATH = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "..",
-  ".pdpp-data",
-  "collector-runner-queue.json"
-);
 const LOCAL_COLLECTOR_PACKAGE_NAME = "@pdpp/local-collector";
 const LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK = "0.0.0";
 const LOCAL_COLLECTOR_PROFILE_DIR_ENV = "PDPP_LOCAL_COLLECTOR_PROFILE_DIR";
@@ -338,6 +333,7 @@ export interface CliOptions {
   olderThanDays?: number;
   profile?: string;
   queuePath: string;
+  queuePathExplicit?: boolean;
   quiet?: boolean;
   /** connect's --recent [days]: an explicit day count of 0 is meaningful ("just given, use the default"), so this is a count, not a boolean. */
   recentDays?: number;
@@ -759,7 +755,7 @@ export async function runCollectorOnce(options: CliOptions): Promise<CollectorRu
       deviceId: options.deviceId,
       deviceToken: options.deviceToken,
       ...(reporter ? { onMessage: reporter.onMessage } : {}),
-      queuePath: scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, options.sourceInstanceId),
+      queuePath: resolveOutboxPath(options),
       ...(options.runId ? { runId: options.runId } : {}),
       sourceInstanceId: options.sourceInstanceId,
     });
@@ -832,7 +828,7 @@ export async function runCollectorSample(options: CliOptions): Promise<SampleRun
       deviceId: options.deviceId,
       deviceToken: options.deviceToken,
       onMessage,
-      queuePath: scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, options.sourceInstanceId),
+      queuePath: resolveOutboxPath(options),
       ...(options.runId ? { runId: options.runId } : {}),
       sourceInstanceId: options.sourceInstanceId,
     });
@@ -1794,7 +1790,7 @@ export function inspectLocalOutboxStatus(
       record_batches: inspection.recordBatchCount,
     },
     db: {
-      configured: Boolean(options.queuePath),
+      configured: true,
       exists,
       path: dbPath,
     },
@@ -2407,12 +2403,15 @@ function applyProfileEnv(options: CliOptions, profile: LocalCollectorProfile): C
   const { env } = profile;
   const explicit = options.explicitOptions;
   const keep = (flag: string): boolean => explicit?.has(flag) === true;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches the established profile-env idiom.
+  const profileQueuePath = env.PDPP_COLLECTOR_QUEUE?.trim();
+  const configuredQueuePath = hasExplicitQueuePath(options);
   const next: CliOptions = {
     ...options,
     // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     baseUrl: keep("--base-url") ? options.baseUrl : env.PDPP_REFERENCE_BASE_URL?.trim() || options.baseUrl,
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
-    queuePath: keep("--queue") ? options.queuePath : env.PDPP_COLLECTOR_QUEUE?.trim() || options.queuePath,
+    queuePath: configuredQueuePath ? options.queuePath : profileQueuePath || options.queuePath,
+    queuePathExplicit: configuredQueuePath || Boolean(profileQueuePath),
   };
   const sourceInstanceId = profile.source_instance_id ?? options.sourceInstanceId;
   // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
@@ -2467,12 +2466,12 @@ function resolveRecoveryOptions(options: CliOptions): {
     };
   }
 
-  const configuredQueue = options.queuePath !== DEFAULT_QUEUE_PATH || Boolean(process.env.PDPP_COLLECTOR_QUEUE?.trim());
+  const configuredQueue = hasExplicitQueuePath(options);
   if (!configuredQueue) {
     throw new CollectorUsageError(
       `recover could not find a local collector profile for source_instance_id '${sourceInstanceId}'. ` +
         "Run this on the collector host after enrollment, pass --profile <name>, or set PDPP_COLLECTOR_QUEUE/--queue explicitly. " +
-        "Refusing to inspect the package default queue because it is often unrelated to the enrolled collector."
+        "Refusing to inspect an unscoped default queue because it may be unrelated to the enrolled collector."
     );
   }
 
@@ -2503,12 +2502,12 @@ export function resolveInspectionOptions(options: CliOptions): CliOptions {
     return applyProfileEnv(options, lookup.matches[0] as LocalCollectorProfile);
   }
 
-  const configuredQueue = options.queuePath !== DEFAULT_QUEUE_PATH || Boolean(process.env.PDPP_COLLECTOR_QUEUE?.trim());
+  const configuredQueue = hasExplicitQueuePath(options);
   if (!configuredQueue) {
     throw new CollectorUsageError(
       `${options.command} could not find a local collector profile for source_instance_id '${sourceInstanceId}'. ` +
         "Run this on the collector host after enrollment, pass --profile <name>, or set PDPP_COLLECTOR_QUEUE/--queue explicitly. " +
-        "Refusing to inspect the package default queue because it is often unrelated to the enrolled collector."
+        "Refusing to inspect an unscoped default queue because it may be unrelated to the enrolled collector."
     );
   }
 
@@ -3075,10 +3074,12 @@ export function parseArgs(args: string[]): CliOptions {
       "usage: pdpp-local-collector <setup|connect|run|status|doctor|logout|connectors|advertise|enroll|recover|retry-dead-letters|prune-sent|compact> --base-url <url> [options]"
     );
   }
+  const configuredQueuePath = process.env.PDPP_COLLECTOR_QUEUE?.trim();
   const options: CliOptions = {
     baseUrl: process.env.PDPP_REFERENCE_BASE_URL ?? "http://127.0.0.1:7662",
     command,
-    queuePath: process.env.PDPP_COLLECTOR_QUEUE ?? DEFAULT_QUEUE_PATH,
+    queuePath: configuredQueuePath ?? "",
+    queuePathExplicit: Boolean(configuredQueuePath),
   };
   const explicitOptions = new Set<string>();
   options.explicitOptions = explicitOptions;
@@ -3181,6 +3182,7 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     },
     "--queue": (next) => {
       options.queuePath = next;
+      options.queuePathExplicit = true;
     },
     "--profile": (next) => {
       options.profile = next;
@@ -3276,19 +3278,22 @@ function parseCsv(value: string): string[] {
     .filter(Boolean);
 }
 
-export function scopedDefaultQueuePath(queuePath: string, defaultQueuePath: string, connectionId: string): string {
-  if (queuePath !== defaultQueuePath) {
-    return queuePath;
-  }
-  const extension = extname(defaultQueuePath);
-  const stem = basename(defaultQueuePath, extension);
-  return join(dirname(defaultQueuePath), `${stem}.${safeQueuePathSegment(connectionId)}${extension}`);
+function resolveOutboxPath(options: CliOptions): string {
+  return resolveCollectorQueuePath({
+    configuredPath: options.queuePath,
+    configuredPathIsExplicit: hasExplicitQueuePath(options),
+    connectorId: options.connector ? normalizeConnectorId(options.connector) : null,
+    sourceInstanceId: options.sourceInstanceId,
+  });
 }
 
-function resolveOutboxPath(options: CliOptions): string {
-  return options.sourceInstanceId
-    ? scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, options.sourceInstanceId)
-    : options.queuePath;
+function hasExplicitQueuePath(options: CliOptions): boolean {
+  // Direct programmatic callers historically passed a nonempty queuePath
+  // without the parser's provenance bit. Treat that shape as explicit while
+  // parser/profile defaults use the explicit false/undefined empty sentinel.
+  return (
+    options.queuePathExplicit === true || (options.queuePathExplicit === undefined && options.queuePath.trim() !== "")
+  );
 }
 
 interface LocalOutboxInspection {
@@ -3333,10 +3338,6 @@ function emptyOutboxSummary(): LocalDeviceOutboxSummary {
     succeeded: 0,
     total: 0,
   };
-}
-
-function safeQueuePathSegment(value: string): string {
-  return encodeURIComponent(value).replaceAll("%", "_");
 }
 
 if (isMainModule(import.meta.url)) {

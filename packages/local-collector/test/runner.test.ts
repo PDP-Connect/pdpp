@@ -48,7 +48,6 @@ import {
   runConnect,
   runLogout,
   runSetup,
-  scopedDefaultQueuePath,
   summarizeRunResultForCli,
   writeLocalCollectorProfile,
 } from "../bin/pdpp-local-collector.ts";
@@ -1599,7 +1598,7 @@ test("local collector rejects conflicting source identity flags", () => {
   );
 });
 
-test("local collector recover refuses package-default queue when no profile exists", async () => {
+test("local collector recover refuses an unscoped default queue when no profile exists", async () => {
   const profileDir = await tempDir();
   const previous = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
   process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDir;
@@ -2091,37 +2090,6 @@ test("pdpp-local-collector run refuses --command <bin> without the dev opt-in en
       process.env[ALLOW_CUSTOM_COMMAND_ENV] = previous;
     }
   }
-});
-
-test("scopedDefaultQueuePath namespaces the default queue path by connection-id", () => {
-  // Task 5.4: two distinct connection-ids must resolve to two distinct
-  // default outbox paths so concurrent local collection across devices
-  // and sources can not collide via a shared SQLite file.
-  const defaultPath = "/var/pdpp/.pdpp-data/collector-runner-queue.json";
-  const a = scopedDefaultQueuePath(defaultPath, defaultPath, "src-A");
-  const b = scopedDefaultQueuePath(defaultPath, defaultPath, "src-B");
-  assert.notEqual(a, b, "distinct connection-ids must produce distinct default queue paths");
-  assert.ok(a.includes("src-A"), `expected ${a} to encode connection-id`);
-  assert.ok(b.includes("src-B"), `expected ${b} to encode connection-id`);
-  assert.equal(a.endsWith(".json"), true);
-  assert.equal(b.endsWith(".json"), true);
-
-  // An operator-supplied --queue path is honored verbatim (single-tenant case).
-  const explicit = "/operator/explicit-queue.sqlite";
-  assert.equal(
-    scopedDefaultQueuePath(explicit, defaultPath, "src-A"),
-    explicit,
-    "operator-supplied queue path must be used as-is"
-  );
-});
-
-test("scopedDefaultQueuePath encodes path-separator characters in connection-ids", () => {
-  // Real connection-ids include separators and unicode; the scoped queue
-  // segment must not let one connection-id escape into another's path.
-  const defaultPath = "/var/pdpp/.pdpp-data/collector-runner-queue.json";
-  const tricky = scopedDefaultQueuePath(defaultPath, defaultPath, "../escape/../etc/passwd");
-  assert.equal(tricky.startsWith("/var/pdpp/.pdpp-data/"), true);
-  assert.equal(tricky.includes("/../"), false, "must not include path traversal segments");
 });
 
 test("buildLocalDeviceOutboxId namespaces ids by source instance so identical payload parts do not collide", () => {

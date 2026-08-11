@@ -313,10 +313,10 @@ under `${PDPP_LOCAL_COLLECTOR_PROFILE_DIR}` or
 `${XDG_CONFIG_HOME:-$HOME/.config}/pdpp/collectors`. When it finds one, it uses
 the profile's durable outbox path, connector id, reference base URL, device id,
 and device token. If no matching profile exists and no explicit queue was
-configured, it refuses with an operator error instead of falling back to the
-package-default outbox. That refusal is intentional: the package-default queue
-is often unrelated to the enrolled host collector and can produce a misleading
-`db.exists:false` / `matched:0` result.
+configured, it refuses with an operator error instead of inspecting an
+unscoped default outbox. That refusal is intentional: without a source identity
+and connector, the CLI cannot prove which local lane an unscoped file belongs
+to.
 
 If you installed globally with `npm i -g @pdpp/local-collector`, replace
 the `npx -y @pdpp/local-collector` prefix with `pdpp-local-collector`:
@@ -356,6 +356,29 @@ The collector keeps undrained work in a durable SQLite outbox between runs.
 That file, and any output you capture, must live on a **persistent,
 disk-backed** directory — not a RAM-backed `/tmp`.
 
+When `PDPP_COLLECTOR_QUEUE` is unset, the collector resolves one source-aware
+file below the platform user-state directory. The default roots are
+`${XDG_STATE_HOME:-$HOME/.local/state}/pdpp/collectors` on Linux/Unix,
+`$HOME/Library/Application Support/pdpp/collectors` on macOS, and
+`%LOCALAPPDATA%/pdpp/collectors` on Windows. A bundled connector uses the
+`<connector>-<source_instance_id>.sqlite` filename; a source without a
+connector uses `collector-runner-queue.<source_instance_id>.sqlite`. The path
+does not depend on the current directory, the package install directory, an
+`npx` temp directory, or a worktree.
+
+An explicit `PDPP_COLLECTOR_QUEUE` value or `--queue` flag always wins and is
+used unchanged. Existing nonempty SQLite stores under the legacy stable
+`~/.local/state/pdpp/collectors` directory remain discoverable. A unique
+package-local legacy store is copied into the canonical state directory using
+a SQLite snapshot, with the original retained. If more than one nonempty
+legacy store matches the source, the command stops and asks for `--queue`; it
+never guesses, overwrites, or deletes state.
+
+This resolver cannot recover a package-relative queue file that a reaped
+worktree already deleted. If the server still reports pending work, use the
+saved profile and normal recovery path first; records that existed only in the
+deleted local SQLite file require a new source scan.
+
 On many Linux hosts `/tmp` is a `tmpfs` mounted on RAM (the default on recent
 Ubuntu releases, sized at half of physical memory). A wrapper that points the
 outbox or a captured run summary at `/tmp` therefore: (a) silently consumes RAM
@@ -363,12 +386,12 @@ as the outbox or a large backfill summary grows, and (b) loses undrained
 backlog on reboot, so the next run re-scans and re-enqueues the same tranche
 instead of draining what was already collected.
 
-Set these explicitly in your wrapper or env file:
+You normally do not need to set the queue path. Set it explicitly only when a
+supervisor owns the location or when you are selecting a legacy store:
 
 ```bash
-# Durable outbox: a disk-backed state dir, never /tmp.
-# Linux (XDG): $XDG_STATE_HOME or ~/.local/state.
-PDPP_COLLECTOR_QUEUE="${XDG_STATE_HOME:-$HOME/.local/state}/pdpp/collector-runner-queue.json"
+# Explicit durable outbox override: a disk-backed state dir, never /tmp.
+PDPP_COLLECTOR_QUEUE="${XDG_STATE_HOME:-$HOME/.local/state}/pdpp/collector-runner-queue.sqlite"
 ```
 
 When you capture the `run` or `doctor` JSON, write it under the same persistent
@@ -423,7 +446,7 @@ EnvironmentFile=/etc/pdpp/local-collector.secret
 # Keep the durable outbox on a disk-backed path so undrained backlog survives
 # reboot and a tmpfs /tmp never holds collector state (see "Persistent State
 # And Scratch Paths" above).
-Environment=PDPP_COLLECTOR_QUEUE=/var/lib/pdpp/collector-runner-queue.json
+Environment=PDPP_COLLECTOR_QUEUE=/var/lib/pdpp/collector-runner-queue.sqlite
 ExecStart=/usr/bin/pdpp-local-collector run --connector %i
 
 # --- Durable resource limits (do not drop these) --------------------------
@@ -603,7 +626,7 @@ source "$HOME/.config/pdpp/local-collector.secret"
 # backlog survives reboot and a tmpfs /tmp never holds collector state.
 # (macOS /tmp is disk-backed today, but pinning the path keeps the wrapper
 # portable to Linux hosts where /tmp is tmpfs.)
-export PDPP_COLLECTOR_QUEUE="$HOME/Library/Application Support/pdpp/collector-runner-queue.json"
+export PDPP_COLLECTOR_QUEUE="$HOME/Library/Application Support/pdpp/collector-runner-queue.sqlite"
 mkdir -p "$(dirname "$PDPP_COLLECTOR_QUEUE")"
 exec /opt/homebrew/bin/pdpp-local-collector run --connector "$1"
 ```
