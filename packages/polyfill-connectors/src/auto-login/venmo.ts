@@ -119,6 +119,13 @@ export interface VenmoAccountProbeResult {
 }
 
 /**
+ * Which side of an automated credential submission a probe runs on — see
+ * {@link probeVenmoAccount}'s "B4" doc for why this determines the thrown
+ * error's NAME (and therefore its retryability), not just its message.
+ */
+export type VenmoProbePhase = "post_submit" | "pre_submit";
+
+/**
  * Page-context probe: fetch `/account` under the real session cookie
  * (`credentials: "include"`, no Authorization header, no device-id, no
  * spoofed User-Agent). A 2xx body carrying `data.user.id` proves the
@@ -130,8 +137,14 @@ export interface VenmoAccountProbeResult {
  * CORS allowlist only grants a credentialed fetch from `https://venmo.com`
  * — see {@link ensureVenmoOrigin}. A probe that skipped this would read
  * every live session as dead and never actually test session state.
+ *
+ * `phase` (default `"pre_submit"`) governs the NAME of a transport-fault
+ * throw, not just its text — see the "B4" note above `throw` below.
  */
-export async function probeVenmoAccount(page: Page): Promise<VenmoAccountProbeResult> {
+export async function probeVenmoAccount(
+  page: Page,
+  phase: VenmoProbePhase = "pre_submit"
+): Promise<VenmoAccountProbeResult> {
   await ensureVenmoOrigin(page);
   let outcome: { kind: "dead" } | { kind: "live"; ownerId: string } | { kind: "transport_error"; message: string };
   try {
@@ -156,9 +169,28 @@ export async function probeVenmoAccount(page: Page): Promise<VenmoAccountProbeRe
     outcome = { kind: "transport_error", message: err instanceof Error ? err.message : String(err) };
   }
   if (outcome.kind === "transport_error") {
-    throw new Error(
-      `venmo_probe_transport_error: ${redactTransportDetail(outcome.message).slice(0, PROBE_TRANSPORT_DETAIL_MAX)}`
-    );
+    const detail = redactTransportDetail(outcome.message).slice(0, PROBE_TRANSPORT_DETAIL_MAX);
+    // B4: a transport blip has NO cost to retry before a password was ever
+    // typed (`pre_submit` — nothing has been sent to Venmo yet), but the SAME
+    // fault immediately after `loginWithSavedCredentials` submits the saved
+    // password (`post_submit` — this probe is verifying that submission's
+    // outcome) is a different risk entirely: this repo's own
+    // `venmo_.*transport_error` wildcard classified BOTH names as retryable,
+    // so a transient network blip landing on the post-submit probe alone
+    // (session establishment already succeeded) would terminal the run
+    // retryable, and a runtime-level retry re-enters ensureVenmoSession from
+    // scratch — re-submitting the SAME saved password against Venmo's own
+    // login form on every retry, with no run-scoped budget (unlike usaa's
+    // sessionRepairAttempted) to stop it. Venmo's own anti-automation gate
+    // (this file's header) makes repeated automated logins against one real
+    // account exactly the kind of signal that risks a lockout. Naming this
+    // throw distinctly (`venmo_post_submit_probe_transport_error`, deliberately
+    // NOT matching connectors/venmo/index.ts's retryablePattern) makes the
+    // runtime terminal this run permanently instead of retrying it — losing
+    // one run's-worth of collection is the safe failure mode, not repeatedly
+    // re-submitting a real password.
+    const name = phase === "post_submit" ? "venmo_post_submit_probe_transport_error" : "venmo_probe_transport_error";
+    throw new Error(`${name}: ${detail}`);
   }
   return outcome.kind === "live" ? { live: true, ownerId: outcome.ownerId } : { live: false, ownerId: null };
 }
@@ -193,15 +225,22 @@ async function captureLoginState(capture: CaptureSession | null | undefined, pag
  * /tmp/review-venmo-browser-redesign-0810.md). Re-probes via
  * `probeVenmoAccount`, whose own origin guard covers wherever the owner's
  * sign-in actually lands.
+ *
+ * `phase` (default `"pre_submit"`) passes straight through to that re-probe
+ * — see {@link probeVenmoAccount}'s B4 doc. Every caller of this function
+ * that hands off AFTER `loginWithSavedCredentials` has already submitted the
+ * saved password must pass `"post_submit"` explicitly.
  */
 async function waitForManualLogin({
   capture,
   message,
   page,
+  phase = "pre_submit",
   reason,
   sendInteraction,
 }: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction"> & {
   readonly message: string;
+  readonly phase?: VenmoProbePhase;
   readonly reason?: "captcha";
 }): Promise<VenmoAccountProbeResult> {
   await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
@@ -209,7 +248,7 @@ async function waitForManualLogin({
     ...(capture ? { capture } : {}),
     message,
     page,
-    probe: () => probeVenmoAccount(page),
+    probe: () => probeVenmoAccount(page, phase),
     ...(reason ? { reason } : {}),
     sendInteraction,
     timeoutSeconds: 1800,
@@ -225,6 +264,8 @@ async function ensureManualSessionWithoutCredentials({
   checkpoint: SessionCheckpointFn;
 }): Promise<VenmoAccountProbeResult> {
   await checkpoint("venmo-signin-manual-required");
+  // pre_submit (default): no credentials are saved at all, so no password
+  // has ever been typed anywhere in this call graph.
   const result = await waitForManualLogin({
     ...(capture ? { capture } : {}),
     message: MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE,
@@ -240,15 +281,18 @@ async function ensureManualSessionWithoutCredentials({
 async function requestManualLoginForChallenge({
   capture,
   page,
+  phase = "pre_submit",
   reason,
   sendInteraction,
 }: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  readonly phase?: VenmoProbePhase;
   readonly reason: string;
 }): Promise<VenmoAccountProbeResult> {
   return await waitForManualLogin({
     ...(capture ? { capture } : {}),
     message: `Venmo did not render the expected sign-in form (${reason}). Complete sign-in — including any device approval, CAPTCHA, or verification step — in the secure browser, then respond success.`,
     page,
+    phase,
     sendInteraction,
   });
 }
@@ -292,6 +336,10 @@ async function fillVenmoPassword(args: ManualHandoff & { password: string }): Pr
  * either a known OTP input shape or the page's own prompt copy — never
  * guesses a code the owner never saw. Returns `null` when no verification
  * step was detected (the caller proceeds to the final session probe).
+ *
+ * Only ever called from `loginWithSavedCredentials` AFTER the saved password
+ * was already submitted — every probe in this function is `"post_submit"`
+ * (see {@link probeVenmoAccount}'s B4 doc).
  */
 async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<VenmoAccountProbeResult | null> {
   const { capture, page, sendInteraction } = args;
@@ -312,6 +360,7 @@ async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<VenmoAccoun
     return await requestManualLoginForChallenge({
       ...(capture ? { capture } : {}),
       page,
+      phase: "post_submit",
       reason: "verification step did not match a known input",
       sendInteraction,
     });
@@ -328,7 +377,7 @@ async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<VenmoAccoun
   });
   const code = resp.data?.code ?? resp.value ?? null;
   if (!code) {
-    const probed = await probeVenmoAccount(page);
+    const probed = await probeVenmoAccount(page, "post_submit");
     if (probed.live) {
       return probed;
     }
@@ -400,13 +449,18 @@ async function loginWithSavedCredentials({
   }
 
   await checkpoint("venmo-final-verify");
-  const finalProbe = await probeVenmoAccount(page);
+  // post_submit: this is the direct outcome check for the password submit
+  // above — see probeVenmoAccount's B4 doc for why a transport fault here
+  // must not be classified the same as a fault that happened before any
+  // password was ever typed.
+  const finalProbe = await probeVenmoAccount(page, "post_submit");
   if (finalProbe.live) {
     return finalProbe;
   }
   return await requestManualLoginForChallenge({
     ...(capture ? { capture } : {}),
     page,
+    phase: "post_submit",
     reason: "automated sign-in did not complete",
     sendInteraction,
   });

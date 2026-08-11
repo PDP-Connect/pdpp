@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Locator, Page } from "playwright";
+import { VENMO_RETRYABLE_PATTERN } from "../../connectors/venmo/index.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
 import { ensureVenmoSession, probeVenmoAccount } from "./venmo.ts";
@@ -545,5 +546,180 @@ test("probeVenmoAccount: a transport fault carrying a query-string token, cookie
     }
     assert.match(err.message, /ECONNRESET/, "the safe transport code must remain visible");
     return true;
+  });
+});
+
+// ─── B4: post-submit transport fault must not retry a credential submission ──
+//
+// Red-team B4: a transport fault discovered by the FINAL probe — the one
+// that verifies the outcome of a password just submitted to Venmo's own
+// sign-in form — used to throw the SAME `venmo_probe_transport_error` name
+// (and, via the old wildcard/bare-vocabulary retryablePattern, always
+// matched anyway on its "Failed to fetch" text) as a pre-submit probe fault.
+// The runtime cannot tell "nothing was ever attempted yet" from "a password
+// was just submitted and we can't confirm the outcome" from the name/message
+// alone, so both were retryable — and a retry re-enters ensureVenmoSession
+// from scratch, resubmitting the SAME saved password with no run-scoped
+// budget to stop it (this repo's usaa sessionRepairAttempted fix closed the
+// analogous within-run gap; this is the cross-run/cross-dispatch version).
+//
+// `probeVenmoAccount(page, "post_submit")` now throws a distinctly-named,
+// deliberately non-retryable error instead.
+
+/**
+ * A page whose login form fills succeed, but whose PROBE after the submit
+ * always throws a transport fault (never resolves live/dead) — the exact B4
+ * repro shape. `probeCount === 1` is the pre-submit initial probe (reports
+ * dead, as with any session that needs credential-assisted login);
+ * `probeCount > 1` is every probe from that point on, all post-submit.
+ */
+function makePageWhosePostSubmitProbeThrows(): { fillCalls: Record<string, string>; page: Page } {
+  const fillCalls: Record<string, string> = {};
+  let probeCount = 0;
+  const username = makeFillRecordingLocator((value) => {
+    fillCalls.username = value;
+  });
+  const password = makeFillRecordingLocator((value) => {
+    fillCalls.password = value;
+  });
+  const submit = makeLocator();
+  const otp = makeLocator({ count: 0, visible: false });
+  let currentUrl = "https://venmo.com/";
+  const page: Pick<
+    Page,
+    "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+  > = {
+    async evaluate(): Promise<unknown> {
+      probeCount += 1;
+      if (probeCount === 1) {
+        return { kind: "dead" };
+      }
+      return await Promise.reject(new Error("Failed to fetch"));
+    },
+    getByRole(): Locator {
+      return submit;
+    },
+    goto(url: string): ReturnType<Page["goto"]> {
+      currentUrl = url;
+      return Promise.resolve(null);
+    },
+    locator(selector: string): Locator {
+      if (selector.includes("username")) {
+        return username;
+      }
+      if (selector.includes("password")) {
+        return password;
+      }
+      if (selector.includes("otp") || selector.includes("code")) {
+        return otp;
+      }
+      return makeLocator({ count: 0, visible: false });
+    },
+    url(): string {
+      return currentUrl;
+    },
+    waitForLoadState(): ReturnType<Page["waitForLoadState"]> {
+      return Promise.resolve();
+    },
+    waitForTimeout(): ReturnType<Page["waitForTimeout"]> {
+      return Promise.resolve();
+    },
+  };
+  return { fillCalls, page: page as Page };
+}
+
+test("ensureVenmoSession: a transport fault in the post-submit probe throws a distinctly-named, non-retryable error", async () => {
+  await withVenmoCredentials(async () => {
+    const { fillCalls, page } = makePageWhosePostSubmitProbeThrows();
+    const { sendInteraction } = recordingSendInteraction();
+    await assert.rejects(ensureVenmoSession({ page, sendInteraction }), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /venmo_post_submit_probe_transport_error/);
+      assert.doesNotMatch(
+        err.message,
+        /^venmo_probe_transport_error/,
+        "must not collide with the pre-submit probe's error name"
+      );
+      return true;
+    });
+    assert.equal(fillCalls.username, "test-user", "the automated form fill did happen — this IS the post-submit case");
+    assert.equal(fillCalls.password, "test-password");
+  });
+});
+
+test("B4 oracle: the post-submit probe's thrown error name does not match the connector's retryablePattern (must not retry)", async () => {
+  await withVenmoCredentials(async () => {
+    const { page } = makePageWhosePostSubmitProbeThrows();
+    const { sendInteraction } = recordingSendInteraction();
+    await assert.rejects(ensureVenmoSession({ page, sendInteraction }), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.equal(
+        VENMO_RETRYABLE_PATTERN.test(err.message),
+        false,
+        "a post-submit transport fault must terminal the run permanently, not retry it"
+      );
+      return true;
+    });
+  });
+});
+
+test("B4 oracle: repeated-dispatch simulation — a retry-if-retryable caller submits the password exactly once total across N dispatch attempts", async () => {
+  await withVenmoCredentials(async () => {
+    const MAX_DISPATCH_ATTEMPTS = 3;
+    let submitCount = 0;
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt < MAX_DISPATCH_ATTEMPTS; attempt += 1) {
+      const { fillCalls, page } = makePageWhosePostSubmitProbeThrows();
+      const { sendInteraction } = recordingSendInteraction();
+      try {
+        await ensureVenmoSession({ page, sendInteraction });
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (fillCalls.password) {
+          submitCount += 1;
+        }
+        // A real dispatcher checks retryability BEFORE deciding to loop
+        // again — this is the exact decision this oracle exists to pin.
+        if (!VENMO_RETRYABLE_PATTERN.test(lastError.message)) {
+          break;
+        }
+        continue;
+      }
+      break;
+    }
+    assert.equal(submitCount, 1, "exactly one password submission across every dispatch attempt, never up to three");
+    assert.match(lastError?.message ?? "", /venmo_post_submit_probe_transport_error/);
+  });
+});
+
+// Counterweight: a PRE-submit transport fault (nothing has been typed or
+// submitted yet — the initial session-liveness probe) is exactly the safe
+// case this fix must not break. It keeps the original retryable name and
+// DOES match the pattern, and a caller that retries on it is retrying
+// something that cost nothing on the failed attempt.
+test("B4 counterweight: a pre-submit transport fault keeps its retryable name and never touches the credential form", async () => {
+  await withVenmoCredentials(async () => {
+    const page: Pick<Page, "evaluate" | "goto" | "url"> = {
+      async evaluate(): Promise<unknown> {
+        return await Promise.reject(new Error("Failed to fetch"));
+      },
+      goto(): ReturnType<Page["goto"]> {
+        return Promise.resolve(null);
+      },
+      url(): string {
+        return "https://venmo.com/";
+      },
+    };
+    const { sendInteraction } = recordingSendInteraction();
+    await assert.rejects(ensureVenmoSession({ page: page as Page, sendInteraction }), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /^venmo_probe_transport_error/);
+      assert.equal(
+        VENMO_RETRYABLE_PATTERN.test(err.message),
+        true,
+        "a pre-submit transport fault is exactly the case that SHOULD retry — nothing was submitted to lose"
+      );
+      return true;
+    });
   });
 });

@@ -88,6 +88,39 @@ const FRIENDS_PAGE_SIZE = 200;
 const TRANSACTIONS_PAGE_SIZE = 50;
 const MAX_FRIENDS_PAGES = 200;
 const MAX_TRANSACTION_PAGES = 400;
+
+/**
+ * `venmo_transport_error` (collect()'s page-fetch, see `makePageFetch` below)
+ * and `venmo_probe_transport_error` (ensureSession's PRE-submit session
+ * probe, see `src/auto-login/venmo.ts`) are the browser fetch's own "could
+ * not run at all" fault (opaque origin, DNS, TLS, reset socket) —
+ * deliberately retryable, distinct from `venmo_session_expired`. Every
+ * transport-fault throw in this connector is always wrapped in one of these
+ * named errors before it can reach the runtime's retryablePattern check —
+ * nothing unwrapped escapes either module's own try/catch — so this pattern
+ * names the two retryable errors EXACTLY rather than also matching bare
+ * transport vocabulary (`fetch failed`/`ECONN`/etc.) as a redundant, and
+ * here actively dangerous, catch-all.
+ *
+ * B4: that redundant bare-vocabulary form is what this pattern used to be
+ * (`venmo_.*transport_error` plus `fetch failed|failed to fetch`), and it
+ * silently made a THIRD, deliberately similarly-named error retryable too:
+ * `probeVenmoAccount` throws `venmo_post_submit_probe_transport_error` for a
+ * transport fault discovered immediately after a saved password was
+ * submitted to Venmo's own sign-in form, and that message still CONTAINS
+ * "Failed to fetch" (the redacted detail) even though its NAME must not
+ * retry. A wildcard/bare-vocabulary pattern classified it retryable anyway
+ * via the message text, and a runtime-level retry re-enters
+ * `ensureVenmoSession` from scratch — resubmitting the SAME saved password
+ * against Venmo's anti-automation gate on every retry, with no run-scoped
+ * budget to stop it (see `src/auto-login/venmo.test.ts`'s "B4" oracle).
+ * Naming exactly the two errors that must retry — and nothing else — is the
+ * only form immune to a future transport-detail string reintroducing this
+ * exact collision. Exported so both this connector's own tests and
+ * `src/auto-login/venmo.test.ts` assert against the REAL pattern, not a
+ * hand-copied stand-in that could silently drift from it.
+ */
+export const VENMO_RETRYABLE_PATTERN = /venmo_rate_limited|venmo_transport_error|venmo_probe_transport_error/i;
 // The redesign dropped `venmoPacingProfile`/the HTTP governor (page-context
 // fetch has no direct outbound Node HTTP to pace — F10 in
 // /tmp/review-venmo-browser-redesign-0810.md), but the page loops below
@@ -425,15 +458,9 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "venmo",
     validateRecord,
-    // `venmo_transport_error`/`venmo_probe_transport_error` are the browser
-    // fetch's own "could not run at all" fault (opaque origin, DNS, TLS,
-    // reset socket) — deliberately retryable, distinct from
-    // `venmo_session_expired`. `fetch failed` covers Node's transport
-    // wording; the page-context error is Chromium's own `TypeError: Failed
-    // to fetch` (capital F), matched here on purpose rather than by an
-    // accidental case-insensitive collision (F4 in
-    // /tmp/review-venmo-browser-redesign-0810.md).
-    retryablePattern: /ECONN|ETIMEDOUT|fetch failed|failed to fetch|venmo_rate_limited|venmo_.*transport_error/i,
+    // See VENMO_RETRYABLE_PATTERN's doc above for why this is an exact-name
+    // pattern rather than the wildcard/bare-vocabulary form it replaced (B4).
+    retryablePattern: VENMO_RETRYABLE_PATTERN,
     // No `auth:` config — credentials are optional. src/auto-login/venmo.ts
     // reads VENMO_USERNAME/VENMO_PASSWORD directly from process.env only to
     // ASSIST login when present, and falls to a manual_action browser
