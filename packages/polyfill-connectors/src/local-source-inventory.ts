@@ -32,6 +32,9 @@ export interface LocalCoverageStoreDescriptor {
 export const LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR = {
   claude_code: [
     { store: "projects", stream: "sessions" },
+    { store: "derived_messages", stream: "messages" },
+    { store: "derived_attachments", stream: "attachments" },
+    { store: "derived_memory_notes", stream: "memory_notes" },
     { store: "skills", stream: "skills" },
     { store: "commands", stream: "slash_commands" },
     { store: "file_history", stream: "file_history" },
@@ -44,6 +47,8 @@ export const LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR = {
   codex: [
     { store: "sessions", stream: "sessions" },
     { store: "state_db", stream: "sessions" },
+    { store: "derived_messages", stream: "messages" },
+    { store: "derived_function_calls", stream: "function_calls" },
     { store: "rules", stream: "rules" },
     { store: "prompts", stream: "prompts" },
     { store: "skills", stream: "skills" },
@@ -106,21 +111,44 @@ export function expectedLocalCoverageStoreDescriptors(
     : null;
 }
 
+/**
+ * Every manifest stream the server proof reader (`deriveLocalCoverageAxis`,
+ * via `parseCoverageDiagnosticsStateSnapshot`) must be able to prove complete
+ * needs at least one descriptor mapped to it, or that stream is structurally
+ * uncappable regardless of what the connector's emitter actually collects —
+ * exactly the drift this authority table exists to make detectable instead of
+ * silent (see the table's own doc comment above). A required stream missing a
+ * descriptor is reported so a connector-package-owned conformance test can
+ * fail on it without either package reaching into the other's internals.
+ */
+export function localCoverageStreamsMissingDescriptors(
+  connectorId: string,
+  requiredStreams: readonly string[]
+): readonly string[] {
+  const descriptors = expectedLocalCoverageStoreDescriptors(connectorId);
+  const declaredStreams = new Set((descriptors ?? []).map((descriptor) => descriptor.stream).filter(Boolean));
+  return requiredStreams.filter((stream) => !declaredStreams.has(stream)).sort();
+}
+
+/**
+ * Every filesystem-scanned {@link KnownLocalStore} the connector declares must
+ * be a member of the authoritative descriptor set, with no duplicates. This is
+ * intentionally a SUBSET check, not exact-equality: the descriptor authority
+ * also carries additive derived-store entries (e.g. `derived_messages`) for
+ * streams parsed out of another store's already-scanned source rather than
+ * their own top-level `KnownLocalStore` -- see `buildDerivedCoverageRecord`.
+ * Those have no filesystem-scanned counterpart to compare against here; the
+ * descriptor authority's coverage of every manifest-required stream (derived
+ * or not) is instead pinned by each connector's manifest-conformance test.
+ */
 function assertExpectedLocalCoverageStores(tool: string, stores: readonly KnownLocalStore[]): void {
-  const expected = expectedLocalCoverageStores(tool);
-  if (!expected) {
+  const expectedDescriptors = expectedLocalCoverageStoreDescriptors(tool);
+  if (!expectedDescriptors) {
     return;
   }
   const actual = stores.map((store) => `${store.store}\u0000${store.stream ?? ""}`).sort();
-  const expectedDescriptors = expectedLocalCoverageStoreDescriptors(tool);
-  const expectedSorted = expectedDescriptors
-    ? expectedDescriptors.map((store) => `${store.store}\u0000${store.stream ?? ""}`).sort()
-    : [];
-  if (
-    actual.length !== expectedSorted.length ||
-    actual.some((store, index) => store !== expectedSorted[index]) ||
-    new Set(actual).size !== actual.length
-  ) {
+  const expectedSet = new Set(expectedDescriptors.map((store) => `${store.store}\u0000${store.stream ?? ""}`));
+  if (new Set(actual).size !== actual.length || actual.some((store) => !expectedSet.has(store))) {
     throw new Error(`${tool} local coverage declaration diverges from its authoritative expected-store set`);
   }
 }

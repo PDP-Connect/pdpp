@@ -21,9 +21,12 @@ import {
   describeDerivedCoverageReason,
   expectedLocalCoverageStoreDescriptors,
   INVENTORY_FINGERPRINT_EXCLUDE_KEYS,
+  LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR,
+  localCoverageStreamsMissingDescriptors,
   openInventoryFingerprintCursor,
   parseCoverageDiagnosticsStateSnapshot,
 } from "./local-source-inventory.ts";
+import { readPolyfillManifests } from "./manifest-registry.ts";
 
 function inventoryRecord(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -358,4 +361,91 @@ test("describeDerivedCoverageReason: identical inputs from two different connect
   });
   assert.equal(claudeCodeStyle, codexStyle);
   assert.equal(claudeCodeStyle, "2 message records emitted");
+});
+
+// ─── descriptor-authority / manifest conformance ──────────────────────────
+//
+// LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR is "an authority shared by
+// emitters and the server proof reader" (see its own doc comment above) --
+// its whole reason to exist is to make a partial/drifted descriptor set
+// detectable rather than silently capping a connector's provable coverage.
+// These tests pin that promise directly against the connector's own shipped
+// manifest, so a required stream that quietly loses its descriptor (as
+// claude_code's messages/attachments/memory_notes and codex's
+// messages/function_calls once did) fails CI instead of only being
+// discoverable by reading a live UAT snapshot.
+
+interface ManifestStreamEntry {
+  readonly name: string;
+  readonly required?: boolean;
+}
+
+interface LocalCoverageManifest {
+  readonly connector_key: string;
+  readonly streams: readonly ManifestStreamEntry[];
+}
+
+function isLocalCoverageManifest(manifest: unknown): manifest is LocalCoverageManifest {
+  if (!manifest || typeof manifest !== "object") {
+    return false;
+  }
+  const candidate = manifest as { connector_key?: unknown; streams?: unknown };
+  return typeof candidate.connector_key === "string" && Array.isArray(candidate.streams);
+}
+
+/** Every shipped manifest that declares a descriptor-table entry for its connector key. */
+function shippedManifestsWithDescriptorAuthority(): readonly LocalCoverageManifest[] {
+  return readPolyfillManifests()
+    .map((entry) => entry.manifest)
+    .filter(isLocalCoverageManifest)
+    .filter((manifest) => expectedLocalCoverageStoreDescriptors(manifest.connector_key) !== null);
+}
+
+test("every shipped manifest with a descriptor-table entry has a descriptor for each required stream", () => {
+  const manifests = shippedManifestsWithDescriptorAuthority();
+  // Guards the guard: if this list is empty the assertions below vacuously
+  // pass without proving anything.
+  assert.ok(
+    manifests.some((manifest) => manifest.connector_key === "claude-code") &&
+      manifests.some((manifest) => manifest.connector_key === "codex"),
+    "expected the claude-code and codex manifests to be discovered under the descriptor authority"
+  );
+
+  for (const manifest of manifests) {
+    const required = manifest.streams
+      .filter((stream) => stream.required !== false && stream.name !== "coverage_diagnostics")
+      .map((stream) => stream.name);
+    const missing = localCoverageStreamsMissingDescriptors(manifest.connector_key, required);
+    assert.deepEqual(
+      missing,
+      [],
+      `${manifest.connector_key}: required manifest stream(s) [${missing.join(", ")}] have no ` +
+        "LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR entry, so deriveLocalCoverageAxis can never " +
+        "mark them complete regardless of what the connector actually collects"
+    );
+  }
+});
+
+test("descriptor authority carries no store whose stream is absent from its own connector's manifest", () => {
+  // The inverse drift direction: a descriptor claims a stream the manifest
+  // does not (or no longer) declare. Catches a stale/renamed entry the same
+  // way -- e.g. a store left behind after a manifest stream rename, or a
+  // synthetic store id (like the "logs" store seen live on an older codex
+  // manifest_generation) that no longer corresponds to real emitter output.
+  const manifests = shippedManifestsWithDescriptorAuthority();
+  for (const manifest of manifests) {
+    const manifestStreams = new Set(manifest.streams.map((stream) => stream.name));
+    const descriptors =
+      LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR[
+        manifest.connector_key.replace(/-/g, "_") as keyof typeof LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR
+      ];
+    const orphaned = descriptors
+      .filter((descriptor) => descriptor.stream !== null && !manifestStreams.has(descriptor.stream))
+      .map((descriptor) => `${descriptor.store}->${descriptor.stream}`);
+    assert.deepEqual(
+      orphaned,
+      [],
+      `${manifest.connector_key}: descriptor(s) [${orphaned.join(", ")}] reference a stream the manifest does not declare`
+    );
+  }
 });

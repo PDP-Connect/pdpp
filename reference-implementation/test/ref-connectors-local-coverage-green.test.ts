@@ -358,10 +358,20 @@ test(
       stream: "messages",
     });
     // Every known store is accounted for (collected / inventory-only / excluded).
-    // The real local collectors emit one diagnostic for the parent project/session
-    // store; co-emitted child streams inherit that coverage through `state_stream`.
+    // `derived_messages`/`derived_attachments` are explicit here because the
+    // production claude_code descriptor authority declares them as their own
+    // proof-bearing stores (the connector's real `emitDerivedCoverage` scans
+    // the same session transcripts `sessions` scans and reports its own
+    // `collected` row) -- they are not implied by the `projects`/`sessions`
+    // row. `state_stream` parent inheritance (see `seedConnector`'s manifest)
+    // is exercised as an independent, agreeing path: were these rows absent,
+    // `messages`/`attachments` would still read `complete` purely from
+    // inheriting the `sessions` row below.
     seedCoverage([
       { status: "collected", store: "projects", stream: "sessions" },
+      { status: "collected", store: "derived_messages", stream: "messages" },
+      { status: "collected", store: "derived_attachments", stream: "attachments" },
+      { status: "collected", store: "derived_memory_notes", stream: "memory_notes" },
       { status: "inventory_only", store: "cache", stream: null },
       { status: "excluded", store: "auth", stream: null },
     ]);
@@ -381,12 +391,12 @@ test(
     assert.equal(
       reportByStream.messages?.coverage_condition,
       "complete",
-      "local coverage diagnostics should prove child-stream coverage through the state_stream parent"
+      "local coverage diagnostics prove messages complete directly, and it also agrees with state_stream parent inheritance"
     );
     assert.equal(
       reportByStream.attachments?.coverage_condition,
       "complete",
-      "co-emitted local child streams inherit coverage from their declared parent stream"
+      "local coverage diagnostics prove attachments complete directly, and it also agrees with state_stream parent inheritance"
     );
     assert.equal(
       reportByStream.coverage_diagnostics?.coverage_condition,
@@ -439,12 +449,34 @@ test(
   })
 );
 
+// A prior version of this suite isolated `state_stream` parent inheritance by
+// omitting messages/attachments' OWN coverage_diagnostics row entirely
+// (proving inheritance is what makes them read complete). That scenario is no
+// longer reachable now that the production claude_code descriptor authority
+// declares `derived_messages`/`derived_attachments`/`derived_memory_notes` as
+// their own required entries: `hasAuthoritativeInventory` + `missingStores`
+// (see `deriveLocalCoverageAxis`) require EVERY descriptor entry present
+// before the axis is reliable at all, so a snapshot missing those rows is
+// honestly `unknown`, not a valid "inheritance-only" healthy state. The
+// "healthy drained local collector..." test above now seeds messages/
+// attachments' direct rows explicitly and still exercises state_stream
+// inheritance as an agreeing, non-exclusive path (see its own comment).
+
 test(
   "repair-lock failure reaches health, required-report authority, and fleet without degrading optional local policy semantics",
   withTmpDb(async () => {
     seedConnector();
     await seedInstance();
-    seedCoverage([{ status: "collected", store: "projects", stream: "sessions" }]);
+    // messages/attachments carry explicit direct-proof rows (matching real
+    // production's derived-store emitter), so the failed-repair assertions
+    // below exercise the demotion of an authoritative `complete` claim to
+    // `unknown` -- not the absence of coverage evidence altogether.
+    seedCoverage([
+      { status: "collected", store: "projects", stream: "sessions" },
+      { status: "collected", store: "derived_messages", stream: "messages" },
+      { status: "collected", store: "derived_attachments", stream: "attachments" },
+      { status: "collected", store: "derived_memory_notes", stream: "memory_notes" },
+    ]);
     await seedHealthyDrainedHeartbeat();
     await rebuildRetainedSize();
 

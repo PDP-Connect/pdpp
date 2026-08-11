@@ -1372,9 +1372,11 @@ async function scanChildSource(input: {
   requested: Map<string, StreamScope>;
   source: ClaudeJsonlSource;
   telemetry: LocalJsonlTelemetry;
-}): Promise<{ cursor: ClaudeChildFileCursorV1; linesExamined: number }> {
+}): Promise<{ attachmentsExamined: number; cursor: ClaudeChildFileCursorV1; messagesExamined: number }> {
   const observation = makeJsonlObservations(input.source.forcedSessionId);
   observation.sessionId = input.cursor?.current_session_id ?? observation.sessionId;
+  let messagesExamined = 0;
+  let attachmentsExamined = 0;
   const result = await scanLocalJsonl({
     path: input.source.path,
     prior: input.cursor,
@@ -1384,6 +1386,18 @@ async function scanChildSource(input: {
         return;
       }
       observeJsonlFields(obj, observation, input.source.forcedSessionId);
+      // Classify by the same dispatch rule processJsonlLine applies (a line
+      // without a pinned session id is never dispatched to either stream) so
+      // the per-type examined counts mirror what was actually considered,
+      // not a scan-wide line total shared across both streams -- see
+      // processJsonlLine's own invariants above.
+      if (observation.sessionId) {
+        if (isMessageType(obj.type)) {
+          messagesExamined += 1;
+        } else if (isAttachmentType(obj.type)) {
+          attachmentsExamined += 1;
+        }
+      }
       await processJsonlLine({
         buildOnly: !input.emitRecords,
         deps: {
@@ -1400,8 +1414,9 @@ async function scanChildSource(input: {
   });
   observeLocalJsonlScan(input.telemetry, result);
   return {
+    attachmentsExamined,
     cursor: { ...result.cursor, current_session_id: observation.sessionId },
-    linesExamined: result.lines_delivered,
+    messagesExamined,
   };
 }
 
@@ -2035,12 +2050,11 @@ if (isMainModule(import.meta.url)) {
                 telemetry,
               });
             }
-            const examined = scanned.linesExamined;
             if (requested.has("messages")) {
-              derivedCounts.messages.examined += examined;
+              derivedCounts.messages.examined += scanned.messagesExamined;
             }
             if (requested.has("attachments")) {
-              derivedCounts.attachments.examined += examined;
+              derivedCounts.attachments.examined += scanned.attachmentsExamined;
             }
             nextChildCursors[source.path] = scanned.cursor;
             newMessageFileMtimes[source.path] = scanned.cursor.observed_mtime_ms;

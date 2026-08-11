@@ -191,3 +191,118 @@ test("claude_code coverage truth: genuinely empty projects dir (no messages/atta
   const messagesCoverage = coverageRecs.find((r) => r.data.stream === "messages");
   assert.equal(messagesCoverage?.data.status, "collected", "an empty-but-complete scan is collected, not missing");
 });
+
+// ─── per-stream examined counts must not cross-contaminate ───────────────
+//
+// scanChildSource used to return one scan-wide `linesExamined` count that got
+// added to BOTH derivedCounts.messages.examined and
+// derivedCounts.attachments.examined for every source file -- so a
+// message-only transcript falsely reported attachments as "N examined, 0
+// emitted", and an attachment-only transcript would equally falsely report
+// messages as examined. These two fixtures are each exclusively one type, so
+// the OTHER stream's honest examined count must read exactly 0.
+
+function coverageReasonFor(recs: Extract<EmittedMessage, { type: "RECORD" }>[], stream: string): string | undefined {
+  const row = recs.find((r) => r.stream === "coverage_diagnostics" && r.data.stream === stream);
+  return typeof row?.data.reason === "string" ? row.data.reason : undefined;
+}
+
+test("claude_code coverage truth: a message-only transcript reports attachments as 0 examined, not the message line count", async () => {
+  const claudeHome = await mkdtemp(join(tmpdir(), "pdpp-claude-coverage-truthful-message-only-"));
+  const project = join(claudeHome, "projects", "-tmp-demo");
+  const sessionDir = join(project, SESSION_ID);
+  await mkdir(sessionDir, { recursive: true });
+  const lines = Array.from({ length: 5 }, (_, i) =>
+    transcriptLine(`00000000-0000-4000-8000-00000000000${i}`, `2026-08-10T00:0${i}:00.000Z`)
+  ).join("\n");
+  await writeFile(join(project, `${SESSION_ID}.jsonl`), `${lines}\n`);
+
+  const result = await runConnectorProtocolSubprocess({
+    allowFailedDone: true,
+    cwd: join(import.meta.dirname, "../.."),
+    entrypoint: "connectors/claude_code/index.ts",
+    env: { CLAUDE_CODE_HOME: claudeHome, CLAUDE_CODE_PROJECTS_DIR: join(claudeHome, "projects") },
+    start: {
+      scope: {
+        streams: [
+          { name: "sessions" },
+          { name: "messages" },
+          { name: "attachments" },
+          { name: "coverage_diagnostics" },
+        ],
+      },
+      type: "START",
+    },
+  });
+
+  assert.equal(result.code, 0);
+  const recs = records(result.messages);
+  assert.equal(recs.filter((r) => r.stream === "messages").length, 5, "fixture must emit exactly 5 message records");
+  assert.equal(recs.filter((r) => r.stream === "attachments").length, 0, "fixture must emit zero attachment records");
+
+  const messagesReason = coverageReasonFor(recs, "messages");
+  const attachmentsReason = coverageReasonFor(recs, "attachments");
+  assert.equal(messagesReason, "5 message records emitted");
+  assert.equal(
+    attachmentsReason,
+    "enumeration complete, 0 examined",
+    "a message-only transcript must report 0 attachment-candidate lines examined, not the shared scan-wide line count"
+  );
+});
+
+test("claude_code coverage truth: an attachment-only transcript reports messages as 0 examined, not the attachment line count", async () => {
+  const claudeHome = await mkdtemp(join(tmpdir(), "pdpp-claude-coverage-truthful-attachment-only-"));
+  const project = join(claudeHome, "projects", "-tmp-demo");
+  const sessionDir = join(project, SESSION_ID);
+  await mkdir(sessionDir, { recursive: true });
+  const attachmentLine = (uuid: string, timestamp: string): string =>
+    JSON.stringify({
+      isSidechain: false,
+      sessionId: SESSION_ID,
+      timestamp,
+      type: "attachment",
+      uuid,
+    });
+  // A leading message-typed line pins obs.sessionId so the attachment lines
+  // that follow are dispatched (processJsonlLine no-ops before a session id
+  // is observed) -- the count under test is on the attachment-typed lines.
+  const lines = [
+    transcriptLine("00000000-0000-4000-8000-000000000000", "2026-08-10T00:00:00.000Z"),
+    ...Array.from({ length: 4 }, (_, i) =>
+      attachmentLine(`00000000-0000-4000-8000-00000000001${i}`, `2026-08-10T00:0${i + 1}:00.000Z`)
+    ),
+  ].join("\n");
+  await writeFile(join(project, `${SESSION_ID}.jsonl`), `${lines}\n`);
+
+  const result = await runConnectorProtocolSubprocess({
+    allowFailedDone: true,
+    cwd: join(import.meta.dirname, "../.."),
+    entrypoint: "connectors/claude_code/index.ts",
+    env: { CLAUDE_CODE_HOME: claudeHome, CLAUDE_CODE_PROJECTS_DIR: join(claudeHome, "projects") },
+    start: {
+      scope: {
+        streams: [
+          { name: "sessions" },
+          { name: "messages" },
+          { name: "attachments" },
+          { name: "coverage_diagnostics" },
+        ],
+      },
+      type: "START",
+    },
+  });
+
+  assert.equal(result.code, 0);
+  const recs = records(result.messages);
+  assert.equal(
+    recs.filter((r) => r.stream === "attachments").length,
+    4,
+    "fixture must emit exactly 4 attachment records"
+  );
+  assert.equal(recs.filter((r) => r.stream === "messages").length, 1, "fixture emits exactly the one pinning message");
+
+  const messagesReason = coverageReasonFor(recs, "messages");
+  const attachmentsReason = coverageReasonFor(recs, "attachments");
+  assert.equal(messagesReason, "1 message records emitted");
+  assert.equal(attachmentsReason, "4 attachment records emitted");
+});
