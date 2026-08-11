@@ -330,10 +330,21 @@ test("runtime/server SQLite isolates durable record rejections and cursor commit
       { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
     assert.equal(streamBRecordsStatus, 200);
+    assertOmitsPrivatePayload("stream_b record response", streamBRecordsBody, forbiddenPayloadNeedles);
     assert.deepEqual(
       ((streamBRecordsBody as { data?: unknown[] }).data ?? []).map((record) => (record as { id?: string }).id),
       ["stream-b-ok"]
     );
+    const { body: streamBDetailBody, status: streamBDetailStatus } = await fetchJson(
+      `${rsUrl}/v1/streams/stream_b/records/${encodeURIComponent("stream-b-ok")}?connector_id=${encodeURIComponent(connectorId)}&connector_instance_id=${encodeURIComponent(connectorInstanceId)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
+    );
+    assert.equal(streamBDetailStatus, 200);
+    assertOmitsPrivatePayload("stream_b record detail", streamBDetailBody, forbiddenPayloadNeedles);
+    assert.deepEqual((streamBDetailBody as { data?: unknown }).data, {
+      id: "stream-b-ok",
+      value: "stream-b-accepted",
+    });
 
     const rows = getDb()
       .prepare(
