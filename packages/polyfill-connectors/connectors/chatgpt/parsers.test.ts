@@ -359,6 +359,17 @@ test("unwrapGizmo: handles {resource:{gizmo:{}}}, {resource:{}}, {gizmo:{}} and 
   assert.deepEqual((unwrapGizmo({ id: "d" }) as RawGizmo).id, "d");
 });
 
+// `{ info: {...gizmo fields...}, list: {...listing metadata} }` is a fifth
+// observed `/gizmos/mine` item wrapper — live in UAT run run_1786417045973,
+// where a considered:1/covered:0 shape_check_failed reported the rejected
+// item's top-level keys as exactly `["info", "list"]`. Same family as the
+// `{gizmo:{}}` wrapper (the gizmo fields sit one level down under a sibling
+// key), but under `info` instead of `gizmo`, with a `list` sibling carrying
+// listing-only metadata (not gizmo fields) that must stay unread.
+test("unwrapGizmo: handles {info:{}, list:{}} (live shape drift, run_1786417045973)", () => {
+  assert.deepEqual((unwrapGizmo({ info: { id: "e" }, list: { is_starred: true } }) as RawGizmo).id, "e");
+});
+
 test("resolveGizmoIsPublic: boolean wins over sharing string, else sharing==='public'", () => {
   assert.equal(resolveGizmoIsPublic({ is_public: true }), true);
   assert.equal(resolveGizmoIsPublic({ is_public: false, sharing: "public" }), false);

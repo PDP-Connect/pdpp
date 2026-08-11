@@ -454,8 +454,12 @@ export function buildMemoryRecord(m: RawMemoryEntry): RecordData | null {
  *   { resource: { gizmo: {...} } }   (newer)
  *   { resource: {...} }              (some tenants)
  *   { gizmo: {...} }                 (rarer)
+ *   { info: {...}, list: {...} }     (live shape drift, run_1786417045973 —
+ *                                      `list` is listing-only metadata, e.g.
+ *                                      is_starred; it carries no gizmo fields
+ *                                      and is intentionally not read)
  *   {...} flat                        (oldest)
- * Normalize all four into a bare gizmo object.
+ * Normalize all five into a bare gizmo object.
  */
 export function unwrapGizmo(raw: unknown): RawGizmo | null {
   const rawObj = raw as RawGizmoWrapper | null | undefined;
@@ -464,8 +468,8 @@ export function unwrapGizmo(raw: unknown): RawGizmo | null {
   }
   const resourceGizmo = (rawObj.resource as { gizmo?: unknown } | null | undefined)?.gizmo;
   const resourceFlat = rawObj.resource as unknown;
-  const direct = rawObj.gizmo;
-  const picked = resourceGizmo ?? direct ?? resourceFlat ?? raw;
+  const { gizmo: direct, info } = rawObj;
+  const picked = resourceGizmo ?? direct ?? info ?? resourceFlat ?? raw;
   if (!picked || typeof picked !== "object") {
     return null;
   }
