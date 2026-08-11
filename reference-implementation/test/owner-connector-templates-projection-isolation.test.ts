@@ -87,8 +87,8 @@ function mountAndCaptureHandler(manifests: Record<string, unknown>[]): CapturedR
     },
     listRegisteredConnectorIds: async () => Array.from(byId.keys()),
     projectStorageDisplayName: (displayName) => displayName ?? null,
-    requireOwner: (_req: unknown, _res: unknown, next: () => void) => next(),
-    requireToken: (_req: unknown, _res: unknown, next: () => void) => next(),
+    requireOwner: (...args: unknown[]) => (args[2] as () => void)(),
+    requireToken: (...args: unknown[]) => (args[2] as () => void)(),
     resolveResource: () => "http://localhost",
   });
   assert.ok(captured, "route handler must be captured");
