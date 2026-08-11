@@ -230,12 +230,12 @@ test("regression: Users 401 must fail the run with the real auth error, not a pl
   }
 });
 
-test("regression: Users 400 with a body must fail the run carrying that body, not a fabricated 400 from a fake user id", async () => {
+test("regression: Users 400 with a body must fail without persisting that body", async () => {
   // 400 is non-retryable (unlike 5xx/429/408), so this exercises resolveUserId's
   // own error-propagation directly rather than the http governor's retry/backoff path.
   const server = await startServer((res) => {
     res.writeHead(400);
-    res.end(JSON.stringify({ Message: "Error processing request for Users" }));
+    res.end(JSON.stringify({ Message: "provider secret-api-key: Error processing request for Users" }));
   });
   const baseUrl = await server.url;
 
@@ -254,10 +254,8 @@ test("regression: Users 400 with a body must fail the run carrying that body, no
     });
 
     assert.ok(threwError, "Must fail the run when Users fails");
-    assert.ok(
-      errorMsg.includes("jellyfin_http_400") && errorMsg.includes("Error processing request for Users"),
-      `Error must carry Users' real status and body, got: ${errorMsg}`
-    );
+    assert.match(errorMsg, /^jellyfin_http_400$/);
+    assert.doesNotMatch(errorMsg, /secret-api-key|Error processing request for Users/);
   } finally {
     await server.stop();
   }

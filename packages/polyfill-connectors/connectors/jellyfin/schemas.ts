@@ -101,11 +101,11 @@ export const JellyfinItemSchema = z.object({
 });
 
 export const JellyfinViewsResponseSchema = z.object({
-  Items: z.array(JellyfinViewSchema).optional(),
+  Items: z.array(JellyfinViewSchema),
 });
 
 export const JellyfinItemsResponseSchema = z.object({
-  Items: z.array(JellyfinItemSchema).optional(),
+  Items: z.array(JellyfinItemSchema),
   TotalRecordCount: z.number().int().optional(),
 });
 

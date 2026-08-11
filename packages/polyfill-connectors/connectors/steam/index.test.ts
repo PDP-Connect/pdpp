@@ -333,18 +333,18 @@ test("classifySteamHttpResponse - 401 maps to steam_auth_failed", () => {
   assert.deepEqual(result, { kind: "error", message: "steam_auth_failed" });
 });
 
-test("classifySteamHttpResponse - 403 maps to steam_auth_failed", () => {
+test("classifySteamHttpResponse - 403 preserves auth-versus-visibility ambiguity", () => {
   const result = classifySteamHttpResponse(403, "");
-  assert.deepEqual(result, { kind: "error", message: "steam_auth_failed" });
+  assert.deepEqual(result, { kind: "error", message: "steam_forbidden_auth_or_visibility" });
 });
 
 test("classifySteamHttpResponse - other non-2xx status is bounded and sanitized", () => {
-  const longBody = "x".repeat(500);
-  const result = classifySteamHttpResponse(500, longBody);
+  const sensitiveBody = `provider secret-api-key ${"x".repeat(500)}`;
+  const result = classifySteamHttpResponse(500, sensitiveBody);
   assert.equal(result.kind, "error");
   if (result.kind === "error") {
-    assert.match(result.message, /^steam_http_500: /, "message is tagged with the status code");
-    assert.ok(result.message.length < longBody.length, "body must be bounded/truncated, not passed through raw");
+    assert.equal(result.message, "steam_http_500", "message is tagged with the status code only");
+    assert.doesNotMatch(result.message, /secret-api-key|x{20,}/, "provider body must not enter durable diagnostics");
   }
 });
 

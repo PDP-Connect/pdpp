@@ -136,3 +136,36 @@ test("collectCategoriesAndGroups: succeeded run stages a category_groups checkpo
     restore();
   }
 });
+
+test("collectCategoriesAndGroups: omitted nested categories fail before coverage or checkpoint", async () => {
+  const restore = stubFetch({
+    data: {
+      server_knowledge: 4242,
+      category_groups: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          name: "Immediate Obligations",
+          hidden: false,
+          deleted: false,
+        },
+      ],
+    },
+  });
+  try {
+    const { ctx, messages } = makeCtx(["categories", "category_groups"]);
+
+    await assert.rejects(() => collectCategoriesAndGroups(ctx), /ynab_response_malformed/);
+    assert.equal(
+      messages.some((message) => message.type === "STATE"),
+      false,
+      "a malformed nested list must not advance either co-fetched checkpoint"
+    );
+    assert.equal(
+      messages.some((message) => message.type === "DETAIL_COVERAGE"),
+      false,
+      "a malformed nested list must not prove an empty boundary"
+    );
+  } finally {
+    restore();
+  }
+});

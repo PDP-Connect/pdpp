@@ -114,6 +114,33 @@ test("collectMonthCategories: applies range/cutoff gates, emits records, and sto
   assert.deepEqual(stateMessage.cursor, ctx.newState.month_categories);
 });
 
+test("collectMonthCategories: omitted nested categories fail before advancing the month checkpoint", async () => {
+  const { ctx, messages } = makeCtx();
+  const malformedMonth: Parameters<typeof collectMonthCategories>[1][number] = {
+    activity: 0,
+    budgeted: 0,
+    deleted: false,
+    income: 0,
+    month: "2026-04-01",
+    to_be_budgeted: 0,
+  };
+
+  await assert.rejects(
+    () => collectMonthCategories(ctx, [malformedMonth], {}, () => Promise.resolve(malformedMonth)),
+    /ynab_response_malformed/
+  );
+  assert.equal(
+    messages.some((message) => message.type === "STATE" && message.stream === "month_categories"),
+    false,
+    "a malformed month envelope must not advance last_fetched_month"
+  );
+  assert.equal(
+    messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "month_categories"),
+    false,
+    "a malformed month envelope must not prove a zero category boundary"
+  );
+});
+
 test("collectMonthCategories: progress omits budget ids and month values", async () => {
   const progressEvents: Array<{ message: string; extra?: Record<string, unknown> }> = [];
   const { ctx } = makeCtx({

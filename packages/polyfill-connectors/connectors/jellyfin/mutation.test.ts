@@ -68,7 +68,12 @@ function makeContext({
 class TestServer {
   private server: any;
   private port = 0;
-  private responseMode: "normal" | "oversized_no_length" | "repeated_page" = "normal";
+  private responseMode:
+    | "normal"
+    | "missing_views_items"
+    | "missing_item_items"
+    | "oversized_no_length"
+    | "repeated_page" = "normal";
 
   start(): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -89,12 +94,22 @@ class TestServer {
         }
 
         if (path === "/Users/user-123/Views") {
+          if (this.responseMode === "missing_views_items") {
+            res.writeHead(200);
+            res.end(JSON.stringify({}));
+            return;
+          }
           res.writeHead(200);
           res.end(JSON.stringify({ Items: [{ Id: "lib1", Name: "Lib1" }] }));
           return;
         }
 
         if (path.includes("/Users/user-123/Items")) {
+          if (this.responseMode === "missing_item_items") {
+            res.writeHead(200);
+            res.end(JSON.stringify({ TotalRecordCount: 0 }));
+            return;
+          }
           if (this.responseMode === "oversized_no_length") {
             // Send large body WITHOUT Content-Length header
             // Streaming reader must catch it, not Content-Length check
@@ -376,5 +391,57 @@ test("mutation: libraries coverage failure — fetch error does not emit coverag
     assert.ok(!coverage, "Failed enumeration must not emit coverage");
   } finally {
     await failingServer.stop();
+  }
+});
+
+test("mutation: a 200 Views envelope without Items fails before library state or coverage", async () => {
+  const server = new TestServer();
+  const baseUrl = await server.start();
+  try {
+    server.setMode("missing_views_items");
+    const { ctx, messages } = makeContext({
+      credentials: { base_url: baseUrl, secret: "test-key" },
+      streams: [{ name: "libraries" }],
+    });
+
+    await assert.rejects(() => collect(ctx));
+    assert.equal(
+      messages.some((message) => message.type === "STATE" && message.stream === "libraries"),
+      false,
+      "missing Views.Items must not advance the libraries checkpoint"
+    );
+    assert.equal(
+      messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "libraries"),
+      false,
+      "missing Views.Items must not prove an empty library boundary"
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("mutation: a 200 Items envelope without Items fails before item state or coverage", async () => {
+  const server = new TestServer();
+  const baseUrl = await server.start();
+  try {
+    server.setMode("missing_item_items");
+    const { ctx, messages } = makeContext({
+      credentials: { base_url: baseUrl, secret: "test-key" },
+      streams: [{ name: "items" }],
+    });
+
+    await assert.rejects(() => collect(ctx));
+    assert.equal(
+      messages.some((message) => message.type === "STATE" && message.stream === "items"),
+      false,
+      "missing Items.Items must not advance the item checkpoint"
+    );
+    assert.equal(
+      messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "items"),
+      false,
+      "missing Items.Items must not prove an empty item boundary"
+    );
+  } finally {
+    await server.stop();
   }
 });

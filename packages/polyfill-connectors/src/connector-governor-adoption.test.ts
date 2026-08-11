@@ -25,7 +25,7 @@ const ADOPTED_PROFILE: ProviderPacingProfile = { pacingMinIntervalMs: 1000 };
  * Patterns copied from each connector's `runConnector({ retryablePattern })`.
  */
 const ADOPTED: Array<{ name: string; retryablePattern: RegExp }> = [
-  { name: "github", retryablePattern: /rate_limited|ECONN|fetch failed/ },
+  { name: "github", retryablePattern: /rate_limited|ECONN|fetch failed|retryable status \d+/i },
   { name: "ynab", retryablePattern: /rate_limited|ECONN|ETIMEDOUT|fetch failed/i },
   { name: "notion", retryablePattern: /ECONN|fetch failed|rate_limited/i },
   { name: "oura", retryablePattern: /rate_limited|ECONN|fetch failed/i },

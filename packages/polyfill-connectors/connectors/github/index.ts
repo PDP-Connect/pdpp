@@ -29,7 +29,13 @@ import {
   createConnectorHttpGovernor,
   readPersistedPacingInterval,
 } from "../../src/connector-http-governor.ts";
-import { buildDetailCoverageMessage, type EmittedMessage, nowIso, runConnector } from "../../src/connector-runtime.ts";
+import {
+  buildDetailCoverageMessage,
+  createConnectorFailure,
+  type EmittedMessage,
+  nowIso,
+  runConnector,
+} from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { githubPacingProfile } from "../../src/provider-profile.ts";
@@ -88,6 +94,20 @@ let httpGovernor = createConnectorHttpGovernor({
   maxAttempts: 1,
   profile: githubPacingProfile(),
 });
+
+const DEFAULT_GITHUB_MAX_LIST_PAGES = 200;
+let maxGithubListPages = DEFAULT_GITHUB_MAX_LIST_PAGES;
+
+/** Runtime retry classification, including the governor's exhausted 5xx form. */
+export const GITHUB_RETRYABLE_PATTERN = /rate_limited|ECONN|fetch failed|retryable status \d+/i;
+
+/** Test-only cap injection; production keeps the bounded default. */
+export function __setMaxGithubListPages(maxPages: number): void {
+  if (!Number.isInteger(maxPages) || maxPages <= 0) {
+    throw new Error("github_pagination_invalid_max_pages");
+  }
+  maxGithubListPages = maxPages;
+}
 
 /**
  * Re-seed the module governor warm-started from the prior run's learned rate,
@@ -203,6 +223,44 @@ export interface StreamCtx {
    * was not collected (warm-start simply does not persist this run).
    */
   userCursor?: Record<string, unknown>;
+}
+
+async function failGithubPagination(
+  ctx: StreamCtx,
+  stream: string,
+  kind: "page_cap" | "repeated_next",
+  pageIndex: number
+): Promise<never> {
+  const repeated = kind === "repeated_next";
+  const reason = repeated ? "github_pagination_repeated_next" : "github_pagination_cap_exceeded";
+  const message = repeated
+    ? `GitHub ${stream} pagination returned a repeated next link after ${String(pageIndex)} page(s)`
+    : `GitHub ${stream} pagination reached its ${String(maxGithubListPages)}-page safety cap with more pages remaining`;
+  await ctx.emit({
+    type: "SKIP_RESULT",
+    stream,
+    reason,
+    message,
+    diagnostics: repeated ? { page_count: pageIndex } : { page_cap: maxGithubListPages, page_count: pageIndex },
+    recovery_hint: { action: "retry_by_runtime", retryable: true },
+  });
+  throw createConnectorFailure("github_pagination_gap", message, { retryable: true });
+}
+
+async function guardGithubPagination(
+  ctx: StreamCtx,
+  stream: string,
+  path: string,
+  pageIndex: number,
+  visitedPaths: Set<string>
+): Promise<void> {
+  if (pageIndex >= maxGithubListPages) {
+    await failGithubPagination(ctx, stream, "page_cap", pageIndex);
+  }
+  if (visitedPaths.has(path)) {
+    await failGithubPagination(ctx, stream, "repeated_next", pageIndex);
+  }
+  visitedPaths.add(path);
 }
 
 /**
@@ -342,6 +400,7 @@ export async function collectRepositories(ctx: StreamCtx): Promise<void> {
   let stop = false;
   let pageIndex = 0;
   let totalSeen = 0;
+  const visitedPaths = new Set<string>();
   // Items the loop actually evaluated against the incremental cursor, summed
   // across pages. This is the honest `considered` denominator: it excludes any
   // page tail past an early stop match, which the loop never visits (see
@@ -350,6 +409,7 @@ export async function collectRepositories(ctx: StreamCtx): Promise<void> {
   // `covered === evaluated` — nothing evaluated is ever silently dropped.
   let totalEvaluated = 0;
   while (path && !stop) {
+    await guardGithubPagination(ctx, "repositories", path, pageIndex, visitedPaths);
     const pageExtra = {
       stream: "repositories",
       phase: "fetch",
@@ -443,7 +503,9 @@ export async function collectStarred(ctx: StreamCtx): Promise<void> {
   // across pages — excludes any page tail past an early stop match (see
   // `emitStarredPage`). The honest `considered` denominator.
   let totalEvaluated = 0;
+  const visitedPaths = new Set<string>();
   while (path && !stop) {
+    await guardGithubPagination(ctx, "starred", path, pageIndex, visitedPaths);
     // Use star:timestamp media type to get starred_at
     const pageExtra = {
       stream: "starred",
@@ -539,7 +601,9 @@ export async function collectIssues(ctx: StreamCtx): Promise<void> {
   let path: string | null = `/issues?${qs.join("&")}`;
   let pageIndex = 0;
   let totalSeen = 0;
+  const visitedPaths = new Set<string>();
   while (path) {
+    await guardGithubPagination(ctx, "issues", path, pageIndex, visitedPaths);
     const pageExtra = {
       stream: "issues",
       phase: "fetch",
@@ -602,7 +666,7 @@ export async function collectIssues(ctx: StreamCtx): Promise<void> {
 // PRs updated since the last cursor is almost never >1000, and a window that
 // somehow still exceeds the cap emits a terminal-gap SKIP_RESULT so the run is
 // honestly incomplete rather than silently truncated.
-const PR_ERROR_BUBBLE_PATTERN = /rate_limited|auth_failed/;
+const PR_ERROR_BUBBLE_PATTERN = /rate_limited|auth_failed|retryable status 503\b/i;
 
 // A single search window that still reports more than this many total results
 // cannot be fully drained (the API stops at ~1000). We treat any window whose
@@ -785,7 +849,9 @@ async function drainPrSearchWindow(
   let evaluated = 0;
   let reportedTotal = 0;
   let latest = latestIn;
+  const visitedPaths = new Set<string>();
   while (path && !stop) {
+    await guardGithubPagination(ctx, "pull_requests", path, pageIndex, visitedPaths);
     const pageExtra = {
       stream: "pull_requests",
       phase: "fetch",
@@ -882,19 +948,22 @@ export async function collectPullRequests(ctx: StreamCtx): Promise<void> {
   // runtime forwards this to the run's known_gap so the projection is honestly
   // incomplete rather than silently truncated.
   if (capTruncatedWindows > 0) {
+    const message =
+      `${String(capTruncatedWindows)} search window(s) reported more than ${String(PR_SEARCH_RESULT_CAP)} ` +
+      "pull requests; GitHub's search API caps results so the oldest in those windows could not be collected";
     await ctx.emit({
       type: "SKIP_RESULT",
       stream: "pull_requests",
       reason: "pr_search_cap_truncated",
-      message:
-        `${String(capTruncatedWindows)} search window(s) reported more than ${String(PR_SEARCH_RESULT_CAP)} ` +
-        "pull requests; GitHub's search API caps results so the oldest in those windows could not be collected",
+      message,
       diagnostics: {
         cap_truncated_windows: capTruncatedWindows,
         result_cap: PR_SEARCH_RESULT_CAP,
         max_reported_total: maxReportedTotal,
       },
+      recovery_hint: { action: "retry_by_runtime", retryable: true },
     });
+    throw createConnectorFailure("github_pagination_gap", message, { retryable: true });
   }
 
   // Stream-level evidence that some PR records are degraded: the search summary
@@ -984,7 +1053,9 @@ export async function collectGists(ctx: StreamCtx): Promise<void> {
   let path: string | null = `/gists?${qs.join("&")}`;
   let pageIndex = 0;
   let totalSeen = 0;
+  const visitedPaths = new Set<string>();
   while (path) {
+    await guardGithubPagination(ctx, "gists", path, pageIndex, visitedPaths);
     const pageExtra = {
       stream: "gists",
       phase: "fetch",
@@ -1022,7 +1093,7 @@ export async function collectGists(ctx: StreamCtx): Promise<void> {
 if (isMainModule(import.meta.url)) {
   runConnector({
     name: "github",
-    retryablePattern: /rate_limited|ECONN|fetch failed/,
+    retryablePattern: GITHUB_RETRYABLE_PATTERN,
     validateRecord,
     // GITHUB_TOKEN is the universal GitHub-CI env var; accept it as a fallback.
     auth: {

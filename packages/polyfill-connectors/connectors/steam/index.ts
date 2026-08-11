@@ -30,6 +30,7 @@
 
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import {
+  type CollectContext,
   type EmittedMessage,
   emitDetailCoverage,
   nowIso,
@@ -133,6 +134,25 @@ interface ResolveVanityUrlResponse {
   response: { message?: string; steamid?: string; success: number };
 }
 
+function requireSteamObject(value: unknown, field: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`steam_response_malformed: ${field} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireSteamArray<T>(value: unknown, field: string): T[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`steam_response_malformed: ${field} must be an array`);
+  }
+  return value as T[];
+}
+
+function requireSteamResponse(value: unknown): Record<string, unknown> {
+  const envelope = requireSteamObject(value, "wire envelope");
+  return requireSteamObject(envelope.response, "response");
+}
+
 // ─── HTTP helpers ─────────────────────────────────────────────────────────
 
 type ProgressFn = (
@@ -161,15 +181,18 @@ export type SteamHttpClassification = { kind: "ok" } | { kind: "error"; message:
  * exported) so tests exercise the exact production decision instead of a
  * re-implementation that can silently drift from it.
  */
-export function classifySteamHttpResponse(status: number, body: string): SteamHttpClassification {
-  if (status === 401 || status === 403) {
+export function classifySteamHttpResponse(status: number, _body: string): SteamHttpClassification {
+  if (status === 401) {
     return { kind: "error", message: "steam_auth_failed" };
+  }
+  if (status === 403) {
+    return { kind: "error", message: "steam_forbidden_auth_or_visibility" };
   }
   if (status === 429) {
     return { kind: "error", message: "steam_rate_limited" };
   }
   if (status < 200 || status >= 300) {
-    return { kind: "error", message: `steam_http_${String(status)}: ${body.slice(0, 200)}` };
+    return { kind: "error", message: `steam_http_${String(status)}` };
   }
   return { kind: "ok" };
 }
@@ -219,7 +242,9 @@ async function steamApiRequest<T>(
     return JSON.parse(result.body) as T;
   } catch (error) {
     if (error instanceof Error && error.message === "steam_auth_failed") {
-      await progress?.("Steam API key invalid or unauthorized", extra);
+      await progress?.("Steam API authentication failed", extra);
+    } else if (error instanceof Error && error.message === "steam_forbidden_auth_or_visibility") {
+      await progress?.("Steam API request forbidden; authentication or profile visibility may be involved", extra);
     }
     throw error;
   }
@@ -247,8 +272,9 @@ async function resolveSteamId(apiKey: string, rawSteamId: string): Promise<strin
   const res = await steamApiRequest<ResolveVanityUrlResponse>("/ISteamUser/ResolveVanityURL/v0001", apiKey, {
     vanityurl: trimmed,
   });
-  if (res.response.success === 1 && res.response.steamid) {
-    return res.response.steamid;
+  const response = requireSteamResponse(res);
+  if (response.success === 1 && typeof response.steamid === "string" && response.steamid) {
+    return response.steamid;
   }
   throw new Error(`steam_vanity_url_not_found: could not resolve "${trimmed}" to a SteamID`);
 }
@@ -322,7 +348,7 @@ function friendRecord(friend: SteamFriend, steamid: string): RecordData {
   };
 }
 
-function steamLevelRecord(steamid: string, level: number | null): RecordData {
+function steamLevelRecord(steamid: string, level: unknown): RecordData {
   return {
     id: steamid,
     steamid,
@@ -389,7 +415,9 @@ async function collectProfile(
     { stream: "profile" }
   );
   await deps.progress("Fetched Steam profile", { stream: "profile" });
-  const [player] = profileRes.response.players;
+  const response = requireSteamResponse(profileRes);
+  const players = requireSteamArray<SteamPlayerSummary>(response.players, "response.players");
+  const [player] = players;
   if (player) {
     const record = profileRecord(player);
     const covered = validateRecord("profile", record).ok ? 1 : 0;
@@ -424,7 +452,8 @@ async function collectOwnedGames(
     deps.progress,
     { stream: "owned_games" }
   );
-  const games = gamesRes.response.games ?? [];
+  const response = requireSteamResponse(gamesRes);
+  const games = requireSteamArray<SteamOwnedGame>(response.games, "response.games");
   await deps.progress("Fetched owned games", { stream: "owned_games", count: games.length });
 
   const gamesCursor = openFingerprintCursor((newState.owned_games as unknown) ?? {});
@@ -465,7 +494,8 @@ async function collectRecentlyPlayed(
     deps.progress,
     { stream: "recently_played_games" }
   );
-  const recentGames = recentRes.response.games ?? [];
+  const response = requireSteamResponse(recentRes);
+  const recentGames = requireSteamArray<SteamRecentlyPlayed>(response.games, "response.games");
   await deps.progress("Fetched recently played games", {
     stream: "recently_played_games",
     count: recentGames.length,
@@ -509,7 +539,9 @@ async function collectFriends(
     deps.progress,
     { stream: "friends" }
   );
-  const friends = friendsRes.friendslist.friends ?? [];
+  const envelope = requireSteamObject(friendsRes, "wire envelope");
+  const friendsList = requireSteamObject(envelope.friendslist, "friendslist");
+  const friends = requireSteamArray<SteamFriend>(friendsList.friends, "friendslist.friends");
   await deps.progress("Fetched friends list", { stream: "friends", count: friends.length });
 
   const friendsCursor = openFingerprintCursor((newState.friends as unknown) ?? {});
@@ -551,8 +583,25 @@ async function collectSteamLevel(
     { stream: "steam_level" }
   );
   await deps.progress("Fetched Steam level", { stream: "steam_level" });
-  const level = levelRes.response.player_level ?? null;
-  await deps.emitRecord("steam_level", steamLevelRecord(steamid, level));
+  const response = requireSteamResponse(levelRes);
+  const level = response.player_level ?? null;
+  const record = steamLevelRecord(steamid, level);
+  const recordValid = validateRecord("steam_level", record).ok;
+  await deps.emitRecord("steam_level", record);
+  if (!recordValid) {
+    await emitDetailCoverage(
+      { emit: deps.emit },
+      {
+        stream: "steam_level",
+        stateStream: "steam_level",
+        requiredKeys: [],
+        hydratedKeys: [],
+        considered: 1,
+        covered: 0,
+      }
+    );
+    return;
+  }
   newState.steam_level = { fetched_at: nowIso() };
   await deps.emit({ type: "STATE", stream: "steam_level", cursor: newState.steam_level });
   await emitDetailCoverage(
@@ -585,50 +634,57 @@ export function resolveRawSteamIdFromCredentials(
   return credentials.STEAM_USER_ID || env.STEAM_USER_ID;
 }
 
+export async function steamCollect({
+  state,
+  requested,
+  credentials,
+  emit,
+  emitRecord,
+  progress,
+}: Pick<CollectContext, "state" | "requested" | "credentials" | "emit" | "emitRecord" | "progress">): Promise<void> {
+  const apiKey = credentials.STEAM_API_KEY;
+  if (!apiKey) {
+    throw new Error("steam_auth_failed");
+  }
+
+  const rawSteamId = resolveRawSteamIdFromCredentials(credentials, process.env);
+  if (!rawSteamId) {
+    // Genuinely missing: no SteamID was ever captured for this connection. Name
+    // the real state — the API key is fine, and setup simply never finished.
+    throw new Error(
+      "steam_setup_incomplete: no SteamID is on file for this connection yet — finish setup by entering the SteamID to continue"
+    );
+  }
+  const steamid = await resolveSteamId(apiKey, rawSteamId);
+
+  const newState: Record<string, unknown> = JSON.parse(JSON.stringify(state));
+  const deps: StreamDeps = { emit, emitRecord, progress };
+
+  await progress("Fetching Steam profile", { stream: "profile" });
+
+  if (requested.has("profile")) {
+    await collectProfile(deps, apiKey, steamid, newState);
+  }
+  if (requested.has("owned_games")) {
+    await collectOwnedGames(deps, apiKey, steamid, newState);
+  }
+  if (requested.has("recently_played_games")) {
+    await collectRecentlyPlayed(deps, apiKey, steamid, newState);
+  }
+  if (requested.has("friends")) {
+    await collectFriends(deps, apiKey, steamid, newState);
+  }
+  if (requested.has("steam_level")) {
+    await collectSteamLevel(deps, apiKey, steamid, newState);
+  }
+}
+
 if (isMainModule(import.meta.url)) {
   runConnector({
     name: "steam",
     retryablePattern: STEAM_RETRYABLE_PATTERN,
     auth: { kind: "env", required: [["STEAM_API_KEY"]] },
     validateRecord,
-    async collect({ state, requested, credentials, emit, emitRecord, progress }) {
-      const apiKey = credentials.STEAM_API_KEY;
-      if (!apiKey) {
-        throw new Error("steam_auth_failed");
-      }
-
-      const rawSteamId = resolveRawSteamIdFromCredentials(credentials, process.env);
-      if (!rawSteamId) {
-        // Genuinely missing: no SteamID was ever captured for this
-        // connection. Name the real state — the API key is fine, and
-        // nothing here was "re-entered" and lost; setup simply never
-        // finished.
-        throw new Error(
-          "steam_setup_incomplete: no SteamID is on file for this connection yet — finish setup by entering the SteamID to continue"
-        );
-      }
-      const steamid = await resolveSteamId(apiKey, rawSteamId);
-
-      const newState: Record<string, unknown> = JSON.parse(JSON.stringify(state));
-      const deps: StreamDeps = { emit, emitRecord, progress };
-
-      await progress("Fetching Steam profile", { stream: "profile" });
-
-      if (requested.has("profile")) {
-        await collectProfile(deps, apiKey, steamid, newState);
-      }
-      if (requested.has("owned_games")) {
-        await collectOwnedGames(deps, apiKey, steamid, newState);
-      }
-      if (requested.has("recently_played_games")) {
-        await collectRecentlyPlayed(deps, apiKey, steamid, newState);
-      }
-      if (requested.has("friends")) {
-        await collectFriends(deps, apiKey, steamid, newState);
-      }
-      if (requested.has("steam_level")) {
-        await collectSteamLevel(deps, apiKey, steamid, newState);
-      }
-    },
+    collect: steamCollect,
   });
 }

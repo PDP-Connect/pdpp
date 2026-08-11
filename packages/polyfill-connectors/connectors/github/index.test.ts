@@ -7,12 +7,14 @@ import { evaluateStreamCoherence } from "@pdpp/reference-contract/evidence";
 import { buildPacingStateFields, readPersistedPacingInterval } from "../../src/connector-http-governor.ts";
 import type { StreamScope } from "../../src/connector-runtime.ts";
 import {
+  __setMaxGithubListPages,
   collectGists,
   collectIssues,
   collectPullRequests,
   collectRepositories,
   collectStarred,
   collectUser,
+  GITHUB_RETRYABLE_PATTERN,
   isoYear,
   prCreatedWindows,
   resolvePrSearchWindows,
@@ -74,6 +76,7 @@ interface CapturedSkip {
   diagnostics?: unknown;
   message: string;
   reason: string;
+  recovery_hint?: unknown;
   stream: string;
 }
 
@@ -84,6 +87,14 @@ interface CapturedCoverage {
   requiredKeys: number;
   stateStream: string;
   stream: string;
+}
+
+function isRetryableGithubGap(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error as Error & { code?: string; retryable?: boolean }).code === "github_pagination_gap" &&
+    (error as Error & { code?: string; retryable?: boolean }).retryable === true
+  );
 }
 
 function makeCtx(
@@ -105,7 +116,13 @@ function makeCtx(
     ctx: {
       emit: (msg) => {
         if (msg.type === "SKIP_RESULT") {
-          skips.push({ stream: msg.stream, reason: msg.reason, message: msg.message, diagnostics: msg.diagnostics });
+          skips.push({
+            stream: msg.stream,
+            reason: msg.reason,
+            message: msg.message,
+            diagnostics: msg.diagnostics,
+            recovery_hint: msg.recovery_hint,
+          });
         } else if (msg.type === "DETAIL_COVERAGE") {
           coverages.push({
             stream: msg.stream,
@@ -209,9 +226,9 @@ test("warm-start: pacing fields merged onto the user cursor round-trip through r
 
 // ─── Starred dropped-item evidence ──────────────────────────────────────
 
-function jsonResponse(body: unknown): Response {
+function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   // No `link` header → gh() pagination stops after this page.
-  return new Response(JSON.stringify(body), { status: 200 });
+  return new Response(JSON.stringify(body), { status: 200, ...init });
 }
 
 function starredEntry(id: number, withRepo: boolean): Record<string, unknown> {
@@ -497,16 +514,16 @@ test("collectPullRequests: full resync partitions by created-year and unions eve
   assert.equal((states[0]?.cursor as { last_updated_at?: string })?.last_updated_at, "2026-07-01T00:00:00Z");
 });
 
-test("collectPullRequests: a window over the search cap emits one terminal-gap SKIP_RESULT", async () => {
+test("collectPullRequests: a window over the search cap fails without a checkpoint", async () => {
   // Single window (account created this year) but it reports 1023 PRs > 1000.
   const fetchHandle = installWindowedPrFetch(
     "2026-01-01T00:00:00Z",
     { 2026: [prSearchItemCreated(1, "owner/a", 2026), prSearchItemCreated(2, "owner/b", 2026)] },
     { 2026: 1023 }
   );
-  const { ctx, records, skips } = makeCtx(["pull_requests"]);
+  const { ctx, records, skips, states } = makeCtx(["pull_requests"]);
 
-  await collectPullRequests(ctx);
+  await assert.rejects(() => collectPullRequests(ctx), isRetryableGithubGap);
 
   // Records that WERE reachable are still emitted.
   assert.equal(records.filter((r) => r.stream === "pull_requests").length, 2);
@@ -521,6 +538,8 @@ test("collectPullRequests: a window over the search cap emits one terminal-gap S
     result_cap: 1000,
     max_reported_total: 1023,
   });
+  assert.deepEqual(capSkip?.recovery_hint, { action: "retry_by_runtime", retryable: true });
+  assert.equal(states.length, 0, "a search cap gap must not advance the pull-request cursor");
 });
 
 test("collectPullRequests: windows under the cap emit no cap gap (honest only when truncated)", async () => {
@@ -712,7 +731,7 @@ test("collectPullRequests: a cap-truncated window declares NO considered (invent
     { 2026: 1023 }
   );
   const { ctx, coverages, skips } = makeCtx(["pull_requests"]);
-  await collectPullRequests(ctx);
+  await assert.rejects(() => collectPullRequests(ctx), isRetryableGithubGap);
 
   assert.equal(
     coverages.filter((c) => c.stream === "pull_requests").length,
@@ -983,11 +1002,109 @@ test("collectPullRequests: provider/list failure counterweight — a cap-truncat
     { 2026: 1023 }
   );
   const { ctx, coverages } = makeCtx(["pull_requests"]);
-  await collectPullRequests(ctx);
+  await assert.rejects(() => collectPullRequests(ctx), isRetryableGithubGap);
 
   assert.equal(
     coverages.filter((c) => c.stream === "pull_requests").length,
     0,
     "a cap-truncated window must declare neither considered nor covered — the boundary is unknowable, not zero"
   );
+});
+
+// ─── Pagination guard mutation coverage ───────────────────────────────────
+
+function installRepeatingNextFetch(stream: string): { calls: () => number } {
+  let callCount = 0;
+  globalThis.fetch = (input: string | URL | Request) => {
+    callCount += 1;
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.endsWith("/user")) {
+      return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
+    }
+    const next = `<${url}>; rel="next"`;
+    if (stream === "pull_requests") {
+      return Promise.resolve(jsonResponse({ total_count: 0, items: [] }, { headers: { link: next } }));
+    }
+    return Promise.resolve(jsonResponse([], { headers: { link: next } }));
+  };
+  return { calls: () => callCount };
+}
+
+const githubListCollectors: Array<{
+  collect: (ctx: StreamCtx) => Promise<void>;
+  name: string;
+  stream: string;
+}> = [
+  { collect: collectRepositories, name: "repositories", stream: "repositories" },
+  { collect: collectStarred, name: "starred", stream: "starred" },
+  { collect: collectIssues, name: "issues", stream: "issues" },
+  { collect: collectPullRequests, name: "pull requests", stream: "pull_requests" },
+  { collect: collectGists, name: "gists", stream: "gists" },
+];
+
+for (const { collect, name, stream } of githubListCollectors) {
+  test(`GitHub ${name}: repeated next link fails with retryable gap and no checkpoint`, async () => {
+    const handle = installRepeatingNextFetch(stream);
+    const { ctx, coverages, skips, states } = makeCtx([stream]);
+
+    await assert.rejects(() => collect(ctx), isRetryableGithubGap);
+    assert.equal(handle.calls(), stream === "pull_requests" ? 2 : 1, "the repeated link must not be fetched twice");
+    assert.equal(states.length, 0, "a repeated next link must not advance state");
+    assert.equal(coverages.length, 0, "a repeated next link must not declare complete coverage");
+    assert.equal(skips.length, 1);
+    assert.equal(skips[0]?.reason, "github_pagination_repeated_next");
+    assert.deepEqual(skips[0]?.recovery_hint, { action: "retry_by_runtime", retryable: true });
+  });
+}
+
+test("GitHub repositories: fresh next links stop at the bounded page cap with a retryable gap", async () => {
+  __setMaxGithubListPages(2);
+  let calls = 0;
+  globalThis.fetch = (input: string | URL | Request) => {
+    calls += 1;
+    const current = new URL(typeof input === "string" ? input : input.toString());
+    const next = new URL(current);
+    next.searchParams.set("page", String(Number(current.searchParams.get("page") ?? "1") + 1));
+    return Promise.resolve(jsonResponse([], { headers: { link: `<${next.href}>; rel="next"` } }));
+  };
+  const { ctx, coverages, skips, states } = makeCtx(["repositories"]);
+
+  try {
+    await assert.rejects(() => collectRepositories(ctx), isRetryableGithubGap);
+  } finally {
+    __setMaxGithubListPages(200);
+  }
+
+  assert.equal(calls, 2, "the cap must prevent the third page request");
+  assert.equal(states.length, 0, "a page cap gap must not advance state");
+  assert.equal(coverages.length, 0, "a page cap gap must not declare complete coverage");
+  assert.equal(skips[0]?.reason, "github_pagination_cap_exceeded");
+  assert.deepEqual(skips[0]?.recovery_hint, { action: "retry_by_runtime", retryable: true });
+});
+
+test("GitHub retryability: exhausted transient 503 text remains retryable", () => {
+  assert.match("HTTP request got retryable status 503 after retry budget was exhausted", GITHUB_RETRYABLE_PATTERN);
+});
+
+test("collectPullRequests: exhausted transient detail 503 bubbles instead of degrading to a checkpoint", async () => {
+  globalThis.fetch = (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.endsWith("/user")) {
+      return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
+    }
+    if (url.includes("/search/issues")) {
+      return Promise.resolve(jsonResponse({ total_count: 1, items: [prSearchItem(1, "owner/a")] }));
+    }
+    if (/\/repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(url)) {
+      return Promise.resolve(new Response("temporary", { status: 503 }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  };
+  const { ctx, states } = makeCtx(["pull_requests"]);
+
+  await assert.rejects(
+    () => collectPullRequests(ctx),
+    (error: unknown) => error instanceof Error && GITHUB_RETRYABLE_PATTERN.test(error.message)
+  );
+  assert.equal(states.length, 0, "an exhausted transient detail failure must not advance state");
 });

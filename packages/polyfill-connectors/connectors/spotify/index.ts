@@ -102,8 +102,28 @@ interface SpotifyPlayHistory {
 }
 
 interface PagedResponse<T> {
-  items?: T[];
+  items: T[];
   next?: string | null;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseSpotifyPage<T>(value: unknown): PagedResponse<T> {
+  if (!isObjectRecord(value)) {
+    throw new Error("spotify_response_malformed: page must be an object");
+  }
+  if (!Array.isArray(value.items)) {
+    throw new Error("spotify_response_malformed: items must be an array");
+  }
+  if (value.next !== undefined && value.next !== null && typeof value.next !== "string") {
+    throw new Error("spotify_response_malformed: next must be a string or null");
+  }
+  return {
+    items: value.items as T[],
+    ...(value.next === undefined ? {} : { next: value.next as string | null }),
+  };
 }
 
 /**
@@ -225,16 +245,14 @@ async function paginate<T>(
       cursor_present: pageIndex > 0,
     };
     await progress("Fetching Spotify page", pageExtra);
-    const json: PagedResponse<T> = await sp<PagedResponse<T>>(next, token, progress, pageExtra);
-    if (Array.isArray(json.items)) {
-      all.push(...json.items);
-    }
+    const json = parseSpotifyPage<T>(await sp<unknown>(next, token, progress, pageExtra));
+    all.push(...json.items);
     await progress("Fetched Spotify page", {
       stream,
       phase: "page",
       page_index: pageIndex,
       offset_ordinal: pageIndex,
-      item_count: json.items?.length ?? 0,
+      item_count: json.items.length,
       total_seen: all.length,
       cursor_present: Boolean(json.next),
     });

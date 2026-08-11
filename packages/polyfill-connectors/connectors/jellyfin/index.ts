@@ -310,7 +310,7 @@ async function jellyfinRequest<T>(baseUrl: string, path: string, apiKey: string,
       );
       if (retryResult.value.status !== 401 && retryResult.value.status !== 403) {
         if (retryResult.value.status < 200 || retryResult.value.status >= 300) {
-          throw new Error(`jellyfin_http_${String(retryResult.value.status)}: ${retryResult.value.body.slice(0, 200)}`);
+          throw new Error(`jellyfin_http_${String(retryResult.value.status)}`);
         }
         return JSON.parse(retryResult.value.body) as T;
       }
@@ -318,7 +318,7 @@ async function jellyfinRequest<T>(baseUrl: string, path: string, apiKey: string,
     throw new Error("jellyfin_auth_failed");
   }
   if (result.value.status < 200 || result.value.status >= 300) {
-    throw new Error(`jellyfin_http_${String(result.value.status)}: ${result.value.body.slice(0, 200)}`);
+    throw new Error(`jellyfin_http_${String(result.value.status)}`);
   }
   return JSON.parse(result.value.body) as T;
 }
@@ -395,7 +395,7 @@ async function authenticateByName(
     throw new Error("jellyfin_auth_failed");
   }
   if (result.value.status < 200 || result.value.status >= 300) {
-    throw new Error(`jellyfin_http_${String(result.value.status)}: ${result.value.body.slice(0, 200)}`);
+    throw new Error(`jellyfin_http_${String(result.value.status)}`);
   }
 
   let parsed: unknown;
@@ -747,14 +747,14 @@ async function resolveUserId(baseUrl: string, apiKey: string, ownerSuppliedUserI
 }
 
 async function fetchLibraries(conn: JellyfinConn): Promise<Record<string, unknown>[]> {
-  const viewsResp = await jellyfinRequest<{ Items?: unknown[] }>(
+  const viewsResp = await jellyfinRequest<{ Items: unknown[] }>(
     conn.baseUrl,
     `Users/${conn.userId}/Views`,
     conn.apiKey,
     conn.reauth
   );
   const validatedViews = validateViewsResponse(viewsResp);
-  return (validatedViews.Items ?? []) as Record<string, unknown>[];
+  return validatedViews.Items as Record<string, unknown>[];
 }
 
 async function collectLibraries(
@@ -812,7 +812,7 @@ async function collectItemsForLibrary(
     }
 
     const itemsPath = `Users/${conn.userId}/Items?ParentId=${libraryId}&StartIndex=${startIndex}&Limit=${pageSize}`;
-    const itemsResp = await jellyfinRequest<{ Items?: unknown[]; TotalRecordCount?: unknown }>(
+    const itemsResp = await jellyfinRequest<{ Items: unknown[]; TotalRecordCount?: unknown }>(
       conn.baseUrl,
       itemsPath,
       conn.apiKey,
@@ -827,7 +827,7 @@ async function collectItemsForLibrary(
     const totalCount = validateTotalRecordCount(validatedItems.TotalRecordCount, priorTotal);
     priorTotal = totalCount;
 
-    const pageItems = validatedItems.Items ?? [];
+    const pageItems = validatedItems.Items;
 
     // Detect actual repeated page: fingerprint the full ordered ID sequence,
     // not just the first item — two distinct pages that happen to share a

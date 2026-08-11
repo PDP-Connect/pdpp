@@ -131,7 +131,7 @@ interface YnabCategory {
 }
 
 interface YnabCategoryGroup {
-  categories?: YnabCategory[];
+  categories: YnabCategory[];
   deleted: boolean;
   hidden: boolean;
   id: string;
@@ -254,6 +254,24 @@ interface YnabMonthsResponse {
 
 interface YnabMonthDetailResponse {
   data: { month: YnabMonth };
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function requireYnabObject<T extends object = Record<string, unknown>>(value: unknown, field: string): T {
+  if (!isObjectRecord(value)) {
+    throw new Error(`ynab_response_malformed: ${field} must be an object`);
+  }
+  return value as T;
+}
+
+function requireYnabArray<T>(value: unknown, field: string): T[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`ynab_response_malformed: ${field} must be an array`);
+  }
+  return value as T[];
 }
 
 const BUDGET_ID_PATH_SEGMENT = /\/budgets\/[^/]+/;
@@ -1040,7 +1058,16 @@ export async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<{
     progress,
     requestExtra
   );
-  const categoryCount = res.data.category_groups.reduce((sum, group) => sum + (group.categories?.length ?? 0), 0);
+  const envelope = requireYnabObject(res, "wire envelope");
+  const data = requireYnabObject(envelope.data, "data");
+  const categoryGroups = requireYnabArray<YnabCategoryGroup>(data.category_groups, "data.category_groups");
+  for (const [groupIndex, group] of categoryGroups.entries()) {
+    if (!isObjectRecord(group)) {
+      throw new Error(`ynab_response_malformed: data.category_groups[${String(groupIndex)}] must be an object`);
+    }
+    requireYnabArray<YnabCategory>(group.categories, `data.category_groups[${String(groupIndex)}].categories`);
+  }
+  const categoryCount = categoryGroups.reduce((sum, group) => sum + group.categories.length, 0);
   await progress("Fetched YNAB categories window", {
     stream: "categories",
     phase: "page",
@@ -1053,14 +1080,14 @@ export async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<{
   });
   const categoryGroupRecords: RecordData[] = [];
   const categoryRecords: RecordData[] = [];
-  for (const group of res.data.category_groups) {
+  for (const group of categoryGroups) {
     if (requested.has("category_groups")) {
       const record = categoryGroupRecord(group, budgetId);
       categoryGroupRecords.push(record);
       await trackAndEmit("category_groups", record);
     }
     if (requested.has("categories")) {
-      for (const c of group.categories ?? []) {
+      for (const c of group.categories) {
         const record = categoryRecord(c, group, budgetId);
         categoryRecords.push(record);
         await trackAndEmit("categories", record);
@@ -1553,7 +1580,11 @@ async function fetchMonthDetail(
   request: YnabRequest
 ): Promise<YnabMonth> {
   const monthRes = await request<YnabMonthDetailResponse>(`/budgets/${budgetId}/months/${month}`, token);
-  return monthRes.data.month;
+  const envelope = requireYnabObject(monthRes, "wire envelope");
+  const data = requireYnabObject(envelope.data, "data");
+  const responseMonth = requireYnabObject<YnabMonth>(data.month, "data.month");
+  requireYnabArray<YnabCategory>(responseMonth.categories, "data.month.categories");
+  return responseMonth;
 }
 
 export async function collectMonthCategories(
@@ -1607,7 +1638,9 @@ export async function collectMonthCategories(
       cursor_present: Boolean(priorCutoff || scopeSince),
     });
     const monthDetail = await fetchMonth(budgetId, m.month, token, request);
-    for (const c of monthDetail.categories ?? []) {
+    const monthObject = requireYnabObject(monthDetail, "data.month");
+    const monthCategories = requireYnabArray<YnabCategory>(monthObject.categories, "data.month.categories");
+    for (const c of monthCategories) {
       const record = monthCategoryRecord(c, m.month, budgetId);
       records.push(record);
       await trackAndEmit("month_categories", record);
