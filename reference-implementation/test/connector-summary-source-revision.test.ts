@@ -338,8 +338,8 @@ test("SQLite trigger omission fails before migration and the atomic reinstall ba
     closeDb();
     initDb(databasePath);
     const migrated = evidence(instanceId);
-    assert.equal(migrated.dirty, 1, "post-install completeness forces existing evidence stale");
-    assert.equal(migrated.list_summary_projection_reason_code, "canonical_source_revision_installation");
+    assert.equal(migrated.dirty, 0, "disposable evidence normalization never blocks trigger installation");
+    assert.notEqual(migrated.list_summary_projection_reason_code, "canonical_source_revision_installation");
     const installed = getDb()
       .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'trigger' AND name = ?")
       .get("pdpp_source_revision_connector_schedules_insert") as { count: number };
@@ -383,7 +383,7 @@ test("SQLite installation lock excludes a live writer until the restored trigger
         "the writer started only after the installation transaction held its lock"
       );
       assert.equal(sourceRevision(instanceId), "1", "the live writer ran after the restored insert trigger");
-      assert.equal(evidence(instanceId).dirty, 1, "the installation barrier remains fail-closed until repair");
+      assert.equal(evidence(instanceId).dirty, 0, "a disposable projection barrier cannot block boot or installation");
       await reconcileConnectorSummaryEvidence([instanceId]);
       assert.equal(evidence(instanceId).dirty, 0);
     } finally {
@@ -713,7 +713,7 @@ test("PostgreSQL projection faults preserve canonical record, schedule, and life
     const passed = await reconcileConnectorSummaryEvidence([POSTGRES_INSTANCE_ID]);
     assert.equal(passed.failed, 0);
     const repaired = await postgresEvidence();
-    assert.equal(repaired.total_records, 1);
+    assert.equal(Number(repaired.total_records), 1);
     assert.equal(repaired.dirty, 0);
     assert.equal(repaired.state, "fresh");
   });
@@ -846,7 +846,7 @@ test("PostgreSQL trigger omission fails before migration and a live writer waits
       await writer;
       await bootstrap;
       assert.notEqual(await postgresSourceRevision(), beforeOmission);
-      assert.equal((await postgresEvidence()).dirty, 1, "the install barrier is fail-closed before repair");
+      assert.equal((await postgresEvidence()).dirty, 0, "a disposable projection barrier cannot block installation");
       await reconcileConnectorSummaryEvidence([POSTGRES_INSTANCE_ID]);
       assert.equal((await postgresEvidence()).dirty, 0);
     } finally {

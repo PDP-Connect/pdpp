@@ -2231,62 +2231,6 @@ function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): voi
     "retained_size_record_family",
     "retained_size_top_rows",
   ] as const;
-  const expectedTriggerNames = [
-    ...sourceTables.flatMap((table) =>
-      table === "spine_events"
-        ? [`pdpp_source_revision_${table}_insert`, `pdpp_source_revision_${table}_delete`]
-        : [
-            `pdpp_source_revision_${table}_insert`,
-            `pdpp_source_revision_${table}_update`,
-            `pdpp_source_revision_${table}_delete`,
-          ]
-    ),
-    "pdpp_source_revision_connector_instances_update",
-    "pdpp_source_revision_connectors_manifest_update",
-  ];
-  const legacyTriggerNames = [
-    ...legacySourceTables.flatMap((table) => [
-      `pdpp_source_revision_${table}_insert`,
-      `pdpp_source_revision_${table}_update`,
-      `pdpp_source_revision_${table}_delete`,
-    ]),
-    "pdpp_source_revision_spine_events_update",
-  ];
-  const triggerSql = (name: string): string | null => {
-    const row = raw.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(name) as
-      | { sql: string | null }
-      | undefined;
-    return row?.sql ?? null;
-  };
-  const hasInstanceSourceRevision = hasTableColumn(raw, "connector_instances", "source_revision");
-  const hasEvidenceSourceRevision = hasTableColumn(raw, "connector_summary_evidence", "source_revision");
-  let needsBarrier = !(hasInstanceSourceRevision && hasEvidenceSourceRevision);
-  if (hasInstanceSourceRevision) {
-    needsBarrier ||= Boolean(
-      raw.prepare("SELECT 1 FROM connector_instances WHERE typeof(source_revision) <> 'integer' LIMIT 1").get()
-    );
-  }
-  if (hasEvidenceSourceRevision) {
-    needsBarrier ||= Boolean(
-      raw
-        .prepare(
-          "SELECT 1 FROM connector_summary_evidence WHERE source_revision IS NOT NULL AND typeof(source_revision) <> 'integer' LIMIT 1"
-        )
-        .get()
-    );
-  }
-  for (const name of expectedTriggerNames) {
-    const sql = triggerSql(name);
-    if (!sql || sql.includes("connector_summary_evidence")) {
-      needsBarrier = true;
-    }
-  }
-  for (const name of legacyTriggerNames) {
-    if (triggerSql(name)) {
-      needsBarrier = true;
-    }
-  }
-
   addColumnIfMissing(raw, "connector_instances", "source_revision", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(raw, "connector_summary_evidence", "source_revision", "INTEGER");
 
@@ -2300,12 +2244,6 @@ function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): voi
        SET source_revision = CAST(source_revision AS INTEGER)
      WHERE source_revision IS NOT NULL
        AND typeof(source_revision) <> 'integer';
-    UPDATE connector_summary_evidence
-       SET dirty = 1,
-           state = 'stale',
-           list_summary_projection_state = 'stale',
-           list_summary_projection_reason_code = 'canonical_source_revision_unknown'
-     WHERE source_revision IS NULL;
   `);
 
   // Source tables whose rows carry connector_instance_id. The spine fallback
@@ -2412,19 +2350,6 @@ function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): voi
          WHERE connector_id IN (NEW.connector_id, OLD.connector_id);
       END;
   `);
-
-  // A complete reinstall is itself a knowledge boundary. Existing evidence
-  // must be rebuilt after the last trigger is present; otherwise a writer
-  // could have landed in an installation gap and left a clean-looking row.
-  if (needsBarrier) {
-    raw.exec(`
-      UPDATE connector_summary_evidence
-         SET dirty = 1,
-             state = 'stale',
-             list_summary_projection_state = 'stale',
-             list_summary_projection_reason_code = 'canonical_source_revision_installation';
-    `);
-  }
 }
 
 function ensureConnectorMaintenanceCursorColumns(raw: SqliteDatabase): void {

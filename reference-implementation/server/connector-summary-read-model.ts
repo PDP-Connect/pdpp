@@ -1930,9 +1930,8 @@ export interface FoldStreamFactsResult {
  * fold-participation check OR terminal-event history (Sol P1.2: unrelated
  * connections' terminal event volume must not affect a scoped fold's cost or
  * the checkpoint a scoped participant advances to). `null` (the default)
- * preserves the exact prior complete behavior for every existing caller —
- * an unscoped fold's high-water mark is still the true global max, and its
- * batch reads still see every connection's terminal history.
+ * runs a complete pass as a sequence of instance-scoped folds, preserving
+ * complete coverage without a fleet-global terminal receipt.
  *
  * `options.maxDurationMs`/`options.maxEvents`, when provided, genuinely
  * bound the batch-drain loop itself (Sol fourth-verdict P1.2: "the fold
@@ -2145,10 +2144,74 @@ async function drainTerminalEventBatches({
   }
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The complete-fold wrapper owns the instance-scoped budget and aggregate receipt contract.
 export async function foldConnectorSummaryStreamFacts(
   connectorInstanceIds: readonly string[] | null = null,
   options: { readonly deadline?: number; readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
 ): Promise<FoldStreamFactsResult> {
+  // Keep the terminal high-water receipt instance-scoped even for a complete
+  // maintenance pass. A fleet-wide MAX(event_seq) lets one busy connection
+  // make an unrelated connection claim that it folded history it never saw.
+  if (connectorInstanceIds === null) {
+    const rows = (await createConnectorSummaryStore().listEvidence({})) as Row[];
+    const aggregate = {
+      casRejectedInstanceIds: [] as string[],
+      eventsRead: 0,
+      folded: 0,
+      incomplete: false,
+      minimumCheckpointAfter: null as number | null,
+      minimumCheckpointBefore: null as number | null,
+      participants: 0,
+      refused: 0,
+      resumeAfterSeq: null as number | null,
+    };
+    const deadline = resolveCooperativeDeadline(options);
+    let remainingEvents = options.maxEvents;
+    for (const row of rows) {
+      if (deadline !== null && Date.now() >= deadline) {
+        aggregate.incomplete = true;
+        break;
+      }
+      // biome-ignore lint/performance/noAwaitInLoops: Instance-scoped folds are intentionally sequential so one complete pass has a deterministic budget and receipt order.
+      const result = await foldConnectorSummaryStreamFacts([String(row.connector_instance_id)], {
+        ...(options.deadline === undefined ? {} : { deadline: options.deadline }),
+        ...(options.maxDurationMs === undefined ? {} : { maxDurationMs: options.maxDurationMs }),
+        ...(remainingEvents === undefined ? {} : { maxEvents: remainingEvents }),
+      });
+      aggregate.casRejectedInstanceIds.push(...result.casRejectedInstanceIds);
+      aggregate.eventsRead += result.eventsRead;
+      aggregate.folded += result.folded;
+      aggregate.incomplete ||= result.incomplete;
+      aggregate.participants += result.participants;
+      aggregate.refused += result.refused;
+      if (result.minimumCheckpointBefore !== null) {
+        aggregate.minimumCheckpointBefore =
+          aggregate.minimumCheckpointBefore === null
+            ? result.minimumCheckpointBefore
+            : Math.min(aggregate.minimumCheckpointBefore, result.minimumCheckpointBefore);
+      }
+      if (result.minimumCheckpointAfter !== null) {
+        aggregate.minimumCheckpointAfter =
+          aggregate.minimumCheckpointAfter === null
+            ? result.minimumCheckpointAfter
+            : Math.min(aggregate.minimumCheckpointAfter, result.minimumCheckpointAfter);
+      }
+      if (result.resumeAfterSeq !== null) {
+        aggregate.resumeAfterSeq =
+          aggregate.resumeAfterSeq === null
+            ? result.resumeAfterSeq
+            : Math.min(aggregate.resumeAfterSeq, result.resumeAfterSeq);
+      }
+      if (remainingEvents !== undefined) {
+        remainingEvents = Math.max(0, remainingEvents - result.eventsRead);
+        if (remainingEvents === 0) {
+          aggregate.incomplete = true;
+          break;
+        }
+      }
+    }
+    return aggregate;
+  }
   let result: FoldStreamFactsResult | null = null;
   for (let attempt = 0; attempt < STREAM_FACTS_CAS_REPLAY_ATTEMPTS; attempt += 1) {
     if (result !== null && typeof options.deadline === "number" && Date.now() >= options.deadline) {
@@ -2428,8 +2491,9 @@ async function writeParticipantStreamFacts(
  * fan-out AND its terminal-event high-water/batch reads to exactly that set
  * (Sol P1.2) — an unrelated connection's terminal-event volume no longer
  * affects a scoped fold's cost or the checkpoint a scoped participant
- * advances to. `null` (the default) preserves the exact prior complete
- * behavior.
+ * advances to. `null` (the default) runs a complete pass as a sequence of
+ * instance-scoped folds, preserving complete coverage without a fleet-global
+ * terminal receipt.
  *
  * `options.maxDurationMs`/`options.maxEvents`, when provided, thread
  * straight through to `foldConnectorSummaryStreamFacts`'s own budget (Sol

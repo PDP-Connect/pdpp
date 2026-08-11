@@ -1349,6 +1349,12 @@ test("dedicated PostgreSQL manifest generations fence historical facts and undec
          ) VALUES($1, $2, $3, $4, 'active', 'account', $1, '{}'::jsonb, $5, $5, NULL)`,
       [INSTANCE_ID, OWNER, CONNECTOR_ID, "Summary evidence oracle", NOW]
     );
+    await postgresQuery(
+      `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+       VALUES($1, $2, $3, 1), ($1, $2, $4, 1)
+       ON CONFLICT (connector_instance_id, stream) DO UPDATE SET max_version = EXCLUDED.max_version`,
+      [CONNECTOR_ID, INSTANCE_ID, EMPTY_STREAM, STREAM]
+    );
 
     const summaries = await rebuildConnectorSummaryEvidence();
     if (!Array.isArray(summaries)) {

@@ -2282,11 +2282,16 @@ export async function bootstrapPostgresSchema({
             NULLIF(NEW.data_json->>'connection_id', '')
           );
           NEW.connector_instance_id := terminal_instance_id;
+          -- Do not lock the instance row from this BEFORE INSERT trigger.
+          -- Concurrent terminal inserts can otherwise hold share locks while
+          -- the source-revision AFTER trigger waits to upgrade the same row,
+          -- producing a PostgreSQL 40P01 cycle. The terminal event is already
+          -- scoped by its identity; generation reconciliation remains a
+          -- disposable read-model concern.
           SELECT manifest_generation
             INTO NEW.manifest_generation
             FROM connector_instances
-           WHERE connector_instance_id = terminal_instance_id
-           FOR SHARE;
+           WHERE connector_instance_id = terminal_instance_id;
         END IF;
         RETURN NEW;
       END;
@@ -2493,74 +2498,10 @@ async function ensurePostgresConnectorSummarySourceRevisionPrimitive(client: Poo
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS source_revision BIGINT;
       UPDATE connector_instances SET source_revision = 0 WHERE source_revision IS NULL;
-      UPDATE connector_summary_evidence
-         SET dirty = 1,
-             state = 'stale',
-             list_summary_projection_state = 'stale',
-             list_summary_projection_reason_code = 'canonical_source_revision_unknown'
-       WHERE source_revision IS NULL;
     `);
     const markerPath = process.env.PDPP_TEST_SOURCE_REVISION_INSTALL_LOCK_PATH;
     if (markerPath) {
       writeFileSync(markerPath, `${process.pid}\n`, "utf8");
-    }
-
-    const expectedTriggerNames = [
-      "pdpp_source_revision_connector_instances_update",
-      "pdpp_source_revision_connectors_update",
-      "pdpp_source_revision_connectors_insert",
-      "pdpp_source_revision_connectors_delete",
-      ...sourceTables.map((table) => `pdpp_source_revision_${table}`),
-    ];
-    const legacyTriggerNames = legacySourceTables.map((table) => `pdpp_source_revision_${table}`);
-    const columnResult = await client.query<{ table_name: string; column_name: string }>(
-      `SELECT table_name, column_name
-         FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND ((table_name = 'connector_instances' AND column_name = 'source_revision')
-            OR (table_name = 'connector_summary_evidence' AND column_name = 'source_revision'))`
-    );
-    let needsBarrier = new Set(columnResult.rows.map((row) => `${row.table_name}.${row.column_name}`)).size < 2;
-    const triggerResult = await client.query<{ tgname: string }>(
-      `SELECT tgname
-         FROM pg_trigger
-        WHERE NOT tgisinternal
-          AND tgname = ANY($1::text[])`,
-      [expectedTriggerNames]
-    );
-    if (new Set(triggerResult.rows.map((row) => row.tgname)).size !== expectedTriggerNames.length) {
-      needsBarrier = true;
-    }
-    const legacyTriggerResult = await client.query<{ tgname: string }>(
-      `SELECT tgname
-         FROM pg_trigger
-        WHERE NOT tgisinternal
-          AND tgname = ANY($1::text[])`,
-      [legacyTriggerNames]
-    );
-    if (legacyTriggerResult.rowCount !== 0) {
-      needsBarrier = true;
-    }
-    const functionResult = await client.query<{ definition: string }>(
-      `SELECT pg_get_functiondef(p.oid) AS definition
-         FROM pg_proc p
-         JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname = current_schema()
-          AND p.proname = ANY($1::text[])`,
-      [
-        [
-          "pdpp_advance_connector_summary_source_revision",
-          "pdpp_touch_connector_summary_source_row",
-          "pdpp_touch_connector_summary_instance",
-          "pdpp_touch_connector_summary_manifest",
-        ],
-      ]
-    );
-    if (
-      functionResult.rowCount !== 4 ||
-      functionResult.rows.some((row) => row.definition.includes("connector_summary_evidence"))
-    ) {
-      needsBarrier = true;
     }
 
     await client.query(`
@@ -2700,12 +2641,13 @@ async function ensurePostgresConnectorSummarySourceRevisionPrimitive(client: Poo
 
     for (const table of sourceTables) {
       const trigger = `pdpp_source_revision_${table}`;
+      const timing = table === "spine_events" ? "BEFORE" : "AFTER";
       const operations = table === "spine_events" ? "INSERT OR DELETE" : "INSERT OR UPDATE OR DELETE";
       // biome-ignore lint/performance/noAwaitInLoops: trigger DDL must run sequentially inside one transaction.
       await client.query(`
         DROP TRIGGER IF EXISTS ${trigger} ON ${table};
         CREATE TRIGGER ${trigger}
-          AFTER ${operations} ON ${table}
+          ${timing} ${operations} ON ${table}
           FOR EACH ROW EXECUTE FUNCTION pdpp_touch_connector_summary_source_row();
       `);
     }
@@ -2718,15 +2660,6 @@ async function ensurePostgresConnectorSummarySourceRevisionPrimitive(client: Poo
     // A complete reinstall is itself a knowledge boundary. Existing evidence
     // must be rebuilt after the last trigger is present; otherwise a writer
     // could have landed in an installation gap and left a clean-looking row.
-    if (needsBarrier) {
-      await client.query(`
-        UPDATE connector_summary_evidence
-           SET dirty = 1,
-               state = 'stale',
-               list_summary_projection_state = 'stale',
-               list_summary_projection_reason_code = 'canonical_source_revision_installation';
-      `);
-    }
     await client.query("COMMIT");
   } catch (error) {
     try {
