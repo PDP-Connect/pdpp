@@ -496,6 +496,34 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       return;
     }
     async function dispatchIfDue(schedule: ConnectorSchedule): Promise<void> {
+      // A connector instance with a run already in flight can never be
+      // dispatched again this tick — `executeRun` below already no-ops on
+      // `runtime.activeRuns.has(key)`. Without this guard, `evaluateBackoffDispatch`
+      // still ran its full probe set (including `getForwardEvidenceDebt`'s
+      // `reconcileDirtyConnectorSummaryEvidence` call) against the SAME
+      // connector instance every ~60s for the run's entire duration, because
+      // `elapsed = now - lastRunTime` keeps growing while a run is in
+      // progress (`lastRunTime` is only set at run start/completion, never
+      // "while running"). That reconcile repair and the in-flight run's own
+      // per-record writes both take `withConnectorInstanceWrite`'s
+      // in-process per-instance mutex (connector-instance-write-coordinator.ts),
+      // which fails a waiting acquisition after `PDPP_INGEST_LOCK_WAIT_MS`
+      // (default 2s) with a retryable `connector_instance_busy` error. A
+      // large batch that queues behind enough of these reconcile windows
+      // accumulates retryable per-record failures and the whole batch's HTTP
+      // response turns into a non-2xx `ingest_batch_storage_error`, even
+      // though every record durably committed — the live GroupMe UAT
+      // incident (run_1786410860909_1, 2026-08-11 01:14-02:47Z: 121/500
+      // records timed out on this exact gate, 318734ms response, 503).
+      // Skipping dispatch evaluation entirely for an already-running
+      // instance removes the unrelated concurrent writer, is connector-
+      // agnostic (keyed only by connectorInstanceId), and changes no
+      // observable scheduling decision for an instance that ISN'T running
+      // (`eligible`/`recoveryOnly`/skip-emission are all no-ops here since
+      // `executeRun` already refused to dispatch on this key).
+      if (runtime.activeRuns.has(runtimeKey(schedule))) {
+        return;
+      }
       let dispatch: Awaited<ReturnType<typeof dispatchGovernor.evaluateBackoffDispatch>>;
       try {
         dispatch = await dispatchGovernor.evaluateBackoffDispatch(schedule, Date.now());
