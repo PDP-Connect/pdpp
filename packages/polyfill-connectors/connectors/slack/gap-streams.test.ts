@@ -19,7 +19,7 @@ import {
   runUsersStream,
   type StreamDeps,
 } from "./index.ts";
-import { resetSlackApiGovernor } from "./slack-api.ts";
+import { resetSlackApiGovernor, SlackApiAuthError } from "./slack-api.ts";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_SET_TIMEOUT = globalThis.setTimeout;
@@ -232,7 +232,7 @@ test("runOptionalStream: a retryable failure (rate limit) is flagged retryable i
 test("runOptionalStream: a non-retryable failure (auth) is flagged non-retryable in the recovery hint", async () => {
   const { emit, messages } = captureEmitted();
 
-  await runOptionalStream(emit, "stars", () => Promise.reject(new Error("slack_auth_failed")));
+  await runOptionalStream(emit, "stars", () => Promise.reject(new SlackApiAuthError("invalid_auth")));
 
   const [msg] = messages;
   const hint = (msg as { recovery_hint?: { retryable?: boolean } }).recovery_hint;
@@ -249,11 +249,38 @@ test("runOptionalStream: an auth failure omits action:retry_by_runtime so the co
   // the same call against the same rejected session can never succeed.
   const { emit, messages } = captureEmitted();
 
-  await runOptionalStream(emit, "stars", () => Promise.reject(new Error("slack_auth_failed")));
+  await runOptionalStream(emit, "stars", () => Promise.reject(new SlackApiAuthError("invalid_auth")));
 
   const [msg] = messages;
   const hint = (msg as { recovery_hint?: { action?: string } }).recovery_hint;
   assert.notEqual(hint?.action, "retry_by_runtime");
+});
+
+test("runOptionalStream: the recovery_hint diagnostics carries the specific Slack-reported error code", async () => {
+  const { emit, messages } = captureEmitted();
+
+  await runOptionalStream(emit, "stars", () => Promise.reject(new SlackApiAuthError("token_revoked")));
+
+  const [msg] = messages;
+  const { diagnostics } = msg as { diagnostics?: { slack_api_error_code?: string } };
+  assert.equal(diagnostics?.slack_api_error_code, "token_revoked");
+});
+
+test("runOptionalStream: classification is by error TYPE, not message text — a plain Error with the same message string is NOT treated as an auth failure", async () => {
+  // Proves the classification genuinely depends on `instanceof SlackApiAuthError`
+  // and not on matching `.message` against a regex — a plain Error carrying
+  // the identical "slack_auth_failed" string (e.g. a bug that constructs the
+  // wrong error type, or an unrelated failure that happens to share the
+  // string) must still be treated as a transient/unclassified failure, not
+  // silently absorbed into the non-retryable auth path.
+  const { emit, messages } = captureEmitted();
+
+  await runOptionalStream(emit, "stars", () => Promise.reject(new Error("slack_auth_failed")));
+
+  const [msg] = messages;
+  const hint = (msg as { recovery_hint?: { action?: string; retryable?: boolean } }).recovery_hint;
+  assert.equal(hint?.action, "retry_by_runtime");
+  assert.equal(hint?.retryable, false);
 });
 
 test("runOptionalStream: a retryable failure (rate limit) still carries action:retry_by_runtime", async () => {

@@ -10,6 +10,7 @@ import {
   fetchAllUserGroups,
   fetchDmReadStates,
   resetSlackApiGovernor,
+  SlackApiAuthError,
 } from "./slack-api.ts";
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -254,14 +255,46 @@ test("a 401 status throws slack_auth_failed", async () => {
   await assert.rejects(fetchAllStars(TOKEN, COOKIE), /slack_auth_failed/);
 });
 
+test("a 401 status throws SlackApiAuthError with slackApiErrorCode=null (no parsed body)", async () => {
+  globalThis.fetch = () => Promise.resolve(jsonResponse({ ok: false, error: "not_authed" }, 401));
+  await assert.rejects(fetchAllStars(TOKEN, COOKIE), (e: unknown) => {
+    assert.ok(e instanceof SlackApiAuthError);
+    assert.equal(e.slackApiErrorCode, null);
+    return true;
+  });
+});
+
 test("ok:false with error invalid_auth throws slack_auth_failed even on HTTP 200", async () => {
   globalThis.fetch = () => Promise.resolve(jsonResponse({ ok: false, error: "invalid_auth" }, 200));
   await assert.rejects(fetchAllStars(TOKEN, COOKIE), /slack_auth_failed/);
 });
 
-test("ok:false with an unrelated error throws a scoped slack_api_error", async () => {
+test("ok:false with error invalid_auth throws SlackApiAuthError carrying the Slack-reported code", async () => {
+  globalThis.fetch = () => Promise.resolve(jsonResponse({ ok: false, error: "invalid_auth" }, 200));
+  await assert.rejects(fetchAllStars(TOKEN, COOKIE), (e: unknown) => {
+    assert.ok(e instanceof SlackApiAuthError);
+    assert.equal(e.slackApiErrorCode, "invalid_auth");
+    return true;
+  });
+});
+
+test("ok:false with error token_revoked throws SlackApiAuthError carrying token_revoked", async () => {
+  globalThis.fetch = () => Promise.resolve(jsonResponse({ ok: false, error: "token_revoked" }, 200));
+  await assert.rejects(fetchAllUserGroups(TOKEN, COOKIE), (e: unknown) => {
+    assert.ok(e instanceof SlackApiAuthError);
+    assert.equal(e.slackApiErrorCode, "token_revoked");
+    return true;
+  });
+});
+
+test("ok:false with an unrelated error throws a scoped slack_api_error, NOT a SlackApiAuthError", async () => {
   globalThis.fetch = () => Promise.resolve(jsonResponse({ ok: false, error: "missing_scope" }, 200));
   await assert.rejects(fetchAllReminders(TOKEN, COOKIE), /slack_api_error_missing_scope/);
+  globalThis.fetch = () => Promise.resolve(jsonResponse({ ok: false, error: "missing_scope" }, 200));
+  await assert.rejects(fetchAllReminders(TOKEN, COOKIE), (e: unknown) => {
+    assert.equal(e instanceof SlackApiAuthError, false);
+    return true;
+  });
 });
 
 test("sustained 429s exhaust the governor's retry budget as slack_rate_limited", async () => {

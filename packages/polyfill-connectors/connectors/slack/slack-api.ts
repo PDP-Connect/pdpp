@@ -46,10 +46,30 @@ const USER_AGENT = slackBrowserUserAgent();
 
 export const SLACK_API_RETRYABLE_FAILURE_RE = /slack_rate_limited|ECONN|ETIMEDOUT|timeout/i;
 
-/** Matches the literal `slack_auth_failed` error `parseSlackApiResponse` throws
- *  on a 401 or an `invalid_auth`/`not_authed`/`token_revoked` API response — a
- *  durable session-credential rejection, never transient. */
-export const SLACK_API_AUTH_FAILURE_RE = /slack_auth_failed/;
+/**
+ * Typed marker for a durable Slack session-credential rejection — a 401, or
+ * an `invalid_auth`/`not_authed`/`token_revoked` API response body. Never
+ * transient: retrying the same call with the same rejected credential
+ * repeats the same outcome forever. Callers classify with `instanceof`
+ * rather than matching on `.message`, so the classification survives a
+ * message-copy edit and cannot silently drift out of sync with the actual
+ * throw site the way a standalone regex can.
+ *
+ * `slackApiErrorCode` preserves the specific Slack-reported reason
+ * (`invalid_auth` / `not_authed` / `token_revoked`, or `null` for a bare
+ * HTTP 401 with no parsed body) as structured data, not string-embedded —
+ * a caller that wants the exact reason reads the field, it doesn't re-parse
+ * the message.
+ */
+export class SlackApiAuthError extends Error {
+  readonly slackApiErrorCode: string | null;
+
+  constructor(slackApiErrorCode: string | null, options?: ErrorOptions) {
+    super("slack_auth_failed", options);
+    this.name = "SlackApiAuthError";
+    this.slackApiErrorCode = slackApiErrorCode;
+  }
+}
 
 /**
  * Mirror slackdump's client-token cookie shape.
@@ -175,7 +195,7 @@ async function slackApiGet<T extends { error?: string; ok: boolean }>(
 
 function parseSlackApiResponse<T extends { error?: string; ok: boolean }>(raw: SlackApiRawResponse): T {
   if (raw.status === 401) {
-    throw new Error("slack_auth_failed");
+    throw new SlackApiAuthError(null);
   }
   if (raw.status < 200 || raw.status >= 300) {
     throw new Error(`slack_api_http_${String(raw.status)}: ${raw.body.slice(0, 200)}`);
@@ -188,7 +208,7 @@ function parseSlackApiResponse<T extends { error?: string; ok: boolean }>(raw: S
   }
   if (!parsed.ok) {
     if (parsed.error === "invalid_auth" || parsed.error === "not_authed" || parsed.error === "token_revoked") {
-      throw new Error("slack_auth_failed");
+      throw new SlackApiAuthError(parsed.error);
     }
     throw new Error(`slack_api_error_${parsed.error ?? "unknown"}`);
   }

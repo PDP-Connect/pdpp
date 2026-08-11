@@ -103,8 +103,8 @@ import {
   fetchAllStars,
   fetchAllUserGroups,
   fetchDmReadStates,
-  SLACK_API_AUTH_FAILURE_RE,
   SLACK_API_RETRYABLE_FAILURE_RE,
+  SlackApiAuthError,
 } from "./slack-api.ts";
 import type {
   CanvasRow,
@@ -2535,7 +2535,11 @@ export async function runOptionalStream(
     // connector-coverage-policy.ts) checks `action` before any reason text,
     // so an unconditional "retry_by_runtime" here would misclassify a
     // persistent slack_auth_failed as a self-healing retryable_gap.
-    const isAuthFailure = SLACK_API_AUTH_FAILURE_RE.test(message);
+    //
+    // Classified by `instanceof SlackApiAuthError`, not by matching `message`
+    // text — a typed marker can't silently drift out of sync with the throw
+    // site the way a regex copy-pasted across files can.
+    const isAuthFailure = e instanceof SlackApiAuthError;
     await emit({
       type: "SKIP_RESULT",
       stream,
@@ -2544,6 +2548,7 @@ export async function runOptionalStream(
       recovery_hint: isAuthFailure
         ? { retryable: false }
         : { action: "retry_by_runtime", retryable: SLACK_API_RETRYABLE_FAILURE_RE.test(message) },
+      ...(isAuthFailure && e.slackApiErrorCode ? { diagnostics: { slack_api_error_code: e.slackApiErrorCode } } : {}),
     });
   }
 }
