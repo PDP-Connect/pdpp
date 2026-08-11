@@ -63,6 +63,7 @@ import {
   type ProviderBudgetGate,
   retryBudgetCapacityFromRequestCap,
 } from "../../src/provider-budget.ts";
+import { createRepairBudget } from "../../src/repair-budget.ts";
 import { RunBudget } from "../../src/run-budget.ts";
 import {
   buildConversationRecord,
@@ -1372,6 +1373,14 @@ export function createChatGptApi({
     return auth();
   }
 
+  // Run-scoped cap on credentialed reauth attempts, shared across every path
+  // (stream, page, retry) that calls fetchOnce through this one createChatGptApi
+  // instance — see repair-budget.ts. Without this, a repeatedly-stale session
+  // (the page keeps handing back a DIFFERENT token that is still unauthorized,
+  // e.g. a rotating-but-revoked refresh) re-extracts on every single 401 across
+  // the whole run instead of self-healing once and then failing honestly.
+  const repairBudget = createRepairBudget();
+
   async function fetchOnce(
     path: string,
     { method, body, parseJson = true }: { method: string; body?: unknown; parseJson?: boolean }
@@ -1387,12 +1396,14 @@ export function createChatGptApi({
     const result = await evaluate(usedAuth);
     // Stale-token self-heal: a 401 on the cached token is almost always a
     // rotated/expired JWT, not a dead session. Re-extract the page's current
-    // token ONCE and retry — but only if it actually CHANGED (a different token
-    // means the page rotated; an identical token means the session is genuinely
-    // unauthorized, so retrying would just loop). If the retry still 401s, or the
-    // token is unchanged, the result flows on to `shouldAbort` → terminal auth
-    // error, which §10-C routes to a reconnect prompt rather than a silent fail.
-    if (result.status === 401) {
+    // token ONCE PER RUN and retry — but only if it actually CHANGED (a
+    // different token means the page rotated; an identical token means the
+    // session is genuinely unauthorized, so retrying would just loop). If the
+    // retry still 401s, the token is unchanged, or this run's repair budget is
+    // already spent, the result flows on to `shouldAbort` → terminal auth error,
+    // which §10-C routes to a reconnect prompt rather than a silent fail or a
+    // repeated credentialed reauth loop.
+    if (result.status === 401 && repairBudget.tryConsume()) {
       const refreshed = await reauth();
       if (refreshed.accessToken && refreshed.accessToken !== usedAuth.accessToken) {
         return evaluate(refreshed);

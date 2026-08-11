@@ -354,6 +354,62 @@ test("createChatGptApi refreshes auth from the current session endpoint after on
   );
 });
 
+test("createChatGptApi caps repeated-stale-session reauth at one per run, across multiple 401'ing paths", async () => {
+  // Discriminating oracle for the uncapped-reauth defect: EVERY reauth call
+  // returns a genuinely DIFFERENT token from the last (so the old "did the
+  // token change?" self-heal check alone would keep retrying forever), but
+  // the session is permanently unauthorized — every token, including fresh
+  // ones, 401s. A repair budget shared across the whole run must let exactly
+  // ONE reauth-and-retry happen for the FIRST 401'ing fetch, then refuse to
+  // reauth for every subsequent 401 (including on a completely different
+  // path), letting those fall through to a terminal 401 instead of looping.
+  let authExtractionCalls = 0;
+  const backendCalls: Array<{ auth?: { accessToken?: string }; path?: string }> = [];
+  const fakePage: Pick<Page, "evaluate" | "goto" | "waitForFunction"> = {
+    evaluate: ((_fn: unknown, arg?: unknown): Promise<unknown> => {
+      if (arg === undefined) {
+        authExtractionCalls += 1;
+        // Every extraction yields a distinct token — the rotation itself is
+        // real, but the underlying session is dead, so every token 401s.
+        return Promise.resolve({ accessToken: `token-${authExtractionCalls}`, deviceId: "fake-device" });
+      }
+      const call = arg as { auth?: { accessToken?: string }; path?: string };
+      backendCalls.push(call);
+      return Promise.resolve({ status: 401, json: null });
+    }) as Page["evaluate"],
+    goto: () => Promise.resolve(null),
+    waitForFunction: () => Promise.reject(new Error("fake page: no client-bootstrap")),
+  };
+
+  const api = createChatGptApi({ capture: null, page: fakePage as Page });
+
+  // First 401'ing path: budget is unspent, so it gets exactly one reauth+retry
+  // before the persistent 401 is surfaced as the terminal auth error.
+  await assert.rejects(
+    () => api.fetch("/memories?include_memory_entries=true"),
+    /got 401 on GET \/memories/,
+    "still 401 after the one allotted repair attempt — the session never heals"
+  );
+  assert.equal(authExtractionCalls, 2, "one initial auth + exactly one reauth for the first path");
+
+  // Second, DIFFERENT path also 401s. If reauth were still budgeted per-call
+  // (the pre-fix defect) rather than per-run, this would trigger a second
+  // reauth because its token also changes every time. The shared run-scoped
+  // budget must refuse it.
+  await assert.rejects(() => api.fetch("/custom_gpts"), /got 401 on GET \/custom_gpts/);
+  assert.equal(
+    authExtractionCalls,
+    2,
+    "budget already spent by the first path — no further reauth on a later path in the same run"
+  );
+
+  // A third call proves the cap holds, not just "holds for one extra call".
+  await assert.rejects(() => api.fetch("/gizmos/snorlax/bootstrap"), /got 401 on GET \/gizmos\/snorlax\/bootstrap/);
+  assert.equal(authExtractionCalls, 2, "budget stays spent across every subsequent 401 in the run");
+
+  assert.equal(backendCalls.length, 4, "1 initial + 1 repair retry for the first path, then 1 each for the next two");
+});
+
 test("createChatGptApi.fetchBatch posts capped conversation batch requests", async () => {
   const backendCalls: Array<{ body?: unknown; method?: string; path?: string }> = [];
   const fakePage: Pick<Page, "evaluate" | "goto" | "waitForFunction"> = {
