@@ -77,6 +77,7 @@ import {
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { jellyfinPacingProfile } from "../../src/provider-profile.ts";
+import { createRepairBudget } from "../../src/repair-budget.ts";
 import { validateItemsResponse, validateRecord, validateSystemInfo, validateViewsResponse } from "./schemas.ts";
 
 // ─── Configuration ────────────────────────────────────────────────────────
@@ -253,34 +254,6 @@ async function fetchJellyfin(
  */
 type ReauthFn = () => Promise<string | undefined>;
 
-/**
- * Run-scoped automated-login budget, shared by EVERY caller of `conn.reauth`
- * across this run: both streams (`libraries`, `items`), `fetchLibraries`
- * (called once per stream), and every page of every library inside
- * `collectItemsForLibrary`. Without this, a repeatedly-revoked session (the
- * server invalidates the token again shortly after each self-heal) drives one
- * automated `AuthenticateByName` login per 401 — for N libraries x M pages
- * that's up to N*M logins in a single run, scaling with catalog size. That is
- * itself a defect independent of the original single-repair self-heal: a
- * self-hosted server has no fraud-lockout risk like a bank, but repeated
- * automated logins against a real credential are still a provider-owned
- * defect class this connector must not reproduce for ANY connector's
- * mid-run self-heal.
- *
- * `reauthAttempted` is spent exactly once, by the `conn.reauth` closure itself
- * (see `resolveConnection`) — every call site above it (`jellyfinRequest`)
- * stays unaware of the budget and just receives `undefined` once it's spent,
- * which it already treats as "no self-heal available" (identical to the
- * API-key path). A session that dies again after the budget is spent must
- * fail the run honestly — see `collectItemsForLibrary`/`collectItems`, which
- * propagate that failure to `collect()`'s catch, which emits `SKIP_RESULT`
- * for both streams instead of a coverage message, so the run cannot read
- * green.
- */
-interface JellyfinRunState {
-  reauthAttempted: boolean;
-}
-
 async function jellyfinRequest<T>(baseUrl: string, path: string, apiKey: string, onReauth?: ReauthFn): Promise<T> {
   const base = validateBaseUrl(baseUrl);
   const url = new URL(path, base);
@@ -305,8 +278,11 @@ async function jellyfinRequest<T>(baseUrl: string, path: string, apiKey: string,
     // request, but only if the new token actually differs from the one that
     // just failed (an identical token means the server really is rejecting
     // this credential, so retrying would just loop). Mirrors the ChatGPT
-    // connector's stale-token self-heal (chatgpt/index.ts fetchOnce).
-    const freshToken = await onReauth?.();
+    // connector's stale-token self-heal (chatgpt/index.ts fetchOnce). A
+    // reauth attempt that itself throws (e.g. authenticateByName 500s) must
+    // not escape here — it would bypass the jellyfin_auth_failed classification
+    // below and surface as a generic, unclassified connector error instead.
+    const freshToken = await onReauth?.().catch(() => undefined);
     if (freshToken && freshToken !== apiKey) {
       const retryResult = await httpGovernor.request<
         { body: string; status: number },
@@ -950,28 +926,25 @@ async function resolveConnection(
   apiKey: string | undefined,
   ownerSuppliedUserId: string | undefined,
   progress: CollectContext["progress"],
-  runState: JellyfinRunState
+  repairBudget: ReturnType<typeof createRepairBudget>
 ): Promise<JellyfinConn> {
   if (username && password) {
     await progress("Signing in to Jellyfin with username and password");
-    const deviceId = deriveStableDeviceId(`${baseUrl} ${username}`);
+    const deviceId = deriveStableDeviceId(`${baseUrl} ${username}`);
     const { accessToken, userId } = await authenticateByName(baseUrl, username, password, deviceId);
     await progress("Signed in to Jellyfin");
 
     const conn: JellyfinConn = { baseUrl, apiKey: accessToken, userId };
-    // Re-authenticate once and remember the fresh token on `conn` so later
-    // requests in this same run (further pagination pages, the next library)
-    // do not immediately hit the same stale token again. `runState` is the
-    // sole spender of the run-scoped budget: once ANY call this run has
-    // attempted a self-heal login (whether it produced a fresh token or
-    // not), every subsequent 401/403 across every stream/library/page
-    // refuses immediately instead of attempting another automated login —
-    // see `JellyfinRunState`.
+    // `repairBudget` is shared across both streams and, within `items`, every
+    // library and page (see `collect`) — a token the server revokes again
+    // shortly after each self-heal must not drive one automated
+    // AuthenticateByName login per 401 across a whole catalog. Once spent,
+    // every later 401/403 gets `undefined` back, same as the API-key path's
+    // "no self-heal available".
     conn.reauth = async () => {
-      if (runState.reauthAttempted) {
+      if (!repairBudget.tryConsume()) {
         return;
       }
-      runState.reauthAttempted = true;
       const refreshed = await authenticateByName(baseUrl, username, password, deviceId);
       conn.apiKey = refreshed.accessToken;
       return refreshed.accessToken;
@@ -1007,13 +980,21 @@ async function collect(ctx: CollectContext): Promise<void> {
 
   const now = nowIso();
 
-  // Constructed once per run, before the first stream — the sole source of
-  // the run-scoped reauth budget shared by both streams (and, within
-  // `items`, every library and every page). See `JellyfinRunState`.
-  const runState: JellyfinRunState = { reauthAttempted: false };
+  // Constructed once per run, before the first stream, so the reauth budget
+  // it hands to `resolveConnection` is shared run-wide rather than reset per
+  // stream/library/page.
+  const repairBudget = createRepairBudget();
 
   try {
-    const conn = await resolveConnection(baseUrl, username, password, apiKey, ownerSuppliedUserId, progress, runState);
+    const conn = await resolveConnection(
+      baseUrl,
+      username,
+      password,
+      apiKey,
+      ownerSuppliedUserId,
+      progress,
+      repairBudget
+    );
 
     if (requested.has("libraries")) {
       await collectLibraries(conn, ctx, now);

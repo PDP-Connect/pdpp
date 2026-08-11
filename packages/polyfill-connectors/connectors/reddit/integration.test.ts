@@ -681,83 +681,157 @@ test("collectAllStreams: credential-less env gate stops the FIRST requested stre
 // automated logins. Fixed behavior: a single repairBudget is created once in
 // collectAllStreams and shared across every collectStream() call, so the
 // login count is exactly 1 regardless of how many streams 401.
-//
-// This test drives collectStream directly (not collectAllStreams) so it can
-// assert on BOTH the pre-fix and post-fix wiring from one harness: passing a
-// fresh `createRepairBudget()` per call reproduces the old per-stream reset
-// (6 logins); passing one shared instance reproduces the fix (1 login). If
-// this ever regresses to a fresh-per-call budget, the "shared" case starts
-// asserting 6 instead of 1 and fails.
-test("collectStream x6 streams, every stream's first page 401s: a FRESH repairBudget per call reproduces the old per-stream-reset bug (6 automated logins); ONE SHARED repairBudget across all 6 caps it at exactly 1", async () => {
-  // Mirrors the red-team oracle exactly: "with credentials present and every
-  // page 401ing" (final-combined-uat-redteam-0811.md, B2). Old behavior:
-  // `attemptedReauth = { done: false }` was declared INSIDE paginate(),
-  // which runs once per stream, so the "one-shot" budget reset on every one
-  // of the 6 streams buildStreamTable returns — one automated login per
-  // stream. Fixed behavior: a single repairBudget, created once in
-  // collectAllStreams, is shared across every collectStream() call, so only
-  // the FIRST stream to hit a 401 gets to spend the run's one repair; every
-  // later stream's 401 is correctly terminal (budget already spent), same
-  // as USAA's run-scoped budget for its own N-cards case.
-  async function runSixStreams(budgetPerCall: boolean): Promise<{ loginCalls: number; threw: boolean }> {
+
+/** A fake Playwright Page that (a) always reports a live session to
+ *  `isSessionLive`'s `goto` + `locator(...).count()` probe — so every reauth
+ *  attempt genuinely succeeds, never masked by a scripted-sequence
+ *  exhaustion — while counting each `goto` call (the real navigation
+ *  `isSessionLive` performs) as one login-repair attempt, and (b) answers
+ *  `page.evaluate(fetch, ...)` — the real production shape `makePageFetch`
+ *  builds — by routing to a scripted `RedditListingFetch`. One object plays
+ *  both roles because production `collectAllStreams` drives both `fetchPath`
+ *  (via `makePageFetch(page)`) and `makeReauth(ctx)` (via
+ *  `isSessionLive(ctx.page)`) off the SAME `ctx.page`. Counting real `goto`
+ *  navigations (rather than a bounded scripted-answer sequence) is what
+ *  makes this discriminate a per-stream-budget regression: with a real
+ *  budget shared across the run, `goto` fires at most twice total (the two
+ *  `isSessionLive` probes inside ONE repair); a regressed per-call budget
+ *  would let every one of the 6 streams attempt its own repair, each firing
+ *  two more `goto` calls, so the count would climb unboundedly instead of
+ *  capping at 2 — a scripted-sequence approach would instead just run out
+ *  and silently report "not live" for the extra attempts, hiding the defect. */
+function makeReauthCapablePage(fetch: RedditListingFetch): { gotoCalls: number; page: Page } {
+  const state = { gotoCalls: 0 };
+  const page = {
+    evaluate: (_fn: unknown, args: unknown): Promise<unknown> => {
+      const { path } = args as { path: string };
+      return fetch(path);
+    },
+    goto: () => {
+      state.gotoCalls += 1;
+      return Promise.resolve(null);
+    },
+    locator: () => ({
+      count: async () => 1, // always reports the logout link present: session reads live
+    }),
+  } as any;
+  return {
+    get gotoCalls() {
+      return state.gotoCalls;
+    },
+    page,
+  };
+}
+
+/** A real `BrowserCollectContext` wired for `collectAllStreams`, with
+ *  `context`/`page` shaped so `makeReauth`'s actual `ensureRedditSession`
+ *  fast path (`hasSessionCookie` + `isSessionLive`) succeeds without a real
+ *  browser: `context.cookies()` reports the session cookie present, so
+ *  `ensureRedditSession` takes its no-login fast path and returns cleanly,
+ *  and `isSessionLive` always reads live off `page`. */
+function createCredentialedMockBrowserContext(
+  page: Page,
+  harness: ReturnType<typeof makeRecordingEmit>,
+  requestedStreams: string[]
+): BrowserCollectContext {
+  const requested = new Map(requestedStreams.map((s) => [s, { name: s }]));
+  return {
+    capture: null,
+    context: { cookies: async () => [{ name: "reddit_session", value: "live-cookie" }] } as any,
+    credentials: { REDDIT_USERNAME: "anon" },
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    emittedAt: EMITTED_AT,
+    page,
+    progress: async () => undefined,
+    requested,
+    state: {},
+    // biome-ignore lint/suspicious/useAwait: mock returns Promise<never> via throw for type conformance
+    assist: async (): Promise<never> => {
+      throw new Error("mock assist not implemented");
+    },
+    completeAssistance: async () => undefined,
+    detailGaps: [],
+    requestDetailGapPage: async (): Promise<readonly never[]> => [],
+    scope: { streams: [] },
+    // biome-ignore lint/suspicious/useAwait: mock returns Promise<never> via throw for type conformance
+    sendInteraction: async (): Promise<never> => {
+      throw new Error("mock sendInteraction not implemented");
+    },
+  };
+}
+
+test("collectAllStreams: 6 credentialed streams each 401 on their first page — production wiring caps automated logins at exactly 1 for the whole run, not 1 per stream", async () => {
+  // Drives the REAL production entry point (collectAllStreams), the real
+  // makeReauth (real ensureRedditSession fast path + real isSessionLive
+  // probe, no injected onAuthFailed stub), and the real page.evaluate(fetch)
+  // shape makePageFetch builds — the exact wiring a live run uses. This is
+  // deliberately NOT collectStream driven in a hand-rolled loop: that shape
+  // can pass even if collectAllStreams itself stopped threading one shared
+  // repairBudget through (e.g. reverted to `repairBudget: createRepairBudget()`
+  // as a per-call default at the collectStream() call site inside
+  // collectAllStreams) because the test would still be supplying its own
+  // shared instance rather than proving collectAllStreams constructs one.
+  await withRedditEnvCredentials("anon", "hunter2", async () => {
     const harness = makeRecordingEmit(validateRecord);
+    const streamTable = buildStreamTable(USER_PATH, EMITTED_AT);
     const script: Record<string, RedditFetchResult[]> = {};
-    for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
+    for (const stream of streamTable) {
       script[stream.endpoint] = [{ status: 401, json: null }, okResult(listing([makePost(`t3_${stream.name}`, 100)]))];
     }
     const { fetch } = makeScriptedFetch(script);
 
-    let loginCalls = 0;
-    // biome-ignore lint/suspicious/useAwait: mock matches RedditReauthFn's Promise-returning signature
-    const onAuthFailed = async () => {
-      loginCalls += 1;
-      return true; // repair "succeeds": the retried page for THIS stream goes through
-    };
-    const sharedBudget = createRepairBudget();
+    // The fake page ALWAYS reports the session live (never a bounded
+    // scripted-answer sequence that could run out and silently mask a
+    // regression by reading "not live" for extra attempts) — every reauth
+    // attempted, whether 1 or 6, would genuinely succeed if attempted. The
+    // discriminating signal is therefore how many times a repair is
+    // attempted at all, measured by counting `page.goto` calls: `isSessionLive`
+    // navigates once per probe, and one successful repair costs exactly two
+    // navigations (ensureRedditSession's own fast-path probe, then
+    // makeReauth's follow-up probe). A run-scoped budget spends this ONCE for
+    // the whole run: 2 navigations total, no matter how many of the 6
+    // streams 401. A regressed per-call/per-stream budget would let every
+    // 401'ing stream attempt its own repair, each costing 2 more
+    // navigations — the count would grow with stream count instead of
+    // staying flat at 2.
+    const pageHandle = makeReauthCapablePage(fetch);
+    const { page } = pageHandle;
+    const ctx = createCredentialedMockBrowserContext(
+      page,
+      harness,
+      streamTable.map((s) => s.name)
+    );
 
-    let threw = false;
-    for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
-      try {
-        await collectStream({
-          stream,
-          fetchPath: fetch,
-          state: {},
-          emit: harness.emit,
-          emitRecord: harness.emitRecord,
-          progress: async () => undefined,
-          capture: null,
-          delay: NO_DELAY,
-          onAuthFailed,
-          // pre-fix wiring: a fresh budget every call, exactly as paginate()
-          // used to construct `attemptedReauth` internally per invocation.
-          repairBudget: budgetPerCall ? createRepairBudget() : sharedBudget,
-        });
-      } catch {
-        threw = true;
-        // A real run (collectAllStreams) stops at the first terminal
-        // stream failure too — but this loop keeps going so `loginCalls`
-        // reflects the FULL 6-stream exposure the red-team report measured,
-        // not just however many streams ran before the first throw.
-      }
-    }
-    return { loginCalls, threw };
-  }
+    // FIXED behavior: the first stream's 401 spends the run's one repair,
+    // succeeds, and collects its record. Every later stream's 401 finds the
+    // shared budget already spent, so makeReauth is never even invoked for
+    // them — they fail immediately with the real terminal reddit_auth_failed,
+    // without ever calling ensureRedditSession/isSessionLive again.
+    await assert.rejects(
+      () => collectAllStreams(ctx),
+      /reddit_auth_failed/,
+      "the run-scoped budget must let exactly one stream repair, then fail terminally on the next 401"
+    );
 
-  const oldBehavior = await runSixStreams(true);
-  assert.equal(oldBehavior.loginCalls, 6, "OLD (per-stream) budget: one login per stream across 6 streams");
-  assert.equal(
-    oldBehavior.threw,
-    false,
-    "OLD behavior: every stream's own budget lets it repair and succeed, so nothing throws"
-  );
+    assert.equal(
+      pageHandle.gotoCalls,
+      2,
+      "exactly one repair's worth of session-live navigation (2 goto calls) for the WHOLE run, regardless of " +
+        "how many of the 6 streams 401 — a per-stream/per-call budget would let every 401'ing stream repair " +
+        "independently and this count would climb with stream count instead of staying at 2"
+    );
 
-  const fixedBehavior = await runSixStreams(false);
-  assert.equal(fixedBehavior.loginCalls, 1, "FIXED (run-scoped) budget: exactly one login for the whole run");
-  assert.equal(
-    fixedBehavior.threw,
-    true,
-    "FIXED behavior: streams after the first correctly get reddit_auth_failed once the shared budget is spent, rather than each minting its own login"
-  );
+    // Only the FIRST stream (submitted) could have retried past its 401 and
+    // collected a record; every later stream's 401 must be terminal before
+    // any record is produced for it.
+    const emittedStreams = harness.emitted.map((e) => e.stream);
+    assert.deepEqual(
+      emittedStreams,
+      ["submitted"],
+      "exactly one stream (the first, whose repair spent the shared budget) reaches record emission"
+    );
+  });
 });
 
 test("collectStream: a single successful repair resumes collection for the CURRENT stream past its 401 (counterweight — the budget caps automated logins, it does not just fail everything closed)", async () => {

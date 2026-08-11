@@ -15,18 +15,19 @@
  * still reports full GREEN coverage — the defect is invisible from the
  * run's own reported result.
  *
- * Fix: a single `JellyfinRunState.reauthAttempted` flag, constructed once in
- * `collect()` before either stream runs and threaded through
- * `resolveConnection` into the `conn.reauth` closure — the sole spender.
- * Once any call this run has attempted a self-heal login, every subsequent
- * 401/403 gets `undefined` back immediately (identical to "no self-heal
- * available"), so `jellyfinRequest` throws the same terminal
- * `jellyfin_auth_failed` a real bad password would produce. That failure
- * propagates out of `collectItemsForLibrary`/`collectItems` to `collect()`'s
- * catch, which emits `SKIP_RESULT` for both streams INSTEAD OF a coverage
- * message — so a run that exhausts the budget cannot read green, and
- * whatever records were already emitted before the failure are preserved
- * (this connector has no rollback-on-error).
+ * Fix: a single `createRepairBudget()` instance (the shared provider-neutral
+ * primitive in `src/repair-budget.ts`), constructed once in `collect()`
+ * before either stream runs and threaded through `resolveConnection` into
+ * the `conn.reauth` closure — the sole spender. Once any call this run has
+ * attempted a self-heal login, every subsequent 401/403 gets `undefined`
+ * back immediately (identical to "no self-heal available"), so
+ * `jellyfinRequest` throws the same terminal `jellyfin_auth_failed` a real
+ * bad password would produce. That failure propagates out of
+ * `collectItemsForLibrary`/`collectItems` to `collect()`'s catch, which
+ * emits `SKIP_RESULT` for both streams INSTEAD OF a coverage message — so a
+ * run that exhausts the budget cannot read green, and whatever records were
+ * already emitted before the failure are preserved (this connector has no
+ * rollback-on-error).
  */
 
 import assert from "node:assert/strict";
@@ -429,6 +430,228 @@ test("counterweight: a run with exactly one revocation (not repeated) still self
     assert.notEqual(itemsCoverage, undefined, "a fully-recovered run must still emit items coverage (reads green)");
     assert.equal(itemsCoverage?.considered, 5);
     assert.equal(itemsCoverage?.covered, 5);
+  } finally {
+    await server.stop();
+  }
+});
+
+// ─── B5 fix: a reauth attempt that itself fails must not escape the ───────
+// deliberate jellyfin_auth_failed classification
+//
+// `jellyfinRequest`'s 401/403 branch calls `onReauth?.()` unguarded. If the
+// mid-run `AuthenticateByName` call this triggers throws (e.g. the server
+// 500s while the session is already dead), that exception used to propagate
+// straight out of `jellyfinRequest`, bypassing the `throw new
+// Error("jellyfin_auth_failed")` a few lines below and surfacing instead as
+// whatever `AuthenticateByName`'s own error was (`jellyfin_http_500`) —
+// which `skipReasonFor` maps to the generic `jellyfin_http_error` reason
+// instead of the auth-specific classification an owner needs to know "your
+// password/API key is the problem" vs. "the server had a transient error".
+// Fix: `.catch(() => undefined)` on the reauth call, so a failed reauth is
+// indistinguishable from "no self-heal available" and falls through to the
+// same terminal `jellyfin_auth_failed` a real bad password produces.
+test("B5: a mid-run reauth attempt that itself throws (server 500s on AuthenticateByName) still terminates with jellyfin_auth_failed, not a generic error", async () => {
+  class FakeJellyfinReauth500Server {
+    private server: any;
+    private port = 0;
+    private tokenCounter = 0;
+    private currentToken = "";
+    private authCallCount = 0;
+
+    start(): Promise<string> {
+      return new Promise((resolve, reject) => {
+        this.server = createServer((req: IncomingMessage, res: ServerResponse) => {
+          const path = req.url || "";
+          const headers: Record<string, string> = {};
+          for (const [key, value] of Object.entries(req.headers)) {
+            if (typeof value === "string") {
+              headers[key] = value;
+            }
+          }
+          const chunks: Buffer[] = [];
+          req.on("data", (chunk) => chunks.push(chunk));
+          req.on("end", () => this.route(res, path, headers));
+        });
+        this.server.listen(0, "127.0.0.1", () => {
+          this.port = (this.server.address() as any).port;
+          resolve(`http://127.0.0.1:${this.port}`);
+        });
+        this.server.on("error", reject);
+      });
+    }
+
+    private route(res: ServerResponse, path: string, headers: Record<string, string>) {
+      if (path === "/Users/AuthenticateByName") {
+        this.authCallCount += 1;
+        if (this.authCallCount === 1) {
+          // Initial sign-in succeeds normally.
+          this.tokenCounter += 1;
+          this.currentToken = `token-${this.tokenCounter}`;
+          res.writeHead(200);
+          res.end(JSON.stringify({ AccessToken: this.currentToken, User: { Id: "user-alice-1", Name: "alice" } }));
+          return;
+        }
+        // Every subsequent reauth attempt (the mid-run self-heal) 500s —
+        // authenticateByName throws jellyfin_http_500 for this call.
+        res.writeHead(500);
+        res.end("Internal Server Error");
+        return;
+      }
+
+      if (path === "/Users/user-alice-1/Views") {
+        if (headers["x-emby-token"] !== this.currentToken) {
+          res.writeHead(401);
+          res.end("Unauthorized");
+          return;
+        }
+        res.writeHead(200);
+        res.end(JSON.stringify({ Items: [{ Id: "lib1", Name: "Movies", CollectionType: "movies" }] }));
+        return;
+      }
+
+      if (path.includes("/Users/user-alice-1/Items")) {
+        // Every Items request 401s — the session is dead and the only escape
+        // hatch (reauth) is the one that 500s.
+        res.writeHead(401);
+        res.end("Unauthorized");
+        return;
+      }
+
+      res.writeHead(404);
+      res.end("Not found");
+    }
+
+    stop(): Promise<void> {
+      return new Promise((resolve, reject) => {
+        if (this.server) {
+          this.server.close((err: any) => (err ? reject(err) : resolve()));
+        } else {
+          resolve();
+        }
+      });
+    }
+  }
+
+  const server = new FakeJellyfinReauth500Server();
+  const baseUrl = await server.start();
+
+  try {
+    const { ctx, messages } = makeContext({
+      credentials: { base_url: baseUrl, username: "alice", password: "correct-password" },
+      streams: [{ name: "libraries" }, { name: "items" }],
+    });
+
+    // The decisive assertion: jellyfin_auth_failed, not jellyfin_http_500
+    // (which is what authenticateByName's own throw would produce if it
+    // escaped jellyfinRequest unguarded) and not a generic jellyfin_error.
+    await assert.rejects(() => collect(ctx), /jellyfin_auth_failed/);
+
+    const itemsSkip = messages.find((m) => m.type === "SKIP_RESULT" && (m as { stream?: string }).stream === "items") as
+      | { reason?: string }
+      | undefined;
+    assert.notEqual(itemsSkip, undefined, "a failed reauth must still emit an honest SKIP_RESULT for items");
+    assert.equal(
+      itemsSkip?.reason,
+      "jellyfin_auth_failed",
+      "a reauth attempt that itself throws must not escape as generic jellyfin_error or jellyfin_http_error — " +
+        "the owner needs the auth-specific classification, not a transient-error-shaped one"
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("B5 counterweight: repeated rejection (reauth never throws, just keeps failing the session) still classifies as jellyfin_auth_failed", async () => {
+  // Distinguishes "reauth attempt itself throws" (the B5 defect) from
+  // "reauth completes but the session is still rejected" (already-correct
+  // behavior via late-auth-self-heal.test.ts's alwaysReject case) — both
+  // must land on the same terminal classification, proving the .catch added
+  // for B5 does not change behavior for the already-working rejection path.
+  class FakeJellyfinAlwaysRejectServer {
+    private server: any;
+    private port = 0;
+    private tokenCounter = 0;
+    private currentToken = "";
+    readonly authCalls: string[] = [];
+
+    start(): Promise<string> {
+      return new Promise((resolve, reject) => {
+        this.server = createServer((req: IncomingMessage, res: ServerResponse) => {
+          const path = req.url || "";
+          const headers: Record<string, string> = {};
+          for (const [key, value] of Object.entries(req.headers)) {
+            if (typeof value === "string") {
+              headers[key] = value;
+            }
+          }
+          const chunks: Buffer[] = [];
+          req.on("data", (chunk) => chunks.push(chunk));
+          req.on("end", () => this.route(res, path, headers));
+        });
+        this.server.listen(0, "127.0.0.1", () => {
+          this.port = (this.server.address() as any).port;
+          resolve(`http://127.0.0.1:${this.port}`);
+        });
+        this.server.on("error", reject);
+      });
+    }
+
+    private route(res: ServerResponse, path: string, headers: Record<string, string>) {
+      if (path === "/Users/AuthenticateByName") {
+        this.tokenCounter += 1;
+        this.currentToken = `token-${this.tokenCounter}`;
+        this.authCalls.push(this.currentToken);
+        res.writeHead(200);
+        res.end(JSON.stringify({ AccessToken: this.currentToken, User: { Id: "user-alice-1", Name: "alice" } }));
+        return;
+      }
+      if (path === "/Users/user-alice-1/Views") {
+        if (headers["x-emby-token"] !== this.currentToken) {
+          res.writeHead(401);
+          res.end("Unauthorized");
+          return;
+        }
+        res.writeHead(200);
+        res.end(JSON.stringify({ Items: [{ Id: "lib1", Name: "Movies", CollectionType: "movies" }] }));
+        return;
+      }
+      if (path.includes("/Users/user-alice-1/Items")) {
+        // Always rejects, even with a just-minted token from a "successful" reauth.
+        res.writeHead(401);
+        res.end("Unauthorized");
+        return;
+      }
+      res.writeHead(404);
+      res.end("Not found");
+    }
+
+    stop(): Promise<void> {
+      return new Promise((resolve, reject) => {
+        if (this.server) {
+          this.server.close((err: any) => (err ? reject(err) : resolve()));
+        } else {
+          resolve();
+        }
+      });
+    }
+  }
+
+  const server = new FakeJellyfinAlwaysRejectServer();
+  const baseUrl = await server.start();
+
+  try {
+    const { ctx, messages } = makeContext({
+      credentials: { base_url: baseUrl, username: "alice", password: "correct-password" },
+      streams: [{ name: "libraries" }, { name: "items" }],
+    });
+
+    await assert.rejects(() => collect(ctx), /jellyfin_auth_failed/);
+    assert.equal(server.authCalls.length, 2, "sign-in plus exactly one self-heal attempt before giving up");
+
+    const itemsSkip = messages.find((m) => m.type === "SKIP_RESULT" && (m as { stream?: string }).stream === "items") as
+      | { reason?: string }
+      | undefined;
+    assert.equal(itemsSkip?.reason, "jellyfin_auth_failed");
   } finally {
     await server.stop();
   }
