@@ -214,6 +214,33 @@ test("parseGoogleMapsExport: an unrecognized segment does not collide with a pat
   assert.notEqual(unrecognized?.id, path?.id, "distinct kinds at the same timestamp get distinct ids");
 });
 
+test("parseGoogleMapsExport: unknown vocabulary IDs are stable across provider key order", () => {
+  const [first] = parseGoogleMapsExport({
+    semanticSegments: [
+      {
+        startTime: "2024-06-05T13:00:00Z",
+        beta: { value: 2 },
+        alpha: { value: 1 },
+      },
+    ],
+  }).segments;
+  const [second] = parseGoogleMapsExport({
+    semanticSegments: [
+      {
+        startTime: "2024-06-05T13:00:00Z",
+        alpha: { value: 1 },
+        beta: { value: 2 },
+      },
+    ],
+  }).segments;
+
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal(first.unrecognized_kind, "alpha,beta");
+  assert.equal(second.unrecognized_kind, "alpha,beta");
+  assert.equal(first.id, second.id);
+});
+
 test("hashId: deterministic 24-char hex output", () => {
   const id = hashId("google|maps|timeline");
   assert.match(id, /^[0-9a-f]{24}$/);

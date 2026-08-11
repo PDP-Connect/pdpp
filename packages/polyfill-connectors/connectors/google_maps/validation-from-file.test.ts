@@ -138,6 +138,21 @@ test("validateGoogleMapsTimelineArtifactFromFile: identifies unsupported (unreco
   assert.match(streamed.remediation ?? "", /Timeline JSON export/i);
 });
 
+test("validateGoogleMapsTimelineArtifactFromFile rejects recognized non-array keys", async () => {
+  await Promise.all(
+    [{}, null, "not-an-array"].map(async (value) => {
+      const content = JSON.stringify({ semanticSegments: value });
+      const buffered = validateGoogleMapsTimelineArtifact(content);
+      const streamed = await validateFile(content, buffered.file_sha256);
+      assert.equal(buffered.status, "unsupported");
+      assert.equal(streamed.status, "unsupported");
+      assert.equal(streamed.detected_format, "unsupported");
+      assert.equal(streamed.estimated_points, 0);
+      assert.equal(streamed.estimated_segments, 0);
+    })
+  );
+});
+
 test("a document with both locations and semanticSegments populated is rejected as unsupported, matching the buffer-backed path", async () => {
   const mixed = {
     locations: [{ latitudeE7: 377_749_000, longitudeE7: -1_224_194_000, timestampMs: "1717595122000" }],
@@ -489,6 +504,68 @@ test("outcome proof: a 60 MiB sparse Timeline export validates cleanly under a b
     assert.equal(result.signal, null);
     const stdout = JSON.parse(result.stdout.trim());
     assert.equal(stdout.status, "valid");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("outcome proof: large wrapped locations and semanticSegments arrays stay below a hard heap limit", async () => {
+  const TARGET_BYTES = 70 * 1024 * 1024;
+  const shapes = [
+    {
+      key: "locations",
+      makeItem: () => ({
+        latitudeE7: 377_749_000,
+        longitudeE7: -1_224_194_000,
+        timestampMs: "1717595122000",
+      }),
+    },
+    {
+      key: "semanticSegments",
+      makeItem: () => ({
+        activity: { activityType: "WALKING" },
+        duration: { startTimestamp: "2024-06-05T13:45:22.000Z" },
+      }),
+    },
+  ] as const;
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-google-maps-wrapped-heap-oracle-"));
+  try {
+    const runShape = async (shape: (typeof shapes)[number]): Promise<void> => {
+      const path = join(dir, `${shape.key}.json`);
+      const itemText = JSON.stringify(shape.makeItem());
+      const itemCount = Math.ceil((TARGET_BYTES - 32) / (Buffer.byteLength(itemText, "utf8") + 1));
+      const { createWriteStream } = await import("node:fs");
+      const out = createWriteStream(path);
+      out.write(`{"${shape.key}":[`);
+      for (let index = 0; index < itemCount; index += 1) {
+        out.write((index === 0 ? "" : ",") + itemText);
+      }
+      out.write("]}");
+      await new Promise((resolve, reject) => {
+        out.end((err?: Error | null) => (err ? reject(err) : resolve(undefined)));
+      });
+
+      const { statSync } = await import("node:fs");
+      const fileSize = statSync(path).size;
+      assert.ok(fileSize > 65 * 1024 * 1024, `${shape.key} fixture must be large enough, got ${fileSize} bytes`);
+
+      const { spawnSync } = await import("node:child_process");
+      const childPath = new URL("./oversized-element-oracle-child.ts", import.meta.url);
+      const result = spawnSync(
+        process.execPath,
+        ["--max-old-space-size=96", "--import", "tsx", childPath.pathname, path, String(fileSize)],
+        { encoding: "utf8", timeout: 60_000 }
+      );
+
+      assert.equal(
+        result.status,
+        0,
+        `${shape.key} wrapped array must validate under the hard heap limit; status=${String(result.status)} signal=${String(result.signal)} stderr=${result.stderr}`
+      );
+      assert.equal(result.signal, null);
+      assert.equal(JSON.parse(result.stdout.trim()).status, "valid");
+    };
+    await shapes.reduce((previous, shape) => previous.then(() => runShape(shape)), Promise.resolve());
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

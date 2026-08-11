@@ -8,12 +8,14 @@
 // object graph in memory at once.
 
 import { createReadStream } from "node:fs";
-import { JSONParser } from "@streamparser/json";
+import { JSONParser, TokenType } from "@streamparser/json";
 import type { GoogleMapsSourceFormat } from "./types.ts";
 
 const READ_BUFFER_SIZE = 65_536;
 const DEFAULT_MAX_SINGLE_ELEMENT_BYTES = 4 * 1024 * 1024;
-const FIRST_NON_WHITESPACE_RE = /\S/u;
+const FIRST_JSON_VALUE_RE = /[^\u0020\t\r\n\uFEFF]/u;
+const ROOT_ARRAY_PATHS = ["$.*"];
+const WRAPPED_ARRAY_ELEMENT_PATHS = ["$.locations.*", "$.semanticSegments.*", "$.timelineObjects.*"];
 
 export const GOOGLE_MAPS_SHAPE_KEYS = ["locations", "semanticSegments", "timelineObjects"] as const;
 export const GOOGLE_MAPS_SHAPE_KEY_TO_FORMAT: Readonly<
@@ -41,14 +43,162 @@ export class GoogleMapsElementTooLargeError extends Error {
   }
 }
 
+export class GoogleMapsUnsupportedShapeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GoogleMapsUnsupportedShapeError";
+  }
+}
+
 function formatForShapeKey(key: string): GoogleMapsSourceFormat | null {
   return (GOOGLE_MAPS_SHAPE_KEY_TO_FORMAT as Readonly<Record<string, GoogleMapsSourceFormat | undefined>>)[key] ?? null;
 }
 
+type ShapeFrame =
+  | {
+      kind: "object";
+      pendingKey: string | undefined;
+      state: "comma_or_end" | "colon" | "key_or_end" | "value";
+    }
+  | {
+      confirmedFormat: GoogleMapsSourceFormat | undefined;
+      kind: "array";
+      state: "comma_or_end" | "value_or_end";
+    };
+
+/**
+ * Tracks only the root object's property/value boundary. The JSON parser's
+ * `paths` option cannot both select wrapped array elements and observe a
+ * non-array value at the same property without retaining that whole value.
+ * Token observation supplies the missing shape proof while retaining no
+ * source data of its own.
+ */
+class RootShapeTracker {
+  private readonly stack: ShapeFrame[] = [];
+  private readonly onArrayConfirmed: (format: GoogleMapsSourceFormat) => void;
+  private rootStarted = false;
+  private invalidRecognizedKey: string | null = null;
+
+  constructor(onArrayConfirmed: (format: GoogleMapsSourceFormat) => void) {
+    this.onArrayConfirmed = onArrayConfirmed;
+  }
+
+  get invalidKey(): string | null {
+    return this.invalidRecognizedKey;
+  }
+
+  onToken(token: TokenType, value: unknown): void {
+    if (token === TokenType.SEPARATOR) {
+      return;
+    }
+    const frame = this.stack.at(-1);
+    if (!frame) {
+      this.startRoot(token);
+      return;
+    }
+    if (frame.kind === "object") {
+      this.onObjectToken(frame, token, value);
+      return;
+    }
+    this.onArrayToken(frame, token);
+  }
+
+  private startRoot(token: TokenType): void {
+    if (this.rootStarted) {
+      return;
+    }
+    this.rootStarted = true;
+    if (token === TokenType.LEFT_BRACE) {
+      this.stack.push({ kind: "object", pendingKey: undefined, state: "key_or_end" });
+      return;
+    }
+    if (token === TokenType.LEFT_BRACKET) {
+      this.stack.push({ kind: "array", state: "value_or_end", confirmedFormat: "timeline_objects" });
+    }
+  }
+
+  private onObjectToken(frame: Extract<ShapeFrame, { kind: "object" }>, token: TokenType, value: unknown): void {
+    if (frame.state === "key_or_end") {
+      if (token === TokenType.STRING && typeof value === "string") {
+        frame.pendingKey = value;
+        frame.state = "colon";
+      } else if (token === TokenType.RIGHT_BRACE) {
+        this.finishContainer();
+      }
+      return;
+    }
+    if (frame.state === "colon") {
+      if (token === TokenType.COLON) {
+        frame.state = "value";
+      }
+      return;
+    }
+    if (frame.state === "value") {
+      this.startObjectValue(frame, token);
+      return;
+    }
+    if (token === TokenType.COMMA) {
+      frame.state = "key_or_end";
+    } else if (token === TokenType.RIGHT_BRACE) {
+      this.finishContainer();
+    }
+  }
+
+  private startObjectValue(frame: Extract<ShapeFrame, { kind: "object" }>, token: TokenType): void {
+    const key = frame.pendingKey;
+    const format = this.stack.length === 1 && key ? formatForShapeKey(key) : null;
+    frame.pendingKey = undefined;
+    frame.state = "comma_or_end";
+
+    if (format && token !== TokenType.LEFT_BRACKET) {
+      this.invalidRecognizedKey ??= key ?? "(unknown)";
+    }
+    if (token === TokenType.LEFT_BRACE) {
+      this.stack.push({ kind: "object", pendingKey: undefined, state: "key_or_end" });
+      return;
+    }
+    if (token === TokenType.LEFT_BRACKET) {
+      this.stack.push({ kind: "array", state: "value_or_end", confirmedFormat: format ?? undefined });
+    }
+  }
+
+  private onArrayToken(frame: Extract<ShapeFrame, { kind: "array" }>, token: TokenType): void {
+    if (frame.state === "value_or_end") {
+      if (token === TokenType.RIGHT_BRACKET) {
+        this.finishContainer();
+        return;
+      }
+      frame.state = "comma_or_end";
+      if (token === TokenType.LEFT_BRACE) {
+        this.stack.push({ kind: "object", pendingKey: undefined, state: "key_or_end" });
+      } else if (token === TokenType.LEFT_BRACKET) {
+        this.stack.push({ kind: "array", state: "value_or_end", confirmedFormat: undefined });
+      }
+      return;
+    }
+    if (token === TokenType.COMMA) {
+      frame.state = "value_or_end";
+    } else if (token === TokenType.RIGHT_BRACKET) {
+      this.finishContainer();
+    }
+  }
+
+  private finishContainer(): void {
+    const frame = this.stack.pop();
+    if (frame?.kind === "array" && frame.confirmedFormat) {
+      this.onArrayConfirmed(frame.confirmedFormat);
+    }
+  }
+}
+
 function formatForElementEvent(
   key: StreamStackKey,
-  stack: readonly { readonly key: StreamStackKey }[]
+  stack: readonly { readonly key: StreamStackKey }[],
+  parent: unknown
 ): GoogleMapsSourceFormat | null {
+  if (!Array.isArray(parent)) {
+    return null;
+  }
   if (stack.length === 1) {
     return typeof key === "number" ? "timeline_objects" : null;
   }
@@ -71,6 +221,63 @@ async function drain(pending: GoogleMapsStreamEvent[], onEvent: GoogleMapsStream
   }
 }
 
+function createParser(
+  paths: string[],
+  shapeTracker: RootShapeTracker,
+  onElement: (format: GoogleMapsSourceFormat, value: unknown) => void
+): JSONParser {
+  const parser = new JSONParser({ emitPartialValues: true, keepStack: false, paths });
+  parser.onToken = ({ token, value }) => shapeTracker.onToken(token, value);
+  parser.onValue = (info) => {
+    if (info.partial) {
+      return;
+    }
+    const format = formatForElementEvent(info.key, info.stack, info.parent);
+    if (!format || info.value === undefined) {
+      return;
+    }
+    onElement(format, info.value);
+  };
+  return parser;
+}
+
+function initializeParser(
+  text: string,
+  shapeTracker: RootShapeTracker,
+  onElement: (format: GoogleMapsSourceFormat, value: unknown) => void
+): { parser: JSONParser; text: string } | null {
+  const firstIndex = text.search(FIRST_JSON_VALUE_RE);
+  if (firstIndex === -1) {
+    return null;
+  }
+  const paths = text[firstIndex] === "[" ? ROOT_ARRAY_PATHS : WRAPPED_ARRAY_ELEMENT_PATHS;
+  return { parser: createParser(paths, shapeTracker, onElement), text: text.slice(firstIndex) };
+}
+
+async function feedParserChunk(
+  parser: JSONParser,
+  text: string,
+  maxSingleElementBytes: number,
+  bytesSinceElementStart: { value: number },
+  pending: GoogleMapsStreamEvent[],
+  onEvent: GoogleMapsStreamEventHandler
+): Promise<void> {
+  if (parser.isEnded) {
+    // Keep feeding later chunks so the tokenizer can reject trailing
+    // non-whitespace instead of silently stopping at the first root.
+    parser.write(text);
+    return;
+  }
+  bytesSinceElementStart.value += Buffer.byteLength(text, "utf8");
+  if (bytesSinceElementStart.value > maxSingleElementBytes) {
+    throw new GoogleMapsElementTooLargeError(
+      `a single Timeline array element exceeded ${String(maxSingleElementBytes)} bytes`
+    );
+  }
+  parser.write(text);
+  await drain(pending, onEvent);
+}
+
 /**
  * Stream Timeline array elements without materializing the source file.
  * `shape` events preserve the empty-container evidence needed by the upload
@@ -82,15 +289,9 @@ export async function streamGoogleMapsExport(
   options: GoogleMapsStreamOptions = {}
 ): Promise<void> {
   const maxSingleElementBytes = options.maxSingleElementBytes ?? DEFAULT_MAX_SINGLE_ELEMENT_BYTES;
-  const parser = new JSONParser({
-    emitPartialValues: true,
-    keepStack: false,
-    paths: ["$.*", "$.locations.*", "$.semanticSegments.*", "$.timelineObjects.*"],
-  });
   const pending: GoogleMapsStreamEvent[] = [];
   const seenShapes = new Set<GoogleMapsSourceFormat>();
-  let firstNonWhitespace: string | null = null;
-  let bytesSinceElementStart = 0;
+  const bytesSinceElementStart = { value: 0 };
 
   const markShape = (format: GoogleMapsSourceFormat): void => {
     if (seenShapes.has(format)) {
@@ -100,55 +301,34 @@ export async function streamGoogleMapsExport(
     pending.push({ format, kind: "shape" });
   };
 
-  parser.onValue = (info) => {
-    if (info.partial) {
-      if (info.stack.length === 1 && typeof info.key === "string") {
-        const format = formatForShapeKey(info.key);
-        if (format) {
-          markShape(format);
-        }
-      }
-      return;
-    }
-
-    bytesSinceElementStart = 0;
-    const format = formatForElementEvent(info.key, info.stack);
-    if (!format || info.value === undefined) {
-      return;
-    }
-    markShape(format);
-    pending.push({ format, kind: "element", value: info.value });
+  const shapeTracker = new RootShapeTracker(markShape);
+  const onElement = (format: GoogleMapsSourceFormat, value: unknown): void => {
+    bytesSinceElementStart.value = 0;
+    pending.push({ format, kind: "element", value });
   };
+  let parser: JSONParser | null = null;
 
   const stream = createReadStream(path, { encoding: "utf8", highWaterMark: READ_BUFFER_SIZE });
   try {
     for await (const chunk of stream as AsyncIterable<string | Buffer>) {
       const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      if (firstNonWhitespace === null) {
-        const first = text.match(FIRST_NON_WHITESPACE_RE)?.[0];
-        if (first) {
-          firstNonWhitespace = first;
+      let toFeed = text;
+      if (!parser) {
+        const initialized = initializeParser(text, shapeTracker, onElement);
+        if (!initialized) {
+          continue;
         }
+        ({ parser, text: toFeed } = initialized);
       }
-      if (parser.isEnded) {
-        // Keep feeding later chunks so the tokenizer can reject trailing
-        // non-whitespace instead of silently stopping at the first root.
-        parser.write(text);
-        continue;
-      }
-      bytesSinceElementStart += Buffer.byteLength(text, "utf8");
-      if (bytesSinceElementStart > maxSingleElementBytes) {
-        throw new GoogleMapsElementTooLargeError(
-          `a single Timeline array element exceeded ${String(maxSingleElementBytes)} bytes`
-        );
-      }
-      parser.write(text);
-      await drain(pending, onEvent);
+      await feedParserChunk(parser, toFeed, maxSingleElementBytes, bytesSinceElementStart, pending, onEvent);
     }
   } finally {
     stream.destroy();
   }
 
+  if (!parser) {
+    throw new Error("google_maps: Timeline document is empty or whitespace-only");
+  }
   if (!parser.isEnded) {
     parser.end();
     if (!parser.isEnded) {
@@ -156,8 +336,10 @@ export async function streamGoogleMapsExport(
     }
   }
 
-  if (firstNonWhitespace === "[") {
-    markShape("timeline_objects");
+  if (shapeTracker.invalidKey) {
+    throw new GoogleMapsUnsupportedShapeError(
+      `google_maps: recognized Timeline key ${shapeTracker.invalidKey} did not contain an array`
+    );
   }
   await drain(pending, onEvent);
 }

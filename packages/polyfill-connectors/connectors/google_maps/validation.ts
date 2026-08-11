@@ -6,6 +6,7 @@ import {
   GOOGLE_MAPS_SHAPE_KEY_TO_FORMAT,
   GOOGLE_MAPS_SHAPE_KEYS,
   GoogleMapsElementTooLargeError,
+  GoogleMapsUnsupportedShapeError,
   streamGoogleMapsExport,
 } from "./archive-stream.ts";
 import { parseGoogleMapsExport, parseGoogleMapsExportElement } from "./parsers.ts";
@@ -52,6 +53,10 @@ function nonEmptyShapeKeys(obj: Record<string, unknown>): string[] {
   });
 }
 
+function nonArrayShapeKeys(obj: Record<string, unknown>): string[] {
+  return SHAPE_KEYS.filter((key) => Object.hasOwn(obj, key) && !Array.isArray(obj[key]));
+}
+
 function detectFormat(json: unknown): GoogleMapsSourceFormat | "unsupported" | "mixed" {
   if (Array.isArray(json)) {
     return "timeline_objects";
@@ -60,6 +65,9 @@ function detectFormat(json: unknown): GoogleMapsSourceFormat | "unsupported" | "
     return "unsupported";
   }
   const obj = json as Record<string, unknown>;
+  if (nonArrayShapeKeys(obj).length > 0) {
+    return "unsupported";
+  }
   const nonEmpty = nonEmptyShapeKeys(obj);
   // More than one shape carrying actual elements is genuinely ambiguous.
   if (nonEmpty.length > 1) {
@@ -382,6 +390,9 @@ export async function validateGoogleMapsTimelineArtifactFromFile(
     }
     if (err instanceof GoogleMapsMixedShapeError) {
       return unsupportedResult(options.fileSha256, MIXED_SHAPE_REMEDIATION);
+    }
+    if (err instanceof GoogleMapsUnsupportedShapeError) {
+      return unsupportedResult(options.fileSha256);
     }
     return unsupportedResult(options.fileSha256);
   }

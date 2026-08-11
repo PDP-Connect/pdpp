@@ -83,6 +83,24 @@ test("timeline_segments schema accepts an unrecognized segment and keeps the pro
   assert.equal(parsed.data?.unrecognized_kind, "timelineMemory");
 });
 
+test("timeline_segments schema rejects an unknown vocabulary whose joined keys exceed the safe text bound", () => {
+  const firstKey = "a".repeat(101);
+  const secondKey = "b".repeat(101);
+  const [segment] = parseGoogleMapsExport({
+    semanticSegments: [
+      {
+        startTime: "2024-06-05T13:00:00Z",
+        [firstKey]: {},
+        [secondKey]: {},
+      },
+    ],
+  }).segments;
+
+  assert.ok(segment);
+  assert.equal(segment.unrecognized_kind?.length, 203);
+  assert.equal(validateRecord("timeline_segments", { ...segment }).ok, false);
+});
+
 test("timeline_segments schema still rejects a wrong-typed segment_kind", () => {
   const parsed = timelineSegmentSchema.safeParse({
     id: "0123456789abcdef01234567",

@@ -335,7 +335,7 @@ function semanticSegmentKind(
  */
 function unrecognizedSegmentKey(segment: Record<string, unknown>): string {
   const keys = Object.keys(segment).filter((k) => !(MODELLED_SEGMENT_KEYS.includes(k) || TIMING_SEGMENT_KEYS.has(k)));
-  return keys.length > 0 ? keys.join(",") : "(no payload key)";
+  return keys.length > 0 ? keys.sort().join(",") : "(no payload key)";
 }
 
 function parseSemanticSegment(segment: Record<string, unknown>): ParseResult {
@@ -516,7 +516,7 @@ function mergeResults(results: ParseResult[]): ParseResult {
 export function parseGoogleMapsExport(json: unknown): ParseResult {
   const obj = asObject(json);
   const results: ParseResult[] = [];
-  if (obj?.locations) {
+  if (Array.isArray(obj?.locations)) {
     results.push(parseLegacyRecords(obj));
   }
   const semanticSegments = Array.isArray(obj?.semanticSegments) ? obj.semanticSegments : [];

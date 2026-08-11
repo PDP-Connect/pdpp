@@ -19,7 +19,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -136,6 +136,13 @@ test("google_maps dedupes duplicate archive files and proves both declared strea
     assert.ok(segmentCoverage, "expected timeline_segments DETAIL_COVERAGE");
     assert.equal(segmentCoverage.considered, 1);
     assert.equal(segmentCoverage.covered, 1);
+    const pointCoverage = messages.find(
+      (message): message is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+        message.type === "DETAIL_COVERAGE" && message.stream === "timeline_points"
+    );
+    assert.ok(pointCoverage, "expected timeline_points DETAIL_COVERAGE");
+    assert.equal(pointCoverage.considered, 2);
+    assert.equal(pointCoverage.covered, 2);
   } finally {
     await rm(importRoot, { force: true, recursive: true });
   }
@@ -194,6 +201,153 @@ test("google_maps rejects trailing non-whitespace after a valid archive", async 
     );
   } finally {
     await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
+test("google_maps rejects recognized non-array keys without state or coverage on either stream", async () => {
+  const cases: readonly [string, unknown][] = [
+    ["locations", {}],
+    ["locations", null],
+    ["locations", "not-an-array"],
+    ["locations", { "0": { latitudeE7: 377_749_000, longitudeE7: -1_224_194_000, timestampMs: "1717595122000" } }],
+    ["semanticSegments", {}],
+    ["timelineObjects", {}],
+  ];
+
+  const runCase = async ([key, value]: (typeof cases)[number]): Promise<void> => {
+    const importRoot = await mkdtemp(join(tmpdir(), "pdpp-google-maps-shape-"));
+    try {
+      await writeFile(join(importRoot, "Timeline.json"), JSON.stringify({ [key]: value }));
+      const { messages } = await runImport(importRoot, {}, ["timeline_points", "timeline_segments"]);
+
+      for (const stream of ["timeline_points", "timeline_segments"]) {
+        assert.ok(
+          messages.some(
+            (message) =>
+              message.type === "SKIP_RESULT" && message.stream === stream && message.reason === "unsupported_shape"
+          ),
+          `${key}=${String(value)} must reject ${stream}`
+        );
+        assert.equal(
+          messages.some((message) => message.type === "STATE" && message.stream === stream),
+          false,
+          `${key}=${String(value)} must not checkpoint ${stream}`
+        );
+        assert.equal(
+          messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === stream),
+          false,
+          `${key}=${String(value)} must not claim coverage for ${stream}`
+        );
+      }
+      assert.equal(
+        messages.some((message) => message.type === "RECORD"),
+        false
+      );
+    } finally {
+      await rm(importRoot, { force: true, recursive: true });
+    }
+  };
+  await cases.reduce((previous, entry) => previous.then(() => runCase(entry)), Promise.resolve());
+});
+
+test("google_maps with a schema-rejected unknown segment withholds its cursor and coverage", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-google-maps-schema-rejection-"));
+  try {
+    const oversizedKey = "x".repeat(201);
+    await writeFile(
+      join(importRoot, "Timeline.json"),
+      JSON.stringify({
+        semanticSegments: [
+          {
+            startTime: "2024-06-05T13:45:22.000Z",
+            [oversizedKey]: {},
+          },
+        ],
+      })
+    );
+    const { messages } = await runImport(importRoot, {}, ["timeline_points", "timeline_segments"]);
+
+    assert.ok(
+      messages.some(
+        (message) =>
+          message.type === "SKIP_RESULT" &&
+          message.stream === "timeline_segments" &&
+          message.reason === "shape_check_failed"
+      )
+    );
+    assert.equal(
+      messages.some((message) => message.type === "RECORD" && message.stream === "timeline_segments"),
+      false
+    );
+    assert.equal(
+      messages.some((message) => message.type === "STATE" && message.stream === "timeline_segments"),
+      false
+    );
+    assert.equal(
+      messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "timeline_segments"),
+      false
+    );
+    assert.equal(
+      messages.some((message) => message.type === "STATE" && message.stream === "timeline_points"),
+      false
+    );
+    assert.equal(
+      messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "timeline_points"),
+      false
+    );
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
+test("google_maps fails closed when discovery misses the source boundary", async () => {
+  const missingRoot = join(tmpdir(), `pdpp-google-maps-missing-${String(process.pid)}-${Date.now()}`);
+  const readErrorRoot = join(tmpdir(), `pdpp-google-maps-not-a-directory-${String(process.pid)}-${Date.now()}`);
+  const deepRoot = await mkdtemp(join(tmpdir(), "pdpp-google-maps-deep-"));
+  const cappedRoot = await mkdtemp(join(tmpdir(), "pdpp-google-maps-capped-"));
+  try {
+    await writeFile(readErrorRoot, "not a directory");
+    const deepPaths: string[] = [];
+    let deepPath = deepRoot;
+    for (let level = 0; level < 6; level += 1) {
+      deepPath = join(deepPath, `level-${String(level)}`);
+      deepPaths.push(deepPath);
+    }
+    await deepPaths.reduce((previous, path) => previous.then(() => mkdir(path)), Promise.resolve());
+    await Promise.all(
+      Array.from({ length: 2001 }, (_, index) =>
+        writeFile(join(cappedRoot, `unrelated-${String(index).padStart(4, "0")}.txt`), "")
+      )
+    );
+
+    const runDiscoveryCase = async (importRoot: string): Promise<void> => {
+      const { messages } = await runImport(importRoot, {}, ["timeline_points", "timeline_segments"]);
+      assert.equal(
+        messages.filter((message) => message.type === "SKIP_RESULT" && message.reason === "source_incomplete").length,
+        2,
+        `discovery must report an incomplete source boundary for ${importRoot}`
+      );
+      assert.equal(
+        messages.some((message) => message.type === "STATE"),
+        false
+      );
+      assert.equal(
+        messages.some((message) => message.type === "DETAIL_COVERAGE"),
+        false
+      );
+      assert.equal(
+        messages.some((message) => message.type === "SKIP_RESULT" && message.reason.endsWith("_not_found")),
+        false
+      );
+    };
+    await [missingRoot, readErrorRoot, deepRoot, cappedRoot].reduce(
+      (previous, importRoot) => previous.then(() => runDiscoveryCase(importRoot)),
+      Promise.resolve()
+    );
+  } finally {
+    await rm(readErrorRoot, { force: true, recursive: true });
+    await rm(deepRoot, { force: true, recursive: true });
+    await rm(cappedRoot, { force: true, recursive: true });
   }
 });
 

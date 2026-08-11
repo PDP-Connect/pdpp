@@ -19,6 +19,7 @@ import { buildDetailCoverageMessage, buildFullScanCoverageMessage, runConnector 
 import {
   GoogleMapsElementTooLargeError,
   type GoogleMapsStreamEvent,
+  GoogleMapsUnsupportedShapeError,
   streamGoogleMapsExport,
 } from "./archive-stream.ts";
 import { parseGoogleMapsExportElement } from "./parsers.ts";
@@ -30,6 +31,13 @@ const MAX_DISCOVERY_ENTRIES = 2000;
 const POINT_PROGRESS_INTERVAL = 10_000;
 const SEGMENT_PROGRESS_INTERVAL = 1000;
 const SUPPORTED_FILE_NAMES = new Set(["location-history.json", "timeline.json", "records.json"]);
+type DiscoveryIncompleteReason = "entry_limit" | "missing" | "read_error" | "depth_limit";
+
+interface TimelineDiscovery {
+  readonly complete: boolean;
+  readonly files: string[];
+  readonly incompleteReason: DiscoveryIncompleteReason | undefined;
+}
 
 function isLikelyTimelineJson(path: string): boolean {
   const fileName = basename(path).toLowerCase();
@@ -45,39 +53,76 @@ function isLikelyTimelineJson(path: string): boolean {
   );
 }
 
-async function discoverTimelineFiles(importDir: string): Promise<string[]> {
+interface DiscoveryState {
+  found: string[];
+  incompleteReason: DiscoveryIncompleteReason | undefined;
+  visited: number;
+}
+
+function markDiscoveryIncomplete(state: DiscoveryState, reason: DiscoveryIncompleteReason): void {
+  state.incompleteReason ??= reason;
+}
+
+async function readDiscoveryDirectory(dir: string, state: DiscoveryState): Promise<Dirent[] | null> {
+  try {
+    return await readdir(dir, { withFileTypes: true });
+  } catch {
+    markDiscoveryIncomplete(state, "read_error");
+    return null;
+  }
+}
+
+async function inspectDiscoveryEntry(entry: Dirent, path: string, depth: number, state: DiscoveryState): Promise<void> {
+  if (entry.isDirectory()) {
+    if (depth >= MAX_DISCOVERY_DEPTH) {
+      markDiscoveryIncomplete(state, "depth_limit");
+      return;
+    }
+    await walkDiscoveryDirectory(path, depth + 1, state);
+    return;
+  }
+  if (entry.isFile() && isLikelyTimelineJson(path)) {
+    state.found.push(path);
+  }
+}
+
+async function walkDiscoveryDirectory(dir: string, depth: number, state: DiscoveryState): Promise<void> {
+  if (depth > MAX_DISCOVERY_DEPTH) {
+    markDiscoveryIncomplete(state, "depth_limit");
+    return;
+  }
+  if (state.visited >= MAX_DISCOVERY_ENTRIES) {
+    markDiscoveryIncomplete(state, "entry_limit");
+    return;
+  }
+  const entries = await readDiscoveryDirectory(dir, state);
+  if (!entries) {
+    return;
+  }
+  for (const entry of entries) {
+    if (state.visited >= MAX_DISCOVERY_ENTRIES) {
+      markDiscoveryIncomplete(state, "entry_limit");
+      return;
+    }
+    state.visited += 1;
+    await inspectDiscoveryEntry(entry, join(dir, entry.name), depth, state);
+    if (state.incompleteReason === "entry_limit") {
+      return;
+    }
+  }
+}
+
+async function discoverTimelineFiles(importDir: string): Promise<TimelineDiscovery> {
   if (!existsSync(importDir)) {
-    return [];
+    return { complete: false, files: [], incompleteReason: "missing" };
   }
-  const found: string[] = [];
-  let visited = 0;
-  async function walk(dir: string, depth: number): Promise<void> {
-    if (depth > MAX_DISCOVERY_DEPTH || visited >= MAX_DISCOVERY_ENTRIES) {
-      return;
-    }
-    let entries: Dirent[];
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      visited += 1;
-      if (visited > MAX_DISCOVERY_ENTRIES) {
-        return;
-      }
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(path, depth + 1);
-        continue;
-      }
-      if (entry.isFile() && isLikelyTimelineJson(path)) {
-        found.push(path);
-      }
-    }
-  }
-  await walk(importDir, 0);
-  return [...new Set(found)].sort();
+  const state: DiscoveryState = { found: [], incompleteReason: undefined, visited: 0 };
+  await walkDiscoveryDirectory(importDir, 0, state);
+  return {
+    complete: state.incompleteReason === undefined,
+    files: [...new Set(state.found)].sort(),
+    incompleteReason: state.incompleteReason,
+  };
 }
 
 async function emitRequestedSkip(ctx: CollectContext, reason: string, message: string): Promise<void> {
@@ -125,6 +170,21 @@ async function emitRecordSafely(ctx: CollectContext, stream: string, record: Rec
   }
 }
 
+async function admitRecord(load: StreamLoadContext, stream: string, record: Record<string, unknown>): Promise<boolean> {
+  const validation = validateRecord(stream, record);
+  if (validation.ok) {
+    return true;
+  }
+  load.summary.complete = false;
+  const requested = stream === "timeline_points" ? load.requestedPoints : load.requestedSegments;
+  if (requested) {
+    // Keep the runtime's SKIP_RESULT visible, but do not let this rejected
+    // record enter the dedupe set or advance any coverage frontier.
+    await emitRecordSafely(load.ctx, stream, record);
+  }
+  return false;
+}
+
 async function emitProgressSafely(ctx: CollectContext, message: string, options: { stream: string }): Promise<void> {
   try {
     await ctx.progress(message, options);
@@ -144,6 +204,11 @@ interface StreamLoadContext {
   readonly summary: LoadSummary;
 }
 
+// The parser retains only the current source element, but exact cross-file
+// dedupe intentionally retains one ID per accepted record for this run. The
+// collector is therefore streaming with O(unique accepted IDs) dedupe state,
+// not a constant-memory whole-run collector.
+
 async function processPointRecords(load: StreamLoadContext, points: readonly TimelinePointRecord[]): Promise<void> {
   for (const point of points) {
     const pointId = typeof point.id === "string" ? point.id : null;
@@ -154,13 +219,17 @@ async function processPointRecords(load: StreamLoadContext, points: readonly Tim
     if (load.seenPointIds.has(pointId)) {
       continue;
     }
+    const record = { ...point };
+    if (!(await admitRecord(load, "timeline_points", record))) {
+      continue;
+    }
     load.seenPointIds.add(pointId);
     load.summary.pointCount += 1;
     load.summary.latestPoint = maxTimestamp(load.summary.latestPoint, timestamp);
     if (!load.requestedPoints || (load.pointSince && timestamp <= load.pointSince)) {
       continue;
     }
-    await emitRecordSafely(load.ctx, "timeline_points", { ...point });
+    await emitRecordSafely(load.ctx, "timeline_points", record);
     load.summary.pointsEmitted += 1;
     if (load.summary.pointsEmitted % POINT_PROGRESS_INTERVAL === 0) {
       await emitProgressSafely(
@@ -193,6 +262,10 @@ async function processSegmentRecords(
     if (load.seenSegmentIds.has(segmentId)) {
       continue;
     }
+    const record = { ...segment };
+    if (!(await admitRecord(load, "timeline_segments", record))) {
+      continue;
+    }
     load.seenSegmentIds.add(segmentId);
     load.summary.segmentCount += 1;
     load.summary.latestSegment = maxTimestamp(load.summary.latestSegment, startTime);
@@ -200,7 +273,7 @@ async function processSegmentRecords(
     if (!load.requestedSegments || (load.segmentSince && startTime <= load.segmentSince)) {
       continue;
     }
-    await emitRecordSafely(load.ctx, "timeline_segments", { ...segment });
+    await emitRecordSafely(load.ctx, "timeline_segments", record);
     load.summary.segmentsEmitted += 1;
     if (load.summary.segmentsEmitted % SEGMENT_PROGRESS_INTERVAL === 0) {
       await emitProgressSafely(
@@ -227,23 +300,43 @@ async function streamTimelineFile(load: StreamLoadContext, file: string): Promis
 
 async function reportSourceFailure(ctx: CollectContext, error: unknown): Promise<void> {
   const oversized = error instanceof GoogleMapsElementTooLargeError;
-  await emitRequestedSkip(
-    ctx,
-    oversized ? "record_too_large" : "invalid_json",
-    oversized
-      ? "A Google Maps Timeline export contains a record that is too large to process safely"
-      : "A Google Maps Timeline export file could not be parsed as JSON"
-  );
+  const unsupportedShape = error instanceof GoogleMapsUnsupportedShapeError;
+  let reason = "invalid_json";
+  let message = "A Google Maps Timeline export file could not be parsed as JSON";
+  if (oversized) {
+    reason = "record_too_large";
+    message = "A Google Maps Timeline export contains a record that is too large to process safely";
+  } else if (unsupportedShape) {
+    reason = "unsupported_shape";
+    message = "A Google Maps Timeline export contains a recognized key whose value is not an array";
+  }
+  await emitRequestedSkip(ctx, reason, message);
+}
+
+function discoveryFailureMessage(reason: DiscoveryIncompleteReason): string {
+  switch (reason) {
+    case "missing":
+      return "The configured Google Maps Timeline import directory is missing, so the source boundary was not observed";
+    case "read_error":
+      return "The Google Maps Timeline import directory could not be fully read, so the source boundary was not observed";
+    case "depth_limit":
+      return "The Google Maps Timeline import tree is deeper than the safe discovery limit, so coverage is incomplete";
+    case "entry_limit":
+      return "The Google Maps Timeline import tree exceeds the safe discovery limit, so coverage is incomplete";
+    default:
+      return "The Google Maps Timeline import tree could not be fully observed, so coverage is incomplete";
+  }
 }
 
 async function loadExports(ctx: CollectContext, importDir: string, state: GoogleMapsState): Promise<LoadSummary> {
-  const files = await discoverTimelineFiles(importDir);
+  const discovery = await discoverTimelineFiles(importDir);
+  const { files } = discovery;
   const requestedPoints = ctx.requested.has("timeline_points");
   const requestedSegments = ctx.requested.has("timeline_segments");
   const pointSince = state.timeline_points?.last_timestamp;
   const segmentSince = state.timeline_segments?.last_start_time;
   const summary: LoadSummary = {
-    complete: true,
+    complete: discovery.complete,
     latestPoint: pointSince,
     latestSegment: segmentSince,
     pointCount: 0,
@@ -274,6 +367,9 @@ async function loadExports(ctx: CollectContext, importDir: string, state: Google
     await ctx.progress("Google Maps phase=emit pass=emit stream=timeline_segments total_items=streaming", {
       stream: "timeline_segments",
     });
+  }
+  if (!discovery.complete && discovery.incompleteReason) {
+    await emitRequestedSkip(ctx, "source_incomplete", discoveryFailureMessage(discovery.incompleteReason));
   }
 
   let fileOrdinal = 0;
@@ -347,7 +443,7 @@ runConnector({
     const requestedSegments = ctx.requested.has("timeline_segments");
     const summary = await loadExports(ctx, importDir, typedState);
 
-    if (requestedPoints && summary.pointCount === 0) {
+    if (requestedPoints && summary.complete && summary.pointCount === 0) {
       await ctx.emit({
         type: "SKIP_RESULT",
         stream: "timeline_points",
@@ -355,7 +451,7 @@ runConnector({
         message: "Google Maps Timeline point records were not found in the configured import directory",
       });
     }
-    if (requestedSegments && summary.segmentCount === 0) {
+    if (requestedSegments && summary.complete && summary.segmentCount === 0) {
       await ctx.emit({
         type: "SKIP_RESULT",
         stream: "timeline_segments",
