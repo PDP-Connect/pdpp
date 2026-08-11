@@ -21,6 +21,8 @@ export interface RefConnectorsPageFollowResult {
   /** The last page's raw parsed body, in case a caller wants envelope metadata (e.g. `object`). */
   readonly lastPageBody: unknown;
   readonly ok: boolean;
+  /** Number of bounded JSON pages consumed; useful to compare against rendered pagers. */
+  readonly pageCount: number;
   readonly status: number | null;
 }
 
@@ -44,6 +46,7 @@ export async function fetchAllConnectorSummaries({
   const data: unknown[] = [];
   let cursor: string | null = null;
   let lastPageBody: unknown = null;
+  let pageCount = 0;
   // This is one unattended traversal, unlike interactive console paging:
   // keep the visited set local to this invocation and fail closed on any
   // repeated opaque continuation rather than reporting a partial audit.
@@ -56,27 +59,56 @@ export async function fetchAllConnectorSummaries({
     // biome-ignore lint/performance/noAwaitInLoops: each page's cursor depends on the previous page's response.
     const res = await fetchImpl(`${base}/_ref/connectors?${params.toString()}`, { headers });
     if (res.status < 200 || res.status >= 300) {
-      return { data, lastPageBody, ok: false, status: res.status, error: "malformed connector-summary page" };
+      return {
+        data,
+        lastPageBody,
+        ok: false,
+        pageCount,
+        status: res.status,
+        error: "malformed connector-summary page",
+      };
     }
     const bodyText = await res.text();
     let body: unknown;
     try {
       body = JSON.parse(bodyText);
     } catch {
-      return { data, lastPageBody, ok: false, status: res.status, error: "malformed connector-summary page" };
+      return {
+        data,
+        lastPageBody,
+        ok: false,
+        pageCount,
+        status: res.status,
+        error: "malformed connector-summary page",
+      };
     }
     lastPageBody = body;
+    pageCount += 1;
     const validation = validateListEnvelope<unknown>(body !== null && typeof body === "object" ? body : {});
     if (validation.kind === "invalid") {
-      return { data, lastPageBody, ok: false, status: res.status, error: "malformed connector-summary page" };
+      return {
+        data,
+        lastPageBody,
+        ok: false,
+        pageCount,
+        status: res.status,
+        error: "malformed connector-summary page",
+      };
     }
     data.push(...validation.data);
     if (!validation.hasMore) {
-      return { data, lastPageBody, ok: true, status: res.status };
+      return { data, lastPageBody, ok: true, pageCount, status: res.status };
     }
     const { nextCursor } = validation;
     if (nextCursor === undefined || seenCursors.has(nextCursor)) {
-      return { data, lastPageBody, ok: false, status: res.status, error: "repeated/self-looping next_cursor" };
+      return {
+        data,
+        lastPageBody,
+        ok: false,
+        pageCount,
+        status: res.status,
+        error: "repeated/self-looping next_cursor",
+      };
     }
     seenCursors.add(nextCursor);
     cursor = nextCursor;

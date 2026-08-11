@@ -1291,31 +1291,6 @@ export function deriveConnectionStatusDisplay(input: {
   }
 }
 
-/**
- * Whether this snapshot's root cause is a self-resolving source-pressure
- * cooldown. Still load-bearing: `deriveFailureSummary`'s `blocked` branch
- * (below) reuses this guard so a source-pressure `blocked` never carries a
- * dead-end Reconnect CTA.
- *
- * The client-side `badgeState`/`synthesizeConnectionVerdict` single-voice
- * badge synthesizer this guard used to feed was deleted (Wave 10a/10b,
- * 2026-07-09 state-model convergence): the server-owned `RenderedVerdict.pill`
- * (via `deriveRenderedSourceStatus` in `source-actionability.ts`) is the one
- * badge every owner surface renders; the console no longer re-derives a
- * second badge state from raw connection-health `state`.
- */
-function isSourcePressureCooldown(health: RefConnectionHealthSnapshot): boolean {
-  if (health.reason_code === SOURCE_PRESSURE_REASON_CODE) {
-    return true;
-  }
-  // A `blocked`/`cooling_off` state that still carries a scheduled next attempt
-  // and a pending source-pressure backlog is a deferral, not a terminal stop —
-  // the scheduler is spacing attempts, not giving up.
-  const backlog = health.detail_gap_backlog;
-  const hasPendingBacklog = Boolean(backlog && (backlog.pending > 0 || (backlog.pending_other ?? 0) > 0));
-  return hasPendingBacklog && Boolean(health.next_attempt_at);
-}
-
 function idleDisplay(input: {
   hasDurableProgress: boolean;
   health: RefConnectionHealthSnapshot;
@@ -1776,9 +1751,11 @@ function deriveRenderedFailureSummary(
 }
 
 /**
- * Derive a `FailureSummary` from the server-owned rendered verdict, with a
- * legacy health-snapshot fallback for older references that predate
- * `rendered_verdict`.
+ * Derive a `FailureSummary` from the server-owned rendered verdict.
+ *
+ * A raw `connection_health` snapshot is evidence for timestamps and diagnostic
+ * facts only. It is not a fallback classifier: without the server-rendered
+ * verdict there is no client-side failure summary to render.
  *
  * Returns `null` for states that do not warrant an expander (`healthy`,
  * `idle`, `unknown`).
@@ -1787,97 +1764,10 @@ export function deriveFailureSummary(
   health: RefConnectionHealthSnapshot | null | undefined,
   renderedVerdict?: RefRenderedVerdict | null
 ): FailureSummary | null {
-  if (!health) {
+  if (!(health && renderedVerdict)) {
     return null;
   }
-  if (renderedVerdict) {
-    return deriveRenderedFailureSummary(health, renderedVerdict);
-  }
-  const { state, reason_code, next_attempt_at, last_success_at } = health;
-
-  switch (state) {
-    case "degraded": {
-      const hasCoverageGaps =
-        health.axes.coverage === "gaps" ||
-        health.axes.coverage === "partial" ||
-        health.axes.coverage === "terminal_gap";
-      return {
-        actionLabel: "View runs",
-        cta: "view_runs",
-        lastSuccessAt: last_success_at,
-        nextAttemptAt: next_attempt_at,
-        ownerActionRequired: false,
-        prose: hasCoverageGaps
-          ? "Some streams have a collection gap from the last run. Data already collected is retained; review the run detail for the recovery path."
-          : "The connection ran, but coverage or freshness is incomplete. Existing records are retained; review the source detail for the next step.",
-        reasonCode: reason_code,
-        triggerLabel: "What's missing?",
-      };
-    }
-    case "cooling_off": {
-      const isSourcePressure = reason_code === SOURCE_PRESSURE_REASON_CODE;
-      return {
-        actionLabel: "No action needed",
-        cta: "wait",
-        lastSuccessAt: last_success_at,
-        nextAttemptAt: next_attempt_at,
-        ownerActionRequired: false,
-        prose: isSourcePressure
-          ? "The source is throttling this connection, so the scheduler is spacing out automatic attempts. Captured progress is retained and collection resumes on the next scheduled attempt."
-          : "The scheduler entered back-off after one or more failed runs. It will retry automatically; captured progress is retained.",
-        reasonCode: reason_code,
-        triggerLabel: "What's wrong?",
-      };
-    }
-    case "blocked": {
-      // §6.2: A source-pressure cooldown whose raw state happens to be
-      // `blocked` is self-resolving — it must never carry a Reconnect CTA
-      // that directs the owner to manual action. Apply the shared
-      // isSourcePressureCooldown guard here; its `cooling_off` branch above
-      // already does this.
-      if (isSourcePressureCooldown(health)) {
-        return {
-          actionLabel: "No action needed",
-          cta: "wait",
-          lastSuccessAt: last_success_at,
-          nextAttemptAt: next_attempt_at,
-          ownerActionRequired: false,
-          prose:
-            "The source is throttling this connection, so the scheduler is spacing out automatic attempts. Captured progress is retained and collection resumes on the next scheduled attempt.",
-          reasonCode: reason_code,
-          triggerLabel: "What's wrong?",
-        };
-      }
-      return {
-        actionLabel: "Reconnect",
-        cta: "reconnect",
-        lastSuccessAt: last_success_at,
-        nextAttemptAt: next_attempt_at,
-        ownerActionRequired: true,
-        prose:
-          "The connection has stopped making progress and automatic retries are paused. This usually means the credentials expired or the provider blocked the session. Reconnect to start a fresh setup, or try a manual run to see if the issue cleared on its own.",
-        reasonCode: reason_code,
-        triggerLabel: "What's wrong?",
-      };
-    }
-    case "needs_attention": {
-      const dominantSummary = formatDominantCondition(health);
-      return {
-        actionLabel: "Reconnect",
-        cta: "reconnect",
-        lastSuccessAt: last_success_at,
-        nextAttemptAt: next_attempt_at,
-        ownerActionRequired: true,
-        prose: dominantSummary
-          ? dominantSummary.label
-          : "Owner action is required before this connection can make progress. Open the run detail for the exact step.",
-        reasonCode: reason_code,
-        triggerLabel: "What's wrong?",
-      };
-    }
-    default:
-      return null;
-  }
+  return deriveRenderedFailureSummary(health, renderedVerdict);
 }
 
 // ─── 14-day streak strip ──────────────────────────────────────────────────────

@@ -597,6 +597,9 @@ export interface RefAcquisitionCoverageSummary {
  */
 export type RefCountState = "known" | "known_zero" | "unobserved" | "stale" | "unknown";
 
+/** Mirrors the server-owned `ConnectorSummary.source_work` projection. */
+export type RefSourceWorkGroup = "needs_owner" | "not_measured" | "review" | "system_issue" | "working" | "none";
+
 export interface RefConnectorSummary {
   /**
    * Owner/control-plane acquisition provenance for manual imports, device
@@ -642,8 +645,8 @@ export interface RefConnectorSummary {
    * state-model convergence). Derived server-side by `deriveOwnerState`
    * (`reference-implementation/runtime/owner-state.ts`); optional on the
    * mirror because a reference predating this field omits it, in which case
-   * console view-models fall back to deriving from `rendered_verdict` alone
-   * rather than inventing owner-state evidence.
+   * the console leaves server-owned work classification unavailable rather
+   * than deriving it from raw health or a second client-side taxonomy.
    */
   owner_state?: RefOwnerState | null;
   /**
@@ -655,8 +658,8 @@ export interface RefConnectorSummary {
   refresh_policy?: RefreshPolicy | null;
   /**
    * Server-owned owner-surface verdict. Current reference builds send this
-   * alongside `connection_health`; older builds omit it and the console falls
-   * back to the legacy snapshot rather than inventing a verdict.
+   * alongside `connection_health`; older builds omit it and the console fails
+   * closed rather than inventing a verdict from the legacy snapshot.
    */
   rendered_verdict?: RefRenderedVerdict | null;
   retained_bytes?: RefRetainedBytesBreakdown | null;
@@ -685,6 +688,12 @@ export interface RefConnectorSummary {
    * field omits it and the console falls back to connector-level modality.
    */
   source_kind?: string;
+  /**
+   * Server-owned work classification derived from `owner_state.resolver`.
+   * Optional only for references predating this field; the console fails closed
+   * when it is absent instead of classifying raw health locally.
+   */
+  source_work?: RefSourceWorkGroup;
   status?: string | null;
   stream_count?: number;
   stream_records?: readonly RefConnectorStreamRecord[];
@@ -1969,7 +1978,7 @@ export async function getDatasetSize(
  */
 export async function getDatasetTop(
   scope: "connection" | "stream" | "record" | "blob",
-  measure: string = "total_retained_bytes"
+  measure = "total_retained_bytes"
 ): Promise<RefDatasetTopResponse> {
   return (await refFetch("/_ref/dataset/top", { measure, scope })) as RefDatasetTopResponse;
 }

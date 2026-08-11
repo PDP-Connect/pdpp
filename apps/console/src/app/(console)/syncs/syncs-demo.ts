@@ -7,8 +7,9 @@
  *
  * Rendered ONLY when the route is hit with `?demo=...`; the real data path is
  * untouched otherwise. The two failure cards are derived by running the REAL
- * {@link deriveFailureSummary} over hand-built health snapshots, so the demo
- * proves the actual guard rather than hard-coding copy:
+ * {@link deriveFailureSummary} over hand-built health snapshots plus
+ * server-shaped rendered verdicts, so the demo exercises formatting without
+ * reintroducing a raw-health fallback classifier:
  *   - a source-pressure cooldown (`cooling_off` + `source_pressure`) → the
  *     WAIT card (no reconnect button, next-attempt time stands in), and
  *   - a genuine `blocked` connection (no source-pressure backlog) → the
@@ -18,7 +19,7 @@
  */
 
 import { deriveFailureSummary } from "../lib/connection-evidence.ts";
-import type { RefConnectionHealthSnapshot } from "../lib/ref-client.ts";
+import type { RefConnectionHealthSnapshot, RefRenderedVerdict } from "../lib/ref-client.ts";
 import type { FailureCard, SyncRhythmTick, SyncRow, SyncsViewModel } from "./syncs-model.ts";
 
 const OK_RHYTHM: SyncRhythmTick[] = ["ok", "ok", "ok", "ok", "ok"];
@@ -70,13 +71,72 @@ const COOLING_HEALTH: RefConnectionHealthSnapshot = {
   unknown_reasons: [],
 } as RefConnectionHealthSnapshot;
 
+const BLOCKED_VERDICT = {
+  annotations: [],
+  channel: "attention",
+  detail: {},
+  forward_statement: "Reconnect this account to resume collection.",
+  pill: { label: "Can't collect", tone: "red" },
+  progress: {
+    gaps_drained_last_run: null,
+    headline: "Collection needs attention.",
+    last_refreshed_at: null,
+    mode: "manual",
+    records_committed_last_run: null,
+    retained_records: null,
+  },
+  required_actions: [
+    {
+      affects: [],
+      audience: "owner",
+      cta: "Reconnect this account",
+      kind: "reauth",
+      satisfied_when: { kind: "credential_present_and_unrejected" },
+      terminal: true,
+      urgency: "now",
+    },
+  ],
+  streams: [],
+  trace: null,
+} as RefRenderedVerdict;
+
+const COOLING_VERDICT = {
+  annotations: [],
+  channel: "advisory",
+  detail: {},
+  forward_statement: "The source is throttling this connection; it will retry automatically.",
+  pill: { label: "Degraded", tone: "amber" },
+  progress: {
+    gaps_drained_last_run: null,
+    headline: "Waiting for the next attempt.",
+    last_refreshed_at: null,
+    mode: "scheduled",
+    records_committed_last_run: null,
+    retained_records: null,
+  },
+  required_actions: [
+    {
+      affects: [],
+      audience: "none",
+      cta: "No action needed",
+      kind: "wait",
+      satisfied_when: { kind: "none" },
+      terminal: false,
+      urgency: "soon",
+    },
+  ],
+  streams: [],
+  trace: null,
+} as RefRenderedVerdict;
+
 function demoCard(input: {
   name: string;
   connectionId: string;
   connectorId: string;
   health: RefConnectionHealthSnapshot;
+  verdict: RefRenderedVerdict;
 }): FailureCard {
-  const summary = deriveFailureSummary(input.health);
+  const summary = deriveFailureSummary(input.health, input.verdict);
   if (!summary) {
     throw new Error(`demo health for ${input.name} did not produce a failure summary`);
   }
@@ -87,6 +147,7 @@ const FIRST_MERIDIAN = demoCard({
   connectionId: "cin_fm_206b11",
   connectorId: "first_meridian",
   health: BLOCKED_HEALTH,
+  verdict: BLOCKED_VERDICT,
   name: "First Meridian — checking",
 });
 
@@ -94,6 +155,7 @@ const CHATGPT = demoCard({
   connectionId: "cin_cg_91a0fe",
   connectorId: "chatgpt",
   health: COOLING_HEALTH,
+  verdict: COOLING_VERDICT,
   name: "ChatGPT — personal",
 });
 

@@ -292,6 +292,14 @@ export interface StandingInputs {
    * anything. These must still suppress "everything is syncing" all-clears.
    */
   sourceIssues: SourceIssueConnection[];
+  /** Honest bounded dashboard pagination state, when the live page is used. */
+  sourcePage?: {
+    kind: "error" | "ok";
+    hasMore: boolean;
+    message?: string;
+    nextCursor?: string;
+    isPaged: boolean;
+  };
   /**
    * Mutually-exclusive owner-console source work. This is the actionability
    * model the Overview renders; legacy arrays remain only for compatibility

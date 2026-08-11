@@ -70,7 +70,9 @@ import {
   type OwnerState,
   type OwnerStateEvidence,
   ownerStateCausalEvidenceFrom,
+  type SourceWorkGroup,
   scheduleModeFrom,
+  sourceWorkGroupFromOwnerState,
 } from "../runtime/owner-state.ts";
 import {
   deriveRecoveryStall,
@@ -112,7 +114,6 @@ import {
   readCoverageEvidenceStrategy,
   readFreshnessEvidenceStrategy,
 } from "./connector-coverage-policy.ts";
-import { readStoredCollectionScope } from "./local-collection-scope.ts";
 import {
   firstDegradingKnownGapReason,
   firstPendingDetailGapReason,
@@ -128,6 +129,7 @@ import {
 import { listConnectorSummaryEvidence } from "./connector-summary-read-model.ts";
 import { getSqliteStoreCacheIdentity } from "./db.ts";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
+import { readStoredCollectionScope } from "./local-collection-scope.ts";
 import { mapPendingPressureGaps } from "./pending-pressure-gap-map.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 import {
@@ -807,6 +809,8 @@ export interface ConnectorSummary {
    * supports a static secret. Connection-scoped fact, not a connector capability.
    */
   readonly source_kind: string;
+  /** Total server-owned work classification derived from `owner_state.resolver`. */
+  readonly source_work: SourceWorkGroup;
   readonly status: string | null;
   readonly stream_count?: number;
   /**
@@ -3197,17 +3201,18 @@ export function projectCollectionReport(input: {
   const classifyingRun = input.localDeviceBacked
     ? null
     : coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun ?? null);
+  const { declaredCollectionScope: explicitCollectionScope, localCoverage } = input;
+  let declaredCollectionScope = explicitCollectionScope;
+  if (declaredCollectionScope === undefined && input.localDeviceBacked === true) {
+    declaredCollectionScope = localCoverage?.declaredCollectionScope;
+  }
   return buildCollectionReport({
     attentionOpen: input.connectionHealth.axes.attention !== "none",
     collectionFacts: classifyingRun?.collection_facts ?? null,
     // Declared boundary: explicit caller value wins; otherwise it rides on the
     // local-coverage axis, which already read it from the connector-state
     // projection (no extra query, no per-stream read).
-    ...(input.declaredCollectionScope === undefined
-      ? input.localDeviceBacked === true && input.localCoverage?.declaredCollectionScope !== undefined
-        ? { declaredCollectionScope: input.localCoverage.declaredCollectionScope }
-        : {}
-      : { declaredCollectionScope: input.declaredCollectionScope }),
+    ...(declaredCollectionScope === undefined ? {} : { declaredCollectionScope }),
     // A local-device connection's evidence is the coverage-diagnostic axis, not
     // a run fact block, so its measured boundary comes off that axis -- which
     // derived it from the coverage rows themselves. Deriving beats accepting: a
@@ -3431,6 +3436,7 @@ interface LocalCoverageDiagnosticAxis {
    * an N+1 across a page of connections.
    */
   readonly declaredCollectionScope?: string;
+  readonly evidenceAsOf: string | null;
   /**
    * Boundary the connection's stored terminal evidence was MEASURED under, read
    * off the same state projection as the declared one. Derived here rather than
@@ -3439,7 +3445,6 @@ interface LocalCoverageDiagnosticAxis {
    * `null` when no local run has committed terminal evidence under the contract.
    */
   readonly measuredCollectionScope?: string | null;
-  readonly evidenceAsOf: string | null;
   readonly reliable: boolean;
   /** Safe per-store triples from `coverage_diagnostics`, used to project stream rows. */
   readonly rows?: readonly LocalCoverageDiagnosticRow[];
@@ -3513,9 +3518,7 @@ export function deriveLocalCoverageAxis(input: {
   // is deliberately treated as having NO measured boundary rather than picking
   // one: an ambiguous pairing must not be able to read as proof.
   const measuredScopes = new Set(
-    rows
-      .map((row) => readRowCollectionScope(row))
-      .filter((value): value is string => value !== null)
+    rows.map((row) => readRowCollectionScope(row)).filter((value): value is string => value !== null)
   );
   const measuredScope: string | null = measuredScopes.size === 1 ? ([...measuredScopes][0] ?? null) : null;
   const scopeField = { declaredCollectionScope: declaredScope, measuredCollectionScope: measuredScope };
@@ -3540,7 +3543,14 @@ export function deriveLocalCoverageAxis(input: {
     return { ...scopeField, axis: "unknown", evidenceAsOf: null, reliable: false, rows, unaccountedStores: [] };
   }
   if (rows.length === 0) {
-    return { ...scopeField, axis: "unknown", evidenceAsOf: input.updatedAt, reliable: true, rows, unaccountedStores: [] };
+    return {
+      ...scopeField,
+      axis: "unknown",
+      evidenceAsOf: input.updatedAt,
+      reliable: true,
+      rows,
+      unaccountedStores: [],
+    };
   }
   const unaccountedStores: string[] = [];
   for (const row of rows) {
@@ -3561,7 +3571,14 @@ export function deriveLocalCoverageAxis(input: {
       unaccountedStores: unaccountedStores.sort((left, right) => left.localeCompare(right)),
     };
   }
-  return { ...scopeField, axis: "complete", evidenceAsOf: input.updatedAt, reliable: true, rows, unaccountedStores: [] };
+  return {
+    ...scopeField,
+    axis: "complete",
+    evidenceAsOf: input.updatedAt,
+    reliable: true,
+    rows,
+    unaccountedStores: [],
+  };
 }
 
 /**
@@ -5437,6 +5454,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     schedule: localDeviceBacked ? null : schedule,
     source_binding_kind: connectionBindingKind(instance),
     source_kind: instance.sourceKind,
+    source_work: sourceWorkGroupFromOwnerState(ownerState.resolver),
     status: instance.status,
     stream_count: evidence ? evidence.stream_count : streamRecords.length,
     stream_records: streamRecords,

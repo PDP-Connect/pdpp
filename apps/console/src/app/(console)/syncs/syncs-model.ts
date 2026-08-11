@@ -13,17 +13,17 @@
  *      (stream · cadence · Rhythm sparkline · last result · next).
  *
  * This module is the single source of truth for how the three real contracts
- * — `RunSummary` (the runs feed), `RefConnectorSummary.rendered_verdict`,
- * `.connection_health` / `.schedule` (per-connection health + cadence), and
- * `RefSchedule` — collapse into that view-model. It is JSX-free and free of
+ * — `RunSummary` (the runs feed), the server-owned source work/verdict
+ * projections, `.schedule` (cadence), and `RefSchedule` — collapse into that
+ * view-model. It is JSX-free and free of
  * `Date.now()` so it stays deterministically unit-testable.
  *
  * The hardest correctness requirement lives here: a connection that the source
  * is throttling (a self-resolving source-pressure cooldown) must read as
  * self-handled — NEVER a false "reconnect / log in again" prompt. We do NOT
  * invent that copy: current references bind the card to the server-owned
- * `RenderedVerdict.forward_statement` and `required_actions[]`; the legacy
- * health-snapshot path exists only for older references.
+ * `RenderedVerdict.forward_statement` and `required_actions[]`; raw health is
+ * not used as a fallback classifier.
  */
 
 import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/display";
@@ -36,7 +36,6 @@ import {
   isSetupInProgressConnector,
   projectSourceActionability,
   SETUP_IN_PROGRESS_CTA_LABEL,
-  type SourceStatusFlag,
   type SourceWorkItem,
   sourceAttentionHeadline,
   sourceWorkItemFromConnector,
@@ -498,15 +497,11 @@ export function buildRecentSyncs(input: {
 }
 
 /**
- * Legacy fallback: without `rendered_verdict`, a connection's health is "ok"
- * unless `deriveFailureSummary` produced a card for it.
+ * Sync group health is a formatting choice over the server-owned work bucket.
+ * Missing projection data is not reconstructed from raw health or run fields.
  */
-function connectionHealth(summary: FailureSummary | null): SyncGroupHealth {
-  return summary ? "failing" : "ok";
-}
-
-function renderedStatusGroupHealth(status: SourceStatusFlag): SyncGroupHealth {
-  return status.kind === "blocked" || status.kind === "degraded" ? "failing" : "ok";
+function serverWorkGroupHealth(connector: RefConnectorSummary): SyncGroupHealth {
+  return connector.source_work === "needs_owner" || connector.source_work === "system_issue" ? "failing" : "ok";
 }
 
 function connectorKind(connector: RefConnectorSummary): string {
@@ -872,8 +867,7 @@ function projectSyncProjection(input: {
   const actionability = projectSourceActionability(connector);
   const summary = actionability.failureSummary;
   const { work } = actionability;
-  const renderedHealth = connector.rendered_verdict ? renderedStatusGroupHealth(actionability.renderedStatus) : null;
-  const failing = (renderedHealth ?? connectionHealth(summary)) === "failing";
+  const failing = serverWorkGroupHealth(connector) === "failing";
   const connectionRuns = connectionRunHistory({ connector, runs });
   const { rows, lastFailed, lastRun } = buildSyncRows({ connectionRuns, connector });
   // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.

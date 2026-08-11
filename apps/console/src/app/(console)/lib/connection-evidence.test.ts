@@ -46,6 +46,7 @@ import type {
   RefConnectionHealthCondition,
   RefConnectionHealthSnapshot,
   RefDetailGapBacklog,
+  RefRenderedVerdict,
   RefSchedule,
 } from "./ref-client.ts";
 import type { ConnectorOverview } from "./rs-client.ts";
@@ -1892,120 +1893,93 @@ test("syncActionIdleLabel keeps non-failed idle sync copy", () => {
 // ─── deriveFailureSummary ─────────────────────────────────────────────────────
 
 // Top-level regex constants for useTopLevelRegex compliance
-const PROSE_GAP_RE = /gap/i;
-const PROSE_INCOMPLETE_RE = /incomplete/i;
 const PROSE_THROTTLE_RE = /throttl/i;
-const PROSE_BACKOFF_RE = /back-off|backoff|retry/i;
-const PROSE_RECONNECT_RE = /reconnect/i;
+function renderedVerdict(overrides: Partial<RefRenderedVerdict> = {}): RefRenderedVerdict {
+  return {
+    annotations: [],
+    channel: "attention",
+    detail: {},
+    forward_statement: "The server has an owner-facing next step.",
+    pill: { label: "Can't collect", tone: "red" },
+    progress: {
+      gaps_drained_last_run: null,
+      headline: "Collection needs review.",
+      last_refreshed_at: null,
+      mode: "manual",
+      records_committed_last_run: null,
+      retained_records: null,
+    },
+    required_actions: [],
+    streams: [],
+    trace: null,
+    ...overrides,
+  } as RefRenderedVerdict;
+}
 
-test("deriveFailureSummary returns null for healthy state", () => {
-  assert.equal(deriveFailureSummary(snapshot({ state: "healthy" })), null);
+test("deriveFailureSummary never classifies a raw health snapshot without a server verdict", () => {
+  for (const health of [
+    snapshot({ state: "degraded" }),
+    snapshot({ state: "cooling_off", reason_code: "source_pressure" }),
+    snapshot({ state: "blocked" }),
+    snapshot({ state: "needs_attention" }),
+  ]) {
+    assert.equal(deriveFailureSummary(health), null);
+  }
 });
 
-test("deriveFailureSummary returns null for idle state", () => {
-  assert.equal(deriveFailureSummary(snapshot({ state: "idle" })), null);
-});
-
-test("deriveFailureSummary returns null for null input", () => {
-  assert.equal(deriveFailureSummary(null), null);
-});
-
-test("deriveFailureSummary degraded → 'What's missing?' trigger, view_runs CTA", () => {
-  const result = deriveFailureSummary(
-    snapshot({ axes: { attention: "none", coverage: "gaps", freshness: "fresh", outbox: "idle" }, state: "degraded" })
-  );
-  assert.ok(result);
-  assert.equal(result.triggerLabel, "What's missing?");
-  assert.equal(result.cta, "view_runs");
-  assert.match(result.prose, PROSE_GAP_RE);
-});
-
-test("deriveFailureSummary degraded with complete coverage → generic prose", () => {
+test("deriveFailureSummary formats the server verdict and only borrows facts from raw health", () => {
   const result = deriveFailureSummary(
     snapshot({
-      axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle" },
-      state: "degraded",
+      last_success_at: "2026-04-28T19:33:00Z",
+      next_attempt_at: "2026-05-15T15:36:00Z",
+      reason_code: "browser_context_died",
+      state: "blocked",
+    }),
+    renderedVerdict({
+      required_actions: [
+        {
+          affects: [],
+          audience: "owner",
+          cta: "Reconnect this account",
+          kind: "reauth",
+          satisfied_when: { kind: "credential_present_and_unrejected" },
+          terminal: true,
+          urgency: "now",
+        },
+      ],
     })
   );
   assert.ok(result);
-  assert.equal(result.triggerLabel, "What's missing?");
-  assert.match(result.prose, PROSE_INCOMPLETE_RE);
-});
-
-test("deriveFailureSummary cooling_off source_pressure → honest prose about throttling", () => {
-  const result = deriveFailureSummary(snapshot({ reason_code: "source_pressure", state: "cooling_off" }));
-  assert.ok(result);
-  assert.equal(result.triggerLabel, "What's wrong?");
-  assert.equal(result.cta, "wait");
-  assert.match(result.prose, PROSE_THROTTLE_RE);
-});
-
-test("deriveFailureSummary cooling_off failure back-off → retry prose", () => {
-  const result = deriveFailureSummary(snapshot({ reason_code: "reddit_login_unexpected_ui", state: "cooling_off" }));
-  assert.ok(result);
-  assert.equal(result.cta, "wait");
-  assert.match(result.prose, PROSE_BACKOFF_RE);
-});
-
-test("deriveFailureSummary blocked → reconnect CTA", () => {
-  const result = deriveFailureSummary(snapshot({ state: "blocked" }));
-  assert.ok(result);
-  assert.equal(result.triggerLabel, "What's wrong?");
-  assert.equal(result.cta, "reconnect");
-  assert.match(result.prose, PROSE_RECONNECT_RE);
-});
-
-test("deriveFailureSummary needs_attention → reconnect CTA", () => {
-  const result = deriveFailureSummary(snapshot({ state: "needs_attention" }));
-  assert.ok(result);
-  assert.equal(result.cta, "reconnect");
-});
-
-test("deriveFailureSummary passes through reason_code", () => {
-  const result = deriveFailureSummary(snapshot({ reason_code: "browser_context_died", state: "blocked" }));
-  assert.ok(result);
+  assert.equal(result.actionLabel, "Reconnect this account");
+  assert.equal(result.cta, "connection_detail");
   assert.equal(result.reasonCode, "browser_context_died");
-});
-
-test("deriveFailureSummary passes through next_attempt_at", () => {
-  const result = deriveFailureSummary(snapshot({ next_attempt_at: "2026-05-15T15:36:00Z", state: "cooling_off" }));
-  assert.ok(result);
   assert.equal(result.nextAttemptAt, "2026-05-15T15:36:00Z");
-});
-
-test("deriveFailureSummary passes through last_success_at", () => {
-  const result = deriveFailureSummary(snapshot({ last_success_at: "2026-04-28T19:33:00Z", state: "blocked" }));
-  assert.ok(result);
   assert.equal(result.lastSuccessAt, "2026-04-28T19:33:00Z");
 });
 
-// §6.2 invariant: source-pressure blocked must NEVER emit cta:"reconnect".
-// A blocked state whose root cause is source-pressure is self-resolving; a
-// Reconnect CTA would direct the owner to a manual action that is unnecessary
-// and confusing. deriveFailureSummary applies the shared isSourcePressureCooldown
-// guard (also load-bearing for the blocked-branch fallback in this file). (spec §6.2)
-test("deriveFailureSummary blocked + source_pressure reason_code → cta is 'wait', NOT 'reconnect'", () => {
-  const result = deriveFailureSummary(snapshot({ reason_code: "source_pressure", state: "blocked" }));
-  assert.ok(result);
-  assert.notEqual(result.cta, "reconnect", "source-pressure blocked must not yield reconnect CTA");
-  assert.equal(result.cta, "wait");
-});
-
-test("deriveFailureSummary blocked + backlog + next_attempt_at (inferred source-pressure) → cta is 'wait', NOT 'reconnect'", () => {
-  // isSourcePressureCooldown also fires when there is a pending backlog AND a
-  // scheduled next_attempt_at, even without an explicit reason_code. The
-  // deriveFailureSummary blocked branch must honour the same inference.
+test("deriveFailureSummary uses the server wait verdict even when raw health says source pressure", () => {
   const result = deriveFailureSummary(
-    snapshot({
-      detail_gap_backlog: backlog({ pending: 5 }),
-      next_attempt_at: "2026-05-20T10:00:00Z",
-      reason_code: null,
-      state: "blocked",
+    snapshot({ reason_code: "source_pressure", state: "blocked" }),
+    renderedVerdict({
+      channel: "advisory",
+      forward_statement: "The source is throttling this connection; it will retry automatically.",
+      pill: { label: "Degraded", tone: "amber" },
+      required_actions: [
+        {
+          affects: [],
+          audience: "none",
+          cta: "No action needed",
+          kind: "wait",
+          satisfied_when: { kind: "none" },
+          terminal: false,
+          urgency: "soon",
+        },
+      ],
     })
   );
   assert.ok(result);
-  assert.notEqual(result.cta, "reconnect", "inferred source-pressure blocked must not yield reconnect CTA");
   assert.equal(result.cta, "wait");
+  assert.match(result.prose, PROSE_THROTTLE_RE);
 });
 
 // §6.3 invariant: "done" (caught up) must be false when terminal > 0.

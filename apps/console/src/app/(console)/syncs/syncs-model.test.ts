@@ -31,7 +31,7 @@ const RESUME_FALSE_REASSURANCE_RE = /fills on the next successful run|resumes no
 const RESUME_NORMALLY_RE = /resume normally/i;
 const THROTTLING_RE = /throttling/i;
 const UNVERIFIED_ZERO_COPY_RE = /without proving the account was empty/;
-const ACTIONABILITY_RENDERED_STATUS_RE = /actionability\.renderedStatus/;
+const SERVER_WORK_PROJECTION_RE = /serverWorkGroupHealth|source_work/;
 const RAW_VERDICT_TONE_RE = /rendered_verdict\.pill\.tone|verdict\.pill\.tone/;
 const SYNCS_PAGE_SOURCE = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
 const DEFERRED_RUN_NOT_LIVE_RE =
@@ -67,6 +67,7 @@ function connector(overrides: Partial<RefConnectorSummary> = {}): RefConnectorSu
     manifest_version: null,
     next_action: null,
     schedule: null,
+    source_work: "none",
     streams: ["alpha", "beta"],
     total_records: 0,
     ...overrides,
@@ -194,7 +195,28 @@ test("source-pressure cooldown produces a WAIT card, never a reconnect prompt", 
     state: "cooling_off",
   });
   const model = buildSyncsViewModel({
-    connectors: [connector({ connection_health: coolingHealth, display_name: "ChatGPT — personal" })],
+    connectors: [
+      connector({
+        connection_health: coolingHealth,
+        display_name: "ChatGPT — personal",
+        rendered_verdict: renderedVerdict({
+          channel: "advisory",
+          forward_statement:
+            "The source is throttling this connection, so the scheduler is spacing out automatic attempts.",
+          pill: { label: "Degraded", tone: "amber" },
+          required_actions: [
+            action({
+              audience: "none",
+              cta: "Wait for the next attempt",
+              kind: "wait",
+              satisfied_when: { kind: "none" },
+              urgency: "verifying",
+            }),
+          ],
+        }),
+        source_work: "working",
+      }),
+    ],
     runs: [run({ event_count: 34, status: "succeeded" })],
   });
 
@@ -229,7 +251,26 @@ test("a blocked connection with a source-pressure backlog still gets the WAIT ca
     state: "blocked",
   });
   const model = buildSyncsViewModel({
-    connectors: [connector({ connection_health: blockedButThrottled })],
+    connectors: [
+      connector({
+        connection_health: blockedButThrottled,
+        rendered_verdict: renderedVerdict({
+          channel: "advisory",
+          forward_statement:
+            "The source is throttling this connection, so the scheduler is spacing out automatic attempts.",
+          pill: { label: "Degraded", tone: "amber" },
+          required_actions: [
+            action({
+              audience: "none",
+              cta: "Wait for the next attempt",
+              kind: "wait",
+              satisfied_when: { kind: "none" },
+            }),
+          ],
+        }),
+        source_work: "working",
+      }),
+    ],
     runs: [],
   });
   // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
@@ -243,12 +284,23 @@ test("a genuine blocked connection (no backlog, no next attempt) DOES prompt rec
     state: "blocked",
   });
   const model = buildSyncsViewModel({
-    connectors: [connector({ connection_health: reallyBlocked })],
+    connectors: [
+      connector({
+        connection_health: reallyBlocked,
+        rendered_verdict: renderedVerdict({
+          channel: "attention",
+          forward_statement: "Reconnect this account and collection resumes.",
+          pill: { label: "Can't collect", tone: "red" },
+          required_actions: [action()],
+        }),
+        source_work: "needs_owner",
+      }),
+    ],
     runs: [],
   });
   const [card] = model.failureCards;
   // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome does not honor that tsconfig flag here).
-  assert.equal(card?.summary.cta, "reconnect", "genuine credential failure keeps the reconnect CTA");
+  assert.equal(card?.summary.cta, "connection_detail", "genuine credential failure follows the server action link");
   assert.equal(model.band.needYourHand, 1, "a genuine block counts under need-your-hand");
 });
 
@@ -269,7 +321,7 @@ test("healthy connections produce no card and count their streams on schedule", 
 });
 
 test("syncs group health uses the shared source status instead of raw verdict tone", () => {
-  assert.match(SYNC_MODEL_SOURCE, ACTIONABILITY_RENDERED_STATUS_RE);
+  assert.match(SYNC_MODEL_SOURCE, SERVER_WORK_PROJECTION_RE);
   assert.doesNotMatch(
     SYNC_MODEL_SOURCE,
     RAW_VERDICT_TONE_RE,
@@ -668,7 +720,7 @@ test("describeDuration formats sub-minute and minute spans", () => {
 test("a failing connection holds its next and marks rows failed", () => {
   const failHealth = health({ reason_code: "credentials_expired", state: "blocked" });
   const model = buildSyncsViewModel({
-    connectors: [connector({ connection_health: failHealth, schedule: schedule() })],
+    connectors: [connector({ connection_health: failHealth, schedule: schedule(), source_work: "needs_owner" })],
     runs: [run({ connection_id: "cin_test", status: "failed" })],
   });
   const [group] = model.groups;
@@ -689,6 +741,7 @@ test("a broken connector does not rewrite a successful last run into sync failed
         }),
         last_run: connectorRun({ event_count: 52, run_id: "run_chase_success", status: "succeeded" }),
         last_successful_run: connectorRun({ event_count: 52, run_id: "run_chase_success", status: "succeeded" }),
+        source_work: "system_issue",
         rendered_verdict: renderedVerdict({
           channel: "advisory",
           forward_statement: "This connector needs a code fix before it can collect again.",
@@ -733,6 +786,7 @@ test("failure cards bind terminal gaps to rendered verdict copy, never retryable
     connectors: [
       connector({
         connection_health: terminalHealth,
+        source_work: "system_issue",
         rendered_verdict: renderedVerdict({
           channel: "advisory",
           forward_statement: "This connector needs a code fix before it can collect again.",
@@ -776,6 +830,7 @@ test("failure cards bind retryable gaps to the rendered Retry now action", () =>
           reason_code: "retryable_gap",
           state: "degraded",
         }),
+        source_work: "system_issue",
         rendered_verdict: renderedVerdict({
           channel: "advisory",
           forward_statement: "Retry now to give the recoverable gap another run.",
@@ -808,6 +863,7 @@ test("failure cards bind stale manual refresh to Refresh now without marking hea
           reason_code: "stale_manual_refresh",
           state: "healthy",
         }),
+        source_work: "review",
         rendered_verdict: renderedVerdict({
           annotations: [{ kind: "freshness", text: "Last refreshed yesterday" }],
           channel: "advisory",
@@ -848,6 +904,7 @@ test("failure cards bind dead-letter backlog to collector action, not resume-nor
           reason_code: "local_exporter_dead_letter_backlog",
           state: "degraded",
         }),
+        source_work: "needs_owner",
         rendered_verdict: renderedVerdict({
           channel: "attention",
           forward_statement: "Check the collector before this source can make progress.",
@@ -888,6 +945,7 @@ test("device-local recovery counts as need-your-hand while navigating to recover
           reason_code: "local_exporter_dead_letter_backlog",
           state: "degraded",
         }),
+        source_work: "needs_owner",
         rendered_verdict: renderedVerdict({
           channel: "attention",
           forward_statement: "The local collector has saved records on its host that did not upload to this server.",
@@ -930,6 +988,7 @@ test("failure cards carry shared source-work groups for Runs presentation", () =
       connector({
         connection_id: "cin_owner",
         display_name: "Owner source",
+        source_work: "needs_owner",
         rendered_verdict: renderedVerdict({
           channel: "attention",
           forward_statement: "Reconnect this account and collection resumes.",
@@ -947,6 +1006,7 @@ test("failure cards carry shared source-work groups for Runs presentation", () =
       connector({
         connection_id: "cin_review",
         display_name: "Review source",
+        source_work: "review",
         rendered_verdict: renderedVerdict({
           channel: "advisory",
           forward_statement: "Run a refresh to bring this up to date.",
@@ -964,6 +1024,7 @@ test("failure cards carry shared source-work groups for Runs presentation", () =
       connector({
         connection_id: "cin_system",
         display_name: "System source",
+        source_work: "system_issue",
         rendered_verdict: renderedVerdict({
           channel: "advisory",
           forward_statement: "Latest collection completed with known coverage gaps.",
@@ -998,6 +1059,7 @@ test("syncs ranking only treats attention plus primary owner action as need-your
   const maintainerFirst = connector({
     connection_id: "cin_maintainer",
     display_name: "A maintainer-only source",
+    source_work: "system_issue",
     rendered_verdict: renderedVerdict({
       channel: "attention",
       forward_statement: "Connector code needs a fix before this can collect again.",
@@ -1023,6 +1085,7 @@ test("syncs ranking only treats attention plus primary owner action as need-your
   const ownerFirst = connector({
     connection_id: "cin_owner",
     display_name: "Z owner-required source",
+    source_work: "needs_owner",
     rendered_verdict: renderedVerdict({
       channel: "attention",
       forward_statement: "Reconnect this account and collection resumes.",

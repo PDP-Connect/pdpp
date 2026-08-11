@@ -9,15 +9,10 @@ import type {
   RefConnectorSummary,
   RefRenderedVerdict,
   RefRequiredAction,
+  RefSourceWorkGroup,
   RefTerminalSetupDisposition,
   RefVerdictTone,
 } from "./ref-client.ts";
-import {
-  deriveRecoveryStep,
-  hasRecoverableWork,
-  type RecoveryStep,
-  recoveryStateGroup,
-} from "./source-recovery-state.ts";
 
 export type SourceWorkGroupId = "needsOwner" | "notMeasured" | "review" | "systemIssue" | "working";
 
@@ -168,6 +163,23 @@ export function sourceAttentionHeadline(groups: SourceWorkGroups): SourceAttenti
 
 const UNDERSCORE_RE = /_/g;
 
+const UI_GROUP_BY_SERVER_GROUP: Readonly<Record<RefSourceWorkGroup, SourceWorkGroupId | null>> = {
+  needs_owner: "needsOwner",
+  not_measured: "notMeasured",
+  none: null,
+  review: "review",
+  system_issue: "systemIssue",
+  working: "working",
+};
+
+const SERVER_GROUP_STATUS_LABEL: Readonly<Record<Exclude<RefSourceWorkGroup, "none">, string>> = {
+  needs_owner: "needs you",
+  not_measured: "is not measured",
+  review: "needs review",
+  system_issue: "needs attention",
+  working: "is working",
+};
+
 const VERDICT_TONE_STATUS: Record<RefVerdictTone, Pick<SourceStatusFlag, "dot" | "kind" | "tone">> = {
   amber: { dot: "◐", kind: "degraded", tone: "warning" },
   green: { dot: "●", kind: "healthy", tone: "success" },
@@ -202,15 +214,11 @@ export function isRevokedConnector(connector: RefConnectorSummary): boolean {
  * draft simply does not have yet), so this is a lifecycle check independent
  * of the verdict, exactly like {@link isRevokedConnector}. Prefers the
  * server-derived `owner_state.resolver` (the closed, exhaustively-tested
- * source of truth — `runtime/owner-state.ts`) and falls back to the raw
- * `status` field for a reference build that predates `owner_state`. See
- * fix-pending-connection-discovery design.
+ * source of truth — `runtime/owner-state.ts`). A missing server state is not
+ * reconstructed from the raw lifecycle field.
  */
 export function isSetupInProgressConnector(connector: RefConnectorSummary): boolean {
-  if (connector.owner_state) {
-    return connector.owner_state.resolver === "setup_in_progress";
-  }
-  return connector.status === "draft";
+  return connector.owner_state?.resolver === "setup_in_progress";
 }
 
 export function isOwnerSatisfiableAction(action: RefRequiredAction | null | undefined): action is RefRequiredAction {
@@ -435,85 +443,6 @@ export function ownerActionAvailabilityByStream(
   return out;
 }
 
-function sourceIssueStatus(verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>): string | null {
-  if (verdict.pill.tone === "red" || verdict.pill.label === "Can't collect") {
-    return "can't collect";
-  }
-  // "Needs refresh" is amber-toned but not-actually-broken (idle/stale/
-  // owner_refresh_due) — it must not read as "degraded". Key off the pill
-  // label, not tone alone, so this stays in sync with the server's amber
-  // label split (rendered-verdict.ts amberLabel).
-  if (verdict.pill.label === "Needs refresh") {
-    return "needs a refresh";
-  }
-  // "Syncing" means an active run is already doing the work a "Needs
-  // refresh" nudge would ask for (rendered-verdict.ts labelForPill's
-  // active-run softening) — it must not fall through to "is degraded" just
-  // because the underlying tone is still honestly amber. Bail out here so
-  // the caller's `isWorking` branch renders it as active progress instead.
-  if (verdict.pill.label === "Syncing") {
-    return null;
-  }
-  if (verdict.pill.tone === "amber" || verdict.pill.label === "Degraded") {
-    return "is degraded";
-  }
-  if (verdict.channel === "attention") {
-    return "needs review";
-  }
-  return null;
-}
-
-function isWorking(verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>): boolean {
-  return verdict.pill.label === "Checking" || verdict.pill.label === "Syncing";
-}
-
-function isNotMeasured(verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>): boolean {
-  return verdict.pill.tone === "grey" || verdict.pill.label === "Not measured";
-}
-
-const RECOVERY_STATUS_LABEL: Partial<Record<RecoveryStep, string>> = {
-  active: "is syncing details",
-  cooling: "is waiting to retry",
-  queued: "is catching up",
-  stalled: "recovery is stalled",
-};
-
-const RECOVERY_WHAT: Partial<Record<RecoveryStep, string>> = {
-  active: "Syncing details now.",
-  cooling: "Waiting until it is safe to retry details.",
-  queued: "Catching up details when it is safe to retry.",
-  stalled: "Recovery has stopped making progress and needs a look.",
-};
-
-/**
- * Route durable recoverable detail work through the typed recovery step. Returns
- * a passive-progress ("PDPP is working") item for active/queued/cooling recovery
- * and a system-issue item for a stalled queue. Returns `null` when there is no
- * recoverable-work evidence, when the verdict is already interrupting the owner
- * (`attention` channel — handled by the needs-you branch), or when the step is
- * not one of the recovery-owned passive/stalled states (owner_required/eligible/
- * system_issue/none are covered by the surrounding branches). Never emits a
- * "Checking" label for an inactive queue.
- */
-function recoveryWorkItem(connector: RefConnectorSummary, verdict: RefRenderedVerdict): SourceWorkItem | null {
-  if (verdict.channel === "attention" || !hasRecoverableWork(connector.connection_health.detail_gap_backlog)) {
-    return null;
-  }
-  const step = deriveRecoveryStep(verdict, connector.connection_health);
-  const group = recoveryStateGroup(step);
-  if (group !== "working" && group !== "systemIssue") {
-    return null;
-  }
-  const statusLabel = RECOVERY_STATUS_LABEL[step];
-  if (!statusLabel) {
-    return null;
-  }
-  return itemFromConnector(connector, group === "working" ? "working" : "systemIssue", {
-    statusLabel,
-    what: RECOVERY_WHAT[step] ?? verdict.forward_statement,
-  });
-}
-
 function itemFromConnector(
   connector: RefConnectorSummary,
   group: SourceWorkGroupId,
@@ -567,88 +496,21 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
   }
 
   const verdict = connector.rendered_verdict;
-  if (!verdict) {
-    const summary = deriveFailureSummary(connector.connection_health, null);
-    if (!summary) {
-      return null;
-    }
-    if (summary.ownerActionRequired) {
-      return itemFromConnector(connector, "needsOwner", {
-        actionLabel: summary.actionLabel ?? "Review source",
-        statusLabel: "needs you",
-        what: summary.prose,
-      });
-    }
-    return itemFromConnector(connector, "systemIssue", {
-      statusLabel: "is degraded",
-      what: summary.prose,
-    });
-  }
-
   const ownerAction = primaryOwnerSatisfiableAction(verdict);
-  if (verdict.channel === "attention" && ownerAction) {
-    return itemFromConnector(connector, "needsOwner", {
-      actionLabel: ownerAction.cta,
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: ownerAction.remediation is optional (RefActionRemediation | undefined); tsc rejects removing this guard.
-      deviceLocal: ownerAction.remediation?.target.kind === "local_device",
-      statusLabel: "needs you",
-      what: verdict.forward_statement,
-    });
+  const serverGroup = connector.source_work;
+  const group = serverGroup ? UI_GROUP_BY_SERVER_GROUP[serverGroup] : null;
+  if (!serverGroup || serverGroup === "none" || !group) {
+    return null;
   }
-
-  if (ownerAction) {
-    return itemFromConnector(connector, "review", {
-      actionLabel: ownerAction.cta,
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: ownerAction.remediation is optional (RefActionRemediation | undefined); tsc rejects removing this guard.
-      deviceLocal: ownerAction.remediation?.target.kind === "local_device",
-      // The concrete CTA (`ownerAction.cta`, e.g. "Refresh now" / "Retry now")
-      // carries the row copy; the statusLabel is a neutral fallback, never the
-      // "ready for review" taxonomy phrasing.
-      statusLabel: ownerAction.cta,
-      what: verdict.forward_statement,
-    });
-  }
-
-  // Durable recoverable detail work the recovery governor owns. This is passive
-  // progress the system continues on cadence — route queued/cooling recovery to
-  // "PDPP is working" (never "is degraded" or "Checking") and a stalled queue to
-  // a system issue, BEFORE the generic amber→system-issue fallthrough below so
-  // an inactive backlog does not read as a broken connection. Needs-you and
-  // owner-runnable recovery are already handled by the branches above.
-  const recovery = recoveryWorkItem(connector, verdict);
-  if (recovery) {
-    return recovery;
-  }
-
-  const statusLabel = sourceIssueStatus(verdict);
-  if (statusLabel) {
-    // "Needs refresh" is not a system/connector defect — it must not land under
-    // the "System or connector issue" / "no account action is needed from you"
-    // group copy. Route it to "review" ("Available actions"), same as a
-    // refresh_now-bearing verdict above, even when no required action is wired
-    // up yet (e.g. an owner-paused schedule with no other stale signal).
-    const group = verdict.pill.label === "Needs refresh" ? "review" : "systemIssue";
-    return itemFromConnector(connector, group, {
-      statusLabel,
-      what: verdict.forward_statement,
-    });
-  }
-
-  if (isWorking(verdict)) {
-    return itemFromConnector(connector, "working", {
-      statusLabel: "is working",
-      what: verdict.forward_statement,
-    });
-  }
-
-  if (isNotMeasured(verdict)) {
-    return itemFromConnector(connector, "notMeasured", {
-      statusLabel: "is not measured",
-      what: verdict.forward_statement,
-    });
-  }
-
-  return null;
+  const actionLabel = ownerAction ? ownerAction.cta : null;
+  const deviceLocal = Boolean(ownerAction?.remediation && ownerAction.remediation.target.kind === "local_device");
+  const what = verdict ? verdict.forward_statement : SOURCE_WORK_GROUP_COPY[group].note;
+  return itemFromConnector(connector, group, {
+    actionLabel,
+    deviceLocal,
+    statusLabel: SERVER_GROUP_STATUS_LABEL[serverGroup],
+    what,
+  });
 }
 
 export function projectSourceActionability(connector: RefConnectorSummary): SourceActionabilityProjection {
@@ -665,9 +527,12 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
     terminalSetupDisposition
   );
   return {
-    failureSummary: pending
-      ? null
-      : deriveFailureSummary(connector.connection_health, connector.rendered_verdict ?? null),
+    // A failure summary is display formatting for a server verdict. Never use
+    // the raw health snapshot as a classifier when the verdict is absent.
+    failureSummary:
+      pending || !connector.rendered_verdict
+        ? null
+        : deriveFailureSummary(connector.connection_health, connector.rendered_verdict),
     label,
     nextAction: formatRenderedRequiredAction(connector.rendered_verdict, pending, terminalSetupDisposition),
     ownerActionByStream: pending ? {} : ownerActionAvailabilityByStream(connector.rendered_verdict ?? null),

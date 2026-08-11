@@ -89,6 +89,30 @@ export type OwnerStateResolver =
   | "system_degraded";
 
 /**
+ * Server-owned owner-console work bucket. This is a presentation boundary,
+ * not a second health state machine: it is a total mapping from the closed
+ * resolver above, so clients never classify raw health or verdict fields.
+ */
+export type SourceWorkGroup = "needs_owner" | "not_measured" | "review" | "system_issue" | "working" | "none";
+
+const SOURCE_WORK_GROUP_BY_RESOLVER: Readonly<Record<OwnerStateResolver, SourceWorkGroup>> = {
+  blocked_maintainer: "system_issue",
+  collecting: "working",
+  healthy: "none",
+  needs_owner: "needs_owner",
+  not_measured: "not_measured",
+  owner_paused: "review",
+  refresh_due: "review",
+  retired: "none",
+  setup_in_progress: "needs_owner",
+  system_degraded: "system_issue",
+};
+
+export function sourceWorkGroupFromOwnerState(resolver: OwnerStateResolver): SourceWorkGroup {
+  return SOURCE_WORK_GROUP_BY_RESOLVER[resolver];
+}
+
+/**
  * Who acts next for this owner state. Mirrors `RequiredAction.audience` but
  * collapses "no action" (`none`/absent) into an explicit resolver-only
  * value so the console never has to infer owner-of-state from an empty

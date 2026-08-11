@@ -272,6 +272,20 @@ function toConnectorOverview(summary: RefConnectorSummary, streams: StreamSummar
   };
 }
 
+function gapStreamNames(gap: unknown): string[] {
+  if (typeof gap === "string") {
+    return [gap];
+  }
+  if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+    return [];
+  }
+  const row = gap as Record<string, unknown>;
+  const scope = row.scope && typeof row.scope === "object" && !Array.isArray(row.scope) ? row.scope : null;
+  return [row.stream, row.stream_id, row.parent_stream, scope && (scope as Record<string, unknown>).stream].filter(
+    (candidate): candidate is string => typeof candidate === "string"
+  );
+}
+
 function streamsFromConnectorSummary(summary: RefConnectorSummary): StreamSummary[] {
   const recordsByStream = new Map((summary.stream_records ?? []).map((record) => [record.stream, record]));
   const orderedNames = new Set<string>();
@@ -299,6 +313,14 @@ function streamsFromConnectorSummary(summary: RefConnectorSummary): StreamSummar
     });
   };
 
+  const pushGapStreams = (gaps: readonly unknown[] | null | undefined) => {
+    for (const gap of gaps ?? []) {
+      for (const name of gapStreamNames(gap)) {
+        pushStream(name);
+      }
+    }
+  };
+
   // Preserve manifest/source order for known streams, then append live-only
   // streams from the retained-size projection. Local collectors can retain
   // streams before the committed manifest catches up; hiding those rows makes
@@ -309,6 +331,16 @@ function streamsFromConnectorSummary(summary: RefConnectorSummary): StreamSummar
   for (const record of summary.stream_records ?? []) {
     pushStream(record.stream);
   }
+  // Collection facts include streams that were observed without a retained row;
+  // the rendered verdict includes server-classified gap streams even when the
+  // latest run did not retain a count row. Keep both evidence paths visible.
+  for (const entry of summary.collection_report ?? []) {
+    pushStream(entry.stream);
+  }
+  for (const entry of summary.rendered_verdict?.streams ?? []) {
+    pushStream(entry.stream_id);
+  }
+  pushGapStreams(summary.last_run?.known_gaps);
   return streams;
 }
 
@@ -528,6 +560,24 @@ function resolveActiveRunNavigation(input: { overview: ConnectorOverview; schedu
   };
 }
 
+function resolveCredentialUpdateHref({
+  browserSessionRepairHref,
+  sessionBound,
+  storedCredentialUpdateHref,
+}: {
+  browserSessionRepairHref: string | null;
+  sessionBound: boolean;
+  storedCredentialUpdateHref: string | null;
+}): string | null {
+  if (sessionBound) {
+    return browserSessionRepairHref;
+  }
+  if (storedCredentialUpdateHref !== null) {
+    return storedCredentialUpdateHref;
+  }
+  return browserSessionRepairHref;
+}
+
 function StreamDisplayName({
   displayLabel,
   name,
@@ -553,6 +603,7 @@ function StreamDisplayName({
   );
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this server view intentionally composes the detail evidence panels and their binding-aware actions in one owner-visible route.
 function ConnectorPageView({
   model,
   dangerMessage,
@@ -617,18 +668,11 @@ function ConnectorPageView({
     sessionBound || isBrowserBoundConnector(connectorId)
       ? browserSessionReconnectHref(connectorId, repairConnectionId)
       : null;
-  const credentialUpdateHref = (() => {
-    if (sessionBound) {
-      return browserSessionRepairHref;
-    }
-    if (storedCredentialUpdateHref !== null) {
-      return storedCredentialUpdateHref;
-    }
-    if (browserSessionRepairHref !== null) {
-      return browserSessionRepairHref;
-    }
-    return null;
-  })();
+  const credentialUpdateHref = resolveCredentialUpdateHref({
+    browserSessionRepairHref,
+    sessionBound,
+    storedCredentialUpdateHref,
+  });
   // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const primaryActionSurface = connectionPrimaryAction?.surface?.kind ?? null;
   // The detail-page primary action is modality-aware for the same reason the

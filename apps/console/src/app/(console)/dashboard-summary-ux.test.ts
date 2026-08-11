@@ -90,18 +90,20 @@ test('"What\'s been read" CTA names the audit log and does not overclaim "every 
   assert.doesNotMatch(src, READS_OVERCLAIMED_CTA);
 });
 
-// ---- second gate REVISE (2026-07-29), finding 1: Overview's bounded page ----
+// ---- terminal gate REVISE (2026-08-11), finding 1: Overview pagination ----
 
 const LOAD_OVERVIEW_CONNECTORS_USES_BOUNDED_PAGE =
-  /async function loadOverviewConnectors\(\)[\s\S]*loadConnectorSummaryPage\(\{ cursor: undefined \}/;
-const OVERVIEW_PUSHES_INCOMPLETE_FLEET_ISSUE =
-  /if \(connectorsResult\.issue === null && !connectorsResult\.value\.complete\)[\s\S]*overviewLoadIssues\.push\("source_status_incomplete_fleet"\)/;
+  /async function loadOverviewConnectors\(\s*state:[\s\S]*loadConnectorSummaryPage\(state,/;
+const OVERVIEW_RENDERS_PAGER = /<ConnectorSummaryPager[\s\S]*basePath="\/"[\s\S]*hasMore=\{page\.hasMore\}/;
 const NO_LIST_ALL_CONNECTOR_SUMMARIES_IN_PAGE = /\blistAllConnectorSummaries\b/;
+const OVERVIEW_SOURCE_PAGE_ERROR = /function DashboardSourcePageControls[\s\S]*page\.kind === "error"/;
+const OVERVIEW_RENDERS_SOURCE_PAGE_ERROR = /<ConnectorSummaryPageError/;
 
-test("Overview's connector load is ONE bounded page (loadConnectorSummaryPage), never the exhaustive fold", async () => {
+test("Overview's connector load is ONE bounded page with an honest continuation pager", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
 
   assert.match(src, LOAD_OVERVIEW_CONNECTORS_USES_BOUNDED_PAGE);
+  assert.match(src, OVERVIEW_RENDERS_PAGER);
   assert.doesNotMatch(
     src,
     NO_LIST_ALL_CONNECTOR_SUMMARIES_IN_PAGE,
@@ -109,12 +111,9 @@ test("Overview's connector load is ONE bounded page (loadConnectorSummaryPage), 
   );
 });
 
-test("Overview surfaces an honest incompleteness issue when its one bounded page was not the whole fleet", async () => {
+test("Overview exposes an error state when its bounded source page cannot be loaded", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
 
-  // This reuses the EXISTING overviewLoadIssues -> buildPartialDataHero /
-  // toOverviewIssues machinery (SERVER_FLEET_VERDICT_HERO_PRECEDENCE above
-  // proves computeHero gates on overviewLoadIssues.length > 0) — no new UI,
-  // just an honest additional issue value when the fleet page was partial.
-  assert.match(src, OVERVIEW_PUSHES_INCOMPLETE_FLEET_ISSUE);
+  assert.match(src, OVERVIEW_SOURCE_PAGE_ERROR);
+  assert.match(src, OVERVIEW_RENDERS_SOURCE_PAGE_ERROR);
 });

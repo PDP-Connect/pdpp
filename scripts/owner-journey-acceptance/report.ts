@@ -36,6 +36,7 @@ interface LocalResult {
 interface LiveResult {
   authMode: string;
   findings: readonly { class: string; line?: number; path: string; rationale: string; ruleId: string }[];
+  mutationChecks?: { detail?: string; status: string };
   ok: boolean;
   origin: string;
   semanticChecks?: readonly { detail?: string; id: string; status: string }[];
@@ -178,6 +179,12 @@ export function renderReport({
       for (const check of live.semanticChecks) {
         lines.push(`| \`${check.id}\` | ${check.status} | ${escapeCell(check.detail ?? "")} |`);
       }
+      lines.push("");
+    }
+    if (live.mutationChecks) {
+      lines.push(
+        `Mutation probes: ${live.mutationChecks.status} — ${escapeCell(live.mutationChecks.detail ?? "")}. Live owner checks remain read-only.`
+      );
       lines.push("");
     }
     if (live.authMode === "none") {
