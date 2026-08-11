@@ -59,6 +59,7 @@ import {
 } from "../../src/connector-runtime.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import { createRepairBudget } from "../../src/repair-budget.ts";
 import {
   appendNewChildren,
   classifyListingStatus,
@@ -152,21 +153,28 @@ async function fetchListingPage(
   fetchPath: RedditListingFetch,
   path: string,
   onAuthFailed: RedditReauthFn | undefined,
-  attemptedReauth: { done: boolean }
+  repairBudget: ReturnType<typeof createRepairBudget>
 ): Promise<RedditFetchResult> {
   const result = await fetchPath(path);
   const klass = classifyListingStatus(result.status);
-  if (klass !== "auth_failed" || !onAuthFailed || attemptedReauth.done) {
+  if (klass !== "auth_failed" || !onAuthFailed) {
     return result;
   }
   // A 401/403 after this run's session was already live at least once
   // (ensureSession succeeded, prior pages in this stream/run succeeded) is
   // far more often a rotated/expired session cookie than a genuinely dead
-  // login — re-establish the session ONCE and retry this exact request. A
-  // second 401/403 (session repair failed, or the fresh session still gets
-  // rejected) falls through to the real reddit_auth_failed below rather
-  // than looping.
-  attemptedReauth.done = true;
+  // login — re-establish the session ONCE PER RUN and retry this exact
+  // request. `repairBudget` is shared across every stream `collectAllStreams`
+  // iterates (submitted/comments/saved/upvoted/downvoted/hidden) — without
+  // that sharing, a budget scoped to a single `paginate()` call resets for
+  // each stream and a session dead at run start drives one automated login
+  // per stream instead of one per run. A second 401/403 (session repair
+  // failed, or the fresh session still gets rejected, or the budget is
+  // already spent) falls through to the real reddit_auth_failed below
+  // rather than looping or re-spending.
+  if (!repairBudget.tryConsume()) {
+    return result;
+  }
   const recovered = await onAuthFailed();
   if (!recovered) {
     return result;
@@ -182,12 +190,12 @@ export async function paginate(
   delay: (ms: number) => Promise<void> = politeDelay,
   progress?: (message: string, extra?: ProgressExtra) => Promise<void>,
   streamName?: string,
-  onAuthFailed?: RedditReauthFn
+  onAuthFailed?: RedditReauthFn,
+  repairBudget: ReturnType<typeof createRepairBudget> = createRepairBudget()
 ): Promise<RedditChild[]> {
   const all: RedditChild[] = [];
   let after: string | null = null;
   const streamExtra = streamName ? { stream: streamName } : {};
-  const attemptedReauth = { done: false };
 
   for (let guard = 0; guard < MAX_PAGES; guard += 1) {
     await progress?.("Fetching Reddit listing page", {
@@ -198,7 +206,7 @@ export async function paginate(
       cursor_present: Boolean(after),
     });
     const path = pagePath(endpoint, after);
-    const { status, json } = await fetchListingPage(fetchPath, path, onAuthFailed, attemptedReauth);
+    const { status, json } = await fetchListingPage(fetchPath, path, onAuthFailed, repairBudget);
     if (status === 429) {
       await progress?.("Reddit listing page rate limited", {
         ...streamExtra,
@@ -268,6 +276,10 @@ export interface CollectStreamArgs {
    *  matching pre-fix behavior. */
   onAuthFailed?: RedditReauthFn;
   progress: (message: string, extra?: ProgressExtra) => Promise<void>;
+  /** RUN-scoped budget for `onAuthFailed` spends, shared by the caller across
+   *  every stream in this run. Defaults to a fresh one-shot budget so direct
+   *  callers (tests) that don't pass one keep today's per-call ceiling of 1. */
+  repairBudget?: ReturnType<typeof createRepairBudget>;
   state: Record<string, unknown>;
   stream: RedditStreamConfig;
 }
@@ -278,7 +290,7 @@ interface CollectStreamResult {
 }
 
 export async function collectStream(args: CollectStreamArgs): Promise<CollectStreamResult> {
-  const { capture, delay, emit, emitRecord, fetchPath, onAuthFailed, progress, state, stream } = args;
+  const { capture, delay, emit, emitRecord, fetchPath, onAuthFailed, progress, repairBudget, state, stream } = args;
   await progress(stream.progressMessage, { stream: stream.name });
 
   const sinceEpoch = sinceFromState(state, stream.name);
@@ -290,7 +302,8 @@ export async function collectStream(args: CollectStreamArgs): Promise<CollectStr
     delay,
     progress,
     stream.name,
-    onAuthFailed
+    onAuthFailed,
+    repairBudget
   );
 
   const latestEpoch = maxCreatedEpoch(items, sinceEpoch ?? 0);
@@ -438,6 +451,10 @@ export async function collectAllStreams(ctx: BrowserCollectContext): Promise<voi
   const userPath = `/user/${encodeURIComponent(user)}`;
   const fetchPath = makePageFetch(page);
   const onAuthFailed = makeReauth(ctx);
+  // Shared across every stream below — see the repair-budget note on
+  // `fetchListingPage` for why a per-stream budget (created inside
+  // `paginate`) undercounts a run's actual credentialed-login exposure.
+  const repairBudget = createRepairBudget();
 
   for (const stream of buildStreamTable(userPath, emittedAt)) {
     if (!requested.has(stream.name)) {
@@ -451,6 +468,7 @@ export async function collectAllStreams(ctx: BrowserCollectContext): Promise<voi
       emitRecord,
       progress,
       onAuthFailed,
+      repairBudget,
       capture,
     });
     await emit(

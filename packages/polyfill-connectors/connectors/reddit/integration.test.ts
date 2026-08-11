@@ -27,6 +27,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Page } from "playwright";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
+import { createRepairBudget } from "../../src/repair-budget.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   buildStreamTable,
@@ -652,7 +653,7 @@ test("collectAllStreams: mid-run 401 with credentials only on baseCtx (prompted,
   });
 });
 
-test("collectAllStreams: per-stream budget still holds under the env gate — 2 requested streams, 2 independent terminal failures, zero page fetches beyond the first probe each", async () => {
+test("collectAllStreams: credential-less env gate stops the FIRST requested stream's terminal failure before a second stream ever runs — not a per-stream-budget assertion (collectAllStreams doesn't catch-and-continue)", async () => {
   await withoutRedditEnvCredentials(async () => {
     const harness = makeRecordingEmit(validateRecord);
     const { fetch, calls } = makeScriptedFetch({
@@ -662,12 +663,134 @@ test("collectAllStreams: per-stream budget still holds under the env gate — 2 
     const ctx = createMockBrowserContext(fetch, harness, ["submitted", "comments"]);
 
     await assert.rejects(collectAllStreams(ctx as Parameters<typeof collectAllStreams>[0]), /reddit_auth_failed/);
-    // Only the first requested stream's failure surfaces (collectAllStreams
-    // doesn't catch per-stream and continue), but the budget gate must have
-    // been consulted independently per paginate() call with no page fetch
-    // beyond the one scripted 401 for the stream that ran.
+    // The "comments" stream is never reached: collectAllStreams throws on
+    // the first stream's terminal reddit_auth_failed instead of catching
+    // and continuing. This is NOT evidence of a per-stream budget — see the
+    // six-stream credentialed oracle below for the actual run-scoped-budget
+    // proof (old per-paginate()-call budget: 6 logins; shared budget: 1).
     assert.equal(calls.length, 1, "the credential-less gate returns false without any additional fetch");
   });
+});
+
+// ─── B2 fix: run-scoped repair budget, not per-stream ───────────────────
+//
+// buildStreamTable returns 6 streams (submitted, comments, saved, upvoted,
+// downvoted, hidden). Each one 401s on its first page. Old behavior:
+// `attemptedReauth = { done: false }` was declared INSIDE paginate(), which
+// runs once per stream, so the "one-shot" budget reset 6 times per run — 6
+// automated logins. Fixed behavior: a single repairBudget is created once in
+// collectAllStreams and shared across every collectStream() call, so the
+// login count is exactly 1 regardless of how many streams 401.
+//
+// This test drives collectStream directly (not collectAllStreams) so it can
+// assert on BOTH the pre-fix and post-fix wiring from one harness: passing a
+// fresh `createRepairBudget()` per call reproduces the old per-stream reset
+// (6 logins); passing one shared instance reproduces the fix (1 login). If
+// this ever regresses to a fresh-per-call budget, the "shared" case starts
+// asserting 6 instead of 1 and fails.
+test("collectStream x6 streams, every stream's first page 401s: a FRESH repairBudget per call reproduces the old per-stream-reset bug (6 automated logins); ONE SHARED repairBudget across all 6 caps it at exactly 1", async () => {
+  // Mirrors the red-team oracle exactly: "with credentials present and every
+  // page 401ing" (final-combined-uat-redteam-0811.md, B2). Old behavior:
+  // `attemptedReauth = { done: false }` was declared INSIDE paginate(),
+  // which runs once per stream, so the "one-shot" budget reset on every one
+  // of the 6 streams buildStreamTable returns — one automated login per
+  // stream. Fixed behavior: a single repairBudget, created once in
+  // collectAllStreams, is shared across every collectStream() call, so only
+  // the FIRST stream to hit a 401 gets to spend the run's one repair; every
+  // later stream's 401 is correctly terminal (budget already spent), same
+  // as USAA's run-scoped budget for its own N-cards case.
+  async function runSixStreams(budgetPerCall: boolean): Promise<{ loginCalls: number; threw: boolean }> {
+    const harness = makeRecordingEmit(validateRecord);
+    const script: Record<string, RedditFetchResult[]> = {};
+    for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
+      script[stream.endpoint] = [{ status: 401, json: null }, okResult(listing([makePost(`t3_${stream.name}`, 100)]))];
+    }
+    const { fetch } = makeScriptedFetch(script);
+
+    let loginCalls = 0;
+    // biome-ignore lint/suspicious/useAwait: mock matches RedditReauthFn's Promise-returning signature
+    const onAuthFailed = async () => {
+      loginCalls += 1;
+      return true; // repair "succeeds": the retried page for THIS stream goes through
+    };
+    const sharedBudget = createRepairBudget();
+
+    let threw = false;
+    for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
+      try {
+        await collectStream({
+          stream,
+          fetchPath: fetch,
+          state: {},
+          emit: harness.emit,
+          emitRecord: harness.emitRecord,
+          progress: async () => undefined,
+          capture: null,
+          delay: NO_DELAY,
+          onAuthFailed,
+          // pre-fix wiring: a fresh budget every call, exactly as paginate()
+          // used to construct `attemptedReauth` internally per invocation.
+          repairBudget: budgetPerCall ? createRepairBudget() : sharedBudget,
+        });
+      } catch {
+        threw = true;
+        // A real run (collectAllStreams) stops at the first terminal
+        // stream failure too — but this loop keeps going so `loginCalls`
+        // reflects the FULL 6-stream exposure the red-team report measured,
+        // not just however many streams ran before the first throw.
+      }
+    }
+    return { loginCalls, threw };
+  }
+
+  const oldBehavior = await runSixStreams(true);
+  assert.equal(oldBehavior.loginCalls, 6, "OLD (per-stream) budget: one login per stream across 6 streams");
+  assert.equal(
+    oldBehavior.threw,
+    false,
+    "OLD behavior: every stream's own budget lets it repair and succeed, so nothing throws"
+  );
+
+  const fixedBehavior = await runSixStreams(false);
+  assert.equal(fixedBehavior.loginCalls, 1, "FIXED (run-scoped) budget: exactly one login for the whole run");
+  assert.equal(
+    fixedBehavior.threw,
+    true,
+    "FIXED behavior: streams after the first correctly get reddit_auth_failed once the shared budget is spent, rather than each minting its own login"
+  );
+});
+
+test("collectStream: a single successful repair resumes collection for the CURRENT stream past its 401 (counterweight — the budget caps automated logins, it does not just fail everything closed)", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [{ status: 401, json: null }, okResult(listing([makePost("t3_a", 300)]))],
+  });
+  const stream = buildStreamTable(USER_PATH, EMITTED_AT).find((s) => s.name === "submitted");
+  assert.ok(stream);
+
+  const result = await collectStream({
+    stream,
+    fetchPath: fetch,
+    state: {},
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: async () => undefined,
+    capture: null,
+    delay: NO_DELAY,
+    onAuthFailed: () => Promise.resolve(true),
+    repairBudget: createRepairBudget(),
+  });
+
+  assert.equal(
+    result.considered,
+    1,
+    "the post-repair retry's record is collected, not just the login itself succeeding"
+  );
+  assert.equal(
+    harness.skipped.length,
+    0,
+    "no SKIP_RESULT: the repaired session's retry is treated as a normal successful page"
+  );
 });
 
 test("collectStream: threads onAuthFailed through to paginate and self-heals a mid-stream 401", async () => {
