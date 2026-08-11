@@ -345,7 +345,7 @@ test("SQLite COUNTERWEIGHT: an ordinary prose-only failure still falls back to i
 });
 
 test("PostgreSQL: a dispatch wedge surfaces through the product health read model as the typed token, not prose", {
-  skip: !POSTGRES_URL,
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
   timeout: 30_000,
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
@@ -383,7 +383,7 @@ test("PostgreSQL: a dispatch wedge surfaces through the product health read mode
 });
 
 test("PostgreSQL COUNTERWEIGHT: an ordinary prose-only failure still falls back to its error text", {
-  skip: !POSTGRES_URL,
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
   timeout: 30_000,
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
