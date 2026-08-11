@@ -356,7 +356,11 @@ test("introspection: active client token returns documented fields (B3)", async 
 // ─── B3.2 — inactive token: grant_revoked ───────────────────────────────────
 
 test("introspection: revoked grant returns active=false with inactive_reason (B3)", async () => {
-  await withHarness(async ({ asUrl, connectorId }) => {
+  await withHarness(async ({ asUrl, connectorId, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, "b3_revoke_owner");
+    await seedStream(rsUrl, ownerToken, connectorId, "top_artists", [
+      { id: "revoke_1", name: "Revocation fixture", source_updated_at: "2026-01-01T00:00:00Z" },
+    ]);
     const approved = await issueClientGrant(asUrl, "b3_revoke_owner", {
       access_mode: "continuous",
       client_id: "longview",

@@ -25,6 +25,7 @@
  * What the operation owns:
  *   - view/fields mutual exclusion;
  *   - manifest stream visibility for owner actors (`not_found`);
+ *   - grant stream visibility for client actors (`grant_stream_not_allowed`);
  *   - view → fields resolution against the grant
  *     (`field_not_granted` when a view names ungranted fields);
  *   - field/filter validation against the manifest stream;
@@ -206,9 +207,12 @@ export interface RecordsListOutput {
 
 /** Error thrown when the request itself is invalid in a host-independent way. */
 export class RecordsListVisibilityError extends Error {
-  readonly code: "not_found" | "invalid_request" | "field_not_granted";
+  readonly code: "not_found" | "invalid_request" | "field_not_granted" | "grant_stream_not_allowed";
 
-  constructor(code: "not_found" | "invalid_request" | "field_not_granted", message: string) {
+  constructor(
+    code: "not_found" | "invalid_request" | "field_not_granted" | "grant_stream_not_allowed",
+    message: string
+  ) {
     super(message);
     this.name = "RecordsListVisibilityError";
     this.code = code;
@@ -236,15 +240,14 @@ export async function executeRecordsList(
   const manifest = await dependencies.getManifest();
   let grant = dependencies.getGrant();
 
-  // Owner manifest-visibility check. Client actors rely on grant scope to
-  // bound visibility; their manifest stream may not be present and the
-  // existing native route does not 404 in that branch.
   if (input.actor.kind === "owner") {
     const mStream = manifest.streams.find((s) => s.name === input.streamName);
     if (!mStream) {
       throw new RecordsListVisibilityError("not_found", `Stream '${input.streamName}' not found`);
     }
     grant = buildOwnerReadGrant(input.streamName);
+  } else if (!grant.streams.some((stream) => stream.name === input.streamName)) {
+    throw new RecordsListVisibilityError("grant_stream_not_allowed", `Stream '${input.streamName}' not in grant`);
   }
 
   // View / fields mutual exclusion runs as a truthiness test against the

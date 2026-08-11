@@ -30,8 +30,11 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { getCumulativeClientAccessForPackage, revokeGrant } from "../server/auth.ts";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
 const REGEXP_1 = /access_token|refresh_token|"token"|token_hash/;
 const REGEXP_2 = /does not exist/;
@@ -73,6 +76,25 @@ async function registerManifest(asUrl: string, manifest: ConnectorManifest) {
   assert.ok(resp.status < 400, `connector registration for ${manifest.connector_id} should succeed`);
 }
 
+async function seedOwnerConnectorInstance(manifest: ConnectorManifest): Promise<void> {
+  const connectorKey = canonicalConnectorKey(manifest.connector_id);
+  assert.ok(connectorKey, `expected a canonical connector key for ${manifest.connector_id}`);
+  const connectorInstanceId = makeDefaultAccountConnectorInstanceId("owner_local", connectorKey);
+  const now = new Date().toISOString();
+  await createRequestConnectorInstanceStore().upsert({
+    connectorId: connectorKey,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: `${connectorKey} test account`,
+    ownerSubjectId: "owner_local",
+    sourceBinding: { fixture: "batch-consent-parent-package-linkage" },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+}
+
 interface HarnessContext {
   asUrl: string;
   github: ConnectorManifest;
@@ -90,6 +112,8 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>) {
     for (const manifest of [spotify, reddit, github]) {
       // biome-ignore lint/performance/noAwaitInLoops: Sequential test setup and assertion order is intentional.
       await registerManifest(asUrl, manifest);
+      // biome-ignore lint/performance/noAwaitInLoops: Sequential test setup and assertion order is intentional.
+      await seedOwnerConnectorInstance(manifest);
     }
     await fn({ asUrl, github, reddit, spotify });
   } finally {
@@ -369,7 +393,7 @@ test("parent linkage: revoking one child grant updates the cumulative active cou
     const rootPackageId = unwrapBody(root).package_id;
     const rootGrant = unwrapBody(root).grant;
     assert.ok(rootGrant?.child_grants);
-    const spotifyChild = rootGrant.child_grants.find((c) => c.source.id === "spotify");
+    const spotifyChild = rootGrant.child_grants.find((c) => c.source.id === spotify.connector_id);
     assert.ok(spotifyChild, "root grant must include a spotify child grant");
 
     const second = await par(

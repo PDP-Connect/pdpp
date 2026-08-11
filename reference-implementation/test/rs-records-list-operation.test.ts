@@ -14,6 +14,7 @@
  *   - `disclosure.served`-shaped data is populated from the result counts;
  *   - owner manifest visibility raises `not_found`;
  *   - view/fields mutual exclusion raises `invalid_request`;
+ *   - client grants reject absent streams with `grant_stream_not_allowed`;
  *   - view → fields resolution sets `requestParams.fields` and clears
  *     `requestParams.view`;
  *   - a view referencing ungranted fields raises `field_not_granted`;
@@ -34,6 +35,8 @@ import {
   type RecordsListManifestStream,
   RecordsListVisibilityError,
 } from "../operations/rs-records-list/index.ts";
+
+const TOP_LEVEL_REGEX_1 = /Stream 'gone' not in grant/;
 
 const ownerActor: RecordsListActor = { kind: "owner", subject_id: "subj_1" };
 const clientActor: RecordsListActor = {
@@ -117,22 +120,27 @@ test("rs.records.list throws not_found for owner when the manifest does not incl
   );
 });
 
-test("rs.records.list does not 404 on missing manifest stream for client actors", async () => {
-  // Client actors rely on the underlying `queryRecords` capability for
-  // grant-shape rejection (the previous native route delegated to
-  // `queryRecords` for that branch). The operation must not 404.
+test("rs.records.list rejects client streams that are absent from the grant before querying records", async () => {
   let called = false;
-  await executeRecordsList(
-    { actor: clientActor, requestParams: {}, streamName: "gone" },
-    makeDeps({
-      getManifest: () => ({ streams: [] }),
-      queryRecords: () => {
-        called = true;
-        return Promise.resolve({ data: [], has_more: false, object: "list" });
-      },
-    })
+  await assert.rejects(
+    () =>
+      executeRecordsList(
+        { actor: clientActor, requestParams: {}, streamName: "gone" },
+        makeDeps({
+          queryRecords: () => {
+            called = true;
+            return Promise.resolve({ data: [], has_more: false, object: "list" });
+          },
+        })
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsListVisibilityError);
+      assert.equal(err.code, "grant_stream_not_allowed");
+      assert.match(err.message, TOP_LEVEL_REGEX_1);
+      return true;
+    }
   );
-  assert.equal(called, true);
+  assert.equal(called, false);
 });
 
 test("rs.records.list rejects when both view and fields are present", async () => {

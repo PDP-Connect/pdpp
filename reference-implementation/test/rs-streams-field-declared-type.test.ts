@@ -30,8 +30,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { startServer } from "../server/index.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
-const CONNECTOR_ID = "streams-field-declared-type";
+const CONNECTOR_KEY = "codex";
+const CONNECTOR_ID = `https://registry.pdpp.org/connectors/${CONNECTOR_KEY}`;
 const STREAM = "transactions";
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = "pdpp-reference-test-initial-access-token";
@@ -84,6 +87,7 @@ const baseManifest = {
           semantic_fields: ["merchant", "memo"],
         },
       },
+      semantics: "mutable_state",
       schema: {
         properties: {
           // Declares a presentation type AND participates in exact + range +
@@ -101,7 +105,7 @@ const baseManifest = {
         required: ["id", "amount_cents", "posted_at"],
         type: "object",
       },
-      selection: { fields: { mode: "explicit" } },
+      selection: { fields: true, resources: true },
     },
   ],
   version: "1.0.0",
@@ -239,6 +243,20 @@ async function withHttpHarness(fn: (urls: { asUrl: string; rsUrl: string }) => P
       method: "POST",
     });
     assert.equal(registerResp.status, 201, "register connector");
+    const connectorInstanceId = makeDefaultAccountConnectorInstanceId("owner_local", CONNECTOR_KEY);
+    const now = new Date().toISOString();
+    await createRequestConnectorInstanceStore().upsert({
+      connectorId: CONNECTOR_KEY,
+      connectorInstanceId,
+      createdAt: now,
+      displayName: "Declared-Type Test Account",
+      ownerSubjectId: "owner_local",
+      sourceBinding: { fixture: "rs-streams-field-declared-type" },
+      sourceBindingKey: connectorInstanceId,
+      sourceKind: "account",
+      status: "active",
+      updatedAt: now,
+    });
     await fn({ asUrl, rsUrl });
   } finally {
     await closeServer(server);
@@ -268,7 +286,7 @@ interface FieldCapability {
 
 async function readStreamMetadata(rsUrl: string, token: string): Promise<Record<string, FieldCapability>> {
   const { status, body } = await fetchJson(
-    `${rsUrl}/v1/streams/${encodeURIComponent(STREAM)}?connector_id=${encodeURIComponent(CONNECTOR_ID)}`,
+    `${rsUrl}/v1/streams/${encodeURIComponent(STREAM)}?connector_id=${encodeURIComponent(CONNECTOR_KEY)}`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   assert.equal(status, 200, `GET /v1/streams/${STREAM} should be 200`);

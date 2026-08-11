@@ -1,6 +1,7 @@
 const TOP_LEVEL_REGEX_1 = /'missing'/;
 const TOP_LEVEL_REGEX_2 = /'pay_statements'/;
 const TOP_LEVEL_REGEX_3 = /definitely_not_a_field/;
+const TOP_LEVEL_REGEX_4 = /Stream 'gone' not in grant/;
 
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
@@ -276,6 +277,29 @@ test("rs.records.get does not overwrite the grant for client actors", async () =
   assert.deepEqual(result.effectiveGrant, {
     streams: [{ fields: ["employer"], name: "pay_statements" }],
   });
+});
+
+test("rs.records.get rejects client streams that are absent from the grant before fetching records", async () => {
+  let fetched = false;
+  await assert.rejects(
+    () =>
+      executeRecordDetail(
+        { actor: clientActor, recordId: "rec_1", streamName: "gone" },
+        makeDeps({
+          getRecord: () => {
+            fetched = true;
+            return Promise.resolve({ id: "rec_1", object: "record" });
+          },
+        })
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordDetailVisibilityError);
+      assert.equal(err.code, "grant_stream_not_allowed");
+      assert.match(err.message, TOP_LEVEL_REGEX_4);
+      return true;
+    }
+  );
+  assert.equal(fetched, false);
 });
 
 test("rs.records.get awaits async dependency promises", async () => {

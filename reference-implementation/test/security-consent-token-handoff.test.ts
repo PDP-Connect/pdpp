@@ -26,10 +26,14 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { consumeConsentExchangeCode, createConsentExchangeCode } from "../server/auth.ts";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
+const OWNER_SUBJECT_ID = "owner_local";
+const NOW = "2026-05-31T00:00:00.000Z";
 
 interface TestHttpServer {
   close: (callback: () => void) => void;
@@ -154,10 +158,28 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>): Promise<
       method: "POST",
     });
     assert.equal(registerResp.status, 201);
+    await seedSpotifyInstance(spotifyManifest);
     await fn({ asUrl, spotifyManifest });
   } finally {
     await closeServer(server);
   }
+}
+
+async function seedSpotifyInstance(spotifyManifest: SpotifyManifest): Promise<void> {
+  const connectorId = canonicalConnectorKey(spotifyManifest.connector_id);
+  assert.ok(connectorId, "spotify manifest must resolve to a canonical connector key");
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId: "cin_security_consent_handoff_spotify",
+    createdAt: NOW,
+    displayName: "Security Consent Handoff Spotify",
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    sourceBinding: { account_hint: "security-consent-handoff@example.com" },
+    sourceBindingKey: "security-consent-handoff@example.com",
+    sourceKind: "account",
+    status: "active",
+    updatedAt: NOW,
+  });
 }
 
 test("security: harden consent token handoff", async (t) => {

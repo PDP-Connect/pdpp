@@ -318,7 +318,7 @@ test("single_use: second token issuance is rejected with grant_consumed (B6)", a
     // HTTP 403. This is the consumption enforcement, not a generic error.
     await assert.rejects(
       () =>
-        issueToken(approved.grant.grant_id, "b6_reissue_owner", "longview", null, {
+        issueToken(approved.grant.grant_id, "b6_reissue_owner", "longview", approved.grant.expires_at ?? null, {
           source: "b6_second_issuance",
         }),
       (err: unknown) => {

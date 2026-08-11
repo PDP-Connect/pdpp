@@ -24,8 +24,10 @@ import {
   getOwnerDeviceAuthorizationByUserCode as getOwnerDeviceAuthorizationByUserCodeUntyped,
   initiateOwnerDeviceAuthorization as initiateOwnerDeviceAuthorizationUntyped,
 } from "../server/auth.ts";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer as startServerUntyped } from "../server/index.ts";
 import { deriveOwnerCsrfSecretFromString, issueOwnerCsrfToken } from "../server/owner-csrf.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 // server/index.js (startServer) and server/auth.ts (device authorization)
 // are untyped JS (allowJs, checkJs:false). Local interfaces model only
@@ -74,6 +76,8 @@ const SPOTIFY_MANIFEST: { connector_id: string; [key: string]: unknown } = JSON.
 );
 
 const TEST_PASSWORD = "csrf-regression-test-password";
+const OWNER_SUBJECT_ID = "owner_local";
+const NOW = "2026-05-31T00:00:00.000Z";
 const CSRF_FIELD_PATTERN = /<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/;
 
 async function closeServer(server: ClosableServer): Promise<void> {
@@ -216,6 +220,7 @@ async function startPendingConsent(asUrl: string): Promise<string> {
   if (!registerResp.ok && registerResp.status !== 409) {
     throw new Error(`connector registration failed: ${registerResp.status} ${await registerResp.text()}`);
   }
+  await seedSpotifyInstance();
   const resp = await fetch(`${asUrl}/oauth/par`, {
     body: JSON.stringify({
       authorization_details: [
@@ -239,6 +244,23 @@ async function startPendingConsent(asUrl: string): Promise<string> {
   }
   const body = (await resp.json()) as { request_uri: string };
   return body.request_uri;
+}
+
+async function seedSpotifyInstance(): Promise<void> {
+  const connectorId = canonicalConnectorKey(SPOTIFY_MANIFEST.connector_id);
+  assert.ok(connectorId, "spotify manifest must resolve to a canonical connector key");
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId: "cin_owner_csrf_spotify",
+    createdAt: NOW,
+    displayName: "Owner CSRF Spotify",
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    sourceBinding: { account_hint: "owner-csrf@example.com" },
+    sourceBindingKey: "owner-csrf@example.com",
+    sourceKind: "account",
+    status: "active",
+    updatedAt: NOW,
+  });
 }
 
 // ── login: form POST without CSRF -> 403 + no session ────────────────────────

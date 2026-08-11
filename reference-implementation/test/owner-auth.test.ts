@@ -10,6 +10,7 @@ import { getOwnerDeviceAuthorizationByUserCode, initiateOwnerDeviceAuthorization
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { closeDb, getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -21,6 +22,8 @@ const SPOTIFY_MANIFEST = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manif
 const TEST_DCR_INITIAL_ACCESS_TOKEN = "pdpp-reference-test-initial-access-token";
 const TEST_PASSWORD = "placeholder-test-password";
 const CUSTOM_SUBJECT_ID = "owner_testing_custom";
+const OWNER_SUBJECT_ID = "owner_local";
+const NOW = "2026-05-31T00:00:00.000Z";
 const CSRF_HIDDEN_FIELD_PATTERN = /<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/;
 
 interface CloseableServer {
@@ -118,6 +121,7 @@ async function startPendingConsent(asUrl: string, overrides: Record<string, unkn
     const text = await registerResp.text();
     throw new Error(`connector registration failed: ${registerResp.status} ${text}`);
   }
+  await seedSpotifyInstance();
   const resp = await fetch(`${asUrl}/oauth/par`, {
     body: JSON.stringify({
       authorization_details: [
@@ -146,6 +150,28 @@ async function startPendingConsent(asUrl: string, overrides: Record<string, unkn
     throw new Error(`par did not return request_uri: ${JSON.stringify(body)}`);
   }
   return body.request_uri;
+}
+
+async function seedSpotifyInstance(): Promise<void> {
+  const connectorId = canonicalConnectorKey(SPOTIFY_MANIFEST.connector_id);
+  assert.ok(connectorId, "spotify manifest must resolve to a canonical connector key");
+  const store = createSqliteConnectorInstanceStore();
+  await Promise.all(
+    [OWNER_SUBJECT_ID, CUSTOM_SUBJECT_ID].map((ownerSubjectId) =>
+      store.upsert({
+        connectorId,
+        connectorInstanceId: `cin_owner_auth_spotify_${ownerSubjectId}`,
+        createdAt: NOW,
+        displayName: "Owner Auth Spotify",
+        ownerSubjectId,
+        sourceBinding: { account_hint: `${ownerSubjectId}@example.com` },
+        sourceBindingKey: `${ownerSubjectId}@example.com`,
+        sourceKind: "account",
+        status: "active",
+        updatedAt: NOW,
+      })
+    )
+  );
 }
 
 function getRawSetCookieList(resp: Response): string[] {
