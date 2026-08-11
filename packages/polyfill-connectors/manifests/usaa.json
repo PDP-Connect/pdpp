@@ -45,17 +45,17 @@
     }
   },
   "capabilities": {
-    "human_interaction": ["manual_action"],
+    "human_interaction": ["manual_action", "otp"],
     "browser_surface_kind": "usaa_transaction_export",
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,
       "maximum_staleness_seconds": 86400,
-      "interaction_posture": "manual_action_likely",
+      "interaction_posture": "otp_likely",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "high",
       "background_safe": false,
-      "rationale": "USAA requires interactive login and short sessions; refresh manually so the owner is present."
+      "rationale": "USAA requires interactive login, may request a one-time code, and uses short sessions; refresh manually so the owner is present."
     },
     "public_listing": {
       "listed": true,
