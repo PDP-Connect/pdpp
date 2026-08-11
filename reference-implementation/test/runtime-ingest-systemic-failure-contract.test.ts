@@ -271,6 +271,108 @@ test("runtime-level: a systemic failure (run_terminal) fails the run terminally 
   }
 });
 
+test("runtime-level: a permanent identity rejection stays partial while STATE and DONE commit", async () => {
+  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const { asPort, rsPort } = server;
+  const asUrl = `http://localhost:${asPort}`;
+  const rsUrl = `http://localhost:${rsPort}`;
+  const connectorId = "runtime-partial-identity-rejection";
+  const runId = "run_partial_identity_rejection_probe";
+  await registerManifest(asUrl, manifest(connectorId));
+  const ownerToken = await issueOwnerToken(asUrl);
+  const { connectorInstanceId } = await admitOwnerRunConnection({
+    connectorId,
+    connectorInstanceId: null,
+    connectorInstanceStore: createRequestConnectorInstanceStore(),
+    ownerSubjectId: "owner_local",
+  });
+  const progress: unknown[] = [];
+  const { connectorPath, cleanup } = createTestConnector([
+    validRecord("p1"),
+    {
+      data: { id: "not-p2", value: "permanent identity mismatch" },
+      emitted_at: nowIso(),
+      key: "p2",
+      stream: "items",
+      type: "RECORD",
+    },
+    validRecord("p3"),
+    { cursor: { cursor: "partial_rejection_cursor" }, stream: "items", type: "STATE" },
+    { records_emitted: 3, status: "succeeded", type: "DONE" },
+  ]);
+
+  try {
+    const result = await runConnector({
+      admitRunConnection: fakeAdmitRunConnection(),
+      collectionMode: "full_refresh",
+      connectorId,
+      connectorInstanceId,
+      connectorPath,
+      manifest: manifest(connectorId),
+      onInteraction: async () => ({}),
+      onProgress: (message) => progress.push(message),
+      ownerToken,
+      persistState: true,
+      rsUrl,
+      runId,
+      scope: { streams: [{ name: "items" }] },
+      state: null,
+    });
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.run_id, runId);
+    assert.equal(result.records_emitted, 3);
+    assert.equal(result.checkpoint_summary?.records_flushed, 3);
+
+    const ingestProgress = progress.filter(
+      (message): message is { accepted: number; rejected: number; stream: string; type: string } =>
+        Boolean(message && typeof message === "object" && (message as { type?: unknown }).type === "ingest")
+    );
+    assert.deepEqual(ingestProgress, [{ accepted: 2, rejected: 1, stream: "items", type: "ingest" }]);
+
+    const { body: timelineBody, status: timelineStatus } = await fetchJson(
+      `${asUrl}/_ref/runs/${encodeURIComponent(runId)}/timeline`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
+    );
+    assert.equal(timelineStatus, 200);
+    const timelineEvents = ((timelineBody as { data?: unknown[] }).data || []) as Array<{
+      data?: Record<string, unknown>;
+      event_type?: string;
+    }>;
+    const batchEvents = timelineEvents.filter((event) => event.event_type === "run.batch_ingested");
+    assert.equal(batchEvents.length, 1);
+    assert.deepEqual(
+      {
+        batch_size: batchEvents[0]?.data?.batch_size,
+        records_accepted: batchEvents[0]?.data?.records_accepted,
+        records_rejected: batchEvents[0]?.data?.records_rejected,
+        total_records_flushed: batchEvents[0]?.data?.total_records_flushed,
+      },
+      { batch_size: 3, records_accepted: 2, records_rejected: 1, total_records_flushed: 3 }
+    );
+    const completed = timelineEvents.find((event) => event.event_type === "run.completed");
+    assert.equal(completed?.data?.records_flushed, 3);
+
+    const state = (await loadSyncState(connectorId, ownerToken, {
+      connectorInstanceId,
+      rsUrl,
+    })) as Record<string, { cursor?: string } | undefined> | null;
+    assert.equal(state?.items?.cursor, "partial_rejection_cursor");
+
+    const { body: itemsBody, status: itemsStatus } = await fetchJson(
+      `${rsUrl}/v1/streams/items/records?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
+    );
+    assert.equal(itemsStatus, 200);
+    const itemsRecords = (itemsBody as { data?: unknown[]; records?: unknown[] }).data || [];
+    const ids = itemsRecords.map((record) => (record as { id?: unknown }).id).sort();
+    assert.deepEqual(ids, ["p1", "p3"]);
+    assert.ok(!ids.includes("not-p2"), "the permanently rejected record must not be stored");
+  } finally {
+    cleanup();
+    await closeServer(server);
+  }
+});
+
 test("runtime-level: accepted-prefix idempotent retry — resubmitting the same records after a prior run produces exactly one row per id, no duplicates", async () => {
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const { asPort, rsPort } = server;
