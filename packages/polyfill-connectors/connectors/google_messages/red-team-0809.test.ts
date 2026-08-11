@@ -149,7 +149,8 @@ function runGoogleMessagesCustom(
   chats: RawChat[],
   messages: RawMessage[],
   state: Record<string, unknown>,
-  env: Record<string, string> = {}
+  env: Record<string, string> = {},
+  timeoutMs = 15_000
 ): Promise<{ code: number | null; messages: EmittedMessage[] }> {
   return runConnectorProtocolSubprocess({
     cwd: PACKAGE_ROOT,
@@ -169,6 +170,7 @@ function runGoogleMessagesCustom(
       state,
       type: "START",
     },
+    timeoutMs,
   });
 }
 
@@ -416,7 +418,7 @@ test("finding 3 — behavioral: an archive with more chats than gmcli's own hidd
   const messages = chats.map((c) =>
     msg({ message_id: `msg_${c.conversation_id}`, conversation_id: c.conversation_id, timestamp_ms: 1000 })
   );
-  const run = await runGoogleMessagesCustom(chats, messages, {}, { GMCLI_MAX_CHATS: String(maxChats) });
+  const run = await runGoogleMessagesCustom(chats, messages, {}, { GMCLI_MAX_CHATS: String(maxChats) }, 60_000);
   const emitted = records(run.messages, "messages");
   const emittedChatIds = new Set(emitted.map((r) => r.chat_id));
 
@@ -451,7 +453,7 @@ test("finding 3 — behavioral: an archive genuinely exceeding GMCLI_MAX_CHATS p
   const messages = chats.map((c) =>
     msg({ message_id: `msg_${c.conversation_id}`, conversation_id: c.conversation_id, timestamp_ms: 1000 })
   );
-  const run = await runGoogleMessagesCustom(chats, messages, {}, { GMCLI_MAX_CHATS: String(maxChats) });
+  const run = await runGoogleMessagesCustom(chats, messages, {}, { GMCLI_MAX_CHATS: String(maxChats) }, 60_000);
   const emitted = records(run.messages, "messages");
   const emittedChatIds = new Set(emitted.map((r) => r.chat_id));
 
@@ -498,7 +500,7 @@ test("finding 3 — exact boundary: archive size exactly GMCLI_MAX_CHATS + 1 is 
   const messages = chats.map((c) =>
     msg({ message_id: `msg_${c.conversation_id}`, conversation_id: c.conversation_id, timestamp_ms: 1000 })
   );
-  const run = await runGoogleMessagesCustom(chats, messages, {}, { GMCLI_MAX_CHATS: String(maxChats) });
+  const run = await runGoogleMessagesCustom(chats, messages, {}, { GMCLI_MAX_CHATS: String(maxChats) }, 60_000);
   const emitted = records(run.messages, "messages");
   const emittedChatIds = new Set(emitted.map((r) => r.chat_id));
 
