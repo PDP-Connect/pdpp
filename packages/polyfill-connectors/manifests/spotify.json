@@ -204,7 +204,7 @@
     },
     {
       "name": "recently_played",
-      "description": "Recent play events (max 50 via Web API).",
+      "description": "Recent play events returned by Spotify; the Web API limits each page to 50 items and the connector follows cursor pagination.",
       "display": {
         "label": "Your recent plays",
         "detail": "Recent track plays with played_at timestamps. API limited to last 50."
