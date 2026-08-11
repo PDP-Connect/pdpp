@@ -1,101 +1,101 @@
 ## Purpose
 
-Provide bounded, replayable evidence that PDPP tests detect plausible faults without turning mutation counts or scores into quality gates.
+Provide bounded, reviewable evidence that selected PDPP tests detect plausible trusted faults before the repository invests in shared mutation infrastructure.
 
 ## ADDED Requirements
 
-### Requirement: Mutation work SHALL be declared as a validated packet
+### Requirement: Version one SHALL execute only trusted repository adapters
 
-Each run SHALL accept a machine-readable packet that identifies the repository revision, risk being tested, mutation target and change, generator provenance, selected test authority, relevant backstop, resource budget, and forbidden execution profiles. The service SHALL reject incomplete, malformed, or revision-mismatched packets before changing source files.
+Version one SHALL be a local developer harness with no daemon, queue, server, or network API. It SHALL execute only reviewed, repository-owned adapter and operator identifiers with validated parameters and exact target preimages. It SHALL NOT execute caller-supplied commands, arbitrary patches, or agent-generated source.
 
-#### Scenario: Valid packet is accepted
-- **WHEN** a packet identifies a clean matching revision, a concrete mutation, accounted tests, a backstop, and finite budgets
-- **THEN** the service SHALL accept it for execution
+#### Scenario: Trusted adapter is requested
+- **WHEN** an intent names a registered adapter and valid checked-in operator
+- **THEN** repository policy SHALL derive the effective command, environment, judge, and limits
 
-#### Scenario: Packet does not match the checkout
-- **WHEN** the packet's revision or target content does not match the checkout
-- **THEN** the service SHALL reject it without applying the mutation
+#### Scenario: Arbitrary executable input is requested
+- **WHEN** an intent supplies executable source, command arguments, working directory, environment policy, or an unregistered operator
+- **THEN** the harness SHALL reject it before execution
 
-### Requirement: Mutation execution SHALL establish a passing baseline
+### Requirement: Intent, attempt, and triage evidence SHALL remain separate
 
-The service SHALL run the packet's selected tests against the unmodified revision before applying the mutation. It SHALL NOT classify a mutant as killed or survived unless the baseline passes under the same declared execution conditions.
+An intent packet SHALL record the requested risk, trusted adapter and operator descriptors, base identity, and requested budget. An attempt receipt SHALL record immutable machine observations from one execution. A triage receipt SHALL separately record a later reviewer judgment bound to one attempt. The harness SHALL derive conventional killed, survived, or inconclusive projections from valid attempt evidence and SHALL NOT accept those projections or triage dispositions from the intent.
 
-#### Scenario: Baseline fails
-- **WHEN** any selected baseline test fails, times out, or cannot run
-- **THEN** the service SHALL stop that trial and classify it as an execution error rather than a mutation result
+#### Scenario: Execution completes
+- **WHEN** a trusted adapter produces valid execution evidence
+- **THEN** the attempt receipt SHALL preserve baseline, materialization, focused, backstop, reachability, cleanup, timeout, and error observations without adding a human judgment
 
-### Requirement: Mutation execution SHALL be isolated and reversible
+#### Scenario: Reviewer classifies evidence
+- **WHEN** an independent reviewer judges an attempt actionable, likely equivalent, uninteresting, deferred, or invalid
+- **THEN** that judgment SHALL be appended as a separate triage receipt with reviewer claim, evidence reference, reason, and timestamp
 
-The service SHALL apply each mutation in isolation, SHALL prevent mutation trials from overlapping beyond the declared resource budget, and SHALL restore the checkout to its exact pre-trial state before another trial or successful exit. A cleanup failure SHALL be visible and SHALL prevent subsequent trials in that checkout.
+### Requirement: Evidence identity and integrity claims SHALL be precise
 
-#### Scenario: Mutant is exercised
-- **WHEN** the service applies a mutation and runs its selected tests
-- **THEN** no other packet's source mutation SHALL be present in that trial
+Canonicalization and hash algorithms SHALL be versioned. The deterministic trial key SHALL bind the intent digest, repository tree, adapter version, policy version, and mutation identity. Each execution SHALL receive a distinct random attempt identifier. Content digests SHALL establish internal consistency or tamper evidence relative to an independently retained digest; they SHALL NOT be represented as issuer authentication.
 
-#### Scenario: Trial is interrupted
-- **WHEN** a trial exits by failure, timeout, or handled termination
-- **THEN** the service SHALL attempt restoration and SHALL verify the pre-trial tree identity before permitting more work
+#### Scenario: Same trial is repeated
+- **WHEN** the same bound trial executes more than once
+- **THEN** the attempts SHALL share a trial key and SHALL have different attempt identifiers and runtime observations
 
-### Requirement: Outcomes SHALL preserve uncertainty
+#### Scenario: Authenticated provenance is unavailable
+- **WHEN** evidence is produced only on a developer-controlled host without a trusted signer or platform attestation
+- **THEN** provenance SHALL be recorded as a claim and SHALL NOT be described as authenticated identity
 
-The service SHALL distinguish at least killed, survived, not exercised, timeout, execution error, equivalent-suspect, and uninteresting outcomes. Equivalent-suspect and uninteresting SHALL require recorded triage and SHALL NOT be inferred only from a passing test run.
+### Requirement: The existing migration oracle SHALL retain its purpose-fit lifecycle
 
-#### Scenario: Selected test detects the mutation
-- **WHEN** the clean baseline passes and an otherwise valid selected test fails because the mutation is present
-- **THEN** the service SHALL classify the mutant as killed and record the detecting test evidence
+The test-migration oracle SHALL retain its existing named mutations, mutation-specific judges, positive control, fixture repositories, and rollback proof. Its structured mode SHALL report the same cases and decisions as its human-readable mode. This adapter SHALL validate structured evidence and crash honesty only; it SHALL NOT be presented as validation of a generic source-mutating executor.
 
-#### Scenario: Selected tests stay green
-- **WHEN** the clean baseline passes and all selected tests pass with the mutation present
-- **THEN** the service SHALL classify the mutant as survived unless independent evidence supports a more specific classification
+#### Scenario: Structured mode runs successfully
+- **WHEN** the existing oracle is run in structured mode
+- **THEN** its named cases, catching checks, holes, positive control, and rollback decision SHALL agree with the legacy result
 
-#### Scenario: Mutation target is not exercised
-- **WHEN** available execution evidence shows that no selected test reaches the mutated behavior
-- **THEN** the service SHALL classify the mutant as not exercised rather than survived
+#### Scenario: Structured evidence is incomplete
+- **WHEN** output is partial, malformed, omits a case or control, exceeds its bound, or the process is interrupted
+- **THEN** the attempt SHALL remain incomplete or invalid and SHALL NOT be projected as killed or survived
 
-### Requirement: Every trial SHALL emit a verifiable receipt
+### Requirement: Test-accounting authority SHALL NOT be overstated
 
-The service SHALL emit a machine-readable receipt bound to the packet, repository revision, pre- and post-restoration tree identity, exact effective commands, environment profile, mutant identity, observed outcomes, timestamps, duration, exit status, and captured diagnostic output. Receipt validation SHALL reject missing or inconsistent evidence.
+Focused checks in the domain pilot SHALL be labeled adapter evidence, not test-accounting authority receipts. Repository-owned policy SHALL select the focused check and mandatory complete owning-suite backstop. Clean and mutant complete backstops SHALL run through the unchanged test-accounting authority on clean committed trees, and mutation evidence SHALL reference its verified receipt digests.
 
-#### Scenario: Receipt is replayed
-- **WHEN** a reviewer validates a receipt against its packet and repository revision
-- **THEN** the reviewer SHALL be able to identify the exact mutation, tests, budgets, result, and cleanup proof without trusting prose
+#### Scenario: Focused mutant check passes
+- **WHEN** the focused check passes with a trusted mutant present
+- **THEN** the mandatory mutant backstop SHALL run; a focused pass followed by a backstop failure SHALL be recorded as a selector miss
 
-#### Scenario: Receipt is altered
-- **WHEN** a bound packet field, command, result, mutant identity, or tree identity is changed after issue
-- **THEN** receipt validation SHALL fail
+#### Scenario: Required backstop cannot complete
+- **WHEN** a clean or mutant backstop is missing, fails its baseline, exceeds budget, or cannot issue a valid authority receipt
+- **THEN** the attempt SHALL be inconclusive and SHALL NOT count as survived
 
-### Requirement: Test selection SHALL respect executable accounting
+### Requirement: Domain mutation attempts SHALL be one-shot and bounded
 
-Selected tests and backstops SHALL resolve through the repository's executable test-accounting authority or an explicitly declared, validated mutation-oracle command. The service SHALL record why each selected test is relevant and SHALL NOT treat static imports alone as complete dependency evidence.
+The GroupMe cursor/frontier pilot SHALL use only checked-in declarative fault operators over permitted production paths while the judge and runner closure remain immutable. Each source-mutating attempt SHALL use a fresh clean committed descendant in a disk-backed workspace. A successful workspace SHALL be deleted; an interrupted or cleanup-failed workspace SHALL be quarantined and detected on the next start.
 
-#### Scenario: Accounted focused tests and backstop are declared
-- **WHEN** a packet selects a focused test set for fast feedback
-- **THEN** it SHALL also identify the relevant accounted package, suite, or control-lane backstop used to measure selection misses
+#### Scenario: Trusted domain operator runs
+- **WHEN** a registered GroupMe operator matches its exact target preimage
+- **THEN** the attempt SHALL record base and mutant trees, permitted changed paths, focused and backstop evidence, environment profile, artifacts, resource observations, and cleanup state
 
-#### Scenario: Unaccounted side lane is requested
-- **WHEN** a packet names an executable test that is neither accounted nor an approved mutation oracle
-- **THEN** the service SHALL reject the packet
+#### Scenario: Attempt is abandoned
+- **WHEN** execution ends before a complete receipt and verified cleanup
+- **THEN** the issued attempt marker SHALL remain incomplete, its workspace SHALL NOT be reused, and a later run SHALL report or quarantine it
 
-### Requirement: Mutation runs SHALL obey explicit safety and resource bounds
+### Requirement: Local execution SHALL use enforceable bounds and honest limitations
 
-Each packet SHALL declare finite wall-time, trial-count, process-concurrency, and cleanup bounds. Local execution SHALL cooperate with the repository's local test-resource controls. Live third-party services, personal data, production credentials, and stateful browser profiles SHALL be forbidden unless a later capability defines an isolated mutation profile for them.
+Repository policy SHALL run one adapter at a time and SHALL set finite limits for attempts, wall time, captured output, workspace bytes, and cleanup time. It SHALL use an environment allowlist and SHALL forbid live credentials, personal data, live third-party services, stateful browsers, and shared production-like databases. CPU and memory limits SHALL be identified as hard only when the host mechanism enforces them; otherwise they SHALL be recorded as advisory observations. Unsupported required limits SHALL cause refusal rather than a portability claim.
 
-#### Scenario: Budget is exhausted
-- **WHEN** a packet reaches a declared time, trial, or process limit
-- **THEN** the service SHALL stop new work, restore the checkout, and report a bounded outcome
+#### Scenario: Hard limit is exceeded
+- **WHEN** wall time, output, workspace, or another enforced limit is exceeded
+- **THEN** execution SHALL stop or be marked interrupted, bounded evidence SHALL be retained, and the attempt SHALL be inconclusive
 
-#### Scenario: Packet requests a forbidden profile
-- **WHEN** a packet requires live credentials, personal data, or an undeclared stateful external profile
-- **THEN** the service SHALL reject it before mutation execution
+#### Scenario: Host cannot enforce required safety
+- **WHEN** the selected adapter requires a hard control that the host does not provide
+- **THEN** the harness SHALL refuse the attempt instead of silently weakening the policy
 
-### Requirement: Mutation evidence SHALL remain advisory until calibrated
+### Requirement: Calibration SHALL end with a pre-registered decision
 
-Initial mutation execution SHALL report evidence without enforcing a repository-wide score or adequacy threshold. A later blocking rule SHALL identify a narrow risk class, a stable operator set, an accountable backstop, observed false-positive and miss evidence, and an explicit rollback path.
+The pilot SHALL remain advisory and SHALL publish raw counts and defined denominators for valid trials, focused-to-backstop misses, invalid faults, execution failures, cleanup failures, runtime, artifact sizes, and reviewer time. It SHALL stop or narrow on any containment or cleanup failure, unexplained selector miss, dominant setup cost, predominantly invalid or trivial faults, or lack of useful evidence within its declared budget. Shared infrastructure SHALL require a later proposal supported by repeated invariants across both adapters and measured reduction in audit cost.
 
-#### Scenario: A survived mutant is reported during calibration
-- **WHEN** an advisory run produces a survived mutant
-- **THEN** the service SHALL nominate it for triage and SHALL NOT automatically fail unrelated changes or require a new test
+#### Scenario: Pilot stays within bounds and produces useful evidence
+- **WHEN** the two adapters produce interpretable evidence without cleanup failures or unexplained selector misses at acceptable compute and review cost
+- **THEN** the decision memo MAY recommend a narrowly scoped shared evidence module and SHALL identify the repeated invariants it would hide
 
-#### Scenario: A test is proposed for deletion
-- **WHEN** mutation evidence shows that another test kills the same sampled mutants
-- **THEN** that evidence alone SHALL NOT authorize deletion because the test may protect a different behavior or fault class
+#### Scenario: Pilot does not justify generalization
+- **WHEN** signal is weak, costs dominate, safety fails, or the adapters do not share a deep stable boundary
+- **THEN** the decision memo SHALL stop or narrow the initiative and retain purpose-fit adapters rather than manufacturing a framework

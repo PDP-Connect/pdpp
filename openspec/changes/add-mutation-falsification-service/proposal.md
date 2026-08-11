@@ -1,21 +1,21 @@
 ## Why
 
-PDPP has strong bespoke falsifiability tests, but no common way to define, run, and audit deliberate faults across its AI-authored implementation and tests. A mutation score would hide the important question: whether a relevant test detects a plausible failure at an acceptable evidence and compute cost.
+PDPP has valuable bespoke falsifiability tests, but their evidence is not consistently machine-readable or comparable. Before adding shared mutation infrastructure, PDPP needs to prove that structured evidence from one existing oracle and one trusted real-domain pilot produces useful signal at acceptable cost.
 
 ## What Changes
 
-- Add a risk-falsification service that accepts machine-readable mutation packets and emits replayable, revision-bound receipts.
-- Require baseline-first, isolated execution, exact cleanup, explicit resource budgets, and honest outcome classification.
-- Route mutation checks through the existing test-accounting authority and record both focused tests and a relevant backstop.
-- Add an adapter for an existing PDPP falsifiability oracle as the first end-to-end implementation.
-- Keep mutation runs advisory during calibration. Do not introduce a repository-wide mutation score, coverage quota, or automatic test-deletion rule.
-- Leave room for later domain-mutator, StrykerJS, and agent-generated-mutant adapters without making any one generator the architecture.
+- Add structured evidence to the existing test-migration oracle without changing its mutation lifecycle, judges, positive control, or rollback proof.
+- Define separate intent, execution-attempt, and reviewer-triage artifacts with honest integrity and provenance claims.
+- Run one trusted, repository-owned GroupMe cursor/frontier pilot with checked-in fault operators, focused adapter evidence, and mandatory complete test-accounting backstops.
+- Pre-register resource budgets, selector-miss rules, evidence metrics, and continue, narrow, or stop criteria.
+- Keep all mutation work local, sequential, advisory, and limited to reviewed adapters.
+- Defer a shared coordinator, generic source-mutating executor, arbitrary or agent-generated patches, StrykerJS, CI scheduling, blocking gates, and automatic test deletion until the pilot evidence justifies a separate proposal.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `mutation-falsification`: Defines mutation packets, execution safety, result classification, evidence receipts, test-authority integration, and calibrated rollout.
+- `mutation-falsification`: Defines trusted local mutation evidence, independent triage, one bounded domain calibration pilot, and the decision gate for any later shared infrastructure.
 
 ### Modified Capabilities
 
@@ -23,7 +23,7 @@ None.
 
 ## Impact
 
-- Adds repository tooling, schemas, tests, and documentation for mutation packets and receipts.
-- Integrates with `test-accounting.manifest.json` and its runners without changing suite ownership.
-- Initially wraps one existing mutation or falsifiability oracle; production behavior and public APIs do not change.
-- Mutation work remains bounded and non-blocking until observed evidence supports a narrower gate.
+- Adds structured output and evidence validation around an existing repository oracle.
+- Adds a bounded GroupMe pilot that uses existing tests and the unchanged test-accounting authority.
+- Does not change product behavior, public APIs, test-accounting authority, or CI requirements.
+- Produces a decision memo before any reusable mutation execution framework is proposed.

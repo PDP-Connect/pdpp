@@ -1,43 +1,25 @@
-## 1. Packet and Receipt Contracts
+## 1. Existing-Oracle Structured Evidence
 
-- [ ] 1.1 Define versioned mutation-packet and mutation-receipt schemas with revision, risk, mutation, provenance, test selection, backstop, budget, outcome, command, diagnostic, and tree-identity fields.
-- [ ] 1.2 Implement strict packet and receipt parsers that reject unknown schema versions, missing bounds, revision mismatches, forbidden profiles, and inconsistent outcome evidence.
-- [ ] 1.3 Add canonical serialization and content binding for packets, receipts, effective commands, mutant content, and pre/post tree identities.
-- [ ] 1.4 Add adversarial tests that alter each bound receipt class and prove validation fails.
+- [ ] 1.1 Define versioned adapter-specific intent, attempt, and triage schemas for `test-migration-oracle/v1`, including canonicalization golden vectors and explicit integrity-versus-authenticity language.
+- [ ] 1.2 Add structured JSON output to the existing test-migration oracle without changing its named mutations, judges, positive control, fixture lifecycle, human output, or rollback proof.
+- [ ] 1.3 Add differential tests requiring legacy and structured modes to report identical cases, catching checks, holes, positive-control result, and rollback result.
+- [ ] 1.4 Add bounded adapter-specific execution evidence for wall time and output, with issued/incomplete/completed attempt states and exact source-checkout unchanged proof.
+- [ ] 1.5 Add corruption, unknown-version, partial-output, crash, timeout, output-cap, missing-case, missing-control, and cleanup-evidence tests.
+- [ ] 1.6 Run the legacy and structured oracle twice on clean revisions, record runtime and artifact costs, and obtain independent review before starting the domain pilot.
 
-## 2. Safe Mutation Executor
+## 2. Trusted GroupMe Domain Pilot
 
-- [ ] 2.1 Implement a baseline-first executor in a disposable clean workspace with one mutation per trial.
-- [ ] 2.2 Integrate finite wall-time, trial-count, process-concurrency, and cleanup bounds with the repository's local test-resource controls.
-- [ ] 2.3 Implement killed, survived, not-exercised, timeout, execution-error, equivalent-suspect, and uninteresting result handling without collapsing uncertainty.
-- [ ] 2.4 Emit receipts atomically with exact effective argv, captured diagnostics, durations, exit status, and cleanup evidence.
-- [ ] 2.5 Add interruption and failure-path tests that prove bounded termination, child cleanup, exact restoration, and refusal to continue after cleanup failure.
+- [ ] 2.1 Register two or three reviewed declarative operators for GroupMe page-ceiling and cursor-progress risks, with exact implementation preimages, permitted postimages, and immutable judge closure.
+- [ ] 2.2 Implement one-shot disk-backed mutant workspaces with free-space preflight, pinned offline frozen dependency materialization, issued markers, successful deletion, interruption quarantine, and next-start recovery.
+- [ ] 2.3 Record focused clean and mutant GroupMe checks as adapter evidence; do not label them test-accounting authority receipts.
+- [ ] 2.4 Run clean and mutant complete `polyfill-connectors` backstops through the unchanged test-accounting authority, including the mutant backstop for every focused survivor, and bind verified receipt digests.
+- [ ] 2.5 Add fault-injection tests for preimage mismatch, forbidden path changes, immutable-judge changes, backstop absence, selector miss, timeout, output/workspace limit, abandoned attempt, cleanup failure, and altered evidence.
+- [ ] 2.6 Run at most 20 trials within 10 wall-clock minutes and sequential local resource policy; capture raw execution axes, projections, selector misses, runtime, setup time, artifact sizes, cleanup, and reviewer minutes.
+- [ ] 2.7 Obtain independent triage for every survivor, likely-equivalent, uninteresting, or invalid-fault disposition.
 
-## 3. Test Authority and Selection
+## 3. Decision Gate
 
-- [ ] 3.1 Resolve declared focused tests and backstops against `test-accounting.manifest.json` or an explicit approved mutation-oracle entry.
-- [ ] 3.2 Reject unaccounted executable side lanes and static-import-only completeness claims.
-- [ ] 3.3 Record focused and backstop results separately so selection misses can be measured.
-- [ ] 3.4 Add tests for dynamic/literal inputs, profile mismatch, missing backstop, and focused-pass/backstop-kill cases.
-
-## 4. Existing-Oracle Adapter
-
-- [ ] 4.1 Express each named case in `scripts/test-migration/mutation-oracle.ts` as a mutation packet without weakening its current checks.
-- [ ] 4.2 Run the existing oracle through the common executor and preserve its byte-identical rollback proof in receipts.
-- [ ] 4.3 Add differential tests proving dropped tests, silent skips, assertion loss, import breakage, and stale literal paths remain detectable.
-- [ ] 4.4 Keep the legacy entry point available until receipt comparison proves the adapter has equal or stronger evidence.
-
-## 5. Domain Pilot
-
-- [ ] 5.1 Select one small, high-risk, hermetic domain surface using measured runtime, independent-oracle strength, and expected operator value.
-- [ ] 5.2 Implement two or three domain-specific mutation operators with explicit risk provenance and compile-valid output checks.
-- [ ] 5.3 Run the focused selection and relevant accounted backstop in advisory mode; capture outcome distribution, misses, runtime, and reviewer effort.
-- [ ] 5.4 Add regression tests for every actionable survivor repaired during the pilot and prove each test fails before the repair or kills its nominated mutant.
-
-## 6. Feasibility and Rollout
-
-- [ ] 6.1 Run a time-boxed StrykerJS command-runner experiment on one precompiled pure-TypeScript island, including setup cost, test routing quality, mutant quality, and compute cost.
-- [ ] 6.2 Record an explicit continue, adapt, or stop decision for the StrykerJS adapter based on comparison with domain operators.
-- [ ] 6.3 Document packet authoring, local advisory execution, receipt triage, equivalent-suspect review, and forbidden live-data profiles.
-- [ ] 6.4 Add a non-blocking control lane only after local reliability is proven, with explicit concurrency and time budgets.
-- [ ] 6.5 Publish a pilot report covering productive-mutant rate, actionable survivors, focused-to-backstop misses, flaky baselines, cleanup failures, reviewer time, and compute time; propose no blocking gate without calibrated evidence.
+- [ ] 3.1 Publish metric definitions and raw pilot results, including invalid trials and excluded denominators rather than only percentages.
+- [ ] 3.2 Stop or narrow on any cleanup/containment failure, unexplained selector miss, authority mismatch, dominant setup cost, predominantly invalid or trivial operators, or insufficient useful evidence within budget.
+- [ ] 3.3 Compare the migration and GroupMe adapters and identify any substantial repeated policy/evidence invariants; do not generalize superficial lifecycle differences.
+- [ ] 3.4 Publish a continue, narrow, or stop memo. Require a new independently reviewed OpenSpec proposal before any shared coordinator, generic executor, StrykerJS experiment, CI scheduling, blocking gate, agent-generated mutant, or test-deletion automation.

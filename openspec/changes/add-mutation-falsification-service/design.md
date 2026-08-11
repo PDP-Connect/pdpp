@@ -1,98 +1,106 @@
 ## Context
 
-See `proposal.md` for motivation. PDPP uses Node's built-in test runner with `tsx`, a fail-closed test-accounting manifest, and several bespoke falsifiability tools. Two current examples are `scripts/test-migration/mutation-oracle.ts`, which applies named defects and proves rollback, and `packages/polyfill-connectors/scripts/mock-mutation-check.ts`, which mutates fake-server path facts. These tools produce useful evidence but have different inputs, classifications, and receipts.
+See `proposal.md` for motivation. PDPP's current test-migration oracle already owns a strong, self-contained lifecycle: it creates fixture repositories, applies named faults, invokes mutation-specific judges, runs a positive control, proves rollback, and disposes its fixtures. The GroupMe connector also has real mutation-killing tests for historical pagination and cursor-progress faults.
 
-The repository is large enough that exhaustive mutation is an unattractive default. Tests also span subprocesses, databases, browsers, fixtures, and dynamic inputs, so a library's import graph cannot be the sole selection authority. Local execution must respect constrained-host concurrency controls.
+The current test-accounting authority issues receipts only for manifest-owned complete plans on clean trees. It does not authorize arbitrary focused subsets or dirty mutants. A Git worktree isolates tracked source state but does not constrain filesystem, environment, network, credentials, processes, caches, databases, or Docker access. Local hashes bind content but do not authenticate an issuer.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Make deliberate-fault evidence deterministic, reviewable, replayable, and cheap enough for routine agent use.
-- Reuse existing test accounting, local resource controls, and falsifiability oracles.
-- Optimize useful risk findings per reviewer-minute and compute-minute.
-- Create an adapter boundary that permits domain operators, third-party engines, and later agent-generated mutants.
+- Make one existing oracle's evidence structured without weakening its lifecycle.
+- Run one trusted real-domain pilot against the current accounting authority's actual contract.
+- Separate requested intent, machine observations, derived projections, and independent triage.
+- Measure whether any shared infrastructure would reduce real repeated reasoning and audit cost.
 
 **Non-Goals:**
 
-- A repository-wide mutation score or a 100% mutation target.
-- Exhaustive mutation of the monorepo.
-- Automatic test generation, deletion, or quality grading.
-- Mutating live services, personal data, or credentialed browser sessions.
-- Replacing coverage, integration tests, or existing conformance harnesses.
+- A generic source-mutating executor or untrusted-code sandbox.
+- Arbitrary, packet-authored, or agent-generated patches and commands.
+- A new test-accounting subset authority.
+- StrykerJS, CI scheduling, blocking gates, mutation scores, or test-deletion authority.
+- Hard CPU or memory containment where the host cannot enforce it.
 
 ## Decisions
 
-### 1. The stable abstraction is a risk-falsification packet, not a mutation engine
+### 1. Version one is a trusted local evidence program, not a service
 
-A packet carries the risk source, exact mutation, expected affected behavior, selected tests, backstop, and budget. A receipt carries what ran and what happened. Generators and runners sit behind adapters.
+There is no daemon, queue, server, network API, or remotely supplied executable input. A repository-owned registry names the only permitted adapters and operators. Intent may request a registered risk and a stricter budget; versioned repository policy derives the effective command, working directory, environment allowlist, immutable judge closure, focused evidence, complete backstop, and host limits.
 
-This keeps StrykerJS, bespoke TypeScript transforms, historical bug patches, and future agent-generated mutations interchangeable. It also makes the judgment boundary explicit: generators propose faults; deterministic tests and receipt validation judge them.
+This prevents a generator from choosing its own judge or safety policy. Arbitrary and agent-generated executable mutations require a separate sandbox design that proves filesystem, network, environment, process-tree, CPU, memory, disk, and output containment.
 
-Alternative: make StrykerJS configuration the architecture. Rejected because PDPP primarily uses `node:test` through `tsx`; StrykerJS has no native Node test-runner integration, and its command runner loses per-test intelligence. It remains a useful feasibility adapter for pure, precompiled TypeScript islands.
+### 2. Adapters own mutation mechanics until common structure is earned
 
-### 2. Start by wrapping the test-migration oracle
+The migration oracle remains self-contained. It gains structured output but keeps its current named cases, fixture repositories, mutation-specific judges, positive control, and rollback proof. It demonstrates evidence shape and crash honesty, not a generic executor.
 
-The first adapter will express the named cases from `scripts/test-migration/mutation-oracle.ts` as packets and preserve its byte-identical rollback proof. This surface is small, deterministic, already falsifiable, and has no live-service dependency. It proves the substrate without first inventing a source transformer.
+The second adapter is a GroupMe cursor/frontier pilot. It uses two or three checked-in declarative operators over `packages/polyfill-connectors/connectors/groupme/index.ts`, such as reintroducing the historical page ceiling or weakening non-progress detection. The operators have exact preimages and permitted postimages; they cannot alter tests, runners, policy, or manifests.
 
-After the substrate works, add two or three domain mutations on one small high-risk pure surface. Good candidates include authorization decisions, projection/filter boundaries, or connector cursor/frontier rules. Select the final target by runtime, isolation, and the availability of an independent oracle.
+Only after both adapters run will a decision memo identify whether they share a deep stable boundary. Until then, duplication is preferable to a shallow common executor with adapter-specific escape hatches.
 
-Alternative: begin with all connector path mutations. Rejected for the first slice because the current connector tool intentionally reports many unknown surfaces and has broader runtime variability.
+### 3. Evidence uses three immutable artifact types
 
-### 3. Use explicit selection first, then measure smarter routing
+An **intent packet** records requested risk, base identity, adapter/operator descriptor, and requested bounds. Its canonical digest is its identifier; callers do not supply the identifier.
 
-Version one packets name focused tests and a relevant accounted backstop. The runner does not infer completeness from static imports. It records both results so later analysis can measure whether focused selection missed a kill found by the backstop.
+An **attempt receipt** records one execution's raw observations: issued random attempt ID, deterministic trial key, resolved policy, exact effective plan, environment profile, base/mutant/judge identities, bounded artifact digests and sizes, baseline/materialization/focused/backstop/reachability/cleanup axes, duration, exit or signal, and any referenced accounting receipt digests.
 
-Later routing may combine changed-code coverage, import and literal-input graphs, historical failures, and test accounting. It may become a fast lane only after shadow comparisons establish an acceptable miss rate.
+A **triage receipt** is append-only and binds one attempt digest. It records an independent reviewer's claimed identity, disposition, evidence, reason, and timestamp. Version one does not authenticate that identity. A different reviewer from the operator/test author is required before likely-equivalent or uninteresting evidence is excluded from reported actionable results.
 
-Alternative: immediately implement whole-repository per-test coverage selection. Rejected because it adds substantial instrumentation cost before the packet and receipt model is proven.
+`killed`, `survived`, and `inconclusive` are computed projections, never caller fields. `not_exercised` requires adapter-supplied validated reachability evidence; otherwise reachability is `unknown`. Timeout remains a timeout unless a later predeclared repeat policy supports a stronger interpretation.
 
-### 4. Execute in disposable workspaces with baseline-first judgment
+### 4. Digests provide integrity binding, not authenticity
 
-The executor uses a clean, disposable worktree or fixture repository. For each packet it:
+Canonical JSON, schema version, canonicalization version, and hash algorithm are explicit. A trial key binds the intent digest, repository tree, adapter version, policy version, and mutation identity. Each run gets a random attempt ID, so replay has stable identity but different observations.
 
-1. validates revision and packet bindings;
-2. runs the focused clean baseline;
-3. applies one mutation;
-4. runs the focused tests;
-5. optionally runs the declared backstop according to packet policy;
-6. restores and verifies the exact tree;
-7. emits and validates a receipt.
+Before spawn, the adapter-specific runner writes an issued attempt marker in a verifier-owned run directory. Complete receipts publish atomically only after structured output validation and cleanup evidence. Interrupted markers remain incomplete and are discovered at next start. Referenced transcripts are bounded artifacts whose digests and sizes appear in the receipt.
 
-Killed requires a passing baseline plus a mutation-present failure attributable in the receipt. A green mutant is survived unless execution evidence supports not-exercised, or a reviewer records equivalent-suspect or uninteresting with independent justification.
+Anyone controlling the host can rewrite records and recompute an unkeyed digest. Version one therefore claims internal consistency and tamper evidence relative to a separately retained digest, not issuer authenticity. Authenticated provenance would require a later CI signature or platform attestation.
 
-Alternative: edit the developer's working tree and revert files in place. Rejected because interruption, concurrent agents, and unrelated dirty changes make cleanup evidence weaker.
+### 5. The migration oracle is the evidence pilot
 
-### 5. Bind receipts to content and effective execution
+The first slice adds a structured JSON mode to `scripts/test-migration/mutation-oracle.ts`. Legacy and structured modes must agree on every named case, catching check, hole, positive control, and rollback result. The source checkout must remain unchanged.
 
-Canonical JSON packets and receipts use a versioned schema. Content hashes bind the packet, base tree, mutated target before and after, mutation patch/operator parameters, exact effective argv, selected profile, captured results, and restored tree. The runner writes receipts atomically. Validation recomputes bindings and rejects partial or forged records.
+The adapter-specific runner accepts only `test-migration-oracle/v1`; it derives the command and allowlisted environment. It imposes hard wall-time and output-byte limits, records partial/crash states honestly, and never interprets missing output as success. It does not claim focused selection, test-accounting authority, or domain value.
 
-The schema records generator kind and provenance without assigning it authority. A later agent-generated mutant therefore remains a proposal judged by deterministic execution.
+### 6. GroupMe is the real-domain calibration pilot
 
-Alternative: human-readable logs only. Rejected because agents cannot reliably compare, replay, or audit unbound prose.
+The pilot uses the existing hermetic GroupMe cursor/frontier tests as focused adapter evidence. It creates a fresh one-commit mutant descendant for each trusted operator. The clean and mutant complete `polyfill-connectors` suite run through the unchanged test-accounting authority; their verified receipt digests are referenced rather than duplicated.
 
-### 6. Calibrate with outcome distributions, not an aggregate score
+The focused clean baseline and complete clean backstop must pass before interpreting mutant evidence. Every focused survivor receives the complete mutant backstop. A focused pass plus backstop failure is a selector miss and blocks selector promotion. If a required backstop cannot complete, the attempt is inconclusive.
 
-The pilot records killed, survived, not exercised, timeout, execution error, equivalent-suspect, and uninteresting counts by operator and risk source. Primary operating measures are productive-mutant rate, actionable-survivor rate, reviewer time, compute time, focused-to-backstop miss rate, cleanup failures, and flaky baseline rate.
+A clean baseline may be reused across operators only when the repository tree, judge and adapter closure, effective command, allowlisted environment, dependency identity, and budget remain digest-identical. Otherwise it must run again.
 
-No aggregate mutation percentage gates a pull request. A future gate must be scoped to a stable risk/operator class and justified by observed signal and cost.
+The source and judge closures are separate. Operators can change only predeclared production ranges in GroupMe's implementation. Tests, policy, runner, manifest, lockfile, and receipt validator remain immutable and are digest-bound.
+
+### 7. Workspaces are one-shot source isolation, not sandboxes
+
+Domain attempts use a configured disk-backed root with free-space preflight. Each attempt gets a fresh workspace and clean committed mutant descendant. Dependencies are materialized with the repository-pinned `pnpm@10.33.0`, offline and frozen from the lockfile, with lifecycle scripts disabled for this pure TypeScript pilot. If that exact materialization cannot satisfy the pilot, execution stops and the design must be reviewed rather than silently sharing mutable build output.
+
+Successful workspaces are deleted before the completed attempt receipt is published. Interrupted or cleanup-failed workspaces are quarantined and never reused. Next-start recovery reports owned incomplete markers and quarantines before new work. This handles hard termination honestly; it does not pretend `finally` runs after power loss or `SIGKILL`.
+
+Initial host policy runs one adapter at a time, at most 20 domain mutants and 10 wall-clock minutes, with hard limits for adapter wall time, captured output, workspace size, and cleanup time. CPU use targets no more than 50% of available processors and memory is observed, but neither is described as hard containment without a host mechanism. Live credentials, personal data, third-party network, stateful browsers, and shared production-like databases are prohibited. Required unsupported controls cause refusal.
+
+### 8. The decision gate precedes shared infrastructure
+
+The pilot predefines valid-trial denominators and reports raw counts for execution axes, projections, selector misses, triage dispositions, runtime, output/workspace size, cleanup, and reviewer minutes. Setup time is reported separately.
+
+Stop or narrow immediately on a cleanup or containment failure, an unexplained selector miss, authority/receipt mismatch, or evidence corruption. Stop generalization if setup consumes most runtime, review exceeds five minutes per disputed attempt, most operators are invalid/trivial, no useful risk evidence appears within 20 mutants/10 minutes, or the adapters do not expose repeated policy/evidence logic.
+
+Continue only if evidence is interpretable, costs are acceptable, there are no unexplained selector or cleanup failures, and a proposed shared module would hide substantial repeated invariants across both adapters. Any coordinator, generic executor, Stryker experiment, CI lane, or sandbox is a new reviewed OpenSpec change.
 
 ## Risks / Trade-offs
 
-- **Mutants are easy to generate but expensive to judge** → cap packets, suppress obviously arid targets, and measure actionable findings per reviewer-minute.
-- **Equivalent or uninteresting mutants create false urgency** → preserve distinct classifications and require recorded triage rather than forcing tests to kill everything.
-- **Focused selection misses dynamic dependencies** → require an explicit backstop and measure focused-to-backstop misses before using selection as a gate.
-- **Mutation trials overload local hosts** → use finite packet budgets, low default concurrency, and the repository's cross-process local test guard.
-- **An interrupted mutation contaminates later work** → use disposable workspaces, atomic receipts, bounded cleanup, and exact tree-identity verification.
-- **The same agent authors code, mutant, and test** → treat generator output as untrusted; require deterministic oracles and preserve generator/reviewer provenance.
-- **A generic engine becomes a maintenance burden** → keep it behind the adapter contract and continue only if a measured pilot outperforms focused domain operators.
+- **The narrow slices may not justify a framework** → treat stopping with two useful purpose-fit adapters as success.
+- **Local evidence lacks authenticated issuer identity** → state the trust boundary and preserve external attestation as a separate future capability.
+- **Full connector backstops may dominate runtime** → measure setup and execution separately; stop rather than weaken the mandatory calibration backstop.
+- **A trusted mutant can still affect ambient host state accidentally** → constrain paths/operators/environment, use hermetic tests, run sequentially, and never call a worktree a sandbox.
+- **Offline dependency materialization may fail** → refuse the attempt and review the dependency strategy; do not share mutable outputs silently.
+- **Small samples cannot prove selector completeness** → report raw counts and treat any observed miss as disqualifying, without claiming zero misses proves completeness.
 
 ## Migration Plan
 
-1. Add schemas, validators, receipt verification, and adversarial self-tests.
-2. Wrap the existing test-migration oracle and run it locally in advisory mode.
-3. Add one bounded domain pilot and compare focused tests with its accounted backstop.
-4. Run a separate StrykerJS feasibility experiment on precompiled pure TypeScript; retain it only if setup, routing, and signal costs are competitive.
-5. Review pilot evidence before adding CI scheduling, additional operators, or any narrow blocking rule.
+1. Land this revised design only after a second independent architecture review returns LAND.
+2. Add structured evidence to the existing migration oracle and validate it without generic execution infrastructure.
+3. Run the trusted GroupMe cursor/frontier pilot under mandatory clean and mutant backstops.
+4. Publish a continue, narrow, or stop decision memo. Do not implement shared infrastructure from this change.
 
-Rollback removes the advisory entry point and generated receipts. Existing mutation oracles remain independently runnable until their adapter demonstrates equivalent evidence.
+Rollback removes structured output and pilot artifacts while preserving both existing test suites and their legacy entry points.
