@@ -20,7 +20,7 @@
  */
 
 import pRetry, { AbortError } from "p-retry";
-import type { Page } from "playwright";
+import type { BrowserContext, Page } from "playwright";
 import { ensureAmazonSession } from "../../src/auto-login/amazon.ts";
 import {
   type BrowserCollectContext,
@@ -465,11 +465,18 @@ export interface RunFlags {
   detailAttempts: number;
   detailCaptured: boolean;
   failedDetailCaptured: boolean;
-  /** Set once a detail attempt lands on Amazon's sign-in/challenge flow. The
-   *  authenticated session is dead for the rest of this run, so remaining
-   *  detail attempts are deferred (a connector-local blast-radius stop) rather
-   *  than hammering sign-in once per order. This is NOT cross-run scheduling —
-   *  the runtime owns whether/when the next run retries. */
+  /** One-shot budget: at most one mid-run automated session-repair attempt
+   *  per run (see `attemptAutomatedSessionRepair`), regardless of how many
+   *  detail fetches subsequently land on sign-in. Distinct from
+   *  `sessionRepairRequired` — that flag can be cleared by a successful
+   *  repair and re-set by a LATER sign-in bounce; this one never resets. */
+  repairAttempted: boolean;
+  /** Set once a detail attempt lands on Amazon's sign-in/challenge flow AND
+   *  the one-shot repair attempt (if any) did not clear it. The authenticated
+   *  session is dead for the rest of this run, so remaining detail attempts
+   *  are deferred (a connector-local blast-radius stop) rather than hammering
+   *  sign-in once per order. This is NOT cross-run scheduling — the runtime
+   *  owns whether/when the next run retries. */
   sessionRepairRequired: boolean;
   temporaryDetailFailures: number;
 }
@@ -631,11 +638,67 @@ function readRecoverableAmazonOrderDetailGap(
   return { gapId: gap.gap_id, orderDate, orderId, recordKey: gap.record_key ?? orderId };
 }
 
-function resolveOrderDetail(page: Page, flags: RunFlags, orderId: string): Promise<DetailFetchResult> {
+/** Injectable override for `attemptAutomatedSessionRepair`'s call to the
+ *  real `ensureAmazonSession` — lets tests substitute a fake reauth without
+ *  driving the full interactive login flow against a stub Page. Mirrors
+ *  the USAA connector's `EmitDeps.reauthenticate` seam. */
+export type AmazonReauthFn = (input: {
+  context: BrowserContext;
+  page: Page;
+  sendInteraction: BrowserCollectContext["sendInteraction"];
+}) => Promise<boolean>;
+
+/**
+ * Attempt exactly one mid-run session repair via `ensureAmazonSession` (or
+ * `reauthenticate`, if injected), then retry the exact same order-detail
+ * fetch once. Gated to the credentialed (`AMAZON_USERNAME`/
+ * `AMAZON_PASSWORD`) automated login path only — `ensureAmazonSession`
+ * probes first and no-ops when the session is still live, but its
+ * NO-credentials fallback opens an interactive owner hand-off that can
+ * block up to 30 minutes and consume an OTP interaction slot; that path
+ * stays reserved for `ensureSession` at run start, never triggered
+ * speculatively mid-run from here. Returns null (no repair attempted, or
+ * credentials absent) so the caller falls through to the existing terminal
+ * `session_repair_required` behavior unchanged.
+ */
+async function attemptAutomatedSessionRepair(
+  page: Page,
+  context: BrowserContext,
+  sendInteraction: BrowserCollectContext["sendInteraction"],
+  flags: RunFlags,
+  orderId: string,
+  reauthenticate: AmazonReauthFn = ensureAmazonSession
+): Promise<DetailFetchResult | null> {
+  if (flags.repairAttempted) {
+    return null;
+  }
+  flags.repairAttempted = true;
+  const email = process.env.AMAZON_USERNAME;
+  const password = process.env.AMAZON_PASSWORD;
+  if (!(email && password)) {
+    return null;
+  }
+  const recovered = await reauthenticate({ context, page, sendInteraction }).catch((): boolean => false);
+  if (!recovered) {
+    return null;
+  }
+  return fetchOrderDetail(page, orderId);
+}
+
+async function resolveOrderDetail(
+  page: Page,
+  context: BrowserContext | undefined,
+  sendInteraction: BrowserCollectContext["sendInteraction"] | undefined,
+  flags: RunFlags,
+  orderId: string,
+  reauthenticate?: AmazonReauthFn
+): Promise<DetailFetchResult> {
   if (flags.sessionRepairRequired) {
-    // The session died earlier this run. Do not touch the browser again — the
-    // gap re-defers as owner-repair so the owner is asked to reconnect instead
-    // of the run hammering sign-in once per remaining order.
+    // The session died earlier this run and the one-shot automated repair
+    // (if eligible) already failed or was never eligible. Do not touch the
+    // browser again — the gap re-defers as owner-repair so the owner is
+    // asked to reconnect instead of the run hammering sign-in once per
+    // remaining order.
     return Promise.resolve({
       failureKind: "session_repair_required",
       reason: reasonForDetailFailure("session_repair_required"),
@@ -657,7 +720,19 @@ function resolveOrderDetail(page: Page, flags: RunFlags, orderId: string): Promi
     });
   }
   flags.detailAttempts += 1;
-  return fetchOrderDetail(page, orderId);
+  const result = await fetchOrderDetail(page, orderId);
+  if (!(result.status === "failed" && result.failureKind === "session_repair_required" && context && sendInteraction)) {
+    return result;
+  }
+  const repaired = await attemptAutomatedSessionRepair(
+    page,
+    context,
+    sendInteraction,
+    flags,
+    orderId,
+    reauthenticate ?? ensureAmazonSession
+  );
+  return repaired ?? result;
 }
 
 /**
@@ -697,10 +772,18 @@ async function captureFailedDetailOnce(
 
 export interface AmazonDetailRecoveryDeps {
   capture: CaptureDep;
+  /** Threaded through to `resolveOrderDetail`'s mid-run session-repair
+   *  attempt. Optional so legacy callers/tests that don't exercise the
+   *  repair path can omit it — see `EmitDeps.context`. */
+  context?: BrowserContext | undefined;
   detailGaps: readonly BrowserCollectContext["detailGaps"][number][];
   emit: EmitFn;
   emitRecord: EmitRecordFn;
+  /** Test-only override for `attemptAutomatedSessionRepair`'s reauth call.
+   *  Production callers omit it (falls back to the real `ensureAmazonSession`). */
+  reauthenticate?: AmazonReauthFn | undefined;
   requestDetailGapPage?: BrowserCollectContext["requestDetailGapPage"] | undefined;
+  sendInteraction?: BrowserCollectContext["sendInteraction"] | undefined;
 }
 
 async function recoverPendingOrderItemDetailGapPage(
@@ -720,7 +803,14 @@ async function recoverPendingOrderItemDetailGapPage(
       }
       continue;
     }
-    const result = await resolveOrderDetail(page, flags, locator.orderId);
+    const result = await resolveOrderDetail(
+      page,
+      deps.context,
+      deps.sendInteraction,
+      flags,
+      locator.orderId,
+      deps.reauthenticate
+    );
     if (result.status === "hydrated") {
       for (const item of result.detail.items) {
         await deps.emitRecord("order_items", buildOrderItemRecord(locator.orderId, locator.orderDate, item));
@@ -845,6 +935,13 @@ export async function emitOrdersCoverage(deps: EmitDeps, coverage: OrdersCoverag
 /** Per-run dependencies threaded through processListOrder → emitOrderAndItems. */
 export interface EmitDeps {
   capture: CaptureDep;
+  /** Threaded through to `resolveOrderDetail`'s mid-run session-repair
+   *  attempt (see `attemptAutomatedSessionRepair`). Optional so legacy
+   *  callers/tests that don't exercise the repair path can omit it — when
+   *  absent, a sign-in bounce falls straight through to the existing
+   *  terminal `session_repair_required` behavior, unchanged from before
+   *  this fix. */
+  context?: BrowserContext | undefined;
   emit: EmitFn;
   emitRecord: EmitRecordFn;
   emittedAt: string;
@@ -879,6 +976,12 @@ export interface EmitDeps {
    *  unconditionally. */
   ordersFingerprintCursor?: FingerprintCursor | undefined;
   progress: BrowserCollectContext["progress"];
+  /** Test-only override for `attemptAutomatedSessionRepair`'s reauth call.
+   *  Production callers omit it (falls back to the real `ensureAmazonSession`). */
+  reauthenticate?: AmazonReauthFn | undefined;
+  /** Threaded through to `resolveOrderDetail`'s mid-run session-repair
+   *  attempt alongside `context`. Optional for the same reason. */
+  sendInteraction?: BrowserCollectContext["sendInteraction"] | undefined;
   skipDetail: boolean;
   wantsItems: boolean;
   wantsOrders: boolean;
@@ -1139,7 +1242,14 @@ async function resolveDetailForListOrder(
   if (deps.skipDetail) {
     return resolution;
   }
-  const result = await resolveOrderDetail(page, flags, listOrder.orderId);
+  const result = await resolveOrderDetail(
+    page,
+    deps.context,
+    deps.sendInteraction,
+    flags,
+    listOrder.orderId,
+    deps.reauthenticate
+  );
   if (result.status === "hydrated") {
     resolution.detail = result.detail;
     return resolution;
@@ -1459,7 +1569,7 @@ if (isMainModule(import.meta.url)) {
       }
     },
     async collect(ctx: BrowserCollectContext): Promise<void> {
-      const { scope, state, emitRecord, emit, progress, capture, emittedAt, page } = ctx;
+      const { scope, state, emitRecord, emit, progress, capture, emittedAt, page, context, sendInteraction } = ctx;
       const requested = new Map((scope?.streams || []).map((s) => [s.name, s]));
       const wantsItems = requested.has("order_items");
       const wantsOrders = requested.has("orders");
@@ -1467,6 +1577,7 @@ if (isMainModule(import.meta.url)) {
         detailAttempts: 0,
         detailCaptured: false,
         failedDetailCaptured: false,
+        repairAttempted: false,
         sessionRepairRequired: false,
         temporaryDetailFailures: 0,
       };
@@ -1480,10 +1591,12 @@ if (isMainModule(import.meta.url)) {
         page,
         {
           capture,
+          context,
           detailGaps: ctx.detailGaps,
           emit,
           emitRecord,
           requestDetailGapPage: ctx.requestDetailGapPage,
+          sendInteraction,
         },
         flags,
         { recoveryOnly: ctx.recoveryOnly === true, wantsItems }
@@ -1548,6 +1661,7 @@ if (isMainModule(import.meta.url)) {
       const ordersCoverage = wantsOrders ? newOrdersCoverage() : undefined;
       const deps: EmitDeps = {
         capture,
+        context,
         emit,
         emitRecord,
         emittedAt,
@@ -1556,6 +1670,7 @@ if (isMainModule(import.meta.url)) {
         ordersCoverage,
         ordersFingerprintCursor,
         progress,
+        sendInteraction,
         skipDetail: process.env.PDPP_AMAZON_SKIP_DETAIL === "1",
         wantsItems,
         wantsOrders,

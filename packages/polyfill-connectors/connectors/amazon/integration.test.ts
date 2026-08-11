@@ -351,6 +351,7 @@ function makeRunFlags(): RunFlags {
     detailAttempts: 0,
     detailCaptured: false,
     failedDetailCaptured: false,
+    repairAttempted: false,
     sessionRepairRequired: false,
     temporaryDetailFailures: 0,
   };
