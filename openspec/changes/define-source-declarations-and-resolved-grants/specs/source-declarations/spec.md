@@ -9,13 +9,16 @@ Core SHALL define one complete `SourceDeclaration` shape for `connector` and
 2020-12 dialect. `streams[].schema` SHALL default to JSON Schema 2020-12 when
 `$schema` is absent, and a present `$schema` SHALL name
 `https://json-schema.org/draft/2020-12/schema`. This dialect declaration SHALL
-NOT by itself claim identical validation behavior across implementations.
+NOT by itself claim identical validation behavior across implementations. The
+AS SHALL meta-validate every embedded stream schema. Embedded `$ref` and
+`$dynamicRef` values SHALL be local fragment references so a retained
+declaration does not depend on mutable remote schema content.
 
 The declaration SHALL include `protocol_version`, `source`,
 `declaration_version`, `publisher`, `display`, and `streams`, with optional
 `selection_presets` and `extensions`. `source` SHALL contain exactly `kind`
-and `id`. Every stream
-SHALL contain a unique non-empty `name`, `semantics`, `schema`, unique non-empty
+and `id`. `protocol_version` SHALL be `0.1.0`. Every stream
+SHALL contain a unique non-empty non-wildcard `name`, `semantics`, `schema`, unique non-empty
 `primary_key`, and `selection`; it MAY contain `description`, `display`,
 `cursor_field`, `consent_time_field`, `views`, `relationships`, and `query`.
 These members SHALL retain Core's consent, record, selection, and Resource
@@ -25,9 +28,16 @@ to per-stream request and grant scope, and the AS SHALL validate their
 eligibility there. The complete member and omission rules are defined in the
 design for this change.
 
-`source.kind` SHALL be provenance and authority-class metadata. It SHALL NOT
+`extensions`, when present, SHALL be an object keyed by collision-resistant
+profile URIs. Each profile SHALL own its entire value. Core SHALL NOT parse or
+validate a profile-owned value. An operation that requires an unsupported
+profile SHALL reject the operation. A profile SHALL NOT redefine or weaken a
+Core member. `source.kind` SHALL be provenance and authority-class metadata. It SHALL NOT
 be authorization equality, a runtime type, or a Collection-conformance claim.
-`source.id` SHALL be the authorization identity. A connector-kind declaration
+`source.id` SHALL be the authorization identity. Core SHALL require an
+absolute URI and SHALL reject local, storage, or instance keys, but SHALL NOT
+reject an absolute URI merely because it resembles a package coordinate.
+Trusted allocation and publisher authority belong to the Discovery Contract PR. A connector-kind declaration
 without a Collection extension SHALL remain Core-usable. Core SHALL NOT parse
 or interpret a profile-owned extension value.
 Connector acquisition and execution terms, including runtime bindings, setup,
@@ -48,31 +58,45 @@ stream members and MAY appear only in a Collection-owned extension.
 - **AND** `source.kind` SHALL remain provenance metadata rather than runtime or
   Collection conformance
 
-### Requirement: Source identity and stream instance scope are explicit
+### Requirement: Source identity and source instance scope are explicit
 
 `source.id` SHALL be an absolute URI identifying the authorization and data
-surface. It SHALL NOT be a package coordinate, storage key, runtime identity,
-account identifier, credential, or instance handle. Request and grant stream
-handles SHALL be opaque and scoped to issuer, subject, `source.id`, and stream.
+surface. It SHALL NOT be a local key, storage key, runtime identity,
+account identifier, credential, or instance handle. Source instance handles in
+requests and grants SHALL be opaque and scoped to issuer, subject, `source.id`,
+and stream.
 Handles SHALL NOT be inferred across streams.
 
-A selection request MAY contain `streams[].instance_ids`, but an approved
-stream in a resolved grant SHALL contain a required unique non-empty
-`instance_ids` array. The AS SHALL validate eligibility for the issuer,
-subject, source ID, and stream. Omission in a request SHALL never mean fan-in.
-Fan-in SHALL be represented only by explicitly listing multiple handles in
-that stream's approved array.
+Core `resource_ref` values SHALL identify the referenced source with
+`source_id`. They SHALL NOT use the connector-only `connector_id` name because
+the referenced source may be connector-backed or provider-native.
 
-#### Scenario: Existing per-stream connection identity is preserved
+A selection request stream MAY contain `instance_ids`, and every approved
+grant stream SHALL contain a required unique non-empty `instance_ids` array.
+The AS SHALL validate each handle for the issuer, subject, source ID, and that
+stream. Omission in a request stream SHALL resolve only when exactly one
+eligible instance exists for that stream. It SHALL never mean fan-in. Fan-in
+SHALL be represented only by explicitly listing multiple handles on the
+approved stream. SourceDeclaration and request source objects SHALL contain no
+instance IDs.
+
+#### Scenario: Existing per-stream connection identity is not reinterpreted
 
 - **WHEN** current serving data addresses a stream with `streams[].connection_id`
-- **THEN** migration SHALL preserve that value as the candidate handle for the
-  same stream
-- **AND** it SHALL not move the handle to a source-wide field
+- **THEN** new authorization SHALL resolve explicit eligible `instance_ids`
+- **AND** it SHALL NOT reinterpret the legacy connection value as authorization
 
-#### Scenario: Ambiguous instance selection is rejected
+#### Scenario: Provider-native records use cross-stream references
 
-- **WHEN** more than one eligible handle exists and the request omits
+- **WHEN** a provider-native record refers to a record from another source on
+  the same Resource Server
+- **THEN** its `resource_ref.source_id` SHALL contain that source's absolute
+  authorization identity
+- **AND** the reference SHALL NOT require a connector identity
+
+#### Scenario: Ambiguous source instance selection is rejected
+
+- **WHEN** more than one eligible handle exists and a request stream omits
   `instance_ids`
 - **THEN** the AS SHALL require an explicit owner choice or reject the request
 - **AND** it SHALL not authorize fan-in
@@ -82,27 +106,29 @@ that stream's approved array.
 A request SHALL contain `type`, `source`, `purpose_code`, `access_mode`, and
 exactly one of `streams` or `selection_preset`; optional members SHALL be
 limited to `purpose_description`, `retention`, and `client_claims`, apart from
-the selected `streams` or `selection_preset` member. A request source SHALL contain
-exactly `kind` and `id`. Request stream
-members SHALL be `name`, optional `necessity`, `instance_ids`, `fields`,
-`view`, `time_range`, and `resources`; `instance_ids`, when present, SHALL be
-unique and non-empty, and `fields` and `view` SHALL be mutually exclusive.
-Wildcards SHALL be request-only.
+the selected `streams` or `selection_preset` member. A request source SHALL
+contain exactly `kind` and `id`. Request stream members SHALL be `name`,
+optional `necessity`, `instance_ids`, `fields`, `view`, `time_range`, and
+`resources`; `fields` and `view` SHALL be mutually exclusive. Wildcards SHALL
+be request-only. Explicit request stream names SHALL be unique, and a wildcard
+entry SHALL be the only stream entry in its request.
 
-A resolved grant SHALL retain the existing Core grant shape and SHALL contain
+A resolved grant SHALL retain the existing Core grant shape, its `version`
+SHALL be `0.1.0`, and it SHALL contain
 `version`, `grant_id`, `issued_at`, `subject`, `client`, `source`,
 `source_declaration`, `purpose_code`, `access_mode`, and `streams`, with
 optional `purpose_description`, `retention`, `selection_preset`, and
 `expires_at`. OAuth issuer and audience SHALL remain binding-context facts
-owned by PR89. Every grant stream SHALL contain concrete `name`, unique
-non-empty `instance_ids`, and unique non-empty `fields`. It MAY contain
+owned by PR89. The approved grant source SHALL contain exactly `kind` and `id`.
+Every grant stream SHALL contain a unique concrete `name`, unique non-empty
+`instance_ids`, and unique non-empty `fields`. It MAY contain
 `time_constraint` and `resources`. `time_constraint`, when present, SHALL
 contain exact `field` and at least one of `since` or `until`; `resources`, when
 present, SHALL be unique non-empty canonical primary-key strings. Omission
 means no constraint and never means future declaration expansion.
 
 The AS SHALL resolve and freeze stream names, fields, source ID, subject,
-client, eligible handles, temporal field and bounds, and resources
+client, every approved per-stream instance set, temporal field and bounds, and resources
 from one declaration snapshot. Grant authorization equality SHALL use source
 ID, not source kind.
 A request that violates this request contract SHALL produce the binding-neutral
@@ -112,9 +138,9 @@ SHALL own its protocol response mapping.
 #### Scenario: Issuance materializes all authorization facts
 
 - **WHEN** a request uses a wildcard, preset, view, omitted fields, or omitted
-  eligible instance IDs
+  eligible per-stream instance IDs
 - **THEN** the issued grant SHALL contain concrete stream names, non-empty
-  fields, and per-stream non-empty instance IDs
+  fields, and a non-empty approved instance set on every stream
 - **AND** it SHALL not retain those convenience forms as continuing authority
 
 #### Scenario: Time constraint is frozen
@@ -142,12 +168,12 @@ substitute for the snapshot.
 
 #### Scenario: Declaration changes between phases
 
-- **WHEN** the declaration is mutated, deleted, or replaced with different bytes
-  under the same version between any barrier
+- **WHEN** the declaration is mutated, deleted, or replaced with a different
+  value under the same version between any barrier
 - **THEN** display, narrowing, issuance, and evidence SHALL continue to use
   the retained snapshot
 - **AND** the AS SHALL fail closed rather than refetch if the retained snapshot
-  is unavailable or fails integrity checks
+  is unavailable
 
 ### Requirement: RS authorization is independent of current declarations
 
@@ -168,39 +194,93 @@ declaration lookup.
   unless lifecycle or serving capability requires rejection
 - **AND** it SHALL not broaden the decision using current metadata
 
-### Requirement: Persisted-data migration preserves evidence and ambiguity
+### Requirement: Grant-scoped and current metadata are distinct
 
-Migration SHALL cover pending consent, grants, packages, current per-stream
-`connection_id`, and absent or ambiguous connection mappings. It SHALL preserve
-original bytes as evidence and write a separate resolved projection. It SHALL
-map a legacy connection ID only after issuer, subject, source ID, stream, and
-eligibility match. An absent or ambiguous mapping SHALL remain unresolved and
-SHALL never map to current fan-in.
-The local legacy adapter SHALL NOT relax this rule. It SHALL reject any stream
-without an unambiguous issuer, subject, source ID, stream, and instance mapping.
+Client-token schema, stream, search, and record metadata SHALL be projected
+from the resolved grant. It SHALL expose only granted streams and fields and
+the frozen temporal and source-instance constraints relevant to that surface.
+It SHALL NOT present current declaration additions as though the client is
+authorized to use them. Owner-token and discovery/catalog metadata MAY expose
+the current declaration and current serving capabilities, but SHALL identify
+them as current capability and SHALL NOT use them as authority for a client
+grant.
 
-#### Scenario: Legacy mapping is absent
+#### Scenario: Client schema excludes a newly declared field
 
-- **WHEN** a pending consent, grant, or package has no unambiguous per-stream
-  connection mapping
-- **THEN** migration SHALL preserve the original bytes and mark the projection
-  unresolved or reject it
-- **AND** it SHALL not issue or serve a grant by selecting all current instances
+- **WHEN** a current declaration adds a field after a client grant was issued
+- **THEN** a client-token schema or stream metadata response SHALL omit that
+  field from the grant projection
+- **AND** an owner or discovery response MAY show the field as current
+  capability
 
-#### Scenario: Legacy mode does not restore implicit fan-in
+#### Scenario: Current metadata cannot replace a grant projection
 
-- **WHEN** local legacy mode loads a stream without an unambiguous instance mapping
-- **THEN** the adapter SHALL fail closed and preserve the original bytes
-- **AND** it SHALL not select one or more current instances
+- **WHEN** an RS route can read current declaration metadata while serving a
+  client-token request
+- **THEN** it MAY use that metadata for routing or reject an unsupported
+  resolved constraint
+- **AND** it SHALL NOT replace the grant projection, resolve a current view, or
+  authorize a field absent from the grant
+
+### Requirement: Collection mechanisms are outside Core conformance
+
+Core SHALL NOT normatively define Collection Profile POST ingest endpoints,
+state endpoints, grant-scoped collection state, concurrent collection
+coordination, or Collection conformance tiers. Those mechanisms and tiers SHALL
+be specified in `spec-collection-profile.md` and SHALL apply only to an
+implementation that claims Collection Profile support. Core grant, record, and
+read-query conformance SHALL be testable with pre-collected or provider-native
+data and no Collection runtime, ingest route, state store, or concurrent-run
+controller.
+
+#### Scenario: Core-only conformance has no Collection dependency
+
+- **WHEN** a Core implementation validates a declaration, issues a grant, and
+  serves pre-collected or provider-native records
+- **THEN** its conformance tests SHALL NOT require POST ingest, Collection state,
+  grant-scoped collection state, concurrent collection, or a Collection tier
+
+#### Scenario: Collection support is claimed separately
+
+- **WHEN** an implementation claims Collection Profile support
+- **THEN** its ingest, state, grant-scoped state, concurrent collection, and
+  conformance-tier behavior SHALL be tested under `spec-collection-profile.md`
+- **AND** those requirements SHALL NOT become prerequisites for Core
+
+### Requirement: Pre-v0.1 authorization state fails closed
+
+After this change, the implementation SHALL approve only pending consent that
+contains the retained SourceDeclaration snapshot and SHALL serve only the
+closed resolved grant shape. Pre-v0.1 pending consent, grants, and packages
+SHALL require fresh consent. The implementation SHALL NOT add a projection
+column, historical reconstruction, or legacy authorization adapter.
+
+#### Scenario: Legacy authorization is encountered
+
+- **WHEN** approval or serving encounters a pre-v0.1 row or a grant stream that
+  uses `connection_id` instead of required `instance_ids`
+- **THEN** it SHALL reject that authorization state
+- **AND** it SHALL NOT infer authorization from current declarations or connections
 
 ### Requirement: Ownership boundaries are explicit
 
-Source SHALL own the neutral declaration, request, grant, snapshot, migration
-contract, and Core dependency oracle. PR89 SHALL own the OAuth carrier for
-resolved facts. Discovery SHALL own retrieval and publisher trust. Collection
-work in this change SHALL be limited to reference relocation and compatibility;
-Collection execution, state, retrieval, and conformance semantics SHALL remain
-outside Core.
+This change SHALL be delivered through five PRs: Source Contract, Source RI,
+PR89 Auth Carrier, Discovery Contract, and Discovery RI. The contract PRs
+SHALL define protocol behavior separately from reference implementation
+adoption. Source RI SHALL own snapshot retention, co-located enforcement, and
+the Core dependency oracle. PR89 SHALL own the binding-neutral approved
+authorization context and OAuth/RAR response and introspection carrier without
+defining a second grant shape. Discovery Contract SHALL own declaration
+retrieval and trust semantics. Discovery RI SHALL implement those semantics
+without making discovery a runtime RS enforcement dependency.
+
+Source Contract SHALL merge before Source RI. Source RI SHALL merge before
+PR89's separated-RS conformance claim. Discovery Contract SHALL stack on
+Source Contract, and Discovery RI SHALL stack on Discovery Contract and Source
+RI. PR89 SHALL pass the response-only enforcement vectors before any separated
+deployment claims the new authorization context. Discovery SHALL NOT change
+grant-right interpretation. Collection work SHALL remain outside these merge
+gates.
 
 #### Scenario: Core dependency oracle runs
 
@@ -215,3 +295,11 @@ outside Core.
   same streams, selection capabilities, views, relationships, and query support
 - **THEN** Core SHALL validate and interpret those members identically
 - **AND** neither source kind SHALL require Collection execution metadata
+
+#### Scenario: PR ownership prevents a second grant shape
+
+- **WHEN** PR89 carries resolved authorization across an OAuth binding
+- **THEN** it SHALL transport the Source Contract resolved grant without
+  redefining SourceDeclaration or creating a parallel selection model
+- **AND** discovery or Collection changes SHALL NOT be required for Source
+  RI's co-located Core conformance

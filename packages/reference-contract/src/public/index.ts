@@ -26,6 +26,35 @@ import {
   OrderSchema,
   UriSchema,
 } from "../common/index.ts";
+import { ResolvedGrantSchema, SelectionRequestSchema } from "./source.ts";
+
+export type {
+  ResolvedGrant,
+  ResolvedGrantStream,
+  SelectionRequest,
+  SelectionRequestStream,
+  SourceAuthorizationSemanticFailure,
+  SourceAuthorizationSemanticValidationResult,
+  SourceDeclaration,
+  SourceDeclarationSemanticFailure,
+  SourceDeclarationSemanticFailureCode,
+  SourceDeclarationSemanticValidationResult,
+  SourceDeclarationStream,
+  SourceKind,
+  SourceObject,
+  SourceQueryCapabilities,
+  SourceSelectionPresetStream,
+} from "./source.ts";
+// biome-ignore lint/performance/noBarrelFile: this public subpath intentionally exposes the standalone Source contracts alongside route manifests.
+export {
+  ResolvedGrantSchema,
+  SelectionRequestSchema,
+  SourceDeclarationSchema,
+  SourceObjectSchema,
+  validateResolvedGrantSemantics,
+  validateSelectionRequestSemantics,
+  validateSourceDeclarationSemantics,
+} from "./source.ts";
 
 const NonEmptyStringSchema = {
   minLength: 1,
@@ -273,118 +302,8 @@ const ClientDisplaySchema = {
   type: "object",
 };
 
-const RetentionSchema = {
-  additionalProperties: false,
-  properties: {
-    max_duration: NonEmptyStringSchema,
-    on_expiry: NonEmptyStringSchema,
-  },
-  required: ["max_duration", "on_expiry"],
-  type: "object",
-};
-
-const TimeRangeSchema = {
-  additionalProperties: false,
-  properties: {
-    since: NonEmptyStringSchema,
-    until: NonEmptyStringSchema,
-  },
-  type: "object",
-};
-
-const StreamSelectionSchema = {
-  additionalProperties: false,
-  properties: {
-    client_claims: { additionalProperties: true, type: "object" },
-    // Optional per-stream connection constraint. Absent means cross-connection
-    // (fan-in) read semantics; present constrains disclosure to records,
-    // hits, or blobs from the named connection. Owned by
-    //   openspec/changes/expose-connection-identity-on-public-read.
-    connection_id: ConnectionIdSchema,
-    fields: { items: NonEmptyStringSchema, minItems: 1, type: "array" },
-    name: NonEmptyStringSchema,
-    necessity: { enum: ["required", "optional"], type: "string" },
-    resources: { items: NonEmptyStringSchema, type: "array" },
-    time_range: TimeRangeSchema,
-    view: NonEmptyStringSchema,
-  },
-  required: ["name"],
-  type: "object",
-};
-
-export const SourceObjectSchema = {
-  additionalProperties: false,
-  properties: {
-    id: NonEmptyStringSchema,
-    kind: { enum: ["connector", "provider_native"], type: "string" },
-  },
-  required: ["kind", "id"],
-  type: "object",
-};
-
-const AuthorizationDetailBaseSchema = {
-  additionalProperties: false,
-  properties: {
-    access_mode: { enum: ["single_use", "continuous"], type: "string" },
-    purpose_code: NonEmptyStringSchema,
-    purpose_description: NonEmptyStringSchema,
-    retention: RetentionSchema,
-    source: SourceObjectSchema,
-    streams: { items: StreamSelectionSchema, minItems: 1, type: "array" },
-    type: { const: "https://pdpp.org/data-access" },
-  },
-  required: ["type", "source", "purpose_code", "access_mode", "streams"],
-  type: "object",
-};
-
-const AuthorizationDetailSchema = AuthorizationDetailBaseSchema;
-
-const GrantSchema = {
-  additionalProperties: false,
-  properties: {
-    access_mode: { enum: ["single_use", "continuous"], type: "string" },
-    client: {
-      additionalProperties: false,
-      properties: {
-        client_display: ClientDisplaySchema,
-        client_id: NonEmptyStringSchema,
-      },
-      required: ["client_id"],
-      type: "object",
-    },
-    expires_at: { format: "date-time", type: ["string", "null"] },
-    grant_id: NonEmptyStringSchema,
-    issued_at: { format: "date-time", type: "string" },
-    manifest_version: NonEmptyStringSchema,
-    purpose_code: NonEmptyStringSchema,
-    purpose_description: NonEmptyStringSchema,
-    retention: RetentionSchema,
-    source: SourceObjectSchema,
-    streams: { items: StreamSelectionSchema, minItems: 1, type: "array" },
-    subject: {
-      additionalProperties: false,
-      properties: {
-        id: NonEmptyStringSchema,
-      },
-      required: ["id"],
-      type: "object",
-    },
-    version: NonEmptyStringSchema,
-  },
-  required: [
-    "version",
-    "grant_id",
-    "issued_at",
-    "subject",
-    "client",
-    "source",
-    "manifest_version",
-    "purpose_code",
-    "access_mode",
-    "streams",
-  ],
-  type: "object",
-};
+const AuthorizationDetailSchema = SelectionRequestSchema;
+const GrantSchema = ResolvedGrantSchema;
 
 const AuthorizationServerMetadataSchema = {
   additionalProperties: false,

@@ -1,6 +1,6 @@
 # Tasks
 
-- [ ] 1. Define the neutral Core contract and examples.
+- [x] 1. Define the neutral Core contract and examples.
   - Add the complete SourceDeclaration shape, 2020-12 schema rules, source
     kind/id semantics, per-stream instance handles, extension ownership, and
     omission and uniqueness rules.
@@ -8,15 +8,18 @@
     cursor, selection, views, relationships, and query capabilities for both
     source kinds. Move only connector acquisition and execution mechanics to
     the optional Collection extension.
+  - Rename Core `resource_ref.connector_id` to `source_id` so record references
+    use the same source-neutral identity.
   - Keep the change focused. Do not perform a broad cosmetic `Manifest` rename.
 
-- [ ] 2. Define request and resolved-grant serialization.
-  - Add complete shapes for request and grant, including source matching,
-    stream instance IDs, concrete names, fields, frozen time constraints,
+- [x] 2. Define request and resolved-grant serialization.
+  - Add complete declared-source, requested-source, and approved-source shapes,
+    including source matching, optional requested and required approved
+    instance IDs, concrete names, fields, frozen time constraints,
     canonical resources, the retained Core grant fields,
     `source_declaration.version`, and omission rules.
-  - Require unique non-empty approved handles and fields. Prove that omitted
-    request handles never authorize fan-in.
+  - Require unique non-empty approved instance IDs and fields on every grant
+    stream. Prove that omitted requested instance IDs never authorize fan-in.
   - Emit binding-neutral `source.authorization_details_invalid` when a request
     violates the Source request or narrowing contract. Leave the OAuth response
     mapping to PR89.
@@ -30,28 +33,36 @@
 
 - [ ] 4. Separate authorization facts from serving metadata.
   - Make RS enforcement use only the resolved authorization context.
-  - Permit current metadata only to route, describe current schemas, or reject
-    unsupported query capabilities. It must not reinterpret resource keys,
-    widen grants, or change the time field frozen in the grant.
+  - Define separate client-token and owner/discovery metadata projections.
+    Client schema, stream, search, and record metadata must be grant-projected;
+    owner/discovery metadata may be current capability. Current metadata may
+    route or reject unsupported resolved constraints, but must not reinterpret
+    resource keys, widen grants, or change the frozen time field.
 
-- [ ] 5. Migrate persisted authorization data.
-  - Cover pending consent, grants, packages, current per-stream `connection_id`,
-    and absent or ambiguous connection mappings.
-  - Preserve original bytes as evidence and write a separate resolved
-    projection. Never convert absent mappings into current fan-in.
-  - Make the local legacy adapter reject streams without an unambiguous issuer,
-    subject, source ID, stream, and instance mapping.
+- [ ] 5. Make the authorization-state break fail closed.
+  - Accept only the new retained-snapshot pending shape and closed resolved
+    grant shape after this change.
+  - Reject pre-v0.1 pending consent, grants, and packages and require fresh
+    consent. Do not add projection columns, historical reconstruction, or a
+    legacy authorization adapter.
+  - Prove that a legacy per-stream `connection_id` never becomes one or more
+    current `instance_ids` during approval or serving.
 
 - [ ] 6. Add implementation oracles and ownership gates.
   - Add a Core-only dependency oracle that imports no Collection schema or
     runtime module and proves a connector declaration works without an
     extension.
-  - Add the three-PR ownership and merge-order matrix: Source owns the neutral
-    contract, PR89 owns the OAuth carrier, and discovery owns retrieval/trust.
-  - Limit Collection work to reference relocation and compatibility.
+  - Relocate POST ingest, state endpoints, grant-scoped collection state,
+    concurrent collection, and Collection conformance tiers from Core into
+    `spec-collection-profile.md` without changing their behavior.
+  - Add and enforce the five-PR matrix: Source Contract, Source RI, PR89 Auth
+    Carrier, Discovery Contract, and Discovery RI. Keep protocol contracts
+    separate from reference implementation adoption. Do not make retrieval a
+    grant-enforcement dependency or create a second grant shape.
+  - Limit other Collection work to compatibility with the neutral contract.
 
 - [ ] 7. Verify the change.
-  - Run focused contract, snapshot, instance, migration, and RS tests.
+  - Run focused contract, snapshot, instance, upgrade-boundary, and RS tests.
   - Run `openspec validate define-source-declarations-and-resolved-grants
     --strict`, `git diff --check`, and stale-term sweeps for deleted live
     declaration lookups, implicit fan-in, broad renames, and excluded scope.
@@ -60,11 +71,12 @@
 
 - A Core-only connector declaration validates, renders consent, issues a grant,
   and supports grant-filtered reads without importing Collection code.
-- Every issued stream has a concrete name, unique non-empty handles and fields;
-  fan-in requires an explicit array.
+- Every issued grant stream has a concrete name, fields, and a unique non-empty
+  instance array; fan-in requires an explicit array on that stream.
 - A declaration mutation, deletion, or same-version replacement between any
   barrier cannot change display, narrowing, issuance, evidence, or an existing
   grant.
 - RS decisions remain stable when the current declaration is absent or changed,
   subject only to lifecycle and serving-capability rejection.
-- Legacy absent or ambiguous `connection_id` mappings do not authorize reads.
+- Pre-v0.1 authorization rows and legacy `connection_id` grant shapes do not
+  authorize reads.
