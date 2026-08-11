@@ -495,10 +495,17 @@ export interface ControllerOptions {
   /**
    * Maximum wall-clock milliseconds a single run may remain active before the
    * watchdog force-finalizes it with a `run.failed` (reason: `run_timed_out`).
-   * Defaults to `PDPP_MAX_RUN_WALL_CLOCK_MS` env var, or 3 600 000 ms (1 hour)
-   * when neither is set. Pass `Infinity` (or set the env var to "Infinity") to
-   * disable the watchdog — useful for intentionally long runs or tests that
-   * drive timing themselves.
+   * Defaults to `PDPP_MAX_RUN_WALL_CLOCK_MS` env var, or 14 400 000 ms (4
+   * hours, >2x longest observed legitimate run) when neither is set. Pass
+   * `Infinity` (or set the env var to "Infinity") to deliberately disable the
+   * watchdog for this connector instance — every run then relies solely on
+   * its own promise settling; a run whose `runConnectorImpl` never resolves
+   * or rejects (a wedged subprocess, a hung network call with no timeout)
+   * leaks its `activeRuns` entry permanently, blacking out the instance until
+   * process restart, with no second timer to catch it. Reserve this for
+   * connectors with their own independent timeout discipline, or for tests
+   * that drive timing themselves; do not use it as a blanket "disable
+   * timeouts" switch.
    */
   maxRunWallClockMs?: number;
   ownerClientId?: string;
@@ -897,14 +904,34 @@ const settledRunIds = new Set<string>();
 // completion never fires the watchdog. All timers are .unref()'d so they
 // don't prevent process exit during a clean shutdown.
 const activeRunWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>();
-// Per-run "watchdog forced this run terminal" signal, keyed by run_id.
-// `awaitRun` races the raw `activeRunPromises` entry against this promise so
-// a parent-side await can never block forever on a child that ignores its
-// cancellation signal — the SAME `maxRunWallClockMs` timer that
-// `armRunWatchdog` arms resolves it; no second timer is created. Resolved
-// (not rejected) because a watchdog-forced timeout is a normal, expected
-// outcome for `awaitRun`'s caller, which only needs the terminal status.
-// Cleared in finalizeRunCleanup alongside the other per-run maps.
+// CANONICAL EXPLANATION (armRunWatchdog and awaitRun both point here instead
+// of restating it): per-run "watchdog forced this run terminal" signal, keyed
+// by run_id. `awaitRun` races the raw `activeRunPromises` entry against this
+// promise so a parent-side await can never block forever on a child that
+// ignores its cancellation signal — the SAME `maxRunWallClockMs` timer that
+// `armRunWatchdog` arms resolves it; this is one timer PER MANAGED RUN, not
+// a single global authority — `maxRunWallClockMs` also independently drives
+// `createAttemptWatchdog`'s resettable no-progress budget in
+// runtime/scheduler/run-executor.ts (a different policy: markProgress()
+// re-arms it), though the two never race in practice because managed runs
+// return before reaching `runWithRetries`/`runSingleAttempt`, so the attempt
+// watchdog never arms for them. Resolved (not rejected) because a
+// watchdog-forced timeout is a normal, expected outcome for `awaitRun`'s
+// caller, which only needs the terminal status. Cleared in
+// finalizeRunCleanup alongside the other per-run maps.
+//
+// `maxRunWallClockMs: Infinity` is a deliberate, supported way to disable
+// this watchdog entirely for a connector instance (see the doc comment on
+// `ControllerOptions.maxRunWallClockMs`) — no settlement is ever armed for
+// that run, so `awaitRun` falls back to a bare await of the raw promise.
+// That is an intentional, pinned behavior for connectors expected to manage
+// their own timeout discipline, NOT a gap to fill with another timer.
+//
+// Fail-closed note: `awaitRun` reads the run's terminal status from the
+// spine after this race settles. A `null` terminal read (no terminal event
+// found — e.g. a swallowed `emitSpineEvent` failure during watchdog
+// force-finalization) maps to `"failed"`, never `"succeeded"`: an
+// unconfirmed run must never be reported as having conclusively succeeded.
 const runWatchdogSettlements = new Map<string, { promise: Promise<void>; resolve: () => void }>();
 // Monotonic run-generation fencing token, keyed by connector_instance key
 // (same key as activeRuns). Incremented each time a new run is admitted for
@@ -1887,6 +1914,11 @@ export function __resetControllerInteractionStateForTests(): void {
   runWatchdogSettlements.clear();
   runGenerations.clear();
   needsHumanAttention.clear();
+}
+
+/** Test-only introspection: proves `runWatchdogSettlements` drains rather than leaking across runs. */
+export function __getRunWatchdogSettlementsSizeForTests(): number {
+  return runWatchdogSettlements.size;
 }
 
 export function isNeedsHumanAttention(connectorId: string, options: ConnectorInstanceOptions = {}): boolean {
@@ -3041,10 +3073,17 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // Idempotency guard: the watchdog and the run's own .finally() can both
     // call finalizeRunCleanup. Only the first call does real work; subsequent
     // calls are silent no-ops. We detect "already finalized" by checking
-    // whether the key is still in activeRuns (the primary liveness signal).
-    if (!activeRuns.has(input.key)) {
-      // Already cleaned up (watchdog fired first, or called twice). Ensure
-      // the settled marker is present regardless.
+    // whether THIS run's entry is still in activeRuns — fenced on run_id, not
+    // just key presence. A bare key check would let a stale finalize (e.g. a
+    // watchdog that parked mid-cleanup) treat a DIFFERENT run's entry as "not
+    // yet finalized" once that later run is admitted on the same key, and
+    // then evict the live run's entry below. Fencing here makes the eviction
+    // itself impossible: a stale call now sees its own run_id is gone and
+    // takes the early-return branch instead of touching the map.
+    if (activeRuns.get(input.key)?.run_id !== input.runId) {
+      // Already cleaned up (watchdog fired first, called twice, or a newer
+      // run has since been admitted on this key). Ensure the settled marker
+      // is present regardless.
       settledRunIds.add(input.runId);
       return;
     }
@@ -3063,6 +3102,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // Mark settled BEFORE deleting from activeRuns so the 409 guard's
     // reconciliation window is as short as possible.
     settledRunIds.add(input.runId);
+    // Safe to delete unconditionally here: the guard above already proved
+    // activeRuns.get(input.key)?.run_id === input.runId.
     activeRuns.delete(input.key);
     activeRunPromises.delete(input.runId);
     activeRunTraceContexts.delete(input.runId);
@@ -3425,7 +3466,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
    *      `awaitRun` caller racing the (possibly still-hung) `activeRunPromises`
    *      entry against it — see `awaitRun` for why that race exists.
    *
-   * No-op when `maxRunWallClockMs` is not a positive finite number (Infinity disables).
+   * No-op when `maxRunWallClockMs` is not a positive finite number — including
+   * the deliberate `Infinity` disable case (see `runWatchdogSettlements`'
+   * declaration comment for what that trades away).
    * The timer is `.unref()`'d so it never prevents a clean process exit.
    * `finalizeRunCleanup` is idempotent — both the watchdog and the run's own `.finally()`
    * can call it safely. The settlement resolves on EVERY firing, including the
@@ -3914,25 +3957,17 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // Waits for `activeRunPromises.get(runId)` to settle (the promise resolves
   // after `finalizeRunCleanup` completes, which fires in the `.finally()` of
   // the connector run — so by the time we get here, the spine terminal event
-  // is guaranteed to have been emitted). Then reads that terminal status from
-  // the spine and maps it to "succeeded" | "failed".
+  // is guaranteed to have been emitted), RACED against this run's
+  // `runWatchdogSettlements` entry (see that map's declaration comment for
+  // why the race exists and what `Infinity` does to it). Then reads the
+  // terminal status from the spine and maps it to "succeeded" | "failed".
   //
   // If the run is not in `activeRunPromises` (already completed before we look,
   // or unknown), we skip the await and go straight to the spine read — this is
   // safe because the terminal event is already there.
   //
-  // Raced against `runWatchdogSettlements.get(runId)`: if `runConnectorImpl`
-  // never resolves or rejects (ignores its cancellation signal), the raw
-  // `runPromise` above never settles either — a caller awaiting it directly
-  // would block forever, and for a scheduled run that means
-  // `executeRun`'s `finally` (scheduler.ts) never reaches `activeRuns.delete`,
-  // permanently blacking out that connector instance. The watchdog settlement
-  // resolves on the SAME `maxRunWallClockMs` timer `armRunWatchdog` already
-  // arms for this run — no second timeout is introduced. Once either side
-  // settles, the spine has the true terminal status (either the run's own
-  // terminal write, or the watchdog's forced `run.failed`/run_timed_out
-  // write), so reading it after the race is always correct — this never
-  // terminalizes a genuinely live run a second time.
+  // Fail-closed: a `null` terminal read (no terminal event found) maps to
+  // "failed", never "succeeded" — see the `runWatchdogSettlements` comment.
   async function awaitRun(runId: string): Promise<"succeeded" | "failed"> {
     const runPromise = activeRunPromises.get(runId);
     if (runPromise) {

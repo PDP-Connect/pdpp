@@ -353,10 +353,12 @@ function createRunManagedConnectorViaController(
     // Run was dispatched (status "started"). Await its real terminal
     // outcome so the scheduler records the true succeeded/failed status
     // and its failure-streak / back-off machinery fires correctly.
-    // controller.awaitRun waits for activeRunPromises[runId] to settle
-    // (the .finally() cleanup chain), then reads the spine terminal event.
-    // No deadlock risk: the run has its own wall-clock budget; a hung run
-    // is the run's responsibility, matching the old runConnector await.
+    // controller.awaitRun races activeRunPromises[runId] (the .finally()
+    // cleanup chain) against the run's own watchdog settlement, then reads
+    // the spine terminal event — see awaitRun's own doc comment for why
+    // that race exists. This call cannot hang even if runConnectorImpl
+    // itself never settles: the watchdog (maxRunWallClockMs) force-finalizes
+    // the run and resolves the race independently of the raw promise.
     const terminalStatus = await controller.awaitRun(handle.run_id);
     const terminalEvent = (await getRunTerminalEvent(handle.run_id)) as TerminalEvent | null;
     return projectManagedControllerTerminalRun(handle, terminalStatus, terminalEvent);
