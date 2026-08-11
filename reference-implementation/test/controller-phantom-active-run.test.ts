@@ -41,7 +41,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 
-import { getRunTerminalEvent, listSpineEventsPage } from "../lib/spine.ts";
+import { emitSpineEvent, getRunTerminalEvent, listSpineEventsPage } from "../lib/spine.ts";
 import { __resetControllerInteractionStateForTests, ControllerError, createController } from "../runtime/controller.ts";
 import type { RuntimeRunConnectorResult } from "../runtime/index.ts";
 import { closeDb, initDb } from "../server/db.ts";
@@ -476,4 +476,188 @@ test("a run that completes normally then has its entry reclaimed is not double-f
 
   // No duplicate terminal events for run_idempotent_1.
   assert.equal(countTerminalEvents("run_idempotent_1"), 0, "no terminal event for immediate-resolve run");
+});
+
+// ─── awaitRun vs. the watchdog: closing the activeRuns-leak class ────────────
+//
+// `controller.awaitRun` is the seam `scheduler-manager-factory.ts`'s
+// `runManagedConnectorViaController` callback (`via`) uses to wait for a
+// scheduled managed run's real terminal outcome before returning to
+// `routeScheduledManagedRun` -> `launchRun` -> `executeRun` (scheduler.ts).
+// Before this fix, `awaitRun` awaited ONLY the raw `activeRunPromises` entry.
+// If `runConnectorImpl` never resolves or rejects — even past the watchdog's
+// own cancellation-signal abort — that raw promise never settles, `awaitRun`
+// never returns, `executeRun`'s `finally` never reaches
+// `runtime.activeRuns.delete(key)`, and the connector instance is
+// PERMANENTLY blacked out (no dispatch, no back-off, no escalation, no
+// recovery) until process restart. These tests prove `awaitRun` now races
+// that raw promise against the watchdog's own settlement signal, closing the
+// leak without a second timer.
+
+test("awaitRun returns once the watchdog force-finalizes a run whose impl never settles", async (t) => {
+  freshDb(t);
+
+  const hang = makeHangingImpl();
+  const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => undefined, warn: () => undefined },
+    // Short budget: the impl below never resolves even after the watchdog
+    // aborts its cancellation signal (modeling a child that ignores SIGTERM /
+    // a parent-side await on a promise nothing will ever settle).
+    maxRunWallClockMs: 20,
+    runConnectorImpl: hang.impl,
+    schedulerStore: createSchedulerStore(),
+  });
+
+  const handle = await controller.runNow(CONNECTOR_ID, {
+    connectorInstanceId: "cin_await_never_settles",
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_await_never_settles",
+  });
+
+  // Without the fix this call hangs forever — the test's own timeout is the
+  // proof. With the fix it returns once the watchdog's settlement resolves.
+  const status = await controller.awaitRun(handle.run_id);
+  assert.equal(status, "failed", "watchdog-forced timeout must read back as failed");
+
+  // The raw impl promise is still genuinely unsettled — awaitRun did NOT
+  // wait for it, it raced past it via the watchdog signal.
+  assert.equal(
+    controller.findActiveRunByRunId("run_await_never_settles"),
+    null,
+    "activeRuns entry must be cleared once awaitRun returns"
+  );
+
+  hang.release();
+  await controller.drainActiveRuns(500);
+});
+
+test("awaitRun returns the true status for a run that completes normally, watchdog never fires", async (t) => {
+  freshDb(t);
+
+  const warnLines: string[] = [];
+  const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: {
+      error: () => undefined,
+      warn: (line) => {
+        warnLines.push(line);
+      },
+    },
+    maxRunWallClockMs: 5000,
+    // The fake impl mirrors a real successful connector run by emitting its
+    // own `run.completed` terminal event before resolving — this test file's
+    // OTHER fixtures resolve without emitting one (see "watchdog does not
+    // fire..." above), which is fine for THOSE assertions (they only check
+    // for the ABSENCE of a run_timed_out event) but would make `awaitRun`
+    // read back `null` -> "failed" here, which is not what this test means
+    // to discriminate on.
+    runConnectorImpl: async (implOpts: { runId?: string }) => {
+      const runId = implOpts.runId ?? "run_await_normal";
+      await emitSpineEvent({
+        actor_id: CONNECTOR_ID,
+        actor_type: "runtime",
+        data: { records_emitted: 0 },
+        event_type: "run.completed",
+        object_id: runId,
+        object_type: "run",
+        run_id: runId,
+        status: "succeeded",
+      });
+      return { records_emitted: 0, status: "succeeded" };
+    },
+    schedulerStore: createSchedulerStore(),
+  });
+
+  const handle = await controller.runNow(CONNECTOR_ID, {
+    connectorInstanceId: "cin_await_normal",
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_await_normal",
+  });
+
+  const status = await controller.awaitRun(handle.run_id);
+  assert.equal(status, "succeeded");
+  assert.equal(
+    warnLines.find((l) => String(l).includes("watchdog")),
+    undefined,
+    "watchdog must not fire for a run that completes within budget"
+  );
+});
+
+test("awaitRun on a run the watchdog force-finalizes reads the watchdog's own terminalization, not a duplicate", async (t) => {
+  freshDb(t);
+
+  const hang = makeHangingImpl();
+  const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => undefined, warn: () => undefined },
+    maxRunWallClockMs: 20,
+    runConnectorImpl: hang.impl,
+    schedulerStore: createSchedulerStore(),
+  });
+
+  const handle = await controller.runNow(CONNECTOR_ID, {
+    connectorInstanceId: "cin_await_watchdog_terminal",
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_await_watchdog_terminal",
+  });
+
+  await controller.awaitRun(handle.run_id);
+
+  const terminal = await getRunTerminalEvent(handle.run_id);
+  assert.equal(terminal?.data?.reason, "run_timed_out");
+  assert.equal(countTerminalEvents(handle.run_id), 1, "exactly one terminal event — no double-terminalization");
+
+  // The impl finally settles well after awaitRun already returned. Its own
+  // .finally()/finalizeRunCleanup chain must be a no-op (idempotency guard),
+  // not a second terminalization of an already-force-finalized run.
+  hang.release();
+  await controller.drainActiveRuns(500);
+  assert.equal(countTerminalEvents(handle.run_id), 1, "late-settling impl must not add a second terminal event");
+});
+
+test("next tick after a watchdog-forced settle: scheduler can dispatch the instance again", async (t) => {
+  freshDb(t);
+
+  const hang = makeHangingImpl();
+  const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => undefined, warn: () => undefined },
+    maxRunWallClockMs: 20,
+    runConnectorImpl: hang.impl,
+    schedulerStore: createSchedulerStore(),
+  });
+
+  const handle1 = await controller.runNow(CONNECTOR_ID, {
+    connectorInstanceId: "cin_recovery_next_tick",
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_recovery_next_tick_1",
+  });
+
+  // Model the scheduler's managed-run seam: routeScheduledManagedRun -> via ->
+  // controller.awaitRun. Without the fix this await would hang forever and
+  // the scheduler's own executeRun `finally` (runtime.activeRuns.delete)
+  // would never run, permanently blacking out this connector instance.
+  await controller.awaitRun(handle1.run_id);
+
+  // The "next tick" recovery case: a fresh run-now for the same instance must
+  // succeed immediately — proving the instance is not permanently wedged.
+  const handle2 = await controller.runNow(CONNECTOR_ID, {
+    connectorInstanceId: "cin_recovery_next_tick",
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_recovery_next_tick_2",
+  });
+  assert.equal(handle2.status, "started", "connector instance must recover on the next tick, not stay blacked out");
+
+  hang.release();
+  await controller.drainActiveRuns(500);
 });
