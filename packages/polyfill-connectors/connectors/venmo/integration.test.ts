@@ -20,11 +20,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
-import { collectAllStreams, collectTransactions, type VenmoPageFetch } from "./index.ts";
+import { collectAllStreams, collectTransactions, fetchAllFriends, type VenmoPageFetch } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
 const OWNER_ID = "1111111111111111111";
 const EMITTED_AT = "2026-08-10T00:00:00.000Z";
+/** Skips the real 500ms PAGE_DELAY_MS pacing in tests that need a multi-page result but aren't testing pacing itself. */
+const NO_DELAY = (): Promise<void> => Promise.resolve();
 
 /** `id` must be a numeric string — real Venmo story/payment ids are decimal digit runs (see schemas.ts NUMERIC_ID_RE). */
 function story(id: string, dateCreated: string, amount = 10) {
@@ -145,6 +147,113 @@ test("collectTransactions: resumes from a persisted before_id cursor and an unmo
   assert.equal(emitted.length, 1, "only the modeled story emits a record");
   assert.equal(result.considered, 2, "the raw page still counts unmodeled stories as considered");
   assert.equal(result.covered, 1, "only the modeled story counts as covered");
+});
+
+// F6: before_id must be a real produced-and-consumed cursor — a full page
+// (== TRANSACTIONS_PAGE_SIZE) means there may be more, so the STATE this run
+// emits must carry the id it would page from next, and a subsequent run
+// must actually be able to consume it (proven by the resume test above,
+// which sends the persisted cursor on request #1 — this test proves the
+// producing half: a full page's STATE.cursor.before_id is the last item's
+// id, not the pre-revision dead reset to `undefined`/null).
+test("collectTransactions: a full page (more may exist) persists before_id as the last item's id — the cursor this run produced", async () => {
+  const TRANSACTIONS_PAGE_SIZE = 50;
+  const fullPage = Array.from({ length: TRANSACTIONS_PAGE_SIZE }, (_, i) =>
+    story(String(8000 + i), "2026-03-01T00:00:00Z")
+  );
+  const { fetchPath } = makeScriptedFetch({
+    "/stories/target-or-actor/1111111111111111111": [{ body: { data: fullPage } }, { body: { data: [] } }],
+  });
+  const { ctx } = makeCtx({}, ["transactions"]);
+  const result = await collectTransactions(ctx, fetchPath, OWNER_ID, NO_DELAY);
+  assert.equal(result.beforeId, "8049", "a full page must persist the last story's id as the resume cursor");
+});
+
+test("collectTransactions: a partial (non-full) page resets the cursor to undefined — the oldest page was reached", async () => {
+  const { fetchPath } = makeScriptedFetch({
+    "/stories/target-or-actor/1111111111111111111": [{ body: { data: [story("9001", "2026-02-01T00:00:00Z")] } }],
+  });
+  const { ctx } = makeCtx({}, ["transactions"]);
+  const result = await collectTransactions(ctx, fetchPath, OWNER_ID);
+  assert.equal(result.beforeId, undefined, "the oldest reachable page must reset the cursor, not persist a dead one");
+});
+
+test("collectAllStreams: transactions STATE carries the before_id this run actually produced, not always null", async () => {
+  const TRANSACTIONS_PAGE_SIZE = 50;
+  const fullPage = Array.from({ length: TRANSACTIONS_PAGE_SIZE }, (_, i) =>
+    story(String(7000 + i), "2026-01-01T00:00:00Z")
+  );
+  const { fetchPath } = makeScriptedFetch({
+    "/stories/target-or-actor/1111111111111111111": [{ body: { data: fullPage } }, { body: { data: [] } }],
+  });
+  const { ctx, messages } = makeCtx({}, ["transactions"]);
+  await collectAllStreams(ctx, fetchPath, OWNER_ID, accountUser());
+  const state = messages.find((m) => m.type === "STATE" && m.stream === "transactions");
+  assert.ok(state && state.type === "STATE");
+  assert.equal(
+    (state.cursor as { before_id?: string | null }).before_id,
+    "7049",
+    "the emitted STATE cursor must carry the produced before_id, not a hardcoded null"
+  );
+});
+
+// ─── Page pacing (F10) ──────────────────────────────────────────────────────
+
+test("collectTransactions: paces between pages via the injected delay, not a bare back-to-back loop", async () => {
+  const TRANSACTIONS_PAGE_SIZE = 50;
+  const page1 = Array.from({ length: TRANSACTIONS_PAGE_SIZE }, (_, i) =>
+    story(String(1000 + i), "2026-01-01T00:00:00Z")
+  );
+  const page2 = [story("2000", "2026-01-02T00:00:00Z")];
+  const { fetchPath } = makeScriptedFetch({
+    "/stories/target-or-actor/1111111111111111111": [{ body: { data: page1 } }, { body: { data: page2 } }],
+  });
+  const { ctx } = makeCtx({}, ["transactions"]);
+  const delays: number[] = [];
+  const recordingDelay = (ms: number): Promise<void> => {
+    delays.push(ms);
+    return Promise.resolve();
+  };
+  await collectTransactions(ctx, fetchPath, OWNER_ID, recordingDelay);
+  assert.deepEqual(delays, [500], "one page-to-page transition must pace exactly once, via the injected delay");
+});
+
+test("collectTransactions: a single (non-continuing) page never paces — nothing to wait between", async () => {
+  const { fetchPath } = makeScriptedFetch({
+    "/stories/target-or-actor/1111111111111111111": [{ body: { data: [story("3000", "2026-01-01T00:00:00Z")] } }],
+  });
+  const { ctx } = makeCtx({}, ["transactions"]);
+  let delayCalls = 0;
+  await collectTransactions(ctx, fetchPath, OWNER_ID, () => {
+    delayCalls += 1;
+    return Promise.resolve();
+  });
+  assert.equal(delayCalls, 0, "a run with only one page has nothing to pace between");
+});
+
+test("fetchAllFriends: paces between pages via the injected delay", async () => {
+  const FRIENDS_PAGE_SIZE = 200;
+  const page1 = Array.from({ length: FRIENDS_PAGE_SIZE }, (_, i) => ({
+    id: String(4000 + i),
+    username: `friend${i}`,
+    display_name: `Friend ${i}`,
+  }));
+  const page2 = [{ id: "5000", username: "last", display_name: "Last Friend" }];
+  const { fetchPath } = makeScriptedFetch({
+    [`/users/${OWNER_ID}/friends`]: [{ body: { data: page1 } }, { body: { data: page2 } }],
+  });
+  const delays: number[] = [];
+  const all = await fetchAllFriends(
+    fetchPath,
+    OWNER_ID,
+    () => Promise.resolve(),
+    (ms) => {
+      delays.push(ms);
+      return Promise.resolve();
+    }
+  );
+  assert.equal(all.length, FRIENDS_PAGE_SIZE + 1);
+  assert.deepEqual(delays, [500], "one page-to-page transition must pace exactly once");
 });
 
 // ─── Endpoint failure classification ────────────────────────────────────────
@@ -274,14 +383,35 @@ test("collectAllStreams: records emit before STATE for each requested stream", a
   assert.ok(stateIdx > lastRecordIdx, "STATE must land after the last RECORD");
 });
 
-// ─── No raw password-grant call anywhere in this module ────────────────────
+// ─── No raw fetch anywhere in the collect path ──────────────────────────────
+//
+// A source grep only catches a literal spelling — renaming
+// `"access" + "_token"` or building the device-id header from a differently
+// named constant defeats it while a real password-grant call still runs
+// (proven live: /tmp/review-venmo-browser-redesign-0810.md F7). This asserts
+// the actual behavior instead: `collectAllStreams` must not touch
+// `globalThis.fetch` at all — every read goes through the injected
+// `VenmoPageFetch` seam (`page.evaluate(fetch)` under the session cookie),
+// never a raw Node-side `fetch()` call that could carry a bearer token,
+// device-id, or spoofed User-Agent.
 
-test("index.ts source contains no password-grant/device-id HTTP auth call", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const source = await readFile(new URL("./index.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(source, /oauth\/access_token/, "no direct password-grant endpoint call");
-  assert.doesNotMatch(source, /["'`]device-id["'`]\s*:/i, "no synthetic device-id header sent on a request");
-  assert.doesNotMatch(source, /randomDeviceId/, "no synthetic device-id generator");
-  assert.doesNotMatch(source, /phone_email_or_username/, "no password-grant request body shape");
-  assert.doesNotMatch(source, /User-Agent.*Venmo\//, "no spoofed Venmo app User-Agent string");
+test("collectAllStreams: never calls globalThis.fetch — every read goes through the injected page-fetch seam", async () => {
+  const original = globalThis.fetch;
+  let called = false;
+  globalThis.fetch = ((...args: Parameters<typeof fetch>) => {
+    called = true;
+    return original(...args);
+  }) as typeof globalThis.fetch;
+  try {
+    const { fetchPath } = makeScriptedFetch({
+      "/account": [{ body: { data: { user: accountUser() } } }],
+      "/users/1111111111111111111/friends": [{ body: { data: [] } }],
+      "/stories/target-or-actor/1111111111111111111": [{ body: { data: [] } }],
+    });
+    const { ctx } = makeCtx({}, ["profile", "friends", "transactions"]);
+    await collectAllStreams(ctx, fetchPath, OWNER_ID, accountUser());
+    assert.equal(called, false, "collectAllStreams must never call globalThis.fetch directly");
+  } finally {
+    globalThis.fetch = original;
+  }
 });

@@ -64,8 +64,13 @@
  */
 
 import type { Page } from "playwright";
-import { ensureVenmoSession } from "../../src/auto-login/venmo.ts";
-import { type BrowserCollectContext, buildDetailCoverageMessage, runConnector } from "../../src/connector-runtime.ts";
+import { ensureVenmoOrigin, ensureVenmoSession } from "../../src/auto-login/venmo.ts";
+import {
+  type BrowserCollectContext,
+  buildDetailCoverageMessage,
+  politeDelay,
+  runConnector,
+} from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { redactTransportDetail } from "../../src/http-retry.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
@@ -83,6 +88,13 @@ const FRIENDS_PAGE_SIZE = 200;
 const TRANSACTIONS_PAGE_SIZE = 50;
 const MAX_FRIENDS_PAGES = 200;
 const MAX_TRANSACTION_PAGES = 400;
+// The redesign dropped `venmoPacingProfile`/the HTTP governor (page-context
+// fetch has no direct outbound Node HTTP to pace — F10 in
+// /tmp/review-venmo-browser-redesign-0810.md), but the page loops below
+// still hit `api.venmo.com` back-to-back up to 200-400 times with zero
+// pacing. Self-pace like reddit (PAGE_DELAY_MS=500) rather than lean on a
+// governor that structurally cannot see this transport.
+const PAGE_DELAY_MS = 500;
 
 interface VenmoProgressExtra {
   cursor_present?: boolean;
@@ -107,29 +119,50 @@ interface VenmoPageFetchResult {
  */
 export type VenmoPageFetch = (path: string, query?: Record<string, string>) => Promise<VenmoPageFetchResult>;
 
+/**
+ * Distinguishes "the fetch could not run at all" (opaque origin, DNS, TLS,
+ * reset socket — a transport/precondition fault) from "the fetch ran and
+ * Venmo said no" (an HTTP status). Collapsing both into the same shape, as
+ * the pre-revision `catch { return { status: 0, ... } }` did, reports every
+ * transport fault as a session-expired auth fault
+ * (/tmp/review-venmo-browser-redesign-0810.md F4) — the owner is told to
+ * re-authenticate when the real problem is that `collect()` never
+ * established the `venmo.com` origin (F1/F3).
+ */
+type VenmoFetchOutcome =
+  | { kind: "response"; body: string; status: number }
+  | { kind: "transport_error"; message: string };
+
 function makePageFetch(page: Page): VenmoPageFetch {
   return async (path, query) => {
     const url = new URL(API_BASE + path);
     for (const [key, value] of Object.entries(query ?? {})) {
       url.searchParams.set(key, value);
     }
-    return (await page.evaluate(async (fetchUrl) => {
-      try {
-        const res = await fetch(fetchUrl, {
-          credentials: "include",
-          headers: { accept: "application/json" },
-        });
-        return { status: res.status, body: await res.text().catch(() => "") };
-      } catch (err) {
-        return { status: 0, body: String(err) };
-      }
-    }, url.toString())) as VenmoPageFetchResult;
+    let outcome: VenmoFetchOutcome;
+    try {
+      outcome = (await page.evaluate(async (fetchUrl) => {
+        try {
+          const res = await fetch(fetchUrl, {
+            credentials: "include",
+            headers: { accept: "application/json" },
+          });
+          return { kind: "response" as const, status: res.status, body: await res.text().catch(() => "") };
+        } catch (err) {
+          return { kind: "transport_error" as const, message: err instanceof Error ? err.message : String(err) };
+        }
+      }, url.toString())) as VenmoFetchOutcome;
+    } catch (err) {
+      // `page.evaluate` itself rejected (execution context destroyed by a
+      // navigation, or the page/browser crashed) — same "could not run at
+      // all" classification as a fetch throwing inside the callback.
+      outcome = { kind: "transport_error", message: err instanceof Error ? err.message : String(err) };
+    }
+    if (outcome.kind === "transport_error") {
+      throw new Error(`venmo_transport_error [endpoint ${path}]: ${redactTransportDetail(outcome.message)}`);
+    }
+    return { status: outcome.status, body: outcome.body };
   };
-}
-
-/** Templated endpoint label for terminal errors — never the resolved URL or a live resource id. */
-function endpointLabel(path: string): string {
-  return path;
 }
 
 export function errorDetail(body: string): string {
@@ -146,13 +179,13 @@ export function errorDetail(body: string): string {
 
 function assertVenmoOk(status: number, body: string, path: string): void {
   if (status === 401 || status === 403) {
-    throw new Error(`venmo_session_expired [endpoint ${endpointLabel(path)}]: ${errorDetail(body)}`);
+    throw new Error(`venmo_session_expired [endpoint ${path}]: ${errorDetail(body)}`);
   }
   if (status === 429) {
-    throw new Error(`venmo_rate_limited [endpoint ${endpointLabel(path)}]`);
+    throw new Error(`venmo_rate_limited [endpoint ${path}]`);
   }
   if (status < 200 || status >= 300) {
-    throw new Error(`venmo_http_${String(status)} [endpoint ${endpointLabel(path)}]: ${errorDetail(body)}`);
+    throw new Error(`venmo_http_${String(status)} [endpoint ${path}]: ${errorDetail(body)}`);
   }
 }
 
@@ -165,7 +198,8 @@ export async function fetchProfile(fetchPath: VenmoPageFetch): Promise<VenmoUser
 export async function fetchAllFriends(
   fetchPath: VenmoPageFetch,
   ownerId: string,
-  progress: VenmoProgress
+  progress: VenmoProgress,
+  delay: (ms: number) => Promise<void> = politeDelay
 ): Promise<VenmoUser[]> {
   const all: VenmoUser[] = [];
   let offset = 0;
@@ -189,6 +223,7 @@ export async function fetchAllFriends(
       break;
     }
     offset += batch.length;
+    await delay(PAGE_DELAY_MS);
   }
   return all;
 }
@@ -231,8 +266,9 @@ async function emitTransactionsPage(
 export async function collectTransactions(
   ctx: BrowserCollectContext,
   fetchPath: VenmoPageFetch,
-  ownerId: string
-): Promise<{ considered: number; covered: number; latestSeenAt: string | null }> {
+  ownerId: string,
+  delay: (ms: number) => Promise<void> = politeDelay
+): Promise<{ beforeId: string | undefined; considered: number; covered: number; latestSeenAt: string | null }> {
   const { emitRecord, state } = ctx;
   const progress = ctx.progress as VenmoProgress;
   const priorState = state.transactions as { before_id?: string } | undefined;
@@ -270,18 +306,19 @@ export async function collectTransactions(
 
     const lastStory = stories.at(-1);
     if (!lastStory?.id || stories.length < TRANSACTIONS_PAGE_SIZE) {
-      // Fewer than a full page (or no id to page from) means this is the
-      // oldest page reachable — do not persist before_id past this run so
-      // the next run starts fresh from the head and re-walks to catch new
-      // transactions (there is no forward/`after_id` cursor documented for
-      // this route).
+      // Fewer than a full page (or no id to page from) means this run
+      // reached the oldest page Venmo has for this account — there is
+      // nothing older to resume from next run, so the cursor resets to the
+      // head (there is no forward/`after_id` cursor documented for this
+      // route; the next run re-walks from the newest page).
       beforeId = undefined;
       break;
     }
     beforeId = lastStory.id;
+    await delay(PAGE_DELAY_MS);
   }
 
-  return { considered: totalSeen, covered: totalModeled, latestSeenAt };
+  return { beforeId, considered: totalSeen, covered: totalModeled, latestSeenAt };
 }
 
 async function collectProfile(
@@ -366,11 +403,11 @@ export async function collectAllStreams(
   }
 
   if (requested.has("transactions")) {
-    const { considered, covered, latestSeenAt } = await collectTransactions(ctx, fetchPath, ownerId);
+    const { beforeId, considered, covered, latestSeenAt } = await collectTransactions(ctx, fetchPath, ownerId);
     await emit({
       type: "STATE",
       stream: "transactions",
-      cursor: { last_seen_date_created: latestSeenAt },
+      cursor: { before_id: beforeId ?? null, last_seen_date_created: latestSeenAt },
     });
     await emit(
       buildDetailCoverageMessage({
@@ -389,7 +426,15 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "venmo",
     validateRecord,
-    retryablePattern: /ECONN|ETIMEDOUT|fetch failed|venmo_rate_limited/i,
+    // `venmo_transport_error`/`venmo_probe_transport_error` are the browser
+    // fetch's own "could not run at all" fault (opaque origin, DNS, TLS,
+    // reset socket) — deliberately retryable, distinct from
+    // `venmo_session_expired`. `fetch failed` covers Node's transport
+    // wording; the page-context error is Chromium's own `TypeError: Failed
+    // to fetch` (capital F), matched here on purpose rather than by an
+    // accidental case-insensitive collision (F4 in
+    // /tmp/review-venmo-browser-redesign-0810.md).
+    retryablePattern: /ECONN|ETIMEDOUT|fetch failed|failed to fetch|venmo_rate_limited|venmo_.*transport_error/i,
     // No `auth:` config — credentials are optional. src/auto-login/venmo.ts
     // reads VENMO_USERNAME/VENMO_PASSWORD directly from process.env only to
     // ASSIST login when present, and falls to a manual_action browser
@@ -410,6 +455,12 @@ if (isMainModule(import.meta.url)) {
     },
     async collect(ctx: BrowserCollectContext): Promise<void> {
       const { page } = ctx;
+      // `ensureSession` may leave the page wherever sign-in redirected it
+      // (e.g. `id.venmo.com`); `api.venmo.com`'s CORS allowlist only grants
+      // a credentialed fetch from `https://venmo.com`, so collect must
+      // establish that origin itself rather than assume ensureSession left
+      // it there (F3 in /tmp/review-venmo-browser-redesign-0810.md).
+      await ensureVenmoOrigin(page);
       const fetchPath = makePageFetch(page);
       const account = await fetchProfile(fetchPath);
       const ownerId = account?.id;
