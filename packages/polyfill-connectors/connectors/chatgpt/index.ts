@@ -121,23 +121,27 @@ export const normalizeChatGptTerminalError: NormalizeTerminalError = ({
     return {
       code: "credential_rejected",
       message: `chatgpt_preprogress_failure: refresh_credentials: ${diagnostic}`,
+      recovery_hint: "refresh_credentials",
       retryable: false,
     };
   }
   if (CHATGPT_AUTH_FAILURE_RE.test(message)) {
     return {
       message: `chatgpt_preprogress_failure: refresh_credentials: ${diagnostic}`,
+      recovery_hint: "refresh_credentials",
       retryable: false,
     };
   }
   if (CHATGPT_MANUAL_ACTION_RE.test(message)) {
     return {
       message: `chatgpt_preprogress_failure: manual_action_required: ${diagnostic}`,
+      recovery_hint: "manual_action_required",
       retryable: false,
     };
   }
   return {
     message: `chatgpt_preprogress_failure: runtime_exception: ${diagnostic}`,
+    ...(retryable ? {} : { recovery_hint: "retry_on_connector_upgrade" }),
     retryable,
   };
 };

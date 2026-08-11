@@ -35,8 +35,8 @@ import {
   buildCollectionFacts,
   buildKnownGap,
   GAP_STRING_MAX,
+  isValidRecoveryHintShape,
   normalizeGapScope,
-  RECOVERY_ACTIONS,
   VIOLATION_LIST_MAX,
 } from "./connector-gap-bounding.ts";
 import { createDetailGapPageReader, validateDetailGapsPageRequest } from "./detail-gap-paging.ts";
@@ -181,10 +181,19 @@ interface RuntimeRunError extends Error {
   trace_id?: string;
 }
 
-/** The `error` object a connector may attach to a failed DONE. */
+/**
+ * The `error` object a connector may attach to a failed DONE. `code`
+ * identifies the cause (e.g. `credential_rejected`) and is connector-defined,
+ * opaque to the RI. `recovery_hint` is the separate, closed-vocabulary
+ * ACTION channel (same shape/vocabulary as `SKIP_RESULT.recovery_hint` —
+ * see `RECOVERY_ACTIONS` / `isValidRecoveryHintShape` in
+ * connector-gap-bounding.ts) — the only field `recoveryHintFromTerminalConnectorError`
+ * reads to decide the owner-facing recovery action.
+ */
 interface ConnectorDoneError {
   code?: string;
   message?: string;
+  recovery_hint?: string | { action?: string; retryable?: boolean } | null;
   retryable?: boolean | null;
   [key: string]: unknown;
 }
@@ -1278,17 +1287,7 @@ function validateProgressMessage(msg: ConnectorMessage, scopeByStream: ScopeBySt
 }
 
 function validateSkipRecoveryHint(value: unknown): void {
-  if (isNullish(value)) {
-    return;
-  }
-  const hint = value as { action?: unknown; retryable?: unknown };
-  const valid =
-    (typeof value === "string" && RECOVERY_ACTIONS.has(value)) ||
-    (typeof value === "object" &&
-      !Array.isArray(value) &&
-      (isNullish(hint.action) || RECOVERY_ACTIONS.has(hint.action as string)) &&
-      (isNullish(hint.retryable) || typeof hint.retryable === "boolean"));
-  if (!valid) {
+  if (!isValidRecoveryHintShape(value)) {
     throw new Error("Connector emitted invalid SKIP_RESULT.recovery_hint");
   }
 }
@@ -2677,27 +2676,28 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     knownGaps.push(gap);
   }
 
+  /**
+   * A connector requests a recovery action only via `connector_error.recovery_hint`
+   * — the same closed vocabulary/shape as `SKIP_RESULT.recovery_hint`
+   * (validated on ingest by `validateDoneError`, so an invalid shape can never
+   * reach here). `code`/`message` are cause identity and free-form text; the
+   * RI never inspects either to choose an action. `buildKnownGap` (via
+   * `normalizeRecoveryHint`) already fails closed on a missing/unrecognized
+   * hint by falling back to its own generic, vocabulary-based inference —
+   * this function does not need to duplicate that.
+   */
   function recoveryHintFromTerminalConnectorError(
     connectorError: ConnectorDoneError | null | undefined
-  ): string | null {
-    if (connectorError?.code === "credential_rejected") {
-      return "refresh_credentials";
-    }
+  ): string | { action?: string; retryable?: boolean } | null {
     const message = typeof connectorError?.message === "string" ? connectorError.message : "";
     if (isRuntimeRetryableBrowserProfileError(message)) {
       return "retry_by_runtime";
     }
-    if (message.includes("chatgpt_preprogress_failure: refresh_credentials:")) {
-      return "refresh_credentials";
-    }
-    if (message.includes("chatgpt_preprogress_failure: manual_action_required:")) {
-      return "manual_action_required";
+    if (connectorError?.recovery_hint) {
+      return connectorError.recovery_hint;
     }
     if (connectorError?.retryable === true) {
       return "retry_by_runtime";
-    }
-    if (message.includes("chatgpt_preprogress_failure: runtime_exception:")) {
-      return "retry_on_connector_upgrade";
     }
     return null;
   }

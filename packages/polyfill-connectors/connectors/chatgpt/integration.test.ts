@@ -120,6 +120,7 @@ test("normalizeChatGptTerminalError maps pre-progress auth failures to refresh_c
     {
       code: "credential_rejected",
       message: `chatgpt_preprogress_failure: refresh_credentials: ${CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE}`,
+      recovery_hint: "refresh_credentials",
       retryable: false,
     }
   );
@@ -131,6 +132,7 @@ test("normalizeChatGptTerminalError maps pre-progress auth failures to refresh_c
     {
       message:
         "chatgpt_preprogress_failure: refresh_credentials: chatgpt_session_failed: apiFetch got 401 on GET /conversation/abc (auth - not retryable)",
+      recovery_hint: "refresh_credentials",
       retryable: false,
     }
   );
@@ -143,6 +145,7 @@ test("normalizeChatGptTerminalError maps pre-progress auth failures to refresh_c
     {
       message:
         "chatgpt_preprogress_failure: refresh_credentials: chatgpt_session_failed: chatgpt_session_required: ChatGPT session is not active; start an owner-attended manual refresh to repair authentication.",
+      recovery_hint: "refresh_credentials",
       retryable: false,
     }
   );
@@ -157,6 +160,7 @@ test("normalizeChatGptTerminalError maps visible login or challenge failures to 
     {
       message:
         "chatgpt_preprogress_failure: manual_action_required: chatgpt_login_post_submit_failed: Cloudflare challenge still visible",
+      recovery_hint: "manual_action_required",
       retryable: false,
     }
   );
@@ -168,12 +172,24 @@ test("normalizeChatGptTerminalError bounds and redacts parser/runtime diagnostic
     retryable: false,
   });
   assert.equal(normalized.retryable, false);
+  assert.equal(normalized.recovery_hint, "retry_on_connector_upgrade");
+  assert.equal("code" in normalized, false, "runtime_exception fallback must not invent a code");
   assert.match(normalized.message, /^chatgpt_preprogress_failure: runtime_exception: /);
   assert.ok(!normalized.message.includes("user@example.com"));
   assert.ok(!normalized.message.includes("secret-token"));
   assert.ok(!normalized.message.includes("json-secret"));
   assert.ok(!normalized.message.includes("https://chatgpt.com"));
   assert.ok(normalized.message.length <= "chatgpt_preprogress_failure: runtime_exception: ".length + 240);
+});
+
+test("normalizeChatGptTerminalError omits recovery_hint when the runtime_exception fallback is retryable", () => {
+  const normalized = normalizeChatGptTerminalError({
+    message: "some transient parser hiccup",
+    retryable: true,
+  });
+  assert.equal(normalized.retryable, true);
+  assert.equal("recovery_hint" in normalized, false);
+  assert.match(normalized.message, /^chatgpt_preprogress_failure: runtime_exception: /);
 });
 
 test("shouldKeepRetryingChatGptDetail fast-opens on bare 429 but keeps honest waits", () => {

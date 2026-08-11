@@ -1751,8 +1751,10 @@ test("Collection Profile conformance", async (t) => {
     const { connectorPath, cleanup } = createTestConnector([
       {
         error: {
+          code: "credential_rejected",
           message:
             "chatgpt_preprogress_failure: refresh_credentials: chatgpt_session_failed: apiFetch got 401 on GET /conversation/abc (auth - not retryable)",
+          recovery_hint: "refresh_credentials",
           retryable: false,
         },
         records_emitted: 0,
@@ -1795,6 +1797,109 @@ test("Collection Profile conformance", async (t) => {
       const failedKnownGaps = knownGapsOf(failedEvent);
       assert.notDeepEqual(failedKnownGaps, [], "terminal timeline must include durable known gaps");
       assert.equal(failedKnownGaps[0]?.recovery_hint?.action, "refresh_credentials");
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test("recovery_hint is a provider-neutral channel: an arbitrary connector id gets the same hint", async () => {
+    // Proves the RI derives its recovery hint from the typed, manifest-neutral
+    // DONE.error.recovery_hint field alone — never from a connector's private
+    // `code`/message format. A connector id ChatGPT's normalizer has never
+    // seen ("acme-crm") gets the identical `manual_action_required` hint by
+    // declaring the same recovery_hint, with a `code` and message sharing
+    // nothing with ChatGPT's.
+    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, {
+      ...MINIMAL_MANIFEST,
+      connector_id: "acme-crm",
+    });
+
+    const { connectorPath, cleanup } = createTestConnector([
+      {
+        error: {
+          code: "acme_verification_wall",
+          message: "acme_crm_verification_wall: owner must complete an in-app verification step",
+          recovery_hint: "manual_action_required",
+          retryable: false,
+        },
+        records_emitted: 0,
+        status: "failed",
+        type: "DONE",
+      },
+    ]);
+
+    try {
+      const result = await runTestConnector({
+        collectionMode: "full_refresh",
+        connectorId,
+        connectorPath,
+        manifest: MINIMAL_MANIFEST,
+        onInteraction: async () => ({}),
+        ownerToken,
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        state: null,
+      });
+
+      assert.equal(result.status, "failed");
+      const runFailedGap = result.known_gaps?.find((gap) => gap.kind === "run_failed");
+      assert.ok(runFailedGap, `expected run_failed known gap, got ${JSON.stringify(result.known_gaps)}`);
+      assert.equal(runFailedGap.recovery_hint?.action, "manual_action_required");
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test("runtime rejects a malformed DONE.error.recovery_hint as a protocol violation (fail closed)", async () => {
+    // An out-of-vocabulary recovery_hint is not silently dropped or trusted —
+    // the whole DONE is rejected as a protocol violation, same as any other
+    // malformed connector-declared field (see the sibling SKIP_RESULT test).
+    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, {
+      ...MINIMAL_MANIFEST,
+      connector_id: "acme-crm",
+    });
+
+    const { connectorPath, cleanup } = createTestConnector([
+      {
+        error: {
+          message: "acme_crm_unexpected_shutdown: worker process exited",
+          recovery_hint: "acme_totally_made_up_action",
+          retryable: false,
+        },
+        records_emitted: 0,
+        status: "failed",
+        type: "DONE",
+      },
+    ]);
+
+    try {
+      let capturedError: RuntimeRunConnectorError | undefined;
+      await assert.rejects(
+        runTestConnector({
+          collectionMode: "full_refresh",
+          connectorId,
+          connectorPath,
+          manifest: MINIMAL_MANIFEST,
+          onInteraction: async () => ({}),
+          ownerToken,
+          persistState: true,
+          rsUrl: `http://localhost:${rsPort}`,
+          state: null,
+        }),
+        (err) => {
+          capturedError = asRuntimeError(err);
+          // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+          assert.match(capturedError.message, /invalid DONE\.error\.recovery_hint/);
+          return true;
+        }
+      );
+      assert.ok(capturedError, "expected a rejection carrying the protocol-violation error");
     } finally {
       cleanup();
       await closeServer(server);

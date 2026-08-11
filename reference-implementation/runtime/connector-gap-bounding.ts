@@ -13,8 +13,8 @@
 // Public facade (what runtime/index.js imports):
 //   Functions: boundString, boundStringList, boundGapString,
 //              boundConnectorErrorMessage, boundConsideredCount,
-//              normalizeRecoveryHint, normalizeGapScope,
-//              buildCollectionFacts, buildKnownGap
+//              normalizeRecoveryHint, isValidRecoveryHintShape,
+//              normalizeGapScope, buildCollectionFacts, buildKnownGap
 //   Constants: VIOLATION_LIST_MAX, GAP_STRING_MAX, RECOVERY_ACTIONS,
 //              BROWSER_SURFACE_KINDS (exported read-only for the manifest
 //              parity test only — see test/connector-gap-bounding-browser-
@@ -118,6 +118,31 @@ export const RECOVERY_ACTIONS = new Set([
   "not_retriable",
   "unknown",
 ]);
+
+/**
+ * Shared shape check for a connector-declared recovery hint: either a bare
+ * string from `RECOVERY_ACTIONS`, or `{ action?, retryable? }` with the same
+ * constraints. One vocabulary and one validator for every wire location a
+ * connector may declare a recovery hint (`SKIP_RESULT.recovery_hint`,
+ * `DONE.error.recovery_hint`) — a connector requests an ACTION this way; it
+ * never gets to pick one by shaping its `code` or free-form `message` text.
+ */
+export function isValidRecoveryHintShape(value: unknown): boolean {
+  if (isNullish(value)) {
+    return true;
+  }
+  if (typeof value === "string") {
+    return RECOVERY_ACTIONS.has(value);
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const hint = value as { action?: unknown; retryable?: unknown };
+  return (
+    (isNullish(hint.action) || RECOVERY_ACTIONS.has(hint.action as string)) &&
+    (isNullish(hint.retryable) || typeof hint.retryable === "boolean")
+  );
+}
 
 // ── BOUNDING FUNCTIONS ────────────────────────────────────────────────────────
 

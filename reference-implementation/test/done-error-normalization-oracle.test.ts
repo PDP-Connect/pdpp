@@ -88,3 +88,20 @@ test("validateDoneError normalizes valid failed DONE.error details", () => {
     }
   );
 });
+
+test("validateDoneError accepts a closed-vocabulary recovery_hint distinct from code", () => {
+  assert.deepEqual(
+    validateDoneError("failed", { code: "session_expired", message: "failed", recovery_hint: "refresh_credentials" }),
+    { code: "session_expired", message: "failed", recovery_hint: "refresh_credentials", retryable: null }
+  );
+  assert.deepEqual(
+    validateDoneError("failed", { message: "failed", recovery_hint: { action: "manual_action_required" } }),
+    { message: "failed", recovery_hint: { action: "manual_action_required" }, retryable: null }
+  );
+});
+
+test("validateDoneError rejects an out-of-vocabulary recovery_hint", () => {
+  const result = validateDoneError("failed", { message: "failed", recovery_hint: "made_up_action" });
+  assert.ok(result instanceof Error);
+  assert.match(result.message, /invalid DONE\.error\.recovery_hint/);
+});

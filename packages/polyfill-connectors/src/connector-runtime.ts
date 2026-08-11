@@ -260,8 +260,17 @@ export interface ProbeSessionArgs {
 }
 
 export interface TerminalErrorDetails {
+  /** Stable cause identity (e.g. `credential_rejected`) — never a recovery action. */
   code?: string;
   message: string;
+  /**
+   * Provider-neutral recovery action, from the same closed vocabulary and
+   * shape as `SKIP_RESULT.recovery_hint` (see `RECOVERY_ACTIONS` /
+   * `validateSkipRecoveryHint` in the reference implementation). `code`
+   * identifies WHAT went wrong; `recovery_hint` says WHAT TO DO about it —
+   * keep the two separate rather than overloading `code` with action meaning.
+   */
+  recovery_hint?: string | { action?: string; retryable?: boolean };
   retryable: boolean;
 }
 
