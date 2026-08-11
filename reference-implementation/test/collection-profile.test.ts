@@ -25,7 +25,9 @@ import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
+import { RECOVERY_ACTIONS } from "../runtime/connector-gap-bounding.ts";
 import { buildStoredCollectionScope, COLLECTION_SCOPE_STATE_KEY } from "../server/local-collection-scope.ts";
 import {
   loadSyncState,
@@ -1904,6 +1906,77 @@ test("Collection Profile conformance", async (t) => {
       cleanup();
       await closeServer(server);
     }
+  });
+
+  await t.test("spec-collection-profile.md's recovery_hint vocabulary and wire fields match the runtime", () => {
+    // Pins spec-collection-profile.md's normative TypeScript types against the
+    // real RECOVERY_ACTIONS vocabulary (connector-gap-bounding.ts) and the
+    // real wire shape (DONE.error / SKIP_RESULT), so recovery_hint cannot
+    // silently drift out of the docs — or out of the runtime — unnoticed.
+    const specPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "spec-collection-profile.md");
+    const specText = readFileSync(specPath, "utf8");
+
+    function requiredMatch(text: string, pattern: RegExp, description: string): RegExpMatchArray {
+      const matchResult = text.match(pattern);
+      assert.ok(matchResult, description);
+      return matchResult;
+    }
+
+    const typesBlock = requiredMatch(
+      specText,
+      /```typescript\n([\s\S]*?)\n```/,
+      "expected a ```typescript code block in spec-collection-profile.md"
+    )[1] as string;
+
+    const actionUnionText = requiredMatch(
+      typesBlock,
+      /type RecoveryAction =\s*([\s\S]*?);/,
+      "expected a `type RecoveryAction = ...` union in the spec's TypeScript types"
+    )[1] as string;
+    const specActions = new Set(Array.from(actionUnionText.matchAll(/'([a-z_]+)'/g)).map((m) => m[1] as string));
+    assert.deepEqual(
+      specActions,
+      RECOVERY_ACTIONS,
+      "spec-collection-profile.md's RecoveryAction union must list exactly the runtime's RECOVERY_ACTIONS vocabulary"
+    );
+
+    const skipResultBlock = requiredMatch(
+      typesBlock,
+      /type:\s*'SKIP_RESULT';[\s\S]*?\}/,
+      "expected a SKIP_RESULT member in the spec's ConnectorMessage union"
+    )[0];
+    assert.match(
+      skipResultBlock,
+      /recovery_hint\?:\s*RecoveryHint/,
+      "spec-collection-profile.md's SKIP_RESULT type must declare recovery_hint"
+    );
+
+    const doneBlock = requiredMatch(
+      typesBlock,
+      /type:\s*'DONE';[\s\S]*?\}/,
+      "expected a DONE member in the spec's ConnectorMessage union"
+    )[0];
+    assert.match(
+      doneBlock,
+      /error\?:\s*\{[^}]*recovery_hint\?:\s*RecoveryHint[^}]*\}/,
+      "spec-collection-profile.md's DONE.error type must declare recovery_hint"
+    );
+    assert.match(
+      doneBlock,
+      /error\?:\s*\{[^}]*code\?:\s*string[^}]*\}/,
+      "spec-collection-profile.md's DONE.error type must declare code"
+    );
+
+    assert.match(
+      specText,
+      /`code` and `recovery_hint` answer different questions[\s\S]{0,400}MUST NOT infer one from the other/,
+      "spec-collection-profile.md must state code and recovery_hint are independent (cause vs. action)"
+    );
+    assert.match(
+      specText,
+      /MUST reject the enclosing message \(fail closed\)/,
+      "spec-collection-profile.md must state an invalid recovery_hint is a protocol violation"
+    );
   });
 
   await t.test("pre-progress browser profile attach race remains runtime-retryable", async () => {

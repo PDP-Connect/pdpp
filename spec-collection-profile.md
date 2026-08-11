@@ -315,6 +315,8 @@ Signals that a stream or resource was intentionally skipped. Does not cause a st
 
 `SKIP_RESULT` MAY also be used when a connector cannot honor a declared scope element for a stream or resource. In that case the `reason` MUST be `scope_not_supported`.
 
+`SKIP_RESULT` MAY carry an optional `recovery_hint`. See [Recovery hints](#recovery-hints) below for its shape and validation rules — the same rules apply here as for `DONE.error.recovery_hint`.
+
 #### PROGRESS
 
 Optional progress update for display in runtime UIs.
@@ -357,6 +359,23 @@ On failure:
 | `succeeded` | Collection completed. Runtime persists final STATE. |
 | `failed` | Collection failed. Runtime does NOT persist STATE. |
 | `cancelled` | Collection was cancelled (e.g., user revoked mid-run). Runtime does NOT persist STATE. |
+
+`error` MAY carry `code` and/or `recovery_hint`, in addition to the required `message` and `retryable`:
+
+- `code` is a stable, connector-defined **cause identity** (e.g. distinguishing one failure mode from another). It is opaque free-form identity, not an instruction — the runtime MUST NOT treat `code` as, or derive, an owner-facing recovery action from it.
+- `recovery_hint` is the connector's declaration of the owner-facing **recovery action**. It uses the exact same bounded shape and vocabulary as `SKIP_RESULT.recovery_hint` — see [Recovery hints](#recovery-hints).
+
+`code` and `recovery_hint` answer different questions (what went wrong vs. what to do about it) and MUST be validated and consumed independently; a runtime MUST NOT infer one from the other.
+
+#### Recovery hints
+
+`SKIP_RESULT.recovery_hint` and `DONE.error.recovery_hint` share one bounded, provider-neutral shape and vocabulary:
+
+- `recovery_hint` is either a bare string from the closed action vocabulary below, or an object `{ action?: string, retryable?: boolean }` where `action`, if present, MUST also be from that vocabulary and `retryable`, if present, MUST be a boolean.
+- Action vocabulary: `retry_by_runtime`, `retry_on_connector_upgrade`, `refresh_credentials`, `manual_action_required`, `update_selector`, `upstream_unblock`, `not_retriable`, `unknown`.
+- A connector requests a specific owner-facing recovery action **only** through `recovery_hint`. A runtime MUST NOT derive a recovery action by inspecting `code`, `message`, or any other connector-authored free-form text.
+- A runtime MUST treat an absent `recovery_hint` as "no hint declared," and MAY fall through to its own generic, connector-neutral policy for choosing a default action (e.g. from the `retryable` flag) — that fallback MUST NOT be, or become, a connector-specific text/identity heuristic.
+- A `recovery_hint` that is present but does not match the shape or vocabulary above is a **protocol violation**: the runtime MUST reject the enclosing message (fail closed), not silently drop the field or substitute a guessed action.
 
 ---
 
@@ -451,6 +470,7 @@ type ConnectorMessage =
       stream?: string;
       reason?: string;
       message?: string;
+      recovery_hint?: RecoveryHint;
     }
   | {
       type: 'PROGRESS';
@@ -463,6 +483,18 @@ type ConnectorMessage =
       type: 'DONE';
       status: 'succeeded' | 'failed' | 'cancelled';
       records_emitted: number;
-      error?: { message: string; retryable: boolean };
+      error?: { code?: string; message: string; recovery_hint?: RecoveryHint; retryable: boolean };
     };
+
+type RecoveryAction =
+  | 'retry_by_runtime'
+  | 'retry_on_connector_upgrade'
+  | 'refresh_credentials'
+  | 'manual_action_required'
+  | 'update_selector'
+  | 'upstream_unblock'
+  | 'not_retriable'
+  | 'unknown';
+
+type RecoveryHint = RecoveryAction | { action?: RecoveryAction; retryable?: boolean };
 ```

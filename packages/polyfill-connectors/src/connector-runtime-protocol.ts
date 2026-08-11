@@ -363,7 +363,12 @@ export type EmittedMessage =
       type: "DONE";
       status: "succeeded" | "failed";
       records_emitted: number;
-      error?: { code?: string; message: string; retryable: boolean };
+      error?: {
+        code?: string;
+        message: string;
+        recovery_hint?: string | { action?: string; retryable?: boolean };
+        retryable: boolean;
+      };
     }
   | {
       type: "INTERACTION";
