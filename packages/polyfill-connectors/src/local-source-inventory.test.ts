@@ -17,6 +17,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   buildCoverageDiagnosticsStateSnapshot,
+  buildDerivedCoverageRecord,
+  describeDerivedCoverageReason,
   expectedLocalCoverageStoreDescriptors,
   INVENTORY_FINGERPRINT_EXCLUDE_KEYS,
   openInventoryFingerprintCursor,
@@ -224,4 +226,136 @@ test("legacy cursor (no fingerprints field) re-emits everything once", () => {
   // must re-emit every record exactly once so the gate self-heals.
   const cursor = openInventoryFingerprintCursor({ fetched_at: "2026-06-01T00:00:00Z" });
   assert.equal(cursor.shouldEmit(inventoryRecord()), true, "legacy cursor re-emits");
+});
+
+// ─── buildDerivedCoverageRecord / describeDerivedCoverageReason ──────────
+//
+// The shared mechanical policy for a "derived" stream — one parsed out of
+// another, already-scanned stream's source rather than its own
+// KnownLocalStore entry (Claude Code's messages/attachments/memory_notes;
+// Codex's messages/function_calls). This is the single source of truth for
+// the status/reason rule both connectors' `emitDerivedCoverage` call into —
+// it must not be reimplemented per connector.
+
+test("buildDerivedCoverageRecord: a completed scan with emitted records is collected, reason names the count", () => {
+  const record = buildDerivedCoverageRecord({
+    emitted: 3,
+    examined: 5,
+    id: "coverage:derived_messages",
+    label: "message",
+    scanComplete: true,
+    store: "derived_messages",
+    stream: "messages",
+  });
+  assert.equal(record.status, "collected");
+  assert.equal(record.reason, "3 message records emitted");
+});
+
+test("buildDerivedCoverageRecord: a completed scan with zero examined is collected, not missing", () => {
+  const record = buildDerivedCoverageRecord({
+    emitted: 0,
+    examined: 0,
+    id: "coverage:derived_messages",
+    label: "message",
+    scanComplete: true,
+    store: "derived_messages",
+    stream: "messages",
+  });
+  assert.equal(record.status, "collected", "an empty-but-complete scan is collected, not missing/unaccounted");
+  assert.equal(record.reason, "enumeration complete, 0 examined");
+});
+
+test("buildDerivedCoverageRecord: examined>0 but emitted=0 (fingerprint-suppressed) is still collected", () => {
+  const record = buildDerivedCoverageRecord({
+    emitted: 0,
+    examined: 4,
+    id: "coverage:derived_messages",
+    label: "message",
+    scanComplete: true,
+    store: "derived_messages",
+    stream: "messages",
+  });
+  assert.equal(record.status, "collected");
+  assert.equal(record.reason, "enumeration complete, 4 examined (0 emitted)");
+});
+
+test("buildDerivedCoverageRecord: an incomplete scan is unaccounted with a generic fallback reason", () => {
+  const record = buildDerivedCoverageRecord({
+    emitted: 0,
+    examined: 0,
+    id: "coverage:derived_messages",
+    label: "message",
+    scanComplete: false,
+    store: "derived_messages",
+    stream: "messages",
+  });
+  assert.equal(record.status, "unaccounted");
+  assert.equal(record.reason, "enumeration did not complete");
+});
+
+test("buildDerivedCoverageRecord: a connector-supplied incompleteReason overrides the generic fallback", () => {
+  const record = buildDerivedCoverageRecord({
+    emitted: 0,
+    examined: 0,
+    id: "coverage:derived_function_calls",
+    incompleteReason: "rollout enumeration failed: parse_error",
+    label: "function_call",
+    scanComplete: false,
+    store: "derived_function_calls",
+    stream: "function_calls",
+  });
+  assert.equal(record.status, "unaccounted");
+  assert.equal(
+    record.reason,
+    "rollout enumeration failed: parse_error",
+    "a connector's own scan-outcome detail must survive through the shared builder"
+  );
+});
+
+test("buildDerivedCoverageRecord: carries an optional scopeFingerprint as collection_scope, omits it when absent", () => {
+  const withScope = buildDerivedCoverageRecord({
+    emitted: 1,
+    examined: 1,
+    id: "coverage:derived_messages",
+    label: "message",
+    scanComplete: true,
+    scopeFingerprint: "fp-abc",
+    store: "derived_messages",
+    stream: "messages",
+  });
+  assert.equal((withScope as { collection_scope?: string }).collection_scope, "fp-abc");
+
+  const withoutScope = buildDerivedCoverageRecord({
+    emitted: 1,
+    examined: 1,
+    id: "coverage:derived_messages",
+    label: "message",
+    scanComplete: true,
+    store: "derived_messages",
+    stream: "messages",
+  });
+  assert.equal(
+    "collection_scope" in withoutScope,
+    false,
+    "an omitted scopeFingerprint must not appear as an explicit undefined key"
+  );
+});
+
+test("describeDerivedCoverageReason: identical inputs from two different connectors produce the identical reason string", () => {
+  // The whole point of the extraction: two connectors calling the SAME
+  // function with the SAME shape must not be able to drift.
+  const claudeCodeStyle = describeDerivedCoverageReason({
+    emitted: 2,
+    examined: 2,
+    label: "message",
+    scanComplete: true,
+  });
+  const codexStyle = describeDerivedCoverageReason({
+    emitted: 2,
+    examined: 2,
+    label: "message",
+    scanComplete: true,
+  });
+  assert.equal(claudeCodeStyle, codexStyle);
+  assert.equal(claudeCodeStyle, "2 message records emitted");
 });

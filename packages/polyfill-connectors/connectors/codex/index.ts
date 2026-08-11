@@ -64,6 +64,7 @@ import { type CarryForwardCursor, openCarryForwardCursor } from "../../src/finge
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildCoverageDiagnosticsStateSnapshot,
+  buildDerivedCoverageRecord,
   buildLocalSourceInventory,
   type CoverageRecord,
   type KnownLocalStore,
@@ -1942,62 +1943,6 @@ async function emitLocalInventoryStreams(input: {
   }
 }
 
-/** Human-readable `reason` for a derived (messages/function_calls) coverage_diagnostics record. */
-function describeDerivedCoverageReason(input: {
-  emitted: number;
-  examined: number;
-  label: string;
-  scanOutcome: "complete" | "unreadable" | "parse_error";
-  status: "collected" | "unaccounted";
-}): string {
-  if (input.status === "unaccounted") {
-    return `rollout enumeration failed: ${input.scanOutcome}`;
-  }
-  if (input.examined === 0) {
-    return "enumeration complete, 0 examined";
-  }
-  if (input.emitted > 0) {
-    return `${input.emitted} ${input.label} records emitted`;
-  }
-  return `enumeration complete, ${input.examined} examined (${input.emitted} emitted)`;
-}
-
-/**
- * A derived coverage_diagnostics CoverageRecord for one rollout-scanned
- * stream (messages or function_calls), on the canonical coverage-status
- * vocabulary (`local-source-inventory.ts`'s `CoverageStatus | "unaccounted"`):
- * a scan that completed — even examining zero records — is `collected`
- * (the reason carries the zero/positive detail); a scan that failed or
- * could not finish (`unreadable` / `parse_error`) is `unaccounted`, since
- * this connector cannot classify what it never got to examine.
- */
-function buildDerivedCoverageRecord(input: {
-  emitted: number;
-  examined: number;
-  id: string;
-  label: string;
-  scanOutcome: "complete" | "unreadable" | "parse_error";
-  scopeFingerprint: string | undefined;
-  store: string;
-  stream: string;
-}): CoverageRecord {
-  const status: "collected" | "unaccounted" = input.scanOutcome === "complete" ? "collected" : "unaccounted";
-  return {
-    id: input.id,
-    store: input.store,
-    stream: input.stream,
-    status,
-    reason: describeDerivedCoverageReason({
-      emitted: input.emitted,
-      examined: input.examined,
-      label: input.label,
-      scanOutcome: input.scanOutcome,
-      status,
-    }),
-    ...(input.scopeFingerprint ? { collection_scope: input.scopeFingerprint } : {}),
-  };
-}
-
 /** Factory: returns the emitRecord closure + a live-updating emitted-count ref. */
 function makeCodexEmitRecord(deps: {
   emittedAt: string;
@@ -2053,6 +1998,8 @@ async function emitDerivedCoverage(input: {
   const { emitRecord, enumerationScope, inventory, nowIso, requested, rolloutScan } = input;
   const derivedRecords: CoverageRecord[] = [];
   const scopeFingerprint = enumerationScopeFingerprint(enumerationScope);
+  const scanComplete = rolloutScan.scanOutcome === "complete";
+  const incompleteReason = scanComplete ? undefined : `rollout enumeration failed: ${rolloutScan.scanOutcome}`;
 
   if (requested.has("messages")) {
     derivedRecords.push(
@@ -2060,8 +2007,9 @@ async function emitDerivedCoverage(input: {
         emitted: rolloutScan.messagesEmitted,
         examined: rolloutScan.messagesExamined,
         id: "coverage:derived_messages",
+        incompleteReason,
         label: "message",
-        scanOutcome: rolloutScan.scanOutcome,
+        scanComplete,
         scopeFingerprint,
         store: "derived_messages",
         stream: "messages",
@@ -2075,8 +2023,9 @@ async function emitDerivedCoverage(input: {
         emitted: rolloutScan.functionCallsEmitted,
         examined: rolloutScan.functionCallsExamined,
         id: "coverage:derived_function_calls",
+        incompleteReason,
         label: "function_call",
-        scanOutcome: rolloutScan.scanOutcome,
+        scanComplete,
         scopeFingerprint,
         store: "derived_function_calls",
         stream: "function_calls",

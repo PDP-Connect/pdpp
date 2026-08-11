@@ -49,6 +49,7 @@ import {
 } from "../../src/local-jsonl-cursor.ts";
 import {
   buildCoverageDiagnosticsStateSnapshot,
+  buildDerivedCoverageRecord,
   buildLocalSourceInventory,
   type CoverageRecord,
   type KnownLocalStore,
@@ -1497,71 +1498,18 @@ async function emitCoverageDiagnosticsState(input: {
   }
 }
 
-/** Human-readable `reason` for a derived (messages/attachments/memory_notes) coverage_diagnostics record. */
-function describeDerivedCoverageReason(input: {
-  emitted: number;
-  examined: number;
-  label: string;
-  scanComplete: boolean;
-}): string {
-  if (!input.scanComplete) {
-    return "project directory scan did not complete";
-  }
-  if (input.examined === 0) {
-    return "enumeration complete, 0 examined";
-  }
-  if (input.emitted > 0) {
-    return `${input.emitted} ${input.label} records emitted`;
-  }
-  return `enumeration complete, ${input.examined} examined (${input.emitted} emitted)`;
-}
-
-/**
- * A derived coverage_diagnostics CoverageRecord for one project-directory-
- * scanned stream (messages, attachments, memory_notes) that is parsed out of
- * the same on-disk files/tree as `sessions` rather than its own
- * `KnownLocalStore` entry.
- *
- * On the canonical coverage-status vocabulary (`local-source-inventory.ts`'s
- * `CoverageStatus | "unaccounted"`): a project scan that completed — even
- * examining zero records — is `collected` (the reason carries the
- * zero/positive detail); a scan that never ran to completion is
- * `unaccounted`, since this connector cannot classify what it never got to
- * examine. A thrown error during the scan fails the whole run before this
- * ever gets called (see `run().catch` in connector-runtime.ts), so
- * `scanComplete: false` only applies when a caller explicitly skipped the
- * scan for a stream that was nonetheless requested.
- */
-function buildDerivedCoverageRecord(input: {
-  emitted: number;
-  examined: number;
-  id: string;
-  label: string;
-  scanComplete: boolean;
-  store: string;
-  stream: string;
-}): CoverageRecord {
-  const status: "collected" | "unaccounted" = input.scanComplete ? "collected" : "unaccounted";
-  return {
-    id: input.id,
-    store: input.store,
-    stream: input.stream,
-    status,
-    reason: describeDerivedCoverageReason({
-      emitted: input.emitted,
-      examined: input.examined,
-      label: input.label,
-      scanComplete: input.scanComplete,
-    }),
-  };
-}
-
 /**
  * Build the `coverage_diagnostics` records for the derived streams
  * (messages, attachments, memory_notes) based on the actual project-directory
  * scan outcome, using additive synthetic store ids so
  * `assertExpectedLocalCoverageStores`'s self-consistency check (which only
- * validates `CLAUDE_CODE_KNOWN_LOCAL_STORES`) is not tripped.
+ * validates `CLAUDE_CODE_KNOWN_LOCAL_STORES`) is not tripped. The record
+ * shape/status/reason policy itself is shared with Codex's identical
+ * derived-stream problem — see `buildDerivedCoverageRecord` in
+ * local-source-inventory.ts. A thrown error during any scan above fails the
+ * whole run before this ever gets called (see `run().catch` in
+ * connector-runtime.ts), so `scanComplete: true` is honest whenever this is
+ * reached.
  */
 function buildDerivedCoverageRecords(input: {
   requested: Map<string, StreamScope>;

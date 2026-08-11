@@ -186,6 +186,85 @@ export function buildCoverageDiagnosticsStateSnapshot(
   });
 }
 
+/**
+ * Human-readable `reason` for a derived coverage_diagnostics record — one
+ * whose stream has no dedicated top-level `KnownLocalStore` entry because it
+ * is parsed out of the same on-disk source as another, already-scanned
+ * stream (e.g. Claude Code's `messages`/`attachments`/`memory_notes` and
+ * Codex's `messages`/`function_calls`, both derived from the same session
+ * transcripts their connector also scans for `sessions`).
+ *
+ * `incompleteReason` lets a connector supply its own scan-outcome detail
+ * (e.g. "rollout enumeration failed: unreadable" vs "...: parse_error") for
+ * the `!scanComplete` case; the generic fallback is used when omitted.
+ */
+export function describeDerivedCoverageReason(input: {
+  emitted: number;
+  examined: number;
+  incompleteReason?: string | undefined;
+  label: string;
+  scanComplete: boolean;
+}): string {
+  if (!input.scanComplete) {
+    return input.incompleteReason ?? "enumeration did not complete";
+  }
+  if (input.examined === 0) {
+    return "enumeration complete, 0 examined";
+  }
+  if (input.emitted > 0) {
+    return `${input.emitted} ${input.label} records emitted`;
+  }
+  return `enumeration complete, ${input.examined} examined (${input.emitted} emitted)`;
+}
+
+/**
+ * A derived `coverage_diagnostics` {@link CoverageRecord} for one stream that
+ * is parsed out of another stream's already-scanned source rather than its
+ * own `KnownLocalStore` entry, so it would otherwise never earn a coverage
+ * row and would silently vanish from `collection_facts`/`fullyAccounted`
+ * despite emitting real records (see collector-runner.ts's
+ * `buildTerminalCollectionFacts`/`summarizeCollectorCompleteness`, which only
+ * ever see streams with at least one coverage row).
+ *
+ * On the canonical coverage-status vocabulary ({@link CoverageStatus} |
+ * `"unaccounted"`): a scan that completed — even examining zero records — is
+ * `collected` (the `reason` carries the zero/positive detail); a scan that
+ * never ran to completion is `unaccounted`, since the connector cannot
+ * classify what it never got to examine.
+ *
+ * This is pure mechanical policy shared across connectors. Enumeration,
+ * store/stream ids, `label` wording, counting, and mapping a connector's own
+ * scan-outcome type onto `scanComplete`/`incompleteReason` all stay
+ * connector-specific.
+ */
+export function buildDerivedCoverageRecord(input: {
+  emitted: number;
+  examined: number;
+  id: string;
+  incompleteReason?: string | undefined;
+  label: string;
+  scanComplete: boolean;
+  scopeFingerprint?: string;
+  store: string;
+  stream: string;
+}): CoverageRecord {
+  const status: CoverageStatus | "unaccounted" = input.scanComplete ? "collected" : "unaccounted";
+  return {
+    id: input.id,
+    store: input.store,
+    stream: input.stream,
+    status,
+    reason: describeDerivedCoverageReason({
+      emitted: input.emitted,
+      examined: input.examined,
+      incompleteReason: input.incompleteReason,
+      label: input.label,
+      scanComplete: input.scanComplete,
+    }),
+    ...(input.scopeFingerprint ? { collection_scope: input.scopeFingerprint } : {}),
+  };
+}
+
 export interface ParsedCoverageDiagnosticsStateSnapshot {
   readonly duplicateStores: readonly string[];
   readonly hasAuthoritativeInventory: boolean;
