@@ -100,7 +100,6 @@ interface StorageBinding {
 }
 
 interface StreamSelection extends Record<string, unknown> {
-  client_claims?: unknown;
   fields?: string[];
   instance_ids?: string[];
   name: string;
@@ -112,7 +111,6 @@ interface StreamSelection extends Record<string, unknown> {
 }
 
 interface RawStreamSelection {
-  client_claims?: unknown | undefined;
   fields?: unknown[] | undefined;
   instance_ids?: unknown[] | undefined;
   name: unknown;
@@ -124,6 +122,7 @@ interface RawStreamSelection {
 
 interface GrantSelection {
   access_mode: string;
+  client_claims?: unknown | undefined;
   purpose_code: string;
   purpose_description?: string | undefined;
   retention?: unknown | undefined;
@@ -791,7 +790,6 @@ const SUPPORTED_AUTHORIZATION_DETAIL_FIELDS = new Set([
   "type",
 ]);
 const SUPPORTED_STREAM_SELECTION_FIELDS = new Set([
-  "client_claims",
   "fields",
   "instance_ids",
   "name",
@@ -815,6 +813,7 @@ const SUPPORTED_PENDING_CLIENT_FIELDS = new Set(["client_display", "client_id", 
 const SUPPORTED_ACCESS_MODES = new Set(["single_use", "continuous"]);
 const SUPPORTED_PENDING_SELECTION_FIELDS = new Set([
   "access_mode",
+  "client_claims",
   "purpose_code",
   "purpose_description",
   "retention",
@@ -1274,7 +1273,6 @@ function applyRegisteredClientToPendingRequestClient(
 
 function normalizeStreamSelection(stream: Record<string, unknown>): RawStreamSelection {
   return {
-    client_claims: stream.client_claims || undefined,
     fields: Array.isArray(stream.fields) ? stream.fields : undefined,
     instance_ids: Array.isArray(stream.instance_ids) ? stream.instance_ids : undefined,
     name: stream.name,
@@ -1490,6 +1488,7 @@ async function normalizeAuthorizationDetail(
   return {
     selection: {
       access_mode: detail.access_mode,
+      client_claims: detail.client_claims || undefined,
       purpose_code: detail.purpose_code as string,
       purpose_description: isNonEmptyString(detail.purpose_description) ? detail.purpose_description : undefined,
       retention: detail.retention || undefined,
@@ -4456,6 +4455,7 @@ function buildBatchConsentCards(request: StagedBatchRequest): Record<string, unk
     const resolvedStreams = resolvePendingRequestAgainstSnapshot(slice);
     return {
       access_mode: entry.selection?.access_mode || null,
+      client_claims: entry.selection?.client_claims ?? null,
       index,
       manifestStreamNames: Array.isArray(snapshot.declaration.streams)
         ? snapshot.declaration.streams.map((stream) => stream.name).filter((name) => typeof name === "string")

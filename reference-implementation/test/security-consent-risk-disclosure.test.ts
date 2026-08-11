@@ -27,14 +27,18 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
+const OWNER_SUBJECT_ID = "owner_local";
+const NOW = "2026-05-31T00:00:00.000Z";
 
 // `startServer`'s inferred asServer/rsServer type comes from a framework
 // `.listen()` call whose TS overload resolves to an http2-shaped type, but at
-// runtime these are plain node:http/https servers — so `closeAllConnections`
+// runtime these are plain node:http/https servers, so `closeAllConnections`
 // (added Node 18.2+) and the single-error-arg `close` callback genuinely
 // exist and are safe to declare here. Established pattern, see
 // connector-instance-admission-routes.test.ts.
@@ -108,10 +112,28 @@ async function withHarness(
       method: "POST",
     });
     assert.equal(registerResp.status, 201);
+    await seedSpotifyInstance(spotifyManifest);
     await fn({ asUrl, spotifyManifest });
   } finally {
     await closeServer(server);
   }
+}
+
+async function seedSpotifyInstance(spotifyManifest: SpotifyManifest): Promise<void> {
+  const connectorId = canonicalConnectorKey(spotifyManifest.connector_id);
+  assert.ok(connectorId, "spotify manifest must resolve to a canonical connector key");
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId: "cin_security_consent_risk_spotify",
+    createdAt: NOW,
+    displayName: "Security Consent Risk Spotify",
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    sourceBinding: { account_hint: "security-consent-risk@example.com" },
+    sourceBindingKey: "security-consent-risk@example.com",
+    sourceKind: "account",
+    status: "active",
+    updatedAt: NOW,
+  });
 }
 
 async function initiate(
@@ -126,7 +148,7 @@ async function initiate(
         purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Consent risk disclosure regression",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
-        streams: [{ name: "top_artists", view: "basic" }],
+        streams: [{ name: "top_artists" }],
         type: "https://pdpp.dev/data-access",
         ...overrides,
       },
@@ -190,8 +212,8 @@ test("security: consent-risk disclosure invariants", async (t) => {
       await withHarness(async ({ asUrl, spotifyManifest }) => {
         const par = await initiate(asUrl, spotifyManifest, {
           access_mode: "continuous",
-          // No retention block — this is the no-expiry case.
-          streams: [{ name: "top_artists", view: "basic" }],
+          // No retention block: this is the no-expiry case.
+          streams: [{ name: "top_artists" }],
         });
         const consentResp = await fetch(`${asUrl}/consent?request_uri=${encodeURIComponent(par.request_uri)}`);
         assert.equal(consentResp.status, 200);
@@ -221,7 +243,7 @@ test("security: consent-risk disclosure invariants", async (t) => {
         access_mode: "continuous",
         purpose_code: "https://pdpp.dev/purpose/ai_training",
         purpose_description: "Training a recommendation model",
-        streams: [{ name: "top_artists", view: "basic" }],
+        streams: [{ name: "top_artists" }],
       });
 
       const resp = await fetchJson(`${asUrl}/consent/approve`, {

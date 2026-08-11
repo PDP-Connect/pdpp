@@ -39,6 +39,9 @@ const REGEXP_25 = /Narrow this source/;
 const REGEXP_26 = /name="narrow_streams_0"/;
 const REGEXP_27 = /name="narrow_fields_0__/;
 const REGEXP_28 = /name="narrow_since_0__/;
+const REGEXP_29 = /Client-authored claims/;
+const SPOTIFY_BATCH_COMMITMENT = "Only use Spotify listening history for playlist suggestions.";
+const REDDIT_BATCH_COMMITMENT = "Only use Reddit posts for community summaries.";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -192,6 +195,13 @@ async function consentPage(asUrl: string, requestUri: string): Promise<{ status:
   return { html: await resp.text(), status: resp.status };
 }
 
+function sourceCardHtml(html: string, sourceIndex: number): string {
+  const start = html.indexOf(`aria-label="Source ${sourceIndex}"`);
+  assert.notEqual(start, -1, `expected source ${sourceIndex} card`);
+  const next = html.indexOf(`aria-label="Source ${sourceIndex + 1}"`, start + 1);
+  return next === -1 ? html.slice(start) : html.slice(start, next);
+}
+
 async function approve(asUrl: string, requestBody: Record<string, unknown>): Promise<GateResult> {
   const resp = await fetch(`${asUrl}/consent/approve`, {
     body: JSON.stringify(requestBody),
@@ -257,6 +267,33 @@ test("batch consent gate: page defaults to per-source confirmation and suppresse
     assert.match(html, REGEXP_3);
     assert.match(html, REGEXP_4);
     assert.doesNotMatch(html, REGEXP_5);
+  });
+});
+
+test("batch consent gate: top-level client_claims render under the matching source cards", async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const body = unwrapBody(
+      await par(asUrl, [
+        detail({ id: spotify.connector_id, kind: "connector" }, [{ name: "top_artists" }], {
+          client_claims: { commitments: [SPOTIFY_BATCH_COMMITMENT] },
+        }),
+        detail({ id: reddit.connector_id, kind: "connector" }, [{ name: "posts" }], {
+          client_claims: { commitments: [REDDIT_BATCH_COMMITMENT] },
+        }),
+      ])
+    );
+
+    assert.ok(body.request_uri);
+    const { status, html } = await consentPage(asUrl, body.request_uri);
+    assert.equal(status, 200);
+    const spotifyCard = sourceCardHtml(html, 1);
+    const redditCard = sourceCardHtml(html, 2);
+    assert.match(spotifyCard, REGEXP_29);
+    assert.match(redditCard, REGEXP_29);
+    assert.ok(spotifyCard.includes(SPOTIFY_BATCH_COMMITMENT));
+    assert.ok(!spotifyCard.includes(REDDIT_BATCH_COMMITMENT));
+    assert.ok(redditCard.includes(REDDIT_BATCH_COMMITMENT));
+    assert.ok(!redditCard.includes(SPOTIFY_BATCH_COMMITMENT));
   });
 });
 

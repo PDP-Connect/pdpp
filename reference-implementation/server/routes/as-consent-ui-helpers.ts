@@ -584,6 +584,11 @@ export function renderPendingConsentNotFoundHtml(providerName: string, ui: Conse
   });
 }
 
+interface PendingClientClaims {
+  commitments?: string[] | null;
+  [key: string]: unknown;
+}
+
 export interface PendingGrantRequest {
   client?: {
     client_display?: { name?: string | null } | null;
@@ -591,6 +596,7 @@ export interface PendingGrantRequest {
     registration_mode?: string | null;
   } | null;
   selection?: {
+    client_claims?: PendingClientClaims | null;
     streams?: Array<{
       name: string;
       time_constraint?: { field?: string | null; since?: string | null; until?: string | null } | null;
@@ -598,14 +604,6 @@ export interface PendingGrantRequest {
       fields?: string[] | null;
       view?: string | null;
       necessity?: string | null;
-      // REQUEST-scoped, CLIENT-authored per-stream claims. Rendered as claims,
-      // never as protocol facts (see `buildClientClaimsBlock`). Carried through
-      // `normalizeStreamSelection` in server/auth.js; the renderer surfaces it.
-      client_claims?: {
-        purpose?: string | null;
-        commitments?: string[] | null;
-        [key: string]: unknown;
-      } | null;
     }> | null;
     access_mode?: string | null;
     purpose_description?: string | null;
@@ -639,6 +637,7 @@ type StreamItem = NonNullable<NonNullable<PendingGrantRequest["selection"]>["str
 
 interface PendingConsentCard {
   access_mode?: string | null;
+  client_claims?: PendingClientClaims | null;
   index: number;
   manifestStreamNames?: string[] | null;
   purpose_code?: string | null;
@@ -670,7 +669,7 @@ interface PendingConsentCumulativeRisk {
 //   • MANIFEST — the owner-trusted human descriptions for the requested streams
 //     (stream labels/details from the resolved manifest).
 //   • CLIENT   — claims the client itself authored (its self-described app name,
-//     the purpose_description, and per-stream client_claims). Rendered, never
+//     the purpose_description, and top-level client_claims). Rendered, never
 //     trusted: each carries a "they say / not enforced" affordance.
 //
 // `data-authorship` is the machine-readable provenance hook (one per block),
@@ -757,49 +756,22 @@ function buildConsentClientDisplay(
 }
 
 /**
- * Render the per-stream `client_claims` (REQUEST-scoped, CLIENT-authored) as a
- * distinct, disclaimed block. Each claim is the client's own word about why it
- * wants a stream and what it commits to — the server does not vouch for any of
- * it. Returns "" when no stream carries claims (so the block never appears with
- * an empty body).
+ * Render top-level `client_claims.commitments` as a distinct, disclaimed
+ * client-authored block. These are the client's own commitments; the server
+ * renders but does not enforce them.
  */
-function buildClientClaimsBlock(streams: StreamItem[], ui: ConsentUiRenderer): string {
-  const rows: string[] = [];
-  for (const stream of streams) {
-    const claims = stream?.client_claims;
-    if (!claims || typeof claims !== "object") {
-      continue;
-    }
-    const parts: string[] = [];
-    const purpose = typeof claims.purpose === "string" ? claims.purpose.trim() : "";
-    if (purpose) {
-      parts.push(`<p class="hosted-ui-client-claim-purpose">${ui.escapeHtml(purpose)}</p>`);
-    }
-    const commitments = Array.isArray(claims.commitments)
-      ? claims.commitments.filter((c): c is string => typeof c === "string" && c.trim() !== "")
-      : [];
-    if (commitments.length > 0) {
-      parts.push(
-        `<ul class="hosted-ui-client-claim-commitments">${commitments
-          .map((c) => `<li>${ui.escapeHtml(c)}</li>`)
-          .join("")}</ul>`
-      );
-    }
-    if (parts.length === 0) {
-      continue;
-    }
-    rows.push(
-      `<div class="hosted-ui-client-claim"><span class="hosted-ui-stream-name">${ui.escapeHtml(
-        stream.name
-      )}</span>${parts.join("")}</div>`
-    );
-  }
-  if (rows.length === 0) {
+function buildClientClaimsBlock(clientClaims: PendingClientClaims | null | undefined, ui: ConsentUiRenderer): string {
+  if (!clientClaims || typeof clientClaims !== "object") {
     return "";
   }
-  const body = `<span class="pdpp-title">What this app says it will do</span>${rows.join(
-    ""
-  )}<p class="hosted-ui-client-claim-disclaimer">These are the app's own claims, not enforced by your server.</p>`;
+  const commitments = Array.isArray(clientClaims.commitments)
+    ? clientClaims.commitments.filter((c: unknown): c is string => typeof c === "string" && c.trim() !== "")
+    : [];
+  if (commitments.length === 0) {
+    return "";
+  }
+  const items = commitments.map((c: string) => `<li>${ui.escapeHtml(c)}</li>`).join("");
+  const body = `<span class="pdpp-title">What this app says it will do</span><ul class="hosted-ui-client-claim-commitments">${items}</ul><p class="hosted-ui-client-claim-disclaimer">These are the app's own claims, not enforced by your server.</p>`;
   return renderAuthorshipBlock("client", "Client-authored claims", body, ui);
 }
 
@@ -893,8 +865,8 @@ function buildBatchSourceCards(cards: PendingConsentCard[], ui: ConsentUiRendere
         ]),
         ui
       );
-      // CLIENT: the client-authored purpose for this source plus any per-stream
-      // client_claims. Rendered as claims, never as facts.
+      // CLIENT: the client-authored purpose for this source. Rendered as a
+      // claim, never as a fact.
       const clientPurpose = card.purpose_code || "unspecified";
       const clientPurposeBlock = renderAuthorshipBlock(
         "client",
@@ -902,7 +874,7 @@ function buildBatchSourceCards(cards: PendingConsentCard[], ui: ConsentUiRendere
         ui.renderKeyValueList([{ label: "Stated purpose", value: clientPurpose }]),
         ui
       );
-      const clientClaimsBlock = buildClientClaimsBlock(streams, ui);
+      const clientClaimsBlock = buildClientClaimsBlock(card.client_claims, ui);
       return ui.renderSurface({
         ariaLabel: `Source ${card.index + 1}`,
         children: `<h3 class="pdpp-title">${ui.escapeHtml(
@@ -1200,9 +1172,8 @@ export function renderPendingGrantConsentHtml(
       ? renderAuthorshipBlock("client", "Client-authored display", ui.renderKeyValueList(clientFactsRaw), ui)
       : "";
 
-  // CLIENT: per-stream client_claims (purpose/commitments), if any. Previously
-  // dropped entirely — now surfaced as a distinct, disclaimed claims block.
-  const clientClaimsBlock = buildClientClaimsBlock(requestedStreams, ui);
+  // CLIENT: top-level client_claims.commitments, if any.
+  const clientClaimsBlock = buildClientClaimsBlock(selection.client_claims, ui);
 
   // MANIFEST: the streams the owner's server is being asked to project, named
   // and described by the resolved manifest (owner-trusted human descriptions).
