@@ -46,12 +46,8 @@ import {
   validateDoneRecordsEmitted,
   validateDoneStatus,
 } from "./done-validators.ts";
-import {
-  buildHttpFailure,
-  buildIngestEnvelopeContractViolationFailure,
-  buildIngestHttpFailure,
-  buildInvalidIngestResponseFailure,
-} from "./ingest-failures.ts";
+import { readIngestResponse } from "./ingest-failure.ts";
+import { buildHttpFailure } from "./ingest-failures.ts";
 import { isClosedPipeWriteError } from "./pipe-errors.ts";
 import {
   validateProgressAttachmentHydrationFailureOutcome,
@@ -139,12 +135,6 @@ interface AvailableBindings {
   filesystem: Record<string, never>;
   interactive?: Record<string, never>;
   network: Record<string, never>;
-}
-
-/** RS ingest response, after `readIngestResponse` proves the two counters. */
-interface IngestResult {
-  records_accepted: number;
-  records_rejected: number;
 }
 
 /**
@@ -769,45 +759,6 @@ function buildAvailableBindings(onInteraction: unknown): AvailableBindings {
     bindings.interactive = {};
   }
   return bindings;
-}
-
-async function readIngestResponse(resp: Response, stream: string, batchSize: number): Promise<IngestResult> {
-  const contentType = resp.headers.get("content-type");
-  const bodyText = await resp.text();
-  if (!resp.ok) {
-    throw buildIngestHttpFailure(`Ingest failed for ${stream}`, stream, batchSize, resp.status, bodyText, contentType);
-  }
-
-  // The RS response body is untrusted until the two counters below are proven
-  // finite, so it is parsed as `unknown` and only then asserted `IngestResult`.
-  let result: Partial<IngestResult> | null;
-  try {
-    result = JSON.parse(bodyText) as Partial<IngestResult> | null;
-  } catch (err) {
-    throw buildInvalidIngestResponseFailure({
-      batchSize,
-      bodyText,
-      cause: err instanceof Error ? err.message : String(err),
-      contentType,
-      phase: "parse_response",
-      status: resp.status,
-      stream,
-    });
-  }
-
-  if (!(result && Number.isFinite(result.records_accepted) && Number.isFinite(result.records_rejected))) {
-    throw buildInvalidIngestResponseFailure({
-      batchSize,
-      bodyText,
-      cause: "expected numeric records_accepted and records_rejected",
-      contentType,
-      phase: "validate_response",
-      status: resp.status,
-      stream,
-    });
-  }
-
-  return result as IngestResult;
 }
 
 /**
@@ -3212,7 +3163,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
     let result: Awaited<ReturnType<typeof readIngestResponse>>;
     try {
-      result = await readIngestResponse(resp, stream, batch.length);
+      result = await readIngestResponse(resp, stream, batch.length, { buildHttpFailure });
     } catch (err) {
       // Transient manifest drift: the RS rejected this stream's ingest as
       // not_found even though the runtime already validated the stream against
@@ -3230,37 +3181,6 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         return;
       }
       throw err;
-    }
-    // Defensive protocol-violation net, NOT the primary retry classifier.
-    // The RS contract (rs.records.ingest) now guarantees that any SYSTEMIC
-    // per-record failure — a storage/coordination error that never proved a
-    // record's own data invalid — makes the whole HTTP response non-2xx
-    // (RecordsIngestSystemicFailureError, mapped to 503), which the `!resp.ok`
-    // branch above already turns into a thrown, retryable failure via
-    // buildIngestHttpFailure. A PERMANENT per-record rejection (malformed
-    // JSON, a genuine schema/identity defect) legitimately stays inside a
-    // 2xx envelope with records_rejected > 0 — that is the intentional
-    // per-record isolation contract, whether it covers one record or every
-    // record in the batch, and must NOT be treated as retryable just because
-    // the count happens to equal the batch size (that conflated N legitimate
-    // permanent failures with a systemic one — the defect a prior revision of
-    // this check introduced). What SHOULD be structurally unreachable against
-    // a conforming RS is records_accepted === 0 on a 2xx WHOSE envelope also
-    // reports zero errors, or a 2xx whose records_accepted/records_rejected
-    // don't sum to the batch size — either shape means the RS is not honoring
-    // its own contract (an old/non-reference RS, or a bug), not that the
-    // records were validly rejected. Only that impossible shape trips this
-    // net; a normal permanent-rejection envelope (errors.length matching
-    // records_rejected) never does, no matter how many records it rejects.
-    const reportedTotal = result.records_accepted + result.records_rejected;
-    if (batch.length > 0 && result.records_accepted === 0 && reportedTotal !== batch.length) {
-      throw buildIngestEnvelopeContractViolationFailure({
-        batchSize: batch.length,
-        recordsAccepted: result.records_accepted,
-        recordsRejected: result.records_rejected,
-        status: resp.status,
-        stream,
-      });
     }
     totalFlushed += batch.length;
     await emitSpineEventTracked({
