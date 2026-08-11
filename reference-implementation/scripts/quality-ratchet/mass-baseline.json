@@ -9,7 +9,7 @@
     "runtime/browser-surface-leases.ts": 1,
     "runtime/browser-surface-readiness.ts": 22,
     "runtime/browser-surface/profile-key.ts": 4,
-    "runtime/browser-surface/run-coordinator.ts": 61,
+    "runtime/browser-surface/run-coordinator.ts": 51,
     "runtime/classify-runtime-failure.ts": 3,
     "runtime/connection-health.ts": 82,
     "runtime/connector-gap-bounding.ts": 93,
@@ -36,7 +36,7 @@
     "runtime/scheduler.ts": 35,
     "runtime/scheduler/dispatch-governor.ts": 40,
     "runtime/scheduler/pre-run-gate.ts": 8,
-    "runtime/scheduler/run-executor.ts": 72,
+    "runtime/scheduler/run-executor.ts": 62,
     "runtime/stderr-tail.ts": 9,
     "runtime/terminal-reason.ts": 3,
     "server/aggregate-request-validation.ts": 16,
@@ -147,7 +147,6 @@
     "server/routes/root-and-discovery.ts": 27,
     "server/routes/rs-mutation.ts": 87,
     "server/routes/rs-read.ts": 119,
-    "server/routes/run-cancel.ts": 6,
     "server/routes/run-interaction.ts": 26,
     "server/routes/source-webhooks.ts": 2,
     "server/routes/web-push.ts": 11,
@@ -189,7 +188,7 @@
     "server/version-disposition.ts": 6,
     "server/web-push-notifications.ts": 11
   },
-  "total": 6916,
+  "total": 6890,
   "meta": {
     "biomeVersion": "2.5.6",
     "maxAllowedComplexity": 5
