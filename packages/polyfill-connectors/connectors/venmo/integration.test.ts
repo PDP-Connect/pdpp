@@ -73,6 +73,30 @@ function makeScriptedFetch(script: Record<string, Array<{ body: unknown; status?
   return { calls, fetchPath };
 }
 
+/**
+ * A fake `/stories/target-or-actor/{id}` backend implementing REAL Venmo
+ * `before_id` semantics: `history` is newest-first (as Venmo returns it),
+ * and a `before_id` query param returns the slice strictly after (i.e.
+ * older than) that id in `history` — never re-serving it or anything newer.
+ * Unlike `makeScriptedFetch`'s hand-scripted per-call arrays, this lets a
+ * cursor from one call correctly resume mid-history in a later call, which
+ * is what a two-run oracle needs to be honest about what `before_id`
+ * actually does.
+ */
+function makeStatefulVenmoFetch(history: ReturnType<typeof story>[]): { calls: string[]; fetchPath: VenmoPageFetch } {
+  const calls: string[] = [];
+  const fetchPath: VenmoPageFetch = (path, query) => {
+    const qs = query ? `?${new URLSearchParams(query).toString()}` : "";
+    calls.push(path + qs);
+    const beforeId = query?.before_id;
+    const limit = Number(query?.limit ?? String(history.length));
+    const startIndex = beforeId ? history.findIndex((s) => s.id === beforeId) + 1 : 0;
+    const page = beforeId && startIndex === 0 ? [] : history.slice(startIndex, startIndex + limit);
+    return Promise.resolve({ status: 200, body: JSON.stringify({ data: page }) });
+  };
+  return { calls, fetchPath };
+}
+
 function makeCtx(
   priorState: Record<string, unknown>,
   requestedStreams: string[]
@@ -178,38 +202,48 @@ test("collectAllStreams: transactions STATE never carries a before_id key — on
 // page size (50, 100, ...) exhausts via the *empty-page* exit, not the
 // partial-page exit. The pre-fix code only reset the cursor on the
 // partial-page exit, so it persisted a dead `before_id` here and run 2
-// resumed past every new head transaction, forever. Two independent
-// `collectTransactions` calls simulate two real runs against a fetch stub
-// that is stateful across the calls, exactly like the real Venmo API.
+// resumed past every new head transaction, forever.
+//
+// This must be a discriminating oracle, not just a rerun of run1's script:
+// run against `makeStatefulVenmoFetch`, which implements real `before_id`
+// semantics over one canonical newest-first history, and thread run1's
+// *actual emitted* STATE message into run2's ctx.state, exactly as the
+// runtime replays STATE across runs. A version that hand-scripts run2's
+// responses independently of run1 can't tell the fixed code from the bug —
+// it passes either way.
 test("collectTransactions: two runs over exact-multiple-of-50 history — run2 sees new head transactions after run1 exhausts", async () => {
   const PAGE_SIZE = 50;
-  const run1History = Array.from({ length: PAGE_SIZE }, (_, i) => story(String(1000 + i), "2026-01-01T00:00:00Z"));
-  const newHeadItems = Array.from({ length: 5 }, (_, i) => story(String(9000 + i), "2026-02-01T00:00:00Z"));
+  const run1History = Array.from({ length: PAGE_SIZE }, (_, i) =>
+    story(String(1000 + i), "2026-01-01T00:00:00Z")
+  ).reverse(); // newest-first, matching real Venmo ordering
+  const newHeadItems = Array.from({ length: 5 }, (_, i) => story(String(9000 + i), "2026-02-01T00:00:00Z")).reverse();
 
-  // Run 1: exactly one full page, then the feed is exhausted (empty page).
-  const run1Fetch = makeScriptedFetch({
-    "/stories/target-or-actor/1111111111111111111": [{ body: { data: run1History } }, { body: { data: [] } }],
-  });
+  // Run 1: exactly one full page of the exact-multiple-of-50 history, then
+  // exhausted via the empty-page exit (not the partial-page exit).
+  const run1Fetch = makeStatefulVenmoFetch(run1History);
   const ctx1 = makeCtx({}, ["transactions"]);
-  const result1 = await collectTransactions(ctx1.ctx, run1Fetch.fetchPath, OWNER_ID, NO_DELAY);
-  assert.equal(result1.considered, PAGE_SIZE, "run1 collects the full 50-item history");
-  assert.equal(ctx1.emitted.length, PAGE_SIZE);
+  await collectAllStreams(ctx1.ctx, run1Fetch.fetchPath, OWNER_ID, accountUser());
+  assert.equal(ctx1.emitted.length, PAGE_SIZE, "run1 collects the full 50-item history");
 
-  // Run 2: no STATE carries a cursor forward (per the fix), so it starts at
-  // the head again. The feed now has 5 new items ahead of the old history.
-  const run2Fetch = makeScriptedFetch({
-    "/stories/target-or-actor/1111111111111111111": [
-      { body: { data: [...newHeadItems, ...run1History].slice(0, PAGE_SIZE) } },
-      { body: { data: [...newHeadItems, ...run1History].slice(PAGE_SIZE) } },
-      { body: { data: [] } },
-    ],
-  });
-  const ctx2 = makeCtx({}, ["transactions"]);
-  const result2 = await collectTransactions(ctx2.ctx, run2Fetch.fetchPath, OWNER_ID, NO_DELAY);
+  const run1State = ctx1.messages.find((m) => m.type === "STATE" && m.stream === "transactions");
+  assert.ok(run1State && run1State.type === "STATE", "run1 must emit a transactions STATE message");
+
+  // Run 2: thread run1's *actual emitted* STATE into ctx.state, exactly as
+  // the runtime replays it. 5 new transactions have landed at the head
+  // since run1 (newest-first, so they now lead the canonical history).
+  const run2History = [...newHeadItems, ...run1History];
+  const run2Fetch = makeStatefulVenmoFetch(run2History);
+  const ctx2 = makeCtx({ transactions: run1State.cursor as Record<string, unknown> }, ["transactions"]);
+  await collectAllStreams(ctx2.ctx, run2Fetch.fetchPath, OWNER_ID, accountUser());
+
+  assert.ok(
+    !run2Fetch.calls[0]?.includes("before_id"),
+    "run2 must start at the head, not resume from run1's stale before_id"
+  );
   const seenIds = new Set(ctx2.emitted.map((r) => r.data.id));
   const sawAllNewHeadItems = newHeadItems.every((s) => seenIds.has(s.id));
-  assert.ok(sawAllNewHeadItems, "run2 must see every new head transaction created after run1");
-  assert.equal(result2.considered, newHeadItems.length + run1History.length, "run2 re-walks the full history");
+  assert.ok(sawAllNewHeadItems, "run2 must retain every new head transaction created after run1");
+  assert.equal(seenIds.size, run2History.length, "run2 re-walks and retains the full history, old and new");
 });
 
 // Page-cap exhaustion (MAX_TRANSACTION_PAGES) must be equally safe: even
