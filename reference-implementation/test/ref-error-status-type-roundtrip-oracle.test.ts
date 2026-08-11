@@ -18,6 +18,8 @@ function expectedTypeByStatus(status: number): string {
       return "not_found_error";
     case 410:
       return "gone_error";
+    case 413:
+      return "request_entity_too_large_error";
     case 429:
       return "rate_limit_error";
     default:
@@ -31,6 +33,7 @@ test("typeFor pins the exact public status-to-type map", () => {
   assert.equal(typeFor(403), "permission_error");
   assert.equal(typeFor(404), "not_found_error");
   assert.equal(typeFor(410), "gone_error");
+  assert.equal(typeFor(413), "request_entity_too_large_error");
   assert.equal(typeFor(429), "rate_limit_error");
 });
 
@@ -66,6 +69,7 @@ test("typeFor(codeToStatus[code]) pins every mapped code round trip", () => {
     grant_stream_not_allowed: "permission_error",
     invalid_request: "invalid_request_error",
     provider_pressure_cooldown: "api_error",
+    resource_limit: "request_entity_too_large_error",
   };
 
   for (const [code, expectedType] of Object.entries(namedCodeTypes)) {
