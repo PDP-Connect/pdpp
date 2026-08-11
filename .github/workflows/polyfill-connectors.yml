@@ -42,9 +42,9 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # Node 22 LTS. Matches the node:test + --test-timeout features
+          # Node 24 LTS. Matches the node:test + --test-timeout features
           # the package relies on and keeps CI on a supported LTS.
-          node-version: "22"
+          node-version: "24"
           cache: "pnpm"
 
       - name: Install dependencies
