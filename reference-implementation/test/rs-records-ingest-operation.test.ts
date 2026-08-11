@@ -453,6 +453,49 @@ test("rs.records.ingest hosted receipts use zero-based non-empty-line indexes an
   );
 });
 
+test("rs.records.ingest hosted mode emits additive shape for accepted-only batches", async () => {
+  const out = await executeRecordsIngest(
+    defaultInput({
+      body: '{"id":"ok"}',
+      connectorInstanceId: "cin_gmail_work",
+      hostedRejectionReceipts: true,
+    }),
+    defaultDeps({
+      insertOrReplayRejection: () => {
+        throw new Error("accepted-only hosted batch should not persist a rejection");
+      },
+    })
+  );
+
+  assert.deepEqual(out.envelope, {
+    errors: [],
+    records_accepted: 1,
+    records_attempted: 1,
+    records_rejected: 0,
+    rejections: [],
+    stream: "messages",
+  });
+});
+
+test("rs.records.ingest hosted mode fails closed when the rejection dependency is missing", async () => {
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({
+          body: '{"id":"ok"}',
+          connectorInstanceId: "cin_gmail_work",
+          hostedRejectionReceipts: true,
+        }),
+        defaultDeps()
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsIngestSystemicFailureError);
+      assert.equal(err.code, "ingest_batch_storage_error");
+      return true;
+    }
+  );
+});
+
 test("rs.records.ingest hosted receipts preserve parsed batch indexes and allow duplicate receipt ids at distinct indexes", async () => {
   const out = await executeRecordsIngest(
     defaultInput({
@@ -483,6 +526,32 @@ test("rs.records.ingest hosted receipts preserve parsed batch indexes and allow 
   ]);
 });
 
+test("rs.records.ingest rejects hosted receipts whose indexes do not exactly match rejected lines", async () => {
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({
+          body: '{"id":"bad"}\n{"id":"ok"}',
+          connectorInstanceId: "cin_gmail_work",
+          hostedRejectionReceipts: true,
+        }),
+        defaultDeps({
+          ingestRecord: (_cid, _cin, record) => {
+            if (record.id === "bad") {
+              throw permanentThrow("invalid record identity");
+            }
+          },
+          insertOrReplayRejection: () => ({
+            code: "invalid_record_identity",
+            input_index: 1,
+            receipt_id: "rr_wrong_index",
+          }),
+        })
+      ),
+    MALFORMED_REJECTION_RECEIPT_RE
+  );
+});
+
 test("rs.records.ingest rejects malformed hosted receipt envelopes fail-closed", async () => {
   await assert.rejects(
     () =>
@@ -505,6 +574,26 @@ test("rs.records.ingest rejects malformed hosted receipt envelopes fail-closed",
       ),
     MALFORMED_REJECTION_RECEIPT_RE
   );
+});
+
+test("rs.records.ingest threads runId to hosted rejection persistence", async () => {
+  const observed: InsertOrReplayRejectionInput[] = [];
+  await executeRecordsIngest(
+    defaultInput({
+      body: "NOT_JSON",
+      connectorInstanceId: "cin_gmail_work",
+      hostedRejectionReceipts: true,
+      runId: "run_123",
+    }),
+    defaultDeps({
+      insertOrReplayRejection: (input) => {
+        observed.push(input);
+        return receiptFor(input);
+      },
+    })
+  );
+
+  assert.equal(observed[0]?.runId, "run_123");
 });
 
 test("rs.records.ingest hosted mode treats permanent failures without typed reason code as systemic", async () => {

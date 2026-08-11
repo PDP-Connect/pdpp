@@ -46,6 +46,8 @@ export interface RecordsIngestInput {
    * explicitly true.
    */
   readonly hostedRejectionReceipts?: boolean;
+  /** Optional hosted run id, threaded to durable rejection persistence when supplied. */
+  readonly runId?: string | null;
   /** Stream name from the request path. */
   readonly streamName: string;
 }
@@ -342,9 +344,13 @@ async function buildRejectionReceipts(args: {
   lineErrors: readonly (IngestLineFailure | null)[];
   runId?: string | null;
   streamName: string;
-}): Promise<readonly RejectionReceipt[] | null> {
+}): Promise<readonly RejectionReceipt[]> {
   if (!args.dependencies.insertOrReplayRejection) {
-    return null;
+    throw new RecordsIngestSystemicFailureError(
+      args.streamName,
+      args.lineErrors.filter((error) => error !== null).length,
+      args.lines.length
+    );
   }
   if (!args.connectorInstanceId) {
     throw new RecordsIngestSystemicFailureError(
@@ -388,20 +394,28 @@ async function buildRejectionReceipts(args: {
 }
 
 function validateRejectionReceipts(
-  submittedCount: number,
-  rejectedCount: number,
+  lineErrors: readonly (IngestLineFailure | null)[],
   rejections: readonly RejectionReceipt[]
 ): void {
-  if (rejections.length !== rejectedCount) {
-    throw new Error(`rejection receipt count ${rejections.length} does not match records_rejected ${rejectedCount}`);
+  const rejectedIndexes = new Set<number>();
+  for (const [index, error] of lineErrors.entries()) {
+    if (error !== null) {
+      rejectedIndexes.add(index);
+    }
+  }
+  if (rejections.length !== rejectedIndexes.size) {
+    throw new Error(
+      `rejection receipt count ${rejections.length} does not match records_rejected ${rejectedIndexes.size}`
+    );
   }
   const indexes = new Set<number>();
   for (const rejection of rejections) {
     if (
       !Number.isInteger(rejection.input_index) ||
       rejection.input_index < 0 ||
-      rejection.input_index >= submittedCount ||
+      rejection.input_index >= lineErrors.length ||
       indexes.has(rejection.input_index) ||
+      !rejectedIndexes.has(rejection.input_index) ||
       typeof rejection.receipt_id !== "string" ||
       rejection.receipt_id.length === 0 ||
       typeof rejection.code !== "string" ||
@@ -430,7 +444,7 @@ function buildIngestEnvelope(
     }
   }
   if (rejections !== null) {
-    validateRejectionReceipts(lineErrors.length, recordsRejected, rejections);
+    validateRejectionReceipts(lineErrors, rejections);
     if (lineErrors.length !== recordsAccepted + recordsRejected) {
       throw new Error("hosted ingest response counts do not balance");
     }
@@ -522,6 +536,7 @@ export async function executeRecordsIngest(
           dependencies,
           lineErrors: parsed.lineErrors,
           lines,
+          runId: input.runId ?? null,
           streamName: input.streamName,
         })
       : null;
