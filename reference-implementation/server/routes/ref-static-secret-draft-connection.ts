@@ -242,6 +242,7 @@ function projectSetup(connectorId: string, manifest: ConnectorManifestLike): Rec
       fields: capture.fields.map(projectField),
       kind: capture.kind,
       label: capture.label,
+      required: capture.required,
       submit_label: capture.submitLabel,
     },
     credential_kind: credentialKind,

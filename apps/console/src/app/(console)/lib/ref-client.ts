@@ -2329,6 +2329,16 @@ export interface StaticSecretSetup {
     fields: StaticSecretSetupField[];
     kind: string;
     label: string;
+    /**
+     * Whether capturing this credential at all is mandatory. `false` means a
+     * fully blank submission is a valid choice (e.g. Venmo — the connector
+     * always falls back to browser-driven sign-in with zero saved
+     * credentials); once ANY field is filled, every field still marked
+     * `required: true` on itself is enforced. See
+     * `static-secret-payload.ts`'s `bundledSecretPayload` for the
+     * enforcement.
+     */
+    required: boolean;
     submit_label: string | null;
   };
   credential_kind: string;

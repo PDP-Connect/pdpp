@@ -188,6 +188,7 @@ export interface ConnectorManifestLike {
       readonly kind?: string | null;
       readonly credential_kind?: string | null;
       readonly label?: string | null;
+      readonly required?: boolean | null;
       readonly submit_label?: string | null;
     } | null;
     readonly manual_or_upload?: {

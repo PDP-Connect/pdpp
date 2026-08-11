@@ -22,6 +22,24 @@ function bundledSecretPayload(setup: StaticSecretSetup, formData: FormReader): {
   const fields: Record<string, string> = {};
   const allFields = setup.credential_capture.fields;
   const secretFields = allFields.filter((field) => field.secret);
+
+  // `credential_capture.required` (default true) is the ONE provider-neutral
+  // fact this decides on — never a connector-name branch, never an inference
+  // from field count or which fields happen to be non-secret-required. See
+  // its doc in ref-client.ts's StaticSecretSetup for the full contract.
+  //
+  // required: false is BOTH-OR-NONE: an entirely blank submission (every
+  // field empty) is a valid, complete choice — Venmo's browser-driven
+  // sign-in always works with zero saved credentials — but the moment ANY
+  // field is filled, the submission is no longer "nothing was chosen" and
+  // every field still marked `required: true` on itself is enforced exactly
+  // as it would be for a required capture. Checked BEFORE the per-field
+  // loop below so a blank submission short-circuits before any field can
+  // fail its own required check.
+  if (setup.credential_capture.required === false && allFields.every((field) => !asString(formData.get(field.name)))) {
+    return { secret: "{}" };
+  }
+
   for (const field of allFields) {
     const value = asString(formData.get(field.name));
     if (!value && field.required) {
@@ -31,18 +49,12 @@ function bundledSecretPayload(setup: StaticSecretSetup, formData: FormReader): {
       fields[field.name] = value;
     }
   }
-  // When no secret field is individually required and at least one OTHER
-  // field in the same form still is (an "at least one credential path"
-  // manifest, e.g. Jellyfin's required base_url plus username+password OR
-  // API key), a fully empty submission would otherwise sail through with an
-  // empty bundle. Require at least one secret field to be filled in that
-  // case. A manifest with NO required field anywhere (e.g. Venmo, whose
-  // credentials only ever assist a browser-driven sign-in that works with
-  // zero saved credentials) has no such fallback to protect and must accept
-  // a fully blank submission.
-  const hasRequiredField = allFields.some((field) => field.required);
+  // Jellyfin's shape: a REQUIRED capture (credential_capture.required is not
+  // false) whose secret fields are all individually optional describes "at
+  // least one credential path" (username+password OR API key) — per-field
+  // required checks never fire on a fully empty submission for that shape,
+  // so it needs its own presence check to reject one.
   if (
-    hasRequiredField &&
     secretFields.length > 0 &&
     !secretFields.some((field) => field.required) &&
     !secretFields.some((field) => fields[field.name])

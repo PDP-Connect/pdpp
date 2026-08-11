@@ -250,6 +250,8 @@ function nowFor(ctx: MountRefStaticSecretCredentialsContext): string {
 interface StaticSecretCredentialContract {
   readonly credentialKind: string;
   readonly fields: readonly StaticSecretSetupField[];
+  /** Block-level `credential_capture.required` — see isAtLeastOnePathContract's doc. */
+  readonly required: boolean;
 }
 
 async function staticSecretCredentialContract(
@@ -259,7 +261,7 @@ async function staticSecretCredentialContract(
   const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
   const credentialKind = expectedStaticSecretCredentialKind(connectorId, manifest);
   const capture = staticSecretCredentialCaptureFromManifest(manifest);
-  return credentialKind && capture ? { credentialKind, fields: capture.fields } : null;
+  return credentialKind && capture ? { credentialKind, fields: capture.fields, required: capture.required } : null;
 }
 
 function projectCredentialMetadata(meta: CredentialMetadata): Record<string, unknown> {
@@ -749,23 +751,13 @@ async function validateCredentialKind(
   return contract;
 }
 
-// A manifest declares an "at least one path" shape when 2+ secret fields
-// exist, none is individually required, but some OTHER field in the same
-// contract still is (e.g. Jellyfin's required base_url plus username+password
-// OR API key) — per-field `required` checks never fire on a fully empty
-// submission for that shape, so it needs its own presence check. A contract
-// with NO required field anywhere (e.g. Venmo, whose credentials only ever
-// assist a browser-driven sign-in that works with zero saved credentials) has
-// no fallback to protect and must accept a fully blank submission.
-function isAtLeastOnePathContract(
-  allFields: readonly StaticSecretSetupField[],
-  secretFields: readonly StaticSecretSetupField[]
-): boolean {
-  return (
-    allFields.some((field) => field.required) &&
-    secretFields.length >= 2 &&
-    !secretFields.some((field) => field.required)
-  );
+// A REQUIRED contract (credential_capture.required is not false) whose
+// secret fields are all individually optional describes "at least one
+// credential path" (e.g. Jellyfin's username+password OR API key) —
+// per-field `required` checks never fire on a fully empty submission for
+// that shape, so it needs its own presence check to reject one.
+function isAtLeastOnePathContract(secretFields: readonly StaticSecretSetupField[]): boolean {
+  return secretFields.length >= 2 && !secretFields.some((field) => field.required);
 }
 
 function parseSecretBundle(secret: string): Record<string, unknown> {
@@ -788,12 +780,68 @@ function bundleHasAnySecret(bundle: Record<string, unknown>, secretFields: reado
   });
 }
 
-// Guards an "at least one path" manifest against a fully empty submission,
-// which would otherwise be stored and reported as "credential captured"
-// with nothing actually captured. A single-secret contract is unaffected:
-// its field is either required already, or has nothing else to be "at
-// least one of".
-async function assertBundledSecretNotEmpty(
+function bundleHasField(bundle: Record<string, unknown>, field: StaticSecretSetupField): boolean {
+  const value = bundle[field.name];
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+// Shared reject path for both `assertBundledSecretComplete` rules: audit +
+// respond identically, only the message differs.
+async function rejectMissingCredential(
+  ctx: MountRefStaticSecretCredentialsContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  namespace: ConnectorNamespace,
+  credentialKind: string | null,
+  ownerSubjectId: string | null,
+  message: string
+): Promise<false> {
+  await emitCaptureAudit(ctx, req, res, {
+    connectionId: namespace.connectorInstanceId,
+    connectorId: namespace.connectorId,
+    credentialKind,
+    error: errWithCode("missing_credential"),
+    outcome: "failed",
+    ownerSubjectId,
+  });
+  ctx.pdppError(res, 400, "missing_credential", message, "secret");
+  return false;
+}
+
+// BOTH-OR-NONE (contract.required === false, e.g. Venmo): an entirely empty
+// bundle is the valid "sign in by hand every time" choice; the moment ANY
+// field is present, every field still marked `required: true` on itself is
+// enforced exactly as it would be for a required capture. Returns `null`
+// when the bundle needs no BOTH-OR-NONE check at all (contract.required is
+// not false) so the caller falls through to the at-least-one-path rule.
+function bothOrNoneViolation(
+  contract: StaticSecretCredentialContract,
+  bundle: Record<string, unknown>
+): readonly StaticSecretSetupField[] | null {
+  if (contract.required !== false) {
+    return null;
+  }
+  if (!contract.fields.some((field) => bundleHasField(bundle, field))) {
+    return []; // Entirely blank — no violation.
+  }
+  return contract.fields.filter((field) => field.required && !bundleHasField(bundle, field));
+}
+
+/**
+ * The server-side re-validation twin of the console's `bundledSecretPayload`
+ * — the console already applied this rule once when it built `secret`, but
+ * this route is the one place every manifest is actually enforced (an
+ * owner-agent or a future non-console client could submit here directly),
+ * so the rule cannot live in the console alone.
+ *
+ * `contract.required` (block-level `credential_capture.required`, default
+ * true) is the ONE provider-neutral fact this decides on — never a
+ * connector-name branch, never an inference from field count. See
+ * `bothOrNoneViolation`'s doc for the `required: false` half; the
+ * at-least-one-path check below is the pre-existing `required` half
+ * (Jellyfin's username+password OR API key).
+ */
+async function assertBundledSecretComplete(
   ctx: MountRefStaticSecretCredentialsContext,
   req: RouteRequest,
   res: RouteResponse,
@@ -803,29 +851,35 @@ async function assertBundledSecretNotEmpty(
   contract: StaticSecretCredentialContract,
   secret: string
 ): Promise<boolean> {
+  const bundle = parseSecretBundle(secret);
+  const missing = bothOrNoneViolation(contract, bundle);
+  if (missing) {
+    return missing.length === 0
+      ? true
+      : await rejectMissingCredential(
+          ctx,
+          req,
+          res,
+          namespace,
+          credentialKind,
+          ownerSubjectId,
+          `${missing.map((field) => field.label).join(", ")} is required once any credential field is filled.`
+        );
+  }
+
   const secretFields = contract.fields.filter((field) => field.secret);
-  if (!isAtLeastOnePathContract(contract.fields, secretFields)) {
+  if (!isAtLeastOnePathContract(secretFields) || bundleHasAnySecret(bundle, secretFields)) {
     return true;
   }
-  if (bundleHasAnySecret(parseSecretBundle(secret), secretFields)) {
-    return true;
-  }
-  await emitCaptureAudit(ctx, req, res, {
-    connectionId: namespace.connectorInstanceId,
-    connectorId: namespace.connectorId,
-    credentialKind,
-    error: errWithCode("missing_credential"),
-    outcome: "failed",
-    ownerSubjectId,
-  });
-  ctx.pdppError(
+  return await rejectMissingCredential(
+    ctx,
+    req,
     res,
-    400,
-    "missing_credential",
-    `At least one of ${secretFields.map((field) => field.label).join(", ")} is required.`,
-    "secret"
+    namespace,
+    credentialKind,
+    ownerSubjectId,
+    `At least one of ${secretFields.map((field) => field.label).join(", ")} is required.`
   );
-  return false;
 }
 
 // Stores the validated credential and sends the success response.
@@ -937,7 +991,7 @@ async function runStaticSecretCredentialCapture(
     return;
   }
   if (
-    !(await assertBundledSecretNotEmpty(ctx, req, res, namespace, credentialKind, ownerSubjectId, contract, secret))
+    !(await assertBundledSecretComplete(ctx, req, res, namespace, credentialKind, ownerSubjectId, contract, secret))
   ) {
     return;
   }

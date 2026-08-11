@@ -134,6 +134,16 @@ test("jellyfin registry secret-bundle and setup-field env vars match its connect
   const fields = manifest.setup.credential_capture.fields as Array<{ name: string; env: string[] }>;
   const descriptor = STATIC_SECRET_CONNECTOR_REGISTRY.jellyfin;
   assert.ok(descriptor, "registry must include jellyfin");
+  assert.equal(
+    manifest.setup.credential_capture.required,
+    undefined,
+    "jellyfin's manifest omits the block-level fact entirely (this test would need updating if that changes)"
+  );
+  assert.equal(
+    descriptor.captureRequired,
+    true,
+    "omitting credential_capture.required must default to true (capture-required) at the registry/injection layer too"
+  );
   for (const bundleField of ["username", "password", "secret"]) {
     const manifestField = fields.find((field) => field.name === bundleField);
     assert.deepEqual(
@@ -324,26 +334,34 @@ test("venmo injection sets both username+password secrets when the bundle is ful
   });
 });
 
-// Venmo's manifest marks both username and password optional
-// (optionalSecretBundleFields) because ensureVenmoSession falls back to a
-// manual browser sign-in with zero saved credentials — so injection must not
-// throw recovered_secret_bundle_field_missing on a partial or fully empty
-// bundle. This is the honest, fail-closed half of the contract: injection
-// never invents or completes a missing credential half, it only sets what
-// was actually saved, and auto-login.ts's own `username && password` check
-// is what refuses to attempt a half-complete login.
-test("venmo injection sets only the present half of a partial username/password bundle, never throwing", () => {
-  const usernameOnly = buildConnectionScopedSecretEnv("venmo", {
-    credentialKind: "username_password",
-    secret: JSON.stringify({ username: "owner@example.com" }),
-  });
-  assert.deepEqual(usernameOnly, { VENMO_USERNAME: "owner@example.com" });
-
-  const passwordOnly = buildConnectionScopedSecretEnv("venmo", {
-    credentialKind: "username_password",
-    secret: JSON.stringify({ password: "synthetic-password" }),
-  });
-  assert.deepEqual(passwordOnly, { VENMO_PASSWORD: "synthetic-password" });
+// Venmo's manifest marks the whole CAPTURE optional (block-level
+// credential_capture.required: false) because ensureVenmoSession falls back
+// to a manual browser sign-in with zero saved credentials — but both fields
+// stay required:true at the FIELD level (BOTH-OR-NONE): the capture-time
+// guards (console/RI) already enforce that a stored bundle is either fully
+// empty or fully complete, so injection's own job is narrower — an entirely
+// EMPTY bundle must inject nothing without throwing (the valid "sign in by
+// hand" choice), while a genuinely PARTIAL bundle (something upstream let
+// through broken) must still fail closed exactly like a required capture
+// would, rather than silently starting a login attempt with half a
+// credential.
+test("venmo injection throws on a partial username/password bundle — BOTH-OR-NONE is fail-closed, not silently half-injected", () => {
+  assert.throws(
+    () =>
+      buildConnectionScopedSecretEnv("venmo", {
+        credentialKind: "username_password",
+        secret: JSON.stringify({ username: "owner@example.com" }),
+      }),
+    (err: unknown) => err instanceof StaticSecretInjectionError && err.code === "recovered_secret_bundle_field_missing"
+  );
+  assert.throws(
+    () =>
+      buildConnectionScopedSecretEnv("venmo", {
+        credentialKind: "username_password",
+        secret: JSON.stringify({ password: "synthetic-password" }),
+      }),
+    (err: unknown) => err instanceof StaticSecretInjectionError && err.code === "recovered_secret_bundle_field_missing"
+  );
 });
 
 test("venmo injection sets nothing for a fully empty bundle, never throwing (browser sign-in is always valid)", () => {
@@ -354,22 +372,32 @@ test("venmo injection sets nothing for a fully empty bundle, never throwing (bro
   assert.deepEqual(env, {});
 });
 
-test("venmo registry secret-bundle env vars match its connector manifest and both fields are optional", () => {
+test("venmo registry secret-bundle env vars match its connector manifest — fields stay required, only the block-level capture is optional", () => {
   const manifest = JSON.parse(readFileSync(new URL("../manifests/venmo.json", import.meta.url), "utf8"));
   const fields = manifest.setup.credential_capture.fields as Array<{ name: string; env: string[]; required: boolean }>;
   const descriptor = STATIC_SECRET_CONNECTOR_REGISTRY.venmo;
   assert.ok(descriptor, "registry must include venmo");
+  assert.equal(
+    manifest.setup.credential_capture.required,
+    false,
+    "venmo's BLOCK-level credential_capture.required must be false"
+  );
+  assert.equal(descriptor.captureRequired, false, "the registry must carry the block-level fact through");
   for (const bundleField of ["username", "password"]) {
     const manifestField = fields.find((field) => field.name === bundleField);
-    assert.equal(manifestField?.required, false, `venmo manifest field '${bundleField}' must be required:false`);
+    assert.equal(
+      manifestField?.required,
+      true,
+      `venmo manifest field '${bundleField}' must stay required:true (BOTH-OR-NONE)`
+    );
     assert.deepEqual(
       descriptor.secretFieldEnvVars?.[bundleField],
       manifestField?.env,
       `venmo secret bundle env mismatch (${bundleField})`
     );
     assert.ok(
-      descriptor.optionalSecretBundleFields?.has(bundleField),
-      `venmo secret bundle field '${bundleField}' must be optional so browser sign-in works with zero saved credentials`
+      !descriptor.optionalSecretBundleFields?.has(bundleField),
+      `venmo secret bundle field '${bundleField}' must NOT be individually optional — the capture as a whole is, via captureRequired`
     );
   }
 });

@@ -17,6 +17,7 @@ function setup(overrides: Partial<StaticSecretSetup>): StaticSecretSetup {
       fields: [],
       kind: "app_password",
       label: "Credential",
+      required: true,
       submit_label: null,
     },
     credential_kind: "app_password",
@@ -71,6 +72,7 @@ test("single-secret credentials store the submitted secret directly", () => {
         ],
         kind: "app_password",
         label: "App password",
+        required: true,
         submit_label: null,
       },
       credential_kind: "app_password",
@@ -120,6 +122,7 @@ test("username/password credentials seal all submitted credential fields as one 
         ],
         kind: "username_password",
         label: "Sign-in details",
+        required: true,
         submit_label: null,
       },
       credential_kind: "username_password",
@@ -186,6 +189,7 @@ test("secret bundles can include required non-secret setup fields needed by the 
       ],
       kind: "secret_bundle",
       label: "Bundle",
+      required: true,
       submit_label: null,
     },
     credential_kind: "secret_bundle",
@@ -268,6 +272,7 @@ test("at-least-one-path bundles reject a fully empty submission instead of stori
         ],
         kind: "username_password",
         label: "Jellyfin sign-in details",
+        required: true,
         submit_label: null,
       },
       credential_kind: "username_password",
@@ -333,6 +338,7 @@ test("at-least-one-path bundles accept a submission that fills exactly one crede
       ],
       kind: "username_password",
       label: "Jellyfin sign-in details",
+      required: true,
       submit_label: null,
     },
     credential_kind: "username_password",
@@ -347,100 +353,105 @@ test("at-least-one-path bundles accept a submission that fills exactly one crede
   });
 });
 
-test("all-optional bundles with no required field anywhere accept a fully empty submission (Venmo: browser sign-in is always valid)", () => {
+// ─── credential_capture.required: false (Venmo) — BOTH-OR-NONE ───────────
+//
+// Venmo's fields are BOTH marked required: true at the FIELD level — the
+// same as a normal required capture — but the BLOCK-level
+// credential_capture.required is false, because the connector always falls
+// back to a browser-driven sign-in that works with zero saved credentials.
+// This is deliberately NOT a field-count or field-required inference: it is
+// one explicit, provider-neutral manifest fact, checked first.
+
+function venmoSetup(): StaticSecretSetup {
+  return setup({
+    credential_capture: {
+      description: null,
+      fields: [
+        {
+          autocomplete: "username",
+          description: null,
+          help_text: null,
+          help_url: null,
+          identity: false,
+          label: "Venmo phone, email, or username",
+          name: "username",
+          placeholder: null,
+          required: true,
+          secret: true,
+          type: "text",
+        },
+        {
+          autocomplete: "current-password",
+          description: null,
+          help_text: null,
+          help_url: null,
+          identity: false,
+          label: "Venmo password",
+          name: "password",
+          placeholder: null,
+          required: true,
+          secret: true,
+          type: "password",
+        },
+      ],
+      kind: "username_password",
+      label: "Venmo sign-in details (optional)",
+      required: false,
+      submit_label: null,
+    },
+    credential_kind: "username_password",
+  });
+}
+
+test("credential_capture.required: false — a fully blank submission is accepted (Venmo: browser sign-in is always valid)", () => {
   const form = new FormData();
-
-  const payload = buildStaticSecretPayload(
-    setup({
-      credential_capture: {
-        description: null,
-        fields: [
-          {
-            autocomplete: "username",
-            description: null,
-            help_text: null,
-            help_url: null,
-            identity: false,
-            label: "Venmo phone, email, or username",
-            name: "username",
-            placeholder: null,
-            required: false,
-            secret: true,
-            type: "text",
-          },
-          {
-            autocomplete: "current-password",
-            description: null,
-            help_text: null,
-            help_url: null,
-            identity: false,
-            label: "Venmo password",
-            name: "password",
-            placeholder: null,
-            required: false,
-            secret: true,
-            type: "password",
-          },
-        ],
-        kind: "username_password",
-        label: "Venmo sign-in details (optional)",
-        submit_label: null,
-      },
-      credential_kind: "username_password",
-    }),
-    form
-  );
-
+  const payload = buildStaticSecretPayload(venmoSetup(), form);
   assert.deepEqual(payload, { ok: true, secret: "{}" });
 });
 
-test("all-optional bundles accept exactly one of two fields filled (fail-closed at injection, not at capture)", () => {
+test("credential_capture.required: false — a PARTIAL submission (one of two BOTH-OR-NONE fields) is rejected", () => {
   const form = new FormData();
   form.set("username", "owner@example.com");
+  const payload = buildStaticSecretPayload(venmoSetup(), form);
+  // The blank-submission short-circuit does not fire (username has a
+  // value), so this falls through to the SAME per-field required check a
+  // fully required capture would run — password's own field-level
+  // `required: true` (BOTH-OR-NONE) is what rejects it.
+  assert.deepEqual(payload, { error: "Venmo password is required.", ok: false });
+});
 
-  const payload = buildStaticSecretPayload(
-    setup({
-      credential_capture: {
-        description: null,
-        fields: [
-          {
-            autocomplete: "username",
-            description: null,
-            help_text: null,
-            help_url: null,
-            identity: false,
-            label: "Venmo phone, email, or username",
-            name: "username",
-            placeholder: null,
-            required: false,
-            secret: true,
-            type: "text",
-          },
-          {
-            autocomplete: "current-password",
-            description: null,
-            help_text: null,
-            help_url: null,
-            identity: false,
-            label: "Venmo password",
-            name: "password",
-            placeholder: null,
-            required: false,
-            secret: true,
-            type: "password",
-          },
-        ],
-        kind: "username_password",
-        label: "Venmo sign-in details (optional)",
-        submit_label: null,
-      },
-      credential_kind: "username_password",
-    }),
-    form
-  );
-
+test("credential_capture.required: false — a COMPLETE submission (both fields) is accepted", () => {
+  const form = new FormData();
+  form.set("username", "owner@example.com");
+  form.set("password", "hunter2");
+  const payload = buildStaticSecretPayload(venmoSetup(), form);
   assert.equal(payload.ok, true);
-  assert.deepEqual(JSON.parse(payload.ok ? payload.secret : ""), { username: "owner@example.com" });
+  assert.deepEqual(JSON.parse(payload.ok ? payload.secret : ""), {
+    password: "hunter2",
+    username: "owner@example.com",
+  });
+});
+
+test("credential_capture.required omitted defaults to required — a blank submission with the fact unset (old manifest response shape) still rejects", () => {
+  const form = new FormData();
+  // Simulate a served payload that predates this fact entirely (an older RI
+  // response, or a manifest that never set it) — genuinely ABSENT, not
+  // `required: false`. `StaticSecretSetup.required` is typed non-optional
+  // because every CURRENT response always sets it; this rebuild via
+  // destructuring omission reproduces what an old/foreign payload actually
+  // looks like on the wire without a `delete` operator.
+  const { required: _omitted, ...captureWithoutRequired } = venmoSetup().credential_capture;
+  const withoutRequiredFact: StaticSecretSetup = {
+    ...venmoSetup(),
+    credential_capture: captureWithoutRequired as StaticSecretSetup["credential_capture"],
+  };
+
+  const payload = buildStaticSecretPayload(withoutRequiredFact, form);
+  assert.equal(
+    payload.ok,
+    false,
+    "omitting the block-level fact must default to required, not accept a blank submission"
+  );
 });
 
 test("required bundled fields fail before capture instead of storing incomplete credentials", () => {
@@ -481,6 +492,7 @@ test("required bundled fields fail before capture instead of storing incomplete 
         ],
         kind: "username_password",
         label: "Sign-in details",
+        required: true,
         submit_label: null,
       },
       credential_kind: "username_password",

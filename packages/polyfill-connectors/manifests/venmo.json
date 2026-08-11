@@ -22,12 +22,13 @@
       "label": "Venmo sign-in details (optional)",
       "description": "Optionally save Venmo sign-in details to assist automated re-login for this source's browser-backed collection. Venmo's internal API rejects synthetic client credentials, so this connector authenticates through a real, owner-driven browser session instead — leave these blank to sign in by hand in the secure browser every time a session needs to be (re)established.",
       "submit_label": "Save Venmo credential and start first sync",
+      "required": false,
       "fields": [
         {
           "name": "username",
           "label": "Venmo phone, email, or username",
           "type": "text",
-          "required": false,
+          "required": true,
           "secret": true,
           "autocomplete": "username",
           "env": ["VENMO_USERNAME"]
@@ -36,7 +37,7 @@
           "name": "password",
           "label": "Venmo password",
           "type": "password",
-          "required": false,
+          "required": true,
           "secret": true,
           "autocomplete": "current-password",
           "env": ["VENMO_PASSWORD"]

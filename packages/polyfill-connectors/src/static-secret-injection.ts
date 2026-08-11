@@ -96,6 +96,17 @@ interface StaticSecretConnectorDescriptor extends StaticSecretInjectionMapping {
    * use; variants keep older stored rows runnable during migrations.
    */
   readonly acceptedCredentialVariants?: readonly StaticSecretInjectionMapping[];
+  /**
+   * `false` only when the manifest's block-level `credential_capture.required`
+   * is explicitly `false` (e.g. Venmo — the connector always falls back to a
+   * browser-driven sign-in that works with zero saved credentials); `true`
+   * for every connector that omits the fact. See `injectSecretBundle`'s use
+   * of this: it is what lets an entirely EMPTY recovered bundle inject
+   * nothing (valid "sign in by hand" choice) instead of throwing
+   * `recovered_secret_bundle_field_missing` on the first field a required
+   * capture (e.g. Jellyfin) would still correctly fail closed on.
+   */
+  readonly captureRequired: boolean;
 }
 
 function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescriptor): StaticSecretConnectorDescriptor {
@@ -218,6 +229,7 @@ export const STATIC_SECRET_CONNECTOR_REGISTRY: Readonly<Record<string, StaticSec
           connectorId,
           freezeStaticSecretDescriptor({
             ...mappingFromGenerated(generated),
+            captureRequired: generated.captureRequired !== false,
             ...(acceptedCredentialVariants ? { acceptedCredentialVariants } : {}),
           }),
         ];
@@ -322,17 +334,33 @@ function injectSingleSecret(fragment: Record<string, string>, envVars: readonly 
   }
 }
 
+/**
+ * `captureRequired: false` (Venmo) means an entirely EMPTY bundle is the
+ * owner's valid "sign in by hand every time" choice, not a bug — inject
+ * nothing and let the connector's own `process.env.X && process.env.Y`
+ * check (e.g. `ensureVenmoSession`) fall back to its manual path. A bundle
+ * that has SOME but not all fields present is still fail-closed exactly like
+ * a required capture: BOTH-OR-NONE was already enforced at capture time
+ * (console/RI), so reaching injection with a genuinely partial bundle means
+ * something upstream let a broken row through, and injecting half a
+ * credential would risk a login attempt with a corrupt/incomplete
+ * credential rather than a clean fallback to manual sign-in.
+ */
 function injectSecretBundle(
   fragment: Record<string, string>,
   connectorId: string,
   secret: string,
   secretFieldEnvVars: StaticSecretConnectorDescriptor["secretFieldEnvVars"],
-  optionalSecretBundleFields: StaticSecretInjectionMapping["optionalSecretBundleFields"]
+  optionalSecretBundleFields: StaticSecretInjectionMapping["optionalSecretBundleFields"],
+  captureRequired: boolean
 ) {
   if (!secretFieldEnvVars) {
     return;
   }
   const bundle = secretBundleFields(connectorId, secret);
+  if (!captureRequired && Object.keys(bundle).length === 0) {
+    return;
+  }
   for (const [fieldName, envVars] of Object.entries(secretFieldEnvVars)) {
     const value = bundle[fieldName];
     if (!value) {
@@ -403,7 +431,8 @@ export function buildConnectionScopedSecretEnv(
     connectorId,
     recovered.secret,
     mapping.secretFieldEnvVars,
-    mapping.optionalSecretBundleFields
+    mapping.optionalSecretBundleFields,
+    descriptor.captureRequired
   );
   injectSetupFields(fragment, mapping.setupFieldEnvVars, sourceBinding);
   return fragment;

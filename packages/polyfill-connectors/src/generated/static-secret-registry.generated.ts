@@ -24,6 +24,8 @@
 // scripts/generate-static-secret-registry.ts` from packages/polyfill-connectors.
 
 export interface GeneratedStaticSecretDescriptor {
+  /** `false` only when the manifest's credential_capture.required is explicitly false; omitted (defaults true) otherwise. */
+  readonly captureRequired?: false;
   readonly credentialKind: string;
   readonly optionalSecretBundleFields?: readonly string[];
   readonly secretEnvVars?: readonly string[];
@@ -136,11 +138,11 @@ export const GENERATED_STATIC_SECRET_REGISTRY: Readonly<Record<string, Generated
     },
     "venmo": {
       credentialKind: "username_password",
+      captureRequired: false,
       secretFieldEnvVars: {
         "password": ["VENMO_PASSWORD"],
         "username": ["VENMO_USERNAME"],
       },
-      optionalSecretBundleFields: ["username", "password"],
     },
     "ynab": {
       credentialKind: "personal_access_token",

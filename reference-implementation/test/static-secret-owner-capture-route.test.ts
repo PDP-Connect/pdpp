@@ -547,7 +547,11 @@ test("capture accepts a fully empty credential bundle for an all-optional, no-fa
   });
 });
 
-test("capture accepts a Venmo credential bundle with only one of username/password filled (fail-closed happens at injection, not capture)", async () => {
+// BOTH-OR-NONE: Venmo's fields are individually required:true, so a
+// PARTIAL bundle is rejected at capture time exactly like a required
+// capture would reject it — only a fully blank OR fully complete bundle is
+// valid. This is the counterpart to the "fully empty" test above.
+test("capture rejects a Venmo credential bundle with only one of username/password filled (BOTH-OR-NONE)", async () => {
   await withCredentialKey(TEST_KEY, async () => {
     await withServer(async ({ asUrl }) => {
       await registerConnector(asUrl, "venmo");
@@ -561,6 +565,35 @@ test("capture accepts a Venmo credential bundle with only one of username/passwo
         JSON.stringify({ username: "owner@example.com" }),
         "username_password"
       );
+      assert.equal(status, 400);
+      assert.equal(errorOf(body).code, "missing_credential");
+
+      const store = createSqliteConnectorInstanceCredentialStore({
+        env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
+      });
+      assert.equal(
+        await store.getMetadata("cin_venmo_partial"),
+        null,
+        "nothing should be stored for a partial (neither blank nor complete) credential bundle"
+      );
+    });
+  });
+});
+
+test("capture accepts a fully complete Venmo credential bundle (both username and password)", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "venmo");
+      await seedInstance({ connectorId: "venmo", connectorInstanceId: "cin_venmo_complete" });
+      const cookie = await login(asUrl);
+
+      const { status, body } = await captureCredential(
+        asUrl,
+        cookie,
+        "cin_venmo_complete",
+        JSON.stringify({ username: "owner@example.com", password: "synthetic-password" }),
+        "username_password"
+      );
       assert.equal(status, 201);
       assert.equal(credentialOf(body).present, true);
 
@@ -568,10 +601,10 @@ test("capture accepts a Venmo credential bundle with only one of username/passwo
         env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
       });
       const recovered = await store.recoverSecret({
-        connectorInstanceId: "cin_venmo_partial",
+        connectorInstanceId: "cin_venmo_complete",
         ownerSubjectId: OWNER_SUBJECT_ID,
       });
-      assert.equal(recovered.secret, JSON.stringify({ username: "owner@example.com" }));
+      assert.equal(recovered.secret, JSON.stringify({ username: "owner@example.com", password: "synthetic-password" }));
     });
   });
 });

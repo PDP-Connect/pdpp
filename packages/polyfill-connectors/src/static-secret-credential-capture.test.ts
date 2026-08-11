@@ -129,6 +129,50 @@ test("required defaults to true when omitted entirely (not false, not undefined)
   assert.equal(normalized?.fields[0]?.required, true);
 });
 
+// ─── BLOCK-level credential_capture.required (distinct from FIELD-level) ──
+
+test("block-level required defaults to true when the manifest omits it entirely", () => {
+  const capture: StaticSecretCredentialCaptureLike = {
+    fields: [{ env: ["PROBE_TOKEN"], label: "Token", name: "token", required: true, secret: true }],
+    kind: "api_key",
+    label: "Probe",
+  };
+  const normalized = normalizeStaticSecretCredentialCapture("probe_block_required_default", capture);
+  assert.equal(normalized?.required, true, "omitting the block-level fact must default to required, not optional");
+});
+
+test("block-level required: false is preserved (Venmo's shape) — independent of each field's own required flag", () => {
+  const capture: StaticSecretCredentialCaptureLike = {
+    fields: [
+      { env: ["PROBE_USERNAME"], label: "Username", name: "username", required: true, secret: true },
+      { env: ["PROBE_PASSWORD"], label: "Password", name: "password", required: true, secret: true },
+    ],
+    kind: "username_password",
+    label: "Probe",
+    required: false,
+  };
+  const normalized = normalizeStaticSecretCredentialCapture("probe_block_optional", capture);
+  assert.equal(normalized?.required, false, "an explicit block-level false must be preserved");
+  // The BOTH-OR-NONE contract lives entirely in the FIELD-level required
+  // flags staying true — this normalizer does not derive or infer that from
+  // block-level required; it only carries both facts through unchanged.
+  assert.ok(
+    normalized?.fields.every((field) => field.required),
+    "field-level required must be untouched by the block-level fact"
+  );
+});
+
+test("block-level required: true explicitly set behaves the same as omitting it", () => {
+  const capture: StaticSecretCredentialCaptureLike = {
+    fields: [{ env: ["PROBE_TOKEN"], label: "Token", name: "token", required: true, secret: true }],
+    kind: "api_key",
+    label: "Probe",
+    required: true,
+  };
+  const normalized = normalizeStaticSecretCredentialCapture("probe_block_required_explicit", capture);
+  assert.equal(normalized?.required, true);
+});
+
 test("secret_bundle: every field (secret and non-secret alike) is still returned for the caller to bundle-decide", () => {
   // The normalizer itself does not decide bundling policy (secret_bundle vs
   // username_password fully-bundled semantics) — that is the generator's

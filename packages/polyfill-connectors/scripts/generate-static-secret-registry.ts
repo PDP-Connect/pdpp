@@ -123,6 +123,21 @@ function manifestKey(manifest: ManifestLike): string | null {
 }
 
 interface StaticSecretDescriptor {
+  /**
+   * Present (`false`) only when the manifest's block-level
+   * `credential_capture.required` is explicitly `false` — omitted otherwise
+   * (the backward-compatible default is `true`, so most connectors never
+   * carry this key at all). Lets `injectSecretBundle`
+   * (`../src/static-secret-injection.ts`) distinguish "the owner explicitly
+   * chose to save no credential — inject nothing" from "a partial/corrupt
+   * bundle is missing a required field — fail closed", which
+   * `secretFieldEnvVars`/`optionalSecretBundleFields` alone cannot express:
+   * an entirely EMPTY bundle for a required, multi-field capture (e.g.
+   * Jellyfin) is still a bug to fail closed on, while the SAME empty bundle
+   * for an explicitly optional capture (e.g. Venmo) is the valid "sign in by
+   * hand every time" choice the manifest itself declares.
+   */
+  captureRequired?: false;
   credentialKind: string;
   optionalSecretBundleFields?: string[];
   secretEnvVars?: string[];
@@ -149,7 +164,7 @@ function descriptorFromManifest(connectorKey: string, manifest: ManifestLike): S
   if (!normalized) {
     return null;
   }
-  const { fields, kind: credentialKind } = normalized;
+  const { fields, kind: credentialKind, required } = normalized;
   const secretFields = fields.filter((field) => field.secret);
   if (secretFields.length === 0) {
     return null;
@@ -157,7 +172,10 @@ function descriptorFromManifest(connectorKey: string, manifest: ManifestLike): S
   const fullyBundled = FULLY_BUNDLED_CREDENTIAL_KINDS.has(credentialKind);
   const bundleFields = fullyBundled ? fields : secretFields;
   const setupFields = fullyBundled ? [] : fields.filter((field) => !field.secret);
-  const descriptor: StaticSecretDescriptor = { credentialKind };
+  const descriptor: StaticSecretDescriptor = {
+    credentialKind,
+    ...(required === false ? { captureRequired: false } : {}),
+  };
   if (MULTI_SECRET_FIELD_CREDENTIAL_KINDS.has(credentialKind) && bundleFields.length > 1) {
     descriptor.secretFieldEnvVars = Object.fromEntries(bundleFields.map((field) => [field.name, [...field.env]]));
     const optional = bundleFields.filter((field) => !field.required).map((field) => field.name);
@@ -207,6 +225,9 @@ function jsonStringArrayMap(record: Record<string, string[]>, indent: string): s
 
 function descriptorLiteral(descriptor: StaticSecretDescriptor): string {
   const lines: string[] = [`      credentialKind: ${JSON.stringify(descriptor.credentialKind)},`];
+  if (descriptor.captureRequired === false) {
+    lines.push("      captureRequired: false,");
+  }
   if (descriptor.secretEnvVars) {
     lines.push(`      secretEnvVars: ${jsonStringArray(descriptor.secretEnvVars)},`);
   }
@@ -252,6 +273,8 @@ const output = `// Copyright The PDP-Connect Contributors
 // scripts/generate-static-secret-registry.ts\` from packages/polyfill-connectors.
 
 export interface GeneratedStaticSecretDescriptor {
+  /** \`false\` only when the manifest's credential_capture.required is explicitly false; omitted (defaults true) otherwise. */
+  readonly captureRequired?: false;
   readonly credentialKind: string;
   readonly optionalSecretBundleFields?: readonly string[];
   readonly secretEnvVars?: readonly string[];

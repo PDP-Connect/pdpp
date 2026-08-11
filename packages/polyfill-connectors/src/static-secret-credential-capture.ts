@@ -68,6 +68,24 @@ export interface StaticSecretCredentialCaptureLike {
   readonly fields?: readonly StaticSecretCredentialCaptureFieldLike[] | null;
   readonly kind?: string | null;
   readonly label?: string | null;
+  /**
+   * Whether capturing this credential at all is mandatory. Defaults to
+   * `true` (every existing manifest's actual behavior, preserved for
+   * backward compatibility) — a manifest must explicitly opt in to
+   * `required: false` to declare "an entirely blank submission is a valid,
+   * complete choice" (e.g. Venmo, whose connector always has a
+   * browser-driven sign-in fallback with zero saved credentials).
+   *
+   * This is BLOCK-level, distinct from and independent of each field's own
+   * `required`. When `false`, a blank submission is accepted, but the
+   * moment ANY field is filled, every field still marked `required: true`
+   * on itself is enforced (BOTH-OR-NONE) — see
+   * {@link NormalizedStaticSecretCredentialCapture.required}'s consumers
+   * (`bundledSecretPayload` in the console, `assertBundledSecretNotEmpty` in
+   * the RI) for where that enforcement actually happens; this module only
+   * carries the fact.
+   */
+  readonly required?: boolean | null;
   readonly submit_label?: string | null;
 }
 
@@ -91,6 +109,13 @@ export interface NormalizedStaticSecretCredentialCapture {
   readonly fields: readonly NormalizedStaticSecretField[];
   readonly kind: string;
   readonly label: string;
+  /**
+   * `false` only when the manifest explicitly says so; `true` for every
+   * manifest that omits the fact (backward-compatible default). See
+   * {@link StaticSecretCredentialCaptureLike.required} for the full
+   * BOTH-OR-NONE contract this fact establishes.
+   */
+  readonly required: boolean;
   readonly submitLabel: string | null;
 }
 
@@ -213,6 +238,7 @@ export function normalizeStaticSecretCredentialCapture(
     fields,
     kind,
     label: cleanString(capture.label) ?? kind,
+    required: capture.required !== false,
     submitLabel: cleanString(capture.submit_label),
   };
 }
