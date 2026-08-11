@@ -99,6 +99,7 @@ class FakeJellyfinLateAuthServer {
   private servedPages = 0;
   private readonly revokeAfterPages: number;
   private readonly alwaysReject: boolean;
+  private readonly sameTokenOnReauth: boolean;
   readonly authCalls: string[] = [];
   readonly itemsRequestsByToken: string[] = [];
 
@@ -108,10 +109,17 @@ class FakeJellyfinLateAuthServer {
    * — models a stale-token blip. `alwaysReject`: every items request 401s
    * regardless of token freshness, including a just-re-authenticated token —
    * models a genuinely dead credential, distinct from a stale-token blip.
+   * `sameTokenOnReauth`: `AuthenticateByName` hands back the IDENTICAL token
+   * that just 401'd instead of minting a new one — models a server whose
+   * session store is wedged (or a load balancer that pins the same dead
+   * session), distinct from `alwaysReject`'s "the credential itself is
+   * rejected" — here the credential is fine, but re-authenticating produces
+   * no new token to retry with.
    */
-  constructor(revokeAfterPages: number, alwaysReject = false) {
+  constructor(revokeAfterPages: number, alwaysReject = false, sameTokenOnReauth = false) {
     this.revokeAfterPages = revokeAfterPages;
     this.alwaysReject = alwaysReject;
+    this.sameTokenOnReauth = sameTokenOnReauth;
   }
 
   start(): Promise<string> {
@@ -142,9 +150,15 @@ class FakeJellyfinLateAuthServer {
 
   private route(res: ServerResponse, path: string, headers: Record<string, string>) {
     if (path === "/Users/AuthenticateByName") {
-      this.tokenCounter += 1;
-      this.currentToken = `token-${this.tokenCounter}`;
-      this.revoked = false; // a fresh sign-in always yields a currently-valid token
+      if (!this.sameTokenOnReauth || this.tokenCounter === 0) {
+        this.tokenCounter += 1;
+        this.currentToken = `token-${this.tokenCounter}`;
+        this.revoked = false; // a fresh sign-in always yields a currently-valid token
+      }
+      // sameTokenOnReauth: every call after the first hands back the exact
+      // same (already-revoked) token — `revoked` is deliberately NOT reset,
+      // so the connector's retry with this "fresh" token would 401 again if
+      // it ever attempted the retry (it must not).
       this.authCalls.push(this.currentToken);
       res.writeHead(200);
       res.end(JSON.stringify({ AccessToken: this.currentToken, User: { Id: "user-alice-1", Name: "alice" } }));
@@ -213,17 +227,21 @@ class FakeJellyfinLateAuthServer {
   }
 }
 
-test("fail-before (documents the live defect): a mid-run 401 on a proven-valid token, with no self-heal, is jellyfin_auth_failed", async () => {
-  // Regression guard for the OLD behavior via a from-scratch minimal
-  // reproduction of jellyfinRequest's pre-fix shape: any 401/403 is terminal,
-  // with no distinction between "never authenticated" and "authenticated
-  // fine, then a later request 401'd". This is what the live run hit.
+test("fake server sanity check: an unrecognized/stale token 401s on the items endpoint (does not exercise the connector)", async () => {
+  // This test drives a bare `fetch` against the fake server directly — it
+  // never calls `jellyfinRequest` or `collect()`, so it proves nothing about
+  // the connector's OLD or NEW behavior. It only pins down that
+  // `FakeJellyfinLateAuthServer` itself 401s an unrecognized token, which the
+  // real regression tests below rely on. The actual "pre-fix, no self-heal"
+  // behavior is proven directly by the assertions inside the "persists after
+  // re-authentication" and "reauth returns the same token" tests below (both
+  // exercise the real `collect()` path and assert the terminal
+  // `jellyfin_auth_failed` the live run hit) — a from-scratch `fetch` against
+  // this fake server cannot stand in for that, since it bypasses
+  // `jellyfinRequest` entirely.
   const server = new FakeJellyfinLateAuthServer(1);
   const baseUrl = await server.start();
   try {
-    // Directly exercise the old contract: a bare 401 with no reauth hook
-    // must surface as jellyfin_auth_failed — this is unchanged by the fix
-    // and is the shape the live run actually failed with.
     const res = await fetch(`${baseUrl}/Users/user-alice-1/Items?StartIndex=2&Limit=2`, {
       headers: { "X-Emby-Token": "stale-token-not-yet-issued" },
     });
@@ -285,6 +303,51 @@ test("a 401 that persists after re-authentication (token genuinely rejected) sti
 
     await assert.rejects(() => collect(ctx), /jellyfin_auth_failed/);
     assert.equal(server.authCalls.length, 2, "must still attempt exactly one re-authentication before giving up");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("reauth that hands back the identical (still-revoked) token does not retry the request, and fails after exactly one auth call", async () => {
+  // sameTokenOnReauth=true: AuthenticateByName succeeds (HTTP 200, a real
+  // token) but hands back the EXACT same token that just 401'd — a wedged
+  // server-side session store, not a rejected credential. `jellyfinRequest`
+  // gates the retry on `freshToken !== apiKey`: since the token is
+  // unchanged, retrying would just replay the identical failing request, so
+  // it must skip the retry and fail immediately instead of looping.
+  const server = new FakeJellyfinLateAuthServer(1, false, true);
+  const baseUrl = await server.start();
+
+  try {
+    const { ctx } = makeContext({
+      credentials: { base_url: baseUrl, username: "alice", password: "correct-password" },
+      streams: [{ name: "items" }],
+    });
+
+    await assert.rejects(() => collect(ctx), /jellyfin_auth_failed/);
+
+    // One AuthenticateByName call happens at sign-in (before any request is
+    // even attempted); the mid-run 401 triggers exactly one MORE reauth
+    // attempt — the same-token gate must stop there rather than looping.
+    assert.equal(
+      server.authCalls.length,
+      2,
+      "exactly one auth call at sign-in plus exactly one reauth attempt after the mid-run 401 — no retry loop"
+    );
+    assert.equal(server.authCalls[0], server.authCalls[1], "sanity: the fake server actually returned the same token");
+
+    // The decisive assertion: since the reauth token was identical, the
+    // retried-request code path must never fire. `itemsRequestsByToken`
+    // records every Items request the fake server actually received, in
+    // order: page 1 (StartIndex=0, succeeds with token-1), page 2
+    // (StartIndex=500, 401s with token-1, triggering reauth). If
+    // `jellyfinRequest` retried anyway, a THIRD Items request would appear
+    // here bearing the same (still-revoked) token again.
+    assert.equal(
+      server.itemsRequestsByToken.length,
+      2,
+      "the same-token retry must never be attempted — only the original 2 pagination requests, no extra retry request"
+    );
   } finally {
     await server.stop();
   }
