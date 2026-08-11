@@ -403,6 +403,7 @@ import {
   mountRefProviderAuthInitiate,
   type ProviderAuthExchanger,
 } from "./routes/ref-provider-auth.ts";
+import { mountRefRecordRejections } from "./routes/ref-record-rejections.ts";
 import { mountRefRunStatus } from "./routes/ref-run-status.ts";
 import { mountRefGrants, mountRefRuns, mountRefTraces } from "./routes/ref-spine-correlations.ts";
 import { mountRefGrantTimeline, mountRefRunTimeline, mountRefTraceTimeline } from "./routes/ref-spine-timelines.ts";
@@ -5487,6 +5488,14 @@ export function buildAsApp(opts: ServerOpts = {}) {
     app,
     refConnectorsContext as unknown as Parameters<typeof mountRefConnectorInstanceDetail>[1]
   );
+  mountRefRecordRejections(app, {
+    createRequestConnectorInstanceStore,
+    createRequestRecordRejectionStore,
+    getOwnerSubjectId: getOwnerTokenSubjectId,
+    handleError,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+  } as unknown as Parameters<typeof mountRefRecordRejections>[1]);
   mountRefConnectionSetDisplayName(
     app,
     refConnectorsContext as unknown as Parameters<typeof mountRefConnectionSetDisplayName>[1]
