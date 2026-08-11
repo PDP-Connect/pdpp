@@ -291,20 +291,22 @@ test("storeTokens fails closed on a malformed persistenceContext instead of trus
     {},
   ];
 
-  for (const persistenceContext of malformedContexts) {
-    await assert.rejects(
-      () =>
-        adapter.storeTokens({
-          manifest: MANIFEST,
-          persistenceContext,
-          tokens: { accessToken: "some-access-token", tokenKind: "Bearer" },
-        }),
-      (err: unknown) =>
-        err instanceof GoogleDataPortabilityProviderAuthError &&
-        err.code === "google_dataportability_access_type_missing",
-      `expected rejection for context ${JSON.stringify(persistenceContext)}`
-    );
-  }
+  await Promise.all(
+    malformedContexts.map((persistenceContext) =>
+      assert.rejects(
+        () =>
+          adapter.storeTokens({
+            manifest: MANIFEST,
+            persistenceContext,
+            tokens: { accessToken: "some-access-token", tokenKind: "Bearer" },
+          }),
+        (err: unknown) =>
+          err instanceof GoogleDataPortabilityProviderAuthError &&
+          err.code === "google_dataportability_access_type_missing",
+        `expected rejection for context ${JSON.stringify(persistenceContext)}`
+      )
+    )
+  );
 });
 
 test("two interleaved flows for different tokens do not cross-talk: each storeTokens only ever sees its own runInventoryOrTest's context", async () => {
