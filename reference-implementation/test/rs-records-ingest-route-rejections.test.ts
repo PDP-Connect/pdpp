@@ -163,6 +163,9 @@ test("hosted route persists invalid_record_identity receipt with raw non-empty i
   });
   assert.deepEqual(persisted, [
     {
+      auditActorId: "owner-token-subject",
+      auditActorType: "subject",
+      auditTraceId: "trace-route-rejections",
       code: "invalid_record_identity",
       connectorId: "connector-1",
       connectorInstanceId: "connection-1",
