@@ -1477,6 +1477,7 @@ test("provider metadata omits registration endpoint when dynamic registration is
 });
 
 test("native provider metadata surfaces the native provider name", async () => {
+  const sourceDeclarationUri = "https://declarations.example.test/northstar.json";
   const nativeManifest = {
     name: "Northstar HR",
     provider_id: NORTHSTAR_PROVIDER_ID,
@@ -1490,15 +1491,35 @@ test("native provider metadata surfaces the native provider name", async () => {
     nativeManifest,
     quiet: true,
     rsPort: 0,
+    sourceDeclarationUri,
+    trustedMetadataHosts: "northstar.example.test",
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
+  const nativePublicHeaders = {
+    "x-forwarded-host": "northstar.example.test",
+    "x-forwarded-proto": "https",
+  };
 
   try {
-    const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
+    const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`, {
+      headers: nativePublicHeaders,
+    });
     assert.equal(protectedResource.status, 200);
+    assert.equal(protectedResource.body.resource, "https://northstar.example.test");
     assert.equal(protectedResource.body.resource_name, "Northstar HR Resource Server");
-    assert.deepEqual(protectedResource.body.authorization_servers, [asUrl]);
+    assert.deepEqual(protectedResource.body.authorization_servers, ["https://northstar.example.test"]);
+    assert.equal(protectedResource.body.pdpp_source_declaration_uri, sourceDeclarationUri);
+
+    const hostedMcp = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource/mcp`, {
+      headers: nativePublicHeaders,
+    });
+    assert.equal(hostedMcp.status, 200);
+    assert.equal(
+      "pdpp_source_declaration_uri" in hostedMcp.body,
+      false,
+      "the provider-native pointer must not be advertised for the separate hosted-MCP resource"
+    );
 
     const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
     assert.equal(authorizationServer.status, 200);

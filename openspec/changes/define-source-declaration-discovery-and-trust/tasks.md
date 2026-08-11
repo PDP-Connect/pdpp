@@ -35,12 +35,21 @@
   well-known URI transformation including root-slash forms, and exact
   returned-resource mismatches.
 
-## Deferred implementation
+## Standalone reference implementation
 
-Reference-server metadata emission, retrieval, onboarding adapters,
-persistence, consent integration, local blocking, and lifecycle behavior are
-out of scope for this specification PR. Their implementation changes must
-consume this contract and add focused runtime, SQLite, and PostgreSQL tests.
+- [x] Emit a configured provider-native declaration pointer only in native
+  metadata, and reject an invalid pointer before response emission.
+- [x] Add credential-free, bounded declaration retrieval with injected
+  fetch/DNS/address/URL/schema-validation policy, per-hop fresh address
+  validation, manual redirects, and source-ID validation.
+- [x] Persist accepted revision content immutably by authority binding, source
+  ID, and opaque declaration version on SQLite and PostgreSQL; reject parsed
+  content equivocation without version ordering.
+- [x] Add deterministic retrieval, metadata, SQLite, and real PostgreSQL
+  parity coverage for this standalone boundary.
+
+Onboarding adapters, consent integration, local blocking, and lifecycle
+behavior remain outside this standalone implementation slice.
 
 ## Validation
 

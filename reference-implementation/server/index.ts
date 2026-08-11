@@ -717,6 +717,7 @@ interface ServerOpts {
   semanticRetrievalBackend?: unknown;
   semanticRetrievalCapability?: unknown;
   semanticRetrievalSupported?: boolean;
+  sourceDeclarationUri?: string | null;
   sqliteBusyTimeoutMs?: number;
   startClientEventDeliveryWorker?: boolean;
   staticSecretAutoResume?: boolean;
@@ -5866,6 +5867,7 @@ function buildRsApp(opts: ServerOpts = {}) {
       }) || null) as { primary: string; note?: string } | null;
     },
     resolveSiblingPublicUrl,
+    resolveSourceDeclarationUri: () => opts.sourceDeclarationUri ?? null,
     shouldUseDirectRequestOrigin,
     trustedMetadataHosts,
   };
@@ -7037,6 +7039,7 @@ export async function startServer(opts: ServerOpts = {}) {
     // configs reach both the route registration gate and the advertisement
     // builder.
     semanticRetrievalSupported: opts.semanticRetrievalSupported,
+    sourceDeclarationUri: opts.sourceDeclarationUri,
     trustedMetadataHosts,
   } as unknown as ServerOpts);
   const rsServer = await rsApp.listen(requestedRsPort, bindHost);

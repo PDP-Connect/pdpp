@@ -12,6 +12,7 @@
 // fixtures used in conformance tests.
 
 import { isIP } from "node:net";
+import { validateProviderNativeDiscoveryMetadata } from "@pdpp/reference-contract";
 
 // Lightweight Express-like accessors. We don't import express types
 // directly here because the helper is also called from Fastify and
@@ -745,6 +746,8 @@ export interface ProtectedResourceMetadataInput {
   resource: string;
   resourceName: string;
   selfExportSupported: boolean;
+  /** Provider-native only. The contract validator checks the exact resource binding and URI shape. */
+  sourceDeclarationUri?: string | null;
   tokenKindsSupported: readonly string[];
 }
 
@@ -758,6 +761,7 @@ export interface ProtectedResourceMetadata {
   pdpp_owner_agent_onboarding?: ProtectedResourceOwnerAgentOnboarding;
   pdpp_provider_connect_version: string;
   pdpp_self_export_supported: boolean;
+  pdpp_source_declaration_uri?: string;
   pdpp_token_kinds_supported: readonly string[];
   resource: string;
   resource_name: string;
@@ -771,6 +775,7 @@ export function buildProtectedResourceMetadata({
   providerConnectVersion,
   selfExportSupported,
   tokenKindsSupported,
+  sourceDeclarationUri,
   agentDiscovery,
   ownerAgentOnboarding,
   capabilities,
@@ -794,6 +799,16 @@ export function buildProtectedResourceMetadata({
   }
   if (ownerAgentOnboarding) {
     metadata.pdpp_owner_agent_onboarding = ownerAgentOnboarding;
+  }
+  if (sourceDeclarationUri !== null && sourceDeclarationUri !== undefined) {
+    const validation = validateProviderNativeDiscoveryMetadata(resource, {
+      pdpp_source_declaration_uri: sourceDeclarationUri,
+      resource,
+    });
+    if (!validation.ok) {
+      throw new TypeError(`Invalid provider-native source declaration pointer: ${validation.reason}`);
+    }
+    metadata.pdpp_source_declaration_uri = validation.sourceDeclarationUri;
   }
   if (capabilities && typeof capabilities === "object" && Object.keys(capabilities).length > 0) {
     metadata.capabilities = capabilities;
