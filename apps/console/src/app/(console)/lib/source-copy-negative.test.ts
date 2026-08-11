@@ -246,7 +246,7 @@ test("the agreed add-account labels are exactly the realignment-plan vocabulary"
       setup: {
         credential_capture: {
           credential_kind: "api_token",
-          fields: [{ env: ["YNAB_ACCESS_TOKEN"], label: "T", name: "t", secret: true }],
+          fields: [{ env: ["YNAB_PERSONAL_ACCESS_TOKEN"], label: "T", name: "t", secret: true }],
         },
         modality: "static_secret",
       },

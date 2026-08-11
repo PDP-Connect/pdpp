@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { describe, it, skip } from "node:test";
+import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const CONNECTOR_DIR = dirname(fileURLToPath(import.meta.url));
@@ -74,9 +74,9 @@ describe("GroupMe setup contract", () => {
     );
   });
 
-  const testFn = process.env.GROUPME_ACCESS_TOKEN ? it : skip;
-
-  testFn("live: accepts valid GROUPME_ACCESS_TOKEN via X-Access-Token header", async () => {
+  it("live: accepts valid GROUPME_ACCESS_TOKEN via X-Access-Token header", {
+    skip: process.env.GROUPME_ACCESS_TOKEN ? false : "GROUPME_ACCESS_TOKEN unset",
+  }, async () => {
     const token = process.env.GROUPME_ACCESS_TOKEN;
     assert.ok(token && token.length > 0, "GROUPME_ACCESS_TOKEN must be non-empty");
     assert.strictEqual(typeof token, "string", "token must be a string");

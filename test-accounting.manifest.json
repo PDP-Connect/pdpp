@@ -213,6 +213,7 @@
           "id": "default",
           "required": true,
           "skip_reasons": {
+            "GROUPME_ACCESS_TOKEN unset": 2,
             "local Amazon raw-DOM fixture directory not present": 2,
             "local Chase raw-DOM fixture directory not present": 3,
             "local USAA raw fixture directory not present": 1
