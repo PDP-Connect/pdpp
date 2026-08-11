@@ -660,6 +660,7 @@ test("runtime-level: a count-only permanent rejection cannot advance the cursor 
   // this count-only 2xx instead of treating `records_rejected` as permission
   // to clear the batch and stage the following STATE.
   const realFetch = globalThis.fetch;
+  let observedDurableReceipt = false;
   globalThis.fetch = async (input, init) => {
     const response = await realFetch(input, init);
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
@@ -669,9 +670,20 @@ test("runtime-level: a count-only permanent rejection cannot advance the cursor 
     const body = (await response.json()) as {
       errors?: unknown;
       records_accepted?: unknown;
+      records_attempted?: unknown;
       records_rejected?: unknown;
+      rejections?: unknown;
       stream?: unknown;
     };
+    assert.equal(body.records_attempted, 1, "the real server must account for the submitted record");
+    assert.equal(body.records_rejected, 1, "the real invalid-identity write must be rejected permanently");
+    assert.ok(Array.isArray(body.rejections), "the real server must return durable rejection evidence");
+    assert.equal(body.rejections.length, 1);
+    const [rejection] = body.rejections as Array<Record<string, unknown>>;
+    assert.equal(rejection?.code, "invalid_record_identity");
+    assert.equal(rejection?.input_index, 0);
+    assert.match(String(rejection?.receipt_id), /^rr_[A-Za-z0-9_-]{24}$/);
+    observedDurableReceipt = true;
     return new Response(
       JSON.stringify({
         errors: body.errors,
@@ -701,6 +713,7 @@ test("runtime-level: a count-only permanent rejection cannot advance the cursor 
         }),
       RECEIPT_REQUIRED_RE
     );
+    assert.equal(observedDurableReceipt, true, "the production route/store seam must persist before responding");
 
     const state = (await loadSyncState(connectorId, ownerToken, { rsUrl })) as Record<
       string,

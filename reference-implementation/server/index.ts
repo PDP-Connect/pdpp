@@ -506,6 +506,10 @@ import {
 } from "./stores/provider-app-config-store.ts";
 import { resolveProviderAuthRunEnv } from "./stores/provider-auth-run-credentials.ts";
 import {
+  createRecordRejectionStore,
+  type InsertOrReplayRecordRejectionInput,
+} from "./stores/record-rejection-store.ts";
+import {
   createResumableRunHistoryBackfillStage,
   runStartupRunHistoryBackfillToCompletion,
 } from "./stores/run-history-backfill-stage.ts";
@@ -1860,6 +1864,10 @@ function createRequestManualUploadArtifactStore() {
   return isPostgresStorageBackend()
     ? createPostgresManualUploadArtifactStore()
     : createSqliteManualUploadArtifactStore();
+}
+
+function createRequestRecordRejectionStore() {
+  return createRecordRejectionStore();
 }
 
 // Lazily loads the pure static-secret injection helpers from the
@@ -6156,6 +6164,7 @@ function buildRsApp(opts: ServerOpts = {}) {
       (
         (await createRequestAcquisitionBatchStore().listByConnection(connectorInstanceId, { limit: 1 })) as unknown[]
       )[0] ?? null,
+    getOwnerTokenSubjectId,
     getSyncState,
     handleError,
     ingestRecord: (
@@ -6176,6 +6185,20 @@ function buildRsApp(opts: ServerOpts = {}) {
         afterRecord,
         options
       ),
+    insertOrReplayRecordRejection: async ({
+      code,
+      ...input
+    }: Omit<InsertOrReplayRecordRejectionInput, "reasonCode"> & { code: string }) => {
+      const receipt = await createRequestRecordRejectionStore().insertOrReplay({
+        ...input,
+        reasonCode: code,
+      });
+      return {
+        code: receipt.code,
+        input_index: receipt.inputIndex,
+        receipt_id: receipt.receiptId,
+      };
+    },
     // Same cache the mutation routes below already invalidate on every other
     // connection-mutating action (revoke, reactivate, schedule, run, rename,
     // delete). `maybeActivateDraftAfterIngest` (rs-mutation.ts) calls this
