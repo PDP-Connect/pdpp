@@ -35,7 +35,10 @@ import {
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
-import { admitOwnerRunConnection, createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import {
+  admitOwnerRunConnection,
+  createSqliteConnectorInstanceStore,
+} from "../server/stores/connector-instance-store.ts";
 
 type TestServer = Awaited<ReturnType<typeof startServer>>;
 
@@ -2476,6 +2479,7 @@ rl.on('line', (line) => {
 
   await t.test("grant-scoped STATE stays isolated from global state and other grants", async () => {
     const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    t.after(() => closeServer(server));
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId, sourceId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -2558,12 +2562,12 @@ rl.on('line', (line) => {
     } finally {
       cleanupGrant();
       cleanupGlobal();
-      await closeServer(server);
     }
   });
 
   await t.test("single_use with grant-scoped STATE still persists nothing", async () => {
     const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    t.after(() => closeServer(server));
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId, sourceId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -2600,7 +2604,6 @@ rl.on('line', (line) => {
       assert.ok(!globalState?.items, "single_use grant runs should not leak into global state");
     } finally {
       cleanup();
-      await closeServer(server);
     }
   });
 
