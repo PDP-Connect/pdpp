@@ -2,21 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Live incident: GroupMe UAT run_1786410860909_1 (2026-08-11 01:14-02:47Z).
-// A 93-minute in-flight run's final 500-record ingest batch took 318734ms
-// and returned 503 ingest_batch_storage_error (121/500 records classified
-// retryable). Root cause: the scheduler's own dispatch-evaluation tick
-// (runtime/scheduler.ts's `dispatchIfDue`, capped at 60s) called
-// `evaluateBackoffDispatch` — including its `getForwardEvidenceDebt` probe,
-// which reconciles connector-summary evidence for that SAME connector
-// instance — UNCONDITIONALLY, even though `runtime.activeRuns` already
-// tracked the instance as running (the guard existed only inside
-// `executeRun`, reached later). The reconcile's repair writes and the
-// in-flight run's own per-record writes both take
-// `withConnectorInstanceWrite`'s in-process per-instance mutex
-// (connector-instance-write-coordinator.ts), which fails a queued
-// acquisition after `PDPP_INGEST_LOCK_WAIT_MS` (2s default) with a
-// retryable `connector_instance_busy` error — silently discarding an
-// otherwise-successful batch as a systemic failure.
+// See the guard comment at `dispatchIfDue` (runtime/scheduler.ts) for the
+// why/how; see the commit message for the full mechanism.
 //
 // This suite proves the fix at the exact seam the scheduler's interval timer
 // drives (`createScheduler(...).start()`), not the pure governor unit (that
@@ -212,7 +199,7 @@ rl.on('line', (line) => {
       // BEFORE the fix, this fires on every ~TICK_INTERVAL_MS tick
       // regardless of run state; AFTER the fix, it must be silent for the
       // instance's entire in-flight duration.
-      getForwardEvidenceDebt: async () => {
+      getForwardEvidenceDebt: () => {
         if (runIsActive) {
           probeCallsWhileRunning += 1;
         } else {
