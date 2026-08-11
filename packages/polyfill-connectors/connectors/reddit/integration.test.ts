@@ -25,6 +25,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { Page } from "playwright";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
 import {
@@ -546,6 +547,88 @@ test("makeReauth: both env vars present → gate passes through, ensureRedditSes
     assert.ok(
       touches.length > 0,
       "with credentials present, the gate must pass through and ensureRedditSession must actually touch context/page"
+    );
+  });
+});
+
+// ─── Invariant 6d: makeReauth trusts the post-repair isSessionLive probe, ───
+// not a bare "ensureRedditSession didn't throw"
+//
+// `ensureRedditSession`'s own fast path (a live cookie already present) can
+// return without throwing while the session dies again immediately after —
+// e.g. Reddit revokes the cookie server-side between the fast-path check and
+// the caller resuming. A mutant that replaces makeReauth's post-repair
+// `isSessionLive(ctx.page)` call with a bare `return true` would pass every
+// other Reddit test (none of them assert on the probe), because
+// `ensureRedditSession` not throwing is otherwise indistinguishable from a
+// truly live session. This builds a page/context pair where
+// `ensureRedditSession`'s internal fast-path probe reports live (so it
+// returns cleanly, no throw) but the FOLLOWING probe call — the one
+// `makeReauth` issues itself — reports dead. Only a real, order-sensitive
+// call to `isSessionLive` after `ensureRedditSession` returns can produce
+// `false` here; a mutant returning bare `true` cannot.
+
+/** A fake Playwright Page satisfying only what `isSessionLive` touches
+ *  (`goto`, `locator(...).count()`). Each call to `.count()` consumes the
+ *  next scripted answer, in order — this is what makes "live on call N,
+ *  dead on call N+1" observable without a real browser. */
+function makeSequencedLiveProbePage(sequence: boolean[]): Page {
+  let call = 0;
+  return {
+    goto: async () => null,
+    locator: () => ({
+      // biome-ignore lint/suspicious/useAwait: mock matches Locator.count's Promise-returning signature
+      count: async () => {
+        const isLive = sequence[call] ?? false;
+        call += 1;
+        return isLive ? 1 : 0;
+      },
+    }),
+  } as any;
+}
+
+test("makeReauth: ensureRedditSession's fast-path returns cleanly (session reads live internally) but the post-repair isSessionLive probe then reports dead → makeReauth returns false, not a bare pass-through true", async () => {
+  await withRedditEnvCredentials("anon", "hunter2", async () => {
+    const page = makeSequencedLiveProbePage([true, false]);
+    const context = {
+      // hasSessionCookie's context.cookies() gate — must report the cookie
+      // present so ensureRedditSession's fast path is the branch taken
+      // (skipping the full login flow this stub can't perform).
+      cookies: async () => [{ name: "reddit_session", value: "stale-but-present" }],
+    } as any;
+    const ctx: BrowserCollectContext = {
+      // biome-ignore lint/suspicious/useAwait: mock returns Promise<never> via throw for type conformance
+      assist: async (): Promise<never> => {
+        throw new Error("mock assist not implemented");
+      },
+      capture: null,
+      completeAssistance: async () => undefined,
+      context,
+      credentials: {},
+      detailGaps: [],
+      emit: async () => undefined,
+      emitRecord: async () => undefined,
+      emittedAt: EMITTED_AT,
+      page,
+      progress: async () => undefined,
+      requestDetailGapPage: async (): Promise<readonly never[]> => [],
+      requested: new Map(),
+      scope: { streams: [] },
+      // biome-ignore lint/suspicious/useAwait: mock throws synchronously to prove the fast path is real, not swallowed
+      sendInteraction: async (): Promise<never> => {
+        throw new Error("stub sendInteraction cannot complete");
+      },
+      state: {},
+    };
+
+    const result = await makeReauth(ctx)();
+    assert.equal(
+      result,
+      false,
+      "PROBE GUARD: ensureRedditSession returned without throwing (fast-path saw a live session), " +
+        "but the session was scripted dead on the NEXT probe call — makeReauth must trust that " +
+        "post-repair probe, not treat 'didn't throw' as truth. A mutant replacing the probe call " +
+        "with `return true` would make this assertion fail."
     );
   });
 });
