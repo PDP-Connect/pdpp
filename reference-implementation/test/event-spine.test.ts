@@ -824,7 +824,7 @@ test("event spine", async (t) => {
         const event = (traceTimeline.data || []).find((entry) => entry.event_type === eventType);
         assert.ok(event, `expected ${eventType} event`);
         assert.equal(event.data?.source?.kind, "connector");
-        assert.equal(event.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
+        assert.equal(event.data?.source?.id, spotifyManifest.connector_id);
         assert.ok(
           !("connector_id" in (event.data || {})),
           `${eventType} should use source descriptors instead of raw connector_id`
@@ -897,7 +897,7 @@ test("event spine", async (t) => {
       assert.equal(deniedEvent.object_type, "pending_consent");
       assert.equal(deniedEvent.status, "denied");
       assert.equal(deniedEvent.data?.source?.kind, "connector");
-      assert.equal(deniedEvent.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
+      assert.equal(deniedEvent.data?.source?.id, spotifyManifest.connector_id);
 
       const grantIssuedEvent = (traceTimeline.data || []).find((event) => event.event_type === "grant.issued");
       assert.equal(grantIssuedEvent, undefined, "denied consent should not issue a grant");
@@ -1125,7 +1125,7 @@ test("event spine", async (t) => {
         assert.ok(queryReceived, "expected query.received for rejected connector grant read");
         assert.equal(queryReceived.data.query_shape, "record_list");
         assert.equal(queryReceived.data.source?.kind, "connector");
-        assert.equal(queryReceived.data.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
+        assert.equal(queryReceived.data.source?.id, spotifyManifest.connector_id);
         assert.ok(!("connector_id" in (queryReceived.data || {})));
 
         const rejected = (timeline.data || []).find(
@@ -1134,7 +1134,7 @@ test("event spine", async (t) => {
         assert.ok(rejected, "expected query.rejected for rejected connector grant read");
         assert.equal(rejected.data.query_shape, "record_list");
         assert.equal(rejected.data.source?.kind, "connector");
-        assert.equal(rejected.data.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
+        assert.equal(rejected.data.source?.id, spotifyManifest.connector_id);
         assert.equal(rejected.data.error?.code, "invalid_request");
         assert.match(rejected.data.error?.message || "", REGEXP_2);
         assert.ok(!("connector_id" in (rejected.data || {})));
@@ -1196,7 +1196,7 @@ test("event spine", async (t) => {
         assert.ok(queryReceived, "expected query.received for rejected connector unknown-field read");
         assert.equal(queryReceived.data.query_shape, "record_list");
         assert.equal(queryReceived.data.source?.kind, "connector");
-        assert.equal(queryReceived.data.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
+        assert.equal(queryReceived.data.source?.id, spotifyManifest.connector_id);
         assert.ok(!("connector_id" in (queryReceived.data || {})));
 
         const rejected = (timeline.data || []).find(
@@ -1205,7 +1205,7 @@ test("event spine", async (t) => {
         assert.ok(rejected, "expected query.rejected for rejected connector unknown-field read");
         assert.equal(rejected.data.query_shape, "record_list");
         assert.equal(rejected.data.source?.kind, "connector");
-        assert.equal(rejected.data.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
+        assert.equal(rejected.data.source?.id, spotifyManifest.connector_id);
         assert.equal(rejected.data.error?.code, "unknown_field");
         assert.match(rejected.data.error?.message || "", REGEXP_3);
         assert.ok(!("connector_id" in (rejected.data || {})));
@@ -1640,6 +1640,7 @@ test("event spine", async (t) => {
   await t.test("captures grant-scoped state artifacts on grant timelines", async () => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
       const ownerToken = await issueOwnerToken(asUrl, "u1");
+      await seedSpotify(rsUrl, spotifyManifest, ownerToken, { ownerSubjectId: "u1" });
       const parResp = await fetch(`${asUrl}/oauth/par`, {
         body: JSON.stringify({
           authorization_details: [
