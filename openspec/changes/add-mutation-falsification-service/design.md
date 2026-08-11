@@ -63,7 +63,7 @@ The adapter-specific runner accepts only `test-migration-oracle/v1`; it derives 
 
 ### 6. GroupMe is the real-domain calibration pilot
 
-The pilot uses the existing hermetic GroupMe cursor/frontier tests as focused adapter evidence. It creates a fresh one-commit mutant descendant for each trusted operator. The clean and mutant complete `polyfill-connectors` suite run through the unchanged test-accounting authority; their verified receipt digests are referenced rather than duplicated.
+The pilot uses the existing hermetic GroupMe cursor/frontier tests as focused adapter evidence. It creates a fresh one-commit mutant descendant for each trusted operator. The clean complete `polyfill-connectors` suite always runs through the unchanged test-accounting authority. The mutant complete suite runs for every focused survivor; after a focused kill, policy may omit it only by recording `not_run_focused_kill`. Verified accounting receipt digests are referenced rather than duplicated.
 
 The focused clean baseline and complete clean backstop must pass before interpreting mutant evidence. Every focused survivor receives the complete mutant backstop. A focused pass plus backstop failure is a selector miss and blocks selector promotion. If a required backstop cannot complete, the attempt is inconclusive.
 
@@ -77,7 +77,11 @@ Domain attempts use a configured disk-backed root with free-space preflight. Eac
 
 Successful workspaces are deleted before the completed attempt receipt is published. Interrupted or cleanup-failed workspaces are quarantined and never reused. Next-start recovery reports owned incomplete markers and quarantines before new work. This handles hard termination honestly; it does not pretend `finally` runs after power loss or `SIGKILL`.
 
-Initial host policy runs one adapter at a time, at most 20 domain mutants and 10 wall-clock minutes, with hard limits for adapter wall time, captured output, workspace size, and cleanup time. CPU use targets no more than 50% of available processors and memory is observed, but neither is described as hard containment without a host mechanism. Live credentials, personal data, third-party network, stateful browsers, and shared production-like databases are prohibited. Required unsupported controls cause refusal.
+Version one supports only Linux hosts with cgroup v2 and a usable systemd user manager. Each adapter, focused check, and authority backstop runs as a uniquely named transient systemd user service with `KillMode=control-group`, a finite `RuntimeMaxSec`, `TasksMax=64`, and policy-selected cgroup CPU and memory limits. The service-unit name and cgroup identity are recorded before launch and bound into effective policy and the attempt receipt. macOS, Windows, non-cgroup-v2 Linux, and Linux without the required user-service controls fail closed in version one.
+
+An atomic repository-scoped issued marker permits only one active mutation attempt. The unique unit name is recorded before the systemd start transaction. If the wrapper dies during or after launch, next-start recovery submits a stop for that prepublished unit name; systemd serializes the start and stop jobs, and recovery waits for the stop job to finish before verifying that the cgroup is empty and the unit inactive. Only then may it retire the marker or allow another attempt. It never relies on a recorded child PID, so PID reuse cannot establish cleanup. A missing, mismatched, or unverifiable unit identity quarantines the attempt and blocks further mutation work until reviewed.
+
+Initial policy permits one adapter or backstop service at a time, at most 20 domain mutants and 10 wall-clock minutes. It hard-bounds direct captured output and adapter workspace growth and sets a 60-second cleanup deadline. The cgroup caps the complete descendant tree at 50% of available CPU, a policy-selected memory maximum, and 64 tasks, including full-suite children and grandchildren. Live credentials, personal data, third-party network, stateful browsers, and shared production-like databases are prohibited. Required unsupported controls cause refusal.
 
 ### 8. The decision gate precedes shared infrastructure
 
@@ -94,6 +98,7 @@ Continue only if evidence is interpretable, costs are acceptable, there are no u
 - **Full connector backstops may dominate runtime** → measure setup and execution separately; stop rather than weaken the mandatory calibration backstop.
 - **A trusted mutant can still affect ambient host state accidentally** → constrain paths/operators/environment, use hermetic tests, run sequentially, and never call a worktree a sandbox.
 - **Offline dependency materialization may fail** → refuse the attempt and review the dependency strategy; do not share mutable outputs silently.
+- **Version-one containment is Linux-specific** → fail closed elsewhere and require separate reviewed host adapters before claiming macOS or Windows support.
 - **Small samples cannot prove selector completeness** → report raw counts and treat any observed miss as disqualifying, without claiming zero misses proves completeness.
 
 ## Migration Plan
