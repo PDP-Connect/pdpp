@@ -1075,15 +1075,46 @@ for (const { collect, name, stream: entryStream } of githubListCollectors.filter
 )) {
   test(`GitHub ${name}: object list envelope fails closed without coverage or state`, async () => {
     globalThis.fetch = () => Promise.resolve(jsonResponse({ items: [] }));
-    const { ctx, coverages, states } = makeCtx([entryStream]);
+    const { ctx, coverages, records, states } = makeCtx([entryStream]);
 
     await assert.rejects(
       () => collect(ctx),
       (error: unknown) =>
         error instanceof Error && (error as Error & { code?: string }).code === "github_malformed_response"
     );
+    assert.equal(records.length, 0, "a malformed first page is a pre-first-item zero-record failure");
     assert.equal(coverages.length, 0, `${entryStream} malformed envelope must not emit coverage`);
     assert.equal(states.length, 0, `${entryStream} malformed envelope must not advance state`);
+  });
+
+  test(`GitHub ${name}: valid prefix survives a later malformed page without coverage or state`, async () => {
+    const firstPage = {
+      repositories: [repoItem(1, "2026-06-01T00:00:00Z")],
+      starred: [starredEntry(1, true)],
+      issues: [issueItem(1, "2026-06-01T00:00:00Z")],
+      gists: [gistItem(1, "2026-06-01T00:00:00Z")],
+    }[entryStream] as Record<string, unknown>[];
+    let first = true;
+    globalThis.fetch = (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (first) {
+        first = false;
+        const next = `${url}${url.includes("?") ? "&" : "?"}page=2`;
+        return Promise.resolve(jsonResponse(firstPage, { headers: { link: `<${next}>; rel="next"` } }));
+      }
+      return Promise.resolve(jsonResponse({ items: [] }));
+    };
+    const { ctx, coverages, records, states } = makeCtx([entryStream]);
+
+    await assert.rejects(
+      () => collect(ctx),
+      (error: unknown) =>
+        error instanceof Error && (error as Error & { code?: string }).code === "github_malformed_response"
+    );
+    assert.equal(records.length, 1, "the valid first-page prefix is retained");
+    assert.equal(records[0]?.stream, entryStream);
+    assert.equal(coverages.length, 0, "later malformed page withholds coverage");
+    assert.equal(states.length, 0, "later malformed page withholds STATE");
   });
 }
 
@@ -1186,7 +1217,9 @@ test("collectPullRequests: invalid JSON search 200 also fails closed without sta
   assert.equal(states.length, 0);
 });
 
-test("collectPullRequests: shared Retry-After retry recovers a transient search 429", async () => {
+test("collectPullRequests: shared Retry-After retry recovers a transient search 429", {
+  concurrency: false,
+}, async () => {
   const sleeps: number[] = [];
   __setGithubHttpSleepForTests((ms) => {
     sleeps.push(ms);
@@ -1214,6 +1247,49 @@ test("collectPullRequests: shared Retry-After retry recovers a transient search 
   assert.equal(sleeps.filter((ms) => ms === 2000).length, 1, "GitHub request seam must honor Retry-After exactly once");
   assert.equal(states.length, 1, "state is emitted only after the retried search completes");
 });
+
+for (const failure of ["429", "transport"] as const) {
+  test(`collectPullRequests: ${failure} on a later detail retains only the valid prefix and withholds completion`, async () => {
+    const items = [prSearchItem(1, "owner/a"), prSearchItem(2, "owner/b")];
+    let detailCalls = 0;
+    globalThis.fetch = (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/user")) {
+        return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
+      }
+      if (url.includes("/search/issues")) {
+        return Promise.resolve(jsonResponse({ total_count: 2, items }));
+      }
+      if (/\/repos\/owner\/a\/pulls\/1$/.test(url)) {
+        return Promise.resolve(jsonResponse({ merged_at: "2026-05-10T00:00:00Z", commits: 3 }));
+      }
+      if (/\/repos\/owner\/b\/pulls\/2$/.test(url)) {
+        detailCalls += 1;
+        return failure === "429"
+          ? Promise.resolve(new Response("rate limited", { status: 429, headers: { "Retry-After": "0" } }))
+          : Promise.reject(new Error("fetch failed", { cause: new Error("socket reset ECONNRESET") }));
+      }
+      return Promise.resolve(jsonResponse({}));
+    };
+    const { ctx, coverages, records, states } = makeCtx(["pull_requests"]);
+
+    await assert.rejects(() => collectPullRequests(ctx));
+    assert.ok(detailCalls > 1, "the bounded request retry policy may retry the fatal detail");
+    assert.deepEqual(
+      records.map((record) => record.data.id),
+      ["1"]
+    );
+    assert.equal(coverages.length, 0, "fatal later detail failure withholds coverage");
+    assert.equal(states.length, 0, "fatal later detail failure withholds STATE");
+
+    // Replay with the same source page: storage sees the same stable key for
+    // the retained prefix, so upsert cannot create a logical duplicate.
+    installPrFetch(items, new Set());
+    const replay = makeCtx(["pull_requests"]);
+    await collectPullRequests(replay.ctx);
+    assert.equal(replay.records[0]?.data.id, records[0]?.data.id, "replay re-emits the stable record key");
+  });
+}
 
 test("collectPullRequests: exhausted transient detail 503 bubbles instead of degrading to a checkpoint", async () => {
   globalThis.fetch = (input: string | URL | Request) => {

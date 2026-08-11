@@ -98,7 +98,7 @@ function createGithubHttpGovernor(restoredIntervalMs?: number): ConnectorHttpGov
     maxAttempts: 4,
     profile: githubPacingProfile(),
     retryBudget: new RetryBudget({ capacity: 8, initialTokens: 2, refillPerSuccess: 0.25 }),
-    ...(githubHttpSleep === undefined ? {} : { sleep: githubHttpSleep }),
+    ...(githubHttpSleep === undefined ? {} : { retrySleep: githubHttpSleep }),
     ...(restoredIntervalMs === undefined ? {} : { restoredIntervalMs }),
   });
 }
@@ -849,6 +849,10 @@ async function emitPullRequestItem(
   const repoFull = repoFullFromUrl(it.repository_url);
   // Fetch PR detail for fields not in search summary.
   const { detail, detailFailed } = await fetchPullDetail(repoFull, it.number, ctx.token);
+  // Streaming is intentional: a later fatal detail/page failure retains this
+  // already-emitted idempotent record. The collector withholds coverage and
+  // STATE until the collection succeeds; a retry re-emits the same stable key
+  // and storage upsert makes the replay logical-duplicate free.
   await ctx.emitRecord("pull_requests", pullRequestRecord(it, detail, repoFull));
   return { detailFailed, latest: laterIso(latestIn, it.updated_at) };
 }

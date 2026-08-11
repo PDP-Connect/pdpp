@@ -108,6 +108,8 @@ export interface ConnectorHttpGovernorOptions {
   restoredIntervalMs?: number | null;
   /** Optional ratio-based retry budget (Finagle). Absent → only `maxAttempts`. */
   retryBudget?: HttpRetryBudget;
+  /** Injectable request-retry sleep (tests). Defaults to `sleep`. */
+  retrySleep?: (ms: number) => void | Promise<void>;
   /** Injectable sleep (tests). */
   sleep?: (ms: number) => void | Promise<void>;
 }
@@ -251,7 +253,7 @@ export function createConnectorHttpGovernor(options: ConnectorHttpGovernorOption
         maxRetryAfterMs,
         ...(options.random === undefined ? {} : { random: options.random }),
         ...(options.retryBudget === undefined ? {} : { retryBudget: options.retryBudget }),
-        ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
+        ...((options.retrySleep ?? options.sleep) === undefined ? {} : { sleep: options.retrySleep ?? options.sleep }),
         request: async () => {
           const raw = await send();
           const c = classify(raw);
