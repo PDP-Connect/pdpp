@@ -355,6 +355,11 @@ test(
     assert.ok(readinessCalls >= 3, "the gate must be re-entered on later ticks, proving dispatch genuinely resumed");
     for (const record of completedRuns) {
       assert.equal(record.terminalReason, "scheduler_dispatch_wedged");
+      assert.equal(
+        record.failureReason,
+        "scheduler_dispatch_wedged",
+        "the wedge must carry the typed failureReason token -- the product health read model surfaces failureReason ?? error, so a null failureReason degrades health classification to the prose error sentence"
+      );
       assert.equal(record.status, "failed", "a wedge is a failure, not a silent skip -- it needs an audit trail");
       assert.equal(
         record.connectorInstanceId,

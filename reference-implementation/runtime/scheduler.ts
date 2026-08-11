@@ -199,6 +199,11 @@ function dispatchWedgedRecord(connectorId: string, connectorInstanceId: string |
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
     error: "scheduler_dispatch_wedged: pre-launch dispatch gate did not settle within its liveness ceiling",
+    // Same token as `terminalReason`, duplicated on `failureReason` because the
+    // product health read model surfaces `failureReason ?? error` as the run's
+    // `failure_reason`/health reasonCode -- without it the wedge classifies by
+    // the prose `error` sentence above instead of a typed code.
+    failureReason: "scheduler_dispatch_wedged",
     knownGaps: [],
     recordsEmitted: 0,
     source: buildScheduledRunSource(connectorId),
