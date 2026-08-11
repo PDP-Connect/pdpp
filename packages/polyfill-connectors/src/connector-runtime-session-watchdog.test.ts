@@ -24,15 +24,14 @@ import type { Page } from "playwright";
 import {
   type AssistanceCompletionStatus,
   type AssistanceRequest,
-  buildSessionEstablishTerminalError,
   captureBrowserPage,
-  establishSession,
   type InteractionRequest,
   type InteractionResponse,
   makeSessionEstablishWatchdog,
   resolveSessionEstablishWatchdogMs,
 } from "./connector-runtime.ts";
 import type { CaptureSession } from "./fixture-capture.ts";
+import { buildSessionEstablishTerminalError, establishSession } from "./session-establish.ts";
 
 // A controllable logical clock: tests advance `value` to simulate elapsed time
 // without waiting in real time. The watchdog's interval still ticks on real

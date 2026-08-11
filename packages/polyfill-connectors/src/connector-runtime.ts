@@ -51,7 +51,6 @@ import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
 import { type AuthConfig, resolveAuth } from "./auth.ts";
 import {
   DEADLINE_TIMEOUT,
-  manualAction,
   prepareBrowserInteractionTarget,
   unregisterBrowserInteractionTarget,
   withDeadline,
@@ -78,6 +77,14 @@ import type {
 import { type CaptureSession, createCaptureSession } from "./fixture-capture.ts";
 import { emitToStdout } from "./safe-emit.ts";
 import { resourceSet } from "./scope-filters.ts";
+import {
+  DEFAULT_RETRYABLE_PATTERN,
+  type EnsureSessionArgs,
+  establishSession,
+  type ProbeSessionArgs,
+  type SessionCheckpointFn,
+} from "./session-establish.ts";
+import { assertValidConnectorErrorCode, TerminalError, type TerminalErrorDetails } from "./terminal-error.ts";
 
 // ─── Protocol message shapes (re-exported from connector-runtime-protocol.ts) ──
 //
@@ -117,6 +124,38 @@ export type {
   StreamScope,
   ValidateRecord,
 } from "./connector-runtime-protocol.ts";
+
+// The session-establishment flow and the typed terminal-error primitive live
+// in `session-establish.ts` / `terminal-error.ts` (this runtime is their
+// production consumer — see `runInBrowser`). The types connectors implement
+// are re-exported here so connector and auto-login code keeps a single
+// runtime import surface; `createConnectorFailure` below is that surface's
+// value-level counterpart.
+export type { EnsureSessionArgs, ProbeSessionArgs, SessionCheckpointFn } from "./session-establish.ts";
+export type { TerminalErrorDetails } from "./terminal-error.ts";
+
+/**
+ * The one shared constructor for a connector-declared typed terminal
+ * failure. Every connector that wants a stable `error.code` on its DONE
+ * message (rather than relying purely on free-form, redacted `message`
+ * text) should throw `createConnectorFailure(...)` instead of hand-rolling
+ * `throw new Error(...)` or an ad hoc `{ code, message }` object — this is
+ * the single point that validates `code` before it can ever reach the
+ * unredacted `connector_error_code` column.
+ *
+ * `message` is ordinary human-readable free-form text: it still goes
+ * through `boundConnectorErrorMessage`/`redactStderrTail` exactly like any
+ * other connector-authored message, so it must never itself be treated as
+ * safe — write it as you would write any other diagnostic string.
+ */
+export function createConnectorFailure(
+  code: string,
+  message: string,
+  options: { cause?: unknown; retryable?: boolean } = {}
+): Error {
+  assertValidConnectorErrorCode(code);
+  return new TerminalError(message, { ...options, code });
+}
 
 // ─── Collect context ────────────────────────────────────────────────────
 
@@ -228,64 +267,6 @@ export type BrowserLaunchSource =
  */
 export type BrowserSurfaceRuntimeKind = BrowserLaunchSource["kind"];
 
-/**
- * Mark a named session-establishment phase. Calling this updates the run's
- * last-establishment-progress marker (which the watchdog reads) and, when
- * capture is active, triggers a best-effort durable diagnostic capture for the
- * phase. Best-effort and bounded: a checkpoint SHALL NOT be able to hang the
- * watchdog and a failed capture never fails the run.
- */
-export type SessionCheckpointFn = (label: string) => Promise<void>;
-
-export interface EnsureSessionArgs {
-  assist: BaseCollectContext["assist"];
-  capture: CaptureSession | null;
-  /**
-   * Mark a session-establishment phase (e.g. "sign-in-loaded", "email-submit",
-   * "2fa-decision", "final-verify"). Resets the watchdog's no-progress deadline
-   * and captures a phase diagnostic. Optional for connectors that do not adopt
-   * checkpoints; the runtime still frames the window with its own checkpoints.
-   */
-  checkpoint: SessionCheckpointFn;
-  completeAssistance: BaseCollectContext["completeAssistance"];
-  context: BrowserContext;
-  /**
-   * Call this at the exact line `ensureSession` submits a saved credential to
-   * the provider's real sign-in form (the `.click()`/`.fill()` that sends the
-   * password) — not before, not after. Once called, any error `ensureSession`
-   * subsequently throws is forced non-retryable by the runtime regardless of
-   * `retryablePattern`: a fault that happens after a password has already
-   * been typed into a live form must never cause a fresh process to redispatch
-   * and resubmit that same password. Calling this has no effect on errors
-   * thrown BEFORE the call — those still go through the ordinary
-   * `retryablePattern` classification untouched.
-   */
-  onCredentialSubmit: () => void;
-  page: Page;
-  progress: BaseCollectContext["progress"];
-  sendInteraction: BaseCollectContext["sendInteraction"];
-}
-
-export interface ProbeSessionArgs {
-  context: BrowserContext;
-  page: Page;
-}
-
-export interface TerminalErrorDetails {
-  /** Stable cause identity (e.g. `credential_rejected`) — never a recovery action. */
-  code?: string;
-  message: string;
-  /**
-   * Provider-neutral recovery action, from the same closed vocabulary and
-   * shape as `SKIP_RESULT.recovery_hint` (see `RECOVERY_ACTIONS` /
-   * `isValidRecoveryHintShape` in the reference implementation). `code`
-   * identifies WHAT went wrong; `recovery_hint` says WHAT TO DO about it —
-   * keep the two separate rather than overloading `code` with action meaning.
-   */
-  recovery_hint?: string | { action?: string; retryable?: boolean };
-  retryable: boolean;
-}
-
 export type NormalizeTerminalError = (error: TerminalErrorDetails) => TerminalErrorDetails;
 
 /** Fields shared by browser and non-browser configs. */
@@ -345,88 +326,7 @@ export type RunConnectorConfig = NonBrowserConnectorConfig | BrowserConnectorCon
 type ClosableBrowserPage = Pick<Page, "close" | "isClosed">;
 type ReusableBrowserPage = Pick<Page, "isClosed" | "url">;
 
-const DEFAULT_RETRYABLE_PATTERN = /ECONN|ETIMEDOUT|timeout/i;
 const TRACE_TIMESTAMP_UNSAFE = /[:.]/g;
-
-/**
- * A failure that the runtime should convert to a terminal DONE rather than
- * let it bubble as an unhandled rejection. Carries an explicit `retryable`
- * bit so the outer catch doesn't have to heuristically pattern-match the
- * message. The optional `code` carries a stable, infrastructure-set
- * machine-actionable code (e.g. `browser_surface_attach_exhausted`) through
- * to `DONE.error.code` — see `emitFailed`'s composition with a connector's
- * `normalizeTerminalError` for how this survives connector overrides.
- */
-class TerminalError extends Error {
-  readonly code?: string;
-  readonly retryable: boolean;
-  constructor(message: string, options: { cause?: unknown; code?: string; retryable?: boolean } = {}) {
-    super(message, options.cause === undefined ? undefined : { cause: options.cause });
-    this.name = "TerminalError";
-    this.retryable = options.retryable ?? false;
-    if (options.code !== undefined) {
-      this.code = options.code;
-    }
-  }
-}
-
-/**
- * `DONE.error.code` / `connector_error_code` is a TYPED channel, deliberately
- * exempt from the free-form redaction `boundConnectorErrorMessage` applies to
- * `DONE.error.message` / `connector_error_message` (see
- * `runtime/index.ts`'s `buildTerminalConnectorFields`: `code` is copied
- * verbatim, `message` is redacted). That is safe ONLY because `code` is
- * constrained to a small, connector-declared, machine-actionable vocabulary —
- * never derived from arbitrary thrown text, and never able to carry the kind
- * of free-form content (a URL, a stack trace, an echoed request body) that
- * could smuggle a secret through unredacted. This pattern is deliberately
- * narrow: short, lowercase, snake_case, no spaces/URLs/punctuation beyond
- * underscore. A connector-authored string this restrictive cannot encode a
- * credential, a session token, or PII — those all fail the length or charset
- * check and the connector gets a thrown ProgrammerError instead of a silently
- * accepted unsafe code.
- */
-const CONNECTOR_ERROR_CODE_RE = /^[a-z][a-z0-9_]{1,63}$/;
-
-/**
- * Validate a connector-declared terminal-error `code` against the strict
- * charset/length contract `CONNECTOR_ERROR_CODE_RE` documents. Throws
- * (fails closed) rather than silently truncating, stripping, or passing an
- * invalid code through — an invalid code is a connector programming error,
- * not a runtime condition to paper over, because `code` reaches
- * `connector_error_json` with no further redaction.
- */
-function assertValidConnectorErrorCode(code: string): void {
-  if (!CONNECTOR_ERROR_CODE_RE.test(code)) {
-    throw new Error(
-      `connector_failure_invalid_code: "${code}" must match ${CONNECTOR_ERROR_CODE_RE.source} ` +
-        "(short, lowercase, snake_case — this channel is never redacted, so it cannot carry arbitrary text)"
-    );
-  }
-}
-
-/**
- * The one shared constructor for a connector-declared typed terminal
- * failure. Every connector that wants a stable `error.code` on its DONE
- * message (rather than relying purely on free-form, redacted `message`
- * text) should throw `createConnectorFailure(...)` instead of hand-rolling
- * `throw new Error(...)` or an ad hoc `{ code, message }` object — this is
- * the single point that validates `code` before it can ever reach the
- * unredacted `connector_error_code` column.
- *
- * `message` is ordinary human-readable free-form text: it still goes
- * through `boundConnectorErrorMessage`/`redactStderrTail` exactly like any
- * other connector-authored message, so it must never itself be treated as
- * safe — write it as you would write any other diagnostic string.
- */
-export function createConnectorFailure(
-  code: string,
-  message: string,
-  options: { cause?: unknown; retryable?: boolean } = {}
-): Error {
-  assertValidConnectorErrorCode(code);
-  return new TerminalError(message, { ...options, code });
-}
 
 /**
  * Compose a stable, infrastructure-set terminal-error `code` (e.g.
@@ -2175,146 +2075,6 @@ export function makeSessionEstablishWatchdog(args: {
   };
 
   return { checkpoint, wrapAssist, wrapCompleteAssistance, wrapSendInteraction, run };
-}
-
-interface SessionEstablishArgs {
-  assist: BaseCollectContext["assist"];
-  capture: CaptureSession | null;
-  checkpoint: SessionCheckpointFn;
-  completeAssistance: BaseCollectContext["completeAssistance"];
-  context: BrowserContext;
-  name: string;
-  page: Page;
-  progress: BaseCollectContext["progress"];
-  retryablePattern: RegExp;
-  sendInteraction: BaseCollectContext["sendInteraction"];
-}
-
-function retryablePatternMatches(pattern: RegExp, value: string): boolean {
-  pattern.lastIndex = 0;
-  const matched = pattern.test(value);
-  pattern.lastIndex = 0;
-  return matched;
-}
-
-/**
- * `postSubmit` forces `retryable: false` unconditionally, WITHOUT consulting
- * `retryablePattern` at all — a saved credential was already submitted to the
- * provider's real sign-in form, so a fault occurring after that point can
- * never be safely retried from a fresh process, no matter what vocabulary the
- * error message happens to share with the connector's legitimate pre-submit
- * retry patterns (e.g. a bare "timeout" or a shared transport-error term).
- * This is the single point that closes the naming-collision defect class: it
- * decides "did the credential already go out" once, centrally, instead of
- * leaving every connector's regex to (fail to) encode that distinction.
- */
-export function buildSessionEstablishTerminalError(
-  name: string,
-  message: string,
-  retryablePattern: RegExp = DEFAULT_RETRYABLE_PATTERN,
-  postSubmit = false
-): TerminalErrorDetails {
-  const terminalMessage = `${name}_session_failed: ${message}`;
-  return {
-    message: terminalMessage,
-    retryable:
-      !postSubmit &&
-      (retryablePatternMatches(retryablePattern, message) ||
-        retryablePatternMatches(retryablePattern, terminalMessage)),
-  };
-}
-
-/**
- * Run whichever session-management flow the connector configured.
- * Throws TerminalError if the session is dead and we couldn't recover.
- *
- * Priority: ensureSession (automated re-auth) > probeSession (read-only
- * + manual_action fallback) > nothing (connector assumes session is live).
- *
- * The runtime frames the window with a `begin` checkpoint before delegating
- * and a `probe` checkpoint around the read-only probe path so the watchdog
- * has progress markers even for connectors that do not checkpoint themselves.
- *
- * Exported so tests can prove the `onCredentialSubmit` → `credentialSubmitted`
- * → `buildSessionEstablishTerminalError(postSubmit)` wiring end-to-end, not
- * just the classifier in isolation.
- */
-export async function establishSession(
-  hooks: {
-    ensureSession: ((args: EnsureSessionArgs) => Promise<void>) | undefined;
-    probeSession: ((args: ProbeSessionArgs) => Promise<boolean>) | undefined;
-  },
-  args: SessionEstablishArgs
-): Promise<void> {
-  const { ensureSession, probeSession } = hooks;
-  const {
-    assist,
-    capture,
-    checkpoint,
-    completeAssistance,
-    context,
-    page,
-    name,
-    retryablePattern,
-    sendInteraction,
-    progress,
-  } = args;
-
-  await checkpoint("session-establish:begin");
-
-  if (typeof ensureSession === "function") {
-    // Set once `ensureSession` reports it has submitted a saved credential to
-    // the provider's real sign-in form. Scoped to this one establishSession()
-    // call — a fresh process gets a fresh `false`, which is correct: the
-    // credential wasn't submitted yet IN THIS process, even if a prior
-    // process's submission is what's being retried. That's exactly the case
-    // this primitive exists to stop: this call is the resubmission risk.
-    let credentialSubmitted = false;
-    try {
-      await ensureSession({
-        assist,
-        capture,
-        checkpoint,
-        completeAssistance,
-        context,
-        onCredentialSubmit: () => {
-          credentialSubmitted = true;
-        },
-        page,
-        sendInteraction,
-        progress,
-      });
-      return;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const terminalError = buildSessionEstablishTerminalError(name, message, retryablePattern, credentialSubmitted);
-      throw new TerminalError(terminalError.message, { retryable: terminalError.retryable, cause: err });
-    }
-  }
-
-  if (typeof probeSession !== "function") {
-    return;
-  }
-  await checkpoint("session-establish:probe");
-  if (await probeSession({ context, page })) {
-    return;
-  }
-
-  await manualAction(
-    {
-      page,
-      reason: "login",
-      message: `${name} session expired. Open the browser and re-authenticate, then continue.`,
-      timeoutSeconds: 1800,
-    },
-    sendInteraction
-  );
-  await checkpoint("session-establish:probe-after-manual");
-  if (await probeSession({ context, page })) {
-    return;
-  }
-
-  throw new TerminalError(`${name}_session_required`);
 }
 
 // ─── Playwright tracing helper ──────────────────────────────────────────

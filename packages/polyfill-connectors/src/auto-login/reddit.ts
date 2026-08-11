@@ -78,6 +78,14 @@ type SendInteraction = (req: InteractionRequest) => Promise<InteractionResponse>
 interface EnsureRedditSessionArgs {
   capture?: CaptureSession | null;
   context: BrowserContext;
+  /**
+   * Runtime marker for the post-submit credential-safety invariant: fired at
+   * the exact click that sends the saved password to Reddit's real sign-in
+   * form (see `EnsureSessionArgs.onCredentialSubmit`). Never fired on the
+   * session-reuse early return, the manual hand-off paths, or the OTP
+   * resubmit — those never send the saved password.
+   */
+  onCredentialSubmit?: () => void;
   page: Page;
   sendInteraction: SendInteraction;
 }
@@ -117,12 +125,13 @@ async function captureLoginState(capture: CaptureSession | null | undefined, pag
   await capture.captureLocatorProbe?.(page, label, LOGIN_LOCATOR_PROBES).catch((): undefined => undefined);
 }
 
-async function clickRedditLoginSubmit(page: Page): Promise<boolean> {
+async function clickRedditLoginSubmit(page: Page, onCredentialSubmit?: () => void): Promise<boolean> {
   const { getByRole } = page as Pick<Page, "getByRole">;
   if (typeof getByRole === "function") {
     const semantic = getByRole.call(page, "button", { name: SUBMIT_BUTTON_NAME_RE }).first();
     if (await locatorIsVisible(semantic)) {
       await semantic.click();
+      onCredentialSubmit?.();
       return true;
     }
   }
@@ -130,6 +139,7 @@ async function clickRedditLoginSubmit(page: Page): Promise<boolean> {
   const fallback = page.locator(SUBMIT_SELECTOR).first();
   if (await locatorIsVisible(fallback)) {
     await fallback.click();
+    onCredentialSubmit?.();
     return true;
   }
   return false;
@@ -189,6 +199,7 @@ async function recoverRedditBlockedLogin({
 export async function ensureRedditSession({
   capture,
   context,
+  onCredentialSubmit,
   page,
   sendInteraction,
 }: EnsureRedditSessionArgs): Promise<void> {
@@ -225,7 +236,7 @@ export async function ensureRedditSession({
   await userIn.fill(username);
   await page.locator(PASSWORD_SELECTOR).first().fill(password);
   await captureLoginState(capture, page, "reddit-login-before-submit");
-  if (!(await clickRedditLoginSubmit(page))) {
+  if (!(await clickRedditLoginSubmit(page, onCredentialSubmit))) {
     await captureLoginState(capture, page, "reddit-login-submit-missing");
     throw new Error("reddit_login_submit_missing");
   }

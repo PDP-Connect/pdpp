@@ -53,6 +53,7 @@ import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
   type EmittedMessage,
+  type EnsureSessionArgs,
   politeDelay,
   type RecordData,
   runConnector,
@@ -83,10 +84,12 @@ const PAGE_DELAY_MS = 500;
  * assert every post-submit throw `src/auto-login/reddit.ts` can produce
  * fails to match this exact pattern — the same object the scheduler
  * classifier actually consults, not a duplicated literal that could drift.
- * Reddit currently has no post-submit/pre-submit collision (unlike USAA's
- * deliberate `source_unavailable` term), and this pattern must stay that way:
- * a future edit that adds a bare transport term here would silently reopen
- * the naming-collision defect class with no test to catch it.
+ * Post-submit safety no longer depends on this pattern's vocabulary:
+ * `redditEnsureSession` wires `onCredentialSubmit`, so any fault after the
+ * password click is forced non-retryable by the runtime regardless of what
+ * this matches. The non-collision tests over this pattern remain as
+ * defense-in-depth for the literals Reddit throws, and the pattern still
+ * fully owns PRE-submit and collect-phase retry classification.
  */
 export const REDDIT_RETRYABLE_PATTERN = /ECONN|ETIMEDOUT|fetch failed|reddit_rate_limited/i;
 
@@ -497,6 +500,25 @@ export async function collectAllStreams(ctx: BrowserCollectContext): Promise<voi
 
 // ─── Entry ──────────────────────────────────────────────────────────────
 
+/**
+ * The production `ensureSession` hook. Exported (rather than inlined in the
+ * `runConnector` config below) so the `onCredentialSubmit` forwarding is
+ * itself under test: `src/auto-login/reddit.test.ts` drives the runtime's
+ * real `establishSession` through this exact function and proves a
+ * post-submit fault comes out non-retryable even when its message matches
+ * `REDDIT_RETRYABLE_PATTERN`. An inline closure here would leave the
+ * forwarding unreachable by any test (the `isMainModule` guard).
+ */
+export async function redditEnsureSession({
+  capture,
+  context,
+  onCredentialSubmit,
+  page,
+  sendInteraction,
+}: EnsureSessionArgs): Promise<void> {
+  await ensureRedditSession({ capture, context, onCredentialSubmit, page, sendInteraction });
+}
+
 if (isMainModule(import.meta.url)) {
   runConnector({
     name: "reddit",
@@ -505,9 +527,7 @@ if (isMainModule(import.meta.url)) {
     auth: { kind: "env", required: ["REDDIT_USERNAME", "REDDIT_PASSWORD"] },
     browser: { profileName: "reddit" },
     timeRangeField: "created_utc",
-    async ensureSession({ capture, context, page, sendInteraction }) {
-      await ensureRedditSession({ capture, context, page, sendInteraction });
-    },
+    ensureSession: redditEnsureSession,
     async collect(ctx: BrowserCollectContext): Promise<void> {
       await collectAllStreams(ctx);
     },
