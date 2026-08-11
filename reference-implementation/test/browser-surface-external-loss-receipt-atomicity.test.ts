@@ -37,7 +37,10 @@ import {
   createPostgresBrowserSurfaceLeaseStore,
   createSqliteBrowserSurfaceLeaseStore,
 } from "../server/stores/browser-surface-lease-store.ts";
-import type { BrowserSurfacePersistenceUnitOfWorkStores } from "../server/stores/browser-surface-persistence-unit-of-work.ts";
+import type {
+  BrowserSurfacePersistenceLeaseCapability,
+  BrowserSurfacePersistenceUnitOfWorkStores,
+} from "../server/stores/browser-surface-persistence-unit-of-work.ts";
 import {
   type BrowserSurfaceReplacementReceiptStore,
   createPostgresBrowserSurfaceReplacementReceiptStore,
@@ -136,7 +139,7 @@ function withFailingUpsert(real: BrowserSurfaceLeaseStore, failSurfaceId: string
         ) =>
           target.withPersistenceUnitOfWork(receiptStore, (stores) =>
             fn({
-              leaseStore: withFailingUpsert(stores.leaseStore, failSurfaceId),
+              leaseStore: withFailingUpsertCapability(stores.leaseStore, failSurfaceId),
               replacementReceiptStore: stores.replacementReceiptStore,
             })
           );
@@ -146,6 +149,23 @@ function withFailingUpsert(real: BrowserSurfaceLeaseStore, failSurfaceId: string
     },
   });
   return wrapped;
+}
+
+function withFailingUpsertCapability(
+  real: BrowserSurfacePersistenceLeaseCapability,
+  failSurfaceId: string
+): BrowserSurfacePersistenceLeaseCapability {
+  return {
+    getSurface: (surfaceId) => real.getSurface(surfaceId),
+    updateBrowserGenerationHash: (surfaceId, browserGenerationHash) =>
+      real.updateBrowserGenerationHash(surfaceId, browserGenerationHash),
+    upsertSurface: (surface) => {
+      if (surface.surface_id === failSurfaceId) {
+        throw new Error("injected: surface persistence failed mid-transaction");
+      }
+      return real.upsertSurface(surface);
+    },
+  };
 }
 
 function countAppends(

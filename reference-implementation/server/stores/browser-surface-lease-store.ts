@@ -19,6 +19,7 @@ import type {
   BrowserSurfacePersistenceTransaction,
   BrowserSurfacePersistenceUnitOfWorkStores,
 } from "./browser-surface-persistence-unit-of-work.ts";
+import { runBrowserSurfacePersistenceUnitOfWork } from "./browser-surface-persistence-unit-of-work.ts";
 import type { BrowserSurfaceReplacementReceiptStore } from "./browser-surface-replacement-ledger-store.ts";
 
 interface Queryable {
@@ -614,10 +615,13 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     fn: (stores: BrowserSurfacePersistenceUnitOfWorkStores) => Promise<T> | T
   ): Promise<T> {
     return this.withLeaseTransaction((leaseStore) =>
-      fn({
-        leaseStore,
-        replacementReceiptStore: replacementReceiptStore.bindToTransaction({ backend: "sqlite" }),
-      })
+      runBrowserSurfacePersistenceUnitOfWork(
+        {
+          leaseStore,
+          replacementReceiptStore: replacementReceiptStore.bindToTransaction({ backend: "sqlite" }),
+        },
+        fn
+      )
     );
   }
 }
@@ -844,11 +848,12 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
         query: (sql, values = []) =>
           client.query(sql, [...values]) as unknown as Promise<{ readonly rows: readonly unknown[] }>,
       };
-      return Promise.resolve(
-        fn({
+      return runBrowserSurfacePersistenceUnitOfWork(
+        {
           leaseStore: new PostgresBrowserSurfaceLeaseStore(client),
           replacementReceiptStore: replacementReceiptStore.bindToTransaction(transaction),
-        })
+        },
+        fn
       );
     });
   }

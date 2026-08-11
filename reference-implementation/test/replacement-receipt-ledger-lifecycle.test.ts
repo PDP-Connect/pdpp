@@ -21,6 +21,11 @@ import type {
   BrowserSurfaceWithPersistenceMetadata,
 } from "../server/stores/browser-surface-lease-store.ts";
 import { createSqliteBrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
+import type {
+  BrowserSurfacePersistenceUnitOfWork,
+  BrowserSurfacePersistenceUnitOfWorkStores,
+} from "../server/stores/browser-surface-persistence-unit-of-work.ts";
+import { createBrowserSurfacePersistenceUnitOfWork } from "../server/stores/browser-surface-persistence-unit-of-work.ts";
 import type { BrowserSurfaceReplacementReceiptStore } from "../server/stores/browser-surface-replacement-ledger-store.ts";
 import { createSqliteBrowserSurfaceReplacementReceiptStore } from "../server/stores/browser-surface-replacement-ledger-store.ts";
 
@@ -425,6 +430,7 @@ test("independent stop attempts survive SQLite terminality and exact rotated rea
       allocator: null,
       leaseStore,
       log: {},
+      persistenceUnitOfWork: createBrowserSurfacePersistenceUnitOfWork(leaseStore, receiptStore),
       receiptStore,
     });
     await hooks.recordBrowserGeneration(minimalLease("lease-2"), rotatedSurface, surface.connector_id, "run-2", {
@@ -771,6 +777,7 @@ function notImplementedInLifecycleFake(method: string): never {
 
 function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetadata): {
   readonly leaseStore: BrowserSurfaceLeaseStore;
+  readonly persistenceUnitOfWork: BrowserSurfacePersistenceUnitOfWork;
   readonly receiptStore: BrowserSurfaceReplacementReceiptStore;
   readonly receipts: ReplacementReceipt[];
   readonly getSurface: () => BrowserSurfaceWithPersistenceMetadata;
@@ -855,9 +862,27 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
     },
     verifySelectionOverrideBatch: async () => notImplementedInLifecycleFake("verifySelectionOverrideBatch"),
   };
+  const persistenceUnitOfWork: BrowserSurfacePersistenceUnitOfWork = {
+    withTransaction: async <T>(fn: (stores: BrowserSurfacePersistenceUnitOfWorkStores) => Promise<T> | T) =>
+      fn({
+        leaseStore: {
+          getSurface: (surfaceId) => leaseStore.getSurface(surfaceId),
+          updateBrowserGenerationHash: (surfaceId, browserGenerationHash) =>
+            leaseStore.updateBrowserGenerationHash(surfaceId, browserGenerationHash),
+          upsertSurface: (nextSurface) => leaseStore.upsertSurface(nextSurface),
+        },
+        replacementReceiptStore: {
+          append: (receipt) => receiptStore.append(receipt),
+          findPendingForScope: (input) => receiptStore.findPendingForScope(input),
+          findPendingForSurface: (surfaceId) => receiptStore.findPendingForSurface(surfaceId),
+          selectSystemActionable: (input) => receiptStore.selectSystemActionable(input),
+        },
+      }),
+  };
   return {
     getSurface: () => surface,
     leaseStore,
+    persistenceUnitOfWork,
     receiptStore,
     receipts,
   };
@@ -869,6 +894,7 @@ test("mid-wait browser generation records stable-container change, unchanged is 
     allocator: null,
     leaseStore: persistence.leaseStore,
     log: {},
+    persistenceUnitOfWork: persistence.persistenceUnitOfWork,
     receiptStore: persistence.receiptStore,
   });
   const lease = minimalLease("lease-generation");
@@ -934,6 +960,7 @@ test("readiness completes a durable pending stop after cleanup rotates the surfa
     allocator: null,
     leaseStore: persistence.leaseStore,
     log: {},
+    persistenceUnitOfWork: persistence.persistenceUnitOfWork,
     receiptStore: persistence.receiptStore,
   });
   await hooksAfterRestart.recordBrowserGeneration(
@@ -961,6 +988,7 @@ test("external loss stays pending until a scoped successor proves its generation
     allocator: null,
     leaseStore: persistence.leaseStore,
     log: {},
+    persistenceUnitOfWork: persistence.persistenceUnitOfWork,
     receiptStore: persistence.receiptStore,
   });
 
@@ -1001,6 +1029,7 @@ test("a failed successor terminalizes the scoped external-loss receipt", async (
     },
     leaseStore: persistence.leaseStore,
     log: {},
+    persistenceUnitOfWork: persistence.persistenceUnitOfWork,
     receiptStore: persistence.receiptStore,
   });
 

@@ -299,6 +299,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     allocator: browserSurfaceAllocator,
     leaseStore: browserSurfaceLeaseStore,
     log,
+    persistenceUnitOfWork: browserSurfacePersistenceUnitOfWork,
     receiptStore: browserSurfaceReplacementReceiptStore,
   });
   const { allocator: replacementAwareAllocator } = replacementHooks;
@@ -1049,7 +1050,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
 
   async function recordExternalLossReceipts(
     evicted: readonly BrowserSurface[],
-    receiptStore = browserSurfaceReplacementReceiptStore
+    receiptStore: Pick<BrowserSurfaceReplacementReceiptStore, "append"> | null = browserSurfaceReplacementReceiptStore
   ): Promise<void> {
     for (const surface of externalLossBoundaryRepresentatives(evicted)) {
       if (receiptStore) {
@@ -1060,7 +1061,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
   }
 
   async function persistReconciledAllocatorSurfaces(
-    store: BrowserSurfaceLeaseStore,
+    store: Pick<BrowserSurfaceLeaseStore, "upsertSurface">,
     allocatorReconcile: AllocatorSurfaceReconciliation
   ): Promise<void> {
     for (const surface of allocatorReconcile.evicted) {
