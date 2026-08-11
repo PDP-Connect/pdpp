@@ -173,7 +173,7 @@ function checkMockMutation(connector: string): Step {
       { cwd: PACKAGE_ROOT, encoding: "utf8", stdio: "pipe", timeout: 600_000 }
     );
     const parsed = JSON.parse(out) as Array<{ detail: string; verdict: string }>;
-    const first = parsed[0];
+    const [first] = parsed;
     if (!first) {
       return { advisory: true, detail: "no result", name: "mock mutation", verdict: "UNKNOWN" };
     }
@@ -276,15 +276,18 @@ function main(): void {
     // means the suite that just passed would not have caught a wrong path, which
     // is precisely how jellyfin shipped green and broken.
     const softGaps = steps.filter((s) => s.advisory && (s.verdict === "WEAK" || s.verdict === "UNKNOWN"));
-    console.log(
-      blocking.length > 0
-        ? `\nNOT READY — ${blocking.length} blocking failure(s).`
-        : unknown.length + softGaps.length > 0
-          ? `\nNo blocking failures, but ${unknown.length + softGaps.length} check(s) could not run or found soft spots. That is a gap, not a pass.`
-          : softGaps.length > 0
-            ? `\nNo blocking failures, but ${softGaps.length} advisory gap(s) above mean the suite has soft spots. This does NOT mean it works against a real account.`
-            : "\nNothing mechanical is wrong. This does NOT mean it works against a real account — only a real run shows that."
-    );
+    let summary: string;
+    if (blocking.length > 0) {
+      summary = `\nNOT READY — ${blocking.length} blocking failure(s).`;
+    } else if (unknown.length + softGaps.length > 0) {
+      summary = `\nNo blocking failures, but ${unknown.length + softGaps.length} check(s) could not run or found soft spots. That is a gap, not a pass.`;
+    } else if (softGaps.length > 0) {
+      summary = `\nNo blocking failures, but ${softGaps.length} advisory gap(s) above mean the suite has soft spots. This does NOT mean it works against a real account.`;
+    } else {
+      summary =
+        "\nNothing mechanical is wrong. This does NOT mean it works against a real account — only a real run shows that.";
+    }
+    console.log(summary);
   }
 
   process.exit(steps.some((s) => !s.advisory && s.verdict === "FAIL") ? 1 : 0);

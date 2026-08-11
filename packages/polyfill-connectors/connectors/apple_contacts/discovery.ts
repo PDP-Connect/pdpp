@@ -320,6 +320,55 @@ const ADDRESSBOOK_HOME_SET_BODY = `<?xml version="1.0" encoding="utf-8" ?>
   </D:prop>
 </D:propfind>`;
 
+/** Add any newly-visited origins from a discovery hop to the trusted set. */
+function addTrustedOrigins(trustedOrigins: string[], visited: readonly string[]): void {
+  for (const origin of visited) {
+    if (!trustedOrigins.includes(origin)) {
+      trustedOrigins.push(origin);
+    }
+  }
+}
+
+/**
+ * RFC 6764 §5 expects the well-known URI to redirect to the real context
+ * path; it does not mandate that a server answering the well-known
+ * PROPFIND inline (no redirect) must itself carry `current-user-principal`
+ * on that exact resource. A server may legally answer 207 there with the
+ * property 404'd in its propstat (RFC 4918 §14.22: "this resource doesn't
+ * have this property") while still honoring the property at the origin
+ * root. Observed live against a real iCloud account: `.well-known/carddav`
+ * answers inline with current-user-principal absent, while `/` on the same
+ * origin returns it populated. When the well-known step never redirected
+ * (so the origin root hasn't already been tried) and yielded no principal
+ * href, retry once against the bare origin root before giving up — this is
+ * a standards-general fallback, not an iCloud-specific carve-out.
+ */
+async function retryPrincipalAtOriginRoot(
+  fetchImpl: DiscoveryFetch,
+  originUrl: string,
+  wellKnownUrl: string,
+  authHeader: string,
+  trustedOrigins: string[]
+): Promise<{ step: Awaited<ReturnType<typeof propfindFollowingRedirects>>; href: string | null } | null> {
+  const rootUrl = new URL("/", originUrl).toString();
+  if (rootUrl === wellKnownUrl) {
+    return null;
+  }
+  const rootStep = await propfindFollowingRedirects(
+    fetchImpl,
+    rootUrl,
+    CURRENT_USER_PRINCIPAL_BODY,
+    authHeader,
+    trustedOrigins,
+    "0"
+  );
+  addTrustedOrigins(trustedOrigins, rootStep.visited);
+  if (rootStep.status < 200 || rootStep.status >= 300) {
+    return { step: rootStep, href: null };
+  }
+  return { step: rootStep, href: extractHref(rootStep.text, "current-user-principal") };
+}
+
 /**
  * Run full RFC 6764 discovery from an owner-entered origin (e.g.
  * `https://contacts.icloud.com` or any CardDAV-capable origin the owner
@@ -349,11 +398,7 @@ export async function discoverCardDav(args: {
   // trusted for subsequent hops (the resolved regional host, e.g.
   // pXX-contacts.icloud.com) — but only after passing the redirect-origin
   // check on the hop that reached it.
-  for (const origin of principalStep.visited) {
-    if (!trustedOrigins.includes(origin)) {
-      trustedOrigins.push(origin);
-    }
-  }
+  addTrustedOrigins(trustedOrigins, principalStep.visited);
 
   if (principalStep.status === 401 || principalStep.status === 403) {
     throw new CardDavDiscoveryError("carddav_auth_rejected");
@@ -363,42 +408,13 @@ export async function discoverCardDav(args: {
   }
 
   let principalHref = extractHref(principalStep.text, "current-user-principal");
-  // RFC 6764 §5 expects the well-known URI to redirect to the real context
-  // path; it does not mandate that a server answering the well-known
-  // PROPFIND inline (no redirect) must itself carry
-  // `current-user-principal` on that exact resource. A server may legally
-  // answer 207 there with the property 404'd in its propstat (RFC 4918
-  // §14.22: "this resource doesn't have this property") while still
-  // honoring the property at the origin root. Observed live against a real
-  // iCloud account: `.well-known/carddav` answers inline with
-  // current-user-principal absent, while `/` on the same origin returns it
-  // populated. When the well-known step never redirected (so the origin
-  // root hasn't already been tried) and yielded no principal href, retry
-  // once against the bare origin root before giving up — this is a
-  // standards-general fallback, not an iCloud-specific carve-out.
   if (!principalHref && principalStep.visited.length === 1) {
-    const rootUrl = new URL("/", originUrl).toString();
-    if (rootUrl !== wellKnownUrl) {
-      const rootStep = await propfindFollowingRedirects(
-        fetchImpl,
-        rootUrl,
-        CURRENT_USER_PRINCIPAL_BODY,
-        authHeader,
-        trustedOrigins,
-        "0"
-      );
-      visitedOrigins.push(...rootStep.visited);
-      for (const origin of rootStep.visited) {
-        if (!trustedOrigins.includes(origin)) {
-          trustedOrigins.push(origin);
-        }
-      }
-      if (rootStep.status >= 200 && rootStep.status < 300) {
-        const rootHref = extractHref(rootStep.text, "current-user-principal");
-        if (rootHref) {
-          principalStep = rootStep;
-          principalHref = rootHref;
-        }
+    const retry = await retryPrincipalAtOriginRoot(fetchImpl, originUrl, wellKnownUrl, authHeader, trustedOrigins);
+    if (retry) {
+      visitedOrigins.push(...retry.step.visited);
+      if (retry.href) {
+        principalStep = retry.step;
+        principalHref = retry.href;
       }
     }
   }

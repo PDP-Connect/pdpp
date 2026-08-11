@@ -325,7 +325,7 @@ describe("GroupMe blob attachment security (production seam)", () => {
 
     it("does not fetch the attachment twice to determine content-type (single fetch call)", async () => {
       let callCount = 0;
-      (global as any).fetch = async () => {
+      (global as any).fetch = () => {
         callCount += 1;
         return fakeAttachmentResponse({ "content-type": "image/png" }, Buffer.alloc(10));
       };

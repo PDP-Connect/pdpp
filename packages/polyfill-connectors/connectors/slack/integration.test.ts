@@ -45,8 +45,8 @@ import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts
 import {
   buildMessageRowsQuery,
   emitMessagesPass,
-  parseIsoInstantToSlackTs,
   type MessagesPassDeps,
+  parseIsoInstantToSlackTs,
   runChannelsStream,
   type StreamDeps,
 } from "./index.ts";
@@ -399,7 +399,7 @@ test("buildMessageRowsQuery: since boundary alone (no cursor)", () => {
   assert.ok(query.params.includes("500000"), "has since microseconds param");
 });
 
-test("buildMessageRowsQuery + SQLite execution: since boundary with cursor (cross-width epochs)", async () => {
+test("buildMessageRowsQuery + SQLite execution: since boundary with cursor (cross-width epochs)", () => {
   // Real SQLite execution test: verify numeric comparison handles variable-width
   // epoch seconds correctly. Lexical comparison fails on cross-width rows:
   //   "978307200.000000" (9 digits, 2001-01-01, pre-9999999999)
@@ -451,7 +451,14 @@ test("buildMessageRowsQuery + SQLite execution: since boundary with cursor (cros
   // Pre-2001 rows (978...) must be excluded even though they sort before 172...
   // lexically. The numeric predicate must include only rows where:
   //   epochSeconds > 1723248385 OR (epochSeconds == 1723248385 AND microsecs >= 500000)
-  const returnedTs = results.map((r) => r.TS).sort();
+  const returnedTs = results
+    .map((r) => r.TS)
+    .sort((a, b) => {
+      if (a < b) {
+        return -1;
+      }
+      return a > b ? 1 : 0;
+    });
   assert.deepEqual(
     returnedTs,
     ["1723248385.500000", "1723248385.600000"],
@@ -484,26 +491,14 @@ test("parseIsoInstantToSlackTs: direct tests (exact production function)", () =>
   assert.match(resultTz, /^\d+\.250000$/, "timezone offset handled");
 
   // Malformed: invalid date string → throws
-  assert.throws(
-    () => parseIsoInstantToSlackTs("not-a-date"),
-    Error,
-    "rejects invalid ISO instant"
-  );
+  assert.throws(() => parseIsoInstantToSlackTs("not-a-date"), Error, "rejects invalid ISO instant");
 
   // Malformed: empty string → throws (Date.parse returns NaN)
-  assert.throws(
-    () => parseIsoInstantToSlackTs(""),
-    Error,
-    "rejects empty string"
-  );
+  assert.throws(() => parseIsoInstantToSlackTs(""), Error, "rejects empty string");
 
   // Pre-epoch (negative epoch seconds) → throws
   const preEpoch = "1969-12-31T23:59:59Z"; // Before Unix epoch
-  assert.throws(
-    () => parseIsoInstantToSlackTs(preEpoch),
-    Error,
-    "rejects pre-epoch timestamps"
-  );
+  assert.throws(() => parseIsoInstantToSlackTs(preEpoch), Error, "rejects pre-epoch timestamps");
 
   // Verify output format is always "seconds.6digits"
   const epoch = "2024-01-01T00:00:00.123Z";
@@ -527,10 +522,6 @@ test("emitMessagesPass: non-monotonic row order with SQL-filtered since boundary
   const result = await emitMessagesPass(deps, rows, null);
 
   const messages = emitted.filter((r) => r.stream === "messages");
-  assert.equal(
-    messages.length,
-    3,
-    "all in-scope rows emitted regardless of arrival order (SQL already filtered)"
-  );
+  assert.equal(messages.length, 3, "all in-scope rows emitted regardless of arrival order (SQL already filtered)");
   assert.equal(result.maxMessageTs, "1700000500.000000", "maxMessageTs is the true max");
 });

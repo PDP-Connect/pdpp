@@ -119,7 +119,10 @@ const FIXTURE: Seed[] = [
 ];
 
 const SHAPES: Array<{ name: string; thresholds: Thresholds }> = [
-  { name: "no cursor (first run, full coverage)", thresholds: { channelLastTs: {}, legacyLastTs: null, sinceTs: null } },
+  {
+    name: "no cursor (first run, full coverage)",
+    thresholds: { channelLastTs: {}, legacyLastTs: null, sinceTs: null },
+  },
   { name: "legacy-only cursor", thresholds: { channelLastTs: {}, legacyLastTs: "180.000000", sinceTs: null } },
   {
     name: "per-channel cursors",
@@ -172,7 +175,10 @@ test("a newer higher-CHUNK_ID row for a past-cursor TS wins the dedup", () => {
     ...FIXTURE,
     { channelId: "C1", ts: "300.000001", chunkId: 12, data: "c1-300-resumed-latest" },
   ]);
-  const rows = runRows(db, buildMessageRowsQuery({ channelLastTs: { C1: "100.000001" }, legacyLastTs: null, sinceTs: null }));
+  const rows = runRows(
+    db,
+    buildMessageRowsQuery({ channelLastTs: { C1: "100.000001" }, legacyLastTs: null, sinceTs: null })
+  );
   assert.ok(rows.includes("C1|300.000001|c1-300-resumed-latest"), "latest chunk for 300 must win");
   assert.ok(!rows.includes("C1|300.000001|c1-300-only"), "stale chunk for 300 must not be emitted");
   db.close();
