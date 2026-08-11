@@ -658,6 +658,10 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
   assert.equal(data.sourceWorkSections[2]?.title, "System or connector issue");
   assert.equal(data.sourceWorkSections[3]?.title, "Not measured");
   assert.equal(data.sourceWorkSections[3]?.rows[0]?.what, "GitHub - Personal: Coverage has not been measured yet.");
+  const chatgptRow = data.sourceWorkSections
+    .flatMap((section) => section.rows)
+    .find((row) => row.what.startsWith("ChatGPT - personal"));
+  assert.equal(chatgptRow?.what, "ChatGPT - personal: Reconnect this account");
 });
 
 // ─── Cross-surface acceptance (recovery governor UI tranche, tasks 4.4/4.6) ───

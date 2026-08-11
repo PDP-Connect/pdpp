@@ -20,7 +20,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { checkCleanShellFreshness } from "./owner-journey-acceptance/clean-shell.ts";
 import { derivePublishedCommandSurface, runLocalAcceptance } from "./owner-journey-acceptance/harness.ts";
-import { resolveOwnerAuthFromEnv, runLiveAcceptance } from "./owner-journey-acceptance/live.ts";
+import {
+  evaluateDashboardSourceTrust,
+  inspectResolvedOwnerSurface,
+  resolveOwnerAuthFromEnv,
+  runLiveAcceptance,
+} from "./owner-journey-acceptance/live.ts";
 import { renderReport } from "./owner-journey-acceptance/report.ts";
 import {
   checkCommandFreshness,
@@ -58,13 +63,16 @@ function classes(findings: readonly Finding[]): Set<string> {
 
 function defaultLiveOwnerPageHtml(url: string | URL): string {
   const href = String(url);
+  if (href.endsWith("/sources")) {
+    return "<main>clean owner page</main>";
+  }
   if (href.endsWith("/schedules")) {
     return "<main><h1>Schedules</h1><p>0 scheduled · 3 unscheduled</p><section>Scheduled connections (0)</section><section>No scheduled connections yet</section></main>";
   }
   if (href.endsWith("/explore")) {
     return "<main><h1>Explore</h1><label>Search names, fields, and values — or type an operator</label><details><summary>Filters</summary></details><button>newest</button><button>oldest</button></main>";
   }
-  return "<main>clean owner page</main>";
+  return "<main><h1>Where you stand</h1><h2>Source attention</h2><h2>Notifications</h2></main>";
 }
 
 // ── 1. Failure-class units: forbidden strings ────────────────────────────────
@@ -505,6 +513,126 @@ test("live probe can create an owner session from PDPP_OWNER_PASSWORD and scan a
   );
 });
 
+test("resolved-surface oracle distinguishes resolved content, a shell, and a visible Suspense skeleton", () => {
+  const resolved = inspectResolvedOwnerSurface({
+    html: defaultLiveOwnerPageHtml("https://example.com/schedules"),
+    path: "/schedules",
+    status: 200,
+  });
+  assert.equal(resolved.ok, true);
+
+  const shell = inspectResolvedOwnerSurface({
+    html: "<main><h1>Owner shell</h1></main>",
+    path: "/schedules",
+    status: 200,
+  });
+  assert.equal(shell.ok, false);
+  assert.ok(shell.missing.includes("Schedules title"));
+
+  const skeleton = inspectResolvedOwnerSurface({
+    html: '<main><h1>Schedules</h1><div class="animate-pulse">Loading…</div></main>',
+    path: "/schedules",
+    status: 200,
+  });
+  assert.equal(skeleton.ok, false);
+  assert.ok(skeleton.skeletonMarkers.length > 0);
+});
+
+test("dashboard source-trust oracle covers zero, multiple, stale-projection, and healthy-advisory cases", () => {
+  const zero = evaluateDashboardSourceTrust([], "All assessed sources are healthy.");
+  assert.deepEqual(zero.materialIssues, []);
+  assert.deepEqual(zero.rawIssues, []);
+  assert.equal(zero.unsupportedAllClearClaim, null);
+
+  const multiple = evaluateDashboardSourceTrust(
+    [
+      {
+        connection_id: "cin_one",
+        display_name: "First source",
+        rendered_verdict: {
+          channel: "advisory",
+          forward_statement: "First source needs attention.",
+          pill: { label: "Degraded", tone: "amber" },
+          required_actions: [],
+        },
+      },
+      {
+        connection_id: "cin_two",
+        display_name: "Second source",
+        rendered_verdict: {
+          channel: "advisory",
+          forward_statement: "Second source cannot collect.",
+          pill: { label: "Can't collect", tone: "red" },
+          required_actions: [],
+        },
+      },
+      {
+        connection_id: "cin_healthy",
+        display_name: "Healthy source",
+        connection_health: { axes: { freshness: "stale" }, state: "healthy" },
+        rendered_verdict: {
+          channel: "advisory",
+          forward_statement: "Run a refresh when you want the latest data.",
+          pill: { label: "Healthy", tone: "green" },
+          required_actions: [
+            { audience: "owner", cta: "Refresh now", satisfied_when: { kind: "confirming_run_succeeded" } },
+          ],
+        },
+      },
+    ],
+    "First source: review it. Healthy source: Refresh now"
+  );
+  assert.deepEqual(
+    multiple.materialIssues.map((issue) => issue.label),
+    ["First source", "Second source"]
+  );
+  assert.deepEqual(
+    multiple.unrepresentedMaterialIssues.map((issue) => issue.label),
+    ["Second source"]
+  );
+  assert.deepEqual(multiple.overstatedHealthyAdvisories, []);
+
+  const staleProjection = evaluateDashboardSourceTrust(
+    [
+      {
+        connection_id: "cin_stale",
+        display_name: "Stale source",
+        connection_health: { axes: { coverage: "terminal_gap" }, state: "degraded" },
+        rendered_verdict: {
+          channel: "calm",
+          forward_statement: "Collection is current.",
+          pill: { label: "Healthy", tone: "green" },
+          required_actions: [],
+        },
+      },
+    ],
+    "Stale source needs a connector fix."
+  );
+  assert.deepEqual(staleProjection.unrepresentedRawIssues, []);
+
+  const healthyMutation = evaluateDashboardSourceTrust(
+    [
+      {
+        connection_id: "cin_healthy",
+        display_name: "Healthy source",
+        rendered_verdict: {
+          channel: "advisory",
+          forward_statement: "Run a refresh when you want the latest data.",
+          pill: { label: "Healthy", tone: "green" },
+          required_actions: [
+            { audience: "owner", cta: "Refresh now", satisfied_when: { kind: "confirming_run_succeeded" } },
+          ],
+        },
+      },
+    ],
+    "Healthy source is degraded."
+  );
+  assert.deepEqual(
+    healthyMutation.overstatedHealthyAdvisories.map((issue) => issue.label),
+    ["Healthy source"]
+  );
+});
+
 test("live Explore render fails when only one sort direction is present", async () => {
   const response = (
     status: number,
@@ -576,6 +704,98 @@ test("live semantic probe requests connectors at limit=100 (the reference's own 
   assert.ok(connectorsUrl, "the acceptance run must fetch /_ref/connectors");
   assert.match(connectorsUrl ?? "", CONNECTORS_LIMIT_100_RE);
   assert.doesNotMatch(connectorsUrl ?? "", CONNECTORS_LIMIT_200_RE);
+});
+
+test("live semantic probe follows pagination before comparing multiple source issues and exact actions", async () => {
+  const urlsSeen: string[] = [];
+  const response = (status: number, body: string) => ({
+    headers: { get: () => null },
+    status,
+    text: async () => body,
+  });
+  const firstPage = {
+    connection_id: "cin_first",
+    display_name: "First source",
+    streams: ["records"],
+    total_records: 1,
+    rendered_verdict: {
+      channel: "calm",
+      forward_statement: "Collection is current.",
+      pill: { label: "Healthy", tone: "green" },
+      required_actions: [],
+    },
+  };
+  const secondPageIssue = {
+    connection_id: "cin_second_issue",
+    display_name: "Second source",
+    streams: ["records"],
+    total_records: 2,
+    rendered_verdict: {
+      channel: "advisory",
+      forward_statement: "Second source needs a connector fix.",
+      pill: { label: "Can't collect", tone: "red" },
+      required_actions: [],
+    },
+  };
+  const secondPageOwnerAction = {
+    connection_id: "cin_second_action",
+    display_name: "Second action source",
+    streams: ["records"],
+    total_records: 3,
+    rendered_verdict: {
+      channel: "attention",
+      forward_statement: "Reconnect this account and collection resumes.",
+      pill: { label: "Can't collect", tone: "red" },
+      required_actions: [
+        {
+          audience: "owner",
+          cta: "Reconnect this account",
+          satisfied_when: { kind: "credential_present_and_unrejected" },
+        },
+      ],
+    },
+  };
+  // biome-ignore lint/suspicious/useAwait: fetchImpl models the async fetch contract for the live harness.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    urlsSeen.push(href);
+    if (href.includes("/_ref/connectors")) {
+      const body = href.includes("cursor=page-2")
+        ? { data: [secondPageIssue, secondPageOwnerAction], has_more: false, object: "list" }
+        : { data: [firstPage], has_more: true, next_cursor: "page-2", object: "list" };
+      return response(200, JSON.stringify(body));
+    }
+    if (href.endsWith("/sources")) {
+      return response(
+        200,
+        "<main><h1>Sources</h1><p>First source 1 record · 1 stream</p><p>Second source 2 records · 1 stream</p><p>Second action source 3 records · 1 stream</p></main>"
+      );
+    }
+    if (href.endsWith("/")) {
+      return response(
+        200,
+        "<main><h2>Source attention</h2><p>Second source cannot collect.</p><p>Second action source: Reconnect this account.</p></main>"
+      );
+    }
+    if (href.endsWith("/sources/cin_second_action")) {
+      return response(200, "<main><h1>Second action source</h1><button>Reconnect this account</button></main>");
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+    origin: "https://example.com",
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(
+    urlsSeen.some((url) => url.includes("cursor=page-2")),
+    "the second connector page must be fetched"
+  );
+  assert.equal(result.semanticChecks.find((check) => check.id === "dashboard-source-issue-all-clear")?.status, "pass");
+  assert.equal(result.semanticChecks.find((check) => check.id === "whats-next-actionable")?.status, "pass");
 });
 
 test("live semantic probe rejects dashboard all-clear when connector summaries contain source issues", async () => {

@@ -44,6 +44,8 @@ const RE_ACQUISITION_COVERAGE_TITLE = /title="Acquisition coverage"/;
 const RE_ACQUISITION_COVERAGE_RECEIPT_LINK = /\/connect\/status\//;
 const RE_ACQUISITION_COVERAGE_OWNER_COPY = /coverage receipts, not generic sync status/;
 const RE_ACQUISITION_COVERAGE_SOURCE_NEUTRAL = /\bWhatsApp\b|\bTimeline\b|\bGoogle\b/i;
+const RE_REAUTH_ACTION_USES_SERVER_CTA =
+  /case "stored_credential"[\s\S]*label: action\.cta[\s\S]*case "browser_session"[\s\S]*label: action\.cta/;
 
 // ─── Surface 1: rendered-verdict health explanation ──────────────────────────
 
@@ -120,4 +122,9 @@ test("connector detail page threads owner-only acquisition coverage into a sourc
   assert.match(src, RE_ACQUISITION_COVERAGE_RECEIPT_LINK);
   assert.match(src, RE_ACQUISITION_COVERAGE_OWNER_COPY);
   assert.doesNotMatch(sectionSrc, RE_ACQUISITION_COVERAGE_SOURCE_NEUTRAL);
+});
+
+test("connector detail page preserves the exact server-owned CTA for reauthentication", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, RE_REAUTH_ACTION_USES_SERVER_CTA);
 });

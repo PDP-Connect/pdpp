@@ -146,6 +146,132 @@ function htmlToText(html: string): string {
     .trim();
 }
 
+const RESOLVED_SURFACE_SKELETON_PATTERNS: readonly RegExp[] = [
+  /\b(?:Loading(?:…|\.{3})|Skeleton)\b/i,
+  /class=["'][^"']*(?:skeleton|animate-pulse|shimmer)[^"']*["']/i,
+  /data-testid=["'][^"']*skeleton[^"']*["']/i,
+];
+const HTML_TAG_PATTERN = /<\/?([a-z][a-z0-9:-]*)\b[^>]*>/gi;
+const SELF_CLOSING_TAG_PATTERN = /\/\s*>$/;
+const ARIA_HIDDEN_TAG_PATTERN = /\baria-hidden=["']true["']/i;
+
+interface ResolvedSurfaceRequirement {
+  label: string;
+  pattern: RegExp;
+}
+
+function resolvedSurfaceRequirements(path: string): readonly ResolvedSurfaceRequirement[] {
+  switch (path) {
+    case "/schedules":
+      return [
+        { label: "Schedules title", pattern: BSCHEDULES_PATTERN },
+        { label: "schedule section", pattern: BSCHEDULED_CONNECTIONS_BNO_SCHEDULED_PATTERN },
+        { label: "scheduled/unscheduled counts", pattern: BSCHEDULED_BUNSCHEDULED_PATTERN },
+      ];
+    case "/explore":
+      return [
+        { label: "Explore title", pattern: BEXPLORE_PATTERN },
+        { label: "record query controls", pattern: SEARCH_NAMES_FIELDS_AND_PATTERN },
+        { label: "record filters", pattern: BFILTERS_PATTERN },
+        { label: "record sort controls", pattern: BNEWEST_BOLDEST_PATTERN },
+      ];
+    default:
+      return [];
+  }
+}
+
+function updateHiddenTagStack(hiddenStack: string[], token: string, name: string): void {
+  if (token.startsWith("</")) {
+    const openIndex = hiddenStack.lastIndexOf(name);
+    if (openIndex >= 0) {
+      hiddenStack.splice(openIndex, hiddenStack.length - openIndex);
+    }
+    return;
+  }
+  if (!SELF_CLOSING_TAG_PATTERN.test(token)) {
+    hiddenStack.push(name);
+  }
+}
+
+function stripHiddenSurfaceMarkup(html: string): string {
+  const hiddenStack: string[] = [];
+  let cursor = 0;
+  let visible = "";
+  for (const match of html.matchAll(HTML_TAG_PATTERN)) {
+    const token = match[0] ?? "";
+    const index = match.index ?? 0;
+    const name = (match[1] ?? "").toLowerCase();
+    if (hiddenStack.length === 0) {
+      if (!token.startsWith("</") && ARIA_HIDDEN_TAG_PATTERN.test(token)) {
+        cursor = index + token.length;
+        hiddenStack.push(name);
+        continue;
+      }
+      visible += html.slice(cursor, index) + token;
+    }
+    if (hiddenStack.length > 0) {
+      updateHiddenTagStack(hiddenStack, token, name);
+    }
+    cursor = index + token.length;
+  }
+  if (hiddenStack.length === 0) {
+    visible += html.slice(cursor);
+  }
+  return visible;
+}
+
+function resolvedSurfaceSkeletonMarkers(html: string): string[] {
+  const visibleHtml = stripHiddenSurfaceMarkup(html);
+  const visibleText = htmlToText(visibleHtml);
+  const markers: string[] = [];
+  for (const pattern of RESOLVED_SURFACE_SKELETON_PATTERNS) {
+    const match =
+      pattern.source.includes("Loading") || pattern.source.includes("Skeleton")
+        ? pattern.exec(visibleText)
+        : pattern.exec(visibleHtml);
+    if (match?.[0]) {
+      markers.push(match[0]);
+    }
+  }
+  return markers;
+}
+
+export interface ResolvedOwnerSurfaceCheck {
+  missing: readonly string[];
+  ok: boolean;
+  path: string;
+  skeletonMarkers: readonly string[];
+  status: number;
+}
+
+/**
+ * Deterministic render oracle for server responses. It reads only visible
+ * text plus visible skeleton markers; RSC scripts and styles do not count as
+ * proof that a React surface resolved.
+ */
+export function inspectResolvedOwnerSurface({
+  html,
+  path,
+  status,
+}: {
+  html: string;
+  path: string;
+  status: number;
+}): ResolvedOwnerSurfaceCheck {
+  const text = htmlToText(stripHiddenSurfaceMarkup(html));
+  const missing = resolvedSurfaceRequirements(path)
+    .filter((requirement) => !requirement.pattern.test(text))
+    .map((requirement) => requirement.label);
+  const skeletonMarkers = resolvedSurfaceSkeletonMarkers(html);
+  return {
+    missing,
+    ok: status >= 200 && status < 300 && text.length > 0 && missing.length === 0 && skeletonMarkers.length === 0,
+    path,
+    skeletonMarkers,
+    status,
+  };
+}
+
 function htmlToProseText(html: string): string {
   return htmlToText(String(html).replace(/<(pre|code|kbd|samp)\b[^>]*>[\s\S]*?<\/\1>/gi, " "));
 }
@@ -312,6 +438,64 @@ function isHealthyRefreshAdvisory(connector: Connector): boolean {
   return BREFRESH_PATTERN.test(`${verdict.forward_statement ?? ""} ${actionText}`);
 }
 
+export interface DashboardSourceTrustOracle {
+  healthyRefreshAdvisories: readonly { forwardStatement: string; label: string }[];
+  materialIssues: readonly { forwardStatement: string; label: string }[];
+  overstatedHealthyAdvisories: readonly { forwardStatement: string; label: string }[];
+  rawIssues: readonly { label: string; reason: string }[];
+  unrepresentedMaterialIssues: readonly { forwardStatement: string; label: string }[];
+  unrepresentedRawIssues: readonly { label: string; reason: string }[];
+  unsupportedAllClearClaim: string | null;
+}
+
+/**
+ * Compare the connector API's trust claims with resolved dashboard text. This
+ * is intentionally provider-neutral: the API supplies labels and actions, and
+ * the rendered page either discloses them or fails the oracle.
+ */
+export function evaluateDashboardSourceTrust(
+  connectors: readonly Connector[],
+  dashboardText: string
+): DashboardSourceTrustOracle {
+  const materialIssues = connectors.filter(isMaterialSourceIssue).map((connector) => ({
+    label: connectorLabel(connector),
+    forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),
+  }));
+  const healthyRefreshAdvisories = connectors.filter(isHealthyRefreshAdvisory).map((connector) => ({
+    label: connectorLabel(connector),
+    forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),
+  }));
+  const rawIssues = connectors.filter(isRawMaterialSourceIssue).map((connector) => ({
+    label: connectorLabel(connector),
+    reason:
+      (connector?.connection_health as Connector | undefined)?.reason_code ??
+      (connector?.last_run as Connector | undefined)?.failure_reason ??
+      "raw source issue",
+  }));
+  const unsupportedAllClearClaim =
+    dashboardText.match(BGRANTS_ARE_WITHIN_THEIR_PATTERN)?.[0] ??
+    dashboardText.match(BBACKUPS_ARE_PATTERN)?.[0] ??
+    null;
+  const overstatedHealthyAdvisories = healthyRefreshAdvisories.filter((issue) => {
+    const renderedAsBroken =
+      dashboardText.includes(`${issue.label} is degraded`) || dashboardText.includes(`${issue.label} can't collect`);
+    const renderedWithRefreshStatement =
+      issue.forwardStatement.length > 0 &&
+      dashboardText.includes(issue.label) &&
+      dashboardText.includes(issue.forwardStatement);
+    return renderedAsBroken || renderedWithRefreshStatement;
+  });
+  return {
+    healthyRefreshAdvisories,
+    materialIssues,
+    overstatedHealthyAdvisories,
+    rawIssues,
+    unsupportedAllClearClaim,
+    unrepresentedMaterialIssues: materialIssues.filter((issue) => !dashboardText.includes(issue.label)),
+    unrepresentedRawIssues: rawIssues.filter((issue) => !dashboardText.includes(issue.label)),
+  };
+}
+
 function isRawMaterialSourceIssue(connector: Connector): boolean {
   if (connector.revoked_at) {
     return false;
@@ -444,27 +628,17 @@ async function runLiveSemanticChecks({
   }
 
   const connectors = asArrayList(connectorsPaged.data);
-  const sourceIssues = connectors.filter(isMaterialSourceIssue).map((connector) => ({
-    label: connectorLabel(connector),
-    forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),
-  }));
-  const healthyRefreshAdvisories = connectors.filter(isHealthyRefreshAdvisory).map((connector) => ({
-    label: connectorLabel(connector),
-    forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),
-  }));
-  const rawSourceIssues = connectors.filter(isRawMaterialSourceIssue).map((connector) => ({
-    label: connectorLabel(connector),
-    reason:
-      (connector?.connection_health as Connector | undefined)?.reason_code ??
-      (connector?.last_run as Connector | undefined)?.failure_reason ??
-      "raw source issue",
-  }));
   const dashboardText = htmlToText(htmlByPath.get("/") ?? "");
+  const dashboardSourceTrust = evaluateDashboardSourceTrust(connectors, dashboardText);
+  const {
+    materialIssues: sourceIssues,
+    overstatedHealthyAdvisories,
+    rawIssues: rawSourceIssues,
+    unsupportedAllClearClaim,
+    unrepresentedMaterialIssues,
+    unrepresentedRawIssues,
+  } = dashboardSourceTrust;
   const dashboardVisibleMonograms = visibleMonogramInitials(htmlByPath.get("/") ?? "");
-  const unsupportedAllClearClaim =
-    dashboardText.match(BGRANTS_ARE_WITHIN_THEIR_PATTERN)?.[0] ??
-    dashboardText.match(BBACKUPS_ARE_PATTERN)?.[0] ??
-    null;
   if (unsupportedAllClearClaim) {
     findings.push({
       ruleId: "dashboard-unsupported-all-clear-claim",
@@ -503,15 +677,6 @@ async function runLiveSemanticChecks({
     }
   }
 
-  const overstatedHealthyAdvisories = healthyRefreshAdvisories.filter((issue) => {
-    const renderedAsBroken =
-      dashboardText.includes(`${issue.label} is degraded`) || dashboardText.includes(`${issue.label} can't collect`);
-    const renderedWithRefreshStatement =
-      issue.forwardStatement.length > 0 &&
-      dashboardText.includes(issue.label) &&
-      dashboardText.includes(issue.forwardStatement);
-    return renderedAsBroken || renderedWithRefreshStatement;
-  });
   if (overstatedHealthyAdvisories.length > 0) {
     findings.push({
       ruleId: "dashboard-healthy-advisory-overstated",
@@ -527,40 +692,34 @@ async function runLiveSemanticChecks({
     });
   }
 
-  if (sourceIssues.length > 0) {
-    const representedIssue = sourceIssues.some((issue) => dashboardText.includes(issue.label));
-    if (!representedIssue) {
-      findings.push({
-        ruleId: "dashboard-source-issue-missing",
-        class: "dashboard-trust-claim",
-        path: "live:/",
-        line: 0,
-        excerpt: sourceIssues
-          .map((issue) => issue.label)
-          .slice(0, 5)
-          .join(", "),
-        rationale:
-          "The dashboard reference data contains material source issues, but none of their source labels appear on the rendered dashboard. The owner needs a visible issue row, not a silent calm state.",
-      });
-    }
+  if (sourceIssues.length > 0 && unrepresentedMaterialIssues.length > 0) {
+    findings.push({
+      ruleId: "dashboard-source-issue-missing",
+      class: "dashboard-trust-claim",
+      path: "live:/",
+      line: 0,
+      excerpt: unrepresentedMaterialIssues
+        .map((issue) => issue.label)
+        .slice(0, 5)
+        .join(", "),
+      rationale:
+        "The dashboard reference data contains material source issues, but one or more source labels are absent from the rendered dashboard. The owner needs a visible row for every issue, not a silent calm state.",
+    });
   }
 
-  if (rawSourceIssues.length > 0) {
-    const representedRawIssue = rawSourceIssues.some((issue) => dashboardText.includes(issue.label));
-    if (!representedRawIssue) {
-      findings.push({
-        ruleId: "dashboard-raw-source-issue-missing",
-        class: "dashboard-trust-claim",
-        path: "live:/",
-        line: 0,
-        excerpt: rawSourceIssues
-          .map((issue) => `${issue.label}:${issue.reason}`)
-          .slice(0, 5)
-          .join(", "),
-        rationale:
-          "Raw connection-health evidence contains a material source issue, but none of those source labels appear on the rendered dashboard. The dashboard must disclose broken-source facts even if a rendered verdict projection regresses.",
-      });
-    }
+  if (rawSourceIssues.length > 0 && unrepresentedRawIssues.length > 0) {
+    findings.push({
+      ruleId: "dashboard-raw-source-issue-missing",
+      class: "dashboard-trust-claim",
+      path: "live:/",
+      line: 0,
+      excerpt: unrepresentedRawIssues
+        .map((issue) => `${issue.label}:${issue.reason}`)
+        .slice(0, 5)
+        .join(", "),
+      rationale:
+        "Raw connection-health evidence contains material source issues, but one or more source labels are absent from the rendered dashboard. The dashboard must disclose every broken-source fact even if a rendered verdict projection regresses.",
+    });
   }
 
   checks.push({
@@ -615,47 +774,42 @@ async function runLiveSemanticChecks({
       id: "schedules-content-rendered",
       path: "/schedules",
       title: "Schedules",
-      required: [
-        { label: "Schedules title", pattern: BSCHEDULES_PATTERN },
-        { label: "schedule section", pattern: BSCHEDULED_CONNECTIONS_BNO_SCHEDULED_PATTERN },
-        { label: "scheduled/unscheduled counts", pattern: BSCHEDULED_BUNSCHEDULED_PATTERN },
-      ],
     },
     {
       id: "explore-content-rendered",
       path: "/explore",
       title: "Explore",
-      required: [
-        { label: "Explore title", pattern: BEXPLORE_PATTERN },
-        {
-          label: "record query controls",
-          pattern: SEARCH_NAMES_FIELDS_AND_PATTERN,
-        },
-        { label: "record filters", pattern: BFILTERS_PATTERN },
-        { label: "record sort controls", pattern: BNEWEST_BOLDEST_PATTERN },
-      ],
     },
   ];
   for (const expectation of contentExpectations) {
-    const pageText = htmlToText(htmlByPath.get(expectation.path) ?? "");
-    const missing = expectation.required.filter((item) => !item.pattern.test(pageText));
-    if (missing.length > 0) {
+    const resolved = inspectResolvedOwnerSurface({
+      html: htmlByPath.get(expectation.path) ?? "",
+      path: expectation.path,
+      status: htmlByPath.has(expectation.path) ? 200 : 0,
+    });
+    const unresolved = [...resolved.missing, ...resolved.skeletonMarkers.map((marker) => `skeleton marker ${marker}`)];
+    if (unresolved.length > 0 || !resolved.ok) {
       findings.push({
         ruleId: expectation.id,
         class: "dashboard-content-missing",
         path: `live:${expectation.path}`,
         line: 0,
-        excerpt: missing.map((item) => item.label).join(", "),
-        rationale: `${expectation.title} must render its core owner controls on the live surface. A shell-only, login, or error-boundary page cannot prove the owner can use this journey.`,
+        excerpt: unresolved.length > 0 ? unresolved.join(", ") : "empty or unresolved response",
+        rationale: `${expectation.title} must render resolved owner controls without a visible loading skeleton. A shell-only, login, or error-boundary page cannot prove the owner can use this journey.`,
       });
+    }
+    let contentDetail: string;
+    if (resolved.ok) {
+      contentDetail = `${expectation.title} rendered resolved core owner controls`;
+    } else if (unresolved.length > 0) {
+      contentDetail = `missing ${unresolved.join(", ")}`;
+    } else {
+      contentDetail = "empty or unresolved response";
     }
     checks.push({
       id: expectation.id,
-      status: missing.length > 0 ? "fail" : "pass",
-      detail:
-        missing.length > 0
-          ? `missing ${missing.map((item) => item.label).join(", ")}`
-          : `${expectation.title} rendered core owner controls`,
+      status: resolved.ok ? "pass" : "fail",
+      detail: contentDetail,
     });
   }
 

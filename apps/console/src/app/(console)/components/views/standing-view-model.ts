@@ -911,7 +911,10 @@ function activeSourceWork(input: StandingInputs): SourceWorkGroups {
 function sourceWorkRow(item: SourceWorkItem, hrefs: StandingHrefs): AttentionRowView {
   let what: string;
   if (item.group === "needsOwner") {
-    what = `${item.label} needs you`;
+    // Owner attention is already classified by the shared provider-neutral
+    // actionability model. Keep its exact sanctioned CTA on the overview so
+    // the owner does not have to open Syncs to learn what to do.
+    what = item.actionLabel ? `${item.label}: ${item.actionLabel}` : `${item.label} needs you`;
   } else if (item.group === "review" && item.actionLabel) {
     // The non-urgent group reads as the CONCRETE available action ("Amazon:
     // Refresh now"), not a taxonomy noun ("Amazon is ready for review").

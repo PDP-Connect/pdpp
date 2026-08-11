@@ -516,6 +516,34 @@ test("toSourceInstanceView uses the same stream count for config and stream tabl
   assert.equal(view.streams.length, 6);
 });
 
+test("toSourceInstanceView uses the declared roster for the list count while retaining extra evidence rows", () => {
+  const view = toSourceInstanceView(
+    summary({
+      collection_report: [
+        {
+          checkpoint: "advanced",
+          collected: 0,
+          considered: 0,
+          coverage_condition: "complete",
+          forward_disposition: "resumable",
+          pending_detail_gaps: 0,
+          skipped: null,
+          stream: "collection_only",
+        },
+      ],
+      stream_records: [{ last_updated: "2026-07-01T17:58:46.531Z", record_count: 3, stream: "retained_only" }],
+      streams: ["messages", "threads"],
+    })
+  );
+
+  assert.equal(view.accountLine, "Gmail source · 100 records · 2 streams");
+  assert.equal(passportField(view, "config"), "4 streams");
+  assert.deepEqual(
+    view.streams.map((stream) => stream.name),
+    ["messages", "threads", "collection_only", "retained_only"]
+  );
+});
+
 test("buildSourcesRuntimeAdvisory renders one global runtime fault and ignores healthy runtime", () => {
   assert.equal(
     buildSourcesRuntimeAdvisory({

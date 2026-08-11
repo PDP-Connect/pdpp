@@ -214,12 +214,9 @@ function LatelyBlock({ lately, tracesHref }: { lately: StandingData["lately"]; t
 }
 
 /**
- * "Anything wrong" — a count, not a repeated list. The Syncs page (see
- * `hrefs.runs` / `dashboardRoutes.section.runs`) already lists every one of
- * these items as its own attention cards, one click away; showing the same
- * rows again here duplicated Syncs (and the hero above already carries the
- * aggregate signal for a non-healthy fleet). The Overview's job is just to
- * say something needs a look and point at where the detail already lives.
+ * Source attention is projected once by the shared source-work model. The
+ * overview shows each row's owner-safe label and next step, while Syncs stays
+ * the deeper recovery surface.
  */
 function AttentionBlock({
   sections,
@@ -244,9 +241,19 @@ function AttentionBlock({
       {rowCount > 0 ? (
         <div className="rr-attn" data-row-count={rowCount}>
           {sections.map((section) => (
-            <div className={["rr-attn__section-summary", `is-${section.tone}`].join(" ")} key={section.id}>
-              <span className="rr-attn__section-title">{section.title}</span>
-              <span className="rr-attn__section-count">{section.countLabel}</span>
+            <div className="rr-attn__section" key={section.id}>
+              <div className={["rr-attn__section-summary", `is-${section.tone}`].join(" ")}>
+                <span className="rr-attn__section-title">{section.title}</span>
+                <span className="rr-attn__section-count">{section.countLabel}</span>
+              </div>
+              {section.rows.map((row) => (
+                <div className={["rr-attn__row", `is-${section.tone}`].join(" ")} key={row.id}>
+                  <a className="rr-attn__what" href={row.href}>
+                    {row.what}
+                  </a>
+                  <span className="rr-attn__why">{row.why}</span>
+                </div>
+              ))}
             </div>
           ))}
           <a className="rr-link rr-attn__syncs-link" href={syncsHref}>

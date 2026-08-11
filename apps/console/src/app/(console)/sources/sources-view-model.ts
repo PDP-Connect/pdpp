@@ -140,10 +140,10 @@ export interface SourceInstanceView {
   detailHref: string;
   /** Owner-facing display name (passport + list title). */
   displayName: string;
-  /** Stable React key + route id. */
-  id: string;
   /** Optional manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
   icon?: SourceManifestLike["icon"];
+  /** Stable React key + route id. */
+  id: string;
   /** True when this connection's data arrives by device push (sync is inert). */
   isLocalDevicePush: boolean;
   /** True when the latest run is active, so reprocessing should not start again. */
@@ -544,9 +544,9 @@ export function toSourceInstanceView(
       displayName: summary.display_name,
       name: summary.connector_display_name,
     });
-    accountLine = `${fallbackName} · ${formatSourceListFacts(summary, sourceStreamNames.length)}`;
+    accountLine = `${fallbackName} · ${formatSourceListFacts(summary, summary.streams.length)}`;
   } else {
-    accountLine = formatSourceListFacts(summary, sourceStreamNames.length);
+    accountLine = formatSourceListFacts(summary, summary.streams.length);
   }
   const { primaryVerdictAction } = actionability;
   const nextAction = primaryVerdictAction?.ownerRunnable ? null : actionability.nextAction;

@@ -23,15 +23,12 @@ const SHARED_SOURCE_WORK_AUTHORITY = /function activeSourceWork[\s\S]*return inp
 // and overviewLoadIssues.
 const SERVER_FLEET_VERDICT_HERO_PRECEDENCE =
   /function computeHero\(input: StandingInputs\)[\s\S]*const fleetHealthHero = input\.fleetHealth \? buildFleetHealthHero\(input\.fleetHealth, input\.hrefs\) : null;[\s\S]*if \(fleetHealthHero\)[\s\S]*return fleetHealthHero[\s\S]*projectionState === "stale"[\s\S]*overviewLoadIssues\.length > 0/;
-// Overview renders one summary line per section (title + count), not the
-// individual attention rows underneath it — those are Syncs's job (see
-// `feedback: remove Overview/Syncs CTA duplication`). This guards the
-// intent both ways: sectioned counts must render, and per-row detail
-// (`section.rows.map`) must NOT reappear here — that duplication is exactly
-// what the owner asked to remove.
+// Overview renders the section summary and the shared row copy. The row is
+// the owner-facing trust correction: it carries the exact source label and
+// sanctioned next action already classified by the shared model.
 const SOURCE_WORK_SECTIONS_RENDERED =
   /data-row-count=\{rowCount\}[\s\S]*sections\.map\(\(section\)[\s\S]*rr-attn__section-count/;
-const SOURCE_WORK_ROWS_NOT_REPEATED_RE = /section\.rows\.map\(\(a\)/;
+const SOURCE_WORK_ROWS_RENDERED = /section\.rows\.map\(\(row\)[\s\S]*rr-attn__row[\s\S]*row\.what[\s\S]*row\.why/;
 const SOURCE_WORK_SYNCS_LINK_RE = /href=\{syncsHref\}/;
 const NOTIFICATIONS_BLOCK_RENDERED =
   /function NotificationsBlock\([\s\S]*<h2 className="rr-stand-block__title">Notifications<\/h2>[\s\S]*href=\{href\}/;
@@ -60,15 +57,11 @@ test("Standing Overview uses source work for detail while the server fleet verdi
   assert.match(src, SERVER_FLEET_VERDICT_HERO_PRECEDENCE);
 });
 
-test("Standing Overview renders sectioned shared source-work counts, and links to Syncs instead of repeating rows", async () => {
+test("Standing Overview renders sectioned shared source-work rows and links to Syncs for deeper recovery", async () => {
   const src = await readFile(OVERVIEW_FILE, "utf8");
 
   assert.match(src, SOURCE_WORK_SECTIONS_RENDERED);
-  assert.doesNotMatch(
-    src,
-    SOURCE_WORK_ROWS_NOT_REPEATED_RE,
-    "Overview must not re-render every attention row — that duplicates Syncs, which already lists them"
-  );
+  assert.match(src, SOURCE_WORK_ROWS_RENDERED, "Overview must render the shared source label and next-step row");
   assert.match(src, SOURCE_WORK_SYNCS_LINK_RE, "Overview must link into Syncs for the full attention list");
 });
 

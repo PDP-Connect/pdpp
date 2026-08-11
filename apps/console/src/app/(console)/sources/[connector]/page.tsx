@@ -797,7 +797,6 @@ function ConnectorPageView({
         sourceInstancesError={sourceInstancesError}
       />
 
-
       <ConnectionDangerZone
         connectionId={connectorInstanceId ?? connectionId}
         error={dangerError}
@@ -1002,13 +1001,13 @@ function reauthActionPresentation({
     case "stored_credential":
       return {
         href: storedCredentialUpdateHref ?? fallbackHref,
-        label: "Update credential",
+        label: action.cta,
         title: "Replace the stored credential for this connection. Records, history, and schedule are preserved.",
       };
     case "browser_session":
       return {
         href: browserSessionRepairHref ?? fallbackHref,
-        label: "Reconnect account",
+        label: action.cta,
         title: "Open the secure browser session for this connection. Records, history, and schedule are preserved.",
       };
     default:
