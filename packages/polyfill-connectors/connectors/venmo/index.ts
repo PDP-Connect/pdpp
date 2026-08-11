@@ -268,11 +268,16 @@ export async function collectTransactions(
   fetchPath: VenmoPageFetch,
   ownerId: string,
   delay: (ms: number) => Promise<void> = politeDelay
-): Promise<{ beforeId: string | undefined; considered: number; covered: number; latestSeenAt: string | null }> {
-  const { emitRecord, state } = ctx;
+): Promise<{ considered: number; covered: number; latestSeenAt: string | null }> {
+  const { emitRecord } = ctx;
   const progress = ctx.progress as VenmoProgress;
-  const priorState = state.transactions as { before_id?: string } | undefined;
-  let beforeId = priorState?.before_id;
+  // `before_id` pages backward (toward older history) with no documented
+  // forward/`after_id` counterpart. A cursor persisted across runs would
+  // resume deeper into old history and permanently skip new transactions
+  // added at the head since the last run. So every run re-walks from the
+  // head — this variable is a same-run pagination cursor only, never read
+  // from or written to STATE.
+  let beforeId: string | undefined;
   let totalSeen = 0;
   let totalModeled = 0;
   let latestSeenAt: string | null = null;
@@ -306,19 +311,13 @@ export async function collectTransactions(
 
     const lastStory = stories.at(-1);
     if (!lastStory?.id || stories.length < TRANSACTIONS_PAGE_SIZE) {
-      // Fewer than a full page (or no id to page from) means this run
-      // reached the oldest page Venmo has for this account — there is
-      // nothing older to resume from next run, so the cursor resets to the
-      // head (there is no forward/`after_id` cursor documented for this
-      // route; the next run re-walks from the newest page).
-      beforeId = undefined;
       break;
     }
     beforeId = lastStory.id;
     await delay(PAGE_DELAY_MS);
   }
 
-  return { beforeId, considered: totalSeen, covered: totalModeled, latestSeenAt };
+  return { considered: totalSeen, covered: totalModeled, latestSeenAt };
 }
 
 async function collectProfile(
@@ -403,11 +402,11 @@ export async function collectAllStreams(
   }
 
   if (requested.has("transactions")) {
-    const { beforeId, considered, covered, latestSeenAt } = await collectTransactions(ctx, fetchPath, ownerId);
+    const { considered, covered, latestSeenAt } = await collectTransactions(ctx, fetchPath, ownerId);
     await emit({
       type: "STATE",
       stream: "transactions",
-      cursor: { before_id: beforeId ?? null, last_seen_date_created: latestSeenAt },
+      cursor: { last_seen_date_created: latestSeenAt },
     });
     await emit(
       buildDetailCoverageMessage({

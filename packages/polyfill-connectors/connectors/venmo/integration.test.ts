@@ -132,53 +132,27 @@ test("collectTransactions: an empty first page stops immediately with zero recor
   assert.equal(result.latestSeenAt, null);
 });
 
-test("collectTransactions: resumes from a persisted before_id cursor and an unmodeled story is considered but not covered", async () => {
-  const modeled = story("5001", "2026-04-01T00:00:00Z");
-  const unmodeled = { id: "5002", date_created: "2026-04-01T00:00:00Z", payment: { id: "5003", action: "refund" } };
+// F6 (regression, fixed): `before_id` pages backward with no documented
+// forward/`after_id` counterpart. Persisting it across runs would resume
+// the *next* run deeper into old history and permanently hide new
+// transactions added at the head since the last run. So a prior run's
+// `before_id` in STATE must never be read back, regardless of how the
+// prior run ended (exhaustion, page cap, anything) — every run starts at
+// the head.
+test("collectTransactions: prior STATE.before_id is never read — every run starts at the head", async () => {
   const { fetchPath, calls } = makeScriptedFetch({
-    "/stories/target-or-actor/1111111111111111111": [{ body: { data: [modeled, unmodeled] } }],
+    "/stories/target-or-actor/1111111111111111111": [{ body: { data: [story("5001", "2026-04-01T00:00:00Z")] } }],
   });
-  const { ctx, emitted } = makeCtx({ transactions: { before_id: "prior-cursor-id" } }, ["transactions"]);
-  const result = await collectTransactions(ctx, fetchPath, OWNER_ID);
+  const { ctx, emitted } = makeCtx({ transactions: { before_id: "stale-cursor-from-a-prior-run" } }, ["transactions"]);
+  await collectTransactions(ctx, fetchPath, OWNER_ID);
   assert.ok(
-    calls[0]?.includes(`before_id=${encodeURIComponent("prior-cursor-id")}`),
-    "the persisted before_id must be sent on the first request of the run"
+    !calls[0]?.includes("before_id"),
+    "the first request of a run must never carry a cursor from a previous run"
   );
-  assert.equal(emitted.length, 1, "only the modeled story emits a record");
-  assert.equal(result.considered, 2, "the raw page still counts unmodeled stories as considered");
-  assert.equal(result.covered, 1, "only the modeled story counts as covered");
+  assert.equal(emitted.length, 1);
 });
 
-// F6: before_id must be a real produced-and-consumed cursor — a full page
-// (== TRANSACTIONS_PAGE_SIZE) means there may be more, so the STATE this run
-// emits must carry the id it would page from next, and a subsequent run
-// must actually be able to consume it (proven by the resume test above,
-// which sends the persisted cursor on request #1 — this test proves the
-// producing half: a full page's STATE.cursor.before_id is the last item's
-// id, not the pre-revision dead reset to `undefined`/null).
-test("collectTransactions: a full page (more may exist) persists before_id as the last item's id — the cursor this run produced", async () => {
-  const TRANSACTIONS_PAGE_SIZE = 50;
-  const fullPage = Array.from({ length: TRANSACTIONS_PAGE_SIZE }, (_, i) =>
-    story(String(8000 + i), "2026-03-01T00:00:00Z")
-  );
-  const { fetchPath } = makeScriptedFetch({
-    "/stories/target-or-actor/1111111111111111111": [{ body: { data: fullPage } }, { body: { data: [] } }],
-  });
-  const { ctx } = makeCtx({}, ["transactions"]);
-  const result = await collectTransactions(ctx, fetchPath, OWNER_ID, NO_DELAY);
-  assert.equal(result.beforeId, "8049", "a full page must persist the last story's id as the resume cursor");
-});
-
-test("collectTransactions: a partial (non-full) page resets the cursor to undefined — the oldest page was reached", async () => {
-  const { fetchPath } = makeScriptedFetch({
-    "/stories/target-or-actor/1111111111111111111": [{ body: { data: [story("9001", "2026-02-01T00:00:00Z")] } }],
-  });
-  const { ctx } = makeCtx({}, ["transactions"]);
-  const result = await collectTransactions(ctx, fetchPath, OWNER_ID);
-  assert.equal(result.beforeId, undefined, "the oldest reachable page must reset the cursor, not persist a dead one");
-});
-
-test("collectAllStreams: transactions STATE carries the before_id this run actually produced, not always null", async () => {
+test("collectAllStreams: transactions STATE never carries a before_id key — only last_seen_date_created", async () => {
   const TRANSACTIONS_PAGE_SIZE = 50;
   const fullPage = Array.from({ length: TRANSACTIONS_PAGE_SIZE }, (_, i) =>
     story(String(7000 + i), "2026-01-01T00:00:00Z")
@@ -190,11 +164,79 @@ test("collectAllStreams: transactions STATE carries the before_id this run actua
   await collectAllStreams(ctx, fetchPath, OWNER_ID, accountUser());
   const state = messages.find((m) => m.type === "STATE" && m.stream === "transactions");
   assert.ok(state && state.type === "STATE");
-  assert.equal(
-    (state.cursor as { before_id?: string | null }).before_id,
-    "7049",
-    "the emitted STATE cursor must carry the produced before_id, not a hardcoded null"
+  assert.ok(
+    !("before_id" in (state.cursor as Record<string, unknown>)),
+    "STATE must not persist a before_id cursor across runs"
   );
+  assert.equal(
+    (state.cursor as { last_seen_date_created?: string | null }).last_seen_date_created,
+    "2026-01-01T00:00:00Z"
+  );
+});
+
+// The decisive regression case: history that is an exact multiple of the
+// page size (50, 100, ...) exhausts via the *empty-page* exit, not the
+// partial-page exit. The pre-fix code only reset the cursor on the
+// partial-page exit, so it persisted a dead `before_id` here and run 2
+// resumed past every new head transaction, forever. Two independent
+// `collectTransactions` calls simulate two real runs against a fetch stub
+// that is stateful across the calls, exactly like the real Venmo API.
+test("collectTransactions: two runs over exact-multiple-of-50 history — run2 sees new head transactions after run1 exhausts", async () => {
+  const PAGE_SIZE = 50;
+  const run1History = Array.from({ length: PAGE_SIZE }, (_, i) => story(String(1000 + i), "2026-01-01T00:00:00Z"));
+  const newHeadItems = Array.from({ length: 5 }, (_, i) => story(String(9000 + i), "2026-02-01T00:00:00Z"));
+
+  // Run 1: exactly one full page, then the feed is exhausted (empty page).
+  const run1Fetch = makeScriptedFetch({
+    "/stories/target-or-actor/1111111111111111111": [{ body: { data: run1History } }, { body: { data: [] } }],
+  });
+  const ctx1 = makeCtx({}, ["transactions"]);
+  const result1 = await collectTransactions(ctx1.ctx, run1Fetch.fetchPath, OWNER_ID, NO_DELAY);
+  assert.equal(result1.considered, PAGE_SIZE, "run1 collects the full 50-item history");
+  assert.equal(ctx1.emitted.length, PAGE_SIZE);
+
+  // Run 2: no STATE carries a cursor forward (per the fix), so it starts at
+  // the head again. The feed now has 5 new items ahead of the old history.
+  const run2Fetch = makeScriptedFetch({
+    "/stories/target-or-actor/1111111111111111111": [
+      { body: { data: [...newHeadItems, ...run1History].slice(0, PAGE_SIZE) } },
+      { body: { data: [...newHeadItems, ...run1History].slice(PAGE_SIZE) } },
+      { body: { data: [] } },
+    ],
+  });
+  const ctx2 = makeCtx({}, ["transactions"]);
+  const result2 = await collectTransactions(ctx2.ctx, run2Fetch.fetchPath, OWNER_ID, NO_DELAY);
+  const seenIds = new Set(ctx2.emitted.map((r) => r.data.id));
+  const sawAllNewHeadItems = newHeadItems.every((s) => seenIds.has(s.id));
+  assert.ok(sawAllNewHeadItems, "run2 must see every new head transaction created after run1");
+  assert.equal(result2.considered, newHeadItems.length + run1History.length, "run2 re-walks the full history");
+});
+
+// Page-cap exhaustion (MAX_TRANSACTION_PAGES) must be equally safe: even
+// when a run stops because it hit the page cap rather than an empty/partial
+// page, nothing is persisted that would make the next run skip the head.
+test("collectTransactions: hitting the page cap still starts the next run at the head", async () => {
+  const PAGE_SIZE = 50;
+  const MAX_TRANSACTION_PAGES = 400;
+  const fullPage = (offset: number) =>
+    Array.from({ length: PAGE_SIZE }, (_, i) => story(String(offset + i), "2026-01-01T00:00:00Z"));
+  const script: Record<string, Array<{ body: unknown }>> = {
+    "/stories/target-or-actor/1111111111111111111": Array.from({ length: MAX_TRANSACTION_PAGES }, (_, page) => ({
+      body: { data: fullPage(page * PAGE_SIZE) },
+    })),
+  };
+  const { fetchPath: fetchPath1, calls } = makeScriptedFetch(script);
+  const ctx1 = makeCtx({}, ["transactions"]);
+  const result1 = await collectTransactions(ctx1.ctx, fetchPath1, OWNER_ID, NO_DELAY);
+  assert.equal(result1.considered, PAGE_SIZE * MAX_TRANSACTION_PAGES, "the run consumes every page up to the cap");
+  assert.equal(calls.length, MAX_TRANSACTION_PAGES, "the loop stops exactly at the page cap, not beyond");
+
+  const { fetchPath: fetchPath2, calls: calls2 } = makeScriptedFetch({
+    "/stories/target-or-actor/1111111111111111111": [{ body: { data: [story("head-1", "2026-03-01T00:00:00Z")] } }],
+  });
+  const ctx2 = makeCtx({ transactions: { before_id: "should-never-be-read" } }, ["transactions"]);
+  await collectTransactions(ctx2.ctx, fetchPath2, OWNER_ID, NO_DELAY);
+  assert.ok(!calls2[0]?.includes("before_id"), "a page-cap-exhausted run must not leave a cursor for the next run");
 });
 
 // ─── Page pacing (F10) ──────────────────────────────────────────────────────
