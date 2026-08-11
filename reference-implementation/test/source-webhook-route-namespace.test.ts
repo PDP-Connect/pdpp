@@ -10,7 +10,7 @@ import { type MountRefSourceWebhooksContext, mountRefSourceWebhooks } from "../s
 
 const SECRET = "webhook-secret";
 
-type Handler = Parameters<Parameters<typeof mountRefSourceWebhooks>[0]["post"]>[1];
+type Handler = Parameters<Parameters<typeof mountRefSourceWebhooks>[0]["post"]>[2];
 
 function sign(eventId: string, timestamp: string, body: string): string {
   return `sha256=${createHmac("sha256", SECRET).update(`${eventId}.${timestamp}.${body}`).digest("hex")}`;
@@ -36,7 +36,7 @@ function mountHandler(ctx: MountRefSourceWebhooksContext): Handler {
   let handler: Handler | null = null;
   mountRefSourceWebhooks(
     {
-      post(_path, registered) {
+      post(_path, _options, registered) {
         handler = registered;
         return this;
       },

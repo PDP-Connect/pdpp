@@ -17,6 +17,7 @@
 
 import {
   executeSourceWebhook,
+  SOURCE_WEBHOOK_MAX_BODY_BYTES,
   SourceWebhookError,
   type SourceWebhookResult,
 } from "../../operations/ref-source-webhook-ingest/index.ts";
@@ -36,8 +37,12 @@ interface RouteResponse {
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
+interface RouteOptions {
+  readonly bodyLimit?: number;
+}
+
 interface AppLike {
-  post: (path: string, ...handlers: RouteHandler[]) => AppLike;
+  post: (path: string, options: RouteOptions, handler: RouteHandler) => AppLike;
 }
 
 export interface SourceWebhookSecret {
@@ -142,7 +147,7 @@ function normalizeBody(body: unknown): string {
 }
 
 export function mountRefSourceWebhooks(app: AppLike, ctx: MountRefSourceWebhooksContext): void {
-  app.post("/_ref/source-webhooks/:sourceId", async (req, res) => {
+  app.post("/_ref/source-webhooks/:sourceId", { bodyLimit: SOURCE_WEBHOOK_MAX_BODY_BYTES }, async (req, res) => {
     const secrets = ctx.parseSourceWebhookSecrets();
     const body = normalizeBody(req.body);
     try {
