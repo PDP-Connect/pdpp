@@ -23,6 +23,7 @@ import {
 } from "../server/stores/scheduler-store.ts";
 
 const CONNECTOR_ID = "source-webhook-receipt-test";
+const CONNECTOR_ALIAS = "source-webhook-receipt-test-legacy-alias";
 const CONNECTOR_INSTANCE_ID = "cin_source_webhook_receipt_test";
 const OWNER_SUBJECT_ID = "owner_source_webhook_receipt_test";
 const MANIFEST = {
@@ -92,11 +93,13 @@ async function assertSourceWebhookReceiptOracle(input: {
   let runCalls = 0;
   const createReceiptController = () =>
     createController({
-      admitRunConnection: ({ connectorId, connectorInstanceId }) =>
-        Promise.resolve({
-          connectorId,
+      admitRunConnection: ({ connectorId, connectorInstanceId }) => {
+        assert.equal(connectorId, CONNECTOR_ALIAS, "admission must receive the caller's legacy connector alias");
+        return Promise.resolve({
+          connectorId: CONNECTOR_ID,
           connectorInstanceId: connectorInstanceId ?? CONNECTOR_INSTANCE_ID,
-        }),
+        });
+      },
       connectorPathResolver: () => "/tmp/source-webhook-receipt-test-connector.mjs",
       logger: { error: () => undefined, warn: () => undefined },
       maxRunWallClockMs: Number.POSITIVE_INFINITY,
@@ -110,7 +113,7 @@ async function assertSourceWebhookReceiptOracle(input: {
   const controller = createReceiptController();
 
   const event = sourceEvent(input.sourcePrefix);
-  const first = await controller.runNow(CONNECTOR_ID, runOptions(event, `${input.sourcePrefix}_run_original`));
+  const first = await controller.runNow(CONNECTOR_ALIAS, runOptions(event, `${input.sourcePrefix}_run_original`));
   await runStarted.promise;
   assert.equal(first.status, "started");
   assert.equal(await input.countReceipts(), 1, "the first request must leave one durable dispatch receipt");
@@ -119,6 +122,10 @@ async function assertSourceWebhookReceiptOracle(input: {
   assert.ok(getReceipt, "real scheduler store exposes the durable source-webhook receipt");
   const receipt = await getReceipt(event.sourceId, event.eventId);
   assert.ok(receipt);
+
+  const replay = await controller.runNow(CONNECTOR_ALIAS, runOptions(event, `${input.sourcePrefix}_run_retry`));
+  assert.equal(replay.run_id, first.run_id, "ambiguous response retry must return the original run handle");
+  assert.equal(replay.trace_id, first.trace_id, "ambiguous response retry must return the original trace handle");
   assert.deepEqual(
     {
       action: receipt.action,
@@ -136,10 +143,6 @@ async function assertSourceWebhookReceiptOracle(input: {
     },
     "receipt must bind the authenticated body and resolved dispatch identity"
   );
-
-  const replay = await controller.runNow(CONNECTOR_ID, runOptions(event, `${input.sourcePrefix}_run_retry`));
-  assert.equal(replay.run_id, first.run_id, "ambiguous response retry must return the original run handle");
-  assert.equal(replay.trace_id, first.trace_id, "ambiguous response retry must return the original trace handle");
   assert.equal(runCalls, 1, "same source event must not invoke a second connector run");
   assert.equal(await input.countReceipts(), 1, "same source event must not create a second receipt");
   assert.equal(await input.countActiveRuns(), 1, "same source event must not create a second durable admission row");
@@ -147,7 +150,7 @@ async function assertSourceWebhookReceiptOracle(input: {
   await assert.rejects(
     () =>
       controller.runNow(
-        CONNECTOR_ID,
+        CONNECTOR_ALIAS,
         runOptions(
           sourceEvent(input.sourcePrefix, { bodyHash: `${input.sourcePrefix}_different_body_hash` }),
           "run_conflict"
@@ -165,7 +168,7 @@ async function assertSourceWebhookReceiptOracle(input: {
   await assert.rejects(
     () =>
       controller.runNow(
-        CONNECTOR_ID,
+        CONNECTOR_ALIAS,
         runOptions(event, "run_owner_conflict", { ownerSubjectId: "owner_source_webhook_receipt_other" })
       ),
     (err: unknown) => {
@@ -177,7 +180,7 @@ async function assertSourceWebhookReceiptOracle(input: {
   await assert.rejects(
     () =>
       controller.runNow(
-        CONNECTOR_ID,
+        CONNECTOR_ALIAS,
         runOptions(event, "run_instance_conflict", { connectorInstanceId: "cin_source_webhook_receipt_other" })
       ),
     (err: unknown) => {
@@ -190,7 +193,7 @@ async function assertSourceWebhookReceiptOracle(input: {
   assert.equal(await input.countActiveRuns(), 1, "resolved identity conflicts must not create another admission row");
 
   await assert.rejects(
-    () => controller.runNow(CONNECTOR_ID, runOptions(sourceEvent(`${input.sourcePrefix}_other`), "run_other_event")),
+    () => controller.runNow(CONNECTOR_ALIAS, runOptions(sourceEvent(`${input.sourcePrefix}_other`), "run_other_event")),
     (err: unknown) => {
       assert.ok(err instanceof ControllerError);
       assert.equal(err.code, "run_already_active");
@@ -220,7 +223,7 @@ async function assertSourceWebhookReceiptOracle(input: {
   __resetControllerInteractionStateForTests();
   const restartedController = createReceiptController();
   const terminalReplay = await restartedController.runNow(
-    CONNECTOR_ID,
+    CONNECTOR_ALIAS,
     runOptions(event, `${input.sourcePrefix}_run_after_terminal`)
   );
   assert.equal(terminalReplay.run_id, first.run_id, "post-terminal retry must recover the original run handle");
@@ -230,7 +233,7 @@ async function assertSourceWebhookReceiptOracle(input: {
   assert.equal(await input.countActiveRuns(), 0, "post-terminal retry must not recreate an active-run admission row");
 }
 
-test("SQLite source-webhook controller receipt returns one durable run handle across response loss and terminal cleanup", async (t) => {
+test("SQLite source-webhook controller receipt canonicalizes an alias across response loss and terminal cleanup", async (t) => {
   closeDb();
   initDb(join(mkdtempSync(join(tmpdir(), "pdpp-source-webhook-run-receipt-")), "pdpp.sqlite"));
   __resetControllerInteractionStateForTests();
@@ -254,7 +257,7 @@ test("SQLite source-webhook controller receipt returns one durable run handle ac
   });
 });
 
-test("Postgres source-webhook controller receipt returns one durable run handle across response loss and terminal cleanup", {
+test("Postgres source-webhook controller receipt canonicalizes an alias across response loss and terminal cleanup", {
   skip: !process.env.PDPP_TEST_POSTGRES_URL,
 }, async (t) => {
   const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;

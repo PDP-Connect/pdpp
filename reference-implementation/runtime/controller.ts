@@ -3817,7 +3817,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
     const bookkeeping = await registerActiveRunBookkeeping({
       automationMetadata,
-      connectorId,
+      connectorId: admittedConnectorId,
       connectorInstanceId,
       key,
       runId,
