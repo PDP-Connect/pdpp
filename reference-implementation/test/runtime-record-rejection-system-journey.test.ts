@@ -143,6 +143,26 @@ rl.on('line', (line) => {
   return { cleanup: () => rmSync(tmpDir, { force: true, recursive: true }), connectorPath };
 }
 
+function createIdlingTestConnector(messages: readonly Record<string, unknown>[]) {
+  const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-runtime-record-rejection-idling-connector-"));
+  const connectorPath = join(tmpDir, "connector.mjs");
+  const script = `
+import { createInterface } from 'readline';
+
+const rl = createInterface({ input: process.stdin, terminal: false });
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === 'START') {
+    const messages = ${JSON.stringify(messages)};
+    for (const m of messages) process.stdout.write(JSON.stringify(m) + '\\n');
+    setInterval(() => {}, 1000);
+  }
+});
+`;
+  writeFileSync(connectorPath, script, "utf-8");
+  return { cleanup: () => rmSync(tmpDir, { force: true, recursive: true }), connectorPath };
+}
+
 async function registerManifest(asUrl: string, ownerSession: string, connectorManifest: Record<string, unknown>) {
   const response = await fetchJson(`${asUrl}/connectors`, {
     body: JSON.stringify(connectorManifest),
@@ -676,6 +696,200 @@ test("runtime/server SQLite response loss replays the same durable rejection rec
     assertOmitsPrivatePayload("replay run history facts", facts, [rejectedPayloadLine, "bad-key", "bad-data"]);
   } finally {
     ingestObserver?.restore();
+    if (server) {
+      await closeServer(server);
+    }
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("runtime cancellation after a committed rejection response preserves the receipt but not the cursor", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-runtime-record-rejection-cancellation-"));
+  const dbPath = join(dir, "store.sqlite");
+  const connectorId = "runtime-record-rejection-cancellation";
+  const runId = "run_record_rejection_cancellation";
+  const rejectedRecord = {
+    data: { id: "private-rejected-data", value: "private-rejected-value" },
+    emitted_at: "2026-08-11T12:00:00.000Z",
+    key: "private-rejected-key",
+  };
+  const rejectedPayloadLine = JSON.stringify(rejectedRecord);
+  const forbiddenPayloadNeedles = [
+    rejectedPayloadLine,
+    "private-rejected-data",
+    "private-rejected-key",
+    "private-rejected-value",
+  ];
+  const nativeFetch = globalThis.fetch;
+  const cancellation = new AbortController();
+  const progress: unknown[] = [];
+  let releaseResponse!: () => void;
+  const responseRelease = new Promise<void>((resolve) => {
+    releaseResponse = resolve;
+  });
+  let signalResponseCommitted!: (response: { body: string; status: number }) => void;
+  const responseCommitted = new Promise<{ body: string; status: number }>((resolve) => {
+    signalResponseCommitted = resolve;
+  });
+  let server: ClosableServer | null = null;
+
+  try {
+    server = await startServer({
+      asPort: 0,
+      dbPath,
+      ownerAuthPassword: OWNER_PASSWORD,
+      ownerAuthSubjectId: OWNER_SUBJECT_ID,
+      quiet: true,
+      rsPort: 0,
+    });
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const ownerSession = await login(asUrl);
+    await registerManifest(asUrl, ownerSession, manifest(connectorId));
+    const ownerToken = await issueOwnerToken(asUrl, ownerSession);
+    const { connectorInstanceId } = await admitOwnerRunConnection({
+      connectorId,
+      connectorInstanceId: null,
+      connectorInstanceStore: createRequestConnectorInstanceStore(),
+      ownerSubjectId: OWNER_SUBJECT_ID,
+    });
+    const { cleanup, connectorPath } = createIdlingTestConnector([
+      { ...rejectedRecord, stream: "items", type: "RECORD" },
+      { cursor: { cursor: "must_not_commit_after_cancel" }, stream: "items", type: "STATE" },
+    ]);
+
+    globalThis.fetch = async (input, init) => {
+      const response = await nativeFetch(input, init);
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (
+        (init?.method ?? (input instanceof Request ? input.method : "GET")) === "POST" &&
+        url.origin === rsUrl &&
+        url.pathname === "/v1/ingest/items"
+      ) {
+        const body = await response.text();
+        signalResponseCommitted({ body, status: response.status });
+        await responseRelease;
+        return new Response(body, {
+          headers: response.headers,
+          status: response.status,
+          statusText: response.statusText,
+        });
+      }
+      return response;
+    };
+
+    try {
+      const runPromise = runConnector({
+        admitRunConnection: async ({ connectorId: admittedConnectorId, connectorInstanceId: requestedInstanceId }) => ({
+          connectorId: admittedConnectorId,
+          connectorInstanceId: requestedInstanceId ?? connectorInstanceId,
+          ownerSubjectId: OWNER_SUBJECT_ID,
+        }),
+        cancelSignal: cancellation.signal,
+        collectionMode: "full_refresh",
+        connectorId,
+        connectorInstanceId,
+        connectorPath,
+        manifest: manifest(connectorId),
+        onInteraction: async () => ({}),
+        onProgress: (message) => progress.push(message),
+        ownerToken,
+        persistState: true,
+        rsUrl,
+        runId,
+        scope: { streams: [{ name: "items" }] },
+        state: null,
+      });
+
+      const deliveredResponse = await responseCommitted;
+      assert.equal(deliveredResponse.status, 200);
+      const responseBody = JSON.parse(deliveredResponse.body) as {
+        records_accepted: number;
+        records_attempted: number;
+        records_rejected: number;
+        rejections: { input_index: number; receipt_id: string }[];
+      };
+      assert.equal(responseBody.records_attempted, 1);
+      assert.equal(responseBody.records_accepted, 0);
+      assert.equal(responseBody.records_rejected, 1);
+      assert.equal(responseBody.rejections.length, 1);
+      assert.equal(responseBody.rejections[0]?.input_index, 0);
+      assert.ok(responseBody.rejections[0]?.receipt_id);
+      assertOmitsPrivatePayload("cancelled ingest response", responseBody, [
+        ...forbiddenPayloadNeedles,
+        "parser exploded",
+        "storage exploded",
+      ]);
+
+      const receiptBeforeCancellation = getDb()
+        .prepare(
+          `SELECT payload_text, receipt_id
+           FROM record_rejections
+           WHERE connector_instance_id = ?`
+        )
+        .get<{ payload_text: string; receipt_id: string }>(connectorInstanceId);
+      assert.ok(receiptBeforeCancellation, "receipt transaction committed before the response boundary");
+      assert.equal(receiptBeforeCancellation.receipt_id, responseBody.rejections[0]?.receipt_id);
+      assert.equal(receiptBeforeCancellation.payload_text, rejectedPayloadLine);
+
+      cancellation.abort();
+      releaseResponse();
+      const result = await runPromise;
+
+      assert.equal(result.status, "cancelled");
+      assert.equal(result.terminal_reason, "owner_cancelled");
+      assert.equal(result.records_emitted, 1);
+      assert.equal(result.records_attempted, 1);
+      assert.equal(result.records_accepted, 0);
+      assert.equal(result.records_permanently_rejected, 0);
+      assert.equal(result.records_unresolved_retryable, 1);
+      assert.equal(result.checkpoint_summary?.commit_status, "not_committed");
+      assert.equal(result.checkpoint_summary?.records_attempted, 1);
+      assert.equal(result.checkpoint_summary?.records_accepted, 0);
+      assert.equal(result.checkpoint_summary?.records_permanently_rejected, 0);
+      assert.equal(result.checkpoint_summary?.records_unresolved_retryable, 1);
+      assertOmitsPrivatePayload("cancelled runtime result", result, forbiddenPayloadNeedles);
+      assertOmitsPrivatePayload("cancelled runtime progress", progress, forbiddenPayloadNeedles);
+
+      globalThis.fetch = nativeFetch;
+      const state = (await loadSyncState(connectorId, ownerToken, { connectorInstanceId, rsUrl })) as Record<
+        string,
+        { cursor?: string } | undefined
+      > | null;
+      assert.notEqual(state?.items?.cursor, "must_not_commit_after_cancel", "cancelled run cannot commit staged state");
+
+      const receiptAfterCancellation = getDb()
+        .prepare(
+          `SELECT payload_text, receipt_id
+           FROM record_rejections
+           WHERE connector_instance_id = ?`
+        )
+        .get<{ payload_text: string; receipt_id: string }>(connectorInstanceId);
+      assert.deepEqual(
+        receiptAfterCancellation,
+        receiptBeforeCancellation,
+        "cancellation does not erase committed evidence"
+      );
+
+      const facts = sqliteRunHistoryFacts(runId);
+      assert.equal(facts.records_attempted, 1);
+      assert.equal(facts.records_accepted, 0);
+      assert.equal(facts.records_permanently_rejected, 0);
+      assert.equal(facts.records_unresolved_retryable, 1);
+      assert.equal(facts.records_flushed, 0);
+      assertOmitsPrivatePayload("cancelled run history facts", facts, forbiddenPayloadNeedles);
+      const spineEvidence = getDb().prepare("SELECT data_json FROM spine_events ORDER BY event_seq").all();
+      assertOmitsPrivatePayload("cancelled spine timeline", spineEvidence, forbiddenPayloadNeedles);
+    } finally {
+      globalThis.fetch = nativeFetch;
+      cancellation.abort();
+      releaseResponse();
+      cleanup();
+    }
+  } finally {
+    globalThis.fetch = nativeFetch;
+    cancellation.abort();
+    releaseResponse();
     if (server) {
       await closeServer(server);
     }
