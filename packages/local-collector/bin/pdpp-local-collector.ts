@@ -3326,6 +3326,7 @@ function emptyOutboxSummary(): LocalDeviceOutboxSummary {
     deadLetter: 0,
     leased: 0,
     oldestReadyAt: null,
+    oldestRetryingAt: null,
     ready: 0,
     retrying: 0,
     staleLeases: 0,
