@@ -16,6 +16,7 @@ import { admitOwnerRunConnection } from "../server/stores/connector-instance-sto
 const OWNER_SUBJECT_ID = "owner_alice";
 const OWNER_PASSWORD = "runtime-record-rejection-password";
 const CSRF_RE = /<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/;
+const SIMULATED_RESPONSE_LOSS_RE = /simulated response loss/;
 
 interface ClosableServer {
   abortStartupBackfill?: (reason: string) => void;
@@ -199,6 +200,31 @@ function assertOmitsPrivatePayload(surfaceName: string, surface: unknown, forbid
   for (const needle of forbidden) {
     assert.equal(serialized.includes(needle), false, `${surfaceName} leaked ${needle}`);
   }
+}
+
+function withLostFirstIngestResponse(runId: string): { restore: () => void; seen: () => number } {
+  const originalFetch = globalThis.fetch;
+  let seen = 0;
+  globalThis.fetch = (async (input, init) => {
+    let url: URL;
+    if (typeof input === "string" || input instanceof URL) {
+      url = new URL(input);
+    } else {
+      url = new URL(input.url);
+    }
+    if (url.pathname === "/v1/ingest/items" && url.searchParams.get("run_id") === runId) {
+      seen += 1;
+      await originalFetch(input, init);
+      throw new Error("simulated response loss after durable ingest commit");
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  return {
+    restore: () => {
+      globalThis.fetch = originalFetch;
+    },
+    seen: () => seen,
+  };
 }
 
 test("runtime/server SQLite journey durably receipts invalid identity rejections and exposes payload only on owner detail", async () => {
@@ -401,6 +427,196 @@ test("runtime/server SQLite journey durably receipts invalid identity rejections
     }
     if (serverA) {
       await closeServer(serverA);
+    }
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("runtime/server SQLite response loss replays the same durable rejection receipt before committing cursor", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-runtime-record-rejection-response-loss-"));
+  const dbPath = join(dir, "store.sqlite");
+  const connectorId = "runtime-record-rejection-response-loss";
+  const firstRunId = "run_record_rejection_response_lost";
+  const secondRunId = "run_record_rejection_response_replay";
+  const emittedAt = "2026-08-11T12:10:00.000Z";
+  const rejectedRecord = { data: { id: "bad-data", value: "bad" }, emitted_at: emittedAt, key: "bad-key" };
+  const rejectedPayloadLine = JSON.stringify(rejectedRecord);
+  let server: ClosableServer | null = null;
+
+  try {
+    server = await startServer({
+      asPort: 0,
+      dbPath,
+      ownerAuthPassword: OWNER_PASSWORD,
+      ownerAuthSubjectId: OWNER_SUBJECT_ID,
+      quiet: true,
+      rsPort: 0,
+    });
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const ownerSession = await login(asUrl);
+    await registerManifest(asUrl, ownerSession, manifest(connectorId));
+    const ownerToken = await issueOwnerToken(asUrl, ownerSession);
+    const { connectorInstanceId } = await admitOwnerRunConnection({
+      connectorId,
+      connectorInstanceId: null,
+      connectorInstanceStore: createRequestConnectorInstanceStore(),
+      ownerSubjectId: OWNER_SUBJECT_ID,
+    });
+
+    const firstAttempt = createTestConnector([
+      { ...rejectedRecord, stream: "items", type: "RECORD" },
+      { cursor: { cursor: "must_not_commit_after_lost_response" }, stream: "items", type: "STATE" },
+      { records_emitted: 1, status: "succeeded", type: "DONE" },
+    ]);
+    const firstProgress: unknown[] = [];
+    const lostResponse = withLostFirstIngestResponse(firstRunId);
+    try {
+      await assert.rejects(
+        () =>
+          runConnector({
+            admitRunConnection: async ({
+              connectorId: admittedConnectorId,
+              connectorInstanceId: requestedInstanceId,
+            }) => ({
+              connectorId: admittedConnectorId,
+              connectorInstanceId: requestedInstanceId ?? connectorInstanceId,
+              ownerSubjectId: OWNER_SUBJECT_ID,
+            }),
+            collectionMode: "full_refresh",
+            connectorId,
+            connectorInstanceId,
+            connectorPath: firstAttempt.connectorPath,
+            manifest: manifest(connectorId),
+            onInteraction: async () => ({}),
+            onProgress: (message) => firstProgress.push(message),
+            ownerToken,
+            persistState: true,
+            rsUrl,
+            runId: firstRunId,
+            scope: { streams: [{ name: "items" }] },
+            state: null,
+          }),
+        SIMULATED_RESPONSE_LOSS_RE
+      );
+      assert.equal(lostResponse.seen(), 1, "test wrapper must lose exactly the first ingest response");
+      assertOmitsPrivatePayload("lost-response runtime progress", firstProgress, [
+        rejectedPayloadLine,
+        "bad-key",
+        "bad-data",
+      ]);
+    } finally {
+      lostResponse.restore();
+      firstAttempt.cleanup();
+    }
+
+    const stateAfterLoss = (await loadSyncState(connectorId, ownerToken, { connectorInstanceId, rsUrl })) as Record<
+      string,
+      { cursor?: string } | undefined
+    > | null;
+    assert.notEqual(stateAfterLoss?.items?.cursor, "must_not_commit_after_lost_response");
+
+    const rowAfterLoss = getDb()
+      .prepare(
+        `SELECT receipt_id, reason_code, payload_text, replay_count
+         FROM record_rejections
+         WHERE connector_instance_id = ?`
+      )
+      .get<{ payload_text: string; reason_code: string; receipt_id: string; replay_count: number }>(
+        connectorInstanceId
+      );
+    assert.ok(rowAfterLoss, "server must commit the receipt before the response is lost");
+    assert.equal(rowAfterLoss.reason_code, "invalid_record_identity");
+    assert.equal(rowAfterLoss.payload_text, rejectedPayloadLine);
+    assert.equal(rowAfterLoss.replay_count, 0);
+    assert.equal(
+      getDb()
+        .prepare("SELECT COUNT(*) AS count FROM record_rejections WHERE connector_instance_id = ?")
+        .get<{ count: number }>(connectorInstanceId)?.count,
+      1
+    );
+
+    const secondAttempt = createTestConnector([
+      { ...rejectedRecord, stream: "items", type: "RECORD" },
+      { cursor: { cursor: "committed_after_replayed_receipt" }, stream: "items", type: "STATE" },
+      { records_emitted: 1, status: "succeeded", type: "DONE" },
+    ]);
+    const secondProgress: unknown[] = [];
+    try {
+      const result = await runConnector({
+        admitRunConnection: async ({ connectorId: admittedConnectorId, connectorInstanceId: requestedInstanceId }) => ({
+          connectorId: admittedConnectorId,
+          connectorInstanceId: requestedInstanceId ?? connectorInstanceId,
+          ownerSubjectId: OWNER_SUBJECT_ID,
+        }),
+        collectionMode: "full_refresh",
+        connectorId,
+        connectorInstanceId,
+        connectorPath: secondAttempt.connectorPath,
+        manifest: manifest(connectorId),
+        onInteraction: async () => ({}),
+        onProgress: (message) => secondProgress.push(message),
+        ownerToken,
+        persistState: true,
+        rsUrl,
+        runId: secondRunId,
+        scope: { streams: [{ name: "items" }] },
+        state: null,
+      });
+
+      assert.equal(result.status, "succeeded");
+      assert.equal(result.records_emitted, 1);
+      assert.equal(result.records_attempted, 1);
+      assert.equal(result.records_accepted, 0);
+      assert.equal(result.records_permanently_rejected, 1);
+      assert.equal(result.records_unresolved_retryable, 0);
+      assert.equal(result.checkpoint_summary?.records_flushed, 0);
+      assert.equal(result.checkpoint_summary?.records_attempted, 1);
+      assert.equal(result.checkpoint_summary?.records_permanently_rejected, 1);
+      assertOmitsPrivatePayload("replay runtime result", result, [rejectedPayloadLine, "bad-key", "bad-data"]);
+      assertOmitsPrivatePayload("replay runtime progress", secondProgress, [
+        rejectedPayloadLine,
+        "bad-key",
+        "bad-data",
+      ]);
+    } finally {
+      secondAttempt.cleanup();
+    }
+
+    const rowAfterReplay = getDb()
+      .prepare(
+        `SELECT receipt_id, payload_text, replay_count
+         FROM record_rejections
+         WHERE connector_instance_id = ?`
+      )
+      .get<{ payload_text: string; receipt_id: string; replay_count: number }>(connectorInstanceId);
+    assert.ok(rowAfterReplay);
+    assert.equal(rowAfterReplay.receipt_id, rowAfterLoss.receipt_id);
+    assert.equal(rowAfterReplay.payload_text, rejectedPayloadLine);
+    assert.equal(rowAfterReplay.replay_count, 1);
+    assert.equal(
+      getDb()
+        .prepare("SELECT COUNT(*) AS count FROM record_rejections WHERE connector_instance_id = ?")
+        .get<{ count: number }>(connectorInstanceId)?.count,
+      1
+    );
+
+    const stateAfterReplay = (await loadSyncState(connectorId, ownerToken, { connectorInstanceId, rsUrl })) as Record<
+      string,
+      { cursor?: string } | undefined
+    > | null;
+    assert.equal(stateAfterReplay?.items?.cursor, "committed_after_replayed_receipt");
+
+    const facts = sqliteRunHistoryFacts(secondRunId);
+    assert.equal(facts.records_attempted, 1);
+    assert.equal(facts.records_accepted, 0);
+    assert.equal(facts.records_permanently_rejected, 1);
+    assert.equal(facts.records_unresolved_retryable, 0);
+    assert.equal(facts.records_flushed, 0);
+    assertOmitsPrivatePayload("replay run history facts", facts, [rejectedPayloadLine, "bad-key", "bad-data"]);
+  } finally {
+    if (server) {
+      await closeServer(server);
     }
     rmSync(dir, { force: true, recursive: true });
   }
