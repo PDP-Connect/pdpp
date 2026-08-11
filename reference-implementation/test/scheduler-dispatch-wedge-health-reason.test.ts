@@ -205,6 +205,7 @@ async function runOneWedgeThroughDefaultStore(connectorId: string, connectorInst
           intervalMs: 25,
           manifest: { capabilities: { refresh_policy: { background_safe: true } } },
           maxRetries: 0,
+          ownerSubjectId: "owner-wedge",
           ownerToken: "owner-token",
         },
       ],

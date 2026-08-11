@@ -3582,7 +3582,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   async function runNow(connectorId: string, options: RunNowOptions = {}): Promise<RunNowResult> {
-    const runOwnerSubjectId = options.ownerSubjectId || ownerSubjectId;
+    const runOwnerSubjectId = options.ownerSubjectId ?? ownerSubjectId;
     const admittedConnection = await resolveAdmittedRunConnection(
       opts,
       connectorId,

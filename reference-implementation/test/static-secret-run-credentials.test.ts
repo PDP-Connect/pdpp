@@ -69,7 +69,7 @@ import {
 type ResolveStaticSecretRunEnv = (args: {
   connectorId: string;
   connectorInstanceId: string;
-  ownerSubjectId?: string | undefined;
+  ownerSubjectId: string;
   sourceBinding: unknown;
   credentialStore: unknown;
   isStaticSecretCaptureOptional?: (connectorId: string) => boolean;
@@ -146,7 +146,7 @@ function resolveEnv(
   }: {
     connectorId: string;
     connectorInstanceId: string;
-    ownerSubjectId?: string | undefined;
+    ownerSubjectId: string;
     sourceBinding?: unknown;
   }
 ): Promise<Record<string, string>> {
@@ -478,8 +478,16 @@ test(
       ownerSubjectId: "owner_1",
       secret: "work two distinct",
     });
-    const personal = await resolveEnv(store, { connectorId: "gmail", connectorInstanceId: "cin_personal" });
-    const work = await resolveEnv(store, { connectorId: "gmail", connectorInstanceId: "cin_work" });
+    const personal = await resolveEnv(store, {
+      connectorId: "gmail",
+      connectorInstanceId: "cin_personal",
+      ownerSubjectId: "owner_1",
+    });
+    const work = await resolveEnv(store, {
+      connectorId: "gmail",
+      connectorInstanceId: "cin_work",
+      ownerSubjectId: "owner_1",
+    });
     assert.equal(personal.GOOGLE_APP_PASSWORD_PDPP, "personal one here");
     assert.equal(work.GOOGLE_APP_PASSWORD_PDPP, "work two distinct");
     assert.notEqual(personal.GOOGLE_APP_PASSWORD_PDPP, work.GOOGLE_APP_PASSWORD_PDPP);

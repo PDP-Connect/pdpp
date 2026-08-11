@@ -43,13 +43,22 @@ export class StaticSecretRunCredentialError extends Error {
   }
 }
 
+function assertRunOwnerSubjectId(ownerSubjectId: unknown): asserts ownerSubjectId is string {
+  if (typeof ownerSubjectId !== "string" || ownerSubjectId.trim().length === 0) {
+    throw new StaticSecretRunCredentialError(
+      "owner_subject_required",
+      "A nonblank ownerSubjectId is required to resolve a static-secret run env."
+    );
+  }
+}
+
 /**
  * Resolve the connection-scoped secret env fragment for one run.
  *
  * @param {object} args
  * @param {string} args.connectorId - the connector type (e.g. 'gmail').
  * @param {string} args.connectorInstanceId - the connection being run.
- * @param {string} [args.ownerSubjectId] - owner scoping for recovery.
+ * @param {string} args.ownerSubjectId - owner scoping for recovery.
  * @param {unknown} [args.sourceBinding] - non-secret connection setup binding.
  * @param {object} args.credentialStore - a connector-instance credential store.
  * @param {(connectorId: string) => boolean} args.isStaticSecretConnector -
@@ -69,10 +78,7 @@ export interface RecoveredCredential {
 }
 
 export interface StaticSecretCredentialStore {
-  recoverSecret: (args: {
-    connectorInstanceId: string;
-    ownerSubjectId?: string | undefined;
-  }) => Promise<RecoveredCredential>;
+  recoverSecret: (args: { connectorInstanceId: string; ownerSubjectId: string }) => Promise<RecoveredCredential>;
 }
 
 export async function resolveStaticSecretRunEnv({
@@ -95,7 +101,7 @@ export async function resolveStaticSecretRunEnv({
   credentialStore: StaticSecretCredentialStore | null | undefined;
   isStaticSecretCaptureOptional?: (connectorId: string) => boolean;
   isStaticSecretConnector: (connectorId: string) => boolean;
-  ownerSubjectId?: string;
+  ownerSubjectId: string;
   sourceBinding?: unknown;
 }): Promise<Record<string, string> | null> {
   if (typeof isStaticSecretConnector !== "function" || typeof buildConnectionScopedSecretEnv !== "function") {
@@ -116,6 +122,7 @@ export async function resolveStaticSecretRunEnv({
       "A connector-instance credential store is required to resolve a static-secret run env."
     );
   }
+  assertRunOwnerSubjectId(ownerSubjectId);
   const browserSessionSource =
     isRecord(sourceBinding) &&
     (sourceBinding.kind === "browser_collector" || sourceBinding.kind === "browser_enrollment_shell");

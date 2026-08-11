@@ -89,6 +89,7 @@ function schedule(connectorId: string, runtimeRequirements: Record<string, unkno
     connectorPath: `/tmp/${connectorId}`,
     intervalMs: 60_000,
     manifest: { runtime_requirements: runtimeRequirements },
+    ownerSubjectId: "owner-readiness",
     ownerToken: `owner-token-${connectorId}`,
   };
 }

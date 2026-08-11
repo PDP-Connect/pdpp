@@ -8143,6 +8143,7 @@ function createReferenceSchedulerManager({
           }
           const handle = await controller.runNow(connectorId, {
             connectorInstanceId: opts.connectorInstanceId,
+            ownerSubjectId: opts.ownerSubjectId,
             ownerToken: opts.ownerToken,
             priorityClass: opts.priorityClass,
             recoveryOnly: opts.recoveryOnly === true,

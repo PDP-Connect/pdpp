@@ -173,6 +173,7 @@ function schedule(connectorPath: string): ConnectorSchedule {
     intervalMs: 60_000,
     manifest: MANIFEST,
     maxRetries: 0,
+    ownerSubjectId: "owner_local",
     ownerToken: "owner-token",
   };
 }

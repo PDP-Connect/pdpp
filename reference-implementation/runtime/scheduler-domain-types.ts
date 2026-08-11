@@ -91,7 +91,7 @@ export interface ConnectorSchedule {
   readonly manifest: SchedulerManifest;
   readonly maxRetries?: number;
   /** Owner admitted with this exact connection at scheduler refresh. */
-  readonly ownerSubjectId?: string;
+  readonly ownerSubjectId: string;
   readonly ownerToken: string;
 }
 

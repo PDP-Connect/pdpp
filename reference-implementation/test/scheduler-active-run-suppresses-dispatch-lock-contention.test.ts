@@ -229,6 +229,7 @@ rl.on('line', (line) => {
             intervalMs: TICK_INTERVAL_MS,
             manifest: spotifyManifest,
             maxRetries: 0,
+            ownerSubjectId: "scheduler_lock_contention_user",
             ownerToken,
           },
         ],

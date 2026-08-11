@@ -81,6 +81,7 @@ test("scheduled static-secret credential rejection suppresses repeated automatic
         intervalMs: 25,
         manifest: BACKGROUND_SAFE_MANIFEST,
         maxRetries: 0,
+        ownerSubjectId: "owner-repair",
         ownerToken: "owner-token",
       },
     ],

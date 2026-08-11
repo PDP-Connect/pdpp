@@ -1195,7 +1195,28 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     return { collectionMode, state, wrappedInteraction };
   }
 
-  async function launchRun(
+  function launchRun(
+    schedule: ConnectorSchedule,
+    isManual: boolean,
+    automationPolicy: ReturnType<typeof projectRunAutomationPolicy>,
+    options: { recoveryOnly?: boolean } = {}
+  ): Promise<RunRecord> {
+    const { connectorId, connectorInstanceId = connectorId, ownerSubjectId } = schedule;
+    if (typeof ownerSubjectId !== "string" || ownerSubjectId.trim().length === 0) {
+      return Promise.resolve(
+        recordAndNotify(
+          buildCredentialResolutionFailure(
+            connectorId,
+            "scheduler ownerSubjectId is required and must be nonblank",
+            connectorInstanceId
+          )
+        )
+      );
+    }
+    return launchRunWithValidatedOwner(schedule, isManual, automationPolicy, options);
+  }
+
+  async function launchRunWithValidatedOwner(
     schedule: ConnectorSchedule,
     isManual: boolean,
     automationPolicy: ReturnType<typeof projectRunAutomationPolicy>,
@@ -1208,7 +1229,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       connectorPath,
       manifest,
       ownerToken,
-      ownerSubjectId = "",
+      ownerSubjectId,
       grantAccessMode = "continuous",
     } = schedule;
     const persistState = grantAccessMode !== "single_use";

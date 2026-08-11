@@ -215,6 +215,7 @@ test("two independent scheduler processes sharing one durable store admit exactl
     connectorPath: connector.connectorPath,
     intervalMs: 60_000,
     manifest: MANIFEST,
+    ownerSubjectId: "owner-durable",
     ownerToken: "owner-token",
   };
 
@@ -325,6 +326,7 @@ test("scheduler restart while an incumbent run is genuinely still live does not 
     connectorPath: connector.connectorPath,
     intervalMs: 60_000,
     manifest: MANIFEST,
+    ownerSubjectId: "owner-durable",
     ownerToken: "owner-token",
   };
 
@@ -432,6 +434,7 @@ test("manual controller.runNow racing a scheduled tick for the same connector in
   const manualPromise = controller.runNow(CONNECTOR_ID, {
     connectorInstanceId: CONNECTOR_INSTANCE_ID,
     manifest: MANIFEST,
+    ownerSubjectId: "owner-durable",
     ownerToken: "owner-token",
     runId: "run_manual_incumbent",
     triggerKind: "manual",
@@ -466,6 +469,7 @@ test("manual controller.runNow racing a scheduled tick for the same connector in
         connectorPath: connector.connectorPath,
         intervalMs: 60_000,
         manifest: MANIFEST,
+        ownerSubjectId: "owner-durable",
         ownerToken: "owner-token",
       },
     ],
@@ -544,6 +548,7 @@ test("next scheduled dispatch is anchored to a run's actual completion time, obs
         intervalMs,
         manifest: MANIFEST,
         maxRetries: 0,
+        ownerSubjectId: "owner-durable",
         ownerToken: "owner-token",
       },
     ],

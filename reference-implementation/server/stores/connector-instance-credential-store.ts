@@ -98,7 +98,7 @@ export interface ConnectorInstanceCredentialStore {
   }) => Promise<CredentialMetadata | null>;
   recoverSecret: (args: {
     connectorInstanceId: string;
-    ownerSubjectId?: string | undefined;
+    ownerSubjectId: string;
   }) => Promise<{ credentialKind: string; secret: string }>;
   revoke: (args: { connectorInstanceId: string; now: string }) => Promise<CredentialMetadata | null>;
 }
@@ -144,6 +144,15 @@ export class ConnectorInstanceCredentialError extends Error {
     super(message);
     this.name = "ConnectorInstanceCredentialError";
     this.code = code;
+  }
+}
+
+function assertRecoveryOwnerSubjectId(ownerSubjectId: unknown): asserts ownerSubjectId is string {
+  if (typeof ownerSubjectId !== "string" || ownerSubjectId.trim().length === 0) {
+    throw new ConnectorInstanceCredentialError(
+      "owner_subject_required",
+      "ownerSubjectId is required to recover a credential."
+    );
   }
 }
 
@@ -336,8 +345,9 @@ function buildStore({
       ownerSubjectId,
     }: {
       connectorInstanceId: string;
-      ownerSubjectId?: string | undefined;
+      ownerSubjectId: string;
     }) {
+      assertRecoveryOwnerSubjectId(ownerSubjectId);
       const row = await read.getRaw(connectorInstanceId);
       if (!row) {
         throw new ConnectorInstanceCredentialError(
@@ -345,7 +355,7 @@ function buildStore({
           `No static-secret credential is captured for connection '${connectorInstanceId}'.`
         );
       }
-      if (ownerSubjectId && row.owner_subject_id !== ownerSubjectId) {
+      if (row.owner_subject_id !== ownerSubjectId) {
         throw new ConnectorInstanceCredentialError(
           "credential_owner_mismatch",
           `Credential for '${connectorInstanceId}' does not belong to owner '${ownerSubjectId}'.`

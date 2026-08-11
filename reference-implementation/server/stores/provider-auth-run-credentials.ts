@@ -150,7 +150,7 @@ function envFromBundle(
 }
 
 export interface ProviderAuthCredentialStore {
-  recoverSecret: (args: { connectorInstanceId: string; ownerSubjectId?: string | undefined }) => Promise<{
+  recoverSecret: (args: { connectorInstanceId: string; ownerSubjectId: string }) => Promise<{
     credentialKind: string;
     secret: string;
   }>;
@@ -168,7 +168,7 @@ export async function resolveProviderAuthRunEnv({
   connectorId: string;
   connectorInstanceId: string;
   credentialStore: ProviderAuthCredentialStore | null | undefined;
-  ownerSubjectId?: string;
+  ownerSubjectId: string;
   sourceBinding?: unknown;
   /** From `manifest.capabilities.auth.connection_config`, normalized to
    * `{envVar, bundleField}` pairs by the caller. Absent/empty means this

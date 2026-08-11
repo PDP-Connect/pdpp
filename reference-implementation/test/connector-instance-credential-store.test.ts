@@ -78,8 +78,8 @@ interface CredentialRow {
 
 // Mirrors createSqliteConnectorInstanceCredentialStore's real return shape
 // (server/stores/connector-instance-credential-store.ts `buildStore`).
-// `ownerSubjectId` is optional on recoverSecret — the module only enforces
-// owner scoping `if (ownerSubjectId && row.owner_subject_id !== ownerSubjectId)`.
+// `ownerSubjectId` is required on recoverSecret so every plaintext recovery is
+// owner-scoped before the sealed value is opened.
 interface ConnectorInstanceCredentialStore {
   capture: (args: {
     connectorInstanceId: string;
@@ -96,7 +96,7 @@ interface ConnectorInstanceCredentialStore {
     rejectedAt: string;
     reason?: string | null;
   }) => Promise<CredentialMetadata | null>;
-  recoverSecret: (args: { connectorInstanceId: string; ownerSubjectId?: string }) => Promise<RecoveredSecret>;
+  recoverSecret: (args: { connectorInstanceId: string; ownerSubjectId: string }) => Promise<RecoveredSecret>;
   revoke: (args: { connectorInstanceId: string; now: string }) => Promise<CredentialMetadata | null>;
 }
 
@@ -276,8 +276,8 @@ test(
       ownerSubjectId: "owner_1",
       secret: "work pass word distinct",
     });
-    const personal = await store.recoverSecret({ connectorInstanceId: "cin_personal" });
-    const work = await store.recoverSecret({ connectorInstanceId: "cin_work" });
+    const personal = await store.recoverSecret({ connectorInstanceId: "cin_personal", ownerSubjectId: "owner_1" });
+    const work = await store.recoverSecret({ connectorInstanceId: "cin_work", ownerSubjectId: "owner_1" });
     assert.equal(personal.secret, "personal pass word here");
     assert.equal(work.secret, "work pass word distinct");
     assert.notEqual(personal.secret, work.secret, "mailboxes must not collide on one secret");
@@ -410,7 +410,10 @@ test("initDb widens legacy credential_kind CHECK without dropping stored credent
       "legacy CHECK should be widened on boot"
     );
     const store = createStore({ env: envWithKey() });
-    assert.equal((await store.recoverSecret({ connectorInstanceId: "cin_existing" })).secret, APP_PASSWORD);
+    assert.equal(
+      (await store.recoverSecret({ connectorInstanceId: "cin_existing", ownerSubjectId: "owner_1" })).secret,
+      APP_PASSWORD
+    );
     seedConnectorInstance({ connectorId: "slack", connectorInstanceId: "cin_bundle", ownerSubjectId: "owner_1" });
     const captured = await store.capture({
       connectorInstanceId: "cin_bundle",
@@ -507,8 +510,15 @@ test("initDb widens legacy credential_kind CHECK to admit access_token and api_k
       "legacy CHECK should be widened on boot to admit access_token/api_key"
     );
     const store = createStore({ env: envWithKey() });
-    assert.equal((await store.recoverSecret({ connectorInstanceId: "cin_existing" })).secret, APP_PASSWORD);
-    seedConnectorInstance({ connectorId: "groupme", connectorInstanceId: "cin_access_token", ownerSubjectId: "owner_1" });
+    assert.equal(
+      (await store.recoverSecret({ connectorInstanceId: "cin_existing", ownerSubjectId: "owner_1" })).secret,
+      APP_PASSWORD
+    );
+    seedConnectorInstance({
+      connectorId: "groupme",
+      connectorInstanceId: "cin_access_token",
+      ownerSubjectId: "owner_1",
+    });
     const captured = await store.capture({
       connectorInstanceId: "cin_access_token",
       credentialKind: "access_token",
@@ -518,7 +528,10 @@ test("initDb widens legacy credential_kind CHECK to admit access_token and api_k
     });
     assert.ok(captured, "capture returns metadata after the access_token/api_key CHECK migration");
     assert.equal(captured.credentialKind, "access_token");
-    assert.equal((await store.recoverSecret({ connectorInstanceId: "cin_access_token" })).secret, "groupme_token_value");
+    assert.equal(
+      (await store.recoverSecret({ connectorInstanceId: "cin_access_token", ownerSubjectId: "owner_1" })).secret,
+      "groupme_token_value"
+    );
   } finally {
     closeDb();
   }
@@ -536,12 +549,12 @@ test("initDb widens legacy credential_kind CHECK to admit access_token and api_k
     );
     const store = createStore({ env: envWithKey() });
     assert.equal(
-      (await store.recoverSecret({ connectorInstanceId: "cin_existing" })).secret,
+      (await store.recoverSecret({ connectorInstanceId: "cin_existing", ownerSubjectId: "owner_1" })).secret,
       APP_PASSWORD,
       "pre-migration row must survive an idempotent re-run byte-identical"
     );
     assert.equal(
-      (await store.recoverSecret({ connectorInstanceId: "cin_access_token" })).secret,
+      (await store.recoverSecret({ connectorInstanceId: "cin_access_token", ownerSubjectId: "owner_1" })).secret,
       "groupme_token_value",
       "row captured post-migration must survive an idempotent re-run byte-identical"
     );
@@ -623,7 +636,10 @@ test("initDb widens legacy credential status CHECK and preserves stored credenti
       "legacy status CHECK should be widened on boot"
     );
     const store = createStore({ env: envWithKey() });
-    assert.equal((await store.recoverSecret({ connectorInstanceId: "cin_existing" })).secret, APP_PASSWORD);
+    assert.equal(
+      (await store.recoverSecret({ connectorInstanceId: "cin_existing", ownerSubjectId: "owner_1" })).secret,
+      APP_PASSWORD
+    );
     const rejected = await store.markRejected({
       connectorInstanceId: "cin_existing",
       reason: "provider rejected stored credential",
@@ -665,7 +681,7 @@ test(
     assert.equal(rotated.capturedAt, NOW, "rotation preserves original capture time");
     assert.equal(rotated.rotatedAt, LATER, "rotation stamps a rotation time");
     assert.notEqual(rotated.fingerprint, first.fingerprint, "fingerprint changes with the new secret");
-    const recovered = await store.recoverSecret({ connectorInstanceId: "cin_a" });
+    const recovered = await store.recoverSecret({ connectorInstanceId: "cin_a", ownerSubjectId: "owner_1" });
     assert.equal(recovered.secret, ROTATED_PASSWORD, "recovers the rotated secret, not the old one");
   })
 );
@@ -688,7 +704,7 @@ test(
     assert.equal(revoked.revokedAt, LATER);
     assert.equal(await store.hasActiveCredential("cin_a"), false);
     await assert.rejects(
-      () => store.recoverSecret({ connectorInstanceId: "cin_a" }),
+      () => store.recoverSecret({ connectorInstanceId: "cin_a", ownerSubjectId: "owner_1" }),
       (err) => err instanceof ConnectorInstanceCredentialError && err.code === "credential_revoked"
     );
     // Metadata still readable (row not deleted) — credential lifecycle is distinct
@@ -723,7 +739,7 @@ test(
     assert.equal(rejected.rejectionReason, "provider rejected stored credential");
     assert.equal(await store.hasActiveCredential("cin_a"), false);
     await assert.rejects(
-      () => store.recoverSecret({ connectorInstanceId: "cin_a" }),
+      () => store.recoverSecret({ connectorInstanceId: "cin_a", ownerSubjectId: "owner_1" }),
       (err) => err instanceof ConnectorInstanceCredentialError && err.code === "credential_rejected"
     );
     const meta = await store.getMetadata("cin_a");
@@ -761,7 +777,10 @@ test(
     assert.ok(recaptured, "re-capture returns metadata");
     assert.equal(recaptured.status, "active");
     assert.equal(recaptured.revokedAt, null);
-    assert.equal((await store.recoverSecret({ connectorInstanceId: "cin_a" })).secret, ROTATED_PASSWORD);
+    assert.equal(
+      (await store.recoverSecret({ connectorInstanceId: "cin_a", ownerSubjectId: "owner_1" })).secret,
+      ROTATED_PASSWORD
+    );
   })
 );
 
@@ -797,7 +816,10 @@ test(
     assert.equal(recaptured.rejected, false);
     assert.equal(recaptured.rejectedAt, null);
     assert.equal(recaptured.rejectionReason, null);
-    assert.equal((await store.recoverSecret({ connectorInstanceId: "cin_a" })).secret, ROTATED_PASSWORD);
+    assert.equal(
+      (await store.recoverSecret({ connectorInstanceId: "cin_a", ownerSubjectId: "owner_1" })).secret,
+      ROTATED_PASSWORD
+    );
   })
 );
 
@@ -820,7 +842,7 @@ test(
       .get("cin_a");
     assert.equal(row, undefined, "no credential row addressable after delete");
     await assert.rejects(
-      () => store.recoverSecret({ connectorInstanceId: "cin_a" }),
+      () => store.recoverSecret({ connectorInstanceId: "cin_a", ownerSubjectId: "owner_1" }),
       (err) => err instanceof ConnectorInstanceCredentialError && err.code === "credential_not_found"
     );
   })

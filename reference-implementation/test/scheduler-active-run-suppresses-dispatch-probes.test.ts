@@ -198,6 +198,7 @@ rl.on('line', (line) => {
           intervalMs: TICK_INTERVAL_MS,
           manifest: spotifyManifest,
           maxRetries: 0,
+          ownerSubjectId: "scheduler_active_run_probe_user",
           ownerToken,
         },
       ],

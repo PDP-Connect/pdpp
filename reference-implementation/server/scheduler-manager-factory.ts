@@ -72,6 +72,7 @@ interface Controller {
     connectorId: string,
     options: {
       connectorInstanceId: string;
+      ownerSubjectId: string;
       ownerToken: string;
       priorityClass: "background";
       triggerKind: "scheduled";
@@ -322,7 +323,7 @@ function projectManagedControllerTerminalRun(
   };
 }
 
-function createRunManagedConnectorViaController(
+export function createRunManagedConnectorViaController(
   controller: Controller
 ): SchedulerOptions["runManagedConnectorViaController"] {
   const leaseManager = controller.browserSurfaceLeaseManager;
@@ -338,6 +339,7 @@ function createRunManagedConnectorViaController(
     }
     const handle = await controller.runNow(connectorId, {
       connectorInstanceId: opts.connectorInstanceId,
+      ownerSubjectId: opts.ownerSubjectId,
       ownerToken: opts.ownerToken,
       priorityClass: opts.priorityClass,
       triggerKind: opts.triggerKind,
@@ -446,6 +448,7 @@ export function createReferenceSchedulerManager({
             connectorPath,
             intervalMs: Math.max(1, schedule.interval_seconds) * 1000,
             manifest,
+            ownerSubjectId,
             ownerToken: await controller.issueRuntimeOwnerToken(),
           };
         } catch (err) {
