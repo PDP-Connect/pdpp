@@ -107,6 +107,8 @@ import {
   GOOGLE_MESSAGES_NOT_PAIRED_DRIVER,
   GROUPME_ATTACHMENTS_SHORTFALL_DRIVER,
   GROUPME_ATTACHMENTS_WITHHELD_DRIVER,
+  GROUPME_HIGH_VOLUME_DRIVER,
+  GROUPME_ZERO_DIRECT_INVENTORY_DRIVER,
   KNOWN_UNEXERCISED_COVERAGE,
   REDDIT_MALFORMED_DRIVER,
   YNAB_ACCOUNT_STATS_TWO_BUDGETS_ONE_MALFORMED_DRIVER,
@@ -790,6 +792,67 @@ test("capability: the ynab ratchet correctly names every remaining real required
       `ynab.${stream} is required but missing from KNOWN_UNEXERCISED_COVERAGE`
     );
   }
+});
+
+// ─── GroupMe required streams: terminal evidence capability pins ───────────
+//
+// These pins use the same real collect() path as the aggregate driver. They
+// are deliberately about the terminal evidence shape, not merely record
+// counts: a clean empty inventory must carry explicit 0/0 coverage, and a
+// multi-page walk must report the complete enumerated boundary even when the
+// fingerprint cursor emits fewer (or no) records.
+
+test("capability: GroupMe's four required streams are registered in the connector-neutral coverage gate", () => {
+  assert.deepEqual(
+    CONNECTOR_DRIVERS.groupme?.coveredStreams,
+    ["groups", "group_messages", "direct_messages", "direct_chat_messages"],
+    "the gate must exercise every GroupMe stream whose manifest requires proof"
+  );
+});
+
+test("capability: GroupMe's empty direct inventory emits measured 0/0 proof for both direct streams", async () => {
+  const result = await GROUPME_ZERO_DIRECT_INVENTORY_DRIVER.run();
+  if (!result.exercised) {
+    assert.fail(`groupme zero-direct driver reported unexercised: ${result.reason}`);
+  }
+  const manifest = readManifest("groupme");
+  assert.ok(manifest, "GroupMe manifest must exist for the coverage oracle");
+
+  for (const stream of ["direct_messages", "direct_chat_messages"]) {
+    const envelope = deriveStreamEnvelope(result.messages, stream, result.skippedRecords);
+    const verdict = evaluateStreamCoherence(envelope, proofDeclarationFor(manifest, stream));
+    assert.equal(envelope.collected, 0, `${stream} has no inventory, so it emits no records`);
+    assert.equal(envelope.considered, 0, `${stream} must report an observed empty boundary, not null`);
+    assert.equal(envelope.covered, 0, `${stream} must preserve the explicit empty numerator`);
+    assert.equal(verdict.proven, true, `${stream} has a clean, measured empty boundary`);
+    assert.equal(verdict.reason, "enumeration_boundary");
+  }
+
+  for (const stream of ["groups", "group_messages"]) {
+    const envelope = deriveStreamEnvelope(result.messages, stream, result.skippedRecords);
+    const verdict = evaluateStreamCoherence(envelope, proofDeclarationFor(manifest, stream));
+    assert.equal(envelope.considered, 1, `${stream} observed the non-empty group side of the fixture`);
+    assert.equal(envelope.covered, 1);
+    assert.equal(verdict.proven, true, `${stream} proves in the same non-degenerate run`);
+  }
+});
+
+test("capability: GroupMe's high-volume group walk folds every page and group into terminal coverage", async () => {
+  const { envelope, verdict } = await runAndEvaluate(GROUPME_HIGH_VOLUME_DRIVER, "group_messages", "groupme");
+  const expectedMessages = 205 * 2;
+
+  assert.equal(
+    envelope.considered,
+    expectedMessages,
+    "terminal considered must include all pages from both groups, not only the first page"
+  );
+  assert.equal(
+    envelope.covered,
+    expectedMessages,
+    "terminal covered must preserve the full measured group-message boundary"
+  );
+  assert.equal(verdict.proven, true);
+  assert.equal(verdict.reason, "enumeration_boundary");
 });
 
 // ─── parent_detail_accounting: GroupMe `attachments` (required: false) ────

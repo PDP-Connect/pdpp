@@ -574,18 +574,17 @@ async function driveAmazonZeroResult(): Promise<DriverResult> {
 
 // ─── GroupMe: collect(), the exact function production's runConnector calls ─
 //
-// The only registered `parent_detail_accounting` driver. GroupMe's real
-// module-level governor paces at 10s/request; these drivers use GroupMe's
-// own `__setZeroDelayHttpGovernorForTests()` test seam (the same one
-// attachment-detail-coverage.test.ts uses) to avoid paying that pacing for
-// a handful of in-process fixture requests. No browser dependency —
-// `collect()` takes a real `CollectContext` and fetches through ordinary
-// `globalThis.fetch`, stubbed by path exactly like GroupMe's own test file.
-// Driving `collect()` directly (rather than a lower-level per-stream
-// helper) is required because the `attachments` DETAIL_COVERAGE is only
-// emitted from `collect()` itself, gated on whether the REQUESTED parent
-// streams (`group_messages`, `direct_chat_messages`) completed cleanly this
-// run — see index.ts's `attachmentParentsProvenClean`.
+// GroupMe's real module-level governor paces at 10s/request; these drivers use
+// GroupMe's own `__setZeroDelayHttpGovernorForTests()` test seam (the same one
+// attachment-detail-coverage.test.ts uses) to avoid paying that pacing for a
+// handful of in-process fixture requests. No browser dependency — `collect()`
+// takes a real `CollectContext` and fetches through ordinary `globalThis.fetch`,
+// stubbed by path exactly like GroupMe's own test file. Driving `collect()`
+// directly (rather than a lower-level per-stream helper) is required because
+// the `attachments` DETAIL_COVERAGE is only emitted from `collect()` itself,
+// gated on whether the REQUESTED parent streams (`group_messages`,
+// `direct_chat_messages`) completed cleanly this run — see index.ts's
+// `attachmentParentsProvenClean`.
 
 const GROUPME_GROUP = {
   id: "group-1",
@@ -620,14 +619,20 @@ function groupMessageWithAttachment(id: string): Record<string, unknown> {
   };
 }
 
+type GroupMeRouteValue = Record<string, unknown> | readonly unknown[] | string | number | boolean | null;
+type GroupMeRoute = GroupMeRouteValue | ((url: URL) => GroupMeRouteValue);
+
 /** Stub `globalThis.fetch` by request pathname, mirroring GroupMe's own
- *  attachment-detail-coverage.test.ts `stubFetchByPath`. Returns a restore
- *  function; callers MUST call it even on a thrown error (try/finally). */
-function stubGroupMeFetchByPath(routes: Record<string, unknown | { status: number; body: unknown }>): () => void {
+ *  attachment-detail-coverage.test.ts `stubFetchByPath`. A route may be a
+ *  resolver when a fixture needs to distinguish pagination query parameters.
+ *  Returns a restore function; callers MUST call it even on a thrown error
+ *  (try/finally). */
+function stubGroupMeFetchByPath(routes: Record<string, GroupMeRoute>): () => void {
   const original = globalThis.fetch;
   globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
     const url = new URL(typeof input === "string" ? input : input.toString());
-    const route = routes[url.pathname];
+    const configuredRoute = routes[url.pathname];
+    const route = typeof configuredRoute === "function" ? configuredRoute(url) : configuredRoute;
     if (route === undefined) {
       throw new Error(`unstubbed path in coverage-conformance GroupMe driver: ${url.pathname}`);
     }
@@ -645,18 +650,16 @@ function stubGroupMeFetchByPath(routes: Record<string, unknown | { status: numbe
 const GROUPME_STREAMS = ["groups", "group_messages", "direct_messages", "direct_chat_messages", "attachments"];
 
 /**
- * Drives `collect()` against the given `group_messages`/`direct_chat_messages`
+ * Drives `collect()` against the given GroupMe routes
  * fetch routes, with the zero-delay governor seam (see the file-header
- * comment above) and fetch stubbing/governor restore handled once here for
- * both capability-pin scenarios below — only the routes differ:
- *   - shortfall: a group message with one attachment, no blob-upload backend
- *     configured -> `hydration_status: "deferred"` -> real `boundary_shortfall`.
- *   - withheld: `group_messages` fails (HTTP 500) -> GroupMe's own
- *     `attachmentParentsProvenClean` withholds the `attachments`
- *     DETAIL_COVERAGE entirely, not a shortfall verdict.
+ * comment above) and fetch stubbing/governor restore handled once here. The
+ * same helper is used by the aggregate required-stream driver and the
+ * attachment capability pins, so all of them exercise production's exact
+ * `collect()` terminal path.
  */
-async function driveGroupMeAttachments(
-  routes: Record<string, unknown | { status: number; body: unknown }>
+async function driveGroupMe(
+  routes: Record<string, GroupMeRoute>,
+  state: Record<string, unknown> = {}
 ): Promise<DriverResult> {
   const { __resetHttpGovernorForTests, __setZeroDelayHttpGovernorForTests, collect } = await import(
     "../groupme/index.ts"
@@ -673,7 +676,7 @@ async function driveGroupMeAttachments(
           credentials: { GROUPME_ACCESS_TOKEN: "coverage-conformance" },
           requested: new Map(GROUPME_STREAMS.map((name) => [name, { name }])),
           scope: { streams: GROUPME_STREAMS.map((name) => ({ name })) },
-          state: {},
+          state,
         });
       } finally {
         restore();
@@ -684,6 +687,95 @@ async function driveGroupMeAttachments(
   }
 }
 
+const GROUPME_NORMAL_ROUTES: Record<string, GroupMeRoute> = {
+  "/v3/groups": [GROUPME_GROUP],
+  "/v3/chats": [GROUPME_CHAT],
+  "/v3/groups/group-1/messages": { count: 1, messages: [groupMessageWithAttachment("gmsg-1")] },
+  "/v3/chats/chat-1/messages": { count: 0, direct_messages: [] },
+};
+
+/** The required-stream driver: all four required GroupMe streams run through
+ * the real collector and are judged by the shared conformance oracle. */
+export const GROUPME_ALL_STREAMS_DRIVER: ConnectorDriver = {
+  coveredStreams: ["groups", "group_messages", "direct_messages", "direct_chat_messages"],
+  run: () => driveGroupMe(GROUPME_NORMAL_ROUTES),
+};
+
+/** A non-degenerate empty-direct-inventory fixture. The groups side still
+ * completes with one message, so `0/0` on both direct streams is measured
+ * absence, not a run that did no work at all. */
+export const GROUPME_ZERO_DIRECT_INVENTORY_DRIVER: ConnectorDriver = {
+  coveredStreams: ["groups", "group_messages", "direct_messages", "direct_chat_messages"],
+  run: () =>
+    driveGroupMe({
+      "/v3/groups": [GROUPME_GROUP],
+      "/v3/chats": [],
+      "/v3/groups/group-1/messages": {
+        count: 1,
+        messages: [
+          {
+            id: "gmsg-zero-direct",
+            text: "group activity",
+            created_at: 1_700_000_100,
+            user_id: "user-2",
+            name: "Fixture Friend",
+            avatar_url: null,
+            attachments: [],
+            favorited_by: [],
+            system: false,
+          },
+        ],
+      },
+    }),
+};
+
+const GROUPME_HIGH_VOLUME_MESSAGES_PER_GROUP = 205;
+const GROUPME_HIGH_VOLUME_GROUPS = [
+  { ...GROUPME_GROUP, id: "group-1", name: "High Volume One", messages_count: GROUPME_HIGH_VOLUME_MESSAGES_PER_GROUP },
+  { ...GROUPME_GROUP, id: "group-2", name: "High Volume Two", messages_count: GROUPME_HIGH_VOLUME_MESSAGES_PER_GROUP },
+];
+
+function groupMessagesForHighVolumeFixture(groupId: string): Record<string, unknown>[] {
+  return Array.from({ length: GROUPME_HIGH_VOLUME_MESSAGES_PER_GROUP }, (_value, index) => ({
+    id: `${groupId}-message-${String(index)}`,
+    text: "high-volume fixture message",
+    // Newest first, matching GroupMe's documented backward-pagination order.
+    created_at: 1_700_000_000 + GROUPME_HIGH_VOLUME_MESSAGES_PER_GROUP - index,
+    user_id: "user-2",
+    name: "Fixture Friend",
+    avatar_url: null,
+    attachments: [],
+    favorited_by: [],
+    system: false,
+  }));
+}
+
+function highVolumeMessagesRoute(messages: readonly Record<string, unknown>[]): GroupMeRoute {
+  return (url) => {
+    const beforeId = url.searchParams.get("before_id");
+    const start = beforeId === null ? 0 : messages.findIndex((message) => message.id === beforeId) + 1;
+    if (beforeId !== null && (start <= 0 || start > messages.length)) {
+      throw new Error(`unexpected GroupMe high-volume before_id ${beforeId ?? "<none>"}`);
+    }
+    const page = messages.slice(start, start + 100);
+    return { count: page.length, messages: page };
+  };
+}
+
+/** Multi-page, multi-group fixture used by the capability pin below. Its
+ * exact total makes dropped pages, duplicated pages, and emitted-count
+ * substitution observable at the shared terminal boundary. */
+export const GROUPME_HIGH_VOLUME_DRIVER: ConnectorDriver = {
+  coveredStreams: ["groups", "group_messages", "direct_messages", "direct_chat_messages"],
+  run: () =>
+    driveGroupMe({
+      "/v3/groups": GROUPME_HIGH_VOLUME_GROUPS,
+      "/v3/chats": [],
+      "/v3/groups/group-1/messages": highVolumeMessagesRoute(groupMessagesForHighVolumeFixture("group-1")),
+      "/v3/groups/group-2/messages": highVolumeMessagesRoute(groupMessagesForHighVolumeFixture("group-2")),
+    }),
+};
+
 /** Not registered in `CONNECTOR_DRIVERS`: `attachments` is `required: false`
  *  in groupme.json, so it never appears in `allRequiredStreamPairs()` — its
  *  proof lives entirely in the dedicated capability-pin tests below, the
@@ -691,19 +783,13 @@ async function driveGroupMeAttachments(
  *  claims the aggregate gate's required-stream loop cannot itself express. */
 export const GROUPME_ATTACHMENTS_SHORTFALL_DRIVER: ConnectorDriver = {
   coveredStreams: ["attachments"],
-  run: () =>
-    driveGroupMeAttachments({
-      "/v3/groups": [GROUPME_GROUP],
-      "/v3/chats": [GROUPME_CHAT],
-      "/v3/groups/group-1/messages": { count: 1, messages: [groupMessageWithAttachment("gmsg-1")] },
-      "/v3/chats/chat-1/messages": { count: 0, direct_messages: [] },
-    }),
+  run: () => driveGroupMe(GROUPME_NORMAL_ROUTES),
 };
 
 export const GROUPME_ATTACHMENTS_WITHHELD_DRIVER: ConnectorDriver = {
   coveredStreams: ["attachments"],
   run: () =>
-    driveGroupMeAttachments({
+    driveGroupMe({
       "/v3/groups": [GROUPME_GROUP],
       "/v3/chats": [GROUPME_CHAT],
       "/v3/groups/group-1/messages": { status: 500, body: { error: "server error" } },
@@ -845,6 +931,7 @@ export const CONNECTOR_DRIVERS: Record<string, ConnectorDriver> = {
     run: driveAppleContacts,
   },
   google_messages: { coveredStreams: ["messages"], run: driveGoogleMessages },
+  groupme: GROUPME_ALL_STREAMS_DRIVER,
   jellyfin: { coveredStreams: ["libraries", "items"], run: driveJellyfin },
   reddit: {
     coveredStreams: ["submitted", "comments", "saved", "upvoted", "downvoted", "hidden"],
@@ -951,10 +1038,6 @@ export const KNOWN_UNEXERCISED_COVERAGE: ReadonlySet<string> = new Set([
   "google_takeout.youtube_watch_history",
   "google_takeout.search_history",
   "google_takeout.photos",
-  "groupme.groups",
-  "groupme.group_messages",
-  "groupme.direct_messages",
-  "groupme.direct_chat_messages",
   "heb.orders",
   "heb.order_items",
   // iCal / iMessage (REAL_UNLISTED_CONNECTORS): file-based import receipts, no
