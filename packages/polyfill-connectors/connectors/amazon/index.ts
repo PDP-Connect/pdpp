@@ -468,15 +468,23 @@ export interface RunFlags {
   /** One-shot budget: at most one mid-run automated session-repair attempt
    *  per run (see `attemptAutomatedSessionRepair`), regardless of how many
    *  detail fetches subsequently land on sign-in. Distinct from
-   *  `sessionRepairRequired` — that flag can be cleared by a successful
-   *  repair and re-set by a LATER sign-in bounce; this one never resets. */
+   *  `sessionRepairRequired` — that flag starts `false` and is set `true`
+   *  exactly once, by whichever sign-in bounce reaches it first (there is no
+   *  code path that clears it back to `false` once set); this one is the
+   *  same shape (starts `false`, set `true` at most once) but guards a
+   *  different decision (spend vs. don't-spend the repair attempt, not
+   *  latch vs. don't-latch the terminal state). */
   repairAttempted: boolean;
   /** Set once a detail attempt lands on Amazon's sign-in/challenge flow AND
-   *  the one-shot repair attempt (if any) did not clear it. The authenticated
-   *  session is dead for the rest of this run, so remaining detail attempts
-   *  are deferred (a connector-local blast-radius stop) rather than hammering
-   *  sign-in once per order. This is NOT cross-run scheduling — the runtime
-   *  owns whether/when the next run retries. */
+   *  either the one-shot repair attempt was ineligible/failed, or the budget
+   *  was already spent by an earlier bounce this run — there is no code path
+   *  that clears this back to `false`, so once set it stays set for the rest
+   *  of the run (a write-once latch, not a flag a successful repair resets).
+   *  The authenticated session is dead for the rest of this run, so
+   *  remaining detail attempts are deferred (a connector-local blast-radius
+   *  stop) rather than hammering sign-in once per order. This is NOT
+   *  cross-run scheduling — the runtime owns whether/when the next run
+   *  retries. */
   sessionRepairRequired: boolean;
   temporaryDetailFailures: number;
 }
