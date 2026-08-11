@@ -252,8 +252,13 @@ async function collectPlaylists(
 ): Promise<void> {
   await progress("Fetching playlists", { stream: "playlists", phase: "start" });
   const items = await paginate<SpotifyPlaylist>("/me/playlists?limit=50", token, progress, "playlists");
+  let covered = 0;
   for (const p of items) {
-    await emitRecord("playlists", spotifyPlaylistRecord(p));
+    const record = spotifyPlaylistRecord(p);
+    if (validateRecord("playlists", record).ok) {
+      covered += 1;
+    }
+    await emitRecord("playlists", record);
   }
   // `playlists` is a full_inventory list with no drop/filter path: the page
   // scan enumerates every playlist, so considered === covered === the exact
@@ -266,7 +271,7 @@ async function collectPlaylists(
       requiredKeys: [],
       hydratedKeys: [],
       considered: items.length,
-      covered: items.length,
+      covered,
     }
   );
 }
@@ -303,14 +308,15 @@ async function collectSavedTracks(
       added_at: addedAt,
       isrc: t.external_ids?.isrc ?? null,
     };
-    if (validateRecord("saved_tracks", record).ok) {
+    const recordValid = validateRecord("saved_tracks", record).ok;
+    if (recordValid) {
       covered += 1;
     }
     if (savedState?.last_added_at && addedAt < savedState.last_added_at) {
       continue;
     }
     await emitRecord("saved_tracks", record);
-    if (addedAt && (!latest || addedAt > latest)) {
+    if (recordValid && addedAt && (!latest || addedAt > latest)) {
       latest = addedAt;
     }
   }
