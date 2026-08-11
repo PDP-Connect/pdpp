@@ -5491,7 +5491,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
   mountRefRecordRejections(app, {
     createRequestConnectorInstanceStore,
     createRequestRecordRejectionStore,
-    getOwnerSubjectId: getOwnerTokenSubjectId,
+    getOwnerSubjectId,
     handleError,
     pdppError,
     requireOwnerSession: ownerAuth.requireOwnerSession,
