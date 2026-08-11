@@ -26,11 +26,11 @@ test("buildBlobAffordance links only granted declared blob fields", () => {
     buildBlobAffordance({ blob_ref: { blob_id: "blob_1", fetch_url: "/v1/blobs/blob_1" } }, [
       { granted: true, name: "blob_ref", type: "blob" },
     ]),
-    { fieldName: "blob_ref", href: "/v1/blobs/blob_1", state: "available" }
+    { fieldName: "blob_ref", href: "/v1/blobs/blob_1", sizeBytes: null, state: "available" }
   );
   assert.deepEqual(
     buildBlobAffordance({ blob_ref: { blob_id: "blob_2" } }, [{ granted: true, name: "blob_ref", type: "blob" }]),
-    { fieldName: "blob_ref", href: "/v1/blobs/blob_2", state: "available" }
+    { fieldName: "blob_ref", href: "/v1/blobs/blob_2", sizeBytes: null, state: "available" }
   );
 
   assert.deepEqual(

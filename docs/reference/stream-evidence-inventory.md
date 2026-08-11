@@ -75,8 +75,6 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | file_history | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | cache_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | coverage_diagnostics | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
-| debug_artifacts | snapshot_import_receipt | device_heartbeat | deferred | false | — | — |
-| downloads | snapshot_import_receipt | device_heartbeat | deferred | false | — | — |
 | backup_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | config_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 
@@ -93,7 +91,6 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | history | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | session_index | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | coverage_diagnostics | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| logs | snapshot_import_receipt | device_heartbeat | deferred | false | — | — |
 | shell_snapshots | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | config_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | cache_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
@@ -179,6 +176,7 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | group_messages | checkpoint_window | scheduled_window | — | true | — | — |
 | direct_messages | checkpoint_window | scheduled_window | — | true | — | — |
 | direct_chat_messages | checkpoint_window | scheduled_window | — | true | — | — |
+| attachments | parent_detail_accounting | scheduled_window | — | false | — | — |
 
 ## polyfill/heb
 
@@ -344,6 +342,14 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | credit_card_billing | checkpoint_window | manual_as_of | — | true | — | — |
 | credit_card_billing_stats | singleton_presence | manual_as_of | — | true | — | — |
 
+## polyfill/venmo
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| profile | full_inventory | scheduled_window | — | true | — | — |
+| friends | full_inventory | scheduled_window | — | true | — | — |
+| transactions | checkpoint_window | scheduled_window | — | true | — | — |
+
 ## polyfill/whatsapp
 
 | stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
@@ -371,7 +377,7 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | payees | full_inventory | scheduled_window | — | true | — | — |
 | payee_locations | full_inventory | scheduled_window | — | true | — | — |
 | transactions | checkpoint_window | scheduled_window | — | true | — | — |
-| scheduled_transactions | checkpoint_window | scheduled_window | — | true | — | — |
+| scheduled_transactions | full_inventory | scheduled_window | — | true | — | — |
 | months | full_inventory | scheduled_window | — | true | — | — |
 | month_categories | full_inventory | scheduled_window | — | true | — | — |
 

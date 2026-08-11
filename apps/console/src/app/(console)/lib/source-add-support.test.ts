@@ -44,7 +44,9 @@ function staticSecretManifest(connectorId: string): CatalogManifestLike {
     setup: {
       credential_capture: {
         credential_kind: "api_token",
-        fields: [{ label: "API token", name: "api_token", secret: true }],
+        fields: [
+          { env: [`${connectorId.toUpperCase()}_API_TOKEN`], label: "API token", name: "api_token", secret: true },
+        ],
       },
       modality: "static_secret",
     },

@@ -12,12 +12,12 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, it, skip } from "node:test";
+import { describe, it } from "node:test";
 
 describe("GroupMe auth probe (live only)", () => {
-  const testFn = process.env.GROUPME_ACCESS_TOKEN ? it : skip;
-
-  testFn("verifies token connectivity to /users/me", async () => {
+  it("verifies token connectivity to /users/me", {
+    skip: process.env.GROUPME_ACCESS_TOKEN ? false : "GROUPME_ACCESS_TOKEN unset",
+  }, async () => {
     const token = process.env.GROUPME_ACCESS_TOKEN;
     assert.ok(token, "GROUPME_ACCESS_TOKEN must be set");
 

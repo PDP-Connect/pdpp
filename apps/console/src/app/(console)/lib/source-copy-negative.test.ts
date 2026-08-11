@@ -244,7 +244,10 @@ test("the agreed add-account labels are exactly the realignment-plan vocabulary"
       display_name: "ynab",
       runtime_requirements: { bindings: { network: {} } },
       setup: {
-        credential_capture: { credential_kind: "api_token", fields: [{ label: "T", name: "t", secret: true }] },
+        credential_capture: {
+          credential_kind: "api_token",
+          fields: [{ env: ["YNAB_ACCESS_TOKEN"], label: "T", name: "t", secret: true }],
+        },
         modality: "static_secret",
       },
     } as never,

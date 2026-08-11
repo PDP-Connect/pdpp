@@ -53,6 +53,8 @@ const TIMELINE_NO_SIGN_IN_RE = /no Google account sign-in is used/i;
 const GOOGLE_DEPLOYMENT_BLOCKER_RE = /GOOGLE_DATAPORTABILITY_CLIENT_ID/;
 const PROVIDER_BROWSER_GUIDANCE_RE = /provider's browser/;
 const OWNER_INTENT_URL_RE = /\/v1\/owner\/connections\/intents$/;
+const LIVE_VALIDATION_RE = /live validation/i;
+const NOT_YET_SHIPPED_RE = /does not yet ship/i;
 
 function canonicalKeyFromManifestId(connectorId: string): string {
   if (connectorId.startsWith(FIRST_PARTY_REGISTRY_PREFIX)) {
@@ -209,7 +211,9 @@ test("browser-bound static-secret capability is not enough to create an account"
       runtime_requirements: { bindings: { browser: { required: true } } },
       setup: {
         credential_capture: {
-          fields: [{ label: "Provider secret", name: "secret", required: true, secret: true }],
+          fields: [
+            { env: ["BROWSER_SAMPLE_SECRET"], label: "Provider secret", name: "secret", required: true, secret: true },
+          ],
           kind: "username_password",
           label: "Browser sign-in",
         },
@@ -235,7 +239,9 @@ test("non-browser static-secret connectors keep the existing single capture path
       runtime_requirements: { bindings: { network: { required: true } } },
       setup: {
         credential_capture: {
-          fields: [{ label: "Provider secret", name: "secret", required: true, secret: true }],
+          fields: [
+            { env: ["GMAIL_APP_PASSWORD"], label: "Provider secret", name: "secret", required: true, secret: true },
+          ],
           kind: "app_password",
           label: "Gmail app password",
         },
@@ -476,8 +482,8 @@ test("requested-connector reachability: Google Calendar/Contacts show honest non
       if (entry.disposition === "provider_auth_proof_gated") {
         // Copy must be accurate: the flow is code-complete/tested, not "not
         // shipped" — and must not claim a live account was tested.
-        assert.match(guidance, /live validation/i);
-        assert.doesNotMatch(guidance, /does not yet ship/i);
+        assert.match(guidance, LIVE_VALIDATION_RE);
+        assert.doesNotMatch(guidance, NOT_YET_SHIPPED_RE);
       }
     }
   }
@@ -1272,11 +1278,7 @@ test("console catalog respects uat_expose_unlisted_connectors server fact", () =
     uat_expose_unlisted_connectors: false,
   });
   let catalog = buildOwnerConnectorCatalog([], [uatFalseTemplate]);
-  assert.equal(
-    catalog.length,
-    0,
-    "unproven connector with uat_expose_unlisted_connectors=false should be filtered"
-  );
+  assert.equal(catalog.length, 0, "unproven connector with uat_expose_unlisted_connectors=false should be filtered");
 
   // Unproven connector WITH the UAT fact → included
   const uatTrueTemplate = ownerTemplate({
@@ -1286,11 +1288,7 @@ test("console catalog respects uat_expose_unlisted_connectors server fact", () =
     uat_expose_unlisted_connectors: true,
   });
   catalog = buildOwnerConnectorCatalog([], [uatTrueTemplate]);
-  assert.equal(
-    catalog.length,
-    1,
-    "unproven connector with uat_expose_unlisted_connectors=true should be included"
-  );
+  assert.equal(catalog.length, 1, "unproven connector with uat_expose_unlisted_connectors=true should be included");
   const [exposedConnector] = catalog;
   assert.ok(exposedConnector);
   assert.equal(exposedConnector.connectorKey, "test-unproven");

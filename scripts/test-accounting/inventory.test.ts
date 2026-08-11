@@ -934,17 +934,17 @@ test("the PostgreSQL profile declares its exact live-gate skip baseline", async 
 });
 // FIFTH-PASS GATE FIX (2026-07-30): this hardcoded literal must track
 // test-accounting.manifest.json's memory-default "PDPP_TEST_POSTGRES_URL
-// unset" count exactly. The integration branch already carried a verified
-// baseline of 135; the integrated PostgreSQL-only contracts add thirteen more
-// canonical skips plus two ordering probes that require a dedicated database.
+// unset" count exactly. The baseline changes whenever a PostgreSQL-only
+// contract is added. This literal intentionally mirrors the complete manifest
+// map so drift fails visibly.
 test("the memory-default profile declares the exact current skip baseline", async () => {
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
   const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
   const memoryDefault = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "memory-default");
   assert.deepEqual(typeof memoryDefault === "string" ? undefined : memoryDefault?.skip_reasons, {
-    "PDPP_TEST_POSTGRES_URL unset": 148,
-    "PDPP_TEST_POSTGRES_URL unset or non-dedicated": 2,
+    "PDPP_TEST_POSTGRES_URL unset": 163,
+    "PDPP_TEST_POSTGRES_URL unset or non-dedicated": 8,
     "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
     "dedicated disposable URL not selected": 1,
     "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
@@ -953,6 +953,11 @@ test("the memory-default profile declares the exact current skip baseline", asyn
     "set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run": 1,
     "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
     "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
+    "requires --experimental-test-module-mocks (npm run test:whatsapp-no-whole-file-read)": 4,
+    "requires --expose-gc (npm run test:whatsapp-no-whole-file-read)": 3,
+    "requires --experimental-test-module-mocks (spawns test/fixtures/manual-upload-write-error-server.ts directly)": 1,
+    "no dedicated PDPP_TEST_POSTGRES_URL": 1,
+    "requires --experimental-test-module-mocks (npm run test:run-generation-fencing-terminal-write-failure)": 1,
   });
 });
 test("the optional PostgreSQL profile is not selected by the required default and rejects implicit execution", async () => {
