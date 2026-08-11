@@ -44,6 +44,12 @@ unique under exact string equality.
   "streams": [
     {
       "name": "issues",
+      "description": "Issues visible to the connected account",
+      "display": {
+        "label": "Your GitHub issues",
+        "detail": "Issue titles, status, and update times."
+      },
+      "semantics": "mutable_state",
       "schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -55,7 +61,16 @@ unique under exact string equality.
         "required": ["id", "title", "updated_at"]
       },
       "primary_key": ["id"],
-      "consent_time_field": "updated_at"
+      "cursor_field": "updated_at",
+      "consent_time_field": "updated_at",
+      "selection": { "fields": true, "resources": true },
+      "views": [
+        { "id": "summary", "label": "Issue summary", "fields": ["id", "title", "updated_at"] }
+      ],
+      "relationships": [],
+      "query": {
+        "range_filters": { "updated_at": ["gte", "gt", "lte", "lt"] }
+      }
     }
   ],
   "extensions": {}
@@ -70,8 +85,12 @@ absolute URI; and `declaration_version` is a non-empty opaque string.
 `selection_presets` and `extensions` are optional. `selection_presets` is an
 array of uniquely identified preset selections.
 
-Every stream has a unique non-empty `name`, a `schema`, and a unique
-non-empty `primary_key`. A SourceDeclaration does not enumerate owner-specific
+Every stream has a unique non-empty `name`, `semantics`, `schema`, unique
+non-empty `primary_key`, and `selection`. It may have `description`, `display`,
+`cursor_field`, `consent_time_field`, `views`, `relationships`, and `query`.
+These are common consent, record, selection, and Resource Server capability
+terms. They apply equally to connector and provider-native fulfillment. A
+SourceDeclaration does not enumerate owner-specific
 instance handles. Instance handles belong to request and grant stream scope
 and are opaque handles scoped to the declaration issuer, owner subject,
 `source.id`, and stream. A handle is not portable between those scopes.
@@ -80,13 +99,19 @@ If `$schema` is
 present, it must name `https://json-schema.org/draft/2020-12/schema`.
 `primary_key` names unique top-level schema fields. `consent_time_field` is
 optional, but if present names a schema field suitable for the current Core
-time-range semantics. Presets resolve only to declared stream names and
-fields. The public SourceDeclaration schema itself declares the 2020-12
+time-range semantics. `cursor_field`, when present, names the schema field used
+for Core logical record ordering and mutation cursors. `semantics` is
+`append_only` or `mutable_state`. `selection` declares field and resource
+selection support. Views, relationships, and query capabilities retain their
+current Core shapes and validation rules. Presets resolve only to declared
+stream names, fields, and views. The public SourceDeclaration schema itself declares the 2020-12
 dialect. That declaration alone does not guarantee identical validator
 behavior across implementations.
 
-The declaration does not define credentials, runtime setup, collection state,
-retrieval, discovery, trust, caches, or quarantine. A connector-kind
+The declaration does not define credentials, runtime bindings, runtime setup,
+interaction, refresh mechanics, collection state, retrieval, discovery, trust,
+caches, or quarantine. Those connector acquisition and execution terms belong
+to the optional Collection Profile extension. A connector-kind
 declaration remains a valid Core declaration with no Collection extension.
 
 ### Selection request
@@ -246,7 +271,8 @@ closed and never fans in.
 | Discovery | Declaration retrieval, publisher trust, and discovery policy | Third or coordinated after the contract. Does not become an RS enforcement dependency. |
 
 Collection may follow with reference relocation and compatibility only. It
-does not add Core requirements or move execution semantics into this change.
+owns connector acquisition and execution mechanics, not the common consent,
+record, selection, or query surface.
 
 ## Rejected alternatives
 

@@ -15,8 +15,11 @@ The declaration SHALL include `protocol_version`, `source`,
 `declaration_version`, `publisher`, `display`, and `streams`, with optional
 `selection_presets` and `extensions`. `source` SHALL contain exactly `kind`
 and `id`. Every stream
-SHALL contain a unique non-empty `name`, `schema`, unique non-empty
-`primary_key`; it MAY contain `consent_time_field`. A declaration SHALL NOT
+SHALL contain a unique non-empty `name`, `semantics`, `schema`, unique non-empty
+`primary_key`, and `selection`; it MAY contain `description`, `display`,
+`cursor_field`, `consent_time_field`, `views`, `relationships`, and `query`.
+These members SHALL retain Core's consent, record, selection, and Resource
+Server capability semantics for both source kinds. A declaration SHALL NOT
 put owner-specific instance handles at source level. Instance handles belong
 to per-stream request and grant scope, and the AS SHALL validate their
 eligibility there. The complete member and omission rules are defined in the
@@ -27,6 +30,9 @@ be authorization equality, a runtime type, or a Collection-conformance claim.
 `source.id` SHALL be the authorization identity. A connector-kind declaration
 without a Collection extension SHALL remain Core-usable. Core SHALL NOT parse
 or interpret a profile-owned extension value.
+Connector acquisition and execution terms, including runtime bindings, setup,
+interaction, refresh, and collection state, SHALL remain outside these Core
+stream members and MAY appear only in a Collection-owned extension.
 
 #### Scenario: Connector Core declaration has no Collection extension
 
@@ -202,3 +208,10 @@ outside Core.
 - **THEN** its dependency graph SHALL import no Collection schema or runtime
   module
 - **AND** the declaration SHALL remain usable without an extension value
+
+#### Scenario: Native and connector sources share query and consent semantics
+
+- **WHEN** equivalent connector and provider-native declarations expose the
+  same streams, selection capabilities, views, relationships, and query support
+- **THEN** Core SHALL validate and interpret those members identically
+- **AND** neither source kind SHALL require Collection execution metadata

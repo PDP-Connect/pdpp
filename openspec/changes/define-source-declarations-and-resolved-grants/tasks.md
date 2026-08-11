@@ -4,6 +4,10 @@
   - Add the complete SourceDeclaration shape, 2020-12 schema rules, source
     kind/id semantics, per-stream instance handles, extension ownership, and
     omission and uniqueness rules.
+  - Preserve existing Core stream description/display, record semantics,
+    cursor, selection, views, relationships, and query capabilities for both
+    source kinds. Move only connector acquisition and execution mechanics to
+    the optional Collection extension.
   - Keep the change focused. Do not perform a broad cosmetic `Manifest` rename.
 
 - [ ] 2. Define request and resolved-grant serialization.

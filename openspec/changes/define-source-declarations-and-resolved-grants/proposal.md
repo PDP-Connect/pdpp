@@ -21,6 +21,8 @@ for routing and capability reasons, but never widens or reinterprets a grant.
 ## Scope
 
 - Define the Core `SourceDeclaration` contract and opaque extension seam.
+- Preserve the common consent, record, selection, and query capabilities now
+  declared by Core for both connector and provider-native sources.
 - Define request and resolved-grant JSON shapes and matching rules.
 - Make per-stream instance handles explicit and prevent implicit fan-in.
 - Define snapshot retention, mutation barriers, evidence, and RS enforcement.
@@ -30,5 +32,6 @@ for routing and capability reasons, but never widens or reinterprets a grant.
 
 Out of scope are digests, portable credentials, security floors, discovery,
 retrieval, trust, caches, quarantine, and broad cosmetic `Manifest` renames.
-Collection owns execution semantics. Its task here is limited to reference
-relocation and compatibility with the neutral contract.
+Collection owns acquisition and execution mechanics such as runtime bindings,
+setup, interaction, refresh, and collection state. Its task here is limited to
+reference relocation and compatibility with the neutral contract.
