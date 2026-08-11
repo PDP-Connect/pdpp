@@ -66,7 +66,6 @@ const NON_RETRYABLE_FAILURE_REASONS: ReadonlySet<string> = new Set([
   "grant_revoked",
   "permission_error",
   "run_timed_out",
-  "scheduler_dispatch_wedged",
 ]);
 
 const NON_RETRYABLE_TERMINAL_REASONS: ReadonlySet<TerminalReason> = new Set<TerminalReason>([
@@ -79,7 +78,6 @@ const NON_RETRYABLE_TERMINAL_REASONS: ReadonlySet<TerminalReason> = new Set<Term
   "owner_cancel_forced",
   "owner_cancelled",
   "permission_error",
-  "scheduler_dispatch_wedged",
 ]);
 
 // A run failure that requires owner auth repair (browser session_required, an

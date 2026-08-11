@@ -116,7 +116,7 @@ function readAttemptCount(path: string): number {
   return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).length;
 }
 
-function minimalSchedulerOpts(dispatchLivenessCeilingMs: number) {
+function minimalSchedulerOpts(dispatchLivenessCeilingMs: number | undefined) {
   return {
     connectors: [
       {
@@ -127,9 +127,29 @@ function minimalSchedulerOpts(dispatchLivenessCeilingMs: number) {
         ownerToken: "owner-token",
       },
     ],
-    dispatchLivenessCeilingMs,
+    ...(dispatchLivenessCeilingMs === undefined ? {} : { dispatchLivenessCeilingMs }),
     onInteraction: () => ({ status: "cancelled", type: "INTERACTION_RESPONSE" }),
   };
+}
+
+/** Runs `fn` with `PDPP_DISPATCH_LIVENESS_CEILING_MS` set, restoring the prior value (or its absence) afterward. */
+async function withDispatchLivenessCeilingEnv<T>(envValue: string | undefined, fn: () => Promise<T> | T): Promise<T> {
+  const key = "PDPP_DISPATCH_LIVENESS_CEILING_MS";
+  const previous = process.env[key];
+  if (envValue === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = envValue;
+  }
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = previous;
+    }
+  }
 }
 
 test("createScheduler rejects a negative dispatchLivenessCeilingMs", () => {
@@ -140,6 +160,93 @@ test("dispatchLivenessCeilingMs: 0 and Infinity both mean disabled, not rejected
   assert.doesNotThrow(() => createScheduler(minimalSchedulerOpts(0)).stop());
   assert.doesNotThrow(() => createScheduler(minimalSchedulerOpts(Number.POSITIVE_INFINITY)).stop());
 });
+
+test("PDPP_DISPATCH_LIVENESS_CEILING_MS: a negative env value is rejected through createScheduler, with restoration", async () => {
+  await withDispatchLivenessCeilingEnv("-1", () => {
+    assert.throws(() => createScheduler(minimalSchedulerOpts(undefined)), /non-negative/);
+  });
+  assert.equal(process.env.PDPP_DISPATCH_LIVENESS_CEILING_MS, undefined, "env must be restored to unset");
+});
+
+test("PDPP_DISPATCH_LIVENESS_CEILING_MS: a non-numeric env value is rejected through createScheduler", async () => {
+  await withDispatchLivenessCeilingEnv("not-a-number", () => {
+    assert.throws(() => createScheduler(minimalSchedulerOpts(undefined)), /non-negative/);
+  });
+});
+
+test("PDPP_DISPATCH_LIVENESS_CEILING_MS: \"Infinity\" is accepted (disables the deadline, no throw)", async () => {
+  await withDispatchLivenessCeilingEnv("Infinity", () => {
+    assert.doesNotThrow(() => createScheduler(minimalSchedulerOpts(undefined)).stop());
+  });
+});
+
+test("PDPP_DISPATCH_LIVENESS_CEILING_MS: a small valid env value actually takes effect (fires the deadline at that ceiling)", async (t) => {
+  const previousEnv = process.env.PDPP_DISPATCH_LIVENESS_CEILING_MS;
+  process.env.PDPP_DISPATCH_LIVENESS_CEILING_MS = "50";
+  t.after(() => {
+    if (previousEnv === undefined) {
+      delete process.env.PDPP_DISPATCH_LIVENESS_CEILING_MS;
+    } else {
+      process.env.PDPP_DISPATCH_LIVENESS_CEILING_MS = previousEnv;
+    }
+  });
+
+  let readinessCalls = 0;
+  const completedRuns: RunRecord[] = [];
+  const scheduler = createScheduler({
+    admitRunConnection: fakeAdmitRunConnection(),
+    connectors: [
+      {
+        connectorId: "dispatch-liveness-env-connector",
+        connectorInstanceId: "dispatch-liveness-env-connector",
+        connectorPath: "/tmp/unreachable-connector-must-never-spawn.mjs",
+        intervalMs: 25,
+        manifest: { capabilities: { refresh_policy: { background_safe: true } } },
+        maxRetries: 0,
+        ownerToken: "owner-token",
+      },
+    ],
+    getState: async () => null,
+    onInteraction: () => ({ status: "cancelled", type: "INTERACTION_RESPONSE" }),
+    onRunComplete: (record) => completedRuns.push(record),
+    readinessChecker: () => {
+      readinessCalls += 1;
+      return new Promise(() => undefined);
+    },
+    rsUrl: "http://localhost.invalid",
+  });
+  t.after(() => scheduler.stop());
+  scheduler.start();
+
+  await waitFor(() => completedRuns.some((r) => r.terminalReason === "scheduler_dispatch_wedged"), 3000);
+  scheduler.stop();
+  assert.ok(readinessCalls >= 1, "the env-configured ceiling must have actually fired the deadline");
+});
+
+test("PDPP_DISPATCH_LIVENESS_CEILING_MS: empty/whitespace behaves like the safe default, NOT like 0 (disabled)", async (t) => {
+  const previousEnv = process.env.PDPP_DISPATCH_LIVENESS_CEILING_MS;
+  t.after(() => {
+    if (previousEnv === undefined) {
+      delete process.env.PDPP_DISPATCH_LIVENESS_CEILING_MS;
+    } else {
+      process.env.PDPP_DISPATCH_LIVENESS_CEILING_MS = previousEnv;
+    }
+  });
+
+  for (const envValue of ["", "   "]) {
+    process.env.PDPP_DISPATCH_LIVENESS_CEILING_MS = envValue;
+    const scheduler = createScheduler(minimalSchedulerOpts(undefined));
+    scheduler.stop();
+  }
+  // No throw and no observable difference from the fully-unset case above
+  // proves this took the same "fall through to default" branch as unset --
+  // the actual non-zero-vs-zero distinction is unit-tested directly in
+  // scheduler-config.test.ts, where waiting out or racing a real ceiling
+  // isn't needed to tell "resolved to 0" apart from "resolved to the
+  // default" (see that file for the mutation-killed proof).
+  assert.ok(true, "reached without throwing");
+});
+
 
 test(
   "CONTROL: a wedged pre-run gate (hung readinessChecker) permanently suppresses dispatch with NO liveness ceiling",

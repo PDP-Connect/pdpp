@@ -30,6 +30,7 @@ import {
 import { createDispatchGovernor } from "./scheduler/dispatch-governor.ts";
 import { createPreRunGate } from "./scheduler/pre-run-gate.ts";
 import { createRunExecutor } from "./scheduler/run-executor.ts";
+import { resolveNonNegativeMsOrInfinity } from "./scheduler-config.ts";
 import { isTerminalGrantFailure, type TerminalReason } from "./scheduler-retry-classifier.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
@@ -167,28 +168,13 @@ function resolveMaxRunWallClockMs(value: number | undefined, envValue: string | 
 // 0 and Infinity both mean "disabled" (matches raceDispatchLivenessDeadline's
 // own <= 0 check) -- 0 is accepted, not rejected, so the two callers agree.
 function resolveDispatchLivenessCeilingMs(value: number | undefined, envValue: string | undefined): number {
-  if (value !== undefined) {
-    if (value === Number.POSITIVE_INFINITY) {
-      return value;
-    }
-    if (!Number.isFinite(value) || value < 0) {
-      throw new Error(`dispatchLivenessCeilingMs must be a non-negative number or Infinity; got ${value}`);
-    }
-    return value;
-  }
-  if (envValue !== undefined) {
-    if (envValue === "Infinity") {
-      return Number.POSITIVE_INFINITY;
-    }
-    const parsed = Number(envValue);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      throw new Error(
-        `PDPP_DISPATCH_LIVENESS_CEILING_MS must be a non-negative number or "Infinity", got ${envValue}`
-      );
-    }
-    return parsed;
-  }
-  return 1_800_000; // 30 minutes -- generous for an in-memory gate plus one readiness probe.
+  return resolveNonNegativeMsOrInfinity(
+    value,
+    envValue,
+    1_800_000, // 30 minutes -- generous for an in-memory gate plus one readiness probe.
+    "dispatchLivenessCeilingMs",
+    "PDPP_DISPATCH_LIVENESS_CEILING_MS"
+  );
 }
 
 /** Sentinel distinguishing "the deadline elapsed" from any real `GateOutcome`. */
