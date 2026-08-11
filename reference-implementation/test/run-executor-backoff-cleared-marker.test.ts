@@ -38,7 +38,11 @@ import {
   type RunExecutorDeps,
   type RunExecutorRuntimeState,
 } from "../runtime/scheduler/run-executor.ts";
-import type { ConnectorSchedule, RunRecord } from "../runtime/scheduler-domain-types.ts";
+import type {
+  ConnectorSchedule,
+  RunManagedConnectorViaController,
+  RunRecord,
+} from "../runtime/scheduler-domain-types.ts";
 import { closeDb, initDb } from "../server/db.ts";
 
 const CONNECTOR_ID = "https://registry.pdpp.org/connectors/backoff-cleared-marker";
@@ -107,11 +111,16 @@ interface Harness {
   runtime: RunExecutorRuntimeState;
 }
 
-function makeHarness(runtime: RunExecutorRuntimeState, onRunComplete?: (record: RunRecord) => void): Harness {
+interface HarnessOptions {
+  readonly managedResult?: NonNullable<Awaited<ReturnType<RunManagedConnectorViaController>>>;
+  readonly onRunComplete?: (record: RunRecord) => void;
+}
+
+function makeHarness(runtime: RunExecutorRuntimeState, options: HarnessOptions = {}): Harness {
   const completions: RunRecord[] = [];
   const notifyCompletion = (record: RunRecord): void => {
     completions.push(record);
-    onRunComplete?.(record);
+    options.onRunComplete?.(record);
   };
   const deps: RunExecutorDeps = {
     // The runtime fails closed without an admitted run connection; admit the
@@ -125,7 +134,7 @@ function makeHarness(runtime: RunExecutorRuntimeState, onRunComplete?: (record: 
     handleGrantFailureDisable: () => {
       // Grant-disable side effects are out of scope for the marker oracle.
     },
-    isManagedConnector: () => false,
+    isManagedConnector: () => options.managedResult !== undefined,
     markNeedsHuman: () => {
       // Needs-human escalation is out of scope for the marker oracle.
     },
@@ -146,7 +155,7 @@ function makeHarness(runtime: RunExecutorRuntimeState, onRunComplete?: (record: 
     registerRunCancellation: null,
     resolveStaticSecretRunEnv: null,
     rsUrl: "http://localhost.invalid",
-    runManagedConnectorViaController: null,
+    runManagedConnectorViaController: options.managedResult ? async () => options.managedResult ?? null : null,
     runtime,
     schedulerStore: null,
     setState: async () => {
@@ -291,10 +300,12 @@ test(
     // success completion notification and clearing the announce map itself
     // before `emitBackoffClearedIfStreakEnded` runs. The marker decision
     // must rest on the PRE-success capture, not a live map read.
-    const harness = makeHarness(runtime, (record) => {
-      if (record.status === "succeeded") {
-        runtime.announcedBackoffClass.delete(CONNECTOR_INSTANCE_ID);
-      }
+    const harness = makeHarness(runtime, {
+      onRunComplete: (record) => {
+        if (record.status === "succeeded") {
+          runtime.announcedBackoffClass.delete(CONNECTOR_INSTANCE_ID);
+        }
+      },
     });
 
     await harness.launchRun(schedule(writeSucceedingConnector(tmpDir)), false, SCHEDULED_POLICY);
@@ -304,5 +315,29 @@ test(
       1,
       "the streak ended with this success, so the marker must emit even though the map was already cleared"
     );
+  })
+);
+
+test(
+  "managed scheduled success records the run before clearing an announced back-off streak",
+  withTmpDir(async (tmpDir) => {
+    const runtime = freshRuntime();
+    runtime.announcedBackoffClass.set(CONNECTOR_INSTANCE_ID, "terminal:authentication_error");
+    const harness = makeHarness(runtime, {
+      managedResult: {
+        run_id: "run_managed_recovered",
+        status: "succeeded",
+        trace_id: "trace_managed_recovered",
+      },
+    });
+
+    await harness.launchRun(schedule(writeSucceedingConnector(tmpDir)), false, SCHEDULED_POLICY);
+
+    assert.deepEqual(
+      runtime.history.map((record) => (isClearedMarker(record) ? "cleared" : record.status)),
+      ["succeeded", "cleared"],
+      "managed recovery must persist success before its cleared transition"
+    );
+    assert.equal(runtime.announcedBackoffClass.has(CONNECTOR_INSTANCE_ID), false);
   })
 );

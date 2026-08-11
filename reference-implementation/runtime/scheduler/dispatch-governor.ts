@@ -412,8 +412,10 @@ export function decideBackoffDispatch(inputs: DecideBackoffDispatchInputs): Deci
       recoveryOnly = false;
     }
   } else if (!inputs.backoffApplied) {
-    // Streak broken (success or different class): clear the announcement.
-    announcedBackoffMutation = "delete";
+    // Eligibility alone does not prove recovery. Keep the announcement armed
+    // until a successful run records `schedule.back_off.cleared`; otherwise
+    // the pre-run governor can erase the only fact needed to emit that event.
+    announcedBackoffMutation = "keep";
   }
 
   return { announcedBackoffMutation, announcedBlockedMutation, eligible, recoveryOnly, transitions };

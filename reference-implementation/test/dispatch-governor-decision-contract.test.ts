@@ -27,7 +27,7 @@ test("decideBackoffDispatch returns exact backoff transition and dedup mutation 
   const cases = [
     {
       expected: {
-        announcedBackoffMutation: "delete",
+        announcedBackoffMutation: "keep",
         announcedBlockedMutation: "keep",
         eligible: true,
         recoveryOnly: true,
@@ -39,7 +39,7 @@ test("decideBackoffDispatch returns exact backoff transition and dedup mutation 
         eligible: true,
         recoveryOnly: true,
       }),
-      name: "no backoff clears announcedBackoff and preserves eligibility",
+      name: "an eligible retry preserves announcedBackoff until a run succeeds",
     },
     {
       expected: {

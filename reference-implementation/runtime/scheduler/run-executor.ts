@@ -638,14 +638,13 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   // must be captured BEFORE this call by the caller, since a success is
   // about to be recorded and this checks the PRE-success streak state.
   function emitBackoffClearedIfStreakEnded(
-    result: RunConnectorResult,
     record: RunRecord,
     connectorId: string,
     connectorInstanceId: string,
     wasAnnouncedBackoff: boolean,
     wasAnnouncedBlocked: boolean
   ): void {
-    if (result.status !== "succeeded" || !(wasAnnouncedBackoff || wasAnnouncedBlocked)) {
+    if (record.status !== "succeeded" || !(wasAnnouncedBackoff || wasAnnouncedBlocked)) {
       return;
     }
     runtime.announcedBackoffClass.delete(connectorInstanceId);
@@ -682,14 +681,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     }
 
     onRunComplete(record);
-    emitBackoffClearedIfStreakEnded(
-      result,
-      record,
-      connectorId,
-      connectorInstanceId,
-      wasAnnouncedBackoff,
-      wasAnnouncedBlocked
-    );
+    emitBackoffClearedIfStreakEnded(record, connectorId, connectorInstanceId, wasAnnouncedBackoff, wasAnnouncedBlocked);
 
     return record;
   }
@@ -1105,9 +1097,19 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       if (runNowResult.status !== "succeeded" && runRequiresOwnerAuthRepair(runNowResult)) {
         markNeedsHuman(connectorId, connectorInstanceId);
       }
-      return recordAndNotify(
+      const wasAnnouncedBackoff = runtime.announcedBackoffClass.has(connectorInstanceId);
+      const wasAnnouncedBlocked = runtime.announcedBlockedClass.has(connectorInstanceId);
+      const record = recordAndNotify(
         buildManagedRunTerminalRecord(connectorId, connectorInstanceId, startedAt, runNowResult, attempt)
       );
+      emitBackoffClearedIfStreakEnded(
+        record,
+        connectorId,
+        connectorInstanceId,
+        wasAnnouncedBackoff,
+        wasAnnouncedBlocked
+      );
+      return record;
     }
 
     throw new Error("unreachable managed run retry state");
