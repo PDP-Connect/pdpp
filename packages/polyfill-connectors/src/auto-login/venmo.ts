@@ -28,13 +28,16 @@
  *      shape as reddit/amazon's OTP handoff.
  */
 
-import type { BrowserContext, Locator, Page } from "playwright";
-import { manualAction } from "../browser-handoff.ts";
+import type { Page } from "playwright";
+import { manualBrowserLogin } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse, SessionCheckpointFn } from "../connector-runtime.ts";
-import type { CaptureSession } from "../fixture-capture.ts";
+import type { CaptureSession, LocatorProbe } from "../fixture-capture.ts";
+import { locatorIsVisible } from "./locator-helpers.ts";
 
+const HOME_URL = "https://venmo.com/";
 const LOGIN_URL = "https://venmo.com/login";
 const ACCOUNT_PROBE_URL = "https://venmo.com/account";
+const VENMO_ORIGIN = "https://venmo.com";
 const USERNAME_SELECTOR = 'input[name="phoneEmailUsername"], input#username, input[autocomplete="username"]';
 const PASSWORD_SELECTOR = 'input[name="password"], input#password, input[type="password"]';
 const OTP_SELECTOR =
@@ -44,12 +47,64 @@ const OTP_PROMPT_TEXT_RE = /verification code|enter the code|we (?:sent|texted)|
 const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE =
   "No optional Venmo sign-in details were provided. Sign in to Venmo in the secure browser, then respond success.";
 
+const LOGIN_LOCATOR_PROBES: LocatorProbe[] = [
+  {
+    id: "username",
+    kind: "css",
+    selector: USERNAME_SELECTOR,
+    description: "Venmo username/phone/email field candidates used by the connector.",
+  },
+  {
+    id: "password",
+    kind: "css",
+    selector: PASSWORD_SELECTOR,
+    description: "Venmo password field candidates used by the connector.",
+  },
+  {
+    id: "submit-role",
+    kind: "role",
+    role: "button",
+    namePattern: SUBMIT_BUTTON_NAME_RE.source,
+    nameFlags: "i",
+    description: "Semantic log in/continue/next button candidate.",
+  },
+  {
+    id: "otp",
+    kind: "css",
+    selector: OTP_SELECTOR,
+    description: "OTP candidates; hidden fields must not trigger an OTP interaction.",
+  },
+];
+
+/**
+ * Ensure `page` is on the `venmo.com` origin before a credentialed
+ * page-context fetch: `api.venmo.com`'s CORS allowlist grants
+ * `credentials:"include"` only to `Access-Control-Allow-Origin:
+ * https://venmo.com` (confirmed live 2026-08-10, /tmp/review-venmo-
+ * browser-redesign-0810.md §1). `about:blank` has an opaque origin and
+ * hard-fails the same fetch with `TypeError: Failed to fetch` — not a
+ * session signal, a transport precondition. Every sibling browser
+ * connector navigates before its first credentialed fetch
+ * (reddit.ts:100, amazon.ts:90); this was the one that didn't.
+ */
+export async function ensureVenmoOrigin(page: Page): Promise<void> {
+  let currentOrigin: string | null = null;
+  try {
+    currentOrigin = new URL(page.url()).origin;
+  } catch {
+    currentOrigin = null;
+  }
+  if (currentOrigin === VENMO_ORIGIN) {
+    return;
+  }
+  await page.goto(HOME_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
+}
+
 const noopCheckpoint: SessionCheckpointFn = () => Promise.resolve();
 
 interface EnsureVenmoSessionArgs {
   capture?: CaptureSession | null;
   checkpoint?: SessionCheckpointFn;
-  context: BrowserContext;
   page: Page;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
 }
@@ -65,28 +120,41 @@ export interface VenmoAccountProbeResult {
  * spoofed User-Agent). A 2xx body carrying `data.user.id` proves the
  * session is live and gives the owner id for free — the same call
  * `fetchProfile`/`collectProfile` will make once collection starts.
+ *
+ * Navigates to `venmo.com` first when not already there: the page starts
+ * on `about:blank` (opaque origin) on a fresh run, and `api.venmo.com`'s
+ * CORS allowlist only grants a credentialed fetch from `https://venmo.com`
+ * — see {@link ensureVenmoOrigin}. A probe that skipped this would read
+ * every live session as dead and never actually test session state.
  */
 export async function probeVenmoAccount(page: Page): Promise<VenmoAccountProbeResult> {
-  return await page.evaluate(async (url) => {
-    try {
-      const res = await fetch(url, { credentials: "include", headers: { accept: "application/json" } });
-      if (res.status < 200 || res.status >= 300) {
-        return { live: false, ownerId: null };
+  await ensureVenmoOrigin(page);
+  let outcome: { kind: "dead" } | { kind: "live"; ownerId: string } | { kind: "transport_error"; message: string };
+  try {
+    outcome = await page.evaluate(async (url) => {
+      try {
+        const res = await fetch(url, { credentials: "include", headers: { accept: "application/json" } });
+        if (res.status < 200 || res.status >= 300) {
+          return { kind: "dead" as const };
+        }
+        const body = (await res.json().catch(() => null)) as { data?: { user?: { id?: string } } } | null;
+        const ownerId = body?.data?.user?.id ?? null;
+        return ownerId ? { kind: "live" as const, ownerId } : { kind: "dead" as const };
+      } catch (err) {
+        return { kind: "transport_error" as const, message: err instanceof Error ? err.message : String(err) };
       }
-      const body = (await res.json().catch(() => null)) as { data?: { user?: { id?: string } } } | null;
-      const ownerId = body?.data?.user?.id ?? null;
-      return { live: Boolean(ownerId), ownerId };
-    } catch {
-      return { live: false, ownerId: null };
-    }
-  }, ACCOUNT_PROBE_URL);
-}
-
-async function locatorIsVisible(locator: Locator): Promise<boolean> {
-  return await locator
-    .first()
-    .isVisible({ timeout: 1000 })
-    .catch((): boolean => false);
+    }, ACCOUNT_PROBE_URL);
+  } catch (err) {
+    // `page.evaluate` itself rejected — the execution context was destroyed
+    // (navigation raced the probe) or the page/browser crashed. Same
+    // "could not run at all" classification as a fetch throwing inside the
+    // callback: a transport fault, not proof the session is dead.
+    outcome = { kind: "transport_error", message: err instanceof Error ? err.message : String(err) };
+  }
+  if (outcome.kind === "transport_error") {
+    throw new Error(`venmo_probe_transport_error: ${outcome.message}`);
+  }
+  return outcome.kind === "live" ? { live: true, ownerId: outcome.ownerId } : { live: false, ownerId: null };
 }
 
 async function clickVenmoLoginSubmit(page: Page): Promise<boolean> {
@@ -108,28 +176,38 @@ async function captureLoginState(capture: CaptureSession | null | undefined, pag
     return;
   }
   await capture.captureDom(page, label).catch((): undefined => undefined);
+  await capture.captureLocatorProbe?.(page, label, LOGIN_LOCATOR_PROBES).catch((): undefined => undefined);
 }
 
+/**
+ * Hand the page to the owner, navigating to the real sign-in page first so
+ * the handoff shows a Venmo sign-in screen rather than `about:blank` — the
+ * page at handoff time has no `preservePageOnSuccess`/`preservePageOnFailure`
+ * guarantee and may still be on its initial blank state (F2 in
+ * /tmp/review-venmo-browser-redesign-0810.md). Re-probes via
+ * `probeVenmoAccount`, whose own origin guard covers wherever the owner's
+ * sign-in actually lands.
+ */
 async function waitForManualLogin({
   capture,
   message,
   page,
+  reason,
   sendInteraction,
 }: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction"> & {
   readonly message: string;
+  readonly reason?: "captcha";
 }): Promise<VenmoAccountProbeResult> {
-  await manualAction(
-    {
-      ...(capture ? { capture } : {}),
-      page,
-      reason: "login",
-      message,
-      timeoutSeconds: 1800,
-    },
-    sendInteraction
-  );
-  await page.waitForTimeout(2000);
-  return await probeVenmoAccount(page);
+  await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
+  return await manualBrowserLogin({
+    ...(capture ? { capture } : {}),
+    message,
+    page,
+    probe: () => probeVenmoAccount(page),
+    ...(reason ? { reason } : {}),
+    sendInteraction,
+    timeoutSeconds: 1800,
+  });
 }
 
 async function ensureManualSessionWithoutCredentials({
@@ -328,16 +406,13 @@ async function loginWithSavedCredentials({
   });
 }
 
-/**
- * Resolve a live Venmo browser session. Returns the probed owner id so the
- * caller does not need a second `/account` round trip.
- */
+/** Resolve a live Venmo browser session, or throw if establishment fails. */
 export async function ensureVenmoSession({
   capture,
   checkpoint = noopCheckpoint,
   page,
   sendInteraction,
-}: Omit<EnsureVenmoSessionArgs, "context">): Promise<VenmoAccountProbeResult> {
+}: EnsureVenmoSessionArgs): Promise<VenmoAccountProbeResult> {
   await checkpoint("venmo-auth-probe");
   const initial = await probeVenmoAccount(page);
   if (initial.live) {

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Locator, Page } from "playwright";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
+import type { CaptureSession } from "../fixture-capture.ts";
 import { ensureVenmoSession, probeVenmoAccount } from "./venmo.ts";
 
 const STREAMING_ENV_KEYS = [
@@ -33,24 +34,34 @@ function makeLocator({ count = 1, visible = true }: { count?: number; visible?: 
   return fake as Locator;
 }
 
-/** A page whose `/account` probe always returns live=false/true per `accountLive`, honoring successive changes via `setLive`. */
-function makeProbePage(initialLive: boolean): { page: Page; setLive: (live: boolean) => void } {
+/** A page whose `/account` probe always returns live=false/true per `accountLive`, honoring successive changes via `setLive`. Starts on `about:blank`, mirroring a fresh run's initial page state. */
+function makeProbePage(initialLive: boolean): { gotoUrls: string[]; page: Page; setLive: (live: boolean) => void } {
   let live = initialLive;
+  let currentUrl = "about:blank";
+  const gotoUrls: string[] = [];
   const empty = makeLocator({ count: 0, visible: false });
   const submit = makeLocator();
-  const page: Pick<Page, "evaluate" | "getByRole" | "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
+  const page: Pick<
+    Page,
+    "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+  > = {
     // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
     async evaluate(): Promise<unknown> {
-      return live ? { live: true, ownerId: "1234567890123456789" } : { live: false, ownerId: null };
+      return live ? { kind: "live", ownerId: "1234567890123456789" } : { kind: "dead" };
     },
     getByRole(): Locator {
       return submit;
     },
-    goto(): ReturnType<Page["goto"]> {
+    goto(url: string): ReturnType<Page["goto"]> {
+      currentUrl = url;
+      gotoUrls.push(url);
       return Promise.resolve(null);
     },
     locator(): Locator {
       return empty;
+    },
+    url(): string {
+      return currentUrl;
     },
     waitForLoadState(): ReturnType<Page["waitForLoadState"]> {
       return Promise.resolve();
@@ -62,7 +73,7 @@ function makeProbePage(initialLive: boolean): { page: Page; setLive: (live: bool
   const setLive = (next: boolean): void => {
     live = next;
   };
-  return { page: page as Page, setLive };
+  return { gotoUrls, page: page as Page, setLive };
 }
 
 /** A fill-recording locator whose `first()` returns itself, so a caller that does `.locator(x).first().fill(v)` still records the fill. */
@@ -104,17 +115,22 @@ function makePageWithWorkingLoginForm(): { fillCalls: Record<string, string>; pa
   });
   const submit = makeLocator();
   const otp = makeLocator({ count: 0, visible: false });
-  const page: Pick<Page, "evaluate" | "getByRole" | "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
+  let currentUrl = "https://venmo.com/";
+  const page: Pick<
+    Page,
+    "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+  > = {
     // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
     async evaluate(): Promise<unknown> {
       probeCount += 1;
       // First probe (initial check) is dead; every probe after the form submit is live.
-      return probeCount > 1 ? { live: true, ownerId: "1234567890123456789" } : { live: false, ownerId: null };
+      return probeCount > 1 ? { kind: "live", ownerId: "1234567890123456789" } : { kind: "dead" };
     },
     getByRole(): Locator {
       return submit;
     },
-    goto(): ReturnType<Page["goto"]> {
+    goto(url: string): ReturnType<Page["goto"]> {
+      currentUrl = url;
       return Promise.resolve(null);
     },
     locator(selector: string): Locator {
@@ -128,6 +144,9 @@ function makePageWithWorkingLoginForm(): { fillCalls: Record<string, string>; pa
         return otp;
       }
       return makeLocator({ count: 0, visible: false });
+    },
+    url(): string {
+      return currentUrl;
     },
     waitForLoadState(): ReturnType<Page["waitForLoadState"]> {
       return Promise.resolve();
@@ -209,25 +228,38 @@ function recordingSendInteraction(): {
 // ─── Session reuse ───────────────────────────────────────────────────────
 
 test("ensureVenmoSession: a live session is reused with zero interactions and no form fill", async () => {
-  const { page } = makeProbePage(true);
+  const { gotoUrls, page } = makeProbePage(true);
   const { requests, sendInteraction } = recordingSendInteraction();
   const result = await ensureVenmoSession({ page, sendInteraction });
   assert.equal(result.live, true);
   assert.equal(result.ownerId, "1234567890123456789");
   assert.equal(requests.length, 0, "a live session must not prompt the owner at all");
+  // F1: the run starts on about:blank; without navigating first the probe's
+  // credentialed fetch runs from an opaque origin and cannot prove reuse.
+  assert.deepEqual(
+    gotoUrls,
+    ["https://venmo.com/"],
+    "the probe must navigate to venmo.com before proving the persistent session is live"
+  );
 });
 
 // ─── Interaction-required: no saved credential ──────────────────────────
 
 test("ensureVenmoSession: hands off to manual_action when no credentials are saved, with no password/username leaked", async () => {
   await withoutVenmoCredentials(async () => {
-    const { page } = makeProbePage(false);
+    const { gotoUrls, page } = makeProbePage(false);
     const { requests, sendInteraction } = recordingSendInteraction();
     await assert.rejects(ensureVenmoSession({ page, sendInteraction }), /venmo_login_manual_incomplete/);
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.kind, "manual_action");
     assert.match(requests[0]?.message ?? "", /No optional Venmo sign-in details/);
     assert.doesNotMatch(requests[0]?.message ?? "", /password|test-user/i);
+    // F2: the owner must be handed a real Venmo sign-in page, not
+    // about:blank — the manual handoff navigates to LOGIN_URL first.
+    assert.ok(
+      gotoUrls.includes("https://venmo.com/login"),
+      `expected a navigation to the login page before handoff, got: ${JSON.stringify(gotoUrls)}`
+    );
   });
 });
 
@@ -246,6 +278,40 @@ test("ensureVenmoSession: manual browser login succeeding is accepted without as
     assert.equal(result.live, true);
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.kind, "manual_action");
+  });
+});
+
+// F9: for an unproven connector built entirely on unverified selectors, the
+// first live run must yield selector-rot evidence (which candidate actually
+// matched) rather than a bare pass/fail — mirrors reddit's
+// LOGIN_LOCATOR_PROBES capture (reddit.ts:40-73).
+test("ensureVenmoSession: captures a locator probe of the login page, recording which selector candidates matched", async () => {
+  await withVenmoCredentials(async () => {
+    const { fillCalls, page } = makePageWithWorkingLoginForm();
+    const probeCalls: Array<{ label: string; probeIds: string[] }> = [];
+    const capture: Pick<CaptureSession, "captureDom" | "captureLocatorProbe"> = {
+      captureDom: () => Promise.resolve(),
+      captureLocatorProbe: (_page, label, probes) => {
+        probeCalls.push({ label, probeIds: probes.map((p) => p.id) });
+        return Promise.resolve();
+      },
+    };
+    const { sendInteraction } = recordingSendInteraction();
+    const result = await ensureVenmoSession({ capture: capture as CaptureSession, page, sendInteraction });
+    assert.equal(result.live, true);
+    assert.equal(fillCalls.username, "test-user");
+    assert.ok(probeCalls.length > 0, "expected at least one locator-probe capture during login");
+    assert.ok(
+      probeCalls.some((c) => c.label === "venmo-login-page"),
+      "expected a locator probe captured at the login page, not just later steps"
+    );
+    for (const call of probeCalls) {
+      assert.deepEqual(
+        call.probeIds,
+        ["username", "password", "submit-role", "otp"],
+        "every capture must record all four selector candidates the connector relies on"
+      );
+    }
   });
 });
 
@@ -272,16 +338,21 @@ test("ensureVenmoSession: an OTP input drives sendInteraction with kind=otp, nev
     const password = makeLocator();
     const submit = makeLocator();
     const otp = makeLocator();
-    const page: Pick<Page, "evaluate" | "getByRole" | "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
+    let currentUrl = "https://venmo.com/";
+    const page: Pick<
+      Page,
+      "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+    > = {
       // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
       async evaluate(): Promise<unknown> {
         probeCount += 1;
-        return probeCount > 1 ? { live: true, ownerId: "1234567890123456789" } : { live: false, ownerId: null };
+        return probeCount > 1 ? { kind: "live", ownerId: "1234567890123456789" } : { kind: "dead" };
       },
       getByRole(): Locator {
         return submit;
       },
-      goto(): ReturnType<Page["goto"]> {
+      goto(url: string): ReturnType<Page["goto"]> {
+        currentUrl = url;
         return Promise.resolve(null);
       },
       locator(selector: string): Locator {
@@ -295,6 +366,9 @@ test("ensureVenmoSession: an OTP input drives sendInteraction with kind=otp, nev
           return otp;
         }
         return makeLocator({ count: 0, visible: false });
+      },
+      url(): string {
+        return currentUrl;
       },
       waitForLoadState(): ReturnType<Page["waitForLoadState"]> {
         return Promise.resolve();
@@ -326,12 +400,87 @@ test("ensureVenmoSession: an expired session (dead initial probe) with saved cre
 
 // ─── probeVenmoAccount: pure page-context probe ──────────────────────────
 
-test("probeVenmoAccount: reports live=false when the page-context fetch throws", async () => {
-  const page: Pick<Page, "evaluate"> = {
-    evaluate(): ReturnType<Page["evaluate"]> {
-      return Promise.reject(new Error("network error"));
+test("probeVenmoAccount: navigates to venmo.com first when the page starts on about:blank", async () => {
+  const gotoUrls: string[] = [];
+  const page: Pick<Page, "evaluate" | "goto" | "url"> = {
+    // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+    async evaluate(): Promise<unknown> {
+      return { kind: "live", ownerId: "1234567890123456789" };
+    },
+    goto(url: string): ReturnType<Page["goto"]> {
+      gotoUrls.push(url);
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return "about:blank";
     },
   };
-  const result = await probeVenmoAccount(page as Page).catch(() => ({ live: false, ownerId: null }));
+  const result = await probeVenmoAccount(page as Page);
+  assert.equal(result.live, true, "the probe must actually run the fetch after navigating, not read the blank page");
+  assert.deepEqual(gotoUrls, ["https://venmo.com/"], "a fresh about:blank page must navigate to venmo.com first");
+});
+
+test("probeVenmoAccount: does not re-navigate when the page is already on venmo.com", async () => {
+  let gotoCalls = 0;
+  const page: Pick<Page, "evaluate" | "goto" | "url"> = {
+    // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+    async evaluate(): Promise<unknown> {
+      return { kind: "dead" };
+    },
+    goto(): ReturnType<Page["goto"]> {
+      gotoCalls += 1;
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return "https://venmo.com/some-path";
+    },
+  };
+  await probeVenmoAccount(page as Page);
+  assert.equal(gotoCalls, 0, "already being on the venmo.com origin must not trigger a re-navigation");
+});
+
+test("probeVenmoAccount: reports live=false (not a throw) for a reachable-but-expired session", async () => {
+  const page: Pick<Page, "evaluate" | "goto" | "url"> = {
+    // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+    async evaluate(): Promise<unknown> {
+      return { kind: "dead" };
+    },
+    goto(): ReturnType<Page["goto"]> {
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return "https://venmo.com/";
+    },
+  };
+  const result = await probeVenmoAccount(page as Page);
   assert.equal(result.live, false);
+  assert.equal(result.ownerId, null);
+});
+
+// F4: a transport/origin fault (the fetch could not run at all) must throw
+// distinguishably from a dead-but-reachable session, rather than being
+// swallowed into the same `{live:false}` shape — see
+// /tmp/review-venmo-browser-redesign-0810.md F4. Before this fix, the prior
+// version of this exact test asserted the OPPOSITE: that a thrown fetch
+// collapses to `{live:false}` via the test's own `.catch()` fallback, which
+// is tautological (the expected value comes from the test, not the
+// function) and hides the actual defect this proves is fixed.
+test("probeVenmoAccount: a page-context transport fault throws venmo_probe_transport_error, distinct from a dead session", async () => {
+  const page: Pick<Page, "evaluate" | "goto" | "url"> = {
+    async evaluate(): Promise<unknown> {
+      return await Promise.reject(new Error("Failed to fetch"));
+    },
+    goto(): ReturnType<Page["goto"]> {
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return "https://venmo.com/";
+    },
+  };
+  await assert.rejects(probeVenmoAccount(page as Page), (err: unknown) => {
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /venmo_probe_transport_error/);
+    assert.match(err.message, /Failed to fetch/);
+    return true;
+  });
 });

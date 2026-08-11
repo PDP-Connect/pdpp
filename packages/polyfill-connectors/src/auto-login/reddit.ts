@@ -20,11 +20,12 @@
  * manual_action INTERACTION rather than banging on the form.
  */
 
-import type { BrowserContext, Locator, Page } from "playwright";
+import type { BrowserContext, Page } from "playwright";
 import { manualBrowserLogin } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import type { CaptureSession, LocatorProbe } from "../fixture-capture.ts";
 import { detectCloudflareChallenge } from "../platform-probes.ts";
+import { locatorIsVisible } from "./locator-helpers.ts";
 
 const LOGIN_URL = "https://www.reddit.com/login/";
 const HOME_URL = "https://www.reddit.com/";
@@ -114,13 +115,6 @@ async function captureLoginState(capture: CaptureSession | null | undefined, pag
   }
   await capture.captureDom(page, label).catch((): undefined => undefined);
   await capture.captureLocatorProbe?.(page, label, LOGIN_LOCATOR_PROBES).catch((): undefined => undefined);
-}
-
-async function locatorIsVisible(locator: Locator): Promise<boolean> {
-  return await locator
-    .first()
-    .isVisible({ timeout: 1000 })
-    .catch((): boolean => false);
 }
 
 async function clickRedditLoginSubmit(page: Page): Promise<boolean> {
