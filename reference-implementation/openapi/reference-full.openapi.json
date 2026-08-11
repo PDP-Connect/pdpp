@@ -7239,6 +7239,10 @@
                           "object": {
                             "const": "record"
                           },
+                          "record_json_bytes": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
                           "stream": {
                             "type": "string"
                           }
@@ -8592,6 +8596,10 @@
                     },
                     "object": {
                       "const": "record"
+                    },
+                    "record_json_bytes": {
+                      "minimum": 0,
+                      "type": "integer"
                     },
                     "stream": {
                       "type": "string"
@@ -25663,6 +25671,28 @@
                                     "null"
                                   ]
                                 },
+                                "heartbeat_age_ms": {
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "heartbeat_health": {
+                                  "enum": [
+                                    "blocked",
+                                    "healthy",
+                                    "retrying",
+                                    "stale",
+                                    "starting",
+                                    "stopped",
+                                    "unknown"
+                                  ],
+                                  "type": "string"
+                                },
+                                "heartbeat_lease_ms": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
                                 "last_error": {
                                   "additionalProperties": true,
                                   "type": [
@@ -26239,6 +26269,28 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "heartbeat_age_ms": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "heartbeat_health": {
+                            "enum": [
+                              "blocked",
+                              "healthy",
+                              "retrying",
+                              "stale",
+                              "starting",
+                              "stopped",
+                              "unknown"
+                            ],
+                            "type": "string"
+                          },
+                          "heartbeat_lease_ms": {
+                            "minimum": 0,
+                            "type": "integer"
                           },
                           "last_error": {
                             "additionalProperties": true,
@@ -26824,6 +26876,28 @@
                                     "string",
                                     "null"
                                   ]
+                                },
+                                "heartbeat_age_ms": {
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "heartbeat_health": {
+                                  "enum": [
+                                    "blocked",
+                                    "healthy",
+                                    "retrying",
+                                    "stale",
+                                    "starting",
+                                    "stopped",
+                                    "unknown"
+                                  ],
+                                  "type": "string"
+                                },
+                                "heartbeat_lease_ms": {
+                                  "minimum": 0,
+                                  "type": "integer"
                                 },
                                 "last_error": {
                                   "additionalProperties": true,
