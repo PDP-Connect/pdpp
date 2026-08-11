@@ -32,6 +32,7 @@ import {
   type RuntimeRunConnectorResult,
   runConnector,
 } from "../runtime/index.ts";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { admitOwnerRunConnection, createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
@@ -2476,10 +2477,10 @@ rl.on('line', (line) => {
   await t.test("grant-scoped STATE stays isolated from global state and other grants", async () => {
     const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
-    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const { ownerToken, connectorId, sourceId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
-    const grantAId = await createGrant(asUrl, connectorId, "test_user");
-    const grantBId = await createGrant(asUrl, connectorId, "test_user");
+    const grantAId = await createGrant(asUrl, sourceId, "test_user");
+    const grantBId = await createGrant(asUrl, sourceId, "test_user");
 
     const { connectorPath: grantPath, cleanup: cleanupGrant } = createTestConnector([
       { cursor: { cursor: "cursor_from_grant_a" }, stream: "items", type: "STATE" },
@@ -2564,9 +2565,9 @@ rl.on('line', (line) => {
   await t.test("single_use with grant-scoped STATE still persists nothing", async () => {
     const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
-    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const { ownerToken, connectorId, sourceId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
-    const grantId = await createGrant(asUrl, connectorId, "test_user");
+    const grantId = await createGrant(asUrl, sourceId, "test_user");
 
     const { connectorPath, cleanup } = createTestConnector([
       { cursor: { cursor: "should_not_persist_grant_state" }, stream: "items", type: "STATE" },
@@ -10241,7 +10242,7 @@ async function fetchJson<T = GenericJsonBody>(url: string, opts: RequestInit = {
 }
 
 // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
-async function startGrantRequest(asUrl: string, params: { connectorId: string }) {
+async function startGrantRequest(asUrl: string, params: { sourceId: string }) {
   return fetchJson(`${asUrl}/oauth/par`, {
     body: JSON.stringify({
       authorization_details: [
@@ -10249,7 +10250,7 @@ async function startGrantRequest(asUrl: string, params: { connectorId: string })
           access_mode: "continuous",
           purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Collection Profile conformance test grant",
-          source: { id: params.connectorId, kind: "connector" },
+          source: { id: params.sourceId, kind: "connector" },
           streams: [{ name: "items" }],
           type: "https://pdpp.dev/data-access",
         },
@@ -10270,9 +10271,12 @@ async function approveGrantRequest(asUrl: string, requestUri: string, subjectId:
   });
 }
 
-async function createGrant(asUrl: string, connectorId: string, subjectId: string): Promise<string> {
-  const { status: requestStatus, body: requestBody } = await startGrantRequest(asUrl, { connectorId });
-  assert.ok([200, 201].includes(requestStatus), `expected successful PAR status, got ${requestStatus}`);
+async function createGrant(asUrl: string, sourceId: string, subjectId: string): Promise<string> {
+  const { status: requestStatus, body: requestBody } = await startGrantRequest(asUrl, { sourceId });
+  assert.ok(
+    [200, 201].includes(requestStatus),
+    `expected successful PAR status, got ${requestStatus}: ${JSON.stringify(requestBody)}`
+  );
   assert.ok(requestBody.request_uri, "expected request_uri from PAR");
 
   const { status: approvalStatus, body: approvalBody } = await approveGrantRequest(
@@ -10286,20 +10290,50 @@ async function createGrant(asUrl: string, connectorId: string, subjectId: string
   return approvalBody.grant_id;
 }
 
+function testSourceIdForConnector(connectorId: string): string {
+  return `https://sources.example/${encodeURIComponent(connectorId)}`;
+}
+
+function withTestSourceDeclaration(manifest: ConnectorManifest): ConnectorManifest {
+  const streams = asArray(manifest.streams).map((stream) => {
+    const streamRecord = asRecord(stream);
+    return {
+      ...streamRecord,
+      selection: {
+        fields: true,
+        resources: true,
+      },
+    };
+  });
+  return {
+    ...manifest,
+    source_declaration: {
+      declaration_version: `collection-profile-test:${manifest.connector_id}:${manifest.version}`,
+      display: { name: manifest.display_name },
+      protocol_version: manifest.protocol_version,
+      publisher: { id: "https://sources.example/publishers/collection-profile-tests" },
+      source: { id: testSourceIdForConnector(manifest.connector_id), kind: "connector" },
+      streams,
+    },
+  };
+}
+
 async function setupConnector(_server: TestServer, asPort: number, manifest: ConnectorManifest = MINIMAL_MANIFEST) {
   const asUrl = `http://localhost:${asPort}`;
+  const registeredManifest = withTestSourceDeclaration(manifest);
 
   // Register connector manifest
   await fetchJson(`${asUrl}/connectors`, {
-    body: JSON.stringify(manifest),
+    body: JSON.stringify(registeredManifest),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
 
+  const connectorId = canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id;
   const now = new Date().toISOString();
   await createSqliteConnectorInstanceStore().upsert({
-    connectorId: manifest.connector_id,
-    connectorInstanceId: `cin_collection_${manifest.connector_id}`,
+    connectorId,
+    connectorInstanceId: `cin_collection_${connectorId}`,
     createdAt: now,
     displayName: `${manifest.connector_id} test account`,
     ownerSubjectId: "test_user",
@@ -10312,7 +10346,7 @@ async function setupConnector(_server: TestServer, asPort: number, manifest: Con
 
   const ownerToken = await issueOwnerToken(asUrl, "test_user");
 
-  return { connectorId: manifest.connector_id, ownerToken };
+  return { connectorId: manifest.connector_id, ownerToken, sourceId: testSourceIdForConnector(manifest.connector_id) };
 }
 
 async function issueOwnerToken(asUrl: string, subjectId = "owner_local"): Promise<string> {
