@@ -2,42 +2,45 @@
   "name": "@pdpp/brand-react",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "description": "Ink Carbon React component library — the framework-bound layer atop @pdpp/brand tokens. Ships .tsx sources directly (no build step); transpiled by the consuming app's Next bundler via transpilePackages. Component styling (components.css / shell.css) ships alongside the components.",
+  "license": "Apache-2.0",
+  "type": "module",
   "exports": {
     ".": "./src/index.ts",
     "./components.css": "./src/components.css",
     "./shell.css": "./src/shell.css"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
     "check": "ultracite check",
     "fix": "ultracite fix",
     "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- bash -c 'node --test --import tsx --import ./css-stub-register.ts \"src/**/*.test.ts\"'",
+    "typecheck": "tsc --noEmit",
     "verify": "pnpm typecheck && pnpm check && pnpm test"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
+    "@pdpp/brand": "workspace:*",
+    "@pdpp/display": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "tailwind-merge": "^3.6.0",
-    "@pdpp/brand": "workspace:*",
-    "@pdpp/display": "workspace:*"
-  },
-  "peerDependencies": {
-    "next": "16.3.0-canary.93",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
+    "@testing-library/user-event": "^14.6.3",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
+    "jsdom": "30.0.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "tsx": "^4.23.11",
     "typescript": "^7.0.2",
     "ultracite": "7.10.2"
   },
-  "license": "Apache-2.0"
+  "peerDependencies": {
+    "next": "16.3.0-canary.93",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  }
 }
