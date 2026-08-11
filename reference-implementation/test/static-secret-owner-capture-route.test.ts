@@ -184,6 +184,33 @@ async function registerConnector(asUrl: string, name: string): Promise<void> {
   assert.equal(resp.status, 201, `register ${name} failed: ${resp.status}`);
 }
 
+// F4: no shipped manifest has a single-secret kind (api_key/app_password/…)
+// with credential_capture.required: false — GroupMe's real, registration-
+// valid manifest (access_token, one secret field) is cloned and given ONLY
+// that one flag flip, so this proves the real HTTP registration + capture
+// contract for the shape F4 describes, not a hand-rolled fixture that could
+// silently diverge from what the route actually accepts.
+async function registerOptionalSingleSecretConnector(asUrl: string, connectorKey: string): Promise<void> {
+  const groupme = loadManifest("groupme");
+  const manifest = structuredClone(groupme);
+  // A custom (non-first-party) connector's `connector_id` must equal its
+  // `connector_key` directly — the registry-URL form is reserved for
+  // manifests already in the generated first-party allowlist (see
+  // connector-key.ts's module doc: "a custom manifest must declare its
+  // canonical key explicitly").
+  manifest.connector_key = connectorKey;
+  manifest.connector_id = connectorKey;
+  manifest.manifest_uri = `https://registry.pdpp.org/connectors/${connectorKey}`;
+  const setup = manifest.setup as { credential_capture: { required?: boolean } };
+  setup.credential_capture.required = false;
+  const resp = await fetch(`${asUrl}/connectors`, {
+    body: JSON.stringify(manifest),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(resp.status, 201, `register ${connectorKey} failed: ${resp.status}`);
+}
+
 async function seedInstance({
   connectorInstanceId,
   connectorId,
@@ -517,14 +544,19 @@ test("capture accepts an at-least-one-path manifest when exactly one credential 
   });
 });
 
-// Venmo's manifest declares username/password as individually optional with
-// NO other required field in the same credential_capture block — unlike
-// Jellyfin, which always has base_url required, Venmo authenticates through
-// an owner-driven browser session that works with zero saved credentials.
-// isAtLeastOnePathContract must not misclassify this shape as Jellyfin's
-// "at least one credential path" contract; a fully blank submission is the
-// correct, honest "sign in by hand every time" choice, not an error.
-test("capture accepts a fully empty credential bundle for an all-optional, no-fallback-required manifest (Venmo)", async () => {
+// Venmo's manifest declares the BLOCK-level credential_capture.required as
+// false, while username/password stay required:true at the FIELD level
+// (BOTH-OR-NONE) — Venmo authenticates through an owner-driven browser
+// session that works with zero saved credentials. validateBundledSecret's
+// `contract.required === false` branch (not isAtLeastOnePathContract, which
+// only ever applies to a REQUIRED capture like Jellyfin's) is what
+// classifies this shape; a fully blank submission is the correct, honest
+// "sign in by hand every time" choice, not an error.
+// F1 ruling: a blank submission on an optional capture means "proceed with
+// manual browser sign-in", NOT "store an empty credential". Nothing is
+// written to the credential store, the response is 200 (not 201 — nothing
+// was created), and `credential.present` is honestly `false`.
+test("capture accepts a fully empty credential bundle for an all-optional, no-fallback-required manifest (Venmo) WITHOUT storing anything", async () => {
   await withCredentialKey(TEST_KEY, async () => {
     await withServer(async ({ asUrl }) => {
       await registerConnector(asUrl, "venmo");
@@ -532,17 +564,57 @@ test("capture accepts a fully empty credential bundle for an all-optional, no-fa
       const cookie = await login(asUrl);
 
       const { status, body } = await captureCredential(asUrl, cookie, "cin_venmo_personal", "{}", "username_password");
-      assert.equal(status, 201, "a blank Venmo credential must be a valid, storable choice");
-      assert.equal(credentialOf(body).present, true);
+      assert.equal(status, 200, "a blank optional submission is a valid choice, but creates nothing (200, not 201)");
+      assert.equal(credentialOf(body).present, false, "an empty bundle must never project as a present credential");
+      assert.equal(
+        nextStepOf(body).kind,
+        "run_connection",
+        "the owner can still run the connection via manual sign-in"
+      );
+
+      const store = createSqliteConnectorInstanceCredentialStore({
+        env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
+      });
+      assert.equal(
+        await store.getMetadata("cin_venmo_personal"),
+        null,
+        "no credential row must exist after a blank optional submission"
+      );
+    });
+  });
+});
+
+// F1 ruling, second half: a blank re-submission must never silently clear an
+// EXISTING stored credential. Capture a real credential first, then submit
+// blank again — the original credential must survive untouched.
+test("capture on an existing Venmo credential followed by a blank re-submission never clears the stored credential", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "venmo");
+      await seedInstance({ connectorId: "venmo", connectorInstanceId: "cin_venmo_preserved" });
+      const cookie = await login(asUrl);
+
+      const complete = JSON.stringify({ username: "owner@example.com", password: "synthetic-password" });
+      const first = await captureCredential(asUrl, cookie, "cin_venmo_preserved", complete, "username_password");
+      assert.equal(first.status, 201);
+      assert.equal(credentialOf(first.body).present, true);
+
+      const second = await captureCredential(asUrl, cookie, "cin_venmo_preserved", "{}", "username_password");
+      assert.equal(second.status, 200, "a blank re-submission is accepted as a no-op, not a rejection");
+      assert.equal(
+        credentialOf(second.body).present,
+        false,
+        "the blank RESPONSE projects present:false — it does not echo the untouched stored row"
+      );
 
       const store = createSqliteConnectorInstanceCredentialStore({
         env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
       });
       const recovered = await store.recoverSecret({
-        connectorInstanceId: "cin_venmo_personal",
+        connectorInstanceId: "cin_venmo_preserved",
         ownerSubjectId: OWNER_SUBJECT_ID,
       });
-      assert.equal(recovered.secret, "{}");
+      assert.equal(recovered.secret, complete, "the ORIGINAL stored credential must survive a later blank submission");
     });
   });
 });
@@ -605,6 +677,102 @@ test("capture accepts a fully complete Venmo credential bundle (both username an
         ownerSubjectId: OWNER_SUBJECT_ID,
       });
       assert.equal(recovered.secret, JSON.stringify({ username: "owner@example.com", password: "synthetic-password" }));
+    });
+  });
+});
+
+// F4: a single-secret kind's `secret` is a bare provider string, never a
+// JSON bundle — validateBundledSecret must route it through
+// validateSingleSecret (never parseSecretBundle, which would silently treat
+// any non-JSON string as an empty bundle). No shipped manifest has this
+// shape today (every required:false manifest is username_password), so this
+// registers a real, valid manifest (GroupMe's, access_token/single-secret)
+// with ONLY credential_capture.required flipped to false, through the
+// actual HTTP registration route.
+test("capture accepts the blank-optional sentinel for a single-secret kind with credential_capture.required: false, storing nothing", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerOptionalSingleSecretConnector(asUrl, "f4_optional_single_secret");
+      await seedInstance({
+        connectorId: "f4_optional_single_secret",
+        connectorInstanceId: "cin_f4_optional_single_secret",
+      });
+      const cookie = await login(asUrl);
+
+      const { status, body } = await captureCredential(
+        asUrl,
+        cookie,
+        "cin_f4_optional_single_secret",
+        "{}",
+        "access_token"
+      );
+      assert.equal(status, 200, "a blank optional single-secret submission is a valid choice, but creates nothing");
+      assert.equal(credentialOf(body).present, false);
+
+      const store = createSqliteConnectorInstanceCredentialStore({
+        env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
+      });
+      assert.equal(
+        await store.getMetadata("cin_f4_optional_single_secret"),
+        null,
+        "no credential row must exist after a blank optional single-secret submission"
+      );
+    });
+  });
+});
+
+test("capture stores a REAL single secret unchanged even when credential_capture.required is false", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerOptionalSingleSecretConnector(asUrl, "f4_optional_single_secret_real");
+      await seedInstance({
+        connectorId: "f4_optional_single_secret_real",
+        connectorInstanceId: "cin_f4_optional_single_secret_real",
+      });
+      const cookie = await login(asUrl);
+
+      const { status, body } = await captureCredential(
+        asUrl,
+        cookie,
+        "cin_f4_optional_single_secret_real",
+        "real-groupme-access-token",
+        "access_token"
+      );
+      assert.equal(status, 201, "a real, non-blank secret is stored normally even on an optional capture");
+      assert.equal(credentialOf(body).present, true);
+
+      const store = createSqliteConnectorInstanceCredentialStore({
+        env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
+      });
+      const recovered = await store.recoverSecret({
+        connectorInstanceId: "cin_f4_optional_single_secret_real",
+        ownerSubjectId: OWNER_SUBJECT_ID,
+      });
+      assert.equal(recovered.secret, "real-groupme-access-token");
+    });
+  });
+});
+
+// Counterweight: the SAME blank-sentinel submission against a manifest that
+// has NOT opted into credential_capture.required: false (GroupMe's real,
+// unmutated manifest) must still be rejected — proving the optionality
+// branch is genuinely gated on the manifest fact, not always-on for every
+// single-secret kind.
+test("F4 counterweight: capture rejects a blank single-secret submission when credential_capture.required stays true (default)", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "groupme");
+      await seedInstance({ connectorId: "groupme", connectorInstanceId: "cin_groupme_blank" });
+      const cookie = await login(asUrl);
+
+      const { status, body } = await captureCredential(asUrl, cookie, "cin_groupme_blank", "{}", "access_token");
+      assert.equal(status, 400);
+      assert.equal(errorOf(body).code, "missing_credential");
+
+      const store = createSqliteConnectorInstanceCredentialStore({
+        env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
+      });
+      assert.equal(await store.getMetadata("cin_groupme_blank"), null);
     });
   });
 });

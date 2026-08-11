@@ -212,7 +212,17 @@ export default async function StaticSecretConnectPage({
                   id={`static-secret-${field.name}`}
                   name={field.name}
                   placeholder={field.placeholder ?? undefined}
-                  required={field.required}
+                  // F2: native HTML validation must not block the block-level
+                  // optional case. `setup.credential_capture.required ===
+                  // false` (e.g. Venmo — BOTH-OR-NONE, blank is a valid,
+                  // complete choice) makes every field's own `required`
+                  // attribute non-binding at the browser level; the server
+                  // (buildStaticSecretPayload / validateBundledSecret) is
+                  // what actually enforces BOTH-OR-NONE once ANY field is
+                  // filled. A REQUIRED capture (the default) is unaffected —
+                  // each field's own `required` still gates the native form
+                  // exactly as before.
+                  required={setup.credential_capture.required !== false && field.required}
                   type={inputType(field)}
                 />
                 {field.description || field.help_text || field.help_url ? (

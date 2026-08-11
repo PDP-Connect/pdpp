@@ -250,7 +250,7 @@ function nowFor(ctx: MountRefStaticSecretCredentialsContext): string {
 interface StaticSecretCredentialContract {
   readonly credentialKind: string;
   readonly fields: readonly StaticSecretSetupField[];
-  /** Block-level `credential_capture.required` — see isAtLeastOnePathContract's doc. */
+  /** Block-level `credential_capture.required` — see `validateBundledSecret`'s doc. */
   readonly required: boolean;
 }
 
@@ -785,7 +785,7 @@ function bundleHasField(bundle: Record<string, unknown>, field: StaticSecretSetu
   return typeof value === "string" && value.trim().length > 0;
 }
 
-// Shared reject path for both `assertBundledSecretComplete` rules: audit +
+// Shared reject path for both `validateBundledSecret` rules: audit +
 // respond identically, only the message differs.
 async function rejectMissingCredential(
   ctx: MountRefStaticSecretCredentialsContext,
@@ -808,23 +808,66 @@ async function rejectMissingCredential(
   return false;
 }
 
-// BOTH-OR-NONE (contract.required === false, e.g. Venmo): an entirely empty
-// bundle is the valid "sign in by hand every time" choice; the moment ANY
+/** Every field in the bundle is absent — the connector-honest "sign in by hand" choice, never a partial submission. */
+function bundleIsEntirelyBlank(contract: StaticSecretCredentialContract, bundle: Record<string, unknown>): boolean {
+  return !contract.fields.some((field) => bundleHasField(bundle, field));
+}
+
+// BOTH-OR-NONE (contract.required === false, e.g. Venmo): the moment ANY
 // field is present, every field still marked `required: true` on itself is
-// enforced exactly as it would be for a required capture. Returns `null`
-// when the bundle needs no BOTH-OR-NONE check at all (contract.required is
-// not false) so the caller falls through to the at-least-one-path rule.
-function bothOrNoneViolation(
+// enforced exactly as it would be for a required capture. Callers must check
+// `bundleIsEntirelyBlank` FIRST and never call this for a blank bundle — an
+// entirely blank bundle is the valid choice this function does not itself
+// special-case, to keep "is it blank" and "is a partial bundle invalid"
+// as two separately testable questions.
+function bothOrNoneMissingFields(
   contract: StaticSecretCredentialContract,
   bundle: Record<string, unknown>
-): readonly StaticSecretSetupField[] | null {
-  if (contract.required !== false) {
-    return null;
-  }
-  if (!contract.fields.some((field) => bundleHasField(bundle, field))) {
-    return []; // Entirely blank — no violation.
-  }
+): readonly StaticSecretSetupField[] {
   return contract.fields.filter((field) => field.required && !bundleHasField(bundle, field));
+}
+
+// Mirrors the console's `bundledSecretPayload`/`singleSecretPayload` split
+// (`static-secret-payload.ts`) EXACTLY, by the same two kind names — a
+// single-secret kind's `secret` is a bare provider string, never JSON, so it
+// must never be run through `parseSecretBundle` (which would silently
+// classify any non-JSON string as an empty bundle and misfire the
+// BOTH-OR-NONE/blank-optional branch on a real, non-blank secret). This is
+// the root cause F4 named: a single-field `required: false` manifest with no
+// kind-aware split would either always look blank (JSON-parse failure) or
+// never look blank (no check at all).
+function bundledCredentialKind(kind: string): boolean {
+  return kind === "secret_bundle" || kind === "username_password";
+}
+
+// The wire encoding for "no credential was submitted" on an OPTIONAL
+// capture, for EITHER kind shape — mirrors the console's
+// `BLANK_OPTIONAL_SECRET_SENTINEL` (`static-secret-payload.ts`) exactly.
+// `parseCaptureBody` above rejects a genuinely empty string outright as
+// `invalid_request` before any required/optional logic runs, so a blank
+// choice must arrive as a non-empty sentinel. Checked by EXACT string
+// equality, never a length/trim heuristic — a bare provider secret is
+// legitimately allowed to be short, and only this one reserved value means
+// "nothing was chosen".
+const BLANK_OPTIONAL_SECRET_SENTINEL = "{}";
+
+/** Outcome of validating a submitted secret/bundle against the manifest's contract, before ANY store write. */
+export type BundledSecretValidation =
+  | { readonly kind: "blank_optional" }
+  | { readonly kind: "proceed" }
+  | { readonly kind: "rejected" };
+
+function validateSingleSecret(contract: StaticSecretCredentialContract, secret: string): BundledSecretValidation {
+  if (secret !== BLANK_OPTIONAL_SECRET_SENTINEL) {
+    return { kind: "proceed" };
+  }
+  // F4: the blank-sentinel single secret on an OPTIONAL capture is the same
+  // valid "sign in by hand" choice a blank bundle is for a multi-field
+  // capture — not reachable by any shipped manifest today (every
+  // `required: false` manifest is `username_password`), but the next
+  // single-field optional manifest must not silently inherit the
+  // always-required assumption the pre-F4 code made by omission.
+  return contract.required === false ? { kind: "blank_optional" } : { kind: "rejected" };
 }
 
 /**
@@ -836,50 +879,49 @@ function bothOrNoneViolation(
  *
  * `contract.required` (block-level `credential_capture.required`, default
  * true) is the ONE provider-neutral fact this decides on — never a
- * connector-name branch, never an inference from field count. See
- * `bothOrNoneViolation`'s doc for the `required: false` half; the
- * at-least-one-path check below is the pre-existing `required` half
- * (Jellyfin's username+password OR API key).
+ * connector-name branch, never an inference from field count.
+ *
+ * Returns `"blank_optional"` — rather than `"proceed"` — for an entirely
+ * blank bundle on an OPTIONAL capture: the caller must NOT store `"{}"` as a
+ * credential for that case (F1). An optional capture's blank choice means
+ * "proceed with manual browser sign-in", not "store an empty secret" —
+ * those are different outcomes the old boolean return could not express.
  */
-async function assertBundledSecretComplete(
-  ctx: MountRefStaticSecretCredentialsContext,
-  req: RouteRequest,
-  res: RouteResponse,
-  namespace: ConnectorNamespace,
-  credentialKind: string | null,
-  ownerSubjectId: string | null,
-  contract: StaticSecretCredentialContract,
-  secret: string
-): Promise<boolean> {
+function validateBundledSecret(contract: StaticSecretCredentialContract, secret: string): BundledSecretValidation {
+  if (!bundledCredentialKind(contract.credentialKind)) {
+    return validateSingleSecret(contract, secret);
+  }
   const bundle = parseSecretBundle(secret);
-  const missing = bothOrNoneViolation(contract, bundle);
-  if (missing) {
-    return missing.length === 0
-      ? true
-      : await rejectMissingCredential(
-          ctx,
-          req,
-          res,
-          namespace,
-          credentialKind,
-          ownerSubjectId,
-          `${missing.map((field) => field.label).join(", ")} is required once any credential field is filled.`
-        );
+  if (contract.required === false) {
+    if (bundleIsEntirelyBlank(contract, bundle)) {
+      return { kind: "blank_optional" };
+    }
+    return bothOrNoneMissingFields(contract, bundle).length === 0 ? { kind: "proceed" } : { kind: "rejected" };
   }
 
   const secretFields = contract.fields.filter((field) => field.secret);
   if (!isAtLeastOnePathContract(secretFields) || bundleHasAnySecret(bundle, secretFields)) {
-    return true;
+    return { kind: "proceed" };
   }
-  return await rejectMissingCredential(
-    ctx,
-    req,
-    res,
-    namespace,
-    credentialKind,
-    ownerSubjectId,
-    `At least one of ${secretFields.map((field) => field.label).join(", ")} is required.`
-  );
+  return { kind: "rejected" };
+}
+
+// Rejection messages for `validateBundledSecret`'s `"rejected"` outcome — kept
+// alongside the validator (not inlined into it) so the message can be
+// regenerated from the SAME contract/bundle the validator already computed,
+// without re-parsing the secret a second time.
+function rejectedCredentialMessage(contract: StaticSecretCredentialContract, secret: string): string {
+  if (!bundledCredentialKind(contract.credentialKind)) {
+    const field = contract.fields.find((candidate) => candidate.secret);
+    return field ? `${field.label} is required.` : "A secret field is required.";
+  }
+  const bundle = parseSecretBundle(secret);
+  if (contract.required === false) {
+    const missing = bothOrNoneMissingFields(contract, bundle);
+    return `${missing.map((field) => field.label).join(", ")} is required once any credential field is filled.`;
+  }
+  const secretFields = contract.fields.filter((field) => field.secret);
+  return `At least one of ${secretFields.map((field) => field.label).join(", ")} is required.`;
 }
 
 // Stores the validated credential and sends the success response.
@@ -942,6 +984,55 @@ async function storeAndRespond(
   });
 }
 
+/**
+ * Ruling (F1): an entirely blank submission on an OPTIONAL capture means
+ * "proceed with manual browser sign-in", never "store an empty credential".
+ * This function therefore:
+ *   - never calls `store.capture(...)` — no row is written, no existing
+ *     credential is touched, rotated, or cleared;
+ *   - projects `credential.present: false` honestly (never the store's
+ *     always-`present:true` shape a written row would carry);
+ *   - still returns 200/201 and a `run_connection` next step, because a
+ *     blank optional choice is a VALID, complete setup outcome — the
+ *     connector's own manual-sign-in fallback is what makes the run able to
+ *     proceed with zero credentials (see `isStaticSecretCaptureOptional` in
+ *     `static-secret-injection.ts` for the run-time half of this contract).
+ * No credential probe runs (there is nothing to probe) and no
+ * active-replacement guard runs (there is nothing to replace).
+ */
+async function respondWithoutStoringCredential(
+  ctx: MountRefStaticSecretCredentialsContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  args: { credentialKind: string | null; namespace: ConnectorNamespace; ownerSubjectId: string | null }
+): Promise<void> {
+  await emitCaptureAudit(ctx, req, res, {
+    connectionId: args.namespace.connectorInstanceId,
+    connectorId: args.namespace.connectorId,
+    credentialKind: args.credentialKind,
+    outcome: "succeeded",
+    ownerSubjectId: args.ownerSubjectId,
+    rotated: false,
+  });
+  res.status(200).json({
+    auto_resume: null,
+    connection_id: args.namespace.connectorInstanceId,
+    connector_id: args.namespace.connectorId,
+    connector_instance_id: args.namespace.connectorInstanceId,
+    credential: { captured_at: null, credential_kind: null, fingerprint: null, present: false, revoked_at: null, rotated_at: null, status: null },
+    identity: null,
+    next_step: {
+      kind: "run_connection",
+      method: "POST",
+      reason:
+        "No credential was saved — this connector signs in through the secure browser instead. Run this connection to begin that sign-in.",
+      url: `/_ref/connections/${encodeURIComponent(args.namespace.connectorInstanceId)}/run`,
+    },
+    object: "static_secret_credential_capture",
+    validation: "first_sync",
+  });
+}
+
 // POST /_ref/connections/:connectorInstanceId/static-secret-credential
 //
 // Owner-session-only credential capture for one existing connection. The
@@ -990,9 +1081,17 @@ async function runStaticSecretCredentialCapture(
   if (!contract) {
     return;
   }
-  if (
-    !(await assertBundledSecretComplete(ctx, req, res, namespace, credentialKind, ownerSubjectId, contract, secret))
-  ) {
+  const validation = validateBundledSecret(contract, secret);
+  if (validation.kind === "rejected") {
+    await rejectMissingCredential(
+      ctx,
+      req,
+      res,
+      namespace,
+      credentialKind,
+      ownerSubjectId,
+      rejectedCredentialMessage(contract, secret)
+    );
     return;
   }
   const submittedSetupFields = parseStaticSecretSetupFields(setupFieldsRaw, contract.fields, (code, message, param) =>
@@ -1007,6 +1106,17 @@ async function runStaticSecretCredentialCapture(
     ownerSubjectId,
     ...(submittedSetupFields ? { setupFields: submittedSetupFields } : {}),
   });
+
+  // F1: an entirely blank submission on an OPTIONAL capture proceeds with
+  // manual browser sign-in — it never reaches the credential probe, the
+  // active-replacement guard, or the store. Nothing is written, nothing
+  // existing is touched, and the response is honest that no credential is
+  // present.
+  if (validation.kind === "blank_optional") {
+    await respondWithoutStoringCredential(ctx, req, res, { credentialKind, namespace, ownerSubjectId });
+    return;
+  }
+
   // Synchronous validation moment (owner-journey flow design B1). When a
   // probe is injected, validate the credential against the provider BEFORE
   // storing it. A known-bad credential is rejected and NOTHING is written.

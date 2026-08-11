@@ -83,6 +83,57 @@ test("single-secret credentials store the submitted secret directly", () => {
   assert.deepEqual(payload, { ok: true, secret: "app password" });
 });
 
+// F4: singleSecretPayload must honor credential_capture.required === false
+// the SAME way bundledSecretPayload does — not reachable by any shipped
+// manifest today (every required:false manifest is username_password), but
+// the next single-field optional manifest must not silently inherit an
+// always-required assumption.
+function singleSecretApiKeySetup(required: boolean): StaticSecretSetup {
+  return setup({
+    credential_capture: {
+      description: null,
+      fields: [
+        {
+          autocomplete: "off",
+          description: null,
+          help_text: null,
+          help_url: null,
+          identity: false,
+          label: "API key",
+          name: "secret",
+          placeholder: null,
+          required: true,
+          secret: true,
+          type: "password",
+        },
+      ],
+      kind: "api_key",
+      label: "API key",
+      required,
+      submit_label: null,
+    },
+    credential_kind: "api_key",
+  });
+}
+
+test("F4: singleSecretPayload accepts a blank submission when credential_capture.required is false", () => {
+  const payload = buildStaticSecretPayload(singleSecretApiKeySetup(false), new FormData());
+  assert.equal(payload.ok, true);
+  assert.equal(payload.ok ? payload.secret : "", "{}", "blank-optional must use the SAME sentinel as the bundled case");
+});
+
+test("F4 counterweight: singleSecretPayload still rejects a blank submission when credential_capture.required is true (default)", () => {
+  const payload = buildStaticSecretPayload(singleSecretApiKeySetup(true), new FormData());
+  assert.deepEqual(payload, { error: "API key is required.", ok: false });
+});
+
+test("F4: singleSecretPayload stores a REAL submitted secret unchanged, even when the capture is optional", () => {
+  const form = new FormData();
+  form.set("secret", "real-api-key-value");
+  const payload = buildStaticSecretPayload(singleSecretApiKeySetup(false), form);
+  assert.deepEqual(payload, { ok: true, secret: "real-api-key-value" });
+});
+
 test("username/password credentials seal all submitted credential fields as one bundle", () => {
   const form = new FormData();
   form.set("username", "owner@example.com");

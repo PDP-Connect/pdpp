@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { runCollectorConnector } from "./collector-runner.ts";
 import {
   buildConnectionScopedSecretEnv,
+  isStaticSecretCaptureOptional,
   isStaticSecretConnector,
   type RecoveredStaticSecret,
   STATIC_SECRET_CONNECTOR_REGISTRY,
@@ -38,6 +39,23 @@ test("static-secret registry knows static-secret connectors and rejects non-stat
   assert.equal(isStaticSecretConnector("apple_contacts"), true);
   assert.equal(isStaticSecretConnector("groupme"), true);
   assert.equal(isStaticSecretConnector("claude-code"), false);
+});
+
+// isStaticSecretCaptureOptional is the run-orchestration-facing predicate a
+// seam with no manifest access (resolveStaticSecretRunEnv) uses to ask "does
+// a missing credential here mean the owner chose manual sign-in" — see its
+// doc for why this exists instead of threading the manifest itself through
+// that seam.
+test("isStaticSecretCaptureOptional reads captureRequired: false for venmo only, true/absent for every other connector", () => {
+  assert.equal(isStaticSecretCaptureOptional("venmo"), true);
+  assert.equal(isStaticSecretCaptureOptional("jellyfin"), false, "jellyfin has no block-level required:false fact");
+  assert.equal(isStaticSecretCaptureOptional("usaa"), false);
+  assert.equal(isStaticSecretCaptureOptional("gmail"), false);
+  assert.equal(
+    isStaticSecretCaptureOptional("claude-code"),
+    false,
+    "a connector absent from the registry must not be misread as optional"
+  );
 });
 
 test("steam injection sets the API key secret and Steam ID setup field", () => {

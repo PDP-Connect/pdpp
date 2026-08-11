@@ -251,6 +251,23 @@ export function isStaticSecretConnector(connectorId: string): boolean {
   return Object.hasOwn(STATIC_SECRET_CONNECTOR_REGISTRY, connectorId);
 }
 
+/**
+ * True when THIS connector's manifest declares `credential_capture.required:
+ * false` — the same block-level, provider-neutral fact `captureRequired`
+ * already carries for injection (see `StaticSecretConnectorDescriptor`'s
+ * doc). Exposed as its own predicate so a run-orchestration seam that has no
+ * business reading manifests directly (e.g. `resolveStaticSecretRunEnv`) can
+ * still ask "does a missing credential here mean the owner chose manual
+ * sign-in, or is it a genuine fail-closed gap" without re-deriving the fact
+ * or introducing a second, connector-name-keyed source of truth. Returns
+ * `false` for a connector absent from the registry (not a static-secret
+ * connector at all) or with no explicit opt-out — the same
+ * backward-compatible default every other layer uses.
+ */
+export function isStaticSecretCaptureOptional(connectorId: string): boolean {
+  return STATIC_SECRET_CONNECTOR_REGISTRY[connectorId]?.captureRequired === false;
+}
+
 function setupFieldsFromSourceBinding(sourceBinding: unknown): StaticSecretSetupFields {
   if (!sourceBinding || typeof sourceBinding !== "object" || Array.isArray(sourceBinding)) {
     return {};

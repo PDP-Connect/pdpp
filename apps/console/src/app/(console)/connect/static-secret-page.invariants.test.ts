@@ -25,6 +25,14 @@ const EXISTING_TARGET_ACTION = /action=\{hasExistingTarget \? replaceStaticSecre
 const RETRY_CONNECTION_ID = /hasExistingTarget && pageParams\.connectionId/;
 const DRAFT_RETRY_MODE = /draftRetry/;
 const FIELDS_MAP = /formContract\.credentialFields\.map/;
+// F2: native HTML `required` must not be hardcoded to the field's own flag —
+// it must also fall back to false whenever the BLOCK-level
+// credential_capture.required is false (BOTH-OR-NONE's blank-optional
+// case), so the browser's own validation cannot block a submission the
+// server-side buildStaticSecretPayload/validateBundledSecret contract
+// already accepts.
+const REQUIRED_HONORS_BLOCK_LEVEL_FACT = /required=\{setup\.credential_capture\.required !== false && field\.required\}/;
+const NO_FIELD_ONLY_REQUIRED_ATTRIBUTE = /required=\{field\.required\}/;
 const CONNECTION_NAME_FIELD = /name=\{formContract\.connectionName\.name\}/;
 const CONNECTION_NAME_MAX_LENGTH = /maxLength=\{formContract\.connectionName\.maxLength\}/;
 const HELP_URL = /field\.help_url/;
@@ -127,6 +135,12 @@ test("static-secret page is an owner-session capture form, not an agent secret p
   assert.match(src, DRAFT_RETRY_MODE);
   assert.match(src, RETRY_COPY);
   assert.match(src, FIELDS_MAP);
+  // F2: the native `required` attribute must be gated by the block-level
+  // credential_capture.required fact, never the field's own `required`
+  // alone — otherwise the browser silently blocks a blank submission the
+  // server-side contract already accepts (Venmo's exact failure mode).
+  assert.match(src, REQUIRED_HONORS_BLOCK_LEVEL_FACT);
+  assert.doesNotMatch(src, NO_FIELD_ONLY_REQUIRED_ATTRIBUTE);
   assert.match(src, CONNECTION_NAME_FIELD);
   assert.match(src, CONNECTION_NAME_MAX_LENGTH);
   assert.match(src, HELP_URL);

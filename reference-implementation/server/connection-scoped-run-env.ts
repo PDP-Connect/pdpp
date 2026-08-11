@@ -111,9 +111,12 @@ export async function buildStaticSecretCredentialProber() {
 // Decision 5). For a static-secret connector that HAS an active stored
 // credential, it returns the env fragment carrying only that connection's
 // secret; the run then authenticates with exactly that secret, overriding any
-// process-global one. It returns `null` for non-static-secret connectors and
+// process-global one. It returns `null` for non-static-secret connectors,
 // for browser-session source bindings that have no optional stored login
-// credential. A missing/revoked/deleted credential on a true static-secret
+// credential, AND for any connector whose manifest declares
+// `credential_capture.required: false` (e.g. Venmo) regardless of its
+// connection's `sourceBinding.kind` — see `resolveStaticSecretRunEnv`'s doc.
+// A missing/revoked/deleted credential on a true REQUIRED static-secret
 // connection still fails closed: the run seam throws and the run is refused
 // before any child can use a stale or deployment-wide provider-account secret.
 function buildControllerStaticSecretRunEnvResolver({
@@ -121,7 +124,8 @@ function buildControllerStaticSecretRunEnvResolver({
   createConnectorInstanceCredentialStore,
 }: ResolverDependencies): RunEnvResolver {
   return async ({ connectorId, connectorInstanceId, ownerSubjectId }: RunEnvResolverArgs) => {
-    const { isStaticSecretConnector, buildConnectionScopedSecretEnv } = await loadStaticSecretInjectionHelpers();
+    const { isStaticSecretCaptureOptional, isStaticSecretConnector, buildConnectionScopedSecretEnv } =
+      await loadStaticSecretInjectionHelpers();
     if (!isStaticSecretConnector(connectorId)) {
       return null;
     }
@@ -133,6 +137,7 @@ function buildControllerStaticSecretRunEnvResolver({
       connectorId,
       connectorInstanceId,
       credentialStore,
+      isStaticSecretCaptureOptional,
       isStaticSecretConnector,
       ownerSubjectId,
       sourceBinding: connectorInstance?.sourceBinding ?? null,
