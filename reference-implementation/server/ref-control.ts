@@ -1847,7 +1847,13 @@ export async function listOwnerVisibleConnectorInstances(
   // elapsed.
   const store = getConnectorInstanceStore();
   const rows: ConnectorInstanceRow[] = [];
+  const visitedBoundaries = new Set<string>();
   const readNextPage = async (after: ConnectorIdentityPageBoundary | null): Promise<void> => {
+    const boundaryKey = after ? JSON.stringify(after) : "<start>";
+    if (visitedBoundaries.has(boundaryKey)) {
+      throw new Error("Owner-visible connector identity pagination repeated a boundary.");
+    }
+    visitedBoundaries.add(boundaryKey);
     const page: { readonly hasMore: boolean; readonly rows: readonly ConnectorInstanceRow[] } =
       await store.listOwnerVisibleIdentityPage(ownerSubjectId, { after, limit: 100 });
     rows.push(...page.rows);
@@ -6237,6 +6243,7 @@ async function listAllConnectorSummariesByPaging(
   }
   const summaries: ConnectorSummary[] = [];
   let after: ConnectorIdentityPageBoundary | null = null;
+  const visitedCursors = new Set<string>();
   for (;;) {
     // biome-ignore lint/performance/noAwaitInLoops: each page's continuation depends on the previous page's cursor.
     const page = await listConnectorSummaryPage(controller, {
@@ -6249,6 +6256,10 @@ async function listAllConnectorSummariesByPaging(
     if (!(page.has_more && page.next_cursor)) {
       break;
     }
+    if (visitedCursors.has(page.next_cursor)) {
+      throw new Error("Connector summary pagination repeated a cursor.");
+    }
+    visitedCursors.add(page.next_cursor);
     after = decodeConnectorSummaryPageCursor(page.next_cursor, ownerSubjectId);
   }
   return summaries;

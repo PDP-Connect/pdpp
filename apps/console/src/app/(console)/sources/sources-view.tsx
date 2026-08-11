@@ -198,7 +198,7 @@ export function SourcesView({
         </aside>
 
         {selected ? (
-          <div className="rr-s-detail">
+          <div className="rr-s-detail" data-pdpp-selected-source={selected.connectionId ?? selected.id}>
             <InstancePassport
               instance={selected}
               interactive={interactive}

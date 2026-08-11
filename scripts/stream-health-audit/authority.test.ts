@@ -39,14 +39,30 @@ function healthyConnection(overrides: Json = {}): Json {
     revoked_at: null,
     streams: ["messages"],
     manifest_version: "manifest-1",
-    manifest_declaration: { state: "current" },
-    record_snapshot: { state: "current" },
-    terminal_facts: { state: "current" },
+    manifest_declaration: { state: "current", as_of: EVIDENCE_AT, reason_code: null },
+    record_snapshot: { state: "current", as_of: EVIDENCE_AT, reason_code: null },
+    terminal_facts: { state: "current", event_seq: 1, as_of: EVIDENCE_AT, reason_code: null },
     owner_state: { resolver: "healthy", owner_of_state: "system", posture: "observed" },
     connection_health: {
       state: "healthy",
       axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "idle" },
-      conditions: [{ type: "ProjectionReliable", status: "true" }],
+      conditions: [
+        {
+          current: true,
+          expires_at: null,
+          id: "projection-reliable",
+          message: "Projection is current",
+          observed_at: EVIDENCE_AT,
+          origin: "read_model",
+          reason: "projection_current",
+          reason_code: null,
+          remediation: null,
+          sensitivity: "public",
+          severity: "info",
+          status: "true",
+          type: "ProjectionReliable",
+        },
+      ],
     },
     rendered_verdict: { pill: { tone: "green", label: "Healthy" } },
     last_run: { finished_at: EVIDENCE_AT, status: "succeeded", run_id: "run-1" },
@@ -80,6 +96,7 @@ function fullyEvidencedInput(connection: Json, connectorManifest = manifest()): 
       paginationComplete: true,
       renderedRows: true,
       resolved: true,
+      selectedConnectionId: synthetic ? null : String(connection.connection_id),
       streamKeys: synthetic ? [] : [{ connectionId: String(connection.connection_id), stream: "messages" }],
       suspense: false,
     },
@@ -128,6 +145,7 @@ test("derives an exact green numerator/denominator from active production stream
       paginationComplete: true,
       renderedRows: true,
       resolved: true,
+      selectedConnectionId: "c1",
       streamKeys: [
         { connectionId: "c1", stream: "messages" },
         { connectionId: "c2", stream: "messages" },
@@ -221,12 +239,12 @@ test("omitted authority inputs and an explicitly empty manifest fail closed", ()
 test("missing terminal or manifest projection evidence cannot inherit a green runtime result", () => {
   const missingTerminal = healthyConnection({ terminal_facts: null });
   const terminalResult = evaluate(missingTerminal);
-  assert.equal(streamResult(terminalResult).class, "unobserved");
+  assert.equal(streamResult(terminalResult).class, "unknown_vocabulary");
   assert.match(streamResult(terminalResult).reason, PROJECTION_PATTERN);
 
   const missingManifestDeclaration = healthyConnection({ manifest_declaration: null });
   const manifestResult = evaluate(missingManifestDeclaration);
-  assert.equal(streamResult(manifestResult).class, "unobserved");
+  assert.equal(streamResult(manifestResult).class, "unknown_vocabulary");
   assert.match(streamResult(manifestResult).reason, PROJECTION_PATTERN);
 });
 
@@ -483,6 +501,7 @@ test("resolved authenticated DOM must agree with every real owner connection", (
       paginationComplete: true,
       renderedRows: true,
       resolved: true,
+      selectedConnectionId: null,
       streamKeys: [],
       suspense: false,
     },
@@ -645,6 +664,7 @@ test("stream evidence must be bound to an expected rendered row and manifest str
       paginationComplete: true,
       renderedRows: true,
       resolved: true,
+      selectedConnectionId: "c1",
       streamKeys: [{ connectionId: "c1", stream: "not-declared" }],
       suspense: false,
     },
@@ -691,6 +711,62 @@ test("the DOM parser recognizes source identities, pagination, empty state, and 
   );
   assert.equal(parseOwnerSourcesDom('<form><input name="password" /></form>').resolved, false);
   assert.equal(parseOwnerSourcesDom('<div aria-busy="true">Loading</div>').suspense, true);
+  const hidden = parseOwnerSourcesDom(
+    '<div data-pdpp-selected-source="c1"><a data-pdpp-source-row="c1"></a><a data-pdpp-stream-row="true" data-connection-id="c1" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages"></a></div>' +
+      '<template><a data-pdpp-source-row="c2"></a></template><noscript><a data-pdpp-source-row="c3"></a></noscript>' +
+      '<div hidden><a data-pdpp-source-row="c4"></a></div><div style="display:none"><a data-pdpp-source-row="c5"></a></div>'
+  );
+  assert.deepEqual(hidden.connectionIds, ["c1"]);
+  assert.deepEqual(hidden.streamKeys, [{ connectionId: "c1", stream: "messages" }]);
+  assert.equal(hidden.selectedConnectionId, "c1");
+});
+
+test("green evidence requires causal runtime identity and complete terminal evidence", () => {
+  const noRunIdentity = healthyConnection({
+    last_run: { finished_at: EVIDENCE_AT, status: "succeeded" },
+    last_successful_run: { finished_at: EVIDENCE_AT, status: "succeeded" },
+  });
+  assert.notEqual(streamResult(evaluate(noRunIdentity)).class, "green");
+
+  const unknownReason = healthyConnection({
+    terminal_facts: { state: "current", event_seq: 1, as_of: EVIDENCE_AT, reason_code: "future_reason" },
+  });
+  const unknownReasonResult = evaluate(unknownReason);
+  assert.equal(unknownReasonResult.status, "inconclusive");
+  assert.ok(unknownReasonResult.perClass.unknown_vocabulary > 0);
+
+  const incompleteCondition = healthyConnection({
+    connection_health: { ...(healthyConnection().connection_health as Json), conditions: [{}] },
+  });
+  const incompleteConditionResult = evaluate(incompleteCondition);
+  assert.equal(incompleteConditionResult.status, "inconclusive");
+  assert.ok(incompleteConditionResult.perClass.unknown_vocabulary > 0);
+});
+
+test("master-detail DOM evidence requires every stream row for the selected source", () => {
+  const twoStreams = manifest({
+    streams: [
+      { name: "messages", required: true },
+      { name: "contacts", required: true },
+    ],
+  });
+  const connection = healthyConnection({ streams: ["messages", "contacts"] });
+  const result = evaluateStreamHealthAuthority({
+    ...fullyEvidencedInput(connection, twoStreams),
+    dom: {
+      authenticated: true,
+      connectionIds: ["c1"],
+      nextPageHrefs: [],
+      paginationComplete: true,
+      renderedRows: true,
+      resolved: true,
+      selectedConnectionId: "c1",
+      streamKeys: [{ connectionId: "c1", stream: "messages" }],
+      suspense: false,
+    },
+  });
+  assert.equal(result.domAgreement.status, "disagree");
+  assert.equal(result.status, "fail");
 });
 
 test("live authority exhausts summary pages and catches a DOM that hides the second owner connection", async () => {

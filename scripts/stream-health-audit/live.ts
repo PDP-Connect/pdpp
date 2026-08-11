@@ -224,6 +224,7 @@ async function fetchOwnerSourcesDom({
   let resolved = true;
   let authenticated = true;
   let renderedRows = false;
+  let selectedConnectionId: string | null = null;
   let suspense = false;
   let paginationComplete = true;
   let reason: string | null = null;
@@ -273,6 +274,7 @@ async function fetchOwnerSourcesDom({
     resolved = resolved && pageEvidence.resolved;
     authenticated = authenticated && pageEvidence.authenticated !== false;
     renderedRows = renderedRows || pageEvidence.renderedRows;
+    selectedConnectionId ??= pageEvidence.selectedConnectionId ?? null;
     suspense = suspense || pageEvidence.suspense === true;
     if (!pageEvidence.resolved || pageEvidence.authenticated === false || pageEvidence.suspense === true) {
       reason = pageEvidence.reason ?? reason;
@@ -301,6 +303,7 @@ async function fetchOwnerSourcesDom({
       paginationComplete: paginationComplete && baseEvidence.paginationComplete !== false,
       renderedRows,
       resolved,
+      selectedConnectionId,
       streamKeys: streamKeyValues,
       suspense,
       reason,

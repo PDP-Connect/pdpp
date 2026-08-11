@@ -181,6 +181,80 @@ const KNOWN_CONDITION_ORIGINS = new Set([
   "scheduler",
 ]);
 const KNOWN_CONDITION_SENSITIVITIES = new Set(["owner", "public", "secret_redacted"]);
+const KNOWN_EVIDENCE_REASON_CODES = new Set([
+  "manifest_generation_changed",
+  "manifest_invalid",
+  "manifest_unavailable",
+  "record_checkpoint_lag",
+  "record_snapshot_failed",
+  "repair_lock_unavailable",
+  "retained_bytes_unavailable",
+  "summary_evidence_unavailable",
+  "summary_missing",
+  "terminal_fold_failed",
+]);
+const KNOWN_CONDITION_REASONS = new Set([
+  "attention_expired",
+  "attention_required",
+  "backoff_expired",
+  "browser_runtime_not_configured",
+  "collection_failed",
+  "collection_not_observed",
+  "collection_succeeded",
+  "collection_succeeded_local_device",
+  "coverage_unknown",
+  "credential_continuity_not_applicable",
+  "credential_continuity_proven",
+  "credential_continuity_unproven",
+  "credential_rejected",
+  "credential_required",
+  "credentials_accepted",
+  "credentials_not_probed",
+  "external_tool_unavailable",
+  "fresh",
+  "freshness_unknown",
+  "local_exporter_active",
+  "local_exporter_dead_letter_backlog",
+  "local_exporter_idle",
+  "local_exporter_not_applicable",
+  "local_exporter_stale_heartbeat",
+  "local_exporter_stale_pending",
+  "local_exporter_stalled",
+  "local_exporter_state_read_failed",
+  "local_exporter_transient_upload_failure",
+  "local_exporter_unknown",
+  "missing_browser_surface",
+  "no_active_backoff",
+  "no_open_attention",
+  "outbox_active",
+  "outbox_dead_letter_backlog",
+  "outbox_idle",
+  "outbox_not_applicable",
+  "outbox_stale_heartbeat",
+  "outbox_stale_pending",
+  "outbox_stalled",
+  "outbox_state_read_failed",
+  "outbox_transient_upload_failure",
+  "outbox_unknown",
+  "projection_current",
+  "projection_unreliable",
+  "remote_surface_available",
+  "remote_surface_failed",
+  "remote_surface_not_required",
+  "remote_surface_unknown",
+  "runtime_available",
+  "runtime_binding_missing",
+  "runtime_not_managed",
+  "runtime_state_unknown",
+  "runtime_unavailable",
+  "schedule_enabled",
+  "schedule_not_configured",
+  "schedule_paused",
+  "scheduler_backoff_active",
+  "stale",
+  "stale_assisted_refresh",
+  "stale_manual_refresh",
+]);
 const KNOWN_CONDITION_REMEDIATION_ACTIONS = new Set([
   "check_runtime",
   "clear_backlog",
@@ -269,10 +343,12 @@ const HREF_PATTERN = /\bhref=(['"])(.*?)\1/gi;
 const PAGE_CURSOR_PATTERN = /[?&]page_cursor=/;
 const EXPLICIT_EMPTY_PATTERN = /data-testid=["']sources-empty["']/i;
 const HTML_TAG_PATTERN = /<[^>]+>/g;
-const NON_RENDERED_HTML_PATTERN = /<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>/gi;
+const NON_RENDERED_HTML_PATTERN =
+  /<!--[\s\S]*?-->|<(?:script|style|template|noscript)\b[\s\S]*?<\/(?:script|style|template|noscript)>|<[^>]*(?:\bhidden\b|aria-hidden\s*=\s*["']true["']|style\s*=\s*["'][^"']*display\s*:\s*none[^"']*["'])[^>]*>[\s\S]*?<\/[^>]+>/gi;
 const ATTRIBUTE_PATTERN = /(?:^|\s)([A-Za-z_:][A-Za-z0-9_.:-]*)(?:\s*=\s*(?:(["'])(.*?)\2|([^\s>]+)))?/g;
 const ROW_ATTRIBUTE_NAMES = new Set([
   "data-pdpp-source-row",
+  "data-pdpp-selected-source",
   "data-pdpp-stream-row",
   "data-connection-id",
   "data-stream-name",
@@ -287,6 +363,7 @@ export interface OwnerSourcesDomEvidence {
   reason?: string | null;
   renderedRows: boolean;
   resolved: boolean;
+  selectedConnectionId?: string | null;
   streamKeys: readonly { connectionId: string; stream: string }[];
   suspense: boolean;
 }
@@ -599,6 +676,7 @@ function checkNextActionVocabulary(candidate: JsonObject | null, path: string, u
   }
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the canonical condition envelope is intentionally checked field-by-field at this trust boundary.
 function checkConditionVocabulary(health: JsonObject | null, unknown: string[]): void {
   const conditions = health?.conditions;
   if (conditions !== undefined && !Array.isArray(conditions)) {
@@ -611,11 +689,67 @@ function checkConditionVocabulary(health: JsonObject | null, unknown: string[]):
       continue;
     }
     const path = `connection_health.conditions[${index}]`;
+    const required = [
+      "current",
+      "expires_at",
+      "id",
+      "message",
+      "observed_at",
+      "origin",
+      "reason",
+      "reason_code",
+      "remediation",
+      "sensitivity",
+      "severity",
+      "status",
+      "type",
+    ];
+    for (const key of required) {
+      if (!(key in object)) {
+        unknown.push(`${path}.${key}=<missing>`);
+      }
+    }
+    if (typeof object.current !== "boolean") {
+      unknown.push(`${path}.current=<malformed>`);
+    }
+    if (object.expires_at !== null && typeof object.expires_at !== "string") {
+      unknown.push(`${path}.expires_at=<malformed>`);
+    }
+    if (typeof object.id !== "string" || !object.id.trim()) {
+      unknown.push(`${path}.id=<malformed>`);
+    }
+    if (typeof object.message !== "string") {
+      unknown.push(`${path}.message=<malformed>`);
+    }
+    if (object.observed_at !== null && typeof object.observed_at !== "string") {
+      unknown.push(`${path}.observed_at=<malformed>`);
+    }
+    if (typeof object.reason !== "string" || !object.reason.trim()) {
+      unknown.push(`${path}.reason=<malformed>`);
+    } else if (!KNOWN_CONDITION_REASONS.has(object.reason)) {
+      unknown.push(`${path}.reason=${object.reason}`);
+    }
+    if (object.reason_code !== null && typeof object.reason_code !== "string") {
+      unknown.push(`${path}.reason_code=<malformed>`);
+    }
+    if (object.remediation !== null && !asObject(object.remediation)) {
+      unknown.push(`${path}.remediation=<malformed>`);
+    }
+    if (
+      typeof object.sensitivity !== "string" ||
+      typeof object.severity !== "string" ||
+      typeof object.status !== "string"
+    ) {
+      unknown.push(`${path}=<malformed>`);
+    }
     checkVocabulary(object.type, KNOWN_CONDITION_TYPES, `${path}.type`, unknown);
     checkVocabulary(object.status, KNOWN_CONDITION_STATUSES, `${path}.status`, unknown);
     checkVocabulary(object.severity, KNOWN_CONDITION_SEVERITIES, `${path}.severity`, unknown);
     checkVocabulary(object.origin, KNOWN_CONDITION_ORIGINS, `${path}.origin`, unknown);
     checkVocabulary(object.sensitivity, KNOWN_CONDITION_SENSITIVITIES, `${path}.sensitivity`, unknown);
+    if (object.reason_code !== null && (typeof object.reason_code !== "string" || !object.reason_code.trim())) {
+      unknown.push(`${path}.reason_code=<malformed>`);
+    }
     const remediation = nestedObject(object, "remediation");
     checkVocabulary(remediation?.action, KNOWN_CONDITION_REMEDIATION_ACTIONS, `${path}.remediation.action`, unknown);
     checkVocabulary(
@@ -625,6 +759,50 @@ function checkConditionVocabulary(health: JsonObject | null, unknown: string[]):
       unknown
     );
   }
+}
+
+function checkEvidenceComponent(
+  value: unknown,
+  path: string,
+  states: ReadonlySet<string>,
+  unknown: string[],
+  terminal = false
+): void {
+  const component = asObject(value);
+  if (!component) {
+    unknown.push(`${path}=<malformed projection evidence>`);
+    return;
+  }
+  for (const key of terminal ? ["state", "event_seq", "as_of", "reason_code"] : ["state", "as_of", "reason_code"]) {
+    if (!(key in component)) {
+      unknown.push(`${path}.${key}=<missing>`);
+    }
+  }
+  checkVocabulary(component.state, states, `${path}.state`, unknown);
+  if (component.as_of !== null && (typeof component.as_of !== "string" || !component.as_of.trim())) {
+    unknown.push(`${path}.as_of=<malformed>`);
+  }
+  if (
+    component.reason_code !== null &&
+    (typeof component.reason_code !== "string" || !KNOWN_EVIDENCE_REASON_CODES.has(component.reason_code))
+  ) {
+    unknown.push(`${path}.reason_code=${String(component.reason_code)}`);
+  }
+  if (terminal && component.event_seq !== null && !isNonNegativeInteger(component.event_seq)) {
+    unknown.push(`${path}.event_seq=<malformed>`);
+  }
+}
+
+function checkStructuredEvidence(connection: JsonObject, unknown: string[]): void {
+  const states = new Set(["current", "failed", "stale", "unobserved", "unavailable"]);
+  checkEvidenceComponent(
+    connection.manifest_declaration,
+    "manifest_declaration",
+    new Set(["current", "failed", "unavailable"]),
+    unknown
+  );
+  checkEvidenceComponent(connection.record_snapshot, "record_snapshot", states, unknown);
+  checkEvidenceComponent(connection.terminal_facts, "terminal_facts", states, unknown, true);
 }
 
 function checkRequiredActionVocabulary(action: unknown, index: number, unknown: string[]): void {
@@ -793,6 +971,7 @@ function checkConnectionVocabulary(connection: JsonObject): string[] {
   checkNextActionVocabulary(nestedObject(health, "next_action"), "connection_health.next_action", unknown);
   checkNextActionVocabulary(nestedObject(connection, "next_action"), "next_action", unknown);
   checkConditionVocabulary(health, unknown);
+  checkStructuredEvidence(connection, unknown);
   checkRenderedVerdictVocabulary(nestedObject(connection, "rendered_verdict"), unknown);
   for (const [index, run] of [connection.last_run, connection.last_successful_run].entries()) {
     checkVocabulary(asObject(run)?.status, KNOWN_RUN_STATUSES, `run[${index}].status`, unknown);
@@ -1157,10 +1336,7 @@ function successfulRuntimeEvidence(connection: JsonObject, report: JsonObject): 
   }
   const lastSuccessId = asNonEmptyString(lastSuccess.run_id);
   const lastRunId = asNonEmptyString(lastRun.run_id);
-  if (
-    (lastSuccessId !== null || lastRunId !== null) &&
-    (!(lastSuccessId && lastRunId) || lastSuccessId !== lastRunId)
-  ) {
+  if (!(lastSuccessId && lastRunId) || lastSuccessId !== lastRunId) {
     return false;
   }
   const evidenceAsOf = asNonEmptyString(report.evidence_as_of) ?? asNonEmptyString(report.as_of);
@@ -1198,7 +1374,18 @@ function currentProjectionEvidence(connection: JsonObject): boolean {
   const snapshot = nestedObject(connection, "record_snapshot");
   const manifest = nestedObject(connection, "manifest_declaration");
   const terminal = nestedObject(connection, "terminal_facts");
-  return snapshot?.state === "current" && manifest?.state === "current" && terminal?.state === "current";
+  return (
+    snapshot?.state === "current" &&
+    manifest?.state === "current" &&
+    terminal?.state === "current" &&
+    typeof snapshot.as_of === "string" &&
+    snapshot.as_of.length > 0 &&
+    typeof manifest.as_of === "string" &&
+    manifest.as_of.length > 0 &&
+    typeof terminal.as_of === "string" &&
+    terminal.as_of.length > 0 &&
+    isNonNegativeInteger(terminal.event_seq)
+  );
 }
 
 function explicitVerifiedEmpty(connection: JsonObject, report: JsonObject): boolean {
@@ -1310,6 +1497,7 @@ function missingDomEvidence(reason = "owner Sources evidence was not supplied"):
     paginationComplete: false,
     renderedRows: false,
     resolved: false,
+    selectedConnectionId: null,
     streamKeys: [],
     suspense: false,
     reason,
@@ -1339,6 +1527,7 @@ interface RenderedRowEvidence {
   malformedStreamRow: boolean;
   orphanedStreamRow: boolean;
   renderedRows: boolean;
+  selectedConnectionId: string | null;
   streamKeys: { connectionId: string; stream: string }[];
 }
 
@@ -1379,8 +1568,10 @@ function parseRenderedRows(source: string): RenderedRowEvidence {
   let malformedStreamRow = false;
   let orphanedStreamRow = false;
   let renderedRows = false;
+  let selectedConnectionId: string | null = null;
   for (const tagMatch of source.matchAll(HTML_TAG_PATTERN)) {
     const attributes = htmlAttributes(tagMatch[0] ?? "");
+    selectedConnectionId ??= attributes.get("data-pdpp-selected-source")?.trim() || null;
     const sourceRow = attributes.get("data-pdpp-source-row");
     if (sourceRow) {
       renderedRows = true;
@@ -1402,7 +1593,7 @@ function parseRenderedRows(source: string): RenderedRowEvidence {
       orphanedStreamRow = true;
     }
   }
-  return { connectionIds, malformedStreamRow, orphanedStreamRow, renderedRows, streamKeys };
+  return { connectionIds, malformedStreamRow, orphanedStreamRow, renderedRows, streamKeys, selectedConnectionId };
 }
 
 function parsePageHrefs(source: string): string[] {
@@ -1457,6 +1648,7 @@ export function parseOwnerSourcesDom(html: string): OwnerSourcesDomEvidence {
     paginationComplete: true,
     renderedRows,
     resolved,
+    selectedConnectionId: rendered.selectedConnectionId,
     streamKeys: [
       ...new Map(
         rendered.streamKeys.map((key) => [key.connectionId + String.fromCharCode(0) + key.stream, key])
@@ -1603,6 +1795,7 @@ function classForStream(
   return { class: "unobserved", denominator, reason: green.reason };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this is the single master-detail reconciliation gate; each branch represents an independent evidence axis.
 function compareDom(
   dom: OwnerSourcesDomEvidence,
   connections: readonly JsonObject[],
@@ -1638,6 +1831,17 @@ function compareDom(
     }
     expectedStreams.set(id, new Set(manifest.streams.map((stream) => stream.name)));
   }
+  const selectedConnectionId = asNonEmptyString(dom.selectedConnectionId);
+  const expectedSelectedStreams = selectedConnectionId ? expectedStreams.get(selectedConnectionId) : undefined;
+  const missingStreamKeys =
+    selectedConnectionId && expectedSelectedStreams
+      ? [...expectedSelectedStreams]
+          .filter(
+            (stream) => !streamValues.some((key) => key.connectionId === selectedConnectionId && key.stream === stream)
+          )
+          .map((stream) => `${selectedConnectionId}:${stream}`)
+      : [];
+  const unexpectedSelectedConnection = selectedConnectionId !== null && !expectedStreams.has(selectedConnectionId);
   const extraStreamKeys: string[] = [];
   const invalidStreamKeys: string[] = [];
   const expectedSet = new Set(expected);
@@ -1656,7 +1860,33 @@ function compareDom(
     }
   }
   const structuralResolved = dom.resolved && dom.renderedRows && Array.isArray(dom.streamKeys);
-  if (!dom.resolved || dom.authenticated === false || dom.suspense === true || !structuralResolved) {
+  const observedSet = new Set(observed);
+  const missingConnectionIds = expected.filter((id) => !observedSet.has(id));
+  const extraConnectionIds = observed.filter((id) => !expectedSet.has(id));
+  if (expected.length === 0 && structuralResolved && dom.authenticated === true && dom.suspense === false) {
+    return {
+      extraConnectionIds: observed,
+      extraStreamKeys,
+      invalidStreamKeys,
+      missingConnectionIds: [],
+      observedConnectionIds: observed,
+      observedStreamKeys,
+      resolved: true,
+      status: extraConnectionIds.length || extraStreamKeys.length || invalidStreamKeys.length ? "disagree" : "agree",
+    };
+  }
+  if (
+    !dom.resolved ||
+    dom.authenticated === false ||
+    dom.suspense === true ||
+    !structuralResolved ||
+    (selectedConnectionId === null &&
+      missingConnectionIds.length === 0 &&
+      extraConnectionIds.length === 0 &&
+      extraStreamKeys.length === 0 &&
+      invalidStreamKeys.length === 0) ||
+    (selectedConnectionId !== null && expectedSelectedStreams === undefined)
+  ) {
     return {
       extraConnectionIds: [],
       extraStreamKeys,
@@ -1668,21 +1898,20 @@ function compareDom(
       status: "inconclusive",
     };
   }
-  const observedSet = new Set(observed);
-  const missingConnectionIds = expected.filter((id) => !observedSet.has(id));
-  const extraConnectionIds = observed.filter((id) => !expectedSet.has(id));
   if (
     missingConnectionIds.length > 0 ||
     extraConnectionIds.length > 0 ||
     extraStreamKeys.length > 0 ||
-    invalidStreamKeys.length > 0
+    invalidStreamKeys.length > 0 ||
+    missingStreamKeys.length > 0 ||
+    unexpectedSelectedConnection
   ) {
     addFinding(findings, counts, {
       class: "projection_disagreement",
       connection_id: null,
       connector_id: null,
       denominator: false,
-      reason: `authenticated owner DOM differs from owner inventory (missing=${missingConnectionIds.length}, extra=${extraConnectionIds.length}, extra_streams=${extraStreamKeys.length}, invalid_streams=${invalidStreamKeys.length})`,
+      reason: `authenticated owner DOM differs from owner inventory (missing=${missingConnectionIds.length}, missing_selected_streams=${missingStreamKeys.length}, extra=${extraConnectionIds.length}, extra_streams=${extraStreamKeys.length}, invalid_streams=${invalidStreamKeys.length})`,
       stream: "<owner-dom>",
     });
     return {

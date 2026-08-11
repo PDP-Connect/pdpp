@@ -4038,35 +4038,10 @@ async function evaluateOwnerStreamHealthAuthority({
       }
     })
   );
-  const connectionIds = summaries
-    .map((summary) =>
-      summary && typeof summary === "object" ? (summary as Record<string, unknown>).connection_id : null
-    )
-    .filter((id): id is string => typeof id === "string" && id.trim().length > 0);
-  const streamKeys = summaries.flatMap((summary) => {
-    if (!summary || typeof summary !== "object" || Array.isArray(summary)) {
-      return [];
-    }
-    const object = summary as Record<string, unknown>;
-    const connectionId = typeof object.connection_id === "string" ? object.connection_id : null;
-    const streams = Array.isArray(object.streams) ? object.streams : [];
-    if (!connectionId) {
-      return [];
-    }
-    return streams
-      .filter((stream): stream is string => typeof stream === "string" && stream.trim().length > 0)
-      .map((stream) => ({ connectionId, stream }));
-  });
-  const dom: OwnerSourcesDomEvidence = {
-    authenticated: true,
-    connectionIds,
-    nextPageHrefs: [],
-    paginationComplete: true,
-    renderedRows: true,
-    resolved: true,
-    streamKeys,
-    suspense: false,
-  };
+  // Summary JSON is not rendered Sources evidence. Sources is master-detail:
+  // all source markers render, but stream rows render only for the selected
+  // source. Do not fabricate DOM rows from the summary projection.
+  const dom: OwnerSourcesDomEvidence | null = null;
   return evaluateStreamHealthAuthority({
     auth: { authenticated: true, mode: "owner-session", resolved: true },
     connections: summaries,
