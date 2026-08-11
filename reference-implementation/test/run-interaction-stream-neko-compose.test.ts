@@ -88,6 +88,7 @@ function fakeLeaseStore(): BrowserSurfaceLeaseStore {
     upsertLease: () => unimplemented("upsertLease"),
     upsertSurface: () => unimplemented("upsertSurface"),
     withLeaseTransaction: () => unimplemented("withLeaseTransaction"),
+    withPersistenceUnitOfWork: () => unimplemented("withPersistenceUnitOfWork"),
   };
 }
 

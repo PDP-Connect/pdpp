@@ -21,6 +21,7 @@ import {
   withPostgresReadOnlyTransaction,
   withPostgresTransaction,
 } from "../postgres-storage.ts";
+import type { BrowserSurfacePersistenceTransaction } from "./browser-surface-persistence-unit-of-work.ts";
 
 export interface BrowserSurfaceReplacementReceiptStore {
   append: (receipt: ReplacementReceipt) => Promise<ReplacementReceipt>;
@@ -28,6 +29,7 @@ export interface BrowserSurfaceReplacementReceiptStore {
   applySelectionOverrideBatch: (
     input: ReplacementReceiptSelectionOverrideBatchInput
   ) => Promise<ReplacementReceiptSelectionOverrideBatchVerification>;
+  bindToTransaction: (transaction: BrowserSurfacePersistenceTransaction) => BrowserSurfaceReplacementReceiptStore;
   dryRunSelectionOverrideBatch: (
     input: ReplacementReceiptSelectionOverrideBatchInput
   ) => Promise<ReplacementReceiptSelectionOverrideBatchVerification>;
@@ -1144,6 +1146,13 @@ function setOptionalRowValue(
 }
 
 class SqliteBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceReplacementReceiptStore {
+  bindToTransaction(tx: BrowserSurfacePersistenceTransaction): BrowserSurfaceReplacementReceiptStore {
+    if (tx.backend !== "sqlite") {
+      throw new Error("SQLite replacement receipt store cannot bind to a PostgreSQL transaction");
+    }
+    return this;
+  }
+
   async applySelectionOverrideBatch(
     input: ReplacementReceiptSelectionOverrideBatchInput
   ): Promise<ReplacementReceiptSelectionOverrideBatchVerification> {
@@ -1540,6 +1549,16 @@ class PostgresBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceRep
       query ??
       ((sql, values = []) =>
         postgresQuery<ReplacementReceiptRow>(sql, [...values]) as Promise<{ rows: ReplacementReceiptRow[] }>);
+  }
+
+  bindToTransaction(tx: BrowserSurfacePersistenceTransaction): BrowserSurfaceReplacementReceiptStore {
+    if (tx.backend !== "postgres" || !tx.query) {
+      throw new Error("PostgreSQL replacement receipt store requires a PostgreSQL transaction query");
+    }
+    const { query } = tx;
+    return new PostgresBrowserSurfaceReplacementReceiptStore(
+      (sql, values = []) => query(sql, values) as Promise<{ rows: ReplacementReceiptRow[] }>
+    );
   }
 
   applySelectionOverrideBatch(

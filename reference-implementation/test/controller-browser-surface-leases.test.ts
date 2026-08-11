@@ -222,6 +222,9 @@ function createMemoryBrowserSurfaceLeaseStore({
       return Promise.resolve(surface);
     },
     withLeaseTransaction: async (fn) => fn(store),
+    withPersistenceUnitOfWork: () => {
+      throw new Error("withPersistenceUnitOfWork is not implemented in this controller test fake");
+    },
   };
   return store;
 }

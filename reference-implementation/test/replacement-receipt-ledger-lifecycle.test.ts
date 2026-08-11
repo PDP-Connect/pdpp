@@ -795,6 +795,7 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
     upsertLease: async () => notImplementedInLifecycleFake("upsertLease"),
     upsertSurface: async () => notImplementedInLifecycleFake("upsertSurface"),
     withLeaseTransaction: async () => notImplementedInLifecycleFake("withLeaseTransaction"),
+    withPersistenceUnitOfWork: async () => notImplementedInLifecycleFake("withPersistenceUnitOfWork"),
   };
   const receiptStore: BrowserSurfaceReplacementReceiptStore = {
     // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
@@ -804,6 +805,7 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
     },
     applySelectionOverride: async () => notImplementedInLifecycleFake("applySelectionOverride"),
     applySelectionOverrideBatch: async () => notImplementedInLifecycleFake("applySelectionOverrideBatch"),
+    bindToTransaction: () => notImplementedInLifecycleFake("bindToTransaction"),
     dryRunSelectionOverrideBatch: async () => notImplementedInLifecycleFake("dryRunSelectionOverrideBatch"),
     findPendingForScope: async ({ connection_id, surface_subject_id, profile_key }) =>
       receipts

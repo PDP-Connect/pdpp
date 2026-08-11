@@ -34,6 +34,10 @@ export interface ReplacementLifecycleHooks {
     result: BrowserSurfaceReadinessProbeResult
   ) => Promise<void>;
   readonly recordExternalSurfaceLoss: (surface: BrowserSurface) => Promise<void>;
+  readonly recordExternalSurfaceLossWithReceiptStore: (
+    store: BrowserSurfaceReplacementReceiptStore,
+    surface: BrowserSurface
+  ) => Promise<void>;
 }
 
 export function createReplacementLifecycleHooks(input: {
@@ -58,6 +62,7 @@ export function createReplacementLifecycleHooks(input: {
         surface,
       }),
     recordExternalSurfaceLoss: (surface) => recordExternalSurfaceLoss(input.receiptStore, ledger, surface),
+    recordExternalSurfaceLossWithReceiptStore: (store, surface) => recordExternalSurfaceLoss(store, ledger, surface),
   };
 }
 

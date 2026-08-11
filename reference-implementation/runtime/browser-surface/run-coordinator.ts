@@ -24,6 +24,10 @@ import {
 } from "@opendatalabs/remote-surface/leases";
 import { createTraceContext, emitSpineEvent, type SpineTraceContext } from "../../lib/spine.ts";
 import type { BrowserSurfaceLeaseStore } from "../../server/stores/browser-surface-lease-store.ts";
+import {
+  type BrowserSurfacePersistenceUnitOfWork,
+  createBrowserSurfacePersistenceUnitOfWork,
+} from "../../server/stores/browser-surface-persistence-unit-of-work.ts";
 import type { BrowserSurfaceReplacementReceiptStore } from "../../server/stores/browser-surface-replacement-ledger-store.ts";
 import { browserSurfaceLeaseEnv } from "../browser-surface-leases.ts";
 import {
@@ -287,6 +291,10 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     scheduleRun,
     startupControllerRunReconciliation,
   } = deps;
+  const browserSurfacePersistenceUnitOfWork =
+    browserSurfaceLeaseStore && browserSurfaceReplacementReceiptStore
+      ? createBrowserSurfacePersistenceUnitOfWork(browserSurfaceLeaseStore, browserSurfaceReplacementReceiptStore)
+      : null;
   const replacementHooks = createReplacementLifecycleHooks({
     allocator: browserSurfaceAllocator,
     leaseStore: browserSurfaceLeaseStore,
@@ -1039,10 +1047,15 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
 
   // ─── Boot reconciliation ───────────────────────────────────────────────────
 
-  async function recordExternalLossReceipts(evicted: readonly BrowserSurface[]): Promise<void> {
+  async function recordExternalLossReceipts(
+    evicted: readonly BrowserSurface[],
+    receiptStore = browserSurfaceReplacementReceiptStore
+  ): Promise<void> {
     for (const surface of externalLossBoundaryRepresentatives(evicted)) {
-      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve receipt and projection ordering.
-      await replacementHooks.recordExternalSurfaceLoss(surface);
+      if (receiptStore) {
+        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve receipt and projection ordering.
+        await replacementHooks.recordExternalSurfaceLossWithReceiptStore(receiptStore, surface);
+      }
     }
   }
 
@@ -1060,22 +1073,57 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     }
   }
 
+  function requireBrowserSurfacePersistenceUnitOfWork(): BrowserSurfacePersistenceUnitOfWork {
+    if (!browserSurfacePersistenceUnitOfWork) {
+      throw new Error("browser surface replacement receipts require a browser-surface persistence unit of work");
+    }
+    return browserSurfacePersistenceUnitOfWork;
+  }
+
+  async function persistAllocatorSurfaceReconciliationInUnitOfWork(
+    allocatorReconcile: AllocatorSurfaceReconciliation
+  ): Promise<void> {
+    await requireBrowserSurfacePersistenceUnitOfWork().withTransaction(async (stores) => {
+      await recordExternalLossReceipts(allocatorReconcile.evicted, stores.replacementReceiptStore);
+      await persistReconciledAllocatorSurfaces(stores.leaseStore, allocatorReconcile);
+    });
+  }
+
+  async function persistAllocatorSurfaceReconciliationInLeaseTransaction(
+    leaseStore: BrowserSurfaceLeaseStore,
+    allocatorReconcile: AllocatorSurfaceReconciliation
+  ): Promise<void> {
+    await leaseStore.withLeaseTransaction(async (store) => {
+      await recordExternalLossReceipts(allocatorReconcile.evicted);
+      await persistReconciledAllocatorSurfaces(store, allocatorReconcile);
+    });
+  }
+
+  function hasAllocatorSurfaceReconciliation(allocatorReconcile: AllocatorSurfaceReconciliation): boolean {
+    return allocatorReconcile.evicted.length > 0 || allocatorReconcile.downgraded.length > 0;
+  }
+
+  async function persistAllocatorSurfaceReconciliationInConfiguredStore(
+    leaseStore: BrowserSurfaceLeaseStore,
+    allocatorReconcile: AllocatorSurfaceReconciliation
+  ): Promise<void> {
+    if (browserSurfaceReplacementReceiptStore) {
+      await persistAllocatorSurfaceReconciliationInUnitOfWork(allocatorReconcile);
+      return;
+    }
+    await persistAllocatorSurfaceReconciliationInLeaseTransaction(leaseStore, allocatorReconcile);
+  }
+
   async function persistAllocatorSurfaceReconciliation(
     allocatorReconcile: AllocatorSurfaceReconciliation
   ): Promise<void> {
     if (!browserSurfaceLeaseStore) {
       return;
     }
-    if (allocatorReconcile.evicted.length === 0 && allocatorReconcile.downgraded.length === 0) {
+    if (!hasAllocatorSurfaceReconciliation(allocatorReconcile)) {
       return;
     }
-    // Receipts stay inside the lease transaction: on the SQLite backend they
-    // share the lease store's connection, so an external-loss receipt and its
-    // surface-health downgrade commit (or roll back) as one unit.
-    await browserSurfaceLeaseStore.withLeaseTransaction(async (store) => {
-      await recordExternalLossReceipts(allocatorReconcile.evicted);
-      await persistReconciledAllocatorSurfaces(store, allocatorReconcile);
-    });
+    await persistAllocatorSurfaceReconciliationInConfiguredStore(browserSurfaceLeaseStore, allocatorReconcile);
   }
 
   function isLiveExternalLossCandidate(surface: BrowserSurface): boolean {
