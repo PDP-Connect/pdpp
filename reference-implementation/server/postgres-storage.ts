@@ -812,6 +812,10 @@ export async function bootstrapPostgresSchema({
         updated_at TEXT NOT NULL,
         revoked_at TEXT,
         manifest_generation BIGINT NOT NULL DEFAULT 0,
+        -- Monotonic per-instance receipt advanced by the source-boundary
+        -- triggers installed after bootstrap migrations. Readers cast it to
+        -- text so BIGINT values never narrow through JavaScript Number.
+        source_revision BIGINT NOT NULL DEFAULT 0,
         UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key)
       );
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instances_owner_connector_status
@@ -2103,6 +2107,9 @@ export async function bootstrapPostgresSchema({
         state                     TEXT NOT NULL DEFAULT 'rebuilding',
         last_error                TEXT,
         canonical_evidence_revision BIGINT NOT NULL DEFAULT 0,
+        -- NULL is legacy/unknown and is rendered stale until a successful
+        -- source-revision-aware repair writes the captured receipt.
+        source_revision BIGINT,
         manifest_generation BIGINT NOT NULL DEFAULT 0,
         schedule_checkpoint TEXT NOT NULL DEFAULT 'unobserved',
         run_lifecycle_event_seq BIGINT,
@@ -2420,6 +2427,7 @@ export async function bootstrapPostgresSchema({
     await migratePostgresConnectorInstancesSourceKindBrowserCollector(client);
     await migratePostgresSemanticEmbeddingToVector(client, log);
     await ensurePostgresLexicalScopedGinIndex(client, log);
+    await ensurePostgresConnectorSummarySourceRevisionPrimitive(client);
   } finally {
     try {
       if (bootstrapLockHeld) {
@@ -2428,6 +2436,198 @@ export async function bootstrapPostgresSchema({
     } finally {
       client.release();
     }
+  }
+}
+
+/**
+ * Install the provider-neutral PostgreSQL source-revision boundary after all
+ * legacy column migrations. The instance row is the single monotonic receipt;
+ * the nullable evidence copy records the revision a built row absorbed. Row
+ * triggers advance the receipt and invalidate evidence in the same transaction
+ * as records, scheduler state, manifests, spine/run facts, retained-size facts,
+ * and manifest-write violations. No touch table or provider-specific code is
+ * needed, so direct SQL writers cannot bypass the boundary.
+ */
+async function ensurePostgresConnectorSummarySourceRevisionPrimitive(client: PoolClient): Promise<void> {
+  await client.query(`
+    ALTER TABLE connector_instances
+      ADD COLUMN IF NOT EXISTS source_revision BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE connector_summary_evidence
+      ADD COLUMN IF NOT EXISTS source_revision BIGINT;
+    UPDATE connector_summary_evidence
+       SET dirty = 1,
+           state = 'stale',
+           list_summary_projection_state = 'stale',
+           list_summary_projection_reason_code = 'canonical_source_revision_unknown'
+     WHERE connector_instance_id IN (
+       SELECT connector_instance_id FROM connector_instances WHERE source_revision IS NULL
+     );
+    UPDATE connector_instances SET source_revision = 0 WHERE source_revision IS NULL;
+    UPDATE connector_summary_evidence
+       SET dirty = 1,
+           state = 'stale',
+           list_summary_projection_state = 'stale',
+           list_summary_projection_reason_code = 'canonical_source_revision_unknown'
+     WHERE source_revision IS NULL;
+  `);
+
+  await client.query(`
+    CREATE OR REPLACE FUNCTION pdpp_advance_connector_summary_source_revision(target_id TEXT)
+    RETURNS VOID
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF target_id IS NULL OR target_id = '' THEN
+        RETURN;
+      END IF;
+      UPDATE connector_instances
+         SET source_revision = COALESCE(source_revision, 0) + 1
+       WHERE connector_instance_id = target_id;
+      UPDATE connector_summary_evidence
+         SET dirty = 1,
+             state = 'stale',
+             canonical_evidence_revision = canonical_evidence_revision + 1,
+             list_summary_projection_state = 'stale',
+             list_summary_projection_reason_code = 'canonical_source_revision_advanced'
+       WHERE connector_instance_id = target_id;
+    END;
+    $function$;
+
+    CREATE OR REPLACE FUNCTION pdpp_touch_connector_summary_source_row()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      new_id TEXT;
+      old_id TEXT;
+      new_row JSONB;
+      old_row JSONB;
+    BEGIN
+      IF TG_OP <> 'DELETE' THEN
+        new_row := to_jsonb(NEW);
+        new_id := NULLIF(new_row->>'connector_instance_id', '');
+        IF TG_TABLE_NAME = 'spine_events' THEN
+          new_id := COALESCE(
+            new_id,
+            NULLIF(new_row->'data_json'->>'connector_instance_id', ''),
+            NULLIF(new_row->'data_json'->>'connection_id', '')
+          );
+        END IF;
+      END IF;
+      IF TG_OP <> 'INSERT' THEN
+        old_row := to_jsonb(OLD);
+        old_id := NULLIF(old_row->>'connector_instance_id', '');
+        IF TG_TABLE_NAME = 'spine_events' THEN
+          old_id := COALESCE(
+            old_id,
+            NULLIF(old_row->'data_json'->>'connector_instance_id', ''),
+            NULLIF(old_row->'data_json'->>'connection_id', '')
+          );
+        END IF;
+      END IF;
+      IF new_id IS NOT NULL THEN
+        PERFORM pdpp_advance_connector_summary_source_revision(new_id);
+      END IF;
+      IF old_id IS NOT NULL AND old_id IS DISTINCT FROM new_id THEN
+        PERFORM pdpp_advance_connector_summary_source_revision(old_id);
+      END IF;
+      IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+      END IF;
+      RETURN NEW;
+    END;
+    $function$;
+
+    CREATE OR REPLACE FUNCTION pdpp_touch_connector_summary_instance()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      PERFORM pdpp_advance_connector_summary_source_revision(NEW.connector_instance_id);
+      RETURN NEW;
+    END;
+    $function$;
+
+    CREATE OR REPLACE FUNCTION pdpp_touch_connector_summary_manifest()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      instance_id TEXT;
+    BEGIN
+      IF TG_OP <> 'DELETE' THEN
+        FOR instance_id IN
+          SELECT connector_instance_id FROM connector_instances WHERE connector_id = NEW.connector_id
+        LOOP
+          PERFORM pdpp_advance_connector_summary_source_revision(instance_id);
+        END LOOP;
+      END IF;
+      IF TG_OP <> 'INSERT' THEN
+        FOR instance_id IN
+          SELECT connector_instance_id FROM connector_instances WHERE connector_id = OLD.connector_id
+        LOOP
+          PERFORM pdpp_advance_connector_summary_source_revision(instance_id);
+        END LOOP;
+      END IF;
+      IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+      END IF;
+      RETURN NEW;
+    END;
+    $function$;
+  `);
+
+  // Trigger names intentionally enumerate the source boundary. The instance
+  // trigger excludes source_revision itself, preventing recursive self-touches.
+  await client.query(`
+    DROP TRIGGER IF EXISTS pdpp_source_revision_connector_instances_update ON connector_instances;
+    CREATE TRIGGER pdpp_source_revision_connector_instances_update
+      AFTER UPDATE OF owner_subject_id, connector_id, display_name, status,
+        source_kind, source_binding_key, source_binding_json, created_at,
+        updated_at, revoked_at, manifest_generation, record_reset_generation,
+        record_identity_generation
+      ON connector_instances
+      FOR EACH ROW EXECUTE FUNCTION pdpp_touch_connector_summary_instance();
+
+    DROP TRIGGER IF EXISTS pdpp_source_revision_connectors_update ON connectors;
+    DROP TRIGGER IF EXISTS pdpp_source_revision_connectors_insert ON connectors;
+    DROP TRIGGER IF EXISTS pdpp_source_revision_connectors_delete ON connectors;
+    CREATE TRIGGER pdpp_source_revision_connectors_update
+      AFTER UPDATE OF connector_id, manifest ON connectors
+      FOR EACH ROW EXECUTE FUNCTION pdpp_touch_connector_summary_manifest();
+    CREATE TRIGGER pdpp_source_revision_connectors_insert
+      AFTER INSERT ON connectors
+      FOR EACH ROW EXECUTE FUNCTION pdpp_touch_connector_summary_manifest();
+    CREATE TRIGGER pdpp_source_revision_connectors_delete
+      AFTER DELETE ON connectors
+      FOR EACH ROW EXECUTE FUNCTION pdpp_touch_connector_summary_manifest();
+  `);
+
+  const sourceTables = [
+    "records",
+    "record_changes",
+    "version_counter",
+    "blobs",
+    "blob_bindings",
+    "connector_schedules",
+    "controller_active_runs",
+    "run_history",
+    "spine_events",
+    "retained_size_connection",
+    "retained_size_stream",
+    "retained_size_record_family",
+    "retained_size_top_rows",
+    "manifest_write_violations",
+  ] as const;
+  for (const table of sourceTables) {
+    const trigger = `pdpp_source_revision_${table}`;
+    // biome-ignore lint/performance/noAwaitInLoops: trigger DDL must run sequentially on the bootstrap client.
+    await client.query(`
+      DROP TRIGGER IF EXISTS ${trigger} ON ${table};
+      CREATE TRIGGER ${trigger}
+        AFTER INSERT OR UPDATE OR DELETE ON ${table}
+        FOR EACH ROW EXECUTE FUNCTION pdpp_touch_connector_summary_source_row();
+    `);
   }
 }
 

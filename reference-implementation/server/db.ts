@@ -533,6 +533,11 @@ CREATE TABLE IF NOT EXISTS connector_instances (
   -- This is intentionally an event counter, not a wall-clock value: a
   -- remove/re-add ABA advances twice even when no reader observes the middle.
   manifest_generation   INTEGER NOT NULL DEFAULT 0,
+  -- Monotonic receipt for every supported canonical mutation belonging to this
+  -- connector instance. Backend-native source triggers advance it in the same
+  -- transaction as the mutation; readers use CAST(... AS TEXT) so BIGINT-sized
+  -- values never pass through JavaScript Number.
+  source_revision       INTEGER NOT NULL DEFAULT 0,
   UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key),
   FOREIGN KEY(connector_id) REFERENCES connectors(connector_id) ON DELETE RESTRICT
 );
@@ -1873,6 +1878,9 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
   -- advances it, so a payload derived from an older bounded read cannot
   -- publish after the row has moved on.
   canonical_evidence_revision   INTEGER NOT NULL DEFAULT 0,
+  -- Nullable only for legacy rows. A NULL receipt is immediately stale and is
+  -- repaired with the first successful source-revision-aware build.
+  source_revision               INTEGER,
   -- Durable connection-scoped declaration identity. This is the only
   -- eligibility boundary for terminal, coverage, and heartbeat proof.
   manifest_generation INTEGER NOT NULL DEFAULT 0,
@@ -2168,6 +2176,7 @@ function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
   addColumnIfMissing(raw, "connector_summary_evidence", "retained_bytes_reason_code", "TEXT");
   addColumnIfMissing(raw, "connector_summary_evidence", "manifest_generation", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(raw, "connector_summary_evidence", "canonical_evidence_revision", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(raw, "connector_summary_evidence", "source_revision", "INTEGER");
   addColumnIfMissing(raw, "connector_summary_evidence", "schedule_checkpoint", "TEXT NOT NULL DEFAULT 'unobserved'");
   addColumnIfMissing(raw, "connector_summary_evidence", "run_lifecycle_event_seq", "INTEGER");
   addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_json", "TEXT");
@@ -2179,6 +2188,163 @@ function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
   );
   addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_reason_code", "TEXT");
   addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_computed_at", "TEXT");
+}
+
+/**
+ * Install the provider-neutral SQLite source-revision boundary after all
+ * legacy table rebuilds have completed. `connector_instances.source_revision`
+ * is the one per-instance monotonic receipt; the nullable evidence copy is
+ * the receipt captured by a built row. Each trigger below advances the source
+ * row and invalidates the disposable evidence row in the same SQLite write
+ * transaction. There is deliberately no new touch table and no provider
+ * knowledge in this mechanism.
+ */
+function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): void {
+  addColumnIfMissing(raw, "connector_instances", "source_revision", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(raw, "connector_summary_evidence", "source_revision", "INTEGER");
+
+  raw.exec(`
+    UPDATE connector_summary_evidence
+       SET dirty = 1,
+           state = 'stale',
+           list_summary_projection_state = 'stale',
+           list_summary_projection_reason_code = 'canonical_source_revision_unknown'
+     WHERE connector_instance_id IN (
+       SELECT connector_instance_id FROM connector_instances WHERE source_revision IS NULL
+     );
+    UPDATE connector_instances SET source_revision = 0 WHERE source_revision IS NULL;
+    UPDATE connector_summary_evidence
+       SET dirty = 1,
+           state = 'stale',
+           list_summary_projection_state = 'stale',
+           list_summary_projection_reason_code = 'canonical_source_revision_unknown'
+     WHERE source_revision IS NULL;
+  `);
+
+  // Source tables whose rows carry connector_instance_id. The spine fallback
+  // matches the existing normalized column and legacy JSON identity. UPDATE
+  // touches NEW and OLD identities once each, so a move cannot leave either
+  // instance with a falsely clean receipt.
+  const sourceTables = [
+    "records",
+    "record_changes",
+    "version_counter",
+    "blobs",
+    "blob_bindings",
+    "connector_schedules",
+    "controller_active_runs",
+    "run_history",
+    "spine_events",
+    "retained_size_connection",
+    "retained_size_stream",
+    "retained_size_record_family",
+    "retained_size_top_rows",
+    "manifest_write_violations",
+  ] as const;
+  const sourceIdentity = (prefix: string, table: string): string => {
+    if (table === "spine_events") {
+      return `COALESCE(
+        NULLIF(${prefix}.connector_instance_id, ''),
+        NULLIF(json_extract(${prefix}.data_json, '$.connector_instance_id'), ''),
+        NULLIF(json_extract(${prefix}.data_json, '$.connection_id'), '')
+      )`;
+    }
+    return `NULLIF(${prefix}.connector_instance_id, '')`;
+  };
+  const touch = (identitySql: string): string => `
+      UPDATE connector_instances
+         SET source_revision = COALESCE(source_revision, 0) + 1
+       WHERE connector_instance_id = ${identitySql};
+      UPDATE connector_summary_evidence
+         SET dirty = 1,
+             state = 'stale',
+             canonical_evidence_revision = canonical_evidence_revision + 1,
+             list_summary_projection_state = 'stale',
+             list_summary_projection_reason_code = 'canonical_source_revision_advanced'
+       WHERE connector_instance_id = ${identitySql};`;
+
+  for (const table of sourceTables) {
+    const insertName = `pdpp_source_revision_${table}_insert`;
+    const updateName = `pdpp_source_revision_${table}_update`;
+    const deleteName = `pdpp_source_revision_${table}_delete`;
+    raw.exec(`
+      DROP TRIGGER IF EXISTS ${insertName};
+      DROP TRIGGER IF EXISTS ${updateName};
+      DROP TRIGGER IF EXISTS ${deleteName};
+      CREATE TRIGGER ${insertName}
+        AFTER INSERT ON ${table}
+        BEGIN
+          ${touch(sourceIdentity("NEW", table))}
+        END;
+      CREATE TRIGGER ${updateName}
+        AFTER UPDATE ON ${table}
+        BEGIN
+          UPDATE connector_instances
+             SET source_revision = COALESCE(source_revision, 0) + 1
+           WHERE connector_instance_id IN (
+             ${sourceIdentity("NEW", table)},
+             ${sourceIdentity("OLD", table)}
+           );
+          UPDATE connector_summary_evidence
+             SET dirty = 1,
+                 state = 'stale',
+                 canonical_evidence_revision = canonical_evidence_revision + 1,
+                 list_summary_projection_state = 'stale',
+                 list_summary_projection_reason_code = 'canonical_source_revision_advanced'
+           WHERE connector_instance_id IN (
+             ${sourceIdentity("NEW", table)},
+             ${sourceIdentity("OLD", table)}
+           );
+        END;
+      CREATE TRIGGER ${deleteName}
+        AFTER DELETE ON ${table}
+        BEGIN
+          ${touch(sourceIdentity("OLD", table))}
+        END;
+    `);
+  }
+
+  // Identity/manifest-generation edits are canonical source mutations even
+  // when they do not touch one of the child source tables. Excluding
+  // source_revision from UPDATE OF prevents the receipt's own internal update
+  // from recursively advancing itself.
+  raw.exec(`
+    DROP TRIGGER IF EXISTS pdpp_source_revision_connector_instances_update;
+    CREATE TRIGGER pdpp_source_revision_connector_instances_update
+      AFTER UPDATE OF owner_subject_id, connector_id, display_name, status,
+        source_kind, source_binding_key, source_binding_json, created_at,
+        updated_at, revoked_at, manifest_generation, record_reset_generation,
+        record_identity_generation
+      ON connector_instances
+      BEGIN
+        UPDATE connector_instances
+           SET source_revision = COALESCE(source_revision, 0) + 1
+         WHERE connector_instance_id = NEW.connector_instance_id;
+        UPDATE connector_summary_evidence
+           SET dirty = 1,
+               state = 'stale',
+               canonical_evidence_revision = canonical_evidence_revision + 1,
+               list_summary_projection_state = 'stale',
+               list_summary_projection_reason_code = 'canonical_source_revision_advanced'
+         WHERE connector_instance_id = NEW.connector_instance_id;
+      END;
+
+    DROP TRIGGER IF EXISTS pdpp_source_revision_connectors_manifest_update;
+    CREATE TRIGGER pdpp_source_revision_connectors_manifest_update
+      AFTER UPDATE OF connector_id, manifest ON connectors
+      BEGIN
+        UPDATE connector_instances
+           SET source_revision = COALESCE(source_revision, 0) + 1
+         WHERE connector_id IN (NEW.connector_id, OLD.connector_id);
+        UPDATE connector_summary_evidence
+           SET dirty = 1,
+               state = 'stale',
+               canonical_evidence_revision = canonical_evidence_revision + 1,
+               list_summary_projection_state = 'stale',
+               list_summary_projection_reason_code = 'canonical_source_revision_advanced'
+         WHERE connector_id IN (NEW.connector_id, OLD.connector_id);
+      END;
+  `);
 }
 
 function ensureConnectorMaintenanceCursorColumns(raw: SqliteDatabase): void {
@@ -5486,6 +5652,7 @@ CREATE TABLE IF NOT EXISTS cimd_client_documents (
   runWithSqliteBusyRetrySync(() =>
     addColumnIfMissing(raw, "controller_active_runs", "run_generation", "INTEGER NOT NULL DEFAULT 1")
   );
+  runWithSqliteBusyRetrySync(() => ensureConnectorSummarySourceRevisionPrimitive(raw));
   db = withCachedPrepare(raw);
   // Stamp the chosen vector-index backend onto the wrapped db so
   // search-semantic.js can select without re-probing. The Proxy's

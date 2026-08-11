@@ -8,8 +8,8 @@
  * with the one scope-safe primitive design.md requires: batched, fixed-query
  * discovery over the complete or scoped canonical `connector_instances` set,
  * classifying each row against canonical authorities (never against the
- * evidence row's own stale claim about itself), followed by writer-fenced
- * repair for exactly the K rows that need it.
+ * evidence row's own stale claim about itself), followed by a build outside
+ * the writer fence and a short exact-instance publish.
  *
  * Authorities (design.md "Authorities"):
  *   - `connector_instances`: lifecycle/identity, and the requested set.
@@ -32,13 +32,19 @@ import {
   type BindValue,
   exec,
   execDynamicSqlAcknowledged,
+  getOne,
   iterateDynamicSqlAcknowledged,
   referenceQueries,
   writeTransaction,
 } from "../lib/db.ts";
 import { withConnectorInstanceWrite } from "./connector-instance-write-coordinator.ts";
 import { getDb } from "./db.ts";
-import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "./postgres-storage.ts";
+import {
+  isPostgresStorageBackend,
+  postgresQuery,
+  withPostgresReadOnlyTransaction,
+  withPostgresTransaction,
+} from "./postgres-storage.ts";
 import {
   normalizeRecordSourceCheckpoint,
   type RecordSourceCheckpoint,
@@ -48,25 +54,10 @@ import {
 // biome-ignore lint/suspicious/noExplicitAny: the db.js/pg boundary is untyped.
 type Db = any;
 type Row = Record<string, unknown>;
+const DECIMAL_TEXT_RE = /^\d+$/;
+const LEADING_ZEROES_RE = /^0+(?=\d)/;
 
-/**
- * Test-only synchronous delay between `repairCandidateSqlite`'s read phase
- * and its write phase, still INSIDE the `writeTransaction` (BEGIN IMMEDIATE)
- * body. Exists solely to make a genuine two-process interleaving window
- * deterministically reproducible in tests: without it, a second process's
- * own `BEGIN IMMEDIATE` could race to acquire the write lock before or after
- * the first process's transaction depending on unpredictable OS scheduling,
- * making a lock-ordering assertion flaky. With the delay held, the SECOND
- * process's `BEGIN IMMEDIATE` is forced to block on SQLite's write lock for
- * the delay's duration, proving the lock — not scheduling luck — is what
- * serializes the two read-then-write units.
- *
- * A complete no-op unless `PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS` is set
- * to a positive integer (never set in production). Better-sqlite3
- * transactions must be synchronous, so this uses `Atomics.wait` on a
- * throwaway `SharedArrayBuffer` for a genuine blocking sleep — no `await` is
- * possible inside a `db.transaction(fn)` body.
- */
+/** Test-only pause between the outside build and the short publish fence. */
 function testOnlyRepairCandidateSqliteDelay(): void {
   const raw = process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS;
   const ms = raw ? Number.parseInt(raw, 10) : 0;
@@ -75,6 +66,23 @@ function testOnlyRepairCandidateSqliteDelay(): void {
   }
   const sab = new SharedArrayBuffer(4);
   Atomics.wait(new Int32Array(sab), 0, 0, ms);
+}
+
+type RepairPhase = "after_build_before_publish";
+
+let repairPhaseHookForTest: ((phase: RepairPhase, connectorInstanceId: string) => Promise<void> | void) | null = null;
+
+/** Narrow deterministic race seam; production never installs a hook. */
+export function __setConnectorSummaryEvidenceRepairPhaseHookForTest(
+  hook: ((phase: RepairPhase, connectorInstanceId: string) => Promise<void> | void) | null
+): void {
+  repairPhaseHookForTest = hook;
+}
+
+async function testOnlyRepairPhaseHook(phase: RepairPhase, connectorInstanceId: string): Promise<void> {
+  if (repairPhaseHookForTest) {
+    await repairPhaseHookForTest(phase, connectorInstanceId);
+  }
 }
 
 export type ComponentState = "current" | "unobserved" | "stale" | "failed";
@@ -115,7 +123,8 @@ export type RepairCandidateReason =
   | "manifest_mismatch"
   | "retained_bytes_changed_or_unavailable"
   | "schedule_mismatch"
-  | "lifecycle_checkpoint_lag";
+  | "lifecycle_checkpoint_lag"
+  | "source_revision_mismatch";
 
 export interface StreamEvidence {
   readonly count_state: CountState;
@@ -260,10 +269,29 @@ interface DiscoveryInput {
   readonly currentLifecycleEventSeq: number | null;
   /** Live `connector_schedules.updated_at` for this connection, or `"absent"` when no schedule row exists. */
   readonly currentScheduleCheckpoint: string;
+  /** Decimal text from connector_instances.source_revision; null is legacy/unknown. */
+  readonly currentSourceRevision: string | null;
   readonly existingEvidence: Row | null;
   readonly instance: Row;
   readonly manifest: ManifestDeclaration;
   readonly retainedByteRow: Row | null;
+}
+
+function decimalText(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const text = String(value);
+  if (!DECIMAL_TEXT_RE.test(text)) {
+    return null;
+  }
+  return text.replace(LEADING_ZEROES_RE, "");
+}
+
+function sourceRevisionsEqual(left: unknown, right: unknown): boolean {
+  const leftText = decimalText(left);
+  const rightText = decimalText(right);
+  return leftText !== null && rightText !== null && leftText === rightText;
 }
 
 /**
@@ -342,6 +370,9 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
   }
   if (retainedBytesNeedsRepair(existingEvidence, retainedByteRow)) {
     return "retained_bytes_changed_or_unavailable";
+  }
+  if (!sourceRevisionsEqual(existingEvidence.source_revision_text, input.currentSourceRevision)) {
+    return "source_revision_mismatch";
   }
   return null;
 }
@@ -477,10 +508,17 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   // every other read/prune below.
   const instanceRows = scoped
     ? db
-        .prepare(`SELECT * FROM connector_instances WHERE connector_instance_id IN (${placeholders})`)
+        .prepare(
+          `SELECT *, CAST(source_revision AS TEXT) AS source_revision_text
+             FROM connector_instances WHERE connector_instance_id IN (${placeholders})`
+        )
         // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
         .all(...connectorInstanceIds!)
-    : [...iterateDynamicSqlAcknowledged<Row>("SELECT * FROM connector_instances ORDER BY connector_instance_id ASC")];
+    : [
+        ...iterateDynamicSqlAcknowledged<Row>(
+          "SELECT *, CAST(source_revision AS TEXT) AS source_revision_text FROM connector_instances ORDER BY connector_instance_id ASC"
+        ),
+      ];
   // Evidence/retained-bytes/version-counter/canonical-count reads are scoped
   // to the SAME requested id set (one batched query each, not a complete
   // table scan) when the caller narrowed the discovery — a scoped consumer
@@ -488,10 +526,17 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   // read (let alone repair) a sibling connection's evidence row.
   const evidenceRows: Row[] = scoped
     ? db
-        .prepare(`SELECT * FROM connector_summary_evidence WHERE connector_instance_id IN (${placeholders})`)
+        .prepare(
+          `SELECT *, CAST(source_revision AS TEXT) AS source_revision_text
+             FROM connector_summary_evidence WHERE connector_instance_id IN (${placeholders})`
+        )
         // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
         .all(...connectorInstanceIds!)
-    : [...iterateDynamicSqlAcknowledged<Row>("SELECT * FROM connector_summary_evidence")];
+    : [
+        ...iterateDynamicSqlAcknowledged<Row>(
+          "SELECT *, CAST(source_revision AS TEXT) AS source_revision_text FROM connector_summary_evidence"
+        ),
+      ];
   const evidenceByInstance = new Map(evidenceRows.map((row) => [String(row.connector_instance_id), row]));
   const connectorRows = [...iterateDynamicSqlAcknowledged<Row>("SELECT connector_id, manifest FROM connectors")];
   const manifestByConnector = new Map(connectorRows.map((row) => [String(row.connector_id), String(row.manifest)]));
@@ -624,20 +669,24 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
   // an owner_subject_id filter here would let a distinct subject's
   // genuinely-live connection be pruned as orphaned.
   const instanceResult = scoped
-    ? await postgresQuery("SELECT * FROM connector_instances WHERE connector_instance_id = ANY($1::text[])", [
-        connectorInstanceIds,
-      ])
-    : await postgresQuery("SELECT * FROM connector_instances ORDER BY connector_instance_id ASC");
+    ? await postgresQuery(
+        "SELECT *, source_revision::text AS source_revision_text FROM connector_instances WHERE connector_instance_id = ANY($1::text[])",
+        [connectorInstanceIds]
+      )
+    : await postgresQuery(
+        "SELECT *, source_revision::text AS source_revision_text FROM connector_instances ORDER BY connector_instance_id ASC"
+      );
   // Evidence/retained-bytes/version-counter/canonical-count reads are scoped
   // to the SAME requested id set (one batched `ANY($1::text[])` query each,
   // not a complete table scan) when the caller narrowed the discovery —
   // matches the SQLite `IN (...)` batching above; a scoped consumer must
   // not pay for, or even read, every other connection's rows.
   const evidenceResult = scoped
-    ? await postgresQuery("SELECT * FROM connector_summary_evidence WHERE connector_instance_id = ANY($1::text[])", [
-        connectorInstanceIds,
-      ])
-    : await postgresQuery("SELECT * FROM connector_summary_evidence");
+    ? await postgresQuery(
+        "SELECT *, source_revision::text AS source_revision_text FROM connector_summary_evidence WHERE connector_instance_id = ANY($1::text[])",
+        [connectorInstanceIds]
+      )
+    : await postgresQuery("SELECT *, source_revision::text AS source_revision_text FROM connector_summary_evidence");
   const evidenceByInstance = new Map(
     (evidenceResult.rows as Row[]).map((row) => [String(row.connector_instance_id), row])
   );
@@ -767,6 +816,7 @@ async function discoverCandidates(
       currentCheckpoint,
       currentLifecycleEventSeq: ctx.maxLifecycleEventSeqByInstance.get(instanceId) ?? null,
       currentScheduleCheckpoint: ctx.scheduleUpdatedAtByInstance.get(instanceId) ?? "absent",
+      currentSourceRevision: decimalText(instance.source_revision_text),
       existingEvidence,
       instance,
       manifest,
@@ -780,10 +830,12 @@ async function discoverCandidates(
 }
 
 // ---------------------------------------------------------------------------
-// Fenced repair — exactly the candidates, re-read + upsert in one transaction
+// Outside-fence build + exact-instance publish
 // ---------------------------------------------------------------------------
 
 interface RepairedEvidence {
+  /** The candidate was intentionally left stale because its source moved or a run is active. */
+  readonly deferred: boolean;
   readonly failed: boolean;
   /**
    * Whether a `failed: true` row's durable write actually landed. `true`
@@ -798,28 +850,36 @@ interface RepairedEvidence {
 }
 
 /**
- * Repair exactly one connection's evidence row under the shared
- * connector-instance writer fence: re-read canonical facts fresh (not the
- * pre-lock discovery snapshot) and upsert. On lock/read/write failure,
- * returns row-shaped `stale`/`failed` evidence with a closed sanitized
- * reason code — never a fabricated clean row.
+ * Build canonical facts without a writer fence, then publish only after the
+ * exact connector-instance source revision is reread under a short fence.
+ * A revision mismatch or active run dirties/defer the candidate; it never
+ * publishes a row built from a different source state.
  */
 async function repairCandidate(connectorInstanceId: string): Promise<RepairedEvidence> {
   try {
-    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
-    return await withConnectorInstanceWrite(connectorInstanceId, async () => {
-      if (isPostgresStorageBackend()) {
-        return repairCandidatePostgres(connectorInstanceId);
-      }
-      return repairCandidateSqlite(connectorInstanceId);
-    });
+    const built = isPostgresStorageBackend()
+      ? await buildCandidatePostgres(connectorInstanceId)
+      : buildCandidateSqlite(connectorInstanceId);
+    await testOnlyRepairPhaseHook("after_build_before_publish", connectorInstanceId);
+    if (!isPostgresStorageBackend()) {
+      testOnlyRepairCandidateSqliteDelay();
+    }
+    if (built.deleted) {
+      return await publishDeletedCandidate(connectorInstanceId);
+    }
+    if (built.deferred) {
+      return await publishDeferredCandidate(connectorInstanceId);
+    }
+    const { row, sourceRevision } = built;
+    if (!row || sourceRevision === null) {
+      throw new Error("source-revision build completed without a publishable row");
+    }
+    return await publishBuiltCandidate(connectorInstanceId, { ...built, row, sourceRevision });
   } catch (err) {
     const failedRow = buildFailedRow(connectorInstanceId, REASON_CODES.LOCK_UNAVAILABLE, err);
-    // The lock itself could not be acquired, so nothing about this
-    // connection's canonical facts was even re-read this attempt — total
-    // failure, every component fails closed (see `buildFailedRow`).
+    // No clean row is fabricated when a build or short publish fails.
     const persisted = await persistFailedEvidence(connectorInstanceId, failedRow);
-    return { failed: true, persisted, row: failedRow };
+    return { deferred: false, failed: true, persisted, row: failedRow };
   }
 }
 
@@ -1041,238 +1101,400 @@ async function persistFailedEvidencePostgres(connectorInstanceId: string, failed
   );
 }
 
-function repairCandidateSqlite(connectorInstanceId: string): RepairedEvidence {
+interface CandidateBuild {
+  readonly deferred: boolean;
+  readonly deleted: boolean;
+  readonly row?: Row;
+  readonly sourceRevision: string | null;
+}
+
+function buildCandidateSqlite(connectorInstanceId: string): CandidateBuild {
   const db: Db = getDb();
-  try {
-    // BEGIN IMMEDIATE (writeTransaction, not a deferred db.transaction()):
-    // this unit reads canonical state (instance/manifest/checkpoint/records/
-    // retained bytes) and then writes a derived upsert based on that read —
-    // the write lock must be acquired at transaction start, not upgraded on
-    // first write, so a concurrent writer serializes on the read rather than
-    // racing between this read and this write. Same contract records.js's
-    // ingest path uses for the identical read-then-write shape.
-    return writeTransaction(() => {
-      const instance = db
-        .prepare("SELECT * FROM connector_instances WHERE connector_instance_id = ?")
+  const instance = db
+    .prepare(
+      "SELECT *, CAST(source_revision AS TEXT) AS source_revision_text FROM connector_instances WHERE connector_instance_id = ?"
+    )
+    .get(connectorInstanceId) as Row | undefined;
+  if (!instance) {
+    return { deferred: false, deleted: true, sourceRevision: null };
+  }
+  const sourceRevision = decimalText(instance.source_revision_text);
+  if (sourceRevision === null) {
+    return { deferred: true, deleted: false, sourceRevision: null };
+  }
+  const activeRun = db
+    .prepare("SELECT 1 AS present FROM controller_active_runs WHERE connector_instance_id = ? LIMIT 1")
+    .get(connectorInstanceId) as Row | undefined;
+  if (activeRun) {
+    return { deferred: true, deleted: false, sourceRevision };
+  }
+
+  const manifestRow = getOne<Row>(referenceQueries.authConnectorsGetManifestById, [String(instance.connector_id)]);
+  const manifest = parseManifestDeclaration(manifestRow?.manifest);
+  const streamRows = db
+    .prepare(
+      "SELECT stream, CAST(max_version AS TEXT) AS max_version FROM version_counter WHERE connector_instance_id = ?"
+    )
+    .all(connectorInstanceId) as Row[];
+  const checkpoint = normalizeRecordSourceCheckpoint({
+    resetGeneration: String(instance.record_reset_generation ?? "0"),
+    streams: streamRows.map((row) => ({ maxVersion: String(row.max_version), stream: String(row.stream) })),
+  });
+  const canonicalRows = db
+    .prepare(
+      `SELECT stream, COUNT(*) AS record_count, MAX(emitted_at) AS last_updated
+         FROM records WHERE connector_instance_id = ? AND deleted = 0
+        GROUP BY stream`
+    )
+    .all(connectorInstanceId) as Row[];
+  const canonicalByStream = new Map(canonicalRows.map((row) => [String(row.stream), row]));
+  const retainedByteRow = db
+    .prepare("SELECT * FROM retained_size_connection WHERE connector_instance_id = ?")
+    .get(connectorInstanceId) as Row | undefined;
+  const retainedStreamRows = db
+    .prepare("SELECT stream, record_count FROM retained_size_stream WHERE connector_instance_id = ?")
+    .all(connectorInstanceId) as Row[];
+  const retainedByStream = new Map(
+    retainedStreamRows.map((row) => [String(row.stream), Number(row.record_count || 0)])
+  );
+  const unexpectedRows = manifest.ok
+    ? (db
+        .prepare(
+          "SELECT stream FROM manifest_write_violations WHERE connector_instance_id = ? AND manifest_generation = ?"
+        )
+        .all(connectorInstanceId, Number(instance.manifest_generation ?? 0)) as Row[])
+    : [];
+  const unexpectedStreams = new Set(unexpectedRows.map((row) => String(row.stream)));
+  const terminalHighWaterRow = db
+    .prepare(
+      `SELECT MAX(event_seq) AS max_seq FROM spine_events
+        WHERE connector_instance_id = ?
+          AND event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
+    )
+    .get(connectorInstanceId) as Row | undefined;
+  const scheduleRow = db
+    .prepare("SELECT updated_at FROM connector_schedules WHERE connector_instance_id = ?")
+    .get(connectorInstanceId) as Row | undefined;
+  const lifecycleHighWaterRow = db
+    .prepare("SELECT MAX(event_seq) AS max_seq FROM spine_events WHERE connector_instance_id = ?")
+    .get(connectorInstanceId) as Row | undefined;
+  const built = buildRepairedRow({
+    canonicalByStream,
+    checkpoint,
+    instance,
+    lifecycleEventSeq:
+      lifecycleHighWaterRow?.max_seq === null || lifecycleHighWaterRow?.max_seq === undefined
+        ? null
+        : Number(lifecycleHighWaterRow.max_seq),
+    manifest,
+    retainedByStream,
+    retainedByteRow,
+    scheduleCheckpoint: scheduleRow?.updated_at === undefined ? "absent" : String(scheduleRow.updated_at),
+    sourceRevision,
+    terminalFactsGenerationBoundary:
+      terminalHighWaterRow?.max_seq === null || terminalHighWaterRow?.max_seq === undefined
+        ? 0
+        : Number(terminalHighWaterRow.max_seq),
+    unexpectedStreams,
+  });
+  return { deferred: false, deleted: false, row: built, sourceRevision };
+}
+
+async function buildCandidatePostgres(connectorInstanceId: string): Promise<CandidateBuild> {
+  return await withPostgresReadOnlyTransaction(async (client: Db) => {
+    const instanceResult = await client.query(
+      "SELECT *, source_revision::text AS source_revision_text FROM connector_instances WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    const instance = instanceResult.rows[0] as Row | undefined;
+    if (!instance) {
+      return { deferred: false, deleted: true, sourceRevision: null };
+    }
+    const sourceRevision = decimalText(instance.source_revision_text);
+    if (sourceRevision === null) {
+      return { deferred: true, deleted: false, sourceRevision: null };
+    }
+    const activeRunResult = await client.query(
+      "SELECT 1 AS present FROM controller_active_runs WHERE connector_instance_id = $1 LIMIT 1",
+      [connectorInstanceId]
+    );
+    if (activeRunResult.rowCount !== 0) {
+      return { deferred: true, deleted: false, sourceRevision };
+    }
+    const manifestResult = await client.query(
+      "SELECT manifest::text AS manifest FROM connectors WHERE connector_id = $1",
+      [instance.connector_id]
+    );
+    const manifest = parseManifestDeclaration((manifestResult.rows[0] as Row | undefined)?.manifest);
+    const streamsResult = await client.query(
+      "SELECT stream, max_version::text AS max_version FROM version_counter WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    const checkpoint = normalizeRecordSourceCheckpoint({
+      resetGeneration: String(instance.record_reset_generation ?? "0"),
+      streams: (streamsResult.rows as Row[]).map((row) => ({
+        maxVersion: String(row.max_version),
+        stream: String(row.stream),
+      })),
+    });
+    const canonicalResult = await client.query(
+      `SELECT stream, COUNT(*)::int AS record_count, MAX(emitted_at) AS last_updated
+         FROM records WHERE connector_instance_id = $1 AND deleted = FALSE
+        GROUP BY stream`,
+      [connectorInstanceId]
+    );
+    const canonicalByStream = new Map((canonicalResult.rows as Row[]).map((row) => [String(row.stream), row]));
+    const retainedByteResult = await client.query(
+      "SELECT * FROM retained_size_connection WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    const retainedByteRow = retainedByteResult.rows[0] as Row | undefined;
+    const retainedStreamResult = await client.query(
+      "SELECT stream, record_count FROM retained_size_stream WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    const retainedByStream = new Map(
+      (retainedStreamResult.rows as Row[]).map((row) => [String(row.stream), Number(row.record_count || 0)])
+    );
+    const unexpectedResult = manifest.ok
+      ? await client.query(
+          "SELECT stream FROM manifest_write_violations WHERE connector_instance_id = $1 AND manifest_generation = $2",
+          [connectorInstanceId, Number(instance.manifest_generation ?? 0)]
+        )
+      : { rows: [] as Row[] };
+    const unexpectedStreams = new Set((unexpectedResult.rows as Row[]).map((row) => String(row.stream)));
+    const terminalHighWaterResult = await client.query(
+      `SELECT MAX(event_seq)::text AS max_seq FROM spine_events
+        WHERE connector_instance_id = $1
+          AND event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`,
+      [connectorInstanceId]
+    );
+    const terminalHighWater = (terminalHighWaterResult.rows[0] as Row | undefined)?.max_seq;
+    const scheduleResult = await client.query(
+      "SELECT updated_at FROM connector_schedules WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    const scheduleCheckpoint = (scheduleResult.rows[0] as Row | undefined)?.updated_at;
+    const lifecycleHighWaterResult = await client.query(
+      "SELECT MAX(event_seq)::text AS max_seq FROM spine_events WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    const lifecycleHighWater = (lifecycleHighWaterResult.rows[0] as Row | undefined)?.max_seq;
+    const built = buildRepairedRow({
+      canonicalByStream,
+      checkpoint,
+      instance,
+      lifecycleEventSeq:
+        lifecycleHighWater === null || lifecycleHighWater === undefined ? null : Number(lifecycleHighWater),
+      manifest,
+      retainedByStream,
+      retainedByteRow,
+      scheduleCheckpoint: scheduleCheckpoint === undefined ? "absent" : String(scheduleCheckpoint),
+      sourceRevision,
+      terminalFactsGenerationBoundary: terminalHighWater === null ? 0 : Number(terminalHighWater),
+      unexpectedStreams,
+    });
+    return { deferred: false, deleted: false, row: built, sourceRevision };
+  });
+}
+
+function markEvidenceStaleSqlite(connectorInstanceId: string, reason: string): void {
+  execDynamicSqlAcknowledged(
+    `UPDATE connector_summary_evidence
+        SET dirty = 1,
+            state = 'stale',
+            canonical_evidence_revision = canonical_evidence_revision + 1,
+            list_summary_projection_state = 'stale',
+            list_summary_projection_reason_code = ?,
+            last_error = NULL
+      WHERE connector_instance_id = ?`,
+    [reason, connectorInstanceId]
+  );
+}
+
+async function markEvidenceStalePostgres(client: Db, connectorInstanceId: string, reason: string): Promise<void> {
+  await client.query(
+    `UPDATE connector_summary_evidence
+        SET dirty = 1,
+            state = 'stale',
+            canonical_evidence_revision = canonical_evidence_revision + 1,
+            list_summary_projection_state = 'stale',
+            list_summary_projection_reason_code = $1,
+            last_error = NULL
+      WHERE connector_instance_id = $2`,
+    [reason, connectorInstanceId]
+  );
+}
+
+function deferredResult(connectorInstanceId: string): RepairedEvidence {
+  return {
+    deferred: true,
+    failed: false,
+    persisted: true,
+    row: { connector_instance_id: connectorInstanceId, dirty: 1, state: "stale" },
+  };
+}
+
+async function publishDeletedCandidate(connectorInstanceId: string): Promise<RepairedEvidence> {
+  if (isPostgresStorageBackend()) {
+    return await withConnectorInstanceWrite(
+      connectorInstanceId,
+      async () =>
+        await withPostgresTransaction(
+          async (client: Db) => {
+            await client.query("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [
+              connectorInstanceId,
+            ]);
+            return {
+              deferred: false,
+              failed: false,
+              persisted: true,
+              row: { __deleted: true, connector_instance_id: connectorInstanceId },
+            };
+          },
+          { lockConnectorInstanceId: connectorInstanceId }
+        )
+    );
+  }
+  return withConnectorInstanceWrite(connectorInstanceId, async () =>
+    writeTransaction(() => {
+      exec(referenceQueries.connectorInstancesDeleteSummaryEvidenceByConnectorInstance, [connectorInstanceId]);
+      return {
+        deferred: false,
+        failed: false,
+        persisted: true,
+        row: { __deleted: true, connector_instance_id: connectorInstanceId },
+      };
+    })
+  );
+}
+
+async function publishDeferredCandidate(connectorInstanceId: string): Promise<RepairedEvidence> {
+  if (isPostgresStorageBackend()) {
+    return await withConnectorInstanceWrite(
+      connectorInstanceId,
+      async () =>
+        await withPostgresTransaction(
+          async (client: Db) => {
+            const instance = await client.query(
+              "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id = $1 FOR UPDATE",
+              [connectorInstanceId]
+            );
+            if (instance.rowCount === 0) {
+              await client.query("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [
+                connectorInstanceId,
+              ]);
+              return {
+                deferred: false,
+                failed: false,
+                persisted: true,
+                row: { __deleted: true, connector_instance_id: connectorInstanceId },
+              };
+            }
+            await markEvidenceStalePostgres(client, connectorInstanceId, "canonical_source_revision_deferred");
+            return deferredResult(connectorInstanceId);
+          },
+          { lockConnectorInstanceId: connectorInstanceId }
+        )
+    );
+  }
+  return withConnectorInstanceWrite(connectorInstanceId, async () =>
+    writeTransaction(() => {
+      const instance = getDb()
+        .prepare("SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id = ?")
         .get(connectorInstanceId) as Row | undefined;
       if (!instance) {
         exec(referenceQueries.connectorInstancesDeleteSummaryEvidenceByConnectorInstance, [connectorInstanceId]);
-        return { failed: false, persisted: true, row: { __deleted: true, connector_instance_id: connectorInstanceId } };
+        return {
+          deferred: false,
+          failed: false,
+          persisted: true,
+          row: { __deleted: true, connector_instance_id: connectorInstanceId },
+        };
       }
-      const manifestRow = db
-        .prepare("SELECT manifest FROM connectors WHERE connector_id = ?")
-        .get(instance.connector_id) as Row | undefined;
-      const manifest = parseManifestDeclaration(manifestRow?.manifest);
-      const generationRow = db
-        .prepare(
-          "SELECT CAST(record_reset_generation AS TEXT) AS reset_generation FROM connector_instances WHERE connector_instance_id = ?"
-        )
-        .get(connectorInstanceId) as Row | undefined;
-      const streamRows = db
-        .prepare(
-          "SELECT stream, CAST(max_version AS TEXT) AS max_version FROM version_counter WHERE connector_instance_id = ?"
-        )
-        .all(connectorInstanceId) as Row[];
-      const checkpoint = normalizeRecordSourceCheckpoint({
-        resetGeneration: String(generationRow?.reset_generation ?? "0"),
-        streams: streamRows.map((row) => ({ maxVersion: String(row.max_version), stream: String(row.stream) })),
-      });
-      const canonicalRows = db
-        .prepare(
-          `SELECT stream, COUNT(*) AS record_count, MAX(emitted_at) AS last_updated
-             FROM records WHERE connector_instance_id = ? AND deleted = 0
-            GROUP BY stream`
-        )
-        .all(connectorInstanceId) as Row[];
-      const canonicalByStream = new Map(canonicalRows.map((row) => [String(row.stream), row]));
-      const retainedByteRow = db
-        .prepare("SELECT * FROM retained_size_connection WHERE connector_instance_id = ?")
-        .get(connectorInstanceId) as Row | undefined;
-      const retainedStreamRows = db
-        .prepare("SELECT stream, record_count FROM retained_size_stream WHERE connector_instance_id = ?")
-        .all(connectorInstanceId) as Row[];
-      const retainedByStream = new Map(
-        retainedStreamRows.map((row) => [String(row.stream), Number(row.record_count || 0)])
-      );
-      const unexpectedRows = manifest.ok
-        ? (db
-            .prepare(
-              "SELECT stream FROM manifest_write_violations WHERE connector_instance_id = ? AND manifest_generation = ?"
-            )
-            .all(connectorInstanceId, Number(instance.manifest_generation ?? 0)) as Row[])
-        : [];
-      const unexpectedStreams = new Set(unexpectedRows.map((row) => String(row.stream)));
-      const terminalHighWaterRow = db
-        .prepare(
-          `SELECT MAX(event_seq) AS max_seq FROM spine_events
-            WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
-        )
-        .get() as Row | undefined;
-      // Terminal-gate revision (2026-07-29): repair also refreshes the
-      // schedule/lifecycle repair-receipt checkpoints so a repaired row
-      // records the current values it was JUST verified against, not the
-      // stale ones that triggered the repair.
-      const scheduleRow = db
-        .prepare("SELECT updated_at FROM connector_schedules WHERE connector_instance_id = ?")
-        .get(connectorInstanceId) as Row | undefined;
-      const lifecycleHighWaterRow = db
-        .prepare("SELECT MAX(event_seq) AS max_seq FROM spine_events WHERE connector_instance_id = ?")
-        .get(connectorInstanceId) as Row | undefined;
-
-      // Test-only: see `testOnlyRepairCandidateSqliteDelay` — no-op in
-      // production. Held here, between the read phase above and the write
-      // phase below, still inside BEGIN IMMEDIATE.
-      testOnlyRepairCandidateSqliteDelay();
-
-      const built = buildRepairedRow({
-        canonicalByStream,
-        checkpoint,
-        instance,
-        lifecycleEventSeq:
-          lifecycleHighWaterRow?.max_seq === null || lifecycleHighWaterRow?.max_seq === undefined
-            ? null
-            : Number(lifecycleHighWaterRow.max_seq),
-        manifest,
-        retainedByStream,
-        retainedByteRow,
-        scheduleCheckpoint: scheduleRow?.updated_at === undefined ? "absent" : String(scheduleRow.updated_at),
-        terminalFactsGenerationBoundary:
-          terminalHighWaterRow?.max_seq === null || terminalHighWaterRow?.max_seq === undefined
-            ? 0
-            : Number(terminalHighWaterRow.max_seq),
-        unexpectedStreams,
-      });
-      upsertSqliteEvidenceRow(db, built);
-      return { failed: false, persisted: true, row: built };
-    });
-  } catch (err) {
-    const failedRow = buildFailedRow(connectorInstanceId, REASON_CODES.RECORD_SNAPSHOT_FAILED, err);
-    // Best-effort durable persist of the failure, OUTSIDE the failed
-    // transaction (already rolled back). This is the same fault surface
-    // Sol P1.1 reproduced (a trigger/fault rejecting BOTH the repair upsert
-    // AND this write): `persistFailedEvidenceSqlite` can itself throw, so
-    // it is wrapped exactly like the outer lock-failure branch — never left
-    // to propagate uncaught, and `persisted: false` on failure so the
-    // caller carries `failedRow` through in memory (see `ReconcileResult.failedRows`).
-    let persisted = true;
-    try {
-      persistFailedEvidenceSqlite(connectorInstanceId, failedRow);
-    } catch {
-      persisted = false;
-    }
-    return { failed: true, persisted, row: failedRow };
-  }
+      markEvidenceStaleSqlite(connectorInstanceId, "canonical_source_revision_deferred");
+      return deferredResult(connectorInstanceId);
+    })
+  );
 }
 
-async function repairCandidatePostgres(connectorInstanceId: string): Promise<RepairedEvidence> {
-  try {
-    return await withPostgresTransaction(async (client: Db) => {
-      const instanceResult = await client.query("SELECT * FROM connector_instances WHERE connector_instance_id = $1", [
-        connectorInstanceId,
-      ]);
-      const instance = instanceResult.rows[0] as Row | undefined;
-      if (!instance) {
-        await client.query("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [
-          connectorInstanceId,
-        ]);
-        return { failed: false, persisted: true, row: { __deleted: true, connector_instance_id: connectorInstanceId } };
-      }
-      const manifestResult = await client.query(
-        "SELECT manifest::text AS manifest FROM connectors WHERE connector_id = $1",
-        [instance.connector_id]
-      );
-      const manifest = parseManifestDeclaration((manifestResult.rows[0] as Row | undefined)?.manifest);
-      const generationResult = await client.query(
-        "SELECT record_reset_generation::text AS reset_generation FROM connector_instances WHERE connector_instance_id = $1",
-        [connectorInstanceId]
-      );
-      const streamsResult = await client.query(
-        "SELECT stream, max_version::text AS max_version FROM version_counter WHERE connector_instance_id = $1",
-        [connectorInstanceId]
-      );
-      const checkpoint = normalizeRecordSourceCheckpoint({
-        resetGeneration: String((generationResult.rows[0] as Row | undefined)?.reset_generation ?? "0"),
-        streams: (streamsResult.rows as Row[]).map((row) => ({
-          maxVersion: String(row.max_version),
-          stream: String(row.stream),
-        })),
-      });
-      const canonicalResult = await client.query(
-        `SELECT stream, COUNT(*)::int AS record_count, MAX(emitted_at) AS last_updated
-           FROM records WHERE connector_instance_id = $1 AND deleted = FALSE
-          GROUP BY stream`,
-        [connectorInstanceId]
-      );
-      const canonicalByStream = new Map((canonicalResult.rows as Row[]).map((row) => [String(row.stream), row]));
-      const retainedByteResult = await client.query(
-        "SELECT * FROM retained_size_connection WHERE connector_instance_id = $1",
-        [connectorInstanceId]
-      );
-      const retainedByteRow = retainedByteResult.rows[0] as Row | undefined;
-      const retainedStreamResult = await client.query(
-        "SELECT stream, record_count FROM retained_size_stream WHERE connector_instance_id = $1",
-        [connectorInstanceId]
-      );
-      const retainedByStream = new Map(
-        (retainedStreamResult.rows as Row[]).map((row) => [String(row.stream), Number(row.record_count || 0)])
-      );
-      const unexpectedResult = manifest.ok
-        ? await client.query(
-            "SELECT stream FROM manifest_write_violations WHERE connector_instance_id = $1 AND manifest_generation = $2",
-            [connectorInstanceId, Number(instance.manifest_generation ?? 0)]
-          )
-        : { rows: [] as Row[] };
-      const unexpectedStreams = new Set((unexpectedResult.rows as Row[]).map((row) => String(row.stream)));
-      const terminalHighWaterResult = await client.query(
-        `SELECT MAX(event_seq) AS max_seq FROM spine_events
-          WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
-      );
-      const terminalHighWater = (terminalHighWaterResult.rows[0] as Row | undefined)?.max_seq;
-      // Terminal-gate revision (2026-07-29): repair also refreshes the
-      // schedule/lifecycle repair-receipt checkpoints so a repaired row
-      // records the current values it was JUST verified against, not the
-      // stale ones that triggered the repair.
-      const scheduleResult = await client.query(
-        "SELECT updated_at FROM connector_schedules WHERE connector_instance_id = $1",
-        [connectorInstanceId]
-      );
-      const scheduleCheckpoint = (scheduleResult.rows[0] as Row | undefined)?.updated_at;
-      const lifecycleHighWaterResult = await client.query(
-        "SELECT MAX(event_seq) AS max_seq FROM spine_events WHERE connector_instance_id = $1",
-        [connectorInstanceId]
-      );
-      const lifecycleHighWater = (lifecycleHighWaterResult.rows[0] as Row | undefined)?.max_seq;
-
-      const built = buildRepairedRow({
-        canonicalByStream,
-        checkpoint,
-        instance,
-        lifecycleEventSeq:
-          lifecycleHighWater === null || lifecycleHighWater === undefined ? null : Number(lifecycleHighWater),
-        manifest,
-        retainedByStream,
-        retainedByteRow,
-        scheduleCheckpoint: scheduleCheckpoint === undefined ? "absent" : String(scheduleCheckpoint),
-        terminalFactsGenerationBoundary: terminalHighWater === null ? 0 : Number(terminalHighWater),
-        unexpectedStreams,
-      });
-      await upsertPostgresEvidenceRow(client, built);
-      return { failed: false, persisted: true, row: built };
-    });
-  } catch (err) {
-    const failedRow = buildFailedRow(connectorInstanceId, REASON_CODES.RECORD_SNAPSHOT_FAILED, err);
-    // See the SQLite branch's identical comment: this write can itself
-    // fail under the same fault (Sol P1.1), so it is wrapped rather than
-    // left to propagate uncaught, and `persisted: false` on failure so the
-    // caller carries `failedRow` through in memory.
-    let persisted = true;
-    try {
-      await persistFailedEvidencePostgres(connectorInstanceId, failedRow);
-    } catch {
-      persisted = false;
-    }
-    return { failed: true, persisted, row: failedRow };
+async function publishBuiltCandidate(
+  connectorInstanceId: string,
+  built: CandidateBuild & { readonly row: Row; readonly sourceRevision: string }
+): Promise<RepairedEvidence> {
+  if (isPostgresStorageBackend()) {
+    return await withConnectorInstanceWrite(
+      connectorInstanceId,
+      async () =>
+        await withPostgresTransaction(
+          async (client: Db) => {
+            const instance = await client.query(
+              "SELECT source_revision::text AS source_revision_text FROM connector_instances WHERE connector_instance_id = $1 FOR UPDATE",
+              [connectorInstanceId]
+            );
+            if (instance.rowCount === 0) {
+              await client.query("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [
+                connectorInstanceId,
+              ]);
+              return {
+                deferred: false,
+                failed: false,
+                persisted: true,
+                row: { __deleted: true, connector_instance_id: connectorInstanceId },
+              };
+            }
+            const activeRun = await client.query(
+              "SELECT 1 AS present FROM controller_active_runs WHERE connector_instance_id = $1 LIMIT 1",
+              [connectorInstanceId]
+            );
+            const currentRevision = decimalText((instance.rows[0] as Row).source_revision_text);
+            if (activeRun.rowCount !== 0 || !sourceRevisionsEqual(currentRevision, built.sourceRevision)) {
+              await markEvidenceStalePostgres(
+                client,
+                connectorInstanceId,
+                activeRun.rowCount === 0 ? "canonical_source_revision_mismatch" : "canonical_source_revision_deferred"
+              );
+              return deferredResult(connectorInstanceId);
+            }
+            await upsertPostgresEvidenceRow(client, built.row);
+            return { deferred: false, failed: false, persisted: true, row: built.row };
+          },
+          { lockConnectorInstanceId: connectorInstanceId }
+        )
+    );
   }
+  return withConnectorInstanceWrite(connectorInstanceId, async () =>
+    writeTransaction(() => {
+      const db: Db = getDb();
+      const instance = db
+        .prepare(
+          "SELECT CAST(source_revision AS TEXT) AS source_revision_text FROM connector_instances WHERE connector_instance_id = ?"
+        )
+        .get(connectorInstanceId) as Row | undefined;
+      if (!instance) {
+        exec(referenceQueries.connectorInstancesDeleteSummaryEvidenceByConnectorInstance, [connectorInstanceId]);
+        return {
+          deferred: false,
+          failed: false,
+          persisted: true,
+          row: { __deleted: true, connector_instance_id: connectorInstanceId },
+        };
+      }
+      const activeRun = db
+        .prepare("SELECT 1 AS present FROM controller_active_runs WHERE connector_instance_id = ? LIMIT 1")
+        .get(connectorInstanceId) as Row | undefined;
+      const currentRevision = decimalText(instance.source_revision_text);
+      if (activeRun || !sourceRevisionsEqual(currentRevision, built.sourceRevision)) {
+        markEvidenceStaleSqlite(
+          connectorInstanceId,
+          activeRun ? "canonical_source_revision_deferred" : "canonical_source_revision_mismatch"
+        );
+        return deferredResult(connectorInstanceId);
+      }
+      upsertSqliteEvidenceRow(db, built.row);
+      return { deferred: false, failed: false, persisted: true, row: built.row };
+    })
+  );
 }
 
 interface RepairInputs {
@@ -1286,6 +1508,8 @@ interface RepairInputs {
   readonly retainedByteRow: Row | undefined;
   /** Live `connector_schedules.updated_at` for this connection at repair time, or `"absent"` when no schedule row exists. */
   readonly scheduleCheckpoint: string;
+  /** Immutable decimal receipt captured before the outside-fence build. */
+  readonly sourceRevision: string;
   /**
    * Terminal-event high-water captured while the fingerprinted manifest is
    * repaired. This is an in-memory generation boundary, never persisted as a
@@ -1412,6 +1636,7 @@ function buildRepairedRow(inputs: RepairInputs): Row {
     run_lifecycle_event_seq: inputs.lifecycleEventSeq,
     schedule_checkpoint: inputs.scheduleCheckpoint,
     source_kind: instance.source_kind,
+    source_revision: inputs.sourceRevision,
     state: "fresh",
     status: instance.status,
     stream_count: streamCount,
@@ -1445,9 +1670,9 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        terminal_facts_state, terminal_facts_reason_code,
        stream_latest_facts_json, stream_facts_event_seq,
        dirty, computed_at, source_event_seq, state, last_error,
-       manifest_generation, schedule_checkpoint, run_lifecycle_event_seq
+       manifest_generation, schedule_checkpoint, run_lifecycle_event_seq, source_revision
      )
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?, ?, ?)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(connector_instance_id) DO UPDATE SET
        connector_id = excluded.connector_id,
        display_name = excluded.display_name,
@@ -1480,6 +1705,7 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        manifest_generation = excluded.manifest_generation,
        schedule_checkpoint = excluded.schedule_checkpoint,
        run_lifecycle_event_seq = excluded.run_lifecycle_event_seq,
+       source_revision = excluded.source_revision,
        list_summary_projection_state = 'stale',
        list_summary_projection_reason_code = 'canonical_evidence_rebuilt'`,
     [
@@ -1518,6 +1744,7 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
       row.manifest_generation,
       row.schedule_checkpoint,
       row.run_lifecycle_event_seq,
+      row.source_revision,
     ] as BindValue[]
   );
 }
@@ -1543,9 +1770,9 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
        terminal_facts_state, terminal_facts_reason_code,
        stream_latest_facts_json, stream_facts_event_seq,
        dirty, computed_at, source_event_seq, state, last_error,
-       manifest_generation, schedule_checkpoint, run_lifecycle_event_seq
+       manifest_generation, schedule_checkpoint, run_lifecycle_event_seq, source_revision
      )
-     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24, 0, $25, NULL, $26, $27, $28, $29, $30)
+     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24, 0, $25, NULL, $26, $27, $28, $29, $30, $31)
      ON CONFLICT (connector_instance_id) DO UPDATE SET
        connector_id = EXCLUDED.connector_id,
        display_name = EXCLUDED.display_name,
@@ -1578,6 +1805,7 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
        manifest_generation = EXCLUDED.manifest_generation,
        schedule_checkpoint = EXCLUDED.schedule_checkpoint,
        run_lifecycle_event_seq = EXCLUDED.run_lifecycle_event_seq,
+       source_revision = EXCLUDED.source_revision,
        list_summary_projection_state = 'stale',
        list_summary_projection_reason_code = 'canonical_evidence_rebuilt'`,
     [
@@ -1611,6 +1839,7 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
       row.manifest_generation,
       row.schedule_checkpoint,
       row.run_lifecycle_event_seq,
+      row.source_revision,
     ]
   );
 }
@@ -1700,8 +1929,8 @@ function pruneReconciledEvidence(
 
 /**
  * The one scope-safe reconciliation primitive: batched fixed-query
- * discovery, then writer-fenced repair for exactly the classified
- * candidates. `connectorInstanceIds: null` runs a complete unscoped census
+ * discovery, then outside-fence builds plus short exact-instance publishes for
+ * exactly the classified candidates. `connectorInstanceIds: null` runs a complete unscoped census
  * (which may also delete evidence rows absent from the complete
  * authoritative set); a non-null array runs a scoped pass that only
  * point-deletes an exact requested row proven gone — it never infers a
@@ -1773,6 +2002,9 @@ export async function reconcileConnectorSummaryEvidence(
     }
     // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     const result = await repairCandidate(connectorInstanceId);
+    if (result.deferred) {
+      continue;
+    }
     repaired += 1;
     if (result.failed) {
       failed += 1;

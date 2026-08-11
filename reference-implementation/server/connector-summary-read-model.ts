@@ -60,6 +60,7 @@ const GENERIC_REPAIR_CANDIDATE_REASONS: readonly RepairCandidateReason[] = [
   "retained_bytes_changed_or_unavailable",
   "schedule_mismatch",
   "lifecycle_checkpoint_lag",
+  "source_revision_mismatch",
 ];
 
 /** Bounded maintenance never creates more than one ordinary page of cold evidence. */
@@ -184,11 +185,16 @@ export interface ConnectorListSummaryTerminalProjectionEnvelope {
 }
 
 const TERMINAL_PROJECTION_STATES = new Set(["current", "stale", "failed"]);
+const DECIMAL_SOURCE_REVISION_RE = /^\d+$/;
 
 function terminalProjectionState(value: unknown): ConnectorListSummaryTerminalProjectionEnvelope["state"] {
   return typeof value === "string" && TERMINAL_PROJECTION_STATES.has(value)
     ? (value as ConnectorListSummaryTerminalProjectionEnvelope["state"])
     : "unobserved";
+}
+
+function knownSourceRevision(value: unknown): boolean {
+  return value !== null && value !== undefined && DECIMAL_SOURCE_REVISION_RE.test(String(value));
 }
 
 function parseTerminalProjection(value: unknown): ConnectorListSummaryTerminalProjection | null {
@@ -300,6 +306,7 @@ function createConnectorSummaryStore() {
                   stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
                   dirty, computed_at, source_event_seq, state, last_error,
                   canonical_evidence_revision,
+                  source_revision::text AS source_revision,
                   manifest_generation, schedule_checkpoint, run_lifecycle_event_seq,
                   list_summary_projection_json, list_summary_projection_state,
                   list_summary_projection_reason_code, list_summary_projection_computed_at
@@ -454,6 +461,7 @@ function createConnectorSummaryStore() {
                     stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
                     dirty, computed_at, source_event_seq, state, last_error,
                     canonical_evidence_revision,
+                    CAST(source_revision AS TEXT) AS source_revision,
                     manifest_generation, schedule_checkpoint, run_lifecycle_event_seq,
                     list_summary_projection_json, list_summary_projection_state,
                     list_summary_projection_reason_code, list_summary_projection_computed_at`;
@@ -833,6 +841,14 @@ function shapeComponentEnvelope(row: Row, state: unknown, reasonCode: unknown) {
 }
 
 function shapeListSummaryProjection(row: Row): ConnectorListSummaryTerminalProjectionEnvelope {
+  if (!knownSourceRevision(row.source_revision)) {
+    return {
+      computed_at: null,
+      projection: null,
+      reason_code: "canonical_source_revision_unknown",
+      state: "stale",
+    };
+  }
   const state = terminalProjectionState(row.list_summary_projection_state);
   return {
     computed_at:
@@ -844,14 +860,28 @@ function shapeListSummaryProjection(row: Row): ConnectorListSummaryTerminalProje
   };
 }
 
+function shapeSourceRevision(row: Row): {
+  readonly dirty: boolean;
+  readonly source_revision: string | null;
+  readonly state: unknown;
+} {
+  const known = knownSourceRevision(row.source_revision);
+  return {
+    dirty: !known || Number(row.dirty || 0) !== 0,
+    source_revision: known ? String(row.source_revision) : null,
+    state: known ? row.state || "unknown" : "stale",
+  };
+}
+
 export function shapeEvidenceRow(row: Row) {
   const retainedBytesState = String(row.retained_bytes_state || "unobserved");
+  const sourceRevision = shapeSourceRevision(row);
   return {
     canonical_evidence_revision: String(row.canonical_evidence_revision ?? "0"),
     computed_at: row.computed_at || null,
     connector_id: row.connector_id,
     connector_instance_id: row.connector_instance_id,
-    dirty: Number(row.dirty || 0) !== 0,
+    ...sourceRevision,
     display_name: row.display_name,
     last_error: row.last_error || null,
     last_record_updated_at: row.last_record_updated_at || null,
@@ -880,7 +910,6 @@ export function shapeEvidenceRow(row: Row) {
     schedule_checkpoint: row.schedule_checkpoint === undefined ? "unobserved" : String(row.schedule_checkpoint),
     source_event_seq: row.source_event_seq === null ? null : Number(row.source_event_seq),
     source_kind: row.source_kind,
-    state: row.state || "unknown",
     status: row.status,
     stream_count: Number(row.stream_count || 0),
     stream_facts_event_seq: row.stream_facts_event_seq === null ? null : Number(row.stream_facts_event_seq),
