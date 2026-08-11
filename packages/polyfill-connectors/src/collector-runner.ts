@@ -2846,6 +2846,7 @@ export function buildHeartbeatOutboxDiagnostics(
     dead_letter: summary.deadLetter,
     leased: summary.leased,
     oldest_pending_at: summary.oldestReadyAt,
+    oldest_retrying_at: summary.oldestRetryingAt,
     pending: summary.ready,
     retrying: summary.retrying,
     stale_leases: summary.staleLeases,

@@ -62,6 +62,16 @@ export interface LocalDeviceOutboxSummary {
   deadLetter: number;
   leased: number;
   oldestReadyAt: string | null;
+  /**
+   * `MIN(created_at)` over `ready` rows that have actually failed at least
+   * once (`attempt_count > 0`) — evidence a retry is genuinely happening,
+   * not just that a row is queued. Distinct from `oldestReadyAt`, which
+   * includes a freshly-enqueued row from a large healthy first drain that
+   * has never failed; that row can be hours old under a slow but
+   * progressing multi-GB import and must never read as a stuck retry.
+   * `null` when no ready row has ever failed.
+   */
+  oldestRetryingAt: string | null;
   ready: number;
   retrying: number;
   staleLeases: number;
@@ -938,6 +948,7 @@ export class LocalDeviceOutbox {
       deadLetter: 0,
       leased: 0,
       oldestReadyAt: null,
+      oldestRetryingAt: null,
       ready: 0,
       retrying: 0,
       staleLeases: 0,
@@ -950,7 +961,8 @@ export class LocalDeviceOutbox {
         COUNT(*) AS total,
         SUM(CASE WHEN status = 'ready' AND next_attempt_at > ? THEN 1 ELSE 0 END) AS retrying,
         SUM(CASE WHEN status = 'leased' AND lease_until IS NOT NULL AND lease_until <= ? THEN 1 ELSE 0 END) AS stale_leases,
-        MIN(CASE WHEN status = 'ready' THEN created_at ELSE NULL END) AS oldest_ready
+        MIN(CASE WHEN status = 'ready' THEN created_at ELSE NULL END) AS oldest_ready,
+        MIN(CASE WHEN status = 'ready' AND attempt_count > 0 THEN created_at ELSE NULL END) AS oldest_retrying
       FROM local_device_outbox
       ${input.sourceInstanceId ? "WHERE source_instance_id = ?" : ""}
       GROUP BY status`;
@@ -969,6 +981,10 @@ export class LocalDeviceOutbox {
         const oldest = rowLike.oldest_ready;
         if (typeof oldest === "string") {
           summary.oldestReadyAt = oldest;
+        }
+        const oldestRetrying = rowLike.oldest_retrying;
+        if (typeof oldestRetrying === "string") {
+          summary.oldestRetryingAt = oldestRetrying;
         }
       } else if (status === "leased") {
         summary.leased = total;

@@ -356,11 +356,14 @@ function collectDiagnosticCounts(value: Record<string, unknown>): Record<string,
   return normalized;
 }
 
-function validOldestPendingAt(value: Record<string, unknown>): string | null {
-  if (typeof value.oldest_pending_at === "string" && value.oldest_pending_at.length > 0) {
-    const parsed = Date.parse(value.oldest_pending_at);
+const OUTBOX_DIAGNOSTIC_TIMESTAMPS = Object.freeze(["oldest_pending_at", "oldest_retrying_at"]);
+
+function validTimestampField(value: Record<string, unknown>, field: string): string | null {
+  const candidate = value[field];
+  if (typeof candidate === "string" && candidate.length > 0) {
+    const parsed = Date.parse(candidate);
     if (Number.isFinite(parsed)) {
-      return value.oldest_pending_at;
+      return candidate;
     }
   }
   return null;
@@ -370,10 +373,13 @@ export function normalizeOutboxDiagnostics(value: unknown): Record<string, unkno
   if (isNullish(value) || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
-  const normalized: Record<string, unknown> = collectDiagnosticCounts(value as Record<string, unknown>);
-  const oldestPendingAt = validOldestPendingAt(value as Record<string, unknown>);
-  if (oldestPendingAt !== null) {
-    normalized.oldest_pending_at = oldestPendingAt;
+  const record = value as Record<string, unknown>;
+  const normalized: Record<string, unknown> = collectDiagnosticCounts(record);
+  for (const field of OUTBOX_DIAGNOSTIC_TIMESTAMPS) {
+    const timestamp = validTimestampField(record, field);
+    if (timestamp !== null) {
+      normalized[field] = timestamp;
+    }
   }
   return Object.keys(normalized).length > 0 ? normalized : null;
 }

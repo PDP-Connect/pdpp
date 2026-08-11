@@ -48,7 +48,7 @@
 
 import type { EphemeralBrowserRuntimeProjection } from "./browser-surface/ephemeral-health-projection.ts";
 import { type BrowserSurfaceRepairEvidence, decideBrowserSurfaceRepair } from "./browser-surface/repair-decision.ts";
-import { BLOCKED_PROMOTION_THRESHOLD, OUTBOX_STALE_PENDING_BACKLOG_AGE_MS } from "./connection-health-policy.ts";
+import { BLOCKED_PROMOTION_THRESHOLD, OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS } from "./connection-health-policy.ts";
 import { type PendingPressureGap, SOURCE_PRESSURE_GAP_REASONS } from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Public types ──────────────────────────────────────────────────────────
@@ -400,6 +400,15 @@ export interface OutboxDiagnosticCounts {
   readonly dead_letter?: number;
   readonly leased?: number;
   readonly oldest_pending_at?: string | null;
+  /**
+   * `MIN(created_at)` over ready rows that have actually failed at least
+   * once (`attempt_count > 0`) — evidence a retry is genuinely stuck, not
+   * just that a row is queued. Distinct from `oldest_pending_at`, which
+   * also ages with a freshly-enqueued, never-failed row (e.g. a large
+   * healthy first drain). Kept for backlog age policy; `oldest_pending_at`
+   * remains the ordinary backlog-diagnostics field.
+   */
+  readonly oldest_retrying_at?: string | null;
   readonly pending?: number;
   readonly retrying?: number;
   readonly stale_leases?: number;
@@ -450,25 +459,33 @@ const OUTBOX_DIAGNOSTIC_COUNT_FIELDS: readonly OutboxDiagnosticCountField[] = [
   "total",
 ];
 
+type OutboxDiagnosticTimestampField = "oldest_pending_at" | "oldest_retrying_at";
+
+const OUTBOX_DIAGNOSTIC_TIMESTAMP_FIELDS: readonly OutboxDiagnosticTimestampField[] = [
+  "oldest_pending_at",
+  "oldest_retrying_at",
+];
+
 /**
  * Roll up several source instances' `OutboxDiagnosticCounts` into one
  * connection-level summary. Pure — no I/O, no clock reads.
  *
- * The numeric count fields are summed; `oldest_pending_at` takes the
- * earliest non-null timestamp so the connection reports the longest-waiting
- * record across its sources. A non-finite or negative count is ignored
+ * The numeric count fields are summed; each timestamp field
+ * (`oldest_pending_at`, `oldest_retrying_at`) independently takes the
+ * earliest non-null value across sources so the connection reports the
+ * longest-waiting record/retry. A non-finite or negative count is ignored
  * (treated as absent) rather than poisoning the sum — the store already
  * normalizes counts, but this keeps the helper safe for any caller.
  *
- * Returns `null` when no input carries any numeric count, so a connection
- * with only empty/absent diagnostics surfaces no count rollup rather than a
- * misleading all-zero object.
+ * Returns `null` when no input carries any numeric count or timestamp, so a
+ * connection with only empty/absent diagnostics surfaces no count rollup
+ * rather than a misleading all-zero object.
  */
 export function rollupOutboxDiagnosticCounts(
   items: readonly (OutboxDiagnosticCounts | null | undefined)[]
 ): OutboxDiagnosticCounts | null {
   const sums = new Map<OutboxDiagnosticCountField, number>();
-  let oldestPendingAt: string | null = null;
+  const oldestTimestamps = new Map<OutboxDiagnosticTimestampField, string>();
   for (const item of items) {
     if (!item) {
       continue;
@@ -480,19 +497,19 @@ export function rollupOutboxDiagnosticCounts(
       }
       sums.set(field, (sums.get(field) ?? 0) + value);
     }
-    if (
-      typeof item.oldest_pending_at === "string" &&
-      item.oldest_pending_at.length > 0 &&
-      (oldestPendingAt === null || item.oldest_pending_at < oldestPendingAt)
-    ) {
-      oldestPendingAt = item.oldest_pending_at;
+    for (const field of OUTBOX_DIAGNOSTIC_TIMESTAMP_FIELDS) {
+      const value = item[field];
+      const current = oldestTimestamps.get(field);
+      if (typeof value === "string" && value.length > 0 && (current === undefined || value < current)) {
+        oldestTimestamps.set(field, value);
+      }
     }
   }
-  if (sums.size === 0 && oldestPendingAt === null) {
+  if (sums.size === 0 && oldestTimestamps.size === 0) {
     return null;
   }
-  const result: OutboxDiagnosticCounts = Object.fromEntries(sums);
-  return oldestPendingAt === null ? result : { ...result, oldest_pending_at: oldestPendingAt };
+  const result: OutboxDiagnosticCounts = { ...Object.fromEntries(sums), ...Object.fromEntries(oldestTimestamps) };
+  return result;
 }
 
 /**
@@ -3445,14 +3462,18 @@ export interface HeartbeatOutboxEvidence {
   /** Last reported `status` from the heartbeat body. */
   readonly lastHeartbeatStatus: "blocked" | "healthy" | "retrying" | "starting" | "stopped" | null;
   /**
-   * ISO timestamp of the oldest still-`ready` outbox row the device last
-   * reported (`created_at`, never reset by a retry — only the row's
-   * `next_attempt_at` moves). `null`/absent/unparseable is treated as "no
-   * age evidence": the backlog-age check below never fires, so a missing or
-   * malformed timestamp fails conservatively (stays at its pre-existing
-   * axis) rather than fabricating a stall.
+   * ISO timestamp of the oldest still-`ready` outbox row that has actually
+   * failed at least once (`attempt_count > 0`), i.e. real retry evidence —
+   * NOT the oldest ready row overall. A large healthy first drain enqueues
+   * rows that can sit `ready` for hours before their first attempt without
+   * ever failing; using the oldest-ready timestamp for an age policy would
+   * label that in-progress, never-failed backlog a stuck retry. `null`/
+   * absent/unparseable is treated as "no retry-age evidence": the
+   * backlog-age check below never fires, so a missing or malformed
+   * timestamp fails conservatively (stays at its pre-existing axis) rather
+   * than fabricating a stall.
    */
-  readonly oldestPendingAt?: string | null;
+  readonly oldestRetryingAt?: string | null;
   /** Pending durable work depth the device last reported. */
   readonly recordsPending: number | null;
 }
@@ -3482,14 +3503,21 @@ export interface HeartbeatOutboxEvidence {
  * retries forever by design (see `collector-runner.ts`'s
  * `classifyLocalDeviceFailure`), so a permanently-broken endpoint that
  * happens to fail in a retryable shape (5xx, timeout, network fault) would
- * otherwise sit in `active` forever with a live-looking heartbeat. When
- * `evidence.oldestPendingAt` is older than `OUTBOX_STALE_PENDING_BACKLOG_AGE_MS`,
- * the axis degrades to `stalled` with cause `transient_upload_failure` — the
- * same system-handled, no-owner-action cause already used for a dead-lettered
- * transient-5xx summary, since both describe the same situation: the system,
- * not the owner, owns recovery. A missing or unparseable `oldestPendingAt`
- * never triggers this path, so absent evidence fails conservatively rather
- * than fabricating a stall.
+ * otherwise sit in `active` forever with a live-looking heartbeat. This
+ * check is keyed on `evidence.oldestRetryingAt` — the oldest row with real
+ * retry evidence (`attempt_count > 0`), NOT the oldest ready row overall.
+ * Age alone cannot answer whether a retry is stuck: a large healthy first
+ * drain enqueues rows that sit `ready` for hours before their first
+ * attempt without ever failing, and using oldest-ready age would falsely
+ * degrade that in-progress, never-failed backlog. When
+ * `evidence.oldestRetryingAt` is older than
+ * `OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS`, the axis degrades to `stalled`
+ * with cause `transient_upload_failure` — the same system-handled,
+ * no-owner-action cause already used for a dead-lettered transient-5xx
+ * summary, since both describe the same situation: the system, not the
+ * owner, owns recovery. A missing or unparseable `oldestRetryingAt` (no row
+ * has ever failed) never triggers this path, so an ordinary healthy
+ * backlog fails conservatively rather than fabricating a stall.
  */
 export function deriveOutboxAxisFromHeartbeat(
   evidence: HeartbeatOutboxEvidence,
@@ -3522,8 +3550,8 @@ export function deriveOutboxAxisFromHeartbeat(
   if (pending > 0 && heartbeatStale) {
     return { axis: "stalled", cause: "stale_pending", unreliable: false };
   }
-  const backlogAgeMs = ageMs(evidence.oldestPendingAt ?? null, options.nowIso);
-  if (pending > 0 && backlogAgeMs !== null && backlogAgeMs > OUTBOX_STALE_PENDING_BACKLOG_AGE_MS) {
+  const retryingBacklogAgeMs = ageMs(evidence.oldestRetryingAt ?? null, options.nowIso);
+  if (pending > 0 && retryingBacklogAgeMs !== null && retryingBacklogAgeMs > OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS) {
     return { axis: "stalled", cause: "transient_upload_failure", unreliable: false };
   }
   if (evidence.lastHeartbeatStatus === "starting" || evidence.lastHeartbeatStatus === "retrying") {

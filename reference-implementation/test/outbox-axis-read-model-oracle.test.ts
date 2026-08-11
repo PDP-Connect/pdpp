@@ -103,19 +103,23 @@ test("active trusted rows contribute while revoked or inactive rows are ignored"
 
 // ─── Old-but-fresh-heartbeat backlog: server-side heartbeat-row projection ──
 //
-// End-to-end proof that `HeartbeatRow.outboxDiagnostics.oldest_pending_at`
-// (already computed device-side, already sent on every heartbeat, already
-// persisted server-side — see `device-exporter-store.ts`) reaches the
-// connection outbox axis through `accumulateOutboxAxisRow`'s
-// `deriveOutboxAxisFromHeartbeat` call. This is the wiring the P2 follow-up
-// found missing: the field existed at every layer except this one.
+// End-to-end proof that `HeartbeatRow.outboxDiagnostics.oldest_retrying_at`
+// (already computed device-side from rows with real retry evidence —
+// attempt_count > 0 — already sent on every heartbeat, already persisted
+// server-side — see `device-exporter-store.ts`) reaches the connection
+// outbox axis through `accumulateOutboxAxisRow`'s `deriveOutboxAxisFromHeartbeat`
+// call. This is the wiring the P2 follow-up found missing: the field existed
+// at every layer except this one. Deliberately keyed on `oldest_retrying_at`,
+// NOT `oldest_pending_at` — the latter also ages with a freshly-enqueued,
+// never-failed row (e.g. a large healthy first drain) and using it here
+// would fabricate failure evidence.
 
-test("a retrying row whose oldest_pending_at is stale-by-age projects as a stalled, system-handled backlog", () => {
+test("a retrying row whose oldest_retrying_at is stale-by-age projects as a stalled, system-handled backlog", () => {
   const rows = [
     hbRow({
       lastHeartbeatAt: FRESH,
       lastHeartbeatStatus: "retrying",
-      outboxDiagnostics: { oldest_pending_at: BACKLOG_OLD, pending: 1, retrying: 1 },
+      outboxDiagnostics: { oldest_retrying_at: BACKLOG_OLD, pending: 1, retrying: 1 },
       recordsPending: 1,
     }),
   ];
@@ -125,12 +129,12 @@ test("a retrying row whose oldest_pending_at is stale-by-age projects as a stall
   assert.equal(axis.hasEvidence, true);
 });
 
-test("a retrying row with a fresh oldest_pending_at stays active — live retries are not false-flagged", () => {
+test("a retrying row with a fresh oldest_retrying_at stays active — live retries are not false-flagged", () => {
   const rows = [
     hbRow({
       lastHeartbeatAt: FRESH,
       lastHeartbeatStatus: "retrying",
-      outboxDiagnostics: { oldest_pending_at: BACKLOG_FRESH, pending: 1, retrying: 1 },
+      outboxDiagnostics: { oldest_retrying_at: BACKLOG_FRESH, pending: 1, retrying: 1 },
       recordsPending: 1,
     }),
   ];
@@ -139,7 +143,7 @@ test("a retrying row with a fresh oldest_pending_at stays active — live retrie
   assert.equal(axis.cause, null);
 });
 
-test("a retrying row with no oldest_pending_at evidence stays active — missing timestamp fails conservatively", () => {
+test("a retrying row with no oldest_retrying_at evidence stays active — missing timestamp fails conservatively", () => {
   const rows = [
     hbRow({
       lastHeartbeatAt: FRESH,
@@ -153,12 +157,31 @@ test("a retrying row with no oldest_pending_at evidence stays active — missing
   assert.equal(axis.cause, null);
 });
 
+test("a retrying row with an old oldest_pending_at but NO oldest_retrying_at stays active — a large healthy never-failed backlog is not false-red", () => {
+  // The exact counterexample the reviewer raised: a large multi-GB import's
+  // oldest queued row can be old under oldest_pending_at (it has been
+  // sitting ready, never having failed) while oldest_retrying_at is absent
+  // because attempt_count is still 0 for every row. Only the latter may
+  // drive the age policy.
+  const rows = [
+    hbRow({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      outboxDiagnostics: { oldest_pending_at: BACKLOG_OLD, pending: 5000, retrying: 0 },
+      recordsPending: 5000,
+    }),
+  ];
+  const axis = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: NOW });
+  assert.equal(axis.axis, "active");
+  assert.equal(axis.cause, null);
+});
+
 test("a revoked device's stale-by-age backlog is not evidence — untrusted rows never drive the axis", () => {
   const rows = [
     revokedStalledRow({
       lastHeartbeatAt: FRESH,
       lastHeartbeatStatus: "retrying",
-      outboxDiagnostics: { oldest_pending_at: BACKLOG_OLD, pending: 1, retrying: 1 },
+      outboxDiagnostics: { oldest_retrying_at: BACKLOG_OLD, pending: 1, retrying: 1 },
       recordsPending: 1,
     }),
   ];

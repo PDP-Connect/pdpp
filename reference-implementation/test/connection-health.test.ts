@@ -1840,16 +1840,22 @@ test("outbox axis: pending work + stale heartbeat degrades to stale_pending stal
 });
 
 // ─── Outbox axis: old-but-fresh-heartbeat backlog (explicit-transient retry-forever) ──
+//
+// Keyed on oldestRetryingAt — the oldest row with REAL retry evidence
+// (attempt_count > 0) — never on the oldest ready row overall. A large
+// healthy first drain enqueues rows that sit ready for hours before their
+// first attempt without ever failing; using oldest-ready age here would
+// fabricate failure evidence and false-red a slow but progressing import.
 
 test("outbox axis: fresh heartbeat with a fresh retrying backlog stays active (no false-red)", () => {
   // A genuinely live retry loop: the heartbeat is fresh AND the oldest
-  // pending row is fresh. Must not be mistaken for a stuck backlog just
-  // because the connector is retrying.
+  // actually-retried row is fresh. Must not be mistaken for a stuck backlog
+  // just because the connector is retrying.
   const r = deriveOutboxAxisFromHeartbeat(
     heartbeat({
       lastHeartbeatAt: FRESH,
       lastHeartbeatStatus: "retrying",
-      oldestPendingAt: BACKLOG_FRESH,
+      oldestRetryingAt: BACKLOG_FRESH,
       recordsPending: 3,
     }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
@@ -1858,19 +1864,19 @@ test("outbox axis: fresh heartbeat with a fresh retrying backlog stays active (n
   assert.equal(r.cause, null);
 });
 
-test("outbox axis: fresh heartbeat with an old retrying backlog is stalled/transient_upload_failure, not active forever", () => {
+test("outbox axis: fresh heartbeat with an old ACTUALLY-RETRIED backlog is stalled/transient_upload_failure, not active forever", () => {
   // The gap this closes: explicit-transient rows (structured 408/429/5xx,
   // timeout, recognized network fault) retry indefinitely by design
   // (collector-runner.ts's classifyLocalDeviceFailure) and never dead-letter,
   // so the heartbeat keeps reporting "retrying" with a live-looking check-in
-  // even when the same row has been stuck for weeks. The backlog's own age
-  // (oldest_pending_at, derived from created_at, never reset by a retry) is
-  // the signal a live heartbeat can't fake.
+  // even when the same row has been stuck for weeks. oldestRetryingAt is
+  // real retry evidence (attempt_count > 0), not merely "oldest ready" — the
+  // signal a live heartbeat can't fake.
   const r = deriveOutboxAxisFromHeartbeat(
     heartbeat({
       lastHeartbeatAt: FRESH,
       lastHeartbeatStatus: "retrying",
-      oldestPendingAt: BACKLOG_OLD,
+      oldestRetryingAt: BACKLOG_OLD,
       recordsPending: 3,
     }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
@@ -1882,7 +1888,27 @@ test("outbox axis: fresh heartbeat with an old retrying backlog is stalled/trans
   assert.equal(r.cause, "transient_upload_failure");
 });
 
-test("outbox axis: fresh heartbeat with an old PENDING (not retrying-status) backlog also stalls", () => {
+test("outbox axis: an old NEVER-FAILED pending backlog stays active — age alone is not failure evidence", () => {
+  // The defect this counterweight guards: a large healthy first drain (a
+  // slow but progressing multi-GB local import) can have its oldest queued
+  // row sit ready for many hours before its first attempt without ever
+  // failing once. oldestRetryingAt is null in that case (no row has
+  // attempt_count > 0 yet), so the age check must never fire, even though
+  // the backlog itself is old and pending > 0.
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestRetryingAt: null,
+      recordsPending: 500,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "active");
+  assert.equal(r.cause, null);
+});
+
+test("outbox axis: fresh heartbeat with an old actually-retried PENDING (not retrying-status) backlog also stalls", () => {
   // The `healthy`-status + `recordsPending > 0` shape (not just
   // starting/retrying) must get the same backlog-age check, since a
   // permanently-stuck row can surface under either heartbeat status.
@@ -1890,7 +1916,7 @@ test("outbox axis: fresh heartbeat with an old PENDING (not retrying-status) bac
     heartbeat({
       lastHeartbeatAt: FRESH,
       lastHeartbeatStatus: "healthy",
-      oldestPendingAt: BACKLOG_OLD,
+      oldestRetryingAt: BACKLOG_OLD,
       recordsPending: 1,
     }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
@@ -1899,12 +1925,12 @@ test("outbox axis: fresh heartbeat with an old PENDING (not retrying-status) bac
   assert.equal(r.cause, "transient_upload_failure");
 });
 
-test("outbox axis: missing oldestPendingAt never triggers the backlog-age stall (fails conservatively)", () => {
+test("outbox axis: missing oldestRetryingAt never triggers the backlog-age stall (fails conservatively)", () => {
   const r = deriveOutboxAxisFromHeartbeat(
     heartbeat({
       lastHeartbeatAt: FRESH,
       lastHeartbeatStatus: "retrying",
-      oldestPendingAt: null,
+      oldestRetryingAt: null,
       recordsPending: 3,
     }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
@@ -1913,12 +1939,12 @@ test("outbox axis: missing oldestPendingAt never triggers the backlog-age stall 
   assert.equal(r.cause, null);
 });
 
-test("outbox axis: malformed oldestPendingAt never triggers the backlog-age stall (fails conservatively)", () => {
+test("outbox axis: malformed oldestRetryingAt never triggers the backlog-age stall (fails conservatively)", () => {
   const r = deriveOutboxAxisFromHeartbeat(
     heartbeat({
       lastHeartbeatAt: FRESH,
       lastHeartbeatStatus: "retrying",
-      oldestPendingAt: "not-a-timestamp",
+      oldestRetryingAt: "not-a-timestamp",
       recordsPending: 3,
     }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
@@ -1927,12 +1953,12 @@ test("outbox axis: malformed oldestPendingAt never triggers the backlog-age stal
   assert.equal(r.cause, null);
 });
 
-test("outbox axis: old backlog with zero pending never stalls (age check requires pending > 0)", () => {
+test("outbox axis: old actually-retried backlog with zero pending never stalls (age check requires pending > 0)", () => {
   const r = deriveOutboxAxisFromHeartbeat(
     heartbeat({
       lastHeartbeatAt: FRESH,
       lastHeartbeatStatus: "healthy",
-      oldestPendingAt: BACKLOG_OLD,
+      oldestRetryingAt: BACKLOG_OLD,
       recordsPending: 0,
     }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
@@ -1941,16 +1967,16 @@ test("outbox axis: old backlog with zero pending never stalls (age check require
   assert.equal(r.cause, null);
 });
 
-test("outbox axis: an old retrying backlog that later recovers (drains) returns active/idle, not stuck stalled", () => {
+test("outbox axis: an old actually-retried backlog that later recovers (drains) returns active/idle, not stuck stalled", () => {
   // Recovery path: once the row finally succeeds, recordsPending drops to 0
-  // (or oldestPendingAt resets to the next-oldest still-pending row's fresh
-  // created_at) and the axis must climb back out of `stalled` — this is a
-  // pure re-derivation from evidence, not a sticky/latched state.
+  // (or oldestRetryingAt resets to null / the next-oldest failed row's own
+  // age) and the axis must climb back out of `stalled` — this is a pure
+  // re-derivation from evidence, not a sticky/latched state.
   const stalled = deriveOutboxAxisFromHeartbeat(
     heartbeat({
       lastHeartbeatAt: FRESH,
       lastHeartbeatStatus: "retrying",
-      oldestPendingAt: BACKLOG_OLD,
+      oldestRetryingAt: BACKLOG_OLD,
       recordsPending: 1,
     }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
@@ -1961,7 +1987,7 @@ test("outbox axis: an old retrying backlog that later recovers (drains) returns 
     heartbeat({
       lastHeartbeatAt: FRESH,
       lastHeartbeatStatus: "healthy",
-      oldestPendingAt: null,
+      oldestRetryingAt: null,
       recordsPending: 0,
     }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
@@ -2034,7 +2060,7 @@ test("local exporter: transient_upload_failure is degraded but system-handled", 
   );
 });
 
-test("end-to-end: an old-but-fresh-heartbeat retrying backlog projects as degraded/system-handled, not stuck-active-forever", () => {
+test("end-to-end: an old-but-fresh-heartbeat ACTUALLY-RETRIED backlog projects as degraded/system-handled, not stuck-active-forever", () => {
   // Full pipeline: deriveOutboxAxisFromHeartbeat's age-based axis/cause feeds
   // directly into computeConnectionHealth, proving the operational gap this
   // closes end to end — an explicit-transient row that retries indefinitely
@@ -2044,7 +2070,7 @@ test("end-to-end: an old-but-fresh-heartbeat retrying backlog projects as degrad
     heartbeat({
       lastHeartbeatAt: FRESH,
       lastHeartbeatStatus: "retrying",
-      oldestPendingAt: BACKLOG_OLD,
+      oldestRetryingAt: BACKLOG_OLD,
       recordsPending: 1,
     }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
@@ -2071,8 +2097,35 @@ test("end-to-end: a genuinely live fresh retrying backlog projects as healthy, n
     heartbeat({
       lastHeartbeatAt: FRESH,
       lastHeartbeatStatus: "retrying",
-      oldestPendingAt: BACKLOG_FRESH,
+      oldestRetryingAt: BACKLOG_FRESH,
       recordsPending: 1,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
+      outbox: { axis: derived.axis, cause: derived.cause },
+      run: run(),
+    })
+  );
+  assert.equal(snap.state, "healthy");
+  assert.equal(snap.axes.outbox, "active");
+});
+
+test("end-to-end: an old but NEVER-FAILED backlog (large healthy first drain) projects as healthy, not a false-red degrade", () => {
+  // The exact scenario the reviewer flagged: a large, slow but progressing
+  // multi-GB local import can have queued rows sitting ready for hours
+  // before their first attempt without ever failing once. Age alone is not
+  // failure evidence — oldestRetryingAt (attempt_count > 0) stays null, so
+  // this must never project as degraded no matter how old the backlog is.
+  const derived = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestRetryingAt: null,
+      recordsPending: 5000,
     }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
   );
@@ -2093,7 +2146,7 @@ test("end-to-end: recovery after the backlog drains returns to green, not latche
     heartbeat({
       lastHeartbeatAt: FRESH,
       lastHeartbeatStatus: "healthy",
-      oldestPendingAt: null,
+      oldestRetryingAt: null,
       recordsPending: 0,
     }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
@@ -2245,6 +2298,27 @@ test("rollupOutboxDiagnosticCounts: ignores negative / non-finite counts", () =>
 test("rollupOutboxDiagnosticCounts: surfaces oldest_pending_at even with no numeric counts", () => {
   const r = rollupOutboxDiagnosticCounts([{ oldest_pending_at: "2026-05-19T09:00:00.000Z" }]);
   assert.deepEqual(r, { oldest_pending_at: "2026-05-19T09:00:00.000Z" });
+});
+
+test("rollupOutboxDiagnosticCounts: keeps the earliest oldest_retrying_at independently of oldest_pending_at", () => {
+  const r = rollupOutboxDiagnosticCounts([
+    { oldest_pending_at: "2026-05-19T08:00:00.000Z", oldest_retrying_at: "2026-05-19T11:00:00.000Z", retrying: 1 },
+    { oldest_pending_at: "2026-05-19T10:00:00.000Z", oldest_retrying_at: "2026-05-19T09:30:00.000Z", retrying: 1 },
+  ]);
+  assert.ok(r);
+  assert.equal(r.retrying, 2);
+  // pending-only source (older, never-failed) still wins oldest_pending_at...
+  assert.equal(r.oldest_pending_at, "2026-05-19T08:00:00.000Z");
+  // ...but oldest_retrying_at is scoped to actual retry evidence and picks
+  // its own independently-earliest value, not derived from oldest_pending_at.
+  assert.equal(r.oldest_retrying_at, "2026-05-19T09:30:00.000Z");
+});
+
+test("rollupOutboxDiagnosticCounts: a source with no retry evidence contributes no oldest_retrying_at", () => {
+  const r = rollupOutboxDiagnosticCounts([{ oldest_pending_at: "2026-05-19T08:00:00.000Z", pending: 5000 }]);
+  assert.ok(r);
+  assert.equal(r.oldest_pending_at, "2026-05-19T08:00:00.000Z");
+  assert.equal(r.oldest_retrying_at, undefined);
 });
 
 // ─── next_action CTA derivation ──────────────────────────────────────────

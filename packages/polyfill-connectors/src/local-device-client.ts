@@ -87,6 +87,14 @@ export interface HeartbeatOutboxDiagnostics {
   dead_letter: number;
   leased: number;
   oldest_pending_at?: string | null;
+  /**
+   * `MIN(created_at)` over `ready` rows that have actually failed at least
+   * once (`attempt_count > 0`). Distinct from `oldest_pending_at`, which
+   * also includes a freshly-enqueued, never-failed row (e.g. a large
+   * healthy first drain) that must not be mistaken for a stuck retry.
+   * `null`/absent when nothing in the backlog has ever failed.
+   */
+  oldest_retrying_at?: string | null;
   pending: number;
   retrying: number;
   stale_leases: number;
