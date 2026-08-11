@@ -250,6 +250,76 @@ test("google_maps rejects recognized non-array keys without state or coverage on
   await cases.reduce((previous, entry) => previous.then(() => runCase(entry)), Promise.resolve());
 });
 
+test("google_maps rejects scalar, empty, and unknown-key-only roots without zero-coverage claims", async () => {
+  const cases = [
+    "null",
+    "42",
+    JSON.stringify({}),
+    JSON.stringify({ archive_jobs: [] }),
+    JSON.stringify({ archive_jobs: [EXPORT_FIXTURE] }),
+  ];
+  for (const content of cases) {
+    const importRoot = await mkdtemp(join(tmpdir(), "pdpp-google-maps-root-shape-"));
+    try {
+      await writeFile(join(importRoot, "Timeline.json"), content);
+      const { messages } = await runImport(importRoot, {}, ["timeline_points", "timeline_segments"]);
+
+      assert.equal(
+        messages.some((message) => message.type === "RECORD"),
+        false,
+        content
+      );
+      for (const stream of ["timeline_points", "timeline_segments"]) {
+        assert.ok(
+          messages.some(
+            (message) =>
+              message.type === "SKIP_RESULT" && message.stream === stream && message.reason === "unsupported_shape"
+          ),
+          `${content} must be unsupported for ${stream}`
+        );
+        assert.equal(
+          messages.some((message) => message.type === "STATE" && message.stream === stream),
+          false,
+          content
+        );
+        assert.equal(
+          messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === stream),
+          false,
+          content
+        );
+        assert.equal(
+          messages.some(
+            (message) =>
+              message.type === "SKIP_RESULT" && message.stream === stream && message.reason.endsWith("_not_found")
+          ),
+          false,
+          content
+        );
+      }
+    } finally {
+      await rm(importRoot, { force: true, recursive: true });
+    }
+  }
+});
+
+test("google_maps keeps a recognized empty array as a valid empty counterweight", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-google-maps-empty-shape-"));
+  try {
+    await writeFile(join(importRoot, "Timeline.json"), JSON.stringify({ timelineObjects: [] }));
+    const { messages } = await runImport(importRoot);
+
+    assert.ok(
+      messages.some((message) => message.type === "SKIP_RESULT" && message.reason === "timeline_points_not_found")
+    );
+    assert.ok(messages.some((message) => message.type === "STATE" && message.stream === "timeline_points"));
+    const coverage = pointsCoverage(messages);
+    assert.equal(coverage.considered, 0);
+    assert.equal(coverage.covered, 0);
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
 test("google_maps with a schema-rejected unknown segment withholds its cursor and coverage", async () => {
   const importRoot = await mkdtemp(join(tmpdir(), "pdpp-google-maps-schema-rejection-"));
   try {

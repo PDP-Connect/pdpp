@@ -341,5 +341,10 @@ export async function streamGoogleMapsExport(
       `google_maps: recognized Timeline key ${shapeTracker.invalidKey} did not contain an array`
     );
   }
+  if (seenShapes.size === 0) {
+    throw new GoogleMapsUnsupportedShapeError(
+      "google_maps: Timeline document did not contain a recognized Timeline array"
+    );
+  }
   await drain(pending, onEvent);
 }
