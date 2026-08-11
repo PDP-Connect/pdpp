@@ -139,6 +139,7 @@ export function isValidRecoveryHintShape(value: unknown): boolean {
   }
   const hint = value as { action?: unknown; retryable?: unknown };
   return (
+    Object.keys(value).every((key) => key === "action" || key === "retryable") &&
     (isNullish(hint.action) || RECOVERY_ACTIONS.has(hint.action as string)) &&
     (isNullish(hint.retryable) || typeof hint.retryable === "boolean")
   );

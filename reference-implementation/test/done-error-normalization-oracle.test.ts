@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { isValidRecoveryHintShape } from "../runtime/connector-gap-bounding.ts";
 import { validateDoneError } from "../runtime/done-validators.ts";
 
 const REGEXP_1 = /invalid DONE\.error\.retryable/;
@@ -96,8 +97,11 @@ test("validateDoneError accepts a closed-vocabulary recovery_hint distinct from 
     { code: "session_expired", message: "failed", recovery_hint: "refresh_credentials", retryable: null }
   );
   assert.deepEqual(
-    validateDoneError("failed", { message: "failed", recovery_hint: { action: "manual_action_required" } }),
-    { message: "failed", recovery_hint: { action: "manual_action_required" }, retryable: null }
+    validateDoneError("failed", {
+      message: "failed",
+      recovery_hint: { action: "manual_action_required", retryable: false },
+    }),
+    { message: "failed", recovery_hint: { action: "manual_action_required", retryable: false }, retryable: null }
   );
 });
 
@@ -105,4 +109,15 @@ test("validateDoneError rejects an out-of-vocabulary recovery_hint", () => {
   const result = validateDoneError("failed", { message: "failed", recovery_hint: "made_up_action" });
   assert.ok(result instanceof Error);
   assert.match(result.message, INVALID_RECOVERY_HINT_MESSAGE_PATTERN);
+});
+
+test("recovery_hint objects reject unknown keys while preserving the bounded shape", () => {
+  assert.equal(
+    isValidRecoveryHintShape({ action: "refresh_credentials", connector_detail: "private", retryable: false }),
+    false
+  );
+  assert.equal(isValidRecoveryHintShape({ action: "refresh_credentials", retryable: false }), true);
+  assert.equal(isValidRecoveryHintShape({ retryable: true }), true);
+  assert.equal(isValidRecoveryHintShape("refresh_credentials"), true);
+  assert.equal(isValidRecoveryHintShape(undefined), true);
 });
