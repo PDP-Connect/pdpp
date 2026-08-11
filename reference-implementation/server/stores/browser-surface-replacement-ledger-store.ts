@@ -349,6 +349,9 @@ function mapRow(row: ReplacementReceiptRow): ReplacementReceipt {
 }
 
 function assertSameEvent(existing: ReplacementReceipt, incoming: ReplacementReceipt): void {
+  // run_id is retained as first-observer audit attribution, but it is not
+  // part of the durable transition identity. A concurrent observer may use a
+  // different run id and must receive the committed authoritative receipt.
   const immutableFields: readonly (keyof ReplacementReceipt)[] = [
     "replacement_id",
     "idempotency_key",
@@ -357,7 +360,6 @@ function assertSameEvent(existing: ReplacementReceipt, incoming: ReplacementRece
     "connector_id",
     "profile_key",
     "surface_subject_id",
-    "run_id",
     "lease_id",
     "surface_id",
     "previous_generation_hash",
@@ -1997,7 +1999,6 @@ function assertSameEventIdentity(previous: ReplacementReceipt, incoming: Replace
     "connector_id",
     "profile_key",
     "surface_subject_id",
-    "run_id",
     "lease_id",
     "surface_id",
     "previous_generation_hash",

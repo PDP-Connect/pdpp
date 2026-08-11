@@ -104,6 +104,7 @@ function receiptSequence(connectionId: string, subjectId: string) {
     observed_at: NOW,
     previous_generation_hash: deriveOpaqueGenerationHash(`${connectionId}:container-old`),
     profile_key: "shared-profile",
+    run_id: "run-store-authority",
     surface_id: `${connectionId}:surface`,
     surface_subject_id: subjectId,
   });
@@ -129,6 +130,7 @@ async function assertStoreContract(store: BrowserSurfaceReplacementReceiptStore,
   const second = receiptSequence(id("connection-b"), id("subject-b"));
   const storedStart = await store.append(first.started);
   const replayedStart = await store.append(first.started);
+  const observerReplay = await store.append({ ...first.started, run_id: "run-store-observer-b" });
   const storedCompletion = await store.append(first.completed);
   await store.append(second.started);
   const concurrentReplays = await Promise.all(Array.from({ length: 8 }, () => store.append(first.started)));
@@ -152,6 +154,8 @@ async function assertStoreContract(store: BrowserSurfaceReplacementReceiptStore,
   assert.equal(storedStart.phase, "started");
   assert.equal(storedCompletion.phase, "completed");
   assert.equal(replayedStart.event_seq, storedStart.event_seq, "same phase replay is idempotent");
+  assert.equal(observerReplay.event_seq, storedStart.event_seq, "observer attribution is not transition identity");
+  assert.equal(observerReplay.run_id, "run-store-authority", "the first committed observer remains auditable");
   assert.ok(storedCompletion.event_seq > storedStart.event_seq, "completion is an append-only second row");
 
   const rows = await store.list();
@@ -162,6 +166,39 @@ async function assertStoreContract(store: BrowserSurfaceReplacementReceiptStore,
   assert.deepEqual(
     rows.map((row) => row.event_seq),
     [...rows].sort((left, right) => left.event_seq - right.event_seq).map((row) => row.event_seq)
+  );
+
+  const concurrentLedgerA = createBrowserSurfaceReplacementLedger({ idPrefix: "concurrent-store", now: () => NOW });
+  const concurrentLedgerB = createBrowserSurfaceReplacementLedger({ idPrefix: "concurrent-store", now: () => NOW });
+  const concurrentStartInput = {
+    cause: "same_container_browser_generation_change",
+    connection_id: id("connection-concurrent-observers"),
+    idempotency_key: id("concurrent-observer-start"),
+    previous_generation_hash: "a".repeat(64),
+    profile_key: "shared-profile",
+    run_id: "run-store-observer-a",
+    surface_id: id("surface-concurrent-observers"),
+    surface_subject_id: id("subject-concurrent-observers"),
+  } as const;
+  const concurrentStartA = concurrentLedgerA.start(concurrentStartInput);
+  const concurrentStartB = concurrentLedgerB.start({ ...concurrentStartInput, run_id: "run-store-observer-b" });
+  const concurrentRows = await Promise.all([store.append(concurrentStartA), store.append(concurrentStartB)]);
+  assert.deepEqual(
+    concurrentRows.map((row) => row.event_seq),
+    [concurrentRows[0]?.event_seq, concurrentRows[0]?.event_seq],
+    "concurrent observers receive one authoritative started sequence"
+  );
+  assert.ok(
+    concurrentRows[0]?.run_id === "run-store-observer-a" || concurrentRows[0]?.run_id === "run-store-observer-b",
+    "the authoritative concurrent observer remains auditable"
+  );
+  const concurrentStoredRows = (await store.list()).filter(
+    (row) => row.replacement_id === concurrentRows[0]?.replacement_id
+  );
+  assert.deepEqual(
+    concurrentStoredRows.map((row) => row.phase),
+    ["started"],
+    "concurrent observers leave exactly one durable started transition"
   );
   assert.equal(
     await store.selectCurrent({ connection_id: id("connection-a"), surface_subject_id: id("subject-a") }),

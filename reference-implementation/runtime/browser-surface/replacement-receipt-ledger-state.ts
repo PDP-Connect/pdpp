@@ -99,11 +99,13 @@ export interface ReplacementReceiptStore {
   list: () => Promise<readonly ReplacementReceipt[]>;
 }
 
+// The derived key describes the transition, not the observer that noticed it.
+// run_id is added to the receipt after key derivation for audit attribution.
 type StartIdentity = Pick<ReplacementReceipt, "connection_id" | "profile_key" | "cause"> &
   Partial<
     Pick<
       ReplacementReceipt,
-      "connector_id" | "surface_subject_id" | "run_id" | "lease_id" | "surface_id" | "previous_generation_hash"
+      "connector_id" | "surface_subject_id" | "lease_id" | "surface_id" | "previous_generation_hash"
     >
   >;
 
@@ -190,8 +192,9 @@ export function createBrowserSurfaceReplacementLedger(
 
   function start(input: ReplacementStartInput): ReplacementReceipt {
     const identity = startIdentity(input);
+    const runId = optionalNonEmpty(input.run_id);
     const idempotencyKey = input.idempotency_key ?? deriveIdempotencyKey("start", identity);
-    return append({
+    const receipt: ReplacementReceipt = {
       event_seq: nextEventSeq,
       idempotency_key: idempotencyKey,
       replacement_id: `${idPrefix}_${sha256(idempotencyKey).slice(0, 24)}`,
@@ -199,7 +202,9 @@ export function createBrowserSurfaceReplacementLedger(
       ...identity,
       observed_at: input.observed_at ?? now(),
       phase: "started",
-    });
+    };
+    assignOptional(receipt, "run_id", runId);
+    return append(receipt);
   }
 
   function startIdentity(input: ReplacementStartInput): StartIdentity {
@@ -210,7 +215,6 @@ export function createBrowserSurfaceReplacementLedger(
     } as StartIdentity;
     assignOptional(identity, "connector_id", optionalNonEmpty(input.connector_id));
     assignOptional(identity, "surface_subject_id", optionalNonEmpty(input.surface_subject_id));
-    assignOptional(identity, "run_id", optionalNonEmpty(input.run_id));
     assignOptional(identity, "lease_id", optionalNonEmpty(input.lease_id));
     assignOptional(identity, "surface_id", optionalNonEmpty(input.surface_id));
     assignOptional(
@@ -454,14 +458,7 @@ function assertCompletionIdentity(
 }
 
 function assertOptionalFieldsMatch(input: ReplacementCompletionInput, prior: ReplacementReceipt): void {
-  for (const field of [
-    "connector_id",
-    "profile_key",
-    "surface_subject_id",
-    "run_id",
-    "lease_id",
-    "surface_id",
-  ] as const) {
+  for (const field of ["connector_id", "profile_key", "surface_subject_id", "lease_id", "surface_id"] as const) {
     assertOptionalFieldMatch(input[field], prior[field], prior.replacement_id, field);
   }
 }
@@ -534,7 +531,6 @@ function assertReplayCompatible(existing: ReplacementReceipt, incoming: Replacem
     "connector_id",
     "profile_key",
     "surface_subject_id",
-    "run_id",
     "lease_id",
     "surface_id",
     "previous_generation_hash",
@@ -558,7 +554,6 @@ function assertImmutableIdentity(previous: ReplacementReceipt, incoming: Replace
     "connector_id",
     "profile_key",
     "surface_subject_id",
-    "run_id",
     "lease_id",
     "surface_id",
     "previous_generation_hash",

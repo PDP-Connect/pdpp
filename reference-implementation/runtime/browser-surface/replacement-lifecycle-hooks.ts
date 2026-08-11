@@ -29,6 +29,32 @@ interface ControllerLogger {
   warn?: (message: string) => void;
 }
 
+// A single SQLite connection cannot run two async BEGIN IMMEDIATE units at
+// once. Queue only the authoritative surface lane; unrelated surfaces still
+// proceed concurrently. PostgreSQL uses the same lane in-process and its
+// receipt uniqueness/replay path covers observers in other processes.
+const browserSurfaceReadinessTails = new Map<string, Promise<void>>();
+
+function serializeReadinessTransition<T>(surfaceId: string, operation: () => Promise<T>): Promise<T> {
+  const previous = browserSurfaceReadinessTails.get(surfaceId) ?? Promise.resolve();
+  const next = previous.then(operation);
+  let tail: Promise<void>;
+  tail = next.then(
+    () => {
+      if (browserSurfaceReadinessTails.get(surfaceId) === tail) {
+        browserSurfaceReadinessTails.delete(surfaceId);
+      }
+    },
+    () => {
+      if (browserSurfaceReadinessTails.get(surfaceId) === tail) {
+        browserSurfaceReadinessTails.delete(surfaceId);
+      }
+    }
+  );
+  browserSurfaceReadinessTails.set(surfaceId, tail);
+  return next;
+}
+
 export interface ReplacementLifecycleHooks {
   readonly allocator: BrowserSurfaceAllocator | null;
   readonly recordBrowserGeneration: (
@@ -164,34 +190,42 @@ async function recordBrowserGeneration(input: {
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const surface = input.surface;
   const generationHash = input.result.browserGenerationHash;
-  if (!input.persistenceUnitOfWork) {
+  const { persistenceUnitOfWork } = input;
+  if (!persistenceUnitOfWork) {
     throw new Error("browser-surface readiness replacement requires a persistence unit of work");
   }
-  await input.persistenceUnitOfWork.withTransaction(async (stores) => {
-    const persistedSurface = await stores.leaseStore.getSurface(surface.surface_id);
-    const pending = await pendingForReadiness(stores.replacementReceiptStore, surface);
-    if (pending) {
-      await completePendingGeneration(
-        { leaseStore: stores.leaseStore, ledger: input.ledger, receiptStore: stores.replacementReceiptStore, surface },
-        pending,
+  await serializeReadinessTransition(surface.surface_id, () =>
+    persistenceUnitOfWork.withTransaction(async (stores) => {
+      const persistedSurface = await stores.leaseStore.getSurface(surface.surface_id);
+      const pending = await pendingForReadiness(stores.replacementReceiptStore, surface);
+      if (pending) {
+        await completePendingGeneration(
+          {
+            leaseStore: stores.leaseStore,
+            ledger: input.ledger,
+            receiptStore: stores.replacementReceiptStore,
+            surface,
+          },
+          pending,
+          generationHash
+        );
+        return;
+      }
+      await recordCurrentGeneration(
+        {
+          connectorId: input.connectorId,
+          lease: input.lease,
+          leaseStore: stores.leaseStore,
+          ledger: input.ledger,
+          receiptStore: stores.replacementReceiptStore,
+          runId: input.runId,
+          surface,
+        },
+        persistedSurface,
         generationHash
       );
-      return;
-    }
-    await recordCurrentGeneration(
-      {
-        connectorId: input.connectorId,
-        lease: input.lease,
-        leaseStore: stores.leaseStore,
-        ledger: input.ledger,
-        receiptStore: stores.replacementReceiptStore,
-        runId: input.runId,
-        surface,
-      },
-      persistedSurface,
-      generationHash
-    );
-  });
+    })
+  );
 }
 
 async function pendingForReadiness(

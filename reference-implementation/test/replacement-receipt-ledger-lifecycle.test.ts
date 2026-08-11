@@ -669,6 +669,50 @@ test("complete and terminate replay paths validate every supplied immutable fiel
   );
 });
 
+test("readiness replay treats run id as attribution while retaining immutable mutation guards", () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const startInput = {
+    cause: "same_container_browser_generation_change",
+    connection_id: "connection-observer-replay",
+    idempotency_key: "observer-replay-start",
+    previous_generation_hash: "a".repeat(64),
+    profile_key: "profile-observer-replay",
+    run_id: "run-owner-a",
+    surface_id: "surface-observer-replay",
+  } as const;
+  const started = ledger.start(startInput);
+  const replayed = ledger.start({ ...startInput, run_id: "run-owner-b" });
+
+  assert.equal(replayed.replacement_id, started.replacement_id);
+  assert.equal(replayed.run_id, "run-owner-a", "the authoritative observer attribution remains durable");
+
+  const derivedStart = ledger.start({
+    cause: "same_container_browser_generation_change",
+    connection_id: "connection-derived-observer-replay",
+    previous_generation_hash: "b".repeat(64),
+    profile_key: "profile-observer-replay",
+    run_id: "run-owner-a",
+    surface_id: "surface-observer-replay",
+  });
+  const derivedReplay = ledger.start({
+    cause: "same_container_browser_generation_change",
+    connection_id: "connection-derived-observer-replay",
+    previous_generation_hash: "b".repeat(64),
+    profile_key: "profile-observer-replay",
+    run_id: "run-owner-b",
+    surface_id: "surface-observer-replay",
+  });
+  assert.equal(derivedReplay.idempotency_key, derivedStart.idempotency_key);
+  assert.equal(derivedReplay.replacement_id, derivedStart.replacement_id);
+  assert.equal(derivedReplay.run_id, "run-owner-a");
+
+  assert.throws(
+    () => ledger.start({ ...startInput, cause: "external_or_host_loss" }),
+    ReplacementReplayConflictError,
+    "a changed transition cause remains a replay conflict"
+  );
+});
+
 test("completed and terminal phases are mutually final", () => {
   const ledger = createBrowserSurfaceReplacementLedger();
   const terminalStarted = ledger.start({

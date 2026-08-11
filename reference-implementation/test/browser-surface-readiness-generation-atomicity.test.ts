@@ -37,6 +37,7 @@ const SURFACE_ID = "readiness-generation-atomicity-surface";
 const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
 const INJECTED_FAILURE = /injected: browser generation hash persistence failed/;
 const MISSING_UOW = /browser-surface readiness replacement requires a persistence unit of work/;
+const OWNER_RUN_IDS = ["run-readiness-owner-a", "run-readiness-owner-b"] as const;
 
 function surface(): BrowserSurfaceWithPersistenceMetadata {
   return {
@@ -72,12 +73,13 @@ function lease(): BrowserSurfaceLease {
 }
 
 function withFailingGenerationUpdateCapability(
-  real: BrowserSurfacePersistenceLeaseCapability
+  real: BrowserSurfacePersistenceLeaseCapability,
+  shouldFail: () => boolean = () => true
 ): BrowserSurfacePersistenceLeaseCapability {
   return {
     getSurface: (surfaceId) => real.getSurface(surfaceId),
     updateBrowserGenerationHash: (surfaceId, browserGenerationHash) => {
-      if (surfaceId === SURFACE_ID) {
+      if (surfaceId === SURFACE_ID && shouldFail()) {
         throw new Error("injected: browser generation hash persistence failed");
       }
       return real.updateBrowserGenerationHash(surfaceId, browserGenerationHash);
@@ -86,7 +88,10 @@ function withFailingGenerationUpdateCapability(
   };
 }
 
-function withFailingGenerationUpdate(real: BrowserSurfaceLeaseStore): BrowserSurfaceLeaseStore {
+function withFailingGenerationUpdate(
+  real: BrowserSurfaceLeaseStore,
+  shouldFail: () => boolean = () => true
+): BrowserSurfaceLeaseStore {
   const wrapped: BrowserSurfaceLeaseStore = new Proxy(real, {
     get(target, prop) {
       if (prop === "withPersistenceUnitOfWork") {
@@ -96,7 +101,7 @@ function withFailingGenerationUpdate(real: BrowserSurfaceLeaseStore): BrowserSur
         ) =>
           target.withPersistenceUnitOfWork(receiptStore, (stores) =>
             fn({
-              leaseStore: withFailingGenerationUpdateCapability(stores.leaseStore),
+              leaseStore: withFailingGenerationUpdateCapability(stores.leaseStore, shouldFail),
               replacementReceiptStore: stores.replacementReceiptStore,
             })
           );
@@ -165,6 +170,107 @@ async function runReadinessGeneration(
     await operation;
   }
   return appendCalls;
+}
+
+function observeReadinessGeneration(
+  leaseStore: BrowserSurfaceLeaseStore,
+  receiptStore: BrowserSurfaceReplacementReceiptStore,
+  runId: string
+): Promise<void> {
+  const hooks = createReplacementLifecycleHooks({
+    allocator: null,
+    leaseStore,
+    log: {},
+    persistenceUnitOfWork: createBrowserSurfacePersistenceUnitOfWork(leaseStore, receiptStore),
+    receiptStore,
+  });
+  return hooks.recordBrowserGeneration(lease(), surface(), "connector-readiness-atomicity", runId, {
+    browserGenerationHash: NEW_GENERATION_HASH,
+    ok: true,
+    pageTargetCount: 1,
+  });
+}
+
+async function assertConcurrentReadinessObservers(
+  leaseStore: BrowserSurfaceLeaseStore,
+  receiptStore: BrowserSurfaceReplacementReceiptStore
+): Promise<void> {
+  await leaseStore.upsertSurface(surface());
+  const results = await Promise.allSettled(
+    OWNER_RUN_IDS.map((runId) => observeReadinessGeneration(leaseStore, receiptStore, runId))
+  );
+  assert.deepEqual(
+    results.map((result) => result.status),
+    ["fulfilled", "fulfilled"],
+    "both concurrent readiness observers must return success"
+  );
+
+  const receipts = (await receiptStore.list()).filter((receipt) => receipt.surface_id === SURFACE_ID);
+  assert.deepEqual(
+    receipts.map((receipt) => receipt.phase),
+    ["started", "completed"],
+    "concurrent observers must commit exactly one started/completed transition"
+  );
+  const [started, completed] = receipts;
+  assert.ok(started, "expected the durable started transition");
+  assert.ok(completed, "expected the durable completed transition");
+  assert.equal(started.replacement_id, completed.replacement_id);
+  assert.ok(OWNER_RUN_IDS.includes(started.run_id as (typeof OWNER_RUN_IDS)[number]));
+  assert.equal(
+    (await leaseStore.getSurface(SURFACE_ID))?.browser_generation_hash,
+    NEW_GENERATION_HASH,
+    "the authoritative generation must commit with the transition"
+  );
+}
+
+async function assertReadinessReplayAfterRestart(
+  leaseStore: BrowserSurfaceLeaseStore,
+  receiptStore: BrowserSurfaceReplacementReceiptStore
+): Promise<void> {
+  await observeReadinessGeneration(leaseStore, receiptStore, "run-readiness-after-restart");
+  assert.deepEqual(
+    (await receiptStore.list()).filter((receipt) => receipt.surface_id === SURFACE_ID).map((receipt) => receipt.phase),
+    ["started", "completed"],
+    "a restarted observer must replay the committed transition without appending another pair"
+  );
+}
+
+async function assertConcurrentRollbackHandoff(
+  leaseStore: BrowserSurfaceLeaseStore,
+  receiptStore: BrowserSurfaceReplacementReceiptStore,
+  firstObserverReceiptStore: BrowserSurfaceReplacementReceiptStore,
+  secondObserverReceiptStore: BrowserSurfaceReplacementReceiptStore
+): Promise<void> {
+  await leaseStore.upsertSurface(surface());
+  let failNextGenerationUpdate = true;
+  const failingLeaseStore = withFailingGenerationUpdate(leaseStore, () => {
+    if (!failNextGenerationUpdate) {
+      return false;
+    }
+    failNextGenerationUpdate = false;
+    return true;
+  });
+  const results = await Promise.allSettled([
+    observeReadinessGeneration(failingLeaseStore, firstObserverReceiptStore, OWNER_RUN_IDS[0]),
+    observeReadinessGeneration(leaseStore, secondObserverReceiptStore, OWNER_RUN_IDS[1]),
+  ]);
+  assert.deepEqual(
+    results.map((result) => result.status),
+    ["rejected", "fulfilled"],
+    "a failed owner must roll back while the queued owner completes the transition"
+  );
+  const [failed] = results;
+  assert.equal(failed.status, "rejected");
+  assert.match(String(failed.reason), INJECTED_FAILURE);
+
+  const receipts = (await receiptStore.list()).filter((receipt) => receipt.surface_id === SURFACE_ID);
+  assert.deepEqual(
+    receipts.map((receipt) => receipt.phase),
+    ["started", "completed"],
+    "the rolled-back owner must leave no durable partial transition"
+  );
+  assert.equal(receipts[0]?.run_id, OWNER_RUN_IDS[1], "the successful successor owns the committed audit attribution");
+  assert.equal((await leaseStore.getSurface(SURFACE_ID))?.browser_generation_hash, NEW_GENERATION_HASH);
 }
 
 async function assertReadinessGenerationAtomicity(
@@ -245,6 +351,38 @@ test("readiness-generation persistence fails closed when the server-owned UoW is
   assert.equal((await leaseStore.getSurface(SURFACE_ID))?.browser_generation_hash, OLD_GENERATION_HASH);
 });
 
+test("two concurrent readiness observers converge to one transition on SQLite and replay after restart", async (t) => {
+  closeDb();
+  const dbPath = makeTemporaryDbPath("browser-surface-readiness-generation-concurrency");
+  initDb(dbPath);
+  t.after(() => closeDb());
+
+  await assertConcurrentReadinessObservers(
+    createSqliteBrowserSurfaceLeaseStore(),
+    createSqliteBrowserSurfaceReplacementReceiptStore()
+  );
+
+  closeDb();
+  initDb(dbPath);
+  await assertReadinessReplayAfterRestart(
+    createSqliteBrowserSurfaceLeaseStore(),
+    createSqliteBrowserSurfaceReplacementReceiptStore()
+  );
+});
+
+test("a failed concurrent readiness observer rolls back before the SQLite successor commits", async (t) => {
+  closeDb();
+  initDb(makeTemporaryDbPath("browser-surface-readiness-generation-concurrency-rollback"));
+  t.after(() => closeDb());
+  const leaseStore = createSqliteBrowserSurfaceLeaseStore();
+  await assertConcurrentRollbackHandoff(
+    leaseStore,
+    createSqliteBrowserSurfaceReplacementReceiptStore(),
+    createSqliteBrowserSurfaceReplacementReceiptStore(),
+    createSqliteBrowserSurfaceReplacementReceiptStore()
+  );
+});
+
 test("readiness-generation receipt and browser hash are atomic on disposable PostgreSQL", {
   skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
 }, async (t) => {
@@ -259,6 +397,54 @@ test("readiness-generation receipt and browser hash are atomic on disposable Pos
   await postgresQuery("DELETE FROM browser_surfaces WHERE surface_id = $1", [SURFACE_ID]);
   await assertReadinessGenerationAtomicity(
     createPostgresBrowserSurfaceLeaseStore(),
+    createPostgresBrowserSurfaceReplacementReceiptStore()
+  );
+});
+
+test("two concurrent readiness observers converge to one transition on disposable PostgreSQL and replay after restart", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async (t) => {
+  assert.ok(POSTGRES_URL);
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+  t.after(async () => {
+    await postgresQuery("DELETE FROM browser_surface_replacement_receipts WHERE surface_id = $1", [SURFACE_ID]);
+    await postgresQuery("DELETE FROM browser_surfaces WHERE surface_id = $1", [SURFACE_ID]);
+    await closePostgresStorage();
+  });
+  await postgresQuery("DELETE FROM browser_surface_replacement_receipts WHERE surface_id = $1", [SURFACE_ID]);
+  await postgresQuery("DELETE FROM browser_surfaces WHERE surface_id = $1", [SURFACE_ID]);
+
+  await assertConcurrentReadinessObservers(
+    createPostgresBrowserSurfaceLeaseStore(),
+    createPostgresBrowserSurfaceReplacementReceiptStore()
+  );
+
+  await closePostgresStorage();
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+  await assertReadinessReplayAfterRestart(
+    createPostgresBrowserSurfaceLeaseStore(),
+    createPostgresBrowserSurfaceReplacementReceiptStore()
+  );
+});
+
+test("a failed concurrent readiness observer rolls back before the PostgreSQL successor commits", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async (t) => {
+  assert.ok(POSTGRES_URL);
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+  t.after(async () => {
+    await postgresQuery("DELETE FROM browser_surface_replacement_receipts WHERE surface_id = $1", [SURFACE_ID]);
+    await postgresQuery("DELETE FROM browser_surfaces WHERE surface_id = $1", [SURFACE_ID]);
+    await closePostgresStorage();
+  });
+  await postgresQuery("DELETE FROM browser_surface_replacement_receipts WHERE surface_id = $1", [SURFACE_ID]);
+  await postgresQuery("DELETE FROM browser_surfaces WHERE surface_id = $1", [SURFACE_ID]);
+
+  const leaseStore = createPostgresBrowserSurfaceLeaseStore();
+  await assertConcurrentRollbackHandoff(
+    leaseStore,
+    createPostgresBrowserSurfaceReplacementReceiptStore(),
+    createPostgresBrowserSurfaceReplacementReceiptStore(),
     createPostgresBrowserSurfaceReplacementReceiptStore()
   );
 });
