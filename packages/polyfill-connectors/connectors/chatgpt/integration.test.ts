@@ -131,7 +131,7 @@ test("normalizeChatGptTerminalError maps pre-progress auth failures to refresh_c
     }),
     {
       message:
-        "chatgpt_preprogress_failure: refresh_credentials: chatgpt_session_failed: apiFetch got 401 on GET /conversation/abc (auth - not retryable)",
+        "chatgpt_preprogress_failure: refresh_credentials: chatgpt_session_failed: apiFetch got 401 on GET [redacted-path] (auth - not retryable)",
       recovery_hint: "refresh_credentials",
       retryable: false,
     }
@@ -151,19 +151,29 @@ test("normalizeChatGptTerminalError maps pre-progress auth failures to refresh_c
   );
 });
 
-test("normalizeChatGptTerminalError maps visible login or challenge failures to manual action", () => {
-  assert.deepEqual(
-    normalizeChatGptTerminalError({
-      message: "chatgpt_login_post_submit_failed: Cloudflare challenge still visible",
-      retryable: false,
-    }),
-    {
-      message:
-        "chatgpt_preprogress_failure: manual_action_required: chatgpt_login_post_submit_failed: Cloudflare challenge still visible",
+const CHATGPT_MANUAL_ACTION_ERROR_CODES = [
+  "chatgpt_login_unexpected_ui",
+  "chatgpt_login_no_password_field",
+  "chatgpt_login_post_submit_failed",
+] as const;
+
+for (const code of CHATGPT_MANUAL_ACTION_ERROR_CODES) {
+  test(`normalizeChatGptTerminalError classifies exact production code ${code} as manual action`, () => {
+    assert.deepEqual(normalizeChatGptTerminalError({ message: code, retryable: false }), {
+      message: `chatgpt_preprogress_failure: manual_action_required: ${code}`,
       recovery_hint: "manual_action_required",
       retryable: false,
-    }
-  );
+    });
+  });
+}
+
+test("normalizeChatGptTerminalError maps a generic visible challenge to manual action", () => {
+  const normalized = normalizeChatGptTerminalError({
+    message: "Cloudflare challenge still visible",
+    retryable: false,
+  });
+  assert.equal(normalized.recovery_hint, "manual_action_required");
+  assert.equal(normalized.retryable, false);
 });
 
 test("normalizeChatGptTerminalError bounds and redacts parser/runtime diagnostics", () => {
@@ -180,6 +190,23 @@ test("normalizeChatGptTerminalError bounds and redacts parser/runtime diagnostic
   assert.ok(!normalized.message.includes("json-secret"));
   assert.ok(!normalized.message.includes("https://chatgpt.com"));
   assert.ok(normalized.message.length <= "chatgpt_preprogress_failure: runtime_exception: ".length + 240);
+});
+
+test("normalizeChatGptTerminalError redacts relative provider paths, IDs, queries, and cursors but keeps structure", () => {
+  const normalized = normalizeChatGptTerminalError({
+    message:
+      "apiFetch got 404 on /conversation/private-conversation-id?cursor=secret-cursor&query=private-query " +
+      "request_id=private-request-id conversation_id=private-conversation-id",
+    retryable: false,
+  });
+
+  assert.equal(normalized.recovery_hint, "retry_on_connector_upgrade");
+  assert.match(normalized.message, /apiFetch got 404/u, "status and recovery facts remain visible");
+  assert.match(normalized.message, /\[redacted-path\]/u);
+  assert.doesNotMatch(normalized.message, /\$1/u, "redaction replacements must not leak capture placeholders");
+  for (const secret of ["private-conversation-id", "secret-cursor", "private-query", "private-request-id"]) {
+    assert.equal(normalized.message.includes(secret), false, `diagnostic must redact ${secret}`);
+  }
 });
 
 test("normalizeChatGptTerminalError omits recovery_hint when the runtime_exception fallback is retryable", () => {
@@ -4285,15 +4312,16 @@ test("runConversationsAndMessagesStreams: retry-exhaustion wait envelope exhaust
   // c-exhaust-2 and c-exhaust-3: once observedRecoverablePressure is armed by
   // c-exhaust-1's 9th failure, subsequent lane tasks are caught by the early
   // guard before reaching the fetch attempt — no fetch is issued for either.
-  assert.equal(
-    fetches.filter((p) => p === "/conversation/c-exhaust-2").length,
-    0,
-    "c-exhaust-2 must not be fetched — the latch armed by c-exhaust-1 short-circuits subsequent items"
-  );
-  assert.equal(
-    fetches.filter((p) => p === "/conversation/c-exhaust-3").length,
-    0,
-    "c-exhaust-3 must not be fetched — deferred as upstream_pressure gap by the latch"
+  const detailPaths = fetches
+    .filter((path) => new URL(path, "https://chatgpt.test").pathname.startsWith("/conversation/"))
+    .map((path) => {
+      const parsed = new URL(path, "https://chatgpt.test");
+      return { hash: parsed.hash, pathname: parsed.pathname, search: parsed.search };
+    });
+  assert.deepEqual(
+    detailPaths,
+    Array.from({ length: 9 }, () => ({ hash: "", pathname: "/conversation/c-exhaust-1", search: "" })),
+    "only the exact c-exhaust-1 path may be fetched; parsed query and suffix mutants must fail this oracle"
   );
 
   // Exactly 8 wait-out PROGRESS messages (all from c-exhaust-1's wait cycles)

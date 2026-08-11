@@ -34,6 +34,7 @@ import {
   collectAllStreams,
   collectStream,
   makeReauth,
+  normalizeRedditTerminalError,
   paginate,
   type RedditListingFetch,
 } from "./index.ts";
@@ -42,6 +43,61 @@ import type { RedditChild, RedditFetchResult, RedditListing } from "./types.ts";
 
 const EMITTED_AT = "2026-04-24T12:00:00.000Z";
 const USER_PATH = "/user/anon";
+
+test("normalizeRedditTerminalError maps auth failures to credential recovery and redacts account paths", () => {
+  const normalized = normalizeRedditTerminalError({
+    message:
+      "reddit_auth_failed: 401 on /user/private-account/submitted.json?after=private-cursor&query=private-query " +
+      "id=private-id",
+    retryable: false,
+  });
+
+  assert.equal(normalized.recovery_hint, "refresh_credentials");
+  assert.equal(normalized.retryable, false);
+  assert.match(normalized.message, /reddit_preprogress_failure: refresh_credentials/u);
+  assert.match(normalized.message, /\/user\/\[redacted\]\/submitted\.json/u);
+  assert.doesNotMatch(normalized.message, /private-account/u);
+  assert.doesNotMatch(normalized.message, /private-cursor|private-query|private-id/u);
+  assert.doesNotMatch(normalized.message, /\$1/u, "redaction replacements must not leak capture placeholders");
+});
+
+const REDDIT_MANUAL_ACTION_ERROR_CODES = [
+  "reddit_login_manual_incomplete",
+  "reddit_login_unexpected_ui",
+  "reddit_login_submit_missing",
+  "reddit_2fa_cancelled",
+  "reddit_login_post_submit_failed",
+] as const;
+
+for (const code of REDDIT_MANUAL_ACTION_ERROR_CODES) {
+  test(`normalizeRedditTerminalError classifies exact production code ${code} as manual action`, () => {
+    assert.deepEqual(normalizeRedditTerminalError({ message: code, retryable: false }), {
+      message: `reddit_preprogress_failure: manual_action_required: ${code}`,
+      recovery_hint: "manual_action_required",
+      retryable: false,
+    });
+  });
+}
+
+test("normalizeRedditTerminalError maps a generic Cloudflare challenge to manual action", () => {
+  const normalized = normalizeRedditTerminalError({
+    message: "Cloudflare challenge remains",
+    retryable: false,
+  });
+  assert.equal(normalized.recovery_hint, "manual_action_required");
+  assert.equal(normalized.retryable, false);
+});
+
+test("normalizeRedditTerminalError does not turn retryable rate limits into reconnects", () => {
+  const normalized = normalizeRedditTerminalError({
+    message: "reddit_rate_limited: 429 on /user/private-account/submitted.json",
+    retryable: true,
+  });
+
+  assert.equal(normalized.retryable, true);
+  assert.equal("recovery_hint" in normalized, false);
+  assert.doesNotMatch(normalized.message, /private-account/u);
+});
 
 // ─── Synthetic fixture helpers ─────────────────────────────────────────
 
@@ -85,6 +141,13 @@ function makeComment(id: string, createdUtc: number, overrides: Partial<RedditCh
   };
 }
 
+function makeStreamChild(streamName: string, suffix: "old" | "new", createdUtc: number): RedditChild {
+  if (streamName === "comments") {
+    return makeComment(`t1_${streamName}${suffix}`, createdUtc);
+  }
+  return makePost(`t3_${streamName}${suffix}`, createdUtc);
+}
+
 function listing(children: RedditChild[], after: string | null = null): RedditListing {
   return { data: { children, after } };
 }
@@ -92,6 +155,18 @@ function listing(children: RedditChild[], after: string | null = null): RedditLi
 function okResult(redditListing: RedditListing): RedditFetchResult {
   return { status: 200, json: redditListing };
 }
+
+function asWrongShapeRedditListing(value: unknown): RedditListing {
+  return value as RedditListing;
+}
+
+const REDDIT_MALFORMED_SUCCESS_BODIES: ReadonlyArray<readonly [string, RedditListing | null]> = [
+  ["null body", null],
+  ["missing data envelope", asWrongShapeRedditListing({})],
+  ["missing children array", asWrongShapeRedditListing({ data: {} })],
+  ["null children", asWrongShapeRedditListing({ data: { children: null } })],
+  ["malformed child entry", asWrongShapeRedditListing({ data: { children: [null] } })],
+];
 
 /** Build a RedditListingFetch that serves pre-scripted responses keyed
  *  by `endpoint` (path before `?`). Subsequent calls to the same
@@ -214,6 +289,53 @@ test("collectStream: since-epoch stops pagination once an item crosses the curso
   assert.equal((stateMsg.cursor as { last_created_utc: number }).last_created_utc, 300);
 });
 
+for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
+  test(`collectStream: ${stream.name} restart resumes strictly after its cursor`, async () => {
+    const firstHarness = makeRecordingEmit(validateRecord);
+    const firstFetch = makeScriptedFetch({
+      [stream.endpoint]: [okResult(listing([makeStreamChild(stream.name, "old", 200)]))],
+    }).fetch;
+    await collectStream({
+      stream,
+      fetchPath: firstFetch,
+      state: {},
+      emit: firstHarness.emit,
+      emitRecord: firstHarness.emitRecord,
+      progress: async () => undefined,
+      capture: null,
+      delay: NO_DELAY,
+    });
+    const firstState = firstHarness.protocolMessages.find((message) => message.type === "STATE");
+    assert.ok(firstState && firstState.type === "STATE");
+
+    const secondHarness = makeRecordingEmit(validateRecord);
+    const secondFetch = makeScriptedFetch({
+      [stream.endpoint]: [
+        okResult(listing([makeStreamChild(stream.name, "new", 300), makeStreamChild(stream.name, "old", 200)])),
+      ],
+    }).fetch;
+    await collectStream({
+      stream,
+      fetchPath: secondFetch,
+      state: { [stream.name]: firstState.cursor },
+      emit: secondHarness.emit,
+      emitRecord: secondHarness.emitRecord,
+      progress: async () => undefined,
+      capture: null,
+      delay: NO_DELAY,
+    });
+
+    assert.deepEqual(
+      secondHarness.emitted.map((record) => record.data.id),
+      [stream.name === "comments" ? `t1_${stream.name}new` : `t3_${stream.name}new`],
+      `${stream.name}: a restart must not re-emit the cursor boundary`
+    );
+    const secondState = secondHarness.protocolMessages.find((message) => message.type === "STATE");
+    assert.ok(secondState && secondState.type === "STATE");
+    assert.deepEqual(secondState.cursor, { last_created_utc: 300 });
+  });
+}
+
 // ─── Invariant 4: multi-page pagination threads the 'after' cursor ──────
 
 test("paginate: follows 'after' through multiple pages until exhausted", async () => {
@@ -230,6 +352,23 @@ test("paginate: follows 'after' through multiple pages until exhausted", async (
   assert.ok(calls[0]?.includes("limit=100"));
   assert.ok(calls[1]?.includes("after=t1_b"), "page 2 must carry the 'after' cursor");
 });
+
+for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
+  test(`paginate: ${stream.name} follows the opaque after cursor`, async () => {
+    const after = `after-${stream.name}`;
+    const { fetch, calls } = makeScriptedFetch({
+      [stream.endpoint]: [
+        okResult(listing([makePost(`t3_${stream.name}_1`, 300)], after)),
+        okResult(listing([makePost(`t3_${stream.name}_2`, 200)], null)),
+      ],
+    });
+
+    const out = await paginate(fetch, stream.endpoint, null, null, NO_DELAY);
+
+    assert.equal(out.length, 2, `${stream.name}: both pages contribute children`);
+    assert.deepEqual(calls, [`${stream.endpoint}?limit=100`, `${stream.endpoint}?limit=100&after=${after}`]);
+  });
+}
 
 test("paginate: progress reports cursor presence without raw cursor values", async () => {
   const progressEvents: Array<{ message: string; extra?: { cursor_present?: boolean; page_index?: number } }> = [];
@@ -961,6 +1100,10 @@ test("buildStreamTable: records from every stream pass their zod schema", async 
   assert.equal(streamCounts.upvoted, 2);
   assert.equal(streamCounts.downvoted, 1);
   assert.equal(streamCounts.hidden, 1);
+  for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
+    const ids = harness.emitted.filter((record) => record.stream === stream.name).map((record) => record.data.id);
+    assert.equal(new Set(ids).size, ids.length, `${stream.name}: emitted primary IDs must be unique within a run`);
+  }
 });
 
 // ─── Invariant 8: no emit when stream isn't requested ───────────────────
@@ -1166,6 +1309,53 @@ function createMockBrowserContext(
       throw new Error("mock sendInteraction not implemented");
     },
   };
+}
+
+for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
+  test(`collectAllStreams: ${stream.name} verified-empty listing emits STATE and zero coverage`, async () => {
+    const harness = makeRecordingEmit(validateRecord);
+    const { fetch } = makeScriptedFetch({ [stream.endpoint]: [okResult(listing([], null))] });
+
+    await collectAllStreams(createMockBrowserContext(fetch, harness, [stream.name]));
+
+    assert.equal(harness.emitted.length, 0, `${stream.name}: verified empty emits no records`);
+    assert.equal(
+      harness.protocolMessages.filter((message) => message.type === "STATE" && message.stream === stream.name).length,
+      1,
+      `${stream.name}: verified empty commits its stream cursor`
+    );
+    const coverage = harness.protocolMessages.find(
+      (message) => message.type === "DETAIL_COVERAGE" && message.stream === stream.name
+    );
+    assert.ok(coverage && coverage.type === "DETAIL_COVERAGE");
+    assert.equal(coverage.considered, 0);
+    assert.equal(coverage.covered, 0);
+  });
+}
+
+for (const stream of buildStreamTable(USER_PATH, EMITTED_AT)) {
+  for (const [label, body] of REDDIT_MALFORMED_SUCCESS_BODIES) {
+    test(`collectAllStreams: ${stream.name} rejects ${label} before STATE or coverage`, async () => {
+      const harness = makeRecordingEmit(validateRecord);
+      const { fetch } = makeScriptedFetch({ [stream.endpoint]: [{ status: 200, json: body }] });
+
+      await assert.rejects(
+        () => collectAllStreams(createMockBrowserContext(fetch, harness, [stream.name])),
+        /reddit_parse_error/u
+      );
+      assert.equal(
+        harness.protocolMessages.some((message) => message.type === "STATE"),
+        false,
+        `${stream.name}/${label}: malformed success must not commit STATE`
+      );
+      assert.equal(
+        harness.protocolMessages.some((message) => message.type === "DETAIL_COVERAGE"),
+        false,
+        `${stream.name}/${label}: malformed success must not prove coverage`
+      );
+      assert.equal(harness.emitted.length, 0, `${stream.name}/${label}: malformed success emits no records`);
+    });
+  }
 }
 
 test("collectAllStreams: zero-count stream emits DETAIL_COVERAGE with considered=0, covered=0", async () => {

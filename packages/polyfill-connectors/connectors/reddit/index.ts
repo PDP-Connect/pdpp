@@ -54,6 +54,7 @@ import {
   buildDetailCoverageMessage,
   type EmittedMessage,
   type EnsureSessionArgs,
+  type NormalizeTerminalError,
   politeDelay,
   type RecordData,
   runConnector,
@@ -92,6 +93,51 @@ const PAGE_DELAY_MS = 500;
  * fully owns PRE-submit and collect-phase retry classification.
  */
 export const REDDIT_RETRYABLE_PATTERN = /ECONN|ETIMEDOUT|fetch failed|reddit_rate_limited/i;
+
+const REDDIT_TERMINAL_DIAGNOSTIC_MAX = 240;
+const REDDIT_AUTH_FAILURE_RE = /\breddit_auth_failed\b|\b(?:401|403)\b|\b(?:unauthorized|forbidden)\b/iu;
+const REDDIT_MANUAL_ACTION_RE =
+  /(?:^|[^A-Za-z0-9_])(?:reddit_login_manual_incomplete|reddit_login_unexpected_ui|reddit_login_submit_missing|reddit_2fa_cancelled|reddit_login_post_submit_failed|cloudflare|captcha|manual_action)(?:$|[^A-Za-z0-9_])/iu;
+
+function scrubRedditTerminalDiagnostic(message: string): string {
+  return message
+    .replace(/\/user\/[^/?\s]+/giu, "/user/[redacted]")
+    .replace(/https?:\/\/\S+/giu, "[redacted-url]")
+    .replace(/([?&](?:after|cursor|id|query)=)[^&\s)"'<>]*/giu, "$1[redacted]")
+    .replace(/(\b(?:after|cursor|id|query)\b\s*[:=]\s*)["']?[^,;\s}"')]+/giu, "$1[redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, REDDIT_TERMINAL_DIAGNOSTIC_MAX);
+}
+
+/**
+ * Keep Reddit's browser-session failures actionable without exposing the
+ * account name embedded in a listing endpoint. Auth and login challenges are
+ * durable owner actions; rate limits remain retryable and must not be turned
+ * into a false reconnect request.
+ */
+export const normalizeRedditTerminalError: NormalizeTerminalError = ({ message, retryable }) => {
+  const diagnostic = scrubRedditTerminalDiagnostic(message);
+  if (REDDIT_AUTH_FAILURE_RE.test(message)) {
+    return {
+      message: `reddit_preprogress_failure: refresh_credentials: ${diagnostic}`,
+      recovery_hint: "refresh_credentials",
+      retryable: false,
+    };
+  }
+  if (REDDIT_MANUAL_ACTION_RE.test(message)) {
+    return {
+      message: `reddit_preprogress_failure: manual_action_required: ${diagnostic}`,
+      recovery_hint: "manual_action_required",
+      retryable: false,
+    };
+  }
+  return {
+    message: `reddit_preprogress_failure: runtime_exception: ${diagnostic}`,
+    ...(retryable ? {} : { recovery_hint: "retry_on_connector_upgrade" }),
+    retryable,
+  };
+};
 
 interface ProgressExtra {
   cursor_present?: boolean;
@@ -132,7 +178,7 @@ async function redditFetch(page: Page, path: string): Promise<RedditFetchResult>
   )) as RedditFetchResult;
 }
 
-function assertListingOk(status: number, json: RedditListing | null, endpoint: string): asserts json is RedditListing {
+function assertListingOk(status: number, endpoint: string): void {
   const klass = classifyListingStatus(status);
   if (klass === "auth_failed") {
     throw new Error(`reddit_auth_failed: ${status} on ${endpoint}`);
@@ -140,8 +186,45 @@ function assertListingOk(status: number, json: RedditListing | null, endpoint: s
   if (klass === "rate_limited") {
     throw new Error(`reddit_rate_limited: 429 on ${endpoint}`);
   }
-  if (klass === "http_error" || !json) {
+  if (klass === "http_error") {
     throw new Error(`reddit_http_${status}: ${endpoint}`);
+  }
+}
+
+type ValidRedditListing = RedditListing & {
+  data: {
+    after?: string | null;
+    children: RedditChild[];
+  };
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isRedditChild(value: unknown): value is RedditChild {
+  return isRecord(value) && typeof value.kind === "string" && isRecord(value.data);
+}
+
+function assertListingEnvelope(
+  status: number,
+  json: RedditListing | null,
+  endpoint: string
+): asserts json is ValidRedditListing {
+  assertListingOk(status, endpoint);
+  if (!(isRecord(json) && isRecord(json.data))) {
+    throw new Error(`reddit_parse_error: invalid listing envelope on ${endpoint}`);
+  }
+  const { data } = json;
+  if (!Array.isArray(data.children)) {
+    throw new Error(`reddit_parse_error: invalid listing envelope on ${endpoint}`);
+  }
+  if (!data.children.every(isRedditChild)) {
+    throw new Error(`reddit_parse_error: invalid listing child array on ${endpoint}`);
+  }
+  const { after } = data;
+  if (after !== undefined && after !== null && typeof after !== "string") {
+    throw new Error(`reddit_parse_error: invalid listing cursor on ${endpoint}`);
   }
 }
 
@@ -231,7 +314,7 @@ export async function paginate(
         rate_limit_pressure: 1,
       });
     }
-    assertListingOk(status, json, endpoint);
+    assertListingEnvelope(status, json, endpoint);
 
     capture?.captureHttp(`page-${String(guard).padStart(3, "0")}-${endpoint.replaceAll("/", "_")}`, json, {
       status,
@@ -239,7 +322,7 @@ export async function paginate(
       endpoint,
     });
 
-    const children = json.data?.children ?? [];
+    const { children } = json.data;
     await progress?.("Fetched Reddit listing page", {
       ...streamExtra,
       phase: "page",

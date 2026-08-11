@@ -99,7 +99,9 @@ const CHATGPT_TERMINAL_DIAGNOSTIC_MAX = 240;
 const CHATGPT_AUTH_FAILURE_RE =
   /(?:^|[^A-Za-z0-9])(?:401|403|auth_missing|session_required|session_failed|unauthorized|forbidden|credentials|CHATGPT_USERNAME\/PASSWORD not set)\b/iu;
 const CHATGPT_MANUAL_ACTION_RE =
-  /\b(?:login_unexpected_ui|login_post_submit_failed|Cloudflare|challenge|captcha|manual_action|2FA|verification code)\b/iu;
+  /(?:^|[^A-Za-z0-9_])(?:chatgpt_login_unexpected_ui|chatgpt_login_no_password_field|chatgpt_login_post_submit_failed|cloudflare|challenge|captcha|manual_action|2fa|verification code)(?:$|[^A-Za-z0-9_])/iu;
+const CHATGPT_SENSITIVE_DIAGNOSTIC_FIELD_RE =
+  /(\b(?:conversation[_-]?id|request[_-]?id|message[_-]?id|user[_-]?id|share[_-]?id|gizmo[_-]?id|id|cursor|query)\b\s*[:=]\s*)["']?[^,;\s}"')]+/giu;
 
 function scrubChatGptTerminalDiagnostic(message: string): string {
   return message
@@ -107,6 +109,15 @@ function scrubChatGptTerminalDiagnostic(message: string): string {
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/giu, "Bearer [redacted]")
     .replace(/access[_-]?token["']?\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]+/giu, "access_token=[redacted]")
     .replace(/https?:\/\/\S+/giu, "[redacted-url]")
+    .replace(CHATGPT_SENSITIVE_DIAGNOSTIC_FIELD_RE, "$1[redacted]")
+    .replace(
+      /([?&](?:conversation[_-]?id|request[_-]?id|message[_-]?id|user[_-]?id|share[_-]?id|gizmo[_-]?id|id|cursor|query)=)[^&\s)"'<>]*/giu,
+      "$1[redacted]"
+    )
+    .replace(
+      /\/(?:api\/|backend-api\/|(?:conversation|conversations|memories|gizmos|user_system_messages|custom_instructions|shared_conversations)(?:[/?]|$))[^\s)"'<>]*/giu,
+      "[redacted-path]"
+    )
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, CHATGPT_TERMINAL_DIAGNOSTIC_MAX);
