@@ -38,7 +38,7 @@ export const LEGACY_LOCAL_ALIASES: Readonly<Record<string, string>> = Object.fre
 export const LOCAL_COLLECTOR_PROVEN_KEYS: readonly string[] = Object.freeze(["claude-code", "codex", "google-takeout", "imessage", "apple-photos", "google-messages"]);
 
 /** Manifests declaring a runtime_requirements.bindings.browser binding. */
-export const BROWSER_BOUND_KEYS: readonly string[] = Object.freeze(["amazon", "anthropic", "chase", "chatgpt", "doordash", "heb", "linkedin", "loom", "meta", "reddit", "shopify", "uber", "usaa", "wholefoods"]);
+export const BROWSER_BOUND_KEYS: readonly string[] = Object.freeze(["amazon", "anthropic", "chase", "chatgpt", "doordash", "heb", "linkedin", "loom", "meta", "reddit", "shopify", "uber", "usaa", "venmo", "wholefoods"]);
 
 /** Manifests declaring capabilities.proven.provider_auth_lifecycle === true. */
 export const PROVIDER_AUTH_LIFECYCLE_PROVEN_KEYS: readonly string[] = Object.freeze(["google-calendar", "google-contacts", "google-maps-data-portability"]);

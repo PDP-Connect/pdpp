@@ -3,11 +3,14 @@
   "connector_id": "https://registry.pdpp.org/connectors/venmo",
   "connector_key": "venmo",
   "manifest_uri": "https://registry.pdpp.org/connectors/venmo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "display_name": "Venmo",
   "runtime_requirements": {
     "bindings": {
       "network": {
+        "required": true
+      },
+      "browser": {
         "required": true
       }
     }
@@ -16,8 +19,8 @@
     "modality": "static_secret",
     "credential_capture": {
       "kind": "username_password",
-      "label": "Venmo sign-in details",
-      "description": "Seal the Venmo sign-in details for this source. Venmo's own Developer API is retired to new integrators, so this connector authenticates the same way the Venmo apps do; a 6-digit SMS code may be requested on first login.",
+      "label": "Venmo sign-in details (optional)",
+      "description": "Optionally save Venmo sign-in details to assist automated re-login for this source's browser-backed collection. Venmo's internal API rejects synthetic client credentials, so this connector authenticates through a real, owner-driven browser session instead — leave these blank to sign in by hand in the secure browser every time a session needs to be (re)established.",
       "submit_label": "Save Venmo credential and start first sync",
       "fields": [
         {
@@ -42,7 +45,7 @@
     }
   },
   "capabilities": {
-    "human_interaction": ["otp"],
+    "human_interaction": ["manual_action", "otp"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "recommended_interval_seconds": 21600,
@@ -50,10 +53,10 @@
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "otp_likely",
       "rate_limit_sensitivity": "medium",
-      "bot_detection_sensitivity": "medium",
+      "bot_detection_sensitivity": "high",
       "background_safe": false,
       "assisted_after_owner_auth": true,
-      "rationale": "Manual by default because first login commonly serves an SMS 2FA challenge, but the resulting access token does not expire (per the documented unofficial client), so an owner can opt into a background schedule once a connection has authenticated once."
+      "rationale": "Manual only while this connector stays unproven and unlisted. Once proven, the session persists in the profile after first login, so background scheduling can be revisited then."
     },
     "public_listing": {
       "listed": false,
