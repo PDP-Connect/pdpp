@@ -759,22 +759,25 @@ export function openAccountCursor(state: Record<string, unknown>, budgetId: stri
  * `accounts` and/or `account_stats` (both fetched from the same
  * `/budgets/{id}/accounts` call).
  *
- * `/accounts` is a `server_knowledge` PARTIAL scan, same as
- * `scheduled_transactions`'s endpoint: called with a prior cursor
- * (`knowledge !== undefined`) it returns only accounts CHANGED since that
- * cursor, so `res.data.accounts.length` is a delta size, not the full
- * boundary, on an incremental call. Only a fresh call (no prior per-budget
- * cursor) walks and measures the full boundary — `enumeratedFresh` records
- * which case this run hit, so the aggregate can require every requested
- * budget to have measured fresh (see `aggregateAccountsCoverage`).
+ * Unlike `categories`/`payees`/`transactions`/`months`, `collectAccounts`
+ * never passes a `server_knowledge` cursor — it always walks the full
+ * account list, same as `payee_locations`/`scheduled_transactions` (and
+ * matching `collectTransactions`'s own unconditional `/accounts` refetch for
+ * its type map). `/accounts` returns no separate total-boundary count
+ * alongside a delta payload, so a `knowledge`-scoped call could never measure
+ * `considered` at all — only a full walk can. This costs nothing extra:
+ * `/accounts` is one request per budget either way (see the file's rate-limit
+ * comment), so always requesting the full list keeps `accounts`/
+ * `account_stats` provable on every run, not just a connection's first ever
+ * run.
  *
  * `accountsCovered`/`accountStatsCovered` follow the `budgets`/usaa/
  * `scheduled_transactions` precedent: emitted-and-valid plus
  * suppressed-because-unchanged, tallied at the per-record loop from
  * `validateRecord` (the same shape-check the runtime's real emitRecord
  * applies) — never aliased to the emitted count, so a steady-state
- * (all-suppressed) fresh run still reads `covered === considered`, while a
- * row this run attempted and the runtime silently SKIPped for a bad shape is
+ * (all-suppressed) run still reads `covered === considered`, while a row
+ * this run attempted and the runtime silently SKIPped for a bad shape is
  * never claimed as covered. A suppressed-unchanged row is counted without
  * re-validating: its fingerprint can only exist because an earlier run's
  * identical content already passed the real emitRecord shape-check.
@@ -788,7 +791,6 @@ export interface AccountsBudgetFact {
   accountsCovered?: number;
   budgetId: string;
   considered: number;
-  enumeratedFresh: boolean;
 }
 
 interface EmitAccountsAndStatsArgs {
@@ -855,28 +857,19 @@ async function emitAccountsAndStats({
 
 async function collectAccounts(ctx: BudgetCtx): Promise<AccountsBudgetFact> {
   const { budgetId, budgetOrdinal = 0, request, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
-  const knowledge = priorKnowledge(state, "accounts", budgetId);
   await progress("Fetching YNAB accounts window", {
     stream: "accounts",
     phase: "fetch",
     offset_ordinal: budgetOrdinal,
-    cursor_present: knowledge !== undefined,
+    cursor_present: false,
   });
   const requestExtra = {
     stream: "accounts",
     phase: "fetch",
     offset_ordinal: budgetOrdinal,
-    cursor_present: knowledge !== undefined,
+    cursor_present: false,
   };
-  const res = await request<YnabAccountsResponse>(
-    `/budgets/${budgetId}/accounts`,
-    token,
-    {
-      ...(knowledge === undefined ? {} : { knowledge }),
-    },
-    progress,
-    requestExtra
-  );
+  const res = await request<YnabAccountsResponse>(`/budgets/${budgetId}/accounts`, token, {}, progress, requestExtra);
   await progress("Fetched YNAB accounts window", {
     stream: "accounts",
     phase: "page",
@@ -888,12 +881,13 @@ async function collectAccounts(ctx: BudgetCtx): Promise<AccountsBudgetFact> {
     total: res.data.accounts.length,
   });
 
-  // Entity stream: gate on a per-record fingerprint so a balance-only delta
-  // does not version the account. `/accounts` is a `server_knowledge` PARTIAL
-  // scan — it returns only accounts changed since the prior knowledge value —
-  // so we must NOT prune: an account absent from this delta was not deleted,
-  // it just did not change. A real deletion arrives as a returned record with
-  // `deleted: true`, which the fingerprint treats as a normal field change.
+  // Entity stream: gate on a per-record fingerprint so an unchanged account
+  // is not re-emitted. `/accounts` is now always a full-collection call (see
+  // AccountsBudgetFact doc comment), so an id absent this run was genuinely
+  // deleted at the source — prune so a future re-creation triggers a fresh
+  // emit instead of silently no-opping against a stale fingerprint. A real
+  // deletion also arrives as a returned record with `deleted: true`, which
+  // the fingerprint treats as a normal field change.
   const entityCursor = openAccountCursor(state, budgetId);
   const wantsEntity = requested.has("accounts");
   const wantsStats = requested.has("account_stats");
@@ -909,6 +903,7 @@ async function collectAccounts(ctx: BudgetCtx): Promise<AccountsBudgetFact> {
   });
 
   if (wantsEntity) {
+    entityCursor.pruneStale();
     const accounts =
       (newState.accounts as
         | Record<string, { server_knowledge: number; fingerprints?: Record<string, string> }>
@@ -917,8 +912,6 @@ async function collectAccounts(ctx: BudgetCtx): Promise<AccountsBudgetFact> {
     newState.accounts = accounts;
     await emit({ type: "STATE", stream: "accounts", cursor: newState.accounts });
   } else {
-    // `account_stats` requested without `accounts`: still advance the
-    // server_knowledge delta cursor so the next run continues incrementally.
     const accounts = (newState.accounts as Record<string, { server_knowledge: number }> | undefined) ?? {};
     accounts[budgetId] = { ...accounts[budgetId], server_knowledge: res.data.server_knowledge };
     newState.accounts = accounts;
@@ -932,7 +925,6 @@ async function collectAccounts(ctx: BudgetCtx): Promise<AccountsBudgetFact> {
   return {
     budgetId,
     considered: res.data.accounts.length,
-    enumeratedFresh: knowledge === undefined,
     ...(wantsEntity ? { accountsCovered } : {}),
     ...(wantsStats ? { accountStatsCovered } : {}),
   };
@@ -940,13 +932,12 @@ async function collectAccounts(ctx: BudgetCtx): Promise<AccountsBudgetFact> {
 
 /**
  * Aggregate per-budget `AccountsBudgetFact`s into the whole-stream
- * self-coverage proof for `accounts` and, separately, `account_stats`. Both
- * require every requested budget to have measured fresh this run — the same
- * `scheduled_transactions` guardrail — so a stray incremental (unchanged,
- * suppressed-by-cursor) budget can never launder a genuinely fresh sibling's
- * zero into a false whole-stream zero. Returns `null` for a stream that had
- * no facts, wasn't requested by any budget, or wasn't measured fresh by
- * every budget that did request it.
+ * self-coverage proof for `accounts` and, separately, `account_stats`. Every
+ * fact already reflects a full-boundary walk (see `AccountsBudgetFact` doc
+ * comment — `collectAccounts` never sends a delta cursor), so no freshness
+ * gate is needed; this mirrors `aggregatePayeeLocationsCoverage`. Returns
+ * `null` for a stream that had no facts (wasn't requested by any budget, or
+ * zero budgets ran).
  */
 export function aggregateAccountsCoverage(facts: readonly AccountsBudgetFact[]): {
   accountStats: { considered: number; covered: number } | null;
@@ -954,7 +945,7 @@ export function aggregateAccountsCoverage(facts: readonly AccountsBudgetFact[]):
 } {
   const accountsFacts = facts.filter((f) => f.accountsCovered !== undefined);
   const accounts =
-    accountsFacts.length > 0 && accountsFacts.every((f) => f.enumeratedFresh)
+    accountsFacts.length > 0
       ? {
           considered: accountsFacts.reduce((sum, f) => sum + f.considered, 0),
           covered: accountsFacts.reduce((sum, f) => sum + (f.accountsCovered ?? 0), 0),
@@ -963,7 +954,7 @@ export function aggregateAccountsCoverage(facts: readonly AccountsBudgetFact[]):
 
   const statsFacts = facts.filter((f) => f.accountStatsCovered !== undefined);
   const accountStats =
-    statsFacts.length > 0 && statsFacts.every((f) => f.enumeratedFresh)
+    statsFacts.length > 0
       ? {
           considered: statsFacts.reduce((sum, f) => sum + f.considered, 0),
           covered: statsFacts.reduce((sum, f) => sum + (f.accountStatsCovered ?? 0), 0),

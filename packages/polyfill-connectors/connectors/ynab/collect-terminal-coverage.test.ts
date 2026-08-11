@@ -352,15 +352,33 @@ test("ynabCollect: a malformed account/payee_location row leaves covered < consi
   assert.equal(payeeLocVerdict.reason, "boundary_shortfall");
 });
 
-// ─── Incremental server_knowledge: an incremental accounts call must not
-//     launder a partial delta into a whole-boundary proof ──────────────────
+// ─── Steady-state connection: accounts/account_stats must keep proving
+//     coverage on every run, not just the connection's first ever run ─────
+//
+// `/accounts` never returns a total-boundary count on its own — a
+// `server_knowledge`-scoped call only returns changed rows — so
+// `collectAccounts` never sends `knowledge` at all (mirroring
+// `payee_locations`/`scheduled_transactions`, and `collectTransactions`'s own
+// unconditional `/accounts` refetch): every call walks the full account list,
+// which the API returns just as reliably as a delta payload for this
+// small, per-budget-single-request endpoint (see the file's rate-limit
+// comment — accounts is one request per budget regardless of whether it
+// requests a delta). This is what makes `accounts`/`account_stats` provable
+// on EVERY run, not just the first — matching manifest.json's declared
+// `full_inventory` strategy, which the shared coherence oracle
+// (coherence.ts) evaluates fresh per run with no "proven once, stays proven"
+// concept. A live UAT connection (run #26 on the same connector instance)
+// hit exactly this gap before the fix: `accounts`/`account_stats` fell back
+// to checkpoint-only evidence forever after run 1.
 
-test("ynabCollect: a second incremental run (prior server_knowledge) does not prove accounts/account_stats coverage", async () => {
+test("ynabCollect: a run on an established (many-runs-old) connection still proves accounts/account_stats coverage, never sends a knowledge cursor to /accounts", async () => {
   const fixtures: BudgetFixture[] = [{ id: BUDGET_A, accounts: [account(ACCOUNT_1)] }];
   const { request, knowledgeSeenFor } = fakeRequest(fixtures);
 
   // First run: fresh (no prior state) — proves the boundary and commits a
-  // server_knowledge cursor.
+  // server_knowledge cursor (still recorded for other consumers of state,
+  // even though collectAccounts itself no longer reads it back as a delta
+  // scope).
   const first = makeCtx(["accounts", "account_stats"]);
   await ynabCollect(first.ctx, request);
   const firstCov = coverageFor(first.messages, "accounts");
@@ -372,34 +390,41 @@ test("ynabCollect: a second incremental run (prior server_knowledge) does not pr
   );
   assert.ok(stateMsg, "fresh run commits an accounts STATE cursor");
 
-  // Second run: reuse the persisted cursor. `/accounts` becomes a PARTIAL
-  // scan (a `knowledge` option is sent) so it can only return the delta, not
-  // the full boundary — the run must NOT claim proof from it.
+  // Second run: reuse the persisted cursor, exactly as a long-running
+  // connection's scheduler would. If `collectAccounts` still gated on
+  // `knowledge === undefined`, this would be the incremental/non-fresh path
+  // and coverage would silently stop being provable forever after.
   const second = makeCtx(["accounts", "account_stats"], { accounts: stateMsg.cursor as Record<string, unknown> });
   await ynabCollect(second.ctx, request);
 
-  assert.notEqual(
+  assert.equal(
     knowledgeSeenFor(`/budgets/${BUDGET_A}/accounts`),
     undefined,
-    "second run sent a knowledge cursor — confirms it was genuinely incremental, not accidentally fresh"
+    "collectAccounts must never send a knowledge cursor — /accounts is a full walk on every run, like payee_locations/scheduled_transactions"
   );
 
-  assert.equal(
-    coverageFor(second.messages, "accounts"),
-    undefined,
-    "an incremental (non-fresh) call must not emit a whole-boundary coverage claim"
-  );
-  assert.equal(coverageFor(second.messages, "account_stats"), undefined);
+  const secondCov = coverageFor(second.messages, "accounts");
+  assert.ok(secondCov, "a run on an established connection still proves accounts coverage");
+  assert.equal(secondCov?.considered, 1);
+  assert.equal(secondCov?.covered, 1);
+  assert.ok(coverageFor(second.messages, "account_stats"), "account_stats also still proves coverage");
 
   const accountsVerdict = coherenceFor(second.messages, "accounts", "full_inventory");
-  assert.equal(accountsVerdict.proven, false, "incremental run: coherence must not read this as proven");
-  // The connector still stages a STATE checkpoint on the incremental run,
-  // so without the freshness gate this would be exactly the
-  // checkpoint-laundering case the coherence contract forbids.
-  assert.ok(
-    hasCommittedState(second.messages, "accounts"),
-    "sanity: a checkpoint alone WAS committed, yet coherence correctly refuses to launder it"
+  assert.equal(accountsVerdict.proven, true, "an established connection's run must still read as proven");
+  assert.equal(accountsVerdict.reason, "enumeration_boundary");
+
+  // Simulate a third run — the exact shape of the live UAT connection this
+  // regression came from (dozens of runs deep). Coverage must still hold;
+  // this is not a one-time "second run" exception.
+  const thirdStateMsg = second.messages.find(
+    (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "accounts"
   );
+  assert.ok(thirdStateMsg);
+  const third = makeCtx(["accounts", "account_stats"], { accounts: thirdStateMsg.cursor as Record<string, unknown> });
+  await ynabCollect(third.ctx, request);
+  assert.ok(coverageFor(third.messages, "accounts"), "a third run on the same connection still proves coverage");
+  const thirdVerdict = coherenceFor(third.messages, "accounts", "full_inventory");
+  assert.equal(thirdVerdict.proven, true);
 });
 
 // A dedicated "regression pin" test was deliberately NOT added as a separate
