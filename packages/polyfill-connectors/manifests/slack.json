@@ -26,6 +26,14 @@
           "exit_code": 0
         }
       }
+    ],
+    "environment_variables": [
+      "SLACK_LOOKBACK_DAYS",
+      "SLACK_CHANNEL_ALLOWLIST",
+      "SLACK_CHANNEL_TYPES",
+      "SLACK_MEMBER_ONLY",
+      "SLACK_SKIP_FILES",
+      "SLACK_RECLAIM_UPLOADS"
     ]
   },
   "setup": {

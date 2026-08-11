@@ -10,7 +10,8 @@
       "filesystem": {
         "required": true
       }
-    }
+    },
+    "environment_variables": ["ICAL_IMPORT_DIR", "ICAL_SUBSCRIPTION_URL"]
   },
   "capabilities": {
     "human_interaction": [],

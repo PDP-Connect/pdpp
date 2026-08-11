@@ -13,7 +13,8 @@
       "browser": {
         "required": true
       }
-    }
+    },
+    "environment_variables": ["CHASE_2FA_METHOD"]
   },
   "setup": {
     "modality": "static_secret",
