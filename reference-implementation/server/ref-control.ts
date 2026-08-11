@@ -6895,14 +6895,15 @@ export function listPendingApprovals(): Promise<Approval[]> {
 
 // ─── Records timeline ───────────────────────────────────────────────────────
 
-const SAFE_JSON_FIELD_RE = /^[A-Za-z_][A-Za-z_0-9]*$/;
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-function safeJsonPathExpr(field: string, label: string): string {
-  if (typeof field !== "string" || !SAFE_JSON_FIELD_RE.test(field)) {
-    throw new Error(`[ref-control] Unsafe JSON field ${label}: ${JSON.stringify(field)}`);
+function sqliteTopLevelJsonPath(field: string, label: string): string {
+  if (typeof field !== "string" || field.length === 0) {
+    throw new Error(`[ref-control] JSON field ${label} must be a non-empty string: ${JSON.stringify(field)}`);
   }
-  return `json_extract(record_json, '$.${field}')`;
+  // Keep the field in a bound SQLite parameter. JSON.stringify makes the
+  // segment literal, so dots and quotes remain part of one top-level key.
+  return `$.${JSON.stringify(field)}`;
 }
 
 /**
@@ -6987,14 +6988,15 @@ function buildTimelineSql({
   since: string | null;
   timestampMode: "emitted" | "native";
   until: string | null;
-}): { sql: string; binds: (number | string)[]; timestampExpr: string } {
+}): { sql: string; binds: (number | string)[]; semanticFieldPath: string | null; timestampExpr: string } {
   // Keep this dynamic SQL inline: optional time-window predicates, native
   // timestamp JSON fields, and caller-selected order direction change the
   // statement shape in ways that are easier to audit beside the validation.
   const semanticField =
     timestampMode === "native" ? manifestStream?.consent_time_field || manifestStream?.cursor_field || null : null;
-  const timestampExpr = semanticField
-    ? `COALESCE(NULLIF(${safeJsonPathExpr(semanticField, "semantic_time_field")}, ''), emitted_at)`
+  const semanticFieldPath = semanticField ? sqliteTopLevelJsonPath(semanticField, "semantic_time_field") : null;
+  const timestampExpr = semanticFieldPath
+    ? "COALESCE(NULLIF(json_extract(record_json, (SELECT path FROM semantic_path)), ''), emitted_at)"
     : "emitted_at";
 
   const where: string[] = ["connector_id = ?", "stream = ?", "deleted = 0"];
@@ -7016,13 +7018,14 @@ function buildTimelineSql({
   }
 
   const sql = `
+      ${semanticFieldPath ? "WITH semantic_path(path) AS (VALUES (?))" : ""}
       SELECT connector_id, stream, record_key, record_json, emitted_at, version
       FROM records
       WHERE ${where.join(" AND ")}
       ORDER BY ${timestampExpr} ${orderDir}, emitted_at ${orderDir}, record_key ${orderDir}
       LIMIT ?
     `;
-  return { binds, sql, timestampExpr };
+  return { binds, semanticFieldPath, sql, timestampExpr };
 }
 
 function comparePrimaryDesc(order: "asc" | "desc", left: TimelineEntry, right: TimelineEntry): number {
@@ -7109,7 +7112,7 @@ async function collectPairEntries(
   const manifest = (await getConnectorManifest(pair.connectorId)) as ConnectorManifest | null;
   const manifestStream = manifest?.streams?.find((item) => item.name === pair.stream) ?? null;
 
-  const { sql, binds } = buildTimelineSql({
+  const { sql, binds, semanticFieldPath } = buildTimelineSql({
     manifestStream,
     orderDir: opts.orderDir,
     since: opts.since,
@@ -7123,12 +7126,14 @@ async function collectPairEntries(
   // values, so the artifact registry cannot validate this SQL up front. The
   // statement embeds a trailing LIMIT ? bound by perPairLimit, which the caller
   // derives from the request's `limit` field.
-  for (const row of iterateDynamicSqlAcknowledged<TimelineQueryRow>(sql, [
+  const queryBinds = [
+    ...(semanticFieldPath ? [semanticFieldPath] : []),
     pair.connectorId,
     pair.stream,
     ...binds,
     opts.perPairLimit,
-  ])) {
+  ];
+  for (const row of iterateDynamicSqlAcknowledged<TimelineQueryRow>(sql, queryBinds)) {
     const entry = buildTimelineEntry(row, manifestStream, opts.timestampMode);
     if (!entry) {
       continue;

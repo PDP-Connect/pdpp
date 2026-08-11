@@ -7,6 +7,7 @@ SELECT
   gp.subject_id,
   gp.client_id,
   gp.status,
+  gp.package_json,
   gp.parent_package_id,
   gp.trace_id,
   gp.scenario_id,

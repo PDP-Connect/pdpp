@@ -359,14 +359,14 @@ test("a request filter narrows total and tightens the window bounds", async () =
   });
 });
 
-test("a grant time_range narrows total and tightens the window bounds", async () => {
+test("a frozen grant time_constraint narrows total and tightens the window bounds", async () => {
   await withSeededDb(async () => {
     const narrowedGrant = {
       streams: [
         {
           fields: ["id", "subject", "amount", "received_at"],
           name: STREAM,
-          time_range: { since: "2023-01-01T00:00:00.000Z" },
+          time_constraint: { field: "received_at", since: "2023-01-01T00:00:00.000Z" },
         },
       ],
     };
@@ -624,6 +624,7 @@ async function withDualWindowDb(testFn: () => Promise<void>, { recordsB }: DualW
 test("fan-in merges all-present windows: total sums, bounds are global min/max", async () => {
   await withDualWindowDb(async () => {
     const { bindings } = await resolveFanInBindings({
+      authorizedInstanceIds: [INSTANCE_A, INSTANCE_B],
       connectorId: CONNECTOR_ID,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
     });
@@ -641,6 +642,7 @@ test("fan-in omits the merged window when one binding cannot produce bounds", as
   await withDualWindowDb(
     async () => {
       const { bindings } = await resolveFanInBindings({
+        authorizedInstanceIds: [INSTANCE_A, INSTANCE_B],
         connectorId: CONNECTOR_ID,
         ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
       });
@@ -664,6 +666,7 @@ test("fan-in omits the merged window when one binding cannot produce bounds", as
 test("fan-in single-binding path passes meta.window through unchanged", async () => {
   await withSeededDb(async () => {
     const { bindings } = await resolveFanInBindings({
+      authorizedInstanceIds: [INSTANCE_A],
       connectorId: CONNECTOR_ID,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
     });
@@ -681,6 +684,7 @@ test("fan-in single-binding path passes meta.window through unchanged", async ()
 test("fan-in without the window param omits meta.window", async () => {
   await withDualWindowDb(async () => {
     const { bindings } = await resolveFanInBindings({
+      authorizedInstanceIds: [INSTANCE_A, INSTANCE_B],
       connectorId: CONNECTOR_ID,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
     });

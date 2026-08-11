@@ -339,15 +339,11 @@ test("owner-mode lexical fan-in: deprecated connector_instance_id alias narrows 
 
 function makeClientWiring(
   query: Record<string, unknown>,
-  { grantStreamConnectionId = null }: { grantStreamConnectionId?: string | null } = {}
+  { authorizedInstanceIds = [INSTANCE_A, INSTANCE_B] }: { authorizedInstanceIds?: string[] } = {}
 ): SearchRunArgs {
   const grant = {
     source: { id: CONNECTOR_ID, kind: "connector" },
-    streams: [
-      grantStreamConnectionId
-        ? { connection_id: grantStreamConnectionId, fields: ["id", "subject", "received_at"], name: STREAM }
-        : { fields: ["id", "subject", "received_at"], name: STREAM },
-    ],
+    streams: [{ fields: ["id", "subject", "received_at"], instance_ids: authorizedInstanceIds, name: STREAM }],
   };
   const tokenInfo = {
     client_id: "cl_test",
@@ -394,7 +390,7 @@ function makeClientWiring(
   };
 }
 
-test("client-mode lexical fan-in: hits union across grant-authorized bindings (no per-stream pin)", async () => {
+test("client-mode lexical fan-in: hits union across explicitly grant-authorized instances", async () => {
   await withDualBindingDb(async () => {
     const wiring = makeClientWiring({ q: "overdraft" });
     const { envelope } = await runLexicalSearch(wiring);
@@ -406,9 +402,9 @@ test("client-mode lexical fan-in: hits union across grant-authorized bindings (n
   });
 });
 
-test("client-mode lexical fan-in: per-stream grant connection_id pins the search to one binding", async () => {
+test("client-mode lexical fan-in: per-stream grant instance_ids constrain search to one binding", async () => {
   await withDualBindingDb(async () => {
-    const wiring = makeClientWiring({ q: "overdraft" }, { grantStreamConnectionId: INSTANCE_A });
+    const wiring = makeClientWiring({ q: "overdraft" }, { authorizedInstanceIds: [INSTANCE_A] });
     const { envelope } = await runLexicalSearch(wiring);
     const results = searchResults(envelope.data);
     assert.equal(results.length, 1);
@@ -416,13 +412,13 @@ test("client-mode lexical fan-in: per-stream grant connection_id pins the search
   });
 });
 
-test("client-mode lexical fan-in: mixed per-stream grant connection_id constraints are honored independently", async () => {
+test("client-mode lexical fan-in: mixed per-stream grant instance_ids are honored independently", async () => {
   await withDualBindingDb(async () => {
     const grant = {
       source: { id: CONNECTOR_ID, kind: "connector" },
       streams: [
-        { connection_id: INSTANCE_A, fields: ["id", "subject", "received_at"], name: STREAM },
-        { connection_id: INSTANCE_B, fields: ["id", "subject", "received_at"], name: ALERTS_STREAM },
+        { fields: ["id", "subject", "received_at"], instance_ids: [INSTANCE_A], name: STREAM },
+        { fields: ["id", "subject", "received_at"], instance_ids: [INSTANCE_B], name: ALERTS_STREAM },
       ],
     };
     const tokenInfo = {
@@ -449,11 +445,11 @@ test("client-mode lexical fan-in: mixed per-stream grant connection_id constrain
   });
 });
 
-test("client-mode lexical fan-in: request connection_id outside grant returns connection_not_found", async () => {
+test("client-mode lexical fan-in: active request connection_id outside grant returns connection_not_found", async () => {
   await withDualBindingDb(async () => {
     const wiring = makeClientWiring(
-      { connection_id: "cin_does_not_exist", q: "overdraft" },
-      { grantStreamConnectionId: INSTANCE_A }
+      { connection_id: INSTANCE_B, q: "overdraft" },
+      { authorizedInstanceIds: [INSTANCE_A] }
     );
     await assert.rejects(
       () => runLexicalSearch(wiring),
@@ -465,7 +461,7 @@ test("client-mode lexical fan-in: request connection_id outside grant returns co
   });
 });
 
-test("semantic plan builder honors mixed per-stream grant connection_id constraints per binding", () => {
+test("semantic plan builder honors mixed per-stream grant instance_ids per binding", () => {
   const manifest = {
     streams: [
       { name: STREAM, query: { search: { semantic_fields: ["subject"] } } },
@@ -474,8 +470,8 @@ test("semantic plan builder honors mixed per-stream grant connection_id constrai
   };
   const grant = {
     streams: [
-      { connection_id: INSTANCE_A, fields: ["subject"], name: STREAM },
-      { connection_id: INSTANCE_B, fields: ["subject"], name: ALERTS_STREAM },
+      { fields: ["subject"], instance_ids: [INSTANCE_A], name: STREAM },
+      { fields: ["subject"], instance_ids: [INSTANCE_B], name: ALERTS_STREAM },
     ],
   };
   const planA = buildSemanticSearchPlanForGrant({

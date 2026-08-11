@@ -1045,6 +1045,13 @@ test("PDPP CLI smoke", async (t) => {
         assert.equal(resultGrantSource.id, nativeManifest.provider_id);
         assert.equal("grant_storage_binding" in result.json, false);
         assert.equal(result.stderr, "");
+
+        const recordsResponse = await fetch(`${rsUrl}/v1/streams/pay_statements/records`, {
+          headers: { Authorization: `Bearer ${approved.token}` },
+        });
+        assert.equal(recordsResponse.status, 200, "issued native grant reads the serving binding");
+        const recordsBody = (await recordsResponse.json()) as { data?: unknown[] };
+        assert.ok(recordsBody.data?.length, "native serving binding returns the seeded pay statement");
       });
     }
   );
@@ -1972,7 +1979,7 @@ test("PDPP CLI smoke", async (t) => {
     assert.ok(Array.isArray(result.json));
     const payStatements = result.json.find((stream) => stream.stream === "pay_statements");
     assert.equal(payStatements.source_kind, "provider_native");
-    assert.equal(payStatements.source_id, "northstar_hr");
+    assert.equal(payStatements.source_id, "https://northstar.example/pdpp");
     assert.equal(payStatements.primary_key, "statement_id");
     assert.equal(result.stderr, "");
   });

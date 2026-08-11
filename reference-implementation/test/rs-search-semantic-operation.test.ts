@@ -480,6 +480,35 @@ test("cursor round-trip slices the snapshot and produces sem1.-prefixed cursors"
   assert.notEqual(item2.record_key, item1.record_key);
 });
 
+test("semantic cursor replay rejects a changed query or narrowed grant authority", async () => {
+  const deps = makeDeps();
+  const page1 = await executeSearchSemantic({ actor: clientActor, query: { limit: "1", q: "foo" } }, deps);
+  const cursor = page1.envelope.next_cursor;
+  assert.ok(cursor);
+  await assert.rejects(
+    () => executeSearchSemantic({ actor: clientActor, query: { cursor, q: "bar" } }, deps),
+    (err) => err instanceof SearchSemanticRequestError && err.code === "invalid_cursor"
+  );
+  const narrowedActor: SearchSemanticActor = {
+    ...clientActor,
+    grant: {
+      ...clientGrant,
+      streams: [
+        {
+          instance_ids: ["cin_acme"],
+          name: "pay_statements",
+          time_constraint: { field: "issued_at", since: "2026-01-01T00:00:00Z" },
+        },
+        { instance_ids: ["cin_acme"], name: "time_entries" },
+      ],
+    },
+  };
+  await assert.rejects(
+    () => executeSearchSemantic({ actor: narrowedActor, query: { cursor, q: "foo" } }, deps),
+    (err) => err instanceof SearchSemanticRequestError && err.code === "invalid_cursor"
+  );
+});
+
 test("cursor without sem1. prefix raises invalid_cursor", async () => {
   const deps = makeDeps();
   // A base64url-encoded JSON cursor *without* the sem1. prefix — i.e. the

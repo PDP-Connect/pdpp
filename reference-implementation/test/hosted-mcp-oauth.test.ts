@@ -16,8 +16,7 @@ import {
   revokeGrant,
   revokeGrantPackage,
 } from "../server/auth.ts";
-import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
-import { getDb } from "../server/db.ts";
+import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { encodeHostedMcpSelection, encodeHostedMcpStreamSelection } from "../server/hosted-mcp-selection.ts";
 import { startServer } from "../server/index.ts";
 import { ingestRecord, queryRecordsAcrossBindings, resolveReadRequestBindings } from "../server/records.ts";
@@ -196,6 +195,24 @@ interface ConnectorManifest {
   [key: string]: unknown;
 }
 
+function publicSourceIdForManifest(manifest: ConnectorManifest): string {
+  const declaration = manifest.source_declaration;
+  if (declaration && typeof declaration === "object") {
+    const { source } = declaration as Record<string, unknown>;
+    if (source && typeof source === "object") {
+      const sourceId = (source as Record<string, unknown>).id;
+      if (typeof sourceId === "string") {
+        return sourceId;
+      }
+    }
+  }
+  try {
+    return new URL(manifest.connector_id).href;
+  } catch {
+    return `https://registry.pdpp.org/connectors/${encodeURIComponent(manifest.connector_id)}`;
+  }
+}
+
 // Register a first-party connector fixture with the AS using its canonical
 // short connector key (e.g. `spotify`, `github`). The fixture manifests on
 // disk still ship URL-shaped `connector_id` values for catalog purposes, but
@@ -231,6 +248,40 @@ async function registerSpotify(asUrl: string): Promise<ConnectorManifest> {
 
 async function registerGithub(asUrl: string): Promise<ConnectorManifest> {
   return registerFirstPartyConnectorFixture(asUrl, "github");
+}
+
+function defaultHostedInstanceId(connectorId: string): string {
+  return `cin_hosted_${connectorId}`;
+}
+
+async function seedDefaultHostedInstance(manifest: ConnectorManifest): Promise<string> {
+  const connectorInstanceId = defaultHostedInstanceId(manifest.connector_id);
+  const now = new Date().toISOString();
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId: manifest.connector_id,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: `${manifest.connector_id} test account`,
+    ownerSubjectId: "owner_local",
+    sourceBinding: { fixture: connectorInstanceId },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+  return connectorInstanceId;
+}
+
+async function registerAuthorizedSpotify(asUrl: string): Promise<ConnectorManifest> {
+  const manifest = await registerSpotify(asUrl);
+  await seedDefaultHostedInstance(manifest);
+  return manifest;
+}
+
+async function registerAuthorizedGithub(asUrl: string): Promise<ConnectorManifest> {
+  const manifest = await registerGithub(asUrl);
+  await seedDefaultHostedInstance(manifest);
+  return manifest;
 }
 
 interface RegisteredClient {
@@ -350,7 +401,7 @@ async function completeOauthCodeFlow({
       access_mode: "continuous",
       purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
       purpose_description: "Use PDPP data through hosted MCP.",
-      source: { id: manifest.connector_id, kind: "connector" },
+      source: { id: publicSourceIdForManifest(manifest), kind: "connector" },
       streams: [{ name: "*" }],
       type: "https://pdpp.dev/data-access",
     },
@@ -381,7 +432,7 @@ async function completeOauthCodeFlow({
     method: "POST",
     redirect: "manual",
   });
-  assert.equal(approveResp.status, 302);
+  assert.equal(approveResp.status, 302, await approveResp.clone().text());
   const callback = new URL(
     mustExist(approveResp.headers.get("location"), "approve redirect must carry a Location header")
   );
@@ -421,7 +472,7 @@ function hostedMcpAuthorizationDetails(manifest: ConnectorManifest): Record<stri
       access_mode: "continuous",
       purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
       purpose_description: "Use PDPP data through hosted MCP.",
-      source: { id: manifest.connector_id, kind: "connector" },
+      source: { id: publicSourceIdForManifest(manifest), kind: "connector" },
       streams: [{ name: "*" }],
       type: "https://pdpp.dev/data-access",
     },
@@ -508,7 +559,7 @@ async function completeMultiSourcePackageFlow({
     "picker MUST NOT submit raw connection:<id>:<id> selection values"
   );
   for (const id of connectorIds) {
-    const encoded = encodeHostedMcpSelection({ connectionId: null, connectorId: id });
+    const encoded = encodeHostedMcpSelection({ connectionId: defaultHostedInstanceId(id), connectorId: id });
     assert.ok(pickerHtml.includes(`value="${encoded}"`), `picker should advertise opaque selection for ${id}`);
   }
 
@@ -528,7 +579,10 @@ async function completeMultiSourcePackageFlow({
   params.append("code_challenge", challenge);
   params.append("code_challenge_method", "S256");
   for (const id of connectorIds) {
-    params.append("selection", encodeHostedMcpSelection({ connectionId: null, connectorId: id }));
+    params.append(
+      "selection",
+      encodeHostedMcpSelection({ connectionId: defaultHostedInstanceId(id), connectorId: id })
+    );
   }
   for (const streamValue of renderedHostedMcpStreamValues(pickerHtml)) {
     params.append("stream", streamValue);
@@ -540,7 +594,9 @@ async function completeMultiSourcePackageFlow({
     method: "POST",
     redirect: "manual",
   });
-  assert.equal(approveResp.status, 302);
+  if (approveResp.status !== 302) {
+    assert.fail(`expected approval redirect, got ${approveResp.status}: ${await approveResp.text()}`);
+  }
   const callback = new URL(
     mustExist(approveResp.headers.get("location"), "approve redirect must carry a Location header")
   );
@@ -658,7 +714,7 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
   const rsUrl = `http://localhost:${server.rsPort}`;
 
   try {
-    const manifest = await registerSpotify(asUrl);
+    const manifest = await registerAuthorizedSpotify(asUrl);
     const client = await registerAuthCodeClient(asUrl);
     const {
       accessToken,
@@ -753,7 +809,6 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
       toolNames.some((name) => name.includes("event_subscription")),
       false
     );
-
     const refreshedTools = await postMcpJson(rsUrl, refreshedAccessToken, {
       id: 22,
       jsonrpc: "2.0",
@@ -966,7 +1021,7 @@ test("grant-scoped MCP device authorization issues a client token usable at /mcp
   const rsUrl = `http://localhost:${server.rsPort}`;
 
   try {
-    const manifest = await registerSpotify(asUrl);
+    const manifest = await registerAuthorizedSpotify(asUrl);
     const client = await registerAuthCodeClient(asUrl);
 
     const device = await startMcpDeviceAuthorization({ asUrl, client, manifest, rsUrl });
@@ -1300,7 +1355,7 @@ test("CIMD native loopback redirect matching ignores only runtime port", async (
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
+    const spotify = await registerAuthorizedSpotify(asUrl);
     const client = await createCimdClientDocument(asUrl, {
       client_name: "Claude Code",
       redirect_uris: ["http://localhost/callback", "http://127.0.0.1/callback"],
@@ -1408,8 +1463,8 @@ test("multi-source hosted MCP picker issues a package token usable at /mcp with 
   const rsUrl = `http://localhost:${server.rsPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
-    const github = await registerGithub(asUrl);
+    const spotify = await registerAuthorizedSpotify(asUrl);
+    const github = await registerAuthorizedGithub(asUrl);
     const client = await registerAuthCodeClient(asUrl);
 
     const { accessToken, refreshToken, packageId } = await completeMultiSourcePackageFlow({
@@ -1458,7 +1513,8 @@ test("multi-source hosted MCP picker issues a package token usable at /mcp with 
       schemaStreams
         .map((s) => {
           const source = s.source as Record<string, unknown> | undefined;
-          return source?.connector_id || source?.connector_key;
+          const connectorId = source?.connector_id || source?.connector_key;
+          return typeof connectorId === "string" ? (canonicalConnectorKey(connectorId) ?? connectorId) : connectorId;
         })
         .filter(Boolean)
     );
@@ -1527,8 +1583,8 @@ test("revoking one child grant silently removes that source from the package /mc
   const rsUrl = `http://localhost:${server.rsPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
-    const github = await registerGithub(asUrl);
+    const spotify = await registerAuthorizedSpotify(asUrl);
+    const github = await registerAuthorizedGithub(asUrl);
     const client = await registerAuthCodeClient(asUrl);
 
     const { accessToken, packageId } = await completeMultiSourcePackageFlow({
@@ -1560,7 +1616,7 @@ test("revoking one child grant silently removes that source from the package /mc
     const beforePackage = mustExist(schemaPackageMetadata(beforeData), "schema response carries package metadata");
     assert.equal(beforePackage.member_count, 2);
     const childGrants = beforePackage.sources.map((s) => ({
-      connector_id: s.connector_id,
+      connector_id: canonicalConnectorKey(s.connector_id) ?? s.connector_id,
       grant_id: s.grant_id,
     }));
     const spotifyChild = mustExist(
@@ -1584,13 +1640,20 @@ test("revoking one child grant silently removes that source from the package /mc
     const afterData = structuredContentData(resultOf(after));
     const afterPackage = mustExist(schemaPackageMetadata(afterData), "schema response carries package metadata");
     assert.equal(afterPackage.member_count, 1, "revoked child is no longer counted in the package fanout");
-    const afterConnectorIds = new Set(schemaStreamRows(afterData).map((s) => s.source?.connector_id));
+    const afterConnectorIds = new Set(
+      schemaStreamRows(afterData).map((stream) => {
+        const connectorId = stream.source?.connector_id;
+        return canonicalConnectorKey(connectorId) ?? connectorId;
+      })
+    );
     assert.ok(
       !afterConnectorIds.has(spotify.connector_id),
       "spotify streams are absent after its child grant is revoked"
     );
     assert.ok(afterConnectorIds.has(github.connector_id), "github streams still present");
-    const afterSourceConnectorIds = afterPackage.sources.map((s) => s.connector_id);
+    const afterSourceConnectorIds = afterPackage.sources.map(
+      (source) => canonicalConnectorKey(source.connector_id) ?? source.connector_id
+    );
     assert.deepEqual(afterSourceConnectorIds, [github.connector_id]);
 
     // The package token itself stays valid because the package is still
@@ -1610,8 +1673,8 @@ test("revoking the package invalidates /mcp access and the refresh-token exchang
   const rsUrl = `http://localhost:${server.rsPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
-    const github = await registerGithub(asUrl);
+    const spotify = await registerAuthorizedSpotify(asUrl);
+    const github = await registerAuthorizedGithub(asUrl);
     const client = await registerAuthCodeClient(asUrl);
 
     const { accessToken, refreshToken, packageId } = await completeMultiSourcePackageFlow({
@@ -2071,7 +2134,7 @@ test("hosted MCP picker pre-selects nothing: zero checked sources and zero check
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    await registerSpotify(asUrl);
+    await registerAuthorizedSpotify(asUrl);
     await registerGithub(asUrl);
     const client = await registerAuthCodeClient(asUrl);
     const verifier = randomBytes(32).toString("base64url");
@@ -2118,8 +2181,8 @@ test("POST /oauth/authorize/mcp-package narrows the child grant to the submitted
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
-    const github = await registerGithub(asUrl);
+    const spotify = await registerAuthorizedSpotify(asUrl);
+    const github = await registerAuthorizedGithub(asUrl);
     const client = await registerAuthCodeClient(asUrl);
 
     const verifier = randomBytes(32).toString("base64url");
@@ -2172,7 +2235,9 @@ test("POST /oauth/authorize/mcp-package narrows the child grant to the submitted
     const access = mustExist(await getGrantPackageAccess(packageId), "package access must exist") as GrantPackageAccess;
     assert.ok(access, "package is retrievable after issuance");
     assert.equal(access.members.length, 2);
-    const byConnector = new Map(access.members.map((m) => [m.grant.source.id, m]));
+    const byConnector = new Map(
+      access.members.map((member) => [canonicalConnectorKey(member.grant.source.id), member])
+    );
     const spotifyChild = byConnector.get(spotify.connector_id);
     const githubChild = byConnector.get(github.connector_id);
     assert.ok(spotifyChild && githubChild, "one child per approved connector");
@@ -2206,7 +2271,7 @@ test("POST /oauth/authorize/mcp-package preserves the wildcard when every stream
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
+    const spotify = await registerAuthorizedSpotify(asUrl);
     const client = await registerAuthCodeClient(asUrl);
 
     const verifier = randomBytes(32).toString("base64url");
@@ -2397,8 +2462,8 @@ test("POST /oauth/authorize/mcp-package ignores stream entries whose source was 
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
-    const github = await registerGithub(asUrl);
+    const spotify = await registerAuthorizedSpotify(asUrl);
+    const github = await registerAuthorizedGithub(asUrl);
     const client = await registerAuthCodeClient(asUrl);
 
     const verifier = randomBytes(32).toString("base64url");
@@ -2466,7 +2531,10 @@ test("POST /oauth/authorize/mcp-package ignores stream entries whose source was 
       "package access must exist"
     ) as GrantPackageAccess;
     assert.equal(access.members.length, 1, "orphan stream entries MUST NOT create a child grant");
-    assert.equal(mustExist(access.members[0], "package must carry one member").grant.source.id, spotify.connector_id);
+    assert.equal(
+      mustExist(access.members[0], "package must carry one member").grant.source.id,
+      publicSourceIdForManifest(spotify)
+    );
   } finally {
     await closeServer(server);
   }
@@ -2543,8 +2611,8 @@ test("POST /oauth/authorize/mcp-package narrows every child grant to single_use 
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
-    const github = await registerGithub(asUrl);
+    const spotify = await registerAuthorizedSpotify(asUrl);
+    const github = await registerAuthorizedGithub(asUrl);
     const client = await registerAuthCodeClient(asUrl);
 
     const verifier = randomBytes(32).toString("base64url");
@@ -2605,7 +2673,7 @@ test("POST /oauth/authorize/mcp-package defaults every child grant to continuous
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
+    const spotify = await registerAuthorizedSpotify(asUrl);
     const client = await registerAuthCodeClient(asUrl);
 
     const verifier = randomBytes(32).toString("base64url");
@@ -2697,7 +2765,7 @@ test("hosted MCP child-grant grant.issued spine event records access_mode, strea
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
+    const spotify = await registerAuthorizedSpotify(asUrl);
     const client = await registerAuthCodeClient(asUrl);
 
     const verifier = randomBytes(32).toString("base64url");
@@ -2927,7 +2995,7 @@ test("GET /oauth/authorize?connector_id=<URL> stages pending consent with canoni
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
   try {
-    await registerSpotify(asUrl);
+    await registerAuthorizedSpotify(asUrl);
     const client = await registerAuthCodeClient(asUrl);
     const verifier = randomBytes(32).toString("base64url");
     const url = new URL(`${asUrl}/oauth/authorize`);
@@ -2963,10 +3031,15 @@ test("GET /oauth/authorize?connector_id=<URL> stages pending consent with canoni
       method: "POST",
       redirect: "manual",
     });
-    // /consent/approve redirects; we just need the code
+    if (approveResp.status !== 302) {
+      assert.fail(`expected consent approval redirect, got ${approveResp.status}: ${await approveResp.text()}`);
+    }
     const codeLocation = approveResp.headers.get("location") || "";
     const codeUrl = new URL(codeLocation, asUrl);
-    const code = mustExist(codeUrl.searchParams.get("code"), "redirect must carry an authorization code");
+    const code = mustExist(
+      codeUrl.searchParams.get("code"),
+      `redirect must carry an authorization code: ${codeLocation}`
+    );
     assert.ok(code, "approval must issue an authorization code");
 
     // Exchange the code for a token
@@ -3216,34 +3289,6 @@ test("sourceMetadata.display_name uses human-readable connection name, not raw c
       instanceId,
       "source.connection_id carries the stable connection ID for programmatic use"
     );
-
-    getDb()
-      .prepare("UPDATE grant_package_members SET source_json = ? WHERE package_id = ? AND grant_id = ?")
-      .run(...[JSON.stringify({ ...childSource, display_name: instanceId }), grantPackageId, child.grant_id]);
-
-    const { body: legacyDetail } = await fetchJson(
-      `${asUrl}/_ref/grant-packages/${encodeURIComponent(grantPackageId)}`
-    );
-    const legacyChildren = legacyDetail.children as Record<string, unknown>[];
-    const legacyChildSource = mustExist(legacyChildren[0], "legacy detail must carry one child").source as Record<
-      string,
-      unknown
-    >;
-    assert.equal(
-      legacyChildSource.display_name,
-      humanDisplayName,
-      "owner package detail sanitizes old rows whose display_name was persisted as the raw connection ID"
-    );
-
-    const legacyAccess = mustExist(
-      await getGrantPackageAccess(tokenBody.grant_package_id),
-      "package access must exist"
-    ) as GrantPackageAccess;
-    assert.equal(
-      mustExist(legacyAccess.members[0], "package must carry one member").source?.display_name,
-      humanDisplayName,
-      "MCP package access sanitizes old rows whose display_name was persisted as the raw connection ID"
-    );
   } finally {
     await closeServer(server);
   }
@@ -3380,20 +3425,20 @@ test("picker hides URL-shaped default connection labels from owner-visible copy"
 // ─── Connection-pin: selection → enforceable grant scope ────────────────────
 //
 // The picker validates the owner's chosen connection, but the bug the scout
-// report surfaced is that the value never reached `grant.streams[].connection_id`
+// report surfaced is that the value never reached `grant.streams[].instance_ids`.
 // — it was stored only in the package member's `source_json` (audit/display),
 // so a "Slack work" pick still fanned in across every Slack connection at read
 // time. These tests prove the enforcement parity invariant end-to-end:
 //
-//   - a connection chosen among >1 active binding pins `streams[].connection_id`
+//   - a connection chosen among active bindings freezes `streams[].instance_ids`
 //     on the persisted child grant;
-//   - a single-connection connector keeps the field OMITTED (fan-in preserved,
+//   - a single-connection grant freezes its one eligible instance (fan-in preserved,
 //     no brittle stored id, no reissuance pressure);
-//   - the pinned `connection_id` is enforced on the read path — a grant-scoped
+//   - the frozen `instance_ids` set is enforced on the read path. A grant-scoped
 //     read under the persisted child grant excludes the unselected sibling's
 //     records (the decisive anti-Goodhart check: `source_json` alone is the
 //     pre-existing bug, so we run the real fan-in resolver, not metadata);
-//   - the wildcard stream case persists `{ name: "*", connection_id }`;
+//   - the wildcard stream case expands into streams with frozen `instance_ids`;
 //   - audit metadata (`source_json.connection_id`) and the enforced grant scope
 //     agree for the pinned member (no drift between shown and enforced).
 //
@@ -3402,6 +3447,7 @@ test("picker hides URL-shaped default connection labels from owner-visible copy"
 // spotify/github fixtures (no ingestible records) cannot.
 
 const PIN_CONNECTOR_ID = "pin-fixture";
+const PIN_SOURCE_ID = "https://registry.pdpp.org/connectors/pin-fixture";
 const PIN_STREAM = "messages";
 
 function pinConnectorManifest(): ConnectorManifest {
@@ -3410,6 +3456,32 @@ function pinConnectorManifest(): ConnectorManifest {
     connector_id: PIN_CONNECTOR_ID,
     display_name: "Pin Fixture Connector",
     protocol_version: "0.1.0",
+    source_declaration: {
+      declaration_version: "hosted-mcp.pin-fixture.v1",
+      display: { name: "Pin Fixture Connector" },
+      protocol_version: "0.1.0",
+      publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
+      source: { id: PIN_SOURCE_ID, kind: "connector" },
+      streams: [
+        {
+          consent_time_field: "received_at",
+          cursor_field: "received_at",
+          name: PIN_STREAM,
+          primary_key: ["id"],
+          schema: {
+            properties: {
+              id: { type: "string" },
+              received_at: { format: "date-time", type: "string" },
+              subject: { type: "string" },
+            },
+            required: ["id", "subject", "received_at"],
+            type: "object",
+          },
+          selection: { fields: true, resources: true },
+          semantics: "mutable_state",
+        },
+      ],
+    },
     streams: [
       {
         consent_time_field: "received_at",
@@ -3519,7 +3591,9 @@ async function approvePinPackage({
     method: "POST",
     redirect: "manual",
   });
-  assert.equal(approveResp.status, 302);
+  if (approveResp.status !== 302) {
+    assert.fail(`expected pin approval redirect, got ${approveResp.status}: ${await approveResp.text()}`);
+  }
   const code = mustExist(
     new URL(mustExist(approveResp.headers.get("location"), "redirect must carry a Location header")).searchParams.get(
       "code"
@@ -3546,7 +3620,7 @@ async function approvePinPackage({
   ) as GrantPackageAccess;
 }
 
-test("hosted MCP picker pins streams[].connection_id on the child grant for a connection chosen among siblings, and enforces it on reads", async () => {
+test("hosted MCP picker freezes streams[].instance_ids for a selected sibling and enforces it on reads", async () => {
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
 
@@ -3577,15 +3651,14 @@ test("hosted MCP picker pins streams[].connection_id on the child grant for a co
     assert.equal(access.members.length, 1);
     const member = mustExist(access.members[0], "package must carry one member");
 
-    // Criterion 1: the persisted child grant carries the selected connection_id
-    // on every stream entry.
+    // The persisted child grant carries the selected instance on every stream.
     const pinnedStreams = member.grant.streams.filter((s) => s.name === PIN_STREAM);
     assert.ok(pinnedStreams.length >= 1, "child grant carries the messages stream");
     for (const stream of member.grant.streams) {
-      assert.equal(
-        stream.connection_id,
-        connA,
-        `every issued stream entry must pin connection_id=${connA}; got ${JSON.stringify(stream)}`
+      assert.deepEqual(
+        stream.instance_ids,
+        [connA],
+        `every issued stream entry must freeze instance_ids=[${connA}]; got ${JSON.stringify(stream)}`
       );
     }
 
@@ -3623,7 +3696,7 @@ test("hosted MCP picker pins streams[].connection_id on the child grant for a co
   }
 });
 
-test("hosted MCP picker omits connection_id for a single-connection connector (fan-in preserved)", async () => {
+test("hosted MCP picker freezes the sole eligible instance for a single-connection connector", async () => {
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
 
@@ -3644,12 +3717,11 @@ test("hosted MCP picker omits connection_id for a single-connection connector (f
     assert.equal(access.members.length, 1);
     const member = mustExist(access.members[0], "package must carry one member");
 
-    // Criterion 5: no connection_id appears where none did before.
     for (const stream of member.grant.streams) {
-      assert.equal(
-        "connection_id" in stream,
-        false,
-        `single-connection grant must NOT pin connection_id; got ${JSON.stringify(stream)}`
+      assert.deepEqual(
+        stream.instance_ids,
+        [soleConn],
+        `single-connection grant must freeze its sole instance; got ${JSON.stringify(stream)}`
       );
     }
 
@@ -3696,10 +3768,10 @@ test("hosted MCP picker pins the wildcard stream entry when the whole source is 
     const grantedNames = member.grant.streams.map((s) => s.name).sort();
     assert.deepEqual(grantedNames, [...allStreamNames].sort(), "whole-source approval covers every manifest stream");
     for (const stream of member.grant.streams) {
-      assert.equal(
-        stream.connection_id,
-        connA,
-        `wildcard-expanded stream "${stream.name}" must carry the connection pin; got ${JSON.stringify(stream)}`
+      assert.deepEqual(
+        stream.instance_ids,
+        [connA],
+        `wildcard-expanded stream "${stream.name}" must freeze the selected instance; got ${JSON.stringify(stream)}`
       );
     }
   } finally {

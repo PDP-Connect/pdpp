@@ -51,11 +51,12 @@ import {
   listGrantPackagesForOwner,
   revokeGrantPackage,
 } from "../server/auth.ts";
-import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
+import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { closeDb } from "../server/db.ts";
 import { encodeHostedMcpSelection } from "../server/hosted-mcp-selection.ts";
 import { startServer } from "../server/index.ts";
-import { closePostgresStorage } from "../server/postgres-storage.ts";
+import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
+import { createPostgresConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
@@ -262,6 +263,27 @@ interface Manifest {
   [key: string]: unknown;
 }
 
+function packageInstanceId(connectorId: string): string {
+  return `cin_pkg_pg_${connectorId}`;
+}
+
+async function seedPackageInstance(connectorId: string): Promise<void> {
+  const now = new Date().toISOString();
+  const connectorInstanceId = packageInstanceId(connectorId);
+  await createPostgresConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: `${connectorId} package fixture`,
+    ownerSubjectId: "owner_local",
+    sourceBinding: { fixture: connectorInstanceId },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "manual",
+    status: "active",
+    updatedAt: now,
+  });
+}
+
 async function registerConnector(asUrl: string, name: string): Promise<Manifest> {
   const raw = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `manifests/${name}.json`), "utf8")) as Manifest;
   const canonical = canonicalConnectorKeyFromManifest(raw);
@@ -330,7 +352,7 @@ async function completeMultiSourcePackageFlow({
   params.append("code_challenge", challenge);
   params.append("code_challenge_method", "S256");
   for (const id of connectorIds) {
-    params.append("selection", encodeHostedMcpSelection({ connectionId: null, connectorId: id }));
+    params.append("selection", encodeHostedMcpSelection({ connectionId: packageInstanceId(id), connectorId: id }));
   }
   for (const streamValue of renderedHostedMcpStreamValues(pickerHtml)) {
     params.append("stream", streamValue);
@@ -342,7 +364,8 @@ async function completeMultiSourcePackageFlow({
     method: "POST",
     redirect: "manual",
   });
-  assert.equal(approveResp.status, 302);
+  const approveBody = await approveResp.text();
+  assert.equal(approveResp.status, 302, approveBody);
   const location = approveResp.headers.get("location");
   assert.ok(location, "the picker-approval redirect carries a location header");
   const callback = new URL(location);
@@ -394,6 +417,8 @@ if (POSTGRES_URL) {
     asUrl = `http://localhost:${server.asPort}`;
     spotify = await registerConnector(asUrl, "spotify");
     github = await registerConnector(asUrl, "github");
+    await seedPackageInstance(spotify.connector_id);
+    await seedPackageInstance(github.connector_id);
     client = await registerAuthCodeClient(asUrl);
   });
 
@@ -465,7 +490,67 @@ if (POSTGRES_URL) {
       assert.equal(typeof member.grant_id, "string");
       assert.equal(typeof member.token, "string", "member exposes its child grant token");
       assert.ok(member.grant, "member carries the parsed child grant");
+      const grant = requireObject(member.grant, "member grant must be an object");
+      const source = requireObject(grant.source, "member source must be an object");
+      const sourceId = requireString(source.id, "member source id must be a string");
+      const storageConnectorId = canonicalConnectorKey(sourceId);
+      assert.ok(storageConnectorId, "member public source id maps to its local fulfillment key");
+      for (const streamValue of requireArray(grant.streams, "member grant streams must be an array")) {
+        const stream = requireObject(streamValue, "member grant stream must be an object");
+        assert.deepEqual(stream.instance_ids, [packageInstanceId(storageConnectorId)]);
+      }
     }
+
+    const memberIdentityRows = await postgresQuery<{
+      grant_id: string;
+      grant_json: Record<string, unknown>;
+      token_id: string;
+    }>(
+      `SELECT gm.grant_id, gm.token_id, g.grant_json
+         FROM grant_package_members gm
+         JOIN grants g ON g.grant_id = gm.grant_id
+        WHERE gm.package_id = $1
+        ORDER BY gm.grant_id
+        LIMIT 1`,
+      [packageId]
+    );
+    const [memberIdentity] = memberIdentityRows.rows;
+    assert.ok(memberIdentity);
+    const originalGrant = structuredClone(memberIdentity.grant_json);
+    const foreignGrant = structuredClone(originalGrant);
+    foreignGrant.subject = { id: "owner_foreign_package_member" };
+    await postgresQuery("UPDATE grants SET subject_id = $1, grant_json = $2::jsonb WHERE grant_id = $3", [
+      "owner_foreign_package_member",
+      JSON.stringify(foreignGrant),
+      memberIdentity.grant_id,
+    ]);
+    await postgresQuery("UPDATE tokens SET subject_id = $1 WHERE token_id = $2", [
+      "owner_foreign_package_member",
+      memberIdentity.token_id,
+    ]);
+    const foreignAccessResponse = await getGrantPackageAccess(packageId);
+    assert.ok(foreignAccessResponse);
+    assert.equal(
+      grantPackageAccess(foreignAccessResponse).members.length,
+      1,
+      "the package omits a valid child whose subject no longer matches its parent"
+    );
+    const packageSubject = requireString(
+      requireObject(requireObject(accessResponse, "package access").package, "package envelope").subject_id,
+      "package subject_id must be a string"
+    );
+    await postgresQuery("UPDATE grants SET subject_id = $1, grant_json = $2::jsonb WHERE grant_id = $3", [
+      packageSubject,
+      JSON.stringify(originalGrant),
+      memberIdentity.grant_id,
+    ]);
+    await postgresQuery("UPDATE tokens SET subject_id = $1 WHERE token_id = $2", [
+      packageSubject,
+      memberIdentity.token_id,
+    ]);
+    const restoredAccess = await getGrantPackageAccess(packageId);
+    assert.ok(restoredAccess);
+    assert.equal(grantPackageAccess(restoredAccess).members.length, 2);
 
     // getGrantPackageIdForGrant: member-by-grant SELECT. Every child grant
     // resolves back to this package; the package token (NULL grant_id) does

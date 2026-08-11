@@ -419,17 +419,18 @@ if (POSTGRES_URL) {
       );
     });
 
-    await t.test("child grant time_range narrows expansion children in SQL", async () => {
+    await t.test("child grant time_constraint narrows expansion children in SQL", async () => {
       // play_1=2026-02-02, play_2=2026-02-03, play_3=2026-02-04, play_4=2026-02-05.
       // Narrow the child grant to [2026-02-03, 2026-02-05) → play_2 and play_3
       // only for track_1; track_2 (play_4 at 2026-02-05) is `until`-excluded.
-      const grantWithTimeRange = {
+      const grantWithTimeConstraint = {
         streams: [
           { fields: ["id", "name", "saved_at"], name: parentStream },
           {
             fields: ["id", "track_id", "played_at"],
             name: childStream,
-            time_range: {
+            time_constraint: {
+              field: "played_at",
               since: "2026-02-03T00:00:00Z",
               until: "2026-02-05T00:00:00Z",
             },
@@ -439,7 +440,7 @@ if (POSTGRES_URL) {
       const result = await queryRecords(
         connectorId,
         parentStream,
-        grantWithTimeRange,
+        grantWithTimeConstraint,
         { expand: "recently_played", order: "asc" },
         manifest
       );
@@ -449,7 +450,7 @@ if (POSTGRES_URL) {
       assert.deepEqual(
         track1.expanded.recently_played.data.map((c: { id: string }) => c.id),
         ["play_2", "play_3"],
-        "only children inside the grant time_range should appear"
+        "only children inside the frozen grant time_constraint should appear"
       );
       assert.equal(track1.expanded.recently_played.has_more, false);
 

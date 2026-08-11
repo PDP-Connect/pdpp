@@ -330,12 +330,9 @@ test("semantic candidate planning scans connector instance namespace, not connec
         streams: [
           {
             fields: ["id", "subject"],
+            instance_ids: [WORK_INSTANCE_ID],
             name: STREAM,
             resources: ["same-key"],
-            time_range: {
-              since: "2026-05-18T00:00:00.000Z",
-              until: "2026-05-19T00:00:00.000Z",
-            },
           },
         ],
       },

@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { getGrantPackageIdForGrant, listGrantPackagesForOwner, parsePendingConsentRequestUri } from "../server/auth.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const REGEXP_1 = /Confirm each source/;
 const REGEXP_2 = /Reference-experimental batch consent/;
@@ -32,7 +33,7 @@ const REGEXP_19 = /widening is forbidden/;
 const REGEXP_20 = /not in the staged field set/;
 const REGEXP_21 = /earlier than the staged bound/;
 const REGEXP_22 = /not a valid ISO-8601 instant/;
-const REGEXP_23 = /no field projection/;
+const REGEXP_23 = /^reference\.legacy-connector-projection\.v1:sha256:[0-9a-f]{64}$/;
 const REGEXP_24 = /not in the approved set/;
 const REGEXP_25 = /Narrow this source/;
 const REGEXP_26 = /name="narrow_streams_0"/;
@@ -99,6 +100,21 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>) {
         method: "POST",
       });
       assert.ok(resp.status < 400, `connector registration for ${manifest.connector_id} should succeed`);
+      const connectorId = new URL(manifest.connector_id).pathname.split("/").filter(Boolean).at(-1);
+      assert.ok(connectorId);
+      const now = new Date().toISOString();
+      await createSqliteConnectorInstanceStore().upsert({
+        connectorId,
+        connectorInstanceId: `cin_batch_${connectorId}`,
+        createdAt: now,
+        displayName: `${connectorId} batch fixture`,
+        ownerSubjectId: "owner_local",
+        sourceBinding: { fixture: connectorId },
+        sourceBindingKey: `batch:${connectorId}`,
+        sourceKind: "manual",
+        status: "active",
+        updatedAt: now,
+      });
     }
     await fn({ asUrl, github, reddit, spotify });
   } finally {
@@ -324,7 +340,7 @@ test("batch consent gate: explicit per-source indexes issue only the selected ch
     assert.equal(issuedGrant(approved).child_grants.length, 1);
     const [firstChild] = issuedGrant(approved).child_grants;
     assert.ok(firstChild);
-    assert.equal(firstChild.source.id, "reddit");
+    assert.equal(firstChild.source.id, reddit.connector_id);
 
     const db = getDb();
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM grants").get() as { n: number }).n, 1);
@@ -355,7 +371,7 @@ test("batch consent gate: approved sources become independent child grants under
       issuedGrant(approved)
         .child_grants.map((child) => child.source.id)
         .sort(),
-      ["reddit", "spotify"]
+      [reddit.connector_id, spotify.connector_id]
     );
 
     const db = getDb();
@@ -449,13 +465,57 @@ test("batch consent gate: staged batch remains source-bounded in storage", async
     };
     const stored = JSON.parse(row.params_json) as {
       request_kind: string;
-      entries: { source_binding: { id: string } }[];
+      entries: {
+        source_binding: { id: string };
+        source_declaration_snapshot: {
+          declaration: {
+            declaration_version: string;
+            extensions?: Record<string, { connector?: { id?: string; version?: string } }>;
+            publisher: { id: string };
+            source: { id: string; kind: string };
+            streams: { name: string }[];
+          };
+          declaration_version: string;
+          snapshot_version: string;
+          source: { id: string; kind: string };
+        };
+      }[];
     };
     assert.equal(stored.request_kind, "pdpp_selection_request_batch");
     assert.deepEqual(
       stored.entries.map((entry) => entry.source_binding.id),
-      ["spotify", "reddit"]
+      [spotify.connector_id, reddit.connector_id]
     );
+    const [spotifySnapshot, redditSnapshot] = stored.entries.map((entry) => entry.source_declaration_snapshot);
+    assert.ok(spotifySnapshot);
+    assert.ok(redditSnapshot);
+    for (const snapshot of [spotifySnapshot, redditSnapshot]) {
+      assert.match(snapshot.declaration_version, REGEXP_23);
+      assert.equal(snapshot.snapshot_version, "reference.source-declaration-snapshot.v1");
+      assert.equal(snapshot.declaration.declaration_version, snapshot.declaration_version);
+    }
+    assert.deepEqual(spotifySnapshot.source, { id: spotify.connector_id, kind: "connector" });
+    assert.deepEqual(redditSnapshot.source, { id: reddit.connector_id, kind: "connector" });
+    const [firstStoredEntry] = stored.entries;
+    assert.ok(firstStoredEntry);
+    assert.deepEqual(firstStoredEntry.source_declaration_snapshot.declaration.source, {
+      id: spotify.connector_id,
+      kind: "connector",
+    });
+    assert.deepEqual(firstStoredEntry.source_declaration_snapshot.declaration.publisher, {
+      id: "https://pdpp.dev/reference-implementation",
+    });
+    assert.equal(
+      firstStoredEntry.source_declaration_snapshot.declaration.declaration_version,
+      firstStoredEntry.source_declaration_snapshot.declaration_version
+    );
+    assert.equal("connector_id" in firstStoredEntry.source_declaration_snapshot.declaration, false);
+    assert.equal("version" in firstStoredEntry.source_declaration_snapshot.declaration, false);
+    const collectionExtension =
+      firstStoredEntry.source_declaration_snapshot.declaration.extensions?.["https://pdpp.org/profile/collection"];
+    assert.ok(collectionExtension);
+    assert.deepEqual(collectionExtension.connector, { id: spotify.manifest_uri, version: spotify.version });
+    assert.equal(firstStoredEntry.source_declaration_snapshot.declaration.streams[0]?.name, "top_artists");
   });
 });
 
@@ -513,7 +573,7 @@ test("batch consent gate: over-soft-cap requests are flagged with affected sourc
     assert.equal(stored.over_soft_cap, true);
     assert.deepEqual(
       stored.over_cap_sources.map((source) => source.id),
-      ["reddit"]
+      [reddit.connector_id]
     );
 
     // The ceremony flags the over-cap condition and names the affected source.
@@ -557,7 +617,13 @@ test("batch consent gate: a package mixing access modes across approved sources 
 
 interface StoredGrant {
   source?: { id: string };
-  streams: { name: string; fields?: string[]; time_range?: { since: string } }[];
+  streams: {
+    name: string;
+    fields?: string[];
+    instance_ids?: string[];
+    time_constraint?: { field: string; since?: string };
+    time_range?: { since: string };
+  }[];
 }
 
 function childGrantStreams(
@@ -598,12 +664,12 @@ test("batch consent narrowing: owner defers a source by approving a subset", asy
     assert.equal(issuedGrant(approved).child_grants.length, 1);
     const [onlySpotifyChild] = issuedGrant(approved).child_grants;
     assert.ok(onlySpotifyChild);
-    assert.equal(onlySpotifyChild.source.id, "spotify");
+    assert.equal(onlySpotifyChild.source.id, spotify.connector_id);
 
     const db = getDb();
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM grants").get() as { n: number }).n, 1);
     // No reddit grant issued from this ceremony.
-    assert.equal(childGrantStreams(db, requirePackageId(unwrapBody(approved)), "reddit"), null);
+    assert.equal(childGrantStreams(db, requirePackageId(unwrapBody(approved)), reddit.connector_id), null);
   });
 });
 
@@ -631,11 +697,11 @@ test("batch consent narrowing: HTML form defers a source even when nested contro
     assert.equal(issuedGrant(approved).child_grants.length, 1);
     const [formSpotifyChild] = issuedGrant(approved).child_grants;
     assert.ok(formSpotifyChild);
-    assert.equal(formSpotifyChild.source.id, "spotify");
+    assert.equal(formSpotifyChild.source.id, spotify.connector_id);
 
     const db = getDb();
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM grants").get() as { n: number }).n, 1);
-    assert.equal(childGrantStreams(db, requirePackageId(unwrapBody(approved)), "reddit"), null);
+    assert.equal(childGrantStreams(db, requirePackageId(unwrapBody(approved)), reddit.connector_id), null);
   });
 });
 
@@ -658,14 +724,14 @@ test("batch consent narrowing: owner reduces a wildcard source to a single strea
     assert.equal(approved.status, 200);
 
     const db = getDb();
-    const spotifyStreams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), "spotify");
+    const spotifyStreams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), spotify.connector_id);
     assert.ok(spotifyStreams);
     assert.deepEqual(
       spotifyStreams.map((s) => s.name),
       ["top_artists"]
     );
     // reddit untouched.
-    const redditStreams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), "reddit");
+    const redditStreams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), reddit.connector_id);
     assert.ok(redditStreams);
     assert.deepEqual(
       redditStreams.map((s) => s.name),
@@ -699,7 +765,7 @@ test("batch consent narrowing: owner reduces a stream to a subset of staged fiel
     assert.equal(approved.status, 200);
 
     const db = getDb();
-    const streams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), "spotify");
+    const streams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), spotify.connector_id);
     assert.ok(streams);
     assert.equal(streams.length, 1);
     const [fieldNarrowedStream] = streams;
@@ -728,11 +794,12 @@ test("batch consent narrowing: owner tightens an existing time bound", async () 
     assert.equal(approved.status, 200);
 
     const db = getDb();
-    const streams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), "spotify");
+    const streams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), spotify.connector_id);
     assert.ok(streams);
     const [timeBoundStream] = streams;
-    assert.ok(timeBoundStream?.time_range);
-    assert.equal(timeBoundStream.time_range.since, "2026-03-01T00:00:00Z");
+    assert.ok(timeBoundStream?.time_constraint);
+    assert.equal(timeBoundStream.time_constraint.field, "source_updated_at");
+    assert.equal(timeBoundStream.time_constraint.since, "2026-03-01T00:00:00Z");
   });
 });
 
@@ -833,11 +900,10 @@ test("batch consent narrowing: a malformed since value is rejected before issuin
   });
 });
 
-test("batch consent narrowing: a field subset on an unprojected stream is rejected", async () => {
+test("batch consent narrowing: omitted fields resolve from the snapshot and may be narrowed", async () => {
   await withHarness(async ({ asUrl, spotify, reddit }) => {
-    // spotify top_artists staged with NO field projection. A field subset
-    // cannot be proven narrower against an unprojected (full-record) stream, so
-    // the narrowing is rejected rather than silently issuing the full record.
+    // Omitted fields resolve to the snapshot's complete field set at staging,
+    // so owner narrowing has a concrete immutable baseline.
     const body = unwrapBody(
       await par(asUrl, [
         detail({ id: spotify.connector_id, kind: "connector" }, [{ name: "top_artists" }]),
@@ -845,16 +911,15 @@ test("batch consent narrowing: a field subset on an unprojected stream is reject
       ])
     );
 
-    const rejected = await approve(asUrl, {
+    const approved = await approve(asUrl, {
       approved_source_indexes: [0, 1],
       request_uri: body.request_uri,
       source_narrowing: { 0: { fields: { top_artists: ["id"] } } },
       subject_id: "owner_local",
     });
-    assert.equal(rejected.status, 400);
-    assert.match(unwrapBody(rejected).error?.message ?? "", REGEXP_23);
-
-    assert.equal(countRows("SELECT COUNT(*) AS n FROM grants"), 0);
+    assert.equal(approved.status, 200);
+    const streams = childGrantStreams(getDb(), requirePackageId(unwrapBody(approved)), spotify.connector_id);
+    assert.deepEqual(streams?.[0]?.fields, ["id", "name"]);
   });
 });
 

@@ -156,7 +156,6 @@ const MAX_PERSISTED_TOP_CONNECTOR_CANDIDATES = 32;
 // the next pass and the projection metadata reports the deferral
 // honestly.
 const MAX_RECONCILE_BATCH = 256;
-const SAFE_CONSENT_TIME_FIELD = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const EMPTY_SUMMARY = Object.freeze({
   counts: { connector_count: 0, record_count: 0, stream_count: 0 },
   ingested_time_bounds: { earliest: null, latest: null },
@@ -661,7 +660,7 @@ export async function reconcileDirtyDatasetSummaryRecordTimeBounds(
 
   await runSequentially(dirtyRows, async (row) => {
     throwIfAborted(signal);
-    if (!isSafeConsentTimeField(row.consent_time_field)) {
+    if (!hasDeclaredConsentTimeField(row.consent_time_field)) {
       deferred += 1;
       return;
     }
@@ -1074,8 +1073,8 @@ function hasDirtyRecordTimeBounds() {
   return Number(row?.count || 0) > 0;
 }
 
-function isSafeConsentTimeField(field: unknown): field is string {
-  return typeof field === "string" && SAFE_CONSENT_TIME_FIELD.test(field);
+function hasDeclaredConsentTimeField(field: unknown): field is string {
+  return typeof field === "string" && field.length > 0;
 }
 
 function markDatasetSummaryProjectionRebuilding(at: IsoTimestamp): number {

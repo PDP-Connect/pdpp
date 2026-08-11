@@ -70,10 +70,9 @@ test("buildClientSourceDescriptor prefers grant.source over the storage binding"
   assert.deepEqual(buildClientSourceDescriptor(tokenInfo), { id: "apple", kind: "provider_native" });
 });
 
-test("buildClientSourceDescriptor falls back to the storage binding connector_id", () => {
+test("buildClientSourceDescriptor never exposes an internal storage connector as public source identity", () => {
   const tokenInfo = { grant_storage_binding: { connector_id: "gmail" } };
-  assert.deepEqual(buildClientSourceDescriptor(tokenInfo), { id: "gmail", kind: "connector" });
-  // Nothing resolvable -> null.
+  assert.equal(buildClientSourceDescriptor(tokenInfo), null);
   assert.equal(buildClientSourceDescriptor({}), null);
   assert.equal(buildClientSourceDescriptor(null), null);
 });
@@ -87,10 +86,17 @@ test("resolveNativeManifest / resolveNativeStorageBinding read the injected nati
   assert.equal(resolveNativeStorageBinding({ nativeManifest: { provider_id: "apple" } }), null);
 });
 
-test("buildOwnerQuerySourceDescriptor prefers the native manifest provider over the query connector_id", () => {
+test("buildOwnerQuerySourceDescriptor prefers the configured declaration source over the query connector_id", () => {
   const req = { query: { connector_id: "gmail" } };
-  const opts = { nativeManifest: { provider_id: "apple" } };
-  assert.deepEqual(buildOwnerQuerySourceDescriptor(req, opts), { id: "apple", kind: "provider_native" });
+  const opts = {
+    nativeManifest: {
+      source_declaration: { source: { id: "https://apple.example/pdpp", kind: "provider_native" } },
+    },
+  };
+  assert.deepEqual(buildOwnerQuerySourceDescriptor(req, opts), {
+    id: "https://apple.example/pdpp",
+    kind: "provider_native",
+  });
 });
 
 test("buildOwnerQuerySourceDescriptor canonicalizes a URL-shaped connector_id", () => {

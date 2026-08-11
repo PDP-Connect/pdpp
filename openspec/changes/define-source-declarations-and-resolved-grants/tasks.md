@@ -29,14 +29,14 @@
     violates the Source request or narrowing contract. Leave the OAuth response
     mapping to PR89.
 
-- [ ] 3. Implement snapshot and mutation barriers.
+- [x] 3. Implement snapshot and mutation barriers.
   - Pass one exact snapshot through validation, display, narrowing, issuance,
     and evidence.
   - At barriers before display, narrowing, and issuance, mutate, delete, and
     same-version-replace the current catalog entry. Prove every phase still
     uses the retained snapshot and fails closed if that snapshot is lost.
 
-- [ ] 4. Separate authorization facts from serving metadata.
+- [x] 4. Separate authorization facts from serving metadata.
   - Make RS enforcement use only the resolved authorization context.
   - Define separate client-token and owner/discovery metadata projections.
     Client schema, stream, search, and record metadata must be grant-projected;
@@ -44,7 +44,7 @@
     route or reject unsupported resolved constraints, but must not reinterpret
     resource keys, widen grants, or change the frozen time field.
 
-- [ ] 5. Make the authorization-state break fail closed.
+- [x] 5. Make the authorization-state break fail closed.
   - Accept only the new retained-snapshot pending shape and closed resolved
     grant shape after this change.
   - Reject pre-v0.1 pending consent, grants, and packages and require fresh
@@ -53,7 +53,7 @@
   - Prove that a legacy per-stream `connection_id` never becomes one or more
     current `instance_ids` during approval or serving.
 
-- [ ] 6. Add implementation oracles and ownership gates.
+- [x] 6. Add implementation oracles and ownership gates.
   - Add a Core-only dependency oracle that imports no Collection schema or
     runtime module and proves a connector declaration works without an
     extension.
@@ -66,7 +66,7 @@
     grant-enforcement dependency or create a second grant shape.
   - Limit other Collection work to compatibility with the neutral contract.
 
-- [ ] 7. Verify the change.
+- [x] 7. Verify the change.
   - Run focused contract, snapshot, instance, upgrade-boundary, and RS tests.
   - Run `openspec validate define-source-declarations-and-resolved-grants
     --strict`, `git diff --check`, and stale-term sweeps for deleted live

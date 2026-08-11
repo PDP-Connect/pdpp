@@ -13,7 +13,7 @@
  * expand_limit shape/positivity/max/cardinality guards, dangling
  * expand_limit relations, duplicate-name dedup, and the insufficient_scope
  * child-grant gate — unpinned. `buildEffectiveFilter`, `normalizePrimaryKey`,
- * `parseIntegerValue`, and `assertSafeJsonField` have no direct coverage at
+ * `parseIntegerValue`, and `assertNonEmptyJsonField` have no direct coverage at
  * all.
  *
  * A mutant that flips a `<=`/`<` boundary, drops a shape guard, mis-labels an
@@ -28,22 +28,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  assertSafeJsonField,
+  assertNonEmptyJsonField,
   buildEffectiveFilter,
   invalidQueryError,
   normalizeExpandRequest,
   normalizePrimaryKey,
   parseIntegerValue,
-  SAFE_JSON_FIELD,
 } from "../server/record-expand-helpers.ts";
 
 interface QueryError extends Error {
   code?: string;
 }
 
-const UNSAFE_FILTER_FIELD_PATTERN = /Unsafe JSON field filter/;
-const UNSAFE_JSON_FIELD_PATTERN = /Unsafe JSON field/;
-const UNSAFE_SORT_FIELD_PATTERN = /Unsafe JSON field sort/;
+const INVALID_JSON_FIELD_PATTERN = /non-empty string/;
 
 function isQueryError(value: unknown): value is QueryError {
   return value instanceof Error;
@@ -124,49 +121,35 @@ test("parseIntegerValue rejects non-string, non-number inputs", () => {
   assert.equal(parseIntegerValue({}), null);
 });
 
-// ─── assertSafeJsonField / SAFE_JSON_FIELD ───────────────────────────────
+// ─── assertNonEmptyJsonField ──────────────────────────────────────────────
 
-test("SAFE_JSON_FIELD matches an identifier and rejects structural chars", () => {
-  assert.ok(SAFE_JSON_FIELD.test("good_field_1"));
-  assert.ok(!SAFE_JSON_FIELD.test("1bad"));
-  assert.ok(!SAFE_JSON_FIELD.test("a.b"));
-  assert.ok(!SAFE_JSON_FIELD.test("a b"));
-});
-
-test("assertSafeJsonField accepts a valid identifier", () => {
-  assert.doesNotThrow(() => assertSafeJsonField("subject_id", "sort"));
-});
-
-test("assertSafeJsonField rejects an identifier starting with a digit", () => {
+test("assertNonEmptyJsonField accepts literal field names and rejects non-strings", () => {
+  for (const field of ["subject_id", "1bad", "a.b", "has-dash", 'said "when"', "時刻"]) {
+    assert.doesNotThrow(() => assertNonEmptyJsonField(field, "sort"));
+  }
   assert.throws(
-    () => assertSafeJsonField("1bad", "sort"),
-    (err: unknown) => isQueryError(err) && UNSAFE_SORT_FIELD_PATTERN.test(err.message)
-  );
-});
-
-test("assertSafeJsonField rejects a dotted / injection path", () => {
-  assert.throws(
-    () => assertSafeJsonField("a.b", "filter"),
-    (err: unknown) => isQueryError(err) && UNSAFE_FILTER_FIELD_PATTERN.test(err.message)
-  );
-});
-
-test("assertSafeJsonField rejects a non-string field", () => {
-  assert.throws(
-    () => assertSafeJsonField(5, "sort"),
-    (err: unknown) => isQueryError(err) && UNSAFE_JSON_FIELD_PATTERN.test(err.message)
+    () => assertNonEmptyJsonField(5, "sort"),
+    (err: unknown) => isQueryError(err) && INVALID_JSON_FIELD_PATTERN.test(err.message)
   );
 });
 
 // ─── buildEffectiveFilter ────────────────────────────────────────────────
 
 test("buildEffectiveFilter carries grant scopes through when no request fields", () => {
-  const eff = buildEffectiveFilter({ fields: ["a", "b"], resources: ["r1"], time_range: { since: "x" } }, {}, []);
+  const eff = buildEffectiveFilter(
+    {
+      fields: ["a", "b"],
+      resources: ["r1"],
+      time_constraint: { field: "frozen_at", since: "2026-01-01T00:00:00Z" },
+    },
+    {},
+    []
+  );
   assert.deepEqual(eff, {
-    consentTimeField: null,
     fields: ["a", "b"],
     resources: ["r1"],
-    timeRange: { since: "x" },
+    timeConstraint: { field: "frozen_at", since: "2026-01-01T00:00:00Z" },
+    timeConstraintField: "frozen_at",
   });
 });
 

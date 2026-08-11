@@ -293,6 +293,7 @@ test("multi-connection fan-in surfaces a single deduplicated limit_clamped warni
   // warning), not one per connection.
   await withDualConnectionDb(80, async () => {
     const { bindings } = await resolveFanInBindings({
+      authorizedInstanceIds: [INSTANCE_A, INSTANCE_B],
       connectorId: CONNECTOR_ID,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
     });

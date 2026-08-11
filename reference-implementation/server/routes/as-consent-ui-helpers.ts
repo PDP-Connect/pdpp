@@ -59,8 +59,13 @@ export interface ConsentPickerCapabilities {
 }
 
 export interface ConsentPickerManifest {
+  readonly connector_id?: string | null;
   readonly display_name?: string | null;
+  readonly manifest_uri?: string | null;
   readonly name?: string | null;
+  readonly source_declaration?: {
+    readonly source?: { readonly id?: string | null; readonly kind?: string | null } | null;
+  } | null;
   readonly streams?: Array<{ name: string; description?: string | null }> | null;
 }
 
@@ -256,13 +261,41 @@ export function validateAuthorizePkce({ responseType, codeChallenge, codeChallen
  * Builds a single-entry `authorization_details` array for a connector-backed
  * hosted MCP authorize shortcut (wildcard streams, continuous access).
  */
-export function buildHostedMcpAuthorizationDetailsForConnector(connectorId: string): unknown[] {
+interface HostedMcpSourceDescriptor {
+  id: string;
+  kind: "connector" | "provider_native";
+}
+
+/** Resolve public source identity without leaking the local storage key. */
+export function resolveHostedMcpSourceDescriptor(
+  manifest: ConsentPickerManifest | null | undefined
+): HostedMcpSourceDescriptor | null {
+  const declared = manifest?.source_declaration?.source;
+  if (
+    declared &&
+    (declared.kind === "connector" || declared.kind === "provider_native") &&
+    typeof declared.id === "string" &&
+    URL.canParse(declared.id)
+  ) {
+    return { id: declared.id, kind: declared.kind };
+  }
+  const legacyId =
+    typeof manifest?.manifest_uri === "string" && manifest.manifest_uri
+      ? manifest.manifest_uri
+      : manifest?.connector_id;
+  return typeof legacyId === "string" && URL.canParse(legacyId) ? { id: legacyId, kind: "connector" } : null;
+}
+
+export function buildHostedMcpAuthorizationDetailsForConnector(
+  connectorId: string,
+  source: HostedMcpSourceDescriptor = { id: connectorId, kind: "connector" }
+): unknown[] {
   return [
     {
       access_mode: "continuous",
       purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
       purpose_description: "Allow this MCP client to read selected personal data through PDPP.",
-      source: { id: connectorId, kind: "connector" },
+      source,
       streams: [{ name: "*" }],
       type: "https://pdpp.dev/data-access",
     },
@@ -277,12 +310,9 @@ export function buildHostedMcpAuthorizationDetailsForConnector(connectorId: stri
  * to `HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE` (continuous).
  *
  * `connectionId`, when a non-empty string, pins every stream entry to that
- * connection by stamping `connection_id` onto it. This is the enforcement
- * lever: `resolveGrantSelection` copies `streams[].connection_id` onto the
- * issued child grant, and the read-path binding resolver narrows fan-in to the
- * named connection. Wildcard stream selections are pinned identically — the
- * runtime narrows the binding to the connection, then expands streams under
- * it. Callers MUST only pass a `connectionId` the picker presented and
+ * connector instance by stamping its opaque handle into `instance_ids`.
+ * Wildcard stream selections are pinned identically. Callers MUST only pass a
+ * `connectionId` the picker presented and
  * validated as active, and MUST omit it when the surface did not present a
  * specific-connection choice (single-connection or unconfigured connector), so
  * fan-in semantics and existing grants are preserved.
@@ -291,19 +321,20 @@ export function buildHostedMcpAuthorizationDetailForConnector(
   connectorId: string,
   streamNames: string[] | null = null,
   accessMode: string | null = null,
-  connectionId: string | null = null
+  connectionId: string | null = null,
+  source: HostedMcpSourceDescriptor = { id: connectorId, kind: "connector" }
 ): {
   type: string;
   source: { kind: string; id: string };
   purpose_code: string;
   purpose_description: string;
   access_mode: string;
-  streams: Array<{ name: string; connection_id?: string }>;
+  streams: Array<{ name: string; instance_ids?: string[] }>;
 } {
   const pinnedConnectionId = typeof connectionId === "string" && connectionId.trim() ? connectionId.trim() : null;
-  const withPin = (name: string): { name: string; connection_id?: string } =>
-    pinnedConnectionId ? { connection_id: pinnedConnectionId, name } : { name };
-  let streams: Array<{ name: string; connection_id?: string }>;
+  const withPin = (name: string): { name: string; instance_ids?: string[] } =>
+    pinnedConnectionId ? { instance_ids: [pinnedConnectionId], name } : { name };
+  let streams: Array<{ name: string; instance_ids?: string[] }>;
   if (Array.isArray(streamNames) && streamNames.length > 0) {
     streams = streamNames.map((name) => withPin(name));
   } else {
@@ -316,7 +347,7 @@ export function buildHostedMcpAuthorizationDetailForConnector(
     access_mode: resolvedAccessMode,
     purpose_code: HOSTED_MCP_PICKER_PURPOSE_CODE,
     purpose_description: HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION,
-    source: { id: connectorId, kind: "connector" },
+    source,
     streams,
     type: "https://pdpp.dev/data-access",
   };
@@ -562,6 +593,7 @@ export interface PendingGrantRequest {
   selection?: {
     streams?: Array<{
       name: string;
+      time_constraint?: { field?: string | null; since?: string | null; until?: string | null } | null;
       time_range?: { since?: string | null } | null;
       fields?: string[] | null;
       view?: string | null;
@@ -772,8 +804,9 @@ function buildClientClaimsBlock(streams: StreamItem[], ui: ConsentUiRenderer): s
 }
 
 function renderRequestedStreamItem(stream: StreamItem, ui: ConsentUiRenderer): string {
+  const since = stream.time_constraint?.since ?? stream.time_range?.since;
   const fragments = [
-    stream.time_range ? `since ${stream.time_range.since || "any"}` : null,
+    since ? `since ${since}` : null,
     stream.fields ? `fields: ${stream.fields.join(", ")}` : null,
     stream.view ? `view: ${stream.view}` : null,
     stream.necessity === "optional" ? "optional" : null,
@@ -922,7 +955,7 @@ function buildSourceNarrowingControls(card: PendingConsentCard, ui: ConsentUiRen
             .join("")}</div>`
         : "";
 
-      const since = stream.time_range?.since;
+      const since = stream.time_constraint?.since;
       const sinceControl = since
         ? `<label class="hosted-ui-narrow-since">Start no earlier than <input type="text" name="narrow_since_${index}__${encoded}" value="${ui.escapeHtml(
             since

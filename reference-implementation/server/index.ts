@@ -420,6 +420,7 @@ import {
   semanticIndexBackfillForManifest,
   supportsDeviceSemanticAttemptDeadline,
 } from "./search-semantic.ts";
+import { requireSourceDeclaration } from "./source-declaration.ts";
 import {
   createPostgresAcquisitionBatchStore,
   createSqliteAcquisitionBatchStore,
@@ -2054,10 +2055,16 @@ async function resolveOwnerReadScope(req: ReqLike, opts: ServerOpts = {}) {
   const nativeManifest = resolveNativeManifest(opts);
   const nativeStorageBinding = resolveNativeStorageBinding(opts);
   if (nativeManifest && nativeStorageBinding) {
+    const configuredSource = buildSourceDescriptor(
+      (nativeManifest.source_declaration as { source?: { id?: string; kind?: string } } | undefined)?.source ?? null
+    );
+    if (!configuredSource) {
+      throw Object.assign(new Error("Configured SourceDeclaration source is missing"), { code: "invalid_request" });
+    }
     return {
       owner_subject_id: getOwnerTokenSubjectId(req),
       public_scope: "native",
-      source: { id: nativeManifest.provider_id, kind: "provider_native" },
+      source: configuredSource,
       storage_binding: nativeStorageBinding,
     };
   }
@@ -2123,9 +2130,7 @@ function validateNativeConfiguration(opts: ServerOpts = {}) {
     return null;
   }
 
-  if (!nativeManifest.provider_id) {
-    throw new Error("Native manifest must include provider_id");
-  }
+  requireSourceDeclaration(nativeManifest.source_declaration);
   if (nativeManifest.connector_id) {
     throw new Error("Native manifest must not include connector_id");
   }
@@ -2349,8 +2354,11 @@ function buildClientSourceDescriptor(tokenInfo: TokenInfo | null | undefined) {
 
 function buildOwnerQuerySourceDescriptor(req: ReqLike, opts: ServerOpts = {}) {
   const nativeManifest = resolveNativeManifest(opts);
-  if (nativeManifest?.provider_id) {
-    return buildSourceDescriptor({ id: nativeManifest.provider_id as string, kind: "provider_native" });
+  const configuredSource = buildSourceDescriptor(
+    (nativeManifest?.source_declaration as { source?: { id?: string; kind?: string } } | undefined)?.source ?? null
+  );
+  if (configuredSource) {
+    return configuredSource;
   }
 
   const connectorId = resolveSingleConnectorIdQueryValue(req.query?.connector_id);
@@ -2396,10 +2404,7 @@ async function resolveOwnerManifestFromScope(ownerScope: Record<string, unknown>
   );
   if (!manifest) {
     const ownerSource = ownerScope.source as { kind?: string; id?: string } | null | undefined;
-    const errMsg =
-      ownerSource?.kind === "provider_native"
-        ? `Unknown source: { kind: 'provider_native', id: '${ownerSource.id}' }`
-        : `Unknown connector: ${storageBinding?.connector_id || "unknown"}`;
+    const errMsg = `Unknown source: ${ownerSource?.id || storageBinding?.connector_id || "unknown"}`;
     throw Object.assign(new Error(errMsg), { code: "not_found" });
   }
   return { manifest, ownerScope, storageBinding };
@@ -2411,51 +2416,22 @@ async function resolveOwnerManifest(req: ReqLike, opts: ServerOpts = {}) {
 }
 
 async function resolveGrantManifest(tokenInfo: TokenInfo | null | undefined, opts: ServerOpts = {}) {
-  let storageBinding: StorageBinding | null = resolveGrantStorageBinding(tokenInfo) as StorageBinding | null;
-  // Only resolve a connector_instance namespace for polyfill connector
-  // sources. Native provider grants point at synthetic storage bindings
-  // whose connector_id is not registered in the `connectors` catalog, so
-  // forcing a connector_instances upsert would FK-fail and surface as
-  // a 500 instead of the intended client-error rejection downstream.
-  const tokenGrant = tokenInfo?.grant as Record<string, unknown> | null | undefined;
-  const grantSourceKind = (tokenGrant?.source as Record<string, unknown> | null | undefined)?.kind;
-  if (storageBinding?.connector_id && grantSourceKind !== "provider_native") {
-    try {
-      const namespace = await resolveOwnerConnectorInstanceNamespace({
-        allowDefaultAccount: false,
-        connectorId: storageBinding.connector_id ?? null,
-        connectorInstanceId: storageBinding.connector_instance_id ?? null,
-        connectorInstanceStore: createRequestConnectorInstanceStore(),
-        displayName: storageBinding.connector_id ?? null,
-        ownerSubjectId:
-          ((tokenGrant?.subject as Record<string, unknown> | null | undefined)?.id as string | undefined) ||
-          tokenInfo?.subject_id ||
-          OWNER_AUTH_DEFAULT_SUBJECT_ID,
-      });
-      storageBinding = storageTargetForConnectorNamespace(namespace);
-    } catch (err) {
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-      if ((err as ApiError)?.code === "ambiguous_connector_instance") {
-        storageBinding = { connector_id: storageBinding.connector_id ?? null };
-        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-      } else if ((err as ApiError)?.code !== "connector_instance_not_found") {
-        throw err;
-      }
-    }
-  }
+  // Client serving is pinned by the persisted storage binding and the grant's
+  // closed instance_ids. Do not resolve a current connector instance here.
+  const storageBinding: StorageBinding | null = resolveGrantStorageBinding(tokenInfo) as StorageBinding | null;
   const source = buildClientSourceDescriptor(tokenInfo);
   const manifest = await getManifestForStorageBinding(
     storageBinding as unknown as Parameters<typeof getManifestForStorageBinding>[0],
     opts
   );
   if (!manifest) {
-    const errMsg =
-      source?.kind === "provider_native"
-        ? `Unknown source: { kind: 'provider_native', id: '${source.id}' }`
-        : `Unknown connector: ${storageBinding?.connector_id || "unknown"}`;
+    const errMsg = `Unknown source: ${source?.id || storageBinding?.connector_id || "unknown"}`;
     throw Object.assign(new Error(errMsg), { code: "not_found" });
   }
-  requireGrantContractAgainstManifest(tokenGrant ?? undefined, manifest);
+  requireGrantContractAgainstManifest(
+    tokenInfo?.grant ? (tokenInfo.grant as Record<string, unknown>) : undefined,
+    manifest
+  );
   return { manifest, source, storageBinding };
 }
 
@@ -2501,7 +2477,12 @@ export async function resolveGrantScopedStateGrant(connectorId: string, grantId:
   const row = isPostgresStorageBackend()
     ? (
         await postgresQuery(
-          `SELECT grant_json::text AS grant_json,
+          `SELECT grant_id AS persisted_grant_id,
+                subject_id AS grant_subject_id,
+                client_id AS grant_client_id,
+                access_mode AS grant_access_mode,
+                expires_at AS grant_expires_at,
+                grant_json::text AS grant_json,
                 storage_binding_json::text AS storage_binding_json,
                 trace_id, scenario_id
          FROM grants
@@ -2842,27 +2823,142 @@ function buildStreamMetadataEntry({
   grantedConnections?: unknown[] | null;
   manifestStreamNames?: Set<string> | null;
 }) {
+  const projectedManifestStream = streamGrant
+    ? projectManifestStreamForGrant(manifestStream, streamGrant, grantStreams)
+    : manifestStream;
   const expandStreamGrant = streamGrant ? { ...streamGrant, grantStreams } : null;
   const entry: Record<string, unknown> = {
-    consent_time_field: manifestStream.consent_time_field,
-    cursor_field: manifestStream.cursor_field,
-    expand_capabilities: buildExpandCapabilities(manifestStream, expandStreamGrant, manifestStreamNames),
-    field_capabilities: buildFieldCapabilities(manifestStream, streamGrant),
+    consent_time_field: projectedManifestStream.consent_time_field,
+    cursor_field: projectedManifestStream.cursor_field,
+    expand_capabilities: buildExpandCapabilities(projectedManifestStream, expandStreamGrant, manifestStreamNames),
+    field_capabilities: buildFieldCapabilities(projectedManifestStream, streamGrant),
     freshness: freshness ?? buildFreshness(null),
-    name: manifestStream.name,
+    name: projectedManifestStream.name,
     object: "stream_metadata",
-    primary_key: normalizePrimaryKey(manifestStream.primary_key),
-    query: manifestStream.query || {},
-    relationships: manifestStream.relationships || [],
-    schema: manifestStream.schema,
-    selection: manifestStream.selection,
-    semantics: manifestStream.semantics,
-    views: manifestStream.views || [],
+    primary_key: normalizePrimaryKey(projectedManifestStream.primary_key),
+    query: projectedManifestStream.query || {},
+    relationships: projectedManifestStream.relationships || [],
+    schema: projectedManifestStream.schema,
+    selection: projectedManifestStream.selection,
+    semantics: projectedManifestStream.semantics,
+    views: projectedManifestStream.views || [],
   };
+  if (streamGrant) {
+    entry.instance_ids = Array.isArray(streamGrant.instance_ids) ? [...streamGrant.instance_ids] : [];
+    if (Array.isArray(streamGrant.resources)) {
+      entry.resources = [...streamGrant.resources];
+    }
+    if (streamGrant.time_constraint && typeof streamGrant.time_constraint === "object") {
+      entry.time_constraint = structuredClone(streamGrant.time_constraint);
+    }
+  }
   if (Array.isArray(grantedConnections)) {
     entry.granted_connections = grantedConnections;
   }
   return entry;
+}
+
+function projectManifestStreamForGrant(
+  manifestStream: Record<string, unknown>,
+  streamGrant: Record<string, unknown>,
+  grantStreams: Record<string, unknown>[]
+): Record<string, unknown> {
+  const fields = Array.isArray(streamGrant.fields)
+    ? (streamGrant.fields as unknown[]).filter((field): field is string => typeof field === "string")
+    : [];
+  const grantedFields = new Set(fields);
+  const currentSchema =
+    manifestStream.schema && typeof manifestStream.schema === "object" && !Array.isArray(manifestStream.schema)
+      ? (structuredClone(manifestStream.schema) as Record<string, unknown>)
+      : {};
+  const properties =
+    currentSchema.properties && typeof currentSchema.properties === "object" && !Array.isArray(currentSchema.properties)
+      ? (currentSchema.properties as Record<string, unknown>)
+      : {};
+  const required = Array.isArray(currentSchema.required)
+    ? (currentSchema.required as unknown[]).filter(
+        (field): field is string => typeof field === "string" && grantedFields.has(field)
+      )
+    : [];
+  const schema: Record<string, unknown> = {
+    ...(currentSchema.$schema ? { $schema: currentSchema.$schema } : {}),
+    ...(currentSchema.$defs ? { $defs: currentSchema.$defs } : {}),
+    additionalProperties: false,
+    properties: Object.fromEntries(Object.entries(properties).filter(([field]) => grantedFields.has(field))),
+    required,
+    type: "object",
+  };
+  const timeConstraint =
+    streamGrant.time_constraint && typeof streamGrant.time_constraint === "object"
+      ? (streamGrant.time_constraint as Record<string, unknown>)
+      : null;
+  const frozenTimeField = typeof timeConstraint?.field === "string" ? timeConstraint.field : undefined;
+  const cursorField = typeof manifestStream.cursor_field === "string" ? manifestStream.cursor_field : undefined;
+  const grantStreamByName = new Map(
+    grantStreams.flatMap((stream) => (typeof stream.name === "string" ? [[stream.name, stream] as const] : []))
+  );
+  return {
+    name: streamGrant.name,
+    schema,
+    ...(frozenTimeField ? { consent_time_field: frozenTimeField } : {}),
+    ...(cursorField && grantedFields.has(cursorField) ? { cursor_field: cursorField } : {}),
+    query: projectQueryForGrantedFields(manifestStream.query, grantedFields),
+    relationships: Array.isArray(manifestStream.relationships)
+      ? (manifestStream.relationships as Record<string, unknown>[]).filter((relationship) => {
+          if (!(typeof relationship?.stream === "string" && typeof relationship?.foreign_key === "string")) {
+            return false;
+          }
+          const relatedGrant = grantStreamByName.get(relationship.stream);
+          if (!relatedGrant) {
+            return false;
+          }
+          const foreignKeyFields =
+            relationship.cardinality === "has_many" && Array.isArray(relatedGrant.fields)
+              ? new Set(relatedGrant.fields)
+              : grantedFields;
+          return foreignKeyFields.has(relationship.foreign_key);
+        })
+      : [],
+  };
+}
+
+function projectQueryForGrantedFields(queryValue: unknown, grantedFields: Set<string>): Record<string, unknown> {
+  if (!(queryValue && typeof queryValue === "object") || Array.isArray(queryValue)) {
+    return {};
+  }
+  const query = queryValue as Record<string, unknown>;
+  const projected: Record<string, unknown> = {};
+  if (query.range_filters && typeof query.range_filters === "object" && !Array.isArray(query.range_filters)) {
+    projected.range_filters = Object.fromEntries(
+      Object.entries(query.range_filters as Record<string, unknown>).filter(([field]) => grantedFields.has(field))
+    );
+  }
+  if (query.search && typeof query.search === "object" && !Array.isArray(query.search)) {
+    const search = query.search as Record<string, unknown>;
+    projected.search = Object.fromEntries(
+      ["lexical_fields", "semantic_fields"].flatMap((key) => {
+        const value = search[key];
+        return Array.isArray(value)
+          ? [[key, value.filter((field): field is string => typeof field === "string" && grantedFields.has(field))]]
+          : [];
+      })
+    );
+  }
+  if (query.aggregations && typeof query.aggregations === "object" && !Array.isArray(query.aggregations)) {
+    const aggregationEntries: [string, unknown][] = [];
+    for (const [key, value] of Object.entries(query.aggregations as Record<string, unknown>)) {
+      if (key === "count" && value === true) {
+        aggregationEntries.push([key, true]);
+      } else if (Array.isArray(value)) {
+        aggregationEntries.push([
+          key,
+          value.filter((field): field is string => typeof field === "string" && grantedFields.has(field)),
+        ]);
+      }
+    }
+    projected.aggregations = Object.fromEntries(aggregationEntries);
+  }
+  return projected;
 }
 
 // Emit one `expand_capabilities` entry per enabled parent-stream relation (a
@@ -2991,6 +3087,87 @@ function buildStreamDiscoverySummary({
   };
 }
 
+function mergeStreamSummary(
+  current: Record<string, unknown> | undefined,
+  next: Record<string, unknown>
+): Record<string, unknown> {
+  const currentUpdated = typeof current?.last_updated === "string" ? current.last_updated : null;
+  const nextUpdated = typeof next.last_updated === "string" ? next.last_updated : null;
+  return {
+    last_updated: !currentUpdated || (nextUpdated && nextUpdated > currentUpdated) ? nextUpdated : currentUpdated,
+    name: next.name,
+    object: "stream",
+    record_count: Number(current?.record_count || 0) + Number(next.record_count || 0),
+  };
+}
+
+async function listSubjectVisibleStreamSummaries({
+  storageBinding,
+  manifest,
+  grant,
+  ownerSubjectId,
+}: {
+  source: { kind?: string; id?: string } | null | undefined;
+  storageBinding: StorageBinding;
+  manifest: Record<string, unknown>;
+  grant: Record<string, unknown> | null;
+  ownerSubjectId: string | null;
+}): Promise<Record<string, unknown>[]> {
+  const manifestStreams = Array.isArray(manifest.streams) ? (manifest.streams as Record<string, unknown>[]) : [];
+  const effectiveGrant = grant ?? {
+    streams: manifestStreams.flatMap((stream) =>
+      typeof stream.name === "string" && stream.name ? [{ name: stream.name }] : []
+    ),
+  };
+  const grantStreams = Array.isArray(effectiveGrant.streams)
+    ? (effectiveGrant.streams as Record<string, unknown>[])
+    : [];
+  const summaries = new Map<string, Record<string, unknown>>();
+  await Promise.all(
+    grantStreams.map(async (streamGrant) => {
+      const streamName = typeof streamGrant.name === "string" ? streamGrant.name : null;
+      if (!streamName) {
+        return;
+      }
+      let bindings: Array<{ connectorId: string; connectorInstanceId: string }>;
+      try {
+        const resolved = await resolveReadRequestBindings({
+          grant: effectiveGrant as unknown as Parameters<typeof resolveReadRequestBindings>[0]["grant"],
+          ownerRead: grant === null,
+          ...(ownerSubjectId ? { ownerSubjectId } : {}),
+          requestParams: {},
+          storageBinding: storageBinding as unknown as NonNullable<
+            Parameters<typeof resolveReadRequestBindings>[0]["storageBinding"]
+          >,
+          streamName,
+        });
+        bindings = resolved.bindings as Array<{ connectorId: string; connectorInstanceId: string }>;
+      } catch (error) {
+        if (error instanceof Error && (error as Error & { code?: string }).code === "connection_not_found") {
+          return;
+        }
+        throw error;
+      }
+      const perBinding = await Promise.all(
+        bindings.map((binding) =>
+          listStreams(
+            {
+              connector_id: binding.connectorId,
+              connector_instance_id: binding.connectorInstanceId,
+            },
+            { streams: [streamGrant] } as unknown as Parameters<typeof listStreams>[1],
+            manifest as Parameters<typeof listStreams>[2]
+          )
+        )
+      );
+      for (const summary of perBinding.flat() as unknown as Record<string, unknown>[]) {
+        summaries.set(streamName, mergeStreamSummary(summaries.get(streamName), summary));
+      }
+    })
+  );
+  return [...summaries.values()];
+}
+
 async function buildConnectorSchemaItem({
   source,
   storageBinding,
@@ -3004,14 +3181,14 @@ async function buildConnectorSchemaItem({
   grant?: Record<string, unknown> | null;
   ownerSubjectId?: string | null;
 }) {
-  const connectorId = source?.kind === "connector" ? ((source.id as string | null | undefined) ?? null) : null;
-  const rawStreamSummaries = grant
-    ? await listStreams(
-        storageBinding as unknown as Parameters<typeof listStreams>[0],
-        grant as unknown as Parameters<typeof listStreams>[1],
-        manifest as unknown as Parameters<typeof listStreams>[2]
-      )
-    : await listAllStreams(storageBinding as unknown as Parameters<typeof listAllStreams>[0]);
+  const connectorId = (storageBinding.connector_id as string | null | undefined) ?? null;
+  const rawStreamSummaries = await listSubjectVisibleStreamSummaries({
+    grant,
+    manifest,
+    ownerSubjectId,
+    source,
+    storageBinding,
+  });
   const streamSummaries = rawStreamSummaries as Record<string, unknown>[];
   const summaryByName = new Map(streamSummaries.map((summary) => [summary.name as string, summary]));
   const grantStreamsArr = Array.isArray(grant?.streams) ? (grant?.streams as Record<string, unknown>[]) : [];
@@ -3030,41 +3207,33 @@ async function buildConnectorSchemaItem({
   const manifestStreamNames = new Set(manifestStreamsArr.map((stream) => stream.name as string));
   const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, source });
 
-  // Look up granted connections once per connector. For polyfill connectors
-  // we batch a single owner+connector store query and reuse the result for
-  // every stream entry, narrowing per-stream by `grant.streams[].connection_id`
-  // when the grant pins a single connection. For provider_native sources we
-  // omit the field — those grants do not address a connection_id.
-  // biome-ignore lint/suspicious/noEvolvingTypes: This runtime-untyped boundary requires staged type narrowing.
-  let activeBindings = null;
-  if (connectorId && ownerSubjectId) {
-    activeBindings = await listGrantedConnectionsForStream({
-      connectorId,
-      grantStreamConnectionId: null,
-      ownerSubjectId,
-    });
-  }
-
-  const streams = visibleStreams.map((manifestStream) => {
-    const streamName = manifestStream.name as string;
-    const summary = summaryByName.get(streamName);
-    const lastUpdated = (summary?.last_updated as string | null | undefined) || null;
-    const streamGrant = grantStreamByName ? grantStreamByName.get(streamName) || null : null;
-    let grantedConnections: unknown[] | null = null;
-    if (activeBindings) {
-      const pin = (streamGrant?.connection_id as string | null | undefined) || null;
-      const bindingsArr = activeBindings as unknown as Record<string, unknown>[];
-      grantedConnections = pin ? bindingsArr.filter((entry) => entry.connection_id === pin) : bindingsArr;
-    }
-    return buildStreamMetadataEntry({
-      freshness: buildConnectorAwareFreshness(freshnessEvidence, lastUpdated),
-      grantedConnections,
-      grantStreams,
-      manifestStream,
-      manifestStreamNames,
-      streamGrant,
-    });
-  });
+  const streams = await Promise.all(
+    visibleStreams.map(async (manifestStream) => {
+      const streamName = manifestStream.name as string;
+      const summary = summaryByName.get(streamName);
+      const lastUpdated = (summary?.last_updated as string | null | undefined) || null;
+      const streamGrant = grantStreamByName ? grantStreamByName.get(streamName) || null : null;
+      let grantedConnections: unknown[] | null = null;
+      if (connectorId && ownerSubjectId) {
+        const authorizedInstanceIds = Array.isArray(streamGrant?.instance_ids)
+          ? (streamGrant.instance_ids as string[])
+          : [];
+        grantedConnections = await listGrantedConnectionsForStream({
+          authorizedInstanceIds: grant ? authorizedInstanceIds : null,
+          connectorId,
+          ownerSubjectId,
+        });
+      }
+      return buildStreamMetadataEntry({
+        freshness: buildConnectorAwareFreshness(freshnessEvidence, lastUpdated),
+        grantedConnections,
+        grantStreams,
+        manifestStream,
+        manifestStreamNames,
+        streamGrant,
+      });
+    })
+  );
 
   const item: Record<string, unknown> = {
     object: "connector",
@@ -3084,20 +3253,22 @@ async function buildConnectorDiscoveryItem({
   storageBinding,
   manifest,
   grant = null as Record<string, unknown> | null,
+  ownerSubjectId = null as string | null,
 }: {
   source: { kind?: string; id?: string } | null | undefined;
   storageBinding: StorageBinding;
   manifest: Record<string, unknown>;
   grant?: Record<string, unknown> | null;
+  ownerSubjectId?: string | null;
 }) {
-  const connectorId = source?.kind === "connector" ? ((source.id as string | null | undefined) ?? null) : null;
-  const rawSummaries = grant
-    ? await listStreams(
-        storageBinding as unknown as Parameters<typeof listStreams>[0],
-        grant as unknown as Parameters<typeof listStreams>[1],
-        manifest as unknown as Parameters<typeof listStreams>[2]
-      )
-    : await listAllStreams(storageBinding as unknown as Parameters<typeof listAllStreams>[0]);
+  const connectorId = (storageBinding.connector_id as string | null | undefined) ?? null;
+  const rawSummaries = await listSubjectVisibleStreamSummaries({
+    grant,
+    manifest,
+    ownerSubjectId,
+    source,
+    storageBinding,
+  });
   const streamSummaries = rawSummaries as Record<string, unknown>[];
   const summaryByName = new Map(streamSummaries.map((summary) => [summary.name as string, summary]));
   const manifestStreamsArr = Array.isArray(manifest.streams) ? (manifest.streams as Record<string, unknown>[]) : [];
@@ -3450,36 +3621,30 @@ async function getVisibleStreamFreshness({
   manifest: Record<string, unknown>;
 }) {
   const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, source });
-  if (tokenInfo?.pdpp_token_kind === "owner") {
-    const rawSummaries = await listAllStreams(storageBinding as unknown as Parameters<typeof listAllStreams>[0]);
-    const summaries = rawSummaries as Record<string, unknown>[];
-    const summary = summaries.find((entry) => entry.name === stream);
-    return buildConnectorAwareFreshness(
-      freshnessEvidence,
-      (summary?.last_updated as string | null | undefined) || null
-    );
-  }
-
-  const grantStreams = Array.isArray((tokenInfo?.grant as Record<string, unknown> | null | undefined)?.streams)
-    ? // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-      ((tokenInfo?.grant as Record<string, unknown>)?.streams as Record<string, unknown>[])
-    : [];
-  const streamGrant = grantStreams.find((entry) => entry.name === stream);
-  if (!streamGrant) {
+  const grant =
+    tokenInfo?.pdpp_token_kind === "owner"
+      ? null
+      : ((tokenInfo?.grant as Record<string, unknown> | null | undefined) ?? null);
+  const grantStreams = Array.isArray(grant?.streams) ? (grant.streams as Record<string, unknown>[]) : [];
+  if (grant && !grantStreams.some((entry) => entry.name === stream)) {
     throw Object.assign(new Error(`Stream '${stream}' not in grant`), {
       code: "grant_stream_not_allowed",
     }) as unknown as ApiError;
   }
-  const rawSummaries2 = await listStreams(
-    storageBinding as unknown as Parameters<typeof listStreams>[0],
-    { streams: [streamGrant] } as unknown as Parameters<typeof listStreams>[1],
-    manifest as unknown as Parameters<typeof listStreams>[2]
-  );
-  const summaries2 = rawSummaries2 as unknown as Record<string, unknown>[];
-  return buildConnectorAwareFreshness(
-    freshnessEvidence,
-    (summaries2[0]?.last_updated as string | null | undefined) || null
-  );
+  const summaries = await listSubjectVisibleStreamSummaries({
+    grant: grant
+      ? {
+          ...grant,
+          streams: grantStreams.filter((entry) => entry.name === stream),
+        }
+      : null,
+    manifest,
+    ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
+    source,
+    storageBinding,
+  });
+  const summary = summaries.find((entry) => entry.name === stream);
+  return buildConnectorAwareFreshness(freshnessEvidence, (summary?.last_updated as string | null | undefined) || null);
 }
 
 // ─── AS App ─────────────────────────────────────────────────────────────────
@@ -3855,7 +4020,10 @@ export function buildAsApp(opts: ServerOpts = {}) {
     async initiateNativeGrant({ baseUrl, clientId, clientName }) {
       const nativeManifest = resolveNativeManifest(opts);
       const nativeStorageBinding = (nativeManifest?.storage_binding || {}) as Record<string, unknown>;
-      if (!(nativeManifest?.provider_id && nativeStorageBinding.connector_id)) {
+      const configuredSource = buildSourceDescriptor(
+        (nativeManifest?.source_declaration as { source?: { id?: string; kind?: string } } | undefined)?.source ?? null
+      );
+      if (!(configuredSource && nativeStorageBinding.connector_id)) {
         return null;
       }
       return consentStore.initiateGrant(
@@ -3865,7 +4033,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
               access_mode: "single_use",
               purpose_code: "https://pdpp.dev/purpose/personal_assistant",
               purpose_description: "Delegate scoped personal data access to a local PDPP CLI client.",
-              source: { id: nativeManifest.provider_id as string, kind: "provider_native" },
+              source: configuredSource,
               streams: [{ name: "*" }],
               type: "https://pdpp.dev/data-access",
             },
@@ -6738,9 +6906,11 @@ export async function startServer(opts: ServerOpts = {}) {
     connectorId: string;
     connectorInstanceId: string;
     connectionId?: string | null;
+    data: Record<string, unknown> | null;
     stream: string;
     version: number | null;
     emittedAt: string;
+    recordKey: string;
   }): Promise<void> {
     try {
       const subs = await listActiveSubscriptions();
@@ -6757,8 +6927,10 @@ export async function startServer(opts: ServerOpts = {}) {
           connectionId: change.connectionId ?? null,
           connectorId: change.connectorId,
           connectorInstanceId: change.connectorInstanceId,
+          data: change.data,
           emittedAt: change.emittedAt,
           ownerSubjectId: changedInstanceOwner,
+          recordKey: change.recordKey,
           stream: change.stream,
           version: Number(change.version) || 0,
         },
@@ -6804,9 +6976,11 @@ export async function startServer(opts: ServerOpts = {}) {
       connectorId: string;
       connectorInstanceId: string;
       connectionId?: string | null;
+      data: Record<string, unknown> | null;
       stream: string;
       version: number | null;
       emittedAt: string;
+      recordKey: string;
     }) => {
       const task = enqueueClientEvents(change);
       clientEventEnqueueTasks.add(task);

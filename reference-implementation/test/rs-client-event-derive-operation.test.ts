@@ -25,8 +25,11 @@ function activeSub(overrides: Partial<ActiveSubscription> = {}): ActiveSubscript
   return {
     ...baseSub,
     scope: {
-      source: { id: "gmail", kind: "connector" },
-      streams: [{ name: "messages" }, { name: "contacts" }],
+      source: { connector_id: "gmail", id: "https://registry.pdpp.org/connectors/gmail", kind: "connector" },
+      streams: [
+        { instance_ids: ["gmail_default"], name: "messages" },
+        { instance_ids: ["gmail_default"], name: "contacts" },
+      ],
     },
     ...overrides,
   };
@@ -108,7 +111,13 @@ test("derive isolates trusted owner-agent wildcard subscriptions by owner subjec
 
 test("derive omits envelope for streams outside grant scope", () => {
   const events = deriveClientEventsFromRecordChange(
-    { connectorId: "gmail", connectorInstanceId: "g", emittedAt: "now", stream: "labels", version: 1 },
+    {
+      connectorId: "gmail",
+      connectorInstanceId: "gmail_default",
+      emittedAt: "now",
+      stream: "labels",
+      version: 1,
+    },
     [activeSub()]
   );
   assert.equal(events.length, 0);
@@ -118,33 +127,49 @@ test("derive respects client-narrowed filters subset", () => {
   const sub = activeSub({
     scope: {
       filters: { streams: ["messages"] },
-      source: { id: "gmail", kind: "connector" },
-      streams: [{ name: "messages" }, { name: "contacts" }],
+      source: { connector_id: "gmail", id: "https://registry.pdpp.org/connectors/gmail", kind: "connector" },
+      streams: [
+        { instance_ids: ["gmail_default"], name: "messages" },
+        { instance_ids: ["gmail_default"], name: "contacts" },
+      ],
     },
   });
   const eventsMsgs = deriveClientEventsFromRecordChange(
-    { connectorId: "gmail", connectorInstanceId: "g", emittedAt: "now", stream: "messages", version: 1 },
+    {
+      connectorId: "gmail",
+      connectorInstanceId: "gmail_default",
+      emittedAt: "now",
+      stream: "messages",
+      version: 1,
+    },
     [sub]
   );
   const eventsContacts = deriveClientEventsFromRecordChange(
-    { connectorId: "gmail", connectorInstanceId: "g", emittedAt: "now", stream: "contacts", version: 2 },
+    {
+      connectorId: "gmail",
+      connectorInstanceId: "gmail_default",
+      emittedAt: "now",
+      stream: "contacts",
+      version: 2,
+    },
     [sub]
   );
   assert.equal(eventsMsgs.length, 1);
   assert.equal(eventsContacts.length, 0);
 });
 
-test("derive matches connection_id when grant binds one", () => {
+test("derive enforces source and instance_ids from the closed grant", () => {
   const sub = activeSub({
     scope: {
-      streams: [{ connection_id: "conn_work", name: "messages" }],
+      source: { connector_id: "gmail", id: "https://registry.pdpp.org/connectors/gmail", kind: "connector" },
+      streams: [{ instance_ids: ["conn_work"], name: "messages" }],
     },
   });
   const matches = deriveClientEventsFromRecordChange(
     {
       connectionId: "conn_work",
       connectorId: "gmail",
-      connectorInstanceId: "g",
+      connectorInstanceId: "conn_work",
       emittedAt: "now",
       stream: "messages",
       version: 1,
@@ -155,7 +180,7 @@ test("derive matches connection_id when grant binds one", () => {
     {
       connectionId: "conn_personal",
       connectorId: "gmail",
-      connectorInstanceId: "g",
+      connectorInstanceId: "conn_personal",
       emittedAt: "now",
       stream: "messages",
       version: 1,
@@ -167,6 +192,63 @@ test("derive matches connection_id when grant binds one", () => {
   assert.ok(match);
   assert.equal(match.data.connection_id, "conn_work");
   assert.equal(otherConn.length, 0);
+
+  const otherSource = deriveClientEventsFromRecordChange(
+    {
+      connectionId: "conn_work",
+      connectorId: "outlook",
+      connectorInstanceId: "conn_work",
+      emittedAt: "now",
+      stream: "messages",
+      version: 1,
+    },
+    [sub]
+  );
+  assert.equal(otherSource.length, 0);
+});
+
+test("derive enforces resource and time constraints before emitting a hint", () => {
+  const sub = activeSub({
+    scope: {
+      source: { connector_id: "gmail", id: "https://registry.pdpp.org/connectors/gmail", kind: "connector" },
+      streams: [
+        {
+          instance_ids: ["gmail_default"],
+          name: "messages",
+          resources: ["message-1"],
+          time_constraint: { field: "sent_at", since: "2026-01-01T00:00:00Z" },
+        },
+      ],
+    },
+  });
+  const baseChange = {
+    connectorId: "gmail",
+    connectorInstanceId: "gmail_default",
+    emittedAt: "now",
+    stream: "messages",
+    version: 1,
+  } as const;
+  assert.equal(
+    deriveClientEventsFromRecordChange(
+      { ...baseChange, data: { sent_at: "2026-02-01T00:00:00Z" }, recordKey: "message-1" },
+      [sub]
+    ).length,
+    1
+  );
+  assert.equal(
+    deriveClientEventsFromRecordChange(
+      { ...baseChange, data: { sent_at: "2026-02-01T00:00:00Z" }, recordKey: "message-2" },
+      [sub]
+    ).length,
+    0
+  );
+  assert.equal(
+    deriveClientEventsFromRecordChange(
+      { ...baseChange, data: { sent_at: "2025-12-01T00:00:00Z" }, recordKey: "message-1" },
+      [sub]
+    ).length,
+    0
+  );
 });
 
 test("derive ignores non-active subscriptions", () => {
@@ -176,7 +258,13 @@ test("derive ignores non-active subscriptions", () => {
   // deliberately passes a non-"active" status to prove that runtime guard works.
   const sub = activeSub({ status: "pending_verification" });
   const events = deriveClientEventsFromRecordChange(
-    { connectorId: "gmail", connectorInstanceId: "g", emittedAt: "now", stream: "messages", version: 1 },
+    {
+      connectorId: "gmail",
+      connectorInstanceId: "gmail_default",
+      emittedAt: "now",
+      stream: "messages",
+      version: 1,
+    },
     [sub]
   );
   assert.equal(events.length, 0);
@@ -184,7 +272,13 @@ test("derive ignores non-active subscriptions", () => {
 
 test("derive output carries no record body or field values", () => {
   const events = deriveClientEventsFromRecordChange(
-    { connectorId: "gmail", connectorInstanceId: "g", emittedAt: "now", stream: "messages", version: 1 },
+    {
+      connectorId: "gmail",
+      connectorInstanceId: "gmail_default",
+      emittedAt: "now",
+      stream: "messages",
+      version: 1,
+    },
     [activeSub()]
   );
   const [event] = events;

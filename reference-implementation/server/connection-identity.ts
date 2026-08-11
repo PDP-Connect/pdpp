@@ -221,25 +221,24 @@ export async function listActiveBindingsForGrant({
  *     many connections the hint is ignored unless explicitly requested.
  *   - `requestConnectionId`: canonical `connection_id` filter parsed from
  *     the request (or its deprecated `connector_instance_id` alias).
- *   - `grantStreamConnectionId`: per-stream `connection_id` constraint
- *     from the grant scope. Absent constraint preserves fan-in.
+ *   - `authorizedInstanceIds`: the closed grant stream's non-empty
+ *     `instance_ids` authority. This is the upper bound for every client
+ *     read; request-time selectors may only narrow it.
  *
- * Returns `{ bindings: [...], warnings: [...] }`. Bindings are
- * `{ connectorInstanceId, connectorId, displayName? }` ordered by
- * created_at ASC. Empty array means no active binding addressable under
- * the grant — callers should map that to `not_found` or
- * `connection_not_found` per their surface.
+ * Returns `{ bindings: [...], warnings: [...] }`. The closed grant ids are
+ * the authority. Current instance rows may enrich display names, but cannot
+ * widen or revoke the set named by the grant.
  */
 export async function resolveFanInBindings({
-  ownerSubjectId,
+  ownerSubjectId: _ownerSubjectId,
   connectorId,
-  connectorInstanceIdHint = null,
+  connectorInstanceIdHint: _connectorInstanceIdHint = null,
   requestConnectionId = null,
-  grantStreamConnectionId = null,
+  authorizedInstanceIds,
 }: {
+  authorizedInstanceIds: readonly string[];
   connectorId: string | null | undefined;
   connectorInstanceIdHint?: string | null;
-  grantStreamConnectionId?: string | null;
   ownerSubjectId: string | null | undefined;
   requestConnectionId?: string | null;
 }): Promise<{
@@ -251,20 +250,17 @@ export async function resolveFanInBindings({
     return { bindings: [], warnings };
   }
 
-  const active = await listActiveBindingsForGrant({ connectorId, ownerSubjectId });
-
-  // Honor grant-scope per-stream connection_id constraint first; absent
-  // constraint preserves fan-in across all active bindings.
-  let candidates = active;
-  if (grantStreamConnectionId) {
-    candidates = candidates.filter((row) => row.connectorInstanceId === grantStreamConnectionId);
-    if (candidates.length === 0) {
-      const err = new ConnectionNotFoundError(
-        `Grant scope connection_id '${grantStreamConnectionId}' is not currently active for connector '${connectorId}'.`
-      );
-      throw err;
-    }
+  if (!Array.isArray(authorizedInstanceIds) || authorizedInstanceIds.length === 0) {
+    throw new ConnectionNotFoundError("The grant does not authorize any source instances for this stream.");
   }
+
+  let candidates = await Promise.all(
+    [...new Set(authorizedInstanceIds)].map(async (connectorInstanceId) => ({
+      connectorId,
+      connectorInstanceId,
+      displayName: await lookupConnectionDisplayName(connectorInstanceId, connectorId),
+    }))
+  );
 
   // Narrow further by request-time `connection_id` (canonical or alias).
   if (requestConnectionId) {
@@ -276,25 +272,6 @@ export async function resolveFanInBindings({
       throw err;
     }
     candidates = narrowed;
-  }
-
-  // Fallback to the previously-pinned single binding when no active rows
-  // are registered yet. Today the reference runtime pins the binding at
-  // ingest time via `ensureDefaultAccountConnection`, so this path mainly
-  // covers boot-time / freshly-issued grants whose default-account row
-  // has not yet materialized; the caller's storage layer continues to
-  // operate against `connectorInstanceIdHint` in that case.
-  if (candidates.length === 0 && connectorInstanceIdHint) {
-    return {
-      bindings: [
-        {
-          connectorId,
-          connectorInstanceId: connectorInstanceIdHint,
-          displayName: null,
-        },
-      ],
-      warnings,
-    };
   }
 
   return {
@@ -362,9 +339,9 @@ export async function listActiveOwnerBindingsForConnectors({
  * Inputs:
  *   - `ownerSubjectId`: owner subject backing the grant.
  *   - `connectorId`: connector_id from the storage binding.
- *   - `grantStreamConnectionId`: per-stream `grant.streams[].connection_id`
- *     constraint. When set, the result is narrowed to that one binding
- *     (returns empty when the constraint is no longer active).
+ *   - `authorizedInstanceIds`: per-stream `grant.streams[].instance_ids`
+ *     authority. When present, these frozen ids are the result set; current
+ *     instance rows may enrich display names but cannot revoke grant scope.
  *
  * Used by `GET /v1/schema` to advertise the discoverable set of connections
  * per stream so grant-authorized clients can call subsequent reads with an
@@ -377,20 +354,30 @@ export async function listActiveOwnerBindingsForConnectors({
 export async function listGrantedConnectionsForStream({
   ownerSubjectId,
   connectorId,
-  grantStreamConnectionId = null,
+  authorizedInstanceIds = null,
 }: {
+  authorizedInstanceIds?: readonly string[] | null;
   ownerSubjectId: string | null | undefined;
   connectorId: string | null | undefined;
-  grantStreamConnectionId?: string | null;
 }): Promise<ConnectionWireBinding[]> {
   if (!(ownerSubjectId && connectorId)) {
     return [];
   }
+  if (authorizedInstanceIds) {
+    const identities = await Promise.all(
+      [...new Set(authorizedInstanceIds)].map((connectorInstanceId) =>
+        resolveRecordIdentityForBinding(connectorInstanceId, connectorId)
+      )
+    );
+    return identities
+      .filter((identity): identity is { connectionId: string; displayName?: string } => identity !== null)
+      .map((identity) => ({
+        connection_id: identity.connectionId,
+        ...(identity.displayName ? { display_name: identity.displayName } : {}),
+      }));
+  }
   const active = await listActiveBindingsForGrant({ connectorId, ownerSubjectId });
-  const filtered = grantStreamConnectionId
-    ? active.filter((row) => row.connectorInstanceId === grantStreamConnectionId)
-    : active;
-  return filtered
+  return active
     .map((row) =>
       projectBindingForWire({
         connectorId: row.connectorId,
@@ -416,19 +403,19 @@ export async function resolveRequestBindings({
   connectorId,
   connectorInstanceIdHint = null,
   requestParams = {},
-  grantStreamConnectionId = null,
+  authorizedInstanceIds,
 }: {
+  authorizedInstanceIds: readonly string[];
   connectorId: string | null | undefined;
   connectorInstanceIdHint?: string | null;
-  grantStreamConnectionId?: string | null;
   ownerSubjectId: string | null | undefined;
   requestParams?: Record<string, unknown>;
 }) {
   const { connectionId: requestConnectionId, warnings: aliasWarnings } = resolveRequestConnectionId(requestParams);
   const { bindings, warnings } = await resolveFanInBindings({
+    authorizedInstanceIds,
     connectorId,
     connectorInstanceIdHint,
-    grantStreamConnectionId,
     ownerSubjectId,
     requestConnectionId,
   });
