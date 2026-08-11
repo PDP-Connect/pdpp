@@ -2148,7 +2148,7 @@ function messageProgressLabel(channelCursorCount: number, priorTs: string | null
   return "Slack: emitting all messages (full pass)";
 }
 
-async function runFilesStream(deps: StreamDeps): Promise<void> {
+export async function runFilesStream(deps: StreamDeps): Promise<void> {
   // Exclude quip/canvas files from the generic `files` stream — they are
   // first-class records in the `canvases` stream (v0.3). Other file modes
   // (hosted, snippet, external, tombstone) still flow here.
