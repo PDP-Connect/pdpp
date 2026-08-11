@@ -64,6 +64,7 @@ import {
   runSingleLadderAttempt,
   shouldParseStatementTitle,
   USAA_RETRYABLE_PATTERN,
+  type UsaaRunState,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type {
@@ -743,6 +744,7 @@ test("runSingleLadderAttempt retains a logon interstitial on the existing re-aut
     sendInteraction: async () => ({ request_id: "test", status: "success", type: "INTERACTION_RESPONSE" }),
     settleDelayMs: 0,
     sinceDate: "2026-01-01",
+    streamState: { sessionDeadMidRun: false, sessionRepairAttempted: false } satisfies UsaaRunState,
     todayIso: "2026-07-16",
   });
 

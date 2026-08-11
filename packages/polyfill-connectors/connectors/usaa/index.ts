@@ -1557,14 +1557,30 @@ function latchSessionDead(streamState: TransactionsStreamState, sessionAlive: bo
   }
 }
 
+/**
+ * `streamState.sessionRepairAttempted` is the same RUN-scoped budget
+ * `gotoOrRepairSession` spends — shared here so the transactions export
+ * ladder cannot drive its own automated bank login independently of every
+ * other stream. Without this check, this path's "≤1 login per run" property
+ * held only because the ladder's own latch (`onSessionDead`) happens to stop
+ * the loop before a second call could occur — an emergent property of call
+ * ordering, not a local one. Checking the shared budget here makes the
+ * guarantee true by construction, the same way it already is in
+ * `gotoOrRepairSession`.
+ */
 async function reauthAfterSessionLapse(
   deps: EmitDeps,
   context: BrowserContext,
   page: Page,
   sendInteraction: BrowserCollectContext["sendInteraction"],
   _accountName: string | null,
+  streamState: UsaaRunState,
   observation?: NoExportAffordanceObservation
 ): Promise<boolean> {
+  if (streamState.sessionRepairAttempted) {
+    return false;
+  }
+  streamState.sessionRepairAttempted = true;
   await deps.emit({
     type: "PROGRESS",
     stream: "transactions",
@@ -1690,6 +1706,7 @@ interface LadderAttemptArgs {
   sendInteraction: BrowserCollectContext["sendInteraction"];
   settleDelayMs?: number;
   sinceDate: string;
+  streamState: UsaaRunState;
   todayIso: string;
 }
 
@@ -1716,6 +1733,7 @@ export async function runSingleLadderAttempt({
   attemptOrdinal,
   attemptTotal,
   sinceDate,
+  streamState,
   todayIso,
   onDiagnostics,
   onSessionDead,
@@ -1742,7 +1760,15 @@ export async function runSingleLadderAttempt({
     return exportResult.kind === "empty" ? { kind: "empty" } : { kind: "retry" };
   } catch (err) {
     if (err instanceof SessionDeadRedirectError) {
-      const ok = await reauthAfterSessionLapse(deps, context, page, sendInteraction, a.name, err.observation);
+      const ok = await reauthAfterSessionLapse(
+        deps,
+        context,
+        page,
+        sendInteraction,
+        a.name,
+        streamState,
+        err.observation
+      );
       if (ok) {
         return { kind: "retry" };
       }
@@ -1774,6 +1800,7 @@ async function tryExportLadder(
   accountTotal: number,
   candidateStarts: readonly string[],
   todayIso: string,
+  streamState: UsaaRunState,
   onSessionDead: () => void
 ): Promise<ExportLadderResult> {
   // Wrap in an object so TS tracks the mutation performed by the onDiagnostics
@@ -1798,6 +1825,7 @@ async function tryExportLadder(
       attemptOrdinal: i + 1,
       attemptTotal: candidateStarts.length,
       sinceDate,
+      streamState,
       todayIso,
       onDiagnostics,
       onSessionDead,
@@ -2187,6 +2215,7 @@ async function processAccountTransactions(
     accountTotal,
     candidateStarts,
     todayIso,
+    streamState,
     () => {
       streamState.sessionDeadMidRun = true;
     }

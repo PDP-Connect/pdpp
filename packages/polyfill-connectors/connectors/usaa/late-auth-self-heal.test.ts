@@ -33,10 +33,12 @@ import {
   extractAccounts,
   gotoOrRepairSession,
   runInboxStream,
+  runSingleLadderAttempt,
   runStatementsStream,
   type UsaaRunState,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
+import type { DashboardAccount } from "./types.ts";
 
 const FAKE_CONTEXT = {} as BrowserContext;
 const LOGON_URL = "https://www.usaa.com/my/logon";
@@ -347,6 +349,237 @@ test("gotoOrRepairSession: budget already spent by an earlier call this run → 
     1,
     "the retry-navigation after repair must never happen — the budget check short-circuits before any second goto"
   );
+});
+
+// ─── cross-path budget: gotoOrRepairSession vs. reauthAfterSessionLapse ──
+//
+// `gotoOrRepairSession` (accounts/statements/inbox/credit-card nav) and
+// `reauthAfterSessionLapse` (the transactions export ladder, reached via
+// `runSingleLadderAttempt` when `driveExport` throws `SessionDeadRedirectError`)
+// are two INDEPENDENT call sites that both spend the same run-scoped
+// `streamState.sessionRepairAttempted` budget. Before this fix,
+// `reauthAfterSessionLapse` never consulted the budget at all — the ≤1
+// auth-attempt-per-run property held only because whichever path detected
+// death first happened to latch `sessionDeadMidRun` and stop the run before
+// the other path's own call could occur. That is an emergent property of
+// call ordering in `collect()`, not a local one: it would silently break if
+// a future change removed an early-exit anywhere in between. These tests
+// spend the budget in one path and prove the OTHER path cannot spend it
+// again — and, as a counterweight, that a fresh run's transactions path can
+// still spend its own single attempt when nothing has touched the budget yet.
+
+function makeLogonBounceExportPage(): Page {
+  return Object.assign({} as Page, {
+    evaluate() {
+      return Promise.resolve({
+        account_detail_marker_count: 0,
+        navigation_marker_count: 0,
+        target_count: 0,
+        transaction_marker_count: 0,
+      });
+    },
+    goto() {
+      return Promise.resolve(null);
+    },
+    locator() {
+      return {
+        count() {
+          return Promise.resolve(0);
+        },
+        filter() {
+          return this;
+        },
+      };
+    },
+    url() {
+      return LOGON_URL;
+    },
+  });
+}
+
+function makeTransactionsAccount(overrides: Partial<DashboardAccount> = {}): DashboardAccount {
+  return {
+    account_id_raw: "ACCT-CHK-0001",
+    account_type: "checking",
+    account_url: "/my/checking?accountId=ACCT-CHK-0001",
+    balance_cents: 123_456,
+    last_four: "9241",
+    name: "USAA CLASSIC CHECKING",
+    raw_text: "USAA CLASSIC CHECKING Ending in *9241 $1,234.56",
+    ...overrides,
+  };
+}
+
+test("cross-path budget: gotoOrRepairSession spends the run's one repair attempt → reauthAfterSessionLapse (via runSingleLadderAttempt) cannot spend it again", async () => {
+  let reauthCalls = 0;
+  // biome-ignore lint/suspicious/useAwait: mock matches EmitDeps["reauthenticate"]'s Promise-returning signature
+  const reauthenticate: EmitDeps["reauthenticate"] = async () => {
+    reauthCalls += 1;
+  };
+  const run = makeHarness(reauthenticate);
+  const streamState = freshRunState();
+
+  // First: accounts' gotoOrRepairSession hits a logon bounce and spends the
+  // run's one automated-login budget (repair "succeeds" per the mock).
+  const { page: accountsPage } = makeSequencedPage([LOGON_URL, DASHBOARD_URL]);
+  const accountsResult = await gotoOrRepairSession(
+    run.deps,
+    FAKE_CONTEXT,
+    accountsPage,
+    NEVER_CALLED_SEND_INTERACTION,
+    DASHBOARD_URL,
+    { timeout: 1000 },
+    "accounts",
+    streamState
+  );
+  assert.deepEqual(accountsResult, { ok: true });
+  assert.equal(reauthCalls, 1, "accounts' repair call spends the budget");
+
+  // Second: later in the SAME run, the transactions export ladder hits its
+  // own logon bounce (SessionDeadRedirectError). Without the budget check in
+  // reauthAfterSessionLapse, this would drive a SECOND automated bank login.
+  let sessionDead = false;
+  const outcome = await runSingleLadderAttempt({
+    a: makeTransactionsAccount(),
+    accountOrdinal: 1,
+    accountTotal: 1,
+    attemptOrdinal: 1,
+    attemptTotal: 1,
+    context: FAKE_CONTEXT,
+    deps: run.deps,
+    onDiagnostics() {
+      // Not asserted here — this test is about the auth budget, not diagnostics.
+    },
+    onSessionDead() {
+      sessionDead = true;
+    },
+    page: makeLogonBounceExportPage(),
+    sendInteraction: NEVER_CALLED_SEND_INTERACTION,
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    streamState,
+    todayIso: "2026-07-16",
+  });
+
+  assert.deepEqual(outcome, { kind: "session_dead" });
+  assert.equal(sessionDead, true, "the ladder still correctly reports session death to its caller");
+  assert.equal(
+    reauthCalls,
+    1,
+    "CROSS-PATH BUDGET GUARD: reauthAfterSessionLapse must not spend a second automated login this run just " +
+      "because it is a different call site than gotoOrRepairSession — both must share one run-scoped budget"
+  );
+});
+
+test("cross-path budget: reauthAfterSessionLapse spends the run's one repair attempt first → a later gotoOrRepairSession call cannot spend it again", async () => {
+  let reauthCalls = 0;
+  const reauthenticate: EmitDeps["reauthenticate"] = () => {
+    reauthCalls += 1;
+    return Promise.reject(new Error("repair fails, proving the SPEND happened even though it didn't help"));
+  };
+  const run = makeHarness(reauthenticate);
+  const streamState = freshRunState();
+
+  // First: transactions hits a logon bounce and spends the budget via
+  // reauthAfterSessionLapse — the repair call itself fails, so the ladder
+  // reports session_dead (mirrors integration.test.ts's existing
+  // "retains a logon interstitial on the existing re-auth failure outcome").
+  let sessionDead = false;
+  const outcome = await runSingleLadderAttempt({
+    a: makeTransactionsAccount(),
+    accountOrdinal: 1,
+    accountTotal: 1,
+    attemptOrdinal: 1,
+    attemptTotal: 1,
+    context: FAKE_CONTEXT,
+    deps: run.deps,
+    onDiagnostics() {
+      // Not asserted here — this test is about the auth budget, not diagnostics.
+    },
+    onSessionDead() {
+      sessionDead = true;
+    },
+    page: makeLogonBounceExportPage(),
+    sendInteraction: NEVER_CALLED_SEND_INTERACTION,
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    streamState,
+    todayIso: "2026-07-16",
+  });
+  assert.deepEqual(outcome, { kind: "session_dead" });
+  assert.equal(sessionDead, true);
+  assert.equal(reauthCalls, 1, "the transactions path's repair call spends the budget");
+
+  // Second: later in the SAME run, statements' gotoOrRepairSession hits its
+  // own logon bounce. Without a shared budget, this would drive a SECOND
+  // automated bank login independent of the one the ladder already spent.
+  const { calls: statementsCalls, page: statementsPage } = makeSequencedPage([LOGON_URL]);
+  const statementsResult = await gotoOrRepairSession(
+    run.deps,
+    FAKE_CONTEXT,
+    statementsPage,
+    NEVER_CALLED_SEND_INTERACTION,
+    "https://www.usaa.com/my/documents",
+    { timeout: 1000 },
+    "statements",
+    streamState
+  );
+
+  assert.deepEqual(statementsResult, { ok: false }, "the budget is already spent, so this call must be refused");
+  assert.equal(
+    reauthCalls,
+    1,
+    "CROSS-PATH BUDGET GUARD: gotoOrRepairSession must not spend a second automated login this run just because " +
+      "reauthAfterSessionLapse (a different call site) already spent it"
+  );
+  assert.equal(
+    statementsCalls.length,
+    1,
+    "the retry-navigation after repair must never happen — the shared budget check short-circuits before it"
+  );
+});
+
+test("cross-path budget counterweight: a FRESH run's transactions path (reauthAfterSessionLapse) can still spend its one attempt when nothing has touched the budget yet", async () => {
+  let reauthCalls = 0;
+  const reauthenticate: EmitDeps["reauthenticate"] = () => {
+    reauthCalls += 1;
+    return Promise.reject(new Error("repair fails, so the outcome is deterministically session_dead"));
+  };
+  const run = makeHarness(reauthenticate);
+  const streamState = freshRunState();
+
+  let sessionDead = false;
+  const outcome = await runSingleLadderAttempt({
+    a: makeTransactionsAccount(),
+    accountOrdinal: 1,
+    accountTotal: 1,
+    attemptOrdinal: 1,
+    attemptTotal: 1,
+    context: FAKE_CONTEXT,
+    deps: run.deps,
+    onDiagnostics() {
+      // Not asserted here — this test is about the auth budget, not diagnostics.
+    },
+    onSessionDead() {
+      sessionDead = true;
+    },
+    page: makeLogonBounceExportPage(),
+    sendInteraction: NEVER_CALLED_SEND_INTERACTION,
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    streamState,
+    todayIso: "2026-07-16",
+  });
+
+  assert.deepEqual(outcome, { kind: "session_dead" });
+  assert.equal(sessionDead, true);
+  assert.equal(
+    reauthCalls,
+    1,
+    "COUNTERWEIGHT: a fresh, untouched run-scoped budget must still allow exactly one automated login attempt " +
+      "on the transactions path — the cross-path guard above must not have made this path permanently inert"
+  );
+  assert.equal(streamState.sessionRepairAttempted, true, "the ladder's own call spends the shared budget");
 });
 
 // ─── runStatementsStream: statements/inbox class of sub-streams ─────────
