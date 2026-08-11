@@ -46,6 +46,11 @@ const USER_AGENT = slackBrowserUserAgent();
 
 export const SLACK_API_RETRYABLE_FAILURE_RE = /slack_rate_limited|ECONN|ETIMEDOUT|timeout/i;
 
+/** Matches the literal `slack_auth_failed` error `parseSlackApiResponse` throws
+ *  on a 401 or an `invalid_auth`/`not_authed`/`token_revoked` API response — a
+ *  durable session-credential rejection, never transient. */
+export const SLACK_API_AUTH_FAILURE_RE = /slack_auth_failed/;
+
 /**
  * Mirror slackdump's client-token cookie shape.
  *

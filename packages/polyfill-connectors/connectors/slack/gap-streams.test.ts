@@ -239,6 +239,33 @@ test("runOptionalStream: a non-retryable failure (auth) is flagged non-retryable
   assert.equal(hint?.retryable, false);
 });
 
+test("runOptionalStream: an auth failure omits action:retry_by_runtime so the coverage rollup does not read it as self-healing", async () => {
+  // reference-implementation/server/connector-coverage-policy.ts's
+  // mapSkipCoverageCondition checks `recovery_hint.action === "retry_by_runtime"`
+  // BEFORE inspecting the skip reason text at all — so an unconditional
+  // "retry_by_runtime" action on every optional-stream failure would project
+  // a durable slack_auth_failed 401 as `retryable_gap` (the same "will
+  // self-heal" coverage condition a transient 429 gets), even though retrying
+  // the same call against the same rejected session can never succeed.
+  const { emit, messages } = captureEmitted();
+
+  await runOptionalStream(emit, "stars", () => Promise.reject(new Error("slack_auth_failed")));
+
+  const [msg] = messages;
+  const hint = (msg as { recovery_hint?: { action?: string } }).recovery_hint;
+  assert.notEqual(hint?.action, "retry_by_runtime");
+});
+
+test("runOptionalStream: a retryable failure (rate limit) still carries action:retry_by_runtime", async () => {
+  const { emit, messages } = captureEmitted();
+
+  await runOptionalStream(emit, "reminders", () => Promise.reject(new Error("slack_rate_limited")));
+
+  const [msg] = messages;
+  const hint = (msg as { recovery_hint?: { action?: string } }).recovery_hint;
+  assert.equal(hint?.action, "retry_by_runtime");
+});
+
 function seedUser(db: DatabaseSync, id: string): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS S_USER (

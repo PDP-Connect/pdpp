@@ -94,6 +94,32 @@ test("skip facts outrank checkpoint strategy proof", () => {
   );
 });
 
+// Guards the exact shape the Slack connector's runOptionalStream now emits
+// for stars/user_groups/reminders/dm_read_states on a durable slack_auth_failed
+// 401: `reason: "optional_stream_failed"` (matches no retryable/deferred/
+// unavailable/unsupported reason pattern) with recovery_action OMITTED (not
+// "retry_by_runtime", since retrying the same call against the same
+// rejected session can never succeed). Must read terminal_gap, never
+// retryable_gap — a retryable_gap misclassification would surface as
+// "will self-heal" when the connector's own manifest disposition is that
+// this stream needs a real credential fix, not a retry.
+test("an optional-stream auth-failure skip with no recovery_action reads terminal_gap, not retryable_gap", () => {
+  assert.equal(
+    deriveStreamCoverageCondition(
+      fact({
+        skipped: {
+          reason: "optional_stream_failed",
+        },
+      }),
+      {
+        coverage_strategy: "full_inventory",
+        freshness_strategy: "scheduled_window",
+      }
+    ),
+    "terminal_gap"
+  );
+});
+
 // Defensive normalization: the type contract is `considered: number | null`,
 // but a caller that bypasses `readRuntimeCollectionFact`'s re-validation
 // (this test constructs the fact directly, unchecked by TypeScript) could

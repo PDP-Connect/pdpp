@@ -103,6 +103,7 @@ import {
   fetchAllStars,
   fetchAllUserGroups,
   fetchDmReadStates,
+  SLACK_API_AUTH_FAILURE_RE,
   SLACK_API_RETRYABLE_FAILURE_RE,
 } from "./slack-api.ts";
 import type {
@@ -2527,12 +2528,22 @@ export async function runOptionalStream(
     await run();
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    // `action: "retry_by_runtime"` is a claim that retrying can help: true for
+    // a transient failure, false for a durable auth rejection (retrying the
+    // same call with the same rejected session repeats the same outcome
+    // forever). `mapSkipCoverageCondition` (reference-implementation/server/
+    // connector-coverage-policy.ts) checks `action` before any reason text,
+    // so an unconditional "retry_by_runtime" here would misclassify a
+    // persistent slack_auth_failed as a self-healing retryable_gap.
+    const isAuthFailure = SLACK_API_AUTH_FAILURE_RE.test(message);
     await emit({
       type: "SKIP_RESULT",
       stream,
       reason: OPTIONAL_STREAM_FAILED_REASON,
       message: `Slack: ${stream} failed and was skipped (optional stream): ${message}`,
-      recovery_hint: { action: "retry_by_runtime", retryable: SLACK_API_RETRYABLE_FAILURE_RE.test(message) },
+      recovery_hint: isAuthFailure
+        ? { retryable: false }
+        : { action: "retry_by_runtime", retryable: SLACK_API_RETRYABLE_FAILURE_RE.test(message) },
     });
   }
 }
