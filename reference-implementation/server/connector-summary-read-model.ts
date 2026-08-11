@@ -186,6 +186,8 @@ export interface ConnectorListSummaryTerminalProjectionEnvelope {
 
 const TERMINAL_PROJECTION_STATES = new Set(["current", "stale", "failed"]);
 const DECIMAL_SOURCE_REVISION_RE = /^\d+$/;
+const LEADING_ZEROES_SOURCE_REVISION_RE = /^0+(?=\d)/;
+const MAX_SOURCE_REVISION = "9223372036854775807";
 
 function terminalProjectionState(value: unknown): ConnectorListSummaryTerminalProjectionEnvelope["state"] {
   return typeof value === "string" && TERMINAL_PROJECTION_STATES.has(value)
@@ -195,6 +197,13 @@ function terminalProjectionState(value: unknown): ConnectorListSummaryTerminalPr
 
 function knownSourceRevision(value: unknown): boolean {
   return value !== null && value !== undefined && DECIMAL_SOURCE_REVISION_RE.test(String(value));
+}
+
+function sourceRevisionIsExhausted(value: unknown): boolean {
+  if (!knownSourceRevision(value)) {
+    return false;
+  }
+  return String(value).replace(LEADING_ZEROES_SOURCE_REVISION_RE, "") === MAX_SOURCE_REVISION;
 }
 
 function parseTerminalProjection(value: unknown): ConnectorListSummaryTerminalProjection | null {
@@ -849,6 +858,14 @@ function shapeListSummaryProjection(row: Row): ConnectorListSummaryTerminalProje
       state: "stale",
     };
   }
+  if (sourceRevisionIsExhausted(row.source_revision)) {
+    return {
+      computed_at: null,
+      projection: null,
+      reason_code: "canonical_source_revision_exhausted",
+      state: "stale",
+    };
+  }
   const state = terminalProjectionState(row.list_summary_projection_state);
   return {
     computed_at:
@@ -866,10 +883,11 @@ function shapeSourceRevision(row: Row): {
   readonly state: unknown;
 } {
   const known = knownSourceRevision(row.source_revision);
+  const exhausted = sourceRevisionIsExhausted(row.source_revision);
   return {
-    dirty: !known || Number(row.dirty || 0) !== 0,
+    dirty: !known || exhausted || Number(row.dirty || 0) !== 0,
     source_revision: known ? String(row.source_revision) : null,
-    state: known ? row.state || "unknown" : "stale",
+    state: !known || exhausted ? "stale" : row.state || "unknown",
   };
 }
 

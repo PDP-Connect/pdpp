@@ -20,6 +20,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { load as loadSqliteVec } from "sqlite-vec";
 import {
@@ -54,7 +55,7 @@ interface SqliteDatabase {
   loadExtension: (file: string, entrypoint?: string) => void;
   pragma: (source: string, options?: { simple?: boolean }) => unknown;
   prepare: (sql: string) => SqliteStatement;
-  transaction: <T>(fn: () => T) => () => T;
+  transaction: <T>(fn: () => T) => (() => T) & { immediate: () => T };
 }
 type VectorIndexKind = "sqlite-vec" | "blob-flat";
 type DatabaseHandle = SqliteDatabase & { vectorIndexKind: VectorIndexKind };
@@ -2047,6 +2048,14 @@ function addColumnIfMissing(raw: SqliteDatabase, table: string, column: string, 
   raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
 
+function testOnlySourceRevisionInstallationLockMarker(): void {
+  const markerPath = process.env.PDPP_TEST_SOURCE_REVISION_INSTALL_LOCK_PATH;
+  if (!markerPath) {
+    return;
+  }
+  writeFileSync(markerPath, `${process.pid}\n`, "utf8");
+}
+
 function migrateDeviceIngestBatchOutcomes(raw: SqliteDatabase): void {
   const columns = raw.prepare("PRAGMA table_info(device_ingest_batch_outcomes)").all();
   const needsRebuild = !columns.some((column) => column.name === "accepted_at");
@@ -2194,25 +2203,103 @@ function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
  * Install the provider-neutral SQLite source-revision boundary after all
  * legacy table rebuilds have completed. `connector_instances.source_revision`
  * is the one per-instance monotonic receipt; the nullable evidence copy is
- * the receipt captured by a built row. Each trigger below advances the source
- * row and invalidates the disposable evidence row in the same SQLite write
- * transaction. There is deliberately no new touch table and no provider
- * knowledge in this mechanism.
+ * the receipt captured by a built row. Source triggers advance only the
+ * canonical receipt. Evidence invalidation is best effort, so a projection
+ * fault can never roll back a canonical write. The caller installs this
+ * primitive inside one BEGIN IMMEDIATE migration transaction.
  */
 function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): void {
+  // Test-only marker: the surrounding transaction is already BEGIN IMMEDIATE,
+  // so a second connection that observes this file is guaranteed to contend
+  // with the installation lock rather than enter an unprotected DDL gap.
+  testOnlySourceRevisionInstallationLockMarker();
+  const sourceTables = [
+    "records",
+    "version_counter",
+    "connector_schedules",
+    "controller_active_runs",
+    "spine_events",
+    "retained_size_connection",
+    "retained_size_stream",
+    "manifest_write_violations",
+  ] as const;
+  const legacySourceTables = [
+    "record_changes",
+    "blobs",
+    "blob_bindings",
+    "run_history",
+    "retained_size_record_family",
+    "retained_size_top_rows",
+  ] as const;
+  const expectedTriggerNames = [
+    ...sourceTables.flatMap((table) =>
+      table === "spine_events"
+        ? [`pdpp_source_revision_${table}_insert`, `pdpp_source_revision_${table}_delete`]
+        : [
+            `pdpp_source_revision_${table}_insert`,
+            `pdpp_source_revision_${table}_update`,
+            `pdpp_source_revision_${table}_delete`,
+          ]
+    ),
+    "pdpp_source_revision_connector_instances_update",
+    "pdpp_source_revision_connectors_manifest_update",
+  ];
+  const legacyTriggerNames = [
+    ...legacySourceTables.flatMap((table) => [
+      `pdpp_source_revision_${table}_insert`,
+      `pdpp_source_revision_${table}_update`,
+      `pdpp_source_revision_${table}_delete`,
+    ]),
+    "pdpp_source_revision_spine_events_update",
+  ];
+  const triggerSql = (name: string): string | null => {
+    const row = raw.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(name) as
+      | { sql: string | null }
+      | undefined;
+    return row?.sql ?? null;
+  };
+  const hasInstanceSourceRevision = hasTableColumn(raw, "connector_instances", "source_revision");
+  const hasEvidenceSourceRevision = hasTableColumn(raw, "connector_summary_evidence", "source_revision");
+  let needsBarrier = !(hasInstanceSourceRevision && hasEvidenceSourceRevision);
+  if (hasInstanceSourceRevision) {
+    needsBarrier ||= Boolean(
+      raw.prepare("SELECT 1 FROM connector_instances WHERE typeof(source_revision) <> 'integer' LIMIT 1").get()
+    );
+  }
+  if (hasEvidenceSourceRevision) {
+    needsBarrier ||= Boolean(
+      raw
+        .prepare(
+          "SELECT 1 FROM connector_summary_evidence WHERE source_revision IS NOT NULL AND typeof(source_revision) <> 'integer' LIMIT 1"
+        )
+        .get()
+    );
+  }
+  for (const name of expectedTriggerNames) {
+    const sql = triggerSql(name);
+    if (!sql || sql.includes("connector_summary_evidence")) {
+      needsBarrier = true;
+    }
+  }
+  for (const name of legacyTriggerNames) {
+    if (triggerSql(name)) {
+      needsBarrier = true;
+    }
+  }
+
   addColumnIfMissing(raw, "connector_instances", "source_revision", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(raw, "connector_summary_evidence", "source_revision", "INTEGER");
 
   raw.exec(`
-    UPDATE connector_summary_evidence
-       SET dirty = 1,
-           state = 'stale',
-           list_summary_projection_state = 'stale',
-           list_summary_projection_reason_code = 'canonical_source_revision_unknown'
-     WHERE connector_instance_id IN (
-       SELECT connector_instance_id FROM connector_instances WHERE source_revision IS NULL
-     );
     UPDATE connector_instances SET source_revision = 0 WHERE source_revision IS NULL;
+    UPDATE connector_instances
+       SET source_revision = CAST(source_revision AS INTEGER)
+     WHERE source_revision IS NOT NULL
+       AND typeof(source_revision) <> 'integer';
+    UPDATE connector_summary_evidence
+       SET source_revision = CAST(source_revision AS INTEGER)
+     WHERE source_revision IS NOT NULL
+       AND typeof(source_revision) <> 'integer';
     UPDATE connector_summary_evidence
        SET dirty = 1,
            state = 'stale',
@@ -2223,24 +2310,10 @@ function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): voi
 
   // Source tables whose rows carry connector_instance_id. The spine fallback
   // matches the existing normalized column and legacy JSON identity. UPDATE
-  // touches NEW and OLD identities once each, so a move cannot leave either
-  // instance with a falsely clean receipt.
-  const sourceTables = [
-    "records",
-    "record_changes",
-    "version_counter",
-    "blobs",
-    "blob_bindings",
-    "connector_schedules",
-    "controller_active_runs",
-    "run_history",
-    "spine_events",
-    "retained_size_connection",
-    "retained_size_stream",
-    "retained_size_record_family",
-    "retained_size_top_rows",
-    "manifest_write_violations",
-  ] as const;
+  // touches NEW and OLD identities with one set-based UPDATE, so a move cannot
+  // leave either instance with a falsely clean receipt. Tables that are
+  // maintained as derived implementation details are intentionally absent:
+  // their writes do not add canonical facts that the summary repair reads.
   const sourceIdentity = (prefix: string, table: string): string => {
     if (table === "spine_events") {
       return `COALESCE(
@@ -2251,22 +2324,39 @@ function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): voi
     }
     return `NULLIF(${prefix}.connector_instance_id, '')`;
   };
-  const touch = (identitySql: string): string => `
+  const advance = (identitySql: string): string => `
       UPDATE connector_instances
-         SET source_revision = COALESCE(source_revision, 0) + 1
-       WHERE connector_instance_id = ${identitySql};
-      UPDATE connector_summary_evidence
-         SET dirty = 1,
-             state = 'stale',
-             canonical_evidence_revision = canonical_evidence_revision + 1,
-             list_summary_projection_state = 'stale',
-             list_summary_projection_reason_code = 'canonical_source_revision_advanced'
+         SET source_revision = CASE
+           WHEN source_revision IS NULL THEN 0
+           WHEN source_revision < 9223372036854775807 THEN source_revision + 1
+           ELSE 9223372036854775807
+         END
        WHERE connector_instance_id = ${identitySql};`;
+  const advanceEither = (newIdentitySql: string, oldIdentitySql: string): string => `
+      UPDATE connector_instances
+         SET source_revision = CASE
+           WHEN source_revision IS NULL THEN 0
+           WHEN source_revision < 9223372036854775807 THEN source_revision + 1
+           ELSE 9223372036854775807
+         END
+       WHERE connector_instance_id IN (${newIdentitySql}, ${oldIdentitySql});`;
 
   for (const table of sourceTables) {
     const insertName = `pdpp_source_revision_${table}_insert`;
     const updateName = `pdpp_source_revision_${table}_update`;
     const deleteName = `pdpp_source_revision_${table}_delete`;
+    // spine_events are append/delete lifecycle facts. Its terminal manifest
+    // stamp performs an internal INSERT-time UPDATE, so omit UPDATE here to
+    // avoid counting that implementation detail as a second source touch.
+    const updateTrigger =
+      table === "spine_events"
+        ? ""
+        : `
+      CREATE TRIGGER ${updateName}
+        AFTER UPDATE ON ${table}
+        BEGIN
+          ${advanceEither(sourceIdentity("NEW", table), sourceIdentity("OLD", table))}
+        END;`;
     raw.exec(`
       DROP TRIGGER IF EXISTS ${insertName};
       DROP TRIGGER IF EXISTS ${updateName};
@@ -2274,33 +2364,22 @@ function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): voi
       CREATE TRIGGER ${insertName}
         AFTER INSERT ON ${table}
         BEGIN
-          ${touch(sourceIdentity("NEW", table))}
+          ${advance(sourceIdentity("NEW", table))}
         END;
-      CREATE TRIGGER ${updateName}
-        AFTER UPDATE ON ${table}
-        BEGIN
-          UPDATE connector_instances
-             SET source_revision = COALESCE(source_revision, 0) + 1
-           WHERE connector_instance_id IN (
-             ${sourceIdentity("NEW", table)},
-             ${sourceIdentity("OLD", table)}
-           );
-          UPDATE connector_summary_evidence
-             SET dirty = 1,
-                 state = 'stale',
-                 canonical_evidence_revision = canonical_evidence_revision + 1,
-                 list_summary_projection_state = 'stale',
-                 list_summary_projection_reason_code = 'canonical_source_revision_advanced'
-           WHERE connector_instance_id IN (
-             ${sourceIdentity("NEW", table)},
-             ${sourceIdentity("OLD", table)}
-           );
-        END;
+      ${updateTrigger}
       CREATE TRIGGER ${deleteName}
         AFTER DELETE ON ${table}
         BEGIN
-          ${touch(sourceIdentity("OLD", table))}
+          ${advance(sourceIdentity("OLD", table))}
         END;
+    `);
+  }
+
+  for (const table of legacySourceTables) {
+    raw.exec(`
+      DROP TRIGGER IF EXISTS pdpp_source_revision_${table}_insert;
+      DROP TRIGGER IF EXISTS pdpp_source_revision_${table}_update;
+      DROP TRIGGER IF EXISTS pdpp_source_revision_${table}_delete;
     `);
   }
 
@@ -2317,16 +2396,7 @@ function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): voi
         record_identity_generation
       ON connector_instances
       BEGIN
-        UPDATE connector_instances
-           SET source_revision = COALESCE(source_revision, 0) + 1
-         WHERE connector_instance_id = NEW.connector_instance_id;
-        UPDATE connector_summary_evidence
-           SET dirty = 1,
-               state = 'stale',
-               canonical_evidence_revision = canonical_evidence_revision + 1,
-               list_summary_projection_state = 'stale',
-               list_summary_projection_reason_code = 'canonical_source_revision_advanced'
-         WHERE connector_instance_id = NEW.connector_instance_id;
+        ${advance("NEW.connector_instance_id")}
       END;
 
     DROP TRIGGER IF EXISTS pdpp_source_revision_connectors_manifest_update;
@@ -2334,17 +2404,27 @@ function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): voi
       AFTER UPDATE OF connector_id, manifest ON connectors
       BEGIN
         UPDATE connector_instances
-           SET source_revision = COALESCE(source_revision, 0) + 1
-         WHERE connector_id IN (NEW.connector_id, OLD.connector_id);
-        UPDATE connector_summary_evidence
-           SET dirty = 1,
-               state = 'stale',
-               canonical_evidence_revision = canonical_evidence_revision + 1,
-               list_summary_projection_state = 'stale',
-               list_summary_projection_reason_code = 'canonical_source_revision_advanced'
+           SET source_revision = CASE
+             WHEN source_revision IS NULL THEN 0
+             WHEN source_revision < 9223372036854775807 THEN source_revision + 1
+             ELSE 9223372036854775807
+           END
          WHERE connector_id IN (NEW.connector_id, OLD.connector_id);
       END;
   `);
+
+  // A complete reinstall is itself a knowledge boundary. Existing evidence
+  // must be rebuilt after the last trigger is present; otherwise a writer
+  // could have landed in an installation gap and left a clean-looking row.
+  if (needsBarrier) {
+    raw.exec(`
+      UPDATE connector_summary_evidence
+         SET dirty = 1,
+             state = 'stale',
+             list_summary_projection_state = 'stale',
+             list_summary_projection_reason_code = 'canonical_source_revision_installation';
+    `);
+  }
 }
 
 function ensureConnectorMaintenanceCursorColumns(raw: SqliteDatabase): void {
@@ -5652,7 +5732,9 @@ CREATE TABLE IF NOT EXISTS cimd_client_documents (
   runWithSqliteBusyRetrySync(() =>
     addColumnIfMissing(raw, "controller_active_runs", "run_generation", "INTEGER NOT NULL DEFAULT 1")
   );
-  runWithSqliteBusyRetrySync(() => ensureConnectorSummarySourceRevisionPrimitive(raw));
+  runWithSqliteBusyRetrySync(() =>
+    raw.transaction(() => ensureConnectorSummarySourceRevisionPrimitive(raw)).immediate()
+  );
   db = withCachedPrepare(raw);
   // Stamp the chosen vector-index backend onto the wrapped db so
   // search-semantic.js can select without re-probing. The Proxy's

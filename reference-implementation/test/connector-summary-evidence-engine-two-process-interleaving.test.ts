@@ -23,11 +23,10 @@
  * (`PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS`, see
  * `testOnlyRepairCandidateSqliteDelay` in
  * `server/connector-summary-evidence-engine.ts`) is set to the same value
- * in BOTH processes. The delay is after the outside-fence canonical build,
- * so neither process holds SQLite's write lock while paused. Both then
- * compete for the short exact-instance `BEGIN IMMEDIATE` publish. This makes
- * the build overlap deterministic while preserving the lock-duration
- * contract under test.
+ * in BOTH processes. The delay sits between the fenced canonical read and
+ * the evidence upsert while `BEGIN IMMEDIATE` is held. The second process
+ * therefore blocks at transaction start, proving that it cannot read a
+ * canonical snapshot that it may later publish after a writer overtakes it.
  *
  * What is proved, each of N attempts:
  *   (a) No lost update — after both processes complete, the persisted
@@ -37,9 +36,9 @@
  *       triple is INTERNALLY CONSISTENT (matches what a fresh, uncontended
  *       repair of the same canonical state would produce), never a torn
  *       mix of one process's checkpoint with another process's stale
- *       record count. The final publisher rereads only the cheap source
- *       revision under the short lock, so a build from a different source
- *       state cannot be published.
+ *       record count. Each publisher reads and writes the complete evidence
+ *       row inside the same connector-instance transaction fence, so a build
+ *       from a different source state cannot be published.
  *   (c) Neither process's repair call throws / reports `failed: true` in
  *       a way that would be silently swallowed by the caller.
  *
@@ -176,11 +175,13 @@ test("two genuine OS processes racing repairCandidateSqlite for the same connect
       // repair would compute) is unambiguous and non-trivial.
       await ingestRecord(
         { connector_id: connectorId, connector_instance_id: connectorInstanceId },
-        { data: { id: "msg_1" }, emitted_at: NOW, key: "msg_1", stream: "messages" }
+        { data: { id: "msg_1" }, emitted_at: NOW, key: "msg_1", stream: "messages" },
+        { deferIndexes: true }
       );
       await ingestRecord(
         { connector_id: connectorId, connector_instance_id: connectorInstanceId },
-        { data: { id: "msg_2" }, emitted_at: NOW, key: "msg_2", stream: "messages" }
+        { data: { id: "msg_2" }, emitted_at: NOW, key: "msg_2", stream: "messages" },
+        { deferIndexes: true }
       );
 
       // Create the repair CANDIDATE (a `missing` evidence row: nothing has
@@ -200,9 +201,9 @@ test("two genuine OS processes racing repairCandidateSqlite for the same connect
         assert.equal(ready.ready, true, `fixture did not report ready: ${readyLine}`);
 
         // Arm this (parent) process's own delay hook to the same window,
-        // then fire BOTH outside-fence builds as close together as possible.
-        // The delay widens the build overlap without holding SQLite's write
-        // lock; both publishers then exercise the short exact-instance fence.
+        // then fire BOTH fenced repairs as close together as possible. The
+        // delay keeps the first transaction in its read-before-upsert window;
+        // the second repair must wait for the exact-instance fence.
         process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS = String(DELAY_MS);
         fixture.child.stdin.write("go\n");
         const parentResultPromise = reconcileConnectorSummaryEvidence([connectorInstanceId]);

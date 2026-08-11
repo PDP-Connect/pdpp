@@ -5000,6 +5000,9 @@ export async function recordCurrentGenerationUndeclaredWrite(
     throw new Error("Current manifest violation evidence requires connection and stream");
   }
   const observedAt = nowIso();
+  // `manifest_write_violations` is canonical source data. Its source-revision
+  // trigger makes the disposable summary row a candidate; touching that row
+  // here would let a projection fault reject the canonical provenance write.
   if (isPostgresStorageBackend()) {
     await withPostgresTransaction(async (client) => {
       const current = await client.query(
@@ -5016,10 +5019,6 @@ export async function recordCurrentGenerationUndeclaredWrite(
        ON CONFLICT(connector_instance_id, stream, manifest_generation) DO UPDATE
          SET provenance = EXCLUDED.provenance, observed_at = EXCLUDED.observed_at`,
         [connectorInstanceId, stream, generation, provenance, observedAt]
-      );
-      await client.query(
-        "UPDATE connector_summary_evidence SET dirty = 1, state = 'stale' WHERE connector_instance_id = $1",
-        [connectorInstanceId]
       );
     });
     return;
@@ -5041,9 +5040,6 @@ export async function recordCurrentGenerationUndeclaredWrite(
            SET provenance = excluded.provenance, observed_at = excluded.observed_at`
         )
         .run(connectorInstanceId, stream, generation, provenance, observedAt);
-      getDb()
-        .prepare("UPDATE connector_summary_evidence SET dirty = 1, state = 'stale' WHERE connector_instance_id = ?")
-        .run(connectorInstanceId);
     });
     return Promise.resolve();
   });
