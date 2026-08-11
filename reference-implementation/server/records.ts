@@ -1552,12 +1552,11 @@ function maybeRecordIndexFault(point: string, ctx: HookContext): void {
  * dozens of existing tests that ingest without ever enrolling a
  * `connector_instances` row) — this check is opted into ONLY via
  * `RecordIngestOptions.requireConnectionAdmission`. Owner HTTP ingest
- * (server/routes/rs-mutation.ts) and device-exporter ingest
- * (server/routes/ref-device-exporters.ts) both opt in on EVERY record, not
- * once per batch. Source-webhook ingest (server/routes/source-webhooks.ts)
- * is deliberately NOT wired to this check: it is connector-id-only generic
- * ingest with no per-connection admission concept at that layer, so it is
- * out of scope for this fix.
+ * (server/routes/rs-mutation.ts), device-exporter ingest
+ * (server/routes/ref-device-exporters.ts), and source-webhook ingest
+ * (server/routes/source-webhooks.ts) opt in on EVERY record, not once per
+ * batch. Source webhooks key this admission on the configured target resolved
+ * after HMAC authentication and before event claim.
  *
  * THIS async function is only the cheap pre-check both backends run BEFORE
  * their durable write transaction opens — an early exit for the common case,

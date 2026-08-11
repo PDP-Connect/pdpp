@@ -9,6 +9,7 @@
 
 - [x] Add operation tests for custom-owner/two-instance target propagation and no-claim/no-mutation rejection.
 - [x] Add route-boundary tests proving exact instance storage, run, scheduler, and rejection behavior.
+- [x] Add real HTTP route coverage for structured JSON parsing, URL-shaped connector config, exact instance storage, and bad-target no-claim retry.
 
 ## 3. Validation
 

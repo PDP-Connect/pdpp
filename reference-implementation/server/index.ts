@@ -6898,8 +6898,9 @@ function buildRsApp(opts: ServerOpts = {}) {
         sourceId: string;
       }) => {
         try {
+          const resolvedConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
           const namespace = await resolveOwnerConnectorInstanceNamespace({
-            connectorId,
+            connectorId: resolvedConnectorId,
             connectorInstanceId: connectorInstanceId ?? null,
             connectorInstanceStore: createRequestConnectorInstanceStore(),
             ownerSubjectId,

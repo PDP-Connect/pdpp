@@ -11,6 +11,7 @@ After HMAC verification, but before event claim, the route resolves the source t
 ### Compatibility
 
 The legacy comma-separated `sourceId:secret[:connectorId]` form is preserved as connector shorthand. It resolves against the configured single owner and is accepted only when that owner has exactly one active connection for the connector. It does not materialize default-account connections.
+URL-shaped connector identifiers in legacy or JSON config are canonicalized at the production resolution boundary before the writable connection lookup.
 
 Explicit multi-connection targets use JSON rather than adding another colon segment. Supported JSON forms are either an array of entries or an object keyed by source id. Each entry accepts `source_id`/`sourceId`, `secret`, `connector_id`/`connectorId`, `owner_subject_id`/`ownerSubjectId`, and `connector_instance_id`/`connectorInstanceId`.
 
@@ -23,6 +24,7 @@ Explicit multi-connection targets use JSON rather than adding another colon segm
 ## Acceptance Checks
 
 - Two sources for the same connector can target different connector instances.
+- Real HTTP route coverage exercises the production environment parser and resolver with structured JSON config.
 - Missing, revoked, wrong-owner, wrong-connector, and ambiguous targets reject before idempotency claim or mutation.
 - Record ingest uses `requireConnectionAdmission: true`.
 - Run start receives owner and connector instance.
