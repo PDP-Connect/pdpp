@@ -22,7 +22,24 @@
  * This file is pure string mapping with no provider, network, or native
  * dependency, so it is safe inside the publishable runner slice. See
  * `add-static-secret-owner-connect-primitive` design Decision 5.
+ *
+ * The injection mapping (which env var(s) each connector's secret/setup
+ * fields land on) is manifest-derived, generated data — see
+ * `./generated/static-secret-registry.generated.ts` and
+ * `scripts/generate-static-secret-registry.ts`. This module used to
+ * hand-maintain that mapping as a second, parallel authority
+ * (`STATIC_SECRET_CONNECTOR_REGISTRY`), separate from the manifest-driven
+ * classification `connection-setup-plan.ts` already uses for setup — the two
+ * could (and did, for venmo) drift, since onboarding a connector meant
+ * remembering to update both. Only `LEGACY_CREDENTIAL_KIND_MIGRATIONS` below
+ * remains hand-maintained: it captures STORED credential shapes that predate
+ * a connector's current manifest and so cannot be regenerated from it.
  */
+
+import {
+  GENERATED_STATIC_SECRET_REGISTRY,
+  type GeneratedStaticSecretDescriptor,
+} from "./generated/static-secret-registry.generated.ts";
 
 /** Credential kinds the per-connection store can hold. Mirrors the store. */
 export type StaticSecretCredentialKind =
@@ -126,169 +143,86 @@ function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescripto
   return Object.freeze(descriptor);
 }
 
+function mappingFromGenerated(generated: GeneratedStaticSecretDescriptor): StaticSecretInjectionMapping {
+  return {
+    credentialKind: generated.credentialKind as StaticSecretCredentialKind,
+    ...(generated.optionalSecretBundleFields
+      ? { optionalSecretBundleFields: new Set(generated.optionalSecretBundleFields) }
+      : {}),
+    ...(generated.secretEnvVars ? { secretEnvVars: generated.secretEnvVars } : {}),
+    ...(generated.secretFieldEnvVars ? { secretFieldEnvVars: generated.secretFieldEnvVars } : {}),
+    ...(generated.setupFieldEnvVars ? { setupFieldEnvVars: generated.setupFieldEnvVars } : {}),
+  };
+}
+
+/**
+ * Stored credential shapes that predate a connector's CURRENT manifest and so
+ * cannot be regenerated from it — the one place this module still hardcodes
+ * connector-specific knowledge, deliberately kept minimal and separate from
+ * the generated, manifest-derived baseline above.
+ *
+ * Each entry is keyed by connector, but the transformation it describes is
+ * scoped by CREDENTIAL KIND (a stored `credentialKind` distinct from the
+ * connector's current manifest kind), not by connector identity: a
+ * newly-onboarded connector never needs an entry here unless it also ships a
+ * genuine legacy-capture migration. Adding a connector to a manifest never
+ * requires touching this table — only retiring an old capture shape does.
+ *
+ *   - reddit: before the connector switched to username_password, a sealed
+ *     OAuth bundle (credentialKind "secret_bundle") was captured with
+ *     provider-specific field names.
+ *   - jellyfin: before the connector switched to a username/password-or-
+ *     api_key bundle, a bare api_key string (credentialKind "api_key") was
+ *     captured directly, with no bundle at all.
+ */
+const LEGACY_CREDENTIAL_KIND_MIGRATIONS: Readonly<Record<string, readonly StaticSecretInjectionMapping[]>> =
+  Object.freeze({
+    jellyfin: [
+      {
+        credentialKind: "api_key",
+        secretEnvVars: ["JELLYFIN_API_KEY"],
+        setupFieldEnvVars: {
+          base_url: ["JELLYFIN_BASE_URL"],
+          jellyfin_user_id: ["JELLYFIN_USER_ID"],
+        },
+      },
+    ],
+    reddit: [
+      {
+        credentialKind: "secret_bundle",
+        secretFieldEnvVars: {
+          reddit_password: ["REDDIT_PASSWORD"],
+          reddit_username: ["REDDIT_USERNAME"],
+        },
+      },
+    ],
+  });
+
 /**
  * Registry of static-secret connectors and the env vars each reads its secret
- * from. The env var names are the ground truth in each connector's code:
- *   - gmail/index.ts `resolveGmailPasswordFromEnv`: GOOGLE_APP_PASSWORD_PDPP / GMAIL_APP_PASSWORD
- *   - github/index.ts auth.required: GITHUB_PERSONAL_ACCESS_TOKEN / GITHUB_TOKEN
- *   - ynab/index.ts auth.required: YNAB_PERSONAL_ACCESS_TOKEN / YNAB_PAT
- *   - slack/index.ts auth.required: SLACK_WORKSPACE / SLACK_TOKEN / SLACK_COOKIE
- *   - oura/index.ts auth.required: OURA_PERSONAL_ACCESS_TOKEN
- *   - notion/index.ts auth.required: NOTION_API_TOKEN
- *   - reddit/index.ts auth.required: REDDIT_USERNAME / REDDIT_PASSWORD
- *   - chatgpt/auto-login/chatgpt.ts: CHATGPT_USERNAME / CHATGPT_PASSWORD
- *   - amazon/auto-login/amazon.ts: AMAZON_USERNAME / AMAZON_PASSWORD
- *   - heb/auto-login/heb.ts: HEB_USERNAME / HEB_PASSWORD
- *   - chase/auto-login/chase.ts: CHASE_USERNAME / CHASE_PASSWORD
- *   - usaa/auto-login/usaa.ts: USAA_USERNAME / USAA_PASSWORD
- *   - steam/index.ts auth.required: STEAM_API_KEY, STEAM_USER_ID
- *   - jellyfin/index.ts: JELLYFIN_USERNAME / JELLYFIN_PASSWORD (primary, AuthenticateByName) or
- *     JELLYFIN_API_KEY (secondary/advanced, admin-only) — JELLYFIN_BASE_URL / JELLYFIN_USER_ID are
- *     non-secret setup fields (read via process.env fallback)
- *   - apple_contacts/index.ts: APPLE_ID / APPLE_ID_EMAIL, APPLE_APP_SPECIFIC_PASSWORD
- *   - groupme/index.ts auth: GROUPME_ACCESS_TOKEN
+ * from, generated from every shipped manifest's `setup.credential_capture`
+ * (see `./generated/static-secret-registry.generated.ts`) plus the minimal,
+ * explicit `LEGACY_CREDENTIAL_KIND_MIGRATIONS` table above for stored
+ * credential shapes a current manifest cannot express.
  *
  * A connector absent from this registry is NOT a static-secret connector for
  * the purposes of injection; callers must not invent env var names for it.
  */
 export const STATIC_SECRET_CONNECTOR_REGISTRY: Readonly<Record<string, StaticSecretConnectorDescriptor>> =
-  Object.freeze({
-    amazon: freezeStaticSecretDescriptor({
-      credentialKind: "username_password",
-      secretFieldEnvVars: {
-        password: ["AMAZON_PASSWORD"],
-        username: ["AMAZON_USERNAME"],
-      },
-    }),
-    heb: freezeStaticSecretDescriptor({
-      credentialKind: "username_password",
-      secretFieldEnvVars: {
-        password: ["HEB_PASSWORD"],
-        username: ["HEB_USERNAME"],
-      },
-    }),
-    chatgpt: freezeStaticSecretDescriptor({
-      credentialKind: "username_password",
-      secretFieldEnvVars: {
-        password: ["CHATGPT_PASSWORD"],
-        username: ["CHATGPT_USERNAME"],
-      },
-    }),
-    gmail: freezeStaticSecretDescriptor({
-      credentialKind: "app_password",
-      secretEnvVars: ["GOOGLE_APP_PASSWORD_PDPP", "GMAIL_APP_PASSWORD"],
-      setupFieldEnvVars: {
-        account_email: ["GMAIL_ADDRESS", "GMAIL_USER"],
-      },
-    }),
-    github: freezeStaticSecretDescriptor({
-      credentialKind: "personal_access_token",
-      secretEnvVars: ["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"],
-    }),
-    ynab: freezeStaticSecretDescriptor({
-      credentialKind: "personal_access_token",
-      secretEnvVars: ["YNAB_PERSONAL_ACCESS_TOKEN", "YNAB_PAT"],
-    }),
-    slack: freezeStaticSecretDescriptor({
-      credentialKind: "secret_bundle",
-      secretFieldEnvVars: {
-        slack_workspace: ["SLACK_WORKSPACE"],
-        slack_token: ["SLACK_TOKEN"],
-        slack_cookie: ["SLACK_COOKIE"],
-      },
-    }),
-    oura: freezeStaticSecretDescriptor({
-      credentialKind: "personal_access_token",
-      secretEnvVars: ["OURA_PERSONAL_ACCESS_TOKEN"],
-    }),
-    notion: freezeStaticSecretDescriptor({
-      credentialKind: "personal_access_token",
-      secretEnvVars: ["NOTION_API_TOKEN"],
-    }),
-    reddit: freezeStaticSecretDescriptor({
-      credentialKind: "username_password",
-      acceptedCredentialVariants: [
-        {
-          credentialKind: "secret_bundle",
-          secretFieldEnvVars: {
-            reddit_password: ["REDDIT_PASSWORD"],
-            reddit_username: ["REDDIT_USERNAME"],
-          },
-        },
-      ],
-      secretFieldEnvVars: {
-        password: ["REDDIT_PASSWORD"],
-        username: ["REDDIT_USERNAME"],
-      },
-    }),
-    chase: freezeStaticSecretDescriptor({
-      credentialKind: "username_password",
-      secretFieldEnvVars: {
-        password: ["CHASE_PASSWORD"],
-        username: ["CHASE_USERNAME"],
-      },
-    }),
-    usaa: freezeStaticSecretDescriptor({
-      credentialKind: "username_password",
-      secretFieldEnvVars: {
-        password: ["USAA_PASSWORD"],
-        username: ["USAA_USERNAME"],
-      },
-    }),
-    steam: freezeStaticSecretDescriptor({
-      credentialKind: "api_key",
-      secretEnvVars: ["STEAM_API_KEY"],
-      setupFieldEnvVars: {
-        steamid: ["STEAM_USER_ID"],
-      },
-    }),
-    jellyfin: freezeStaticSecretDescriptor({
-      // A single fixed credential_kind is sealed at capture time (see
-      // expectedStaticSecretCredentialKind), so both the primary path
-      // (username+password, AuthenticateByName) and the secondary/advanced
-      // path (a bare admin api_key, bundle field name "secret" to match the
-      // manifest's field) must fit in ONE bundle shape rather than two
-      // acceptedCredentialVariants — the manifest cannot switch kinds
-      // per-submission. username/password/secret are therefore all optional
-      // bundle fields; jellyfin/index.ts's collect() is what actually
-      // enforces "at least one complete path was supplied".
-      credentialKind: "username_password",
-      secretFieldEnvVars: {
-        username: ["JELLYFIN_USERNAME"],
-        password: ["JELLYFIN_PASSWORD"],
-        secret: ["JELLYFIN_API_KEY"],
-      },
-      optionalSecretBundleFields: new Set(["username", "password", "secret"]),
-      setupFieldEnvVars: {
-        base_url: ["JELLYFIN_BASE_URL"],
-        jellyfin_user_id: ["JELLYFIN_USER_ID"],
-      },
-      // Backward compat: connections captured before this change stored a
-      // bare api_key string (credentialKind "api_key", not a JSON bundle).
-      // Keep that shape runnable without forcing a re-capture.
-      acceptedCredentialVariants: [
-        {
-          credentialKind: "api_key",
-          secretEnvVars: ["JELLYFIN_API_KEY"],
-          setupFieldEnvVars: {
-            base_url: ["JELLYFIN_BASE_URL"],
-            jellyfin_user_id: ["JELLYFIN_USER_ID"],
-          },
-        },
-      ],
-    }),
-    apple_contacts: freezeStaticSecretDescriptor({
-      credentialKind: "app_password",
-      secretEnvVars: ["APPLE_APP_SPECIFIC_PASSWORD"],
-      setupFieldEnvVars: {
-        account_email: ["APPLE_ID", "APPLE_ID_EMAIL"],
-      },
-    }),
-    groupme: freezeStaticSecretDescriptor({
-      credentialKind: "access_token",
-      secretEnvVars: ["GROUPME_ACCESS_TOKEN"],
-    }),
-  });
+  Object.freeze(
+    Object.fromEntries(
+      Object.entries(GENERATED_STATIC_SECRET_REGISTRY).map(([connectorId, generated]) => {
+        const acceptedCredentialVariants = LEGACY_CREDENTIAL_KIND_MIGRATIONS[connectorId];
+        return [
+          connectorId,
+          freezeStaticSecretDescriptor({
+            ...mappingFromGenerated(generated),
+            ...(acceptedCredentialVariants ? { acceptedCredentialVariants } : {}),
+          }),
+        ];
+      })
+    )
+  );
 
 export class StaticSecretInjectionError extends Error {
   readonly code: string;

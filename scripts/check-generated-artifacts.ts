@@ -124,7 +124,31 @@ try {
     { cwd: join(root, "reference-implementation"), stdio: "inherit" }
   );
 
-  const pairs = [serviceWorker, syncScript, ...designScripts, ...recordroomScripts, cliListEnvelope, connectorRegistry];
+  // static-secret-injection.ts (packages/polyfill-connectors) ships inside the
+  // publishable @pdpp/local-collector runner slice and so must stay free of
+  // node:fs / manifest-directory scanning at import time on an owner's
+  // machine — its injection mapping (which env var(s) each connector's secret
+  // lands on) is generated at build/CI time instead. See
+  // packages/polyfill-connectors/scripts/generate-static-secret-registry.ts.
+  const staticSecretRegistry: ArtifactPair = {
+    generated: join(temporaryRoot, "static-secret-registry", "static-secret-registry.generated.ts"),
+    tracked: "packages/polyfill-connectors/src/generated/static-secret-registry.generated.ts",
+  };
+  execFileSync(
+    "node",
+    ["--experimental-strip-types", "scripts/generate-static-secret-registry.ts", staticSecretRegistry.generated],
+    { cwd: join(root, "packages/polyfill-connectors"), stdio: "inherit" }
+  );
+
+  const pairs = [
+    serviceWorker,
+    syncScript,
+    ...designScripts,
+    ...recordroomScripts,
+    cliListEnvelope,
+    connectorRegistry,
+    staticSecretRegistry,
+  ];
   for (const pair of pairs) {
     compare(pair);
   }
