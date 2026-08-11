@@ -40,6 +40,12 @@ export interface RecordsIngestInput {
   readonly connectorId: string | null;
   /** Connector instance id parsed from the query string. Optional for legacy connector-only compatibility. */
   readonly connectorInstanceId?: string | null;
+  /**
+   * Opt in to the hosted durable-rejection response contract. Existing
+   * non-hosted callers retain the legacy count-only behavior unless this is
+   * explicitly true.
+   */
+  readonly hostedRejectionReceipts?: boolean;
   /** Stream name from the request path. */
   readonly streamName: string;
 }
@@ -60,8 +66,25 @@ export interface RecordsIngestInput {
  * failure must never be reported as an ordinary partial-rejection success.
  */
 export interface IngestLineFailure {
+  readonly code?: string;
   readonly message: string;
   readonly retryable: boolean;
+}
+
+export interface InsertOrReplayRejectionInput {
+  readonly code: string;
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly inputIndex: number;
+  readonly rawLine: string;
+  readonly runId?: string | null;
+  readonly stream: string;
+}
+
+export interface RejectionReceipt {
+  readonly code: string;
+  readonly input_index: number;
+  readonly receipt_id: string;
 }
 
 export interface RecordsIngestDependencies {
@@ -92,12 +115,15 @@ export interface RecordsIngestDependencies {
     connectorInstanceId: string | null,
     records: readonly Record<string, unknown>[]
   ) => readonly (IngestLineFailure | null)[] | Promise<readonly (IngestLineFailure | null)[]>;
+  insertOrReplayRejection?: (input: InsertOrReplayRejectionInput) => RejectionReceipt | Promise<RejectionReceipt>;
 }
 
 export interface RecordsIngestEnvelope {
   readonly errors: readonly string[];
   readonly records_accepted: number;
+  readonly records_attempted?: number;
   readonly records_rejected: number;
+  readonly rejections?: readonly RejectionReceipt[];
   readonly stream: string;
 }
 
@@ -115,8 +141,13 @@ export interface RecordsIngestOutput {
 
 interface ParsedRecordLines {
   readonly lineErrors: Array<IngestLineFailure | null>;
-  readonly parsedLineIndexes: number[];
-  readonly parsedRecords: Record<string, unknown>[];
+  readonly parsedInputs: ParsedRecordInput[];
+}
+
+interface ParsedRecordInput {
+  readonly inputIndex: number;
+  readonly parsedRecord: Record<string, unknown>;
+  readonly rawLine: string;
 }
 
 export class RecordsIngestInvalidRequestError extends Error {
@@ -169,10 +200,11 @@ export class RecordsIngestSystemicFailureError extends Error {
   readonly code: "ingest_batch_storage_error";
   readonly retryableFailureCount: number;
 
-  constructor(streamName: string, retryableFailureCount: number, submittedCount: number) {
+  constructor(streamName: string, retryableFailureCount: number, submittedCount: number, options?: ErrorOptions) {
     super(
       `Ingest for stream '${streamName}' had ${retryableFailureCount} systemic/retryable record failure(s) ` +
-        `out of ${submittedCount} submitted; retry the batch`
+        `out of ${submittedCount} submitted; retry the batch`,
+      options
     );
     this.name = "RecordsIngestSystemicFailureError";
     this.code = "ingest_batch_storage_error";
@@ -195,33 +227,36 @@ export function parseLines(body: string | null | undefined): string[] {
 
 function parseRecordLines(lines: readonly string[], streamName: string): ParsedRecordLines {
   const lineErrors = new Array<IngestLineFailure | null>(lines.length).fill(null);
-  const parsedRecords: Record<string, unknown>[] = [];
-  const parsedLineIndexes: number[] = [];
+  const parsedInputs: ParsedRecordInput[] = [];
 
   for (const [lineIndex, line] of lines.entries()) {
     try {
       const parsed = JSON.parse(line) as Record<string, unknown>;
-      parsedRecords.push({ ...parsed, stream: streamName });
-      parsedLineIndexes.push(lineIndex);
+      parsedInputs.push({ inputIndex: lineIndex, parsedRecord: { ...parsed, stream: streamName }, rawLine: line });
     } catch (err) {
       // Malformed NDJSON is permanent by construction: the same bytes will
       // never parse differently on retry. Never retryable.
-      lineErrors[lineIndex] = { message: err instanceof Error ? err.message : String(err), retryable: false };
+      lineErrors[lineIndex] = {
+        code: "malformed_ndjson",
+        message: err instanceof Error ? err.message : String(err),
+        retryable: false,
+      };
     }
   }
 
-  return { lineErrors, parsedLineIndexes, parsedRecords };
+  return { lineErrors, parsedInputs };
 }
 
 async function ingestParsedRecords(
   connectorId: string,
   connectorInstanceId: string | null,
-  parsedRecords: readonly Record<string, unknown>[],
+  parsedInputs: readonly ParsedRecordInput[],
   dependencies: RecordsIngestDependencies
 ): Promise<readonly (IngestLineFailure | null)[]> {
-  if (parsedRecords.length === 0) {
+  if (parsedInputs.length === 0) {
     return [];
   }
+  const parsedRecords = parsedInputs.map((input) => input.parsedRecord);
   if (dependencies.ingestRecords) {
     return await ingestWithBatchCapability(connectorId, connectorInstanceId, parsedRecords, dependencies.ingestRecords);
   }
@@ -280,25 +315,109 @@ async function ingestSequentially(
  */
 function classifyThrownIngestError(err: unknown): IngestLineFailure {
   const message = err instanceof Error ? err.message : String(err);
+  const code = (err as { code?: unknown } | null)?.code;
   const retryableField = (err as { retryable?: unknown } | null)?.retryable;
   const retryable = typeof retryableField === "boolean" ? retryableField : true;
-  return { message, retryable };
+  return { ...(typeof code === "string" ? { code } : {}), message, retryable };
 }
 
 function applyIngestErrors(
   lineErrors: Array<IngestLineFailure | null>,
-  parsedLineIndexes: readonly number[],
+  parsedInputs: readonly ParsedRecordInput[],
   ingestErrors: readonly (IngestLineFailure | null)[]
 ): void {
   for (const [recordIndex, error] of ingestErrors.entries()) {
-    const lineIndex = parsedLineIndexes[recordIndex];
+    const lineIndex = parsedInputs[recordIndex]?.inputIndex;
     if (lineIndex !== undefined) {
       lineErrors[lineIndex] = error;
     }
   }
 }
 
-function buildIngestEnvelope(stream: string, lineErrors: readonly (IngestLineFailure | null)[]): RecordsIngestEnvelope {
+async function buildRejectionReceipts(args: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  dependencies: RecordsIngestDependencies;
+  lines: readonly string[];
+  lineErrors: readonly (IngestLineFailure | null)[];
+  runId?: string | null;
+  streamName: string;
+}): Promise<readonly RejectionReceipt[] | null> {
+  if (!args.dependencies.insertOrReplayRejection) {
+    return null;
+  }
+  if (!args.connectorInstanceId) {
+    throw new RecordsIngestSystemicFailureError(
+      args.streamName,
+      args.lineErrors.filter((error) => error !== null).length,
+      args.lines.length
+    );
+  }
+
+  const receipts: RejectionReceipt[] = [];
+  try {
+    for (const [inputIndex, error] of args.lineErrors.entries()) {
+      if (error === null) {
+        continue;
+      }
+      const { code } = error;
+      if (!code) {
+        throw new RecordsIngestSystemicFailureError(args.streamName, 1, args.lines.length);
+      }
+      receipts.push(
+        // biome-ignore lint/performance/noAwaitInLoops: Rejection persistence must stay ordered with the response vector.
+        await args.dependencies.insertOrReplayRejection({
+          code,
+          connectorId: args.connectorId,
+          connectorInstanceId: args.connectorInstanceId,
+          inputIndex,
+          rawLine: args.lines[inputIndex] ?? "",
+          runId: args.runId ?? null,
+          stream: args.streamName,
+        })
+      );
+    }
+  } catch (err) {
+    if (err instanceof RecordsIngestSystemicFailureError) {
+      throw err;
+    }
+    // biome-ignore lint/style/useErrorCause: RecordsIngestSystemicFailureError forwards ErrorOptions to Error.
+    throw new RecordsIngestSystemicFailureError(args.streamName, 1, args.lines.length, { cause: err });
+  }
+  return receipts;
+}
+
+function validateRejectionReceipts(
+  submittedCount: number,
+  rejectedCount: number,
+  rejections: readonly RejectionReceipt[]
+): void {
+  if (rejections.length !== rejectedCount) {
+    throw new Error(`rejection receipt count ${rejections.length} does not match records_rejected ${rejectedCount}`);
+  }
+  const indexes = new Set<number>();
+  for (const rejection of rejections) {
+    if (
+      !Number.isInteger(rejection.input_index) ||
+      rejection.input_index < 0 ||
+      rejection.input_index >= submittedCount ||
+      indexes.has(rejection.input_index) ||
+      typeof rejection.receipt_id !== "string" ||
+      rejection.receipt_id.length === 0 ||
+      typeof rejection.code !== "string" ||
+      rejection.code.length === 0
+    ) {
+      throw new Error("malformed rejection receipt");
+    }
+    indexes.add(rejection.input_index);
+  }
+}
+
+function buildIngestEnvelope(
+  stream: string,
+  lineErrors: readonly (IngestLineFailure | null)[],
+  rejections: readonly RejectionReceipt[] | null
+): RecordsIngestEnvelope {
   let recordsAccepted = 0;
   let recordsRejected = 0;
   const errors: string[] = [];
@@ -309,6 +428,20 @@ function buildIngestEnvelope(stream: string, lineErrors: readonly (IngestLineFai
       recordsRejected += 1;
       errors.push(error.message);
     }
+  }
+  if (rejections !== null) {
+    validateRejectionReceipts(lineErrors.length, recordsRejected, rejections);
+    if (lineErrors.length !== recordsAccepted + recordsRejected) {
+      throw new Error("hosted ingest response counts do not balance");
+    }
+    return {
+      errors,
+      records_accepted: recordsAccepted,
+      records_attempted: lineErrors.length,
+      records_rejected: recordsRejected,
+      rejections,
+      stream,
+    };
   }
   return { errors, records_accepted: recordsAccepted, records_rejected: recordsRejected, stream };
 }
@@ -359,10 +492,10 @@ export async function executeRecordsIngest(
   const ingestErrors = await ingestParsedRecords(
     connectorId,
     input.connectorInstanceId ?? null,
-    parsed.parsedRecords,
+    parsed.parsedInputs,
     dependencies
   );
-  applyIngestErrors(parsed.lineErrors, parsed.parsedLineIndexes, ingestErrors);
+  applyIngestErrors(parsed.lineErrors, parsed.parsedInputs, ingestErrors);
 
   // At least one line failed systemically (retryable: true) — a storage or
   // coordination failure that never proved that line's OWN data invalid.
@@ -381,8 +514,20 @@ export async function executeRecordsIngest(
     throw new RecordsIngestSystemicFailureError(input.streamName, retryableFailureCount, lines.length);
   }
 
+  const rejections =
+    input.hostedRejectionReceipts === true
+      ? await buildRejectionReceipts({
+          connectorId,
+          connectorInstanceId: input.connectorInstanceId ?? null,
+          dependencies,
+          lineErrors: parsed.lineErrors,
+          lines,
+          streamName: input.streamName,
+        })
+      : null;
+
   return {
-    envelope: buildIngestEnvelope(input.streamName, parsed.lineErrors),
+    envelope: buildIngestEnvelope(input.streamName, parsed.lineErrors, rejections),
     submittedRecordCount,
   };
 }

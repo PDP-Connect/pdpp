@@ -29,8 +29,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type {
   IngestLineFailure,
+  InsertOrReplayRejectionInput,
   RecordsIngestDependencies,
   RecordsIngestInput,
+  RejectionReceipt,
 } from "../operations/rs-records-ingest/index.ts";
 import {
   executeRecordsIngest,
@@ -42,6 +44,7 @@ import {
 
 const STORE_DOWN_RE = /store down/;
 const DERIVED_INDEX_ERROR_RE = /derived index failed/;
+const MALFORMED_REJECTION_RECEIPT_RE = /malformed rejection receipt/;
 const SYSTEMIC_SUMMARY_RE = /systemic\/retryable record failure/;
 
 function defaultDeps(overrides: Partial<RecordsIngestDependencies> = {}): RecordsIngestDependencies {
@@ -66,7 +69,7 @@ function defaultInput(overrides: Partial<RecordsIngestInput> = {}): RecordsInges
 // classified error (server/index.ts's ingestRecord wrapper sets `.retryable`
 // off `classifyIngestFailure`'s result) without depending on records.ts.
 function permanentThrow(message: string): Error {
-  return Object.assign(new Error(message), { retryable: false });
+  return Object.assign(new Error(message), { code: "invalid_record_identity", retryable: false });
 }
 
 // A thrown error with no `.retryable` field at all — the "host never
@@ -398,6 +401,176 @@ test("rs.records.ingest: the batch capability itself throwing (no per-record out
       return true;
     }
   );
+});
+
+function receiptFor(input: InsertOrReplayRejectionInput): RejectionReceipt {
+  return {
+    code: input.code,
+    input_index: input.inputIndex,
+    receipt_id: input.rawLine.includes('"dup"') ? "rr_duplicate_exact_line" : `rr_${input.inputIndex}_${input.code}`,
+  };
+}
+
+test("rs.records.ingest hosted receipts use zero-based non-empty-line indexes and exact raw lines", async () => {
+  const persisted: InsertOrReplayRejectionInput[] = [];
+  const out = await executeRecordsIngest(
+    defaultInput({
+      body: '\n  \n{"id":"ok"}\nNOT_JSON\n{"id":"bad"}',
+      connectorInstanceId: "cin_gmail_work",
+      hostedRejectionReceipts: true,
+    }),
+    defaultDeps({
+      ingestRecord: (_cid, _cin, record) => {
+        if (record.id === "bad") {
+          throw permanentThrow("invalid record identity");
+        }
+      },
+      insertOrReplayRejection: (input) => {
+        persisted.push(input);
+        return receiptFor(input);
+      },
+    })
+  );
+
+  assert.equal(out.submittedRecordCount, 3);
+  assert.deepEqual(out.envelope, {
+    errors: [out.envelope.errors[0], "invalid record identity"],
+    records_accepted: 1,
+    records_attempted: 3,
+    records_rejected: 2,
+    rejections: [
+      { code: "malformed_ndjson", input_index: 1, receipt_id: "rr_1_malformed_ndjson" },
+      { code: "invalid_record_identity", input_index: 2, receipt_id: "rr_2_invalid_record_identity" },
+    ],
+    stream: "messages",
+  });
+  assert.deepEqual(
+    persisted.map(({ code, inputIndex, rawLine }) => ({ code, inputIndex, rawLine })),
+    [
+      { code: "malformed_ndjson", inputIndex: 1, rawLine: "NOT_JSON" },
+      { code: "invalid_record_identity", inputIndex: 2, rawLine: '{"id":"bad"}' },
+    ]
+  );
+});
+
+test("rs.records.ingest hosted receipts preserve parsed batch indexes and allow duplicate receipt ids at distinct indexes", async () => {
+  const out = await executeRecordsIngest(
+    defaultInput({
+      body: '{"id":"dup"}\n{"id":"ok"}\n{"id":"dup"}',
+      connectorInstanceId: "cin_gmail_work",
+      hostedRejectionReceipts: true,
+    }),
+    defaultDeps({
+      ingestRecord: () => {
+        throw new Error("ordered fallback should not run when batch capability is present");
+      },
+      ingestRecords: (_cid, _cin, records) =>
+        records.map((record) =>
+          record.id === "dup"
+            ? { code: "invalid_record_identity", message: "invalid record identity", retryable: false }
+            : null
+        ),
+      insertOrReplayRejection: receiptFor,
+    })
+  );
+
+  assert.equal(out.envelope.records_attempted, 3);
+  assert.equal(out.envelope.records_accepted, 1);
+  assert.equal(out.envelope.records_rejected, 2);
+  assert.deepEqual(out.envelope.rejections, [
+    { code: "invalid_record_identity", input_index: 0, receipt_id: "rr_duplicate_exact_line" },
+    { code: "invalid_record_identity", input_index: 2, receipt_id: "rr_duplicate_exact_line" },
+  ]);
+});
+
+test("rs.records.ingest rejects malformed hosted receipt envelopes fail-closed", async () => {
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({
+          body: '{"id":"bad"}',
+          connectorInstanceId: "cin_gmail_work",
+          hostedRejectionReceipts: true,
+        }),
+        defaultDeps({
+          ingestRecord: () => {
+            throw permanentThrow("invalid record identity");
+          },
+          insertOrReplayRejection: () => ({
+            code: "invalid_record_identity",
+            input_index: 99,
+            receipt_id: "rr_out_of_range",
+          }),
+        })
+      ),
+    MALFORMED_REJECTION_RECEIPT_RE
+  );
+});
+
+test("rs.records.ingest hosted mode treats permanent failures without typed reason code as systemic", async () => {
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({
+          body: '{"id":"bad"}',
+          connectorInstanceId: "cin_gmail_work",
+          hostedRejectionReceipts: true,
+        }),
+        defaultDeps({
+          ingestRecord: () => {
+            throw Object.assign(new Error("legacy permanent"), { retryable: false });
+          },
+          insertOrReplayRejection: receiptFor,
+        })
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsIngestSystemicFailureError);
+      return true;
+    }
+  );
+});
+
+test("rs.records.ingest hosted mode treats rejection receipt persistence failure as systemic", async () => {
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({
+          body: '{"id":"bad"}',
+          connectorInstanceId: "cin_gmail_work",
+          hostedRejectionReceipts: true,
+        }),
+        defaultDeps({
+          ingestRecord: () => {
+            throw permanentThrow("invalid record identity");
+          },
+          insertOrReplayRejection: () => {
+            throw new Error("quarantine store unavailable");
+          },
+        })
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsIngestSystemicFailureError);
+      assert.equal(err.code, "ingest_batch_storage_error");
+      return true;
+    }
+  );
+});
+
+test("rs.records.ingest leaves legacy callers on the count-only response shape", async () => {
+  const out = await executeRecordsIngest(
+    defaultInput({ body: '{"id":"bad"}', connectorInstanceId: "cin_gmail_work" }),
+    defaultDeps({
+      ingestRecord: () => {
+        throw permanentThrow("invalid record identity");
+      },
+      insertOrReplayRejection: () => {
+        throw new Error("legacy path should not persist receipts");
+      },
+    })
+  );
+
+  assert.deepEqual(Object.keys(out.envelope).sort(), ["errors", "records_accepted", "records_rejected", "stream"]);
+  assert.equal(out.envelope.records_rejected, 1);
 });
 
 test("rs.records.ingest does not halt on a failing line; subsequent lines still ingest (systemic failure, still isolated per-line before the throw)", async () => {
