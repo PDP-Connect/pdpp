@@ -319,7 +319,6 @@ export interface ParseMetaOk {
 
 export interface ParseMetaUnknown {
   era: "unknown";
-  rawTextSample: string;
   year: number;
 }
 

@@ -50,6 +50,7 @@ import type { CaptureSession } from "../../src/fixture-capture.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   buildIndexRows,
+  buildPdfTemplateUnknownDiagnostics,
   classifyUsaaNoExportRoute,
   DEFERRED_STREAMS,
   driveExport,
@@ -835,6 +836,25 @@ test("emitExportFailure: no diagnostic at all is an honest unknown outcome (stil
   assert.match(skip.message, /outcome unknown/, "message is honest that the outcome could not be determined");
   const emittedDiag = skip.diagnostics as { outcome: string };
   assert.equal(emittedDiag.outcome, "unknown");
+});
+
+test("unknown PDF template diagnostics keep structural recovery facts but never statement text", () => {
+  const privateStatementText = "OWNER NAME | MERCHANT NAME | $9,999.99 | BALANCE 1234.56";
+  const parseMeta = {
+    era: "unknown" as const,
+    year: 2026,
+    // The parser no longer returns this field, but this fixture protects the
+    // emission boundary if an older parser shape is supplied at runtime.
+    rawTextSample: privateStatementText,
+  };
+  const diagnostics = buildPdfTemplateUnknownDiagnostics("opaque-statement-hash", parseMeta);
+
+  assert.deepEqual(diagnostics, {
+    parser_era: "unknown",
+    statement_id: "opaque-statement-hash",
+    year: 2026,
+  });
+  assert.doesNotMatch(JSON.stringify(diagnostics), /OWNER NAME|MERCHANT NAME|9,999\.99|1234\.56/);
 });
 
 test("emitExportFailure: artifact diagnostics are summarized when page diagnostics are unavailable", async () => {

@@ -77,7 +77,6 @@ const DOWNLOAD_MENU_ITEM_RE = /download/i;
 const DOWNLOAD_BUTTON_TEXT_RE = /^\s*Download( PDF)?\s*$/i;
 const DOCUMENTS_PATH_RE = /\/my\/documents/;
 const MENU_WS_RE = /\s+/g;
-const WS_CLEANUP_RE = /\s+/g;
 const CHECK_NUMBER_RE = /CHECK\s*#?\s*0*(\d+)/i;
 
 // ─── Timing constants ────────────────────────────────────────────────────
@@ -90,7 +89,6 @@ const OPTIONS_MENU_SETTLE_MS = 500;
 const ROW_JITTER_MS = 400;
 const MAX_ERROR_MSG = 160;
 const MAX_MENU_HTML_SAMPLE = 500;
-const MAX_RAW_TEXT_SAMPLE = 800;
 
 // ─── Tiny helpers ────────────────────────────────────────────────────────
 
@@ -538,10 +536,9 @@ export function fileUrlForPath(p: string): string {
  *   - Columns: Trans Date | Post Date | Description | Amount
  *   - Section "Transactions" per card-holder
  *
- * We try each parser in order. If none match we emit SKIP_RESULT with the
- * first ~800 chars of raw text so the next iteration has evidence to
- * extend the parser. This mirrors the defensive pattern used elsewhere in
- * the USAA connector.
+ * We try each parser in order. If none match we emit a structural SKIP_RESULT
+ * with the parser era and statement year; raw statement text never enters the
+ * durable diagnostic payload.
  */
 
 // Statement text extraction reuses the shared `pdf-parse` path so the USAA
@@ -623,9 +620,9 @@ function buildStatementRecords(
  *   accountId, accountName, period (YYYY-MM for provenance), originalDescription
  *   fallback.
  *
- * Returns { txns: Array<TxnRecord>, parseMeta: { era, rawTextSample, year } }.
+ * Returns { txns: Array<TxnRecord>, parseMeta: { era, year } }.
  * When no parser matches, txns is [] and parseMeta.era === "unknown"; the
- * connector surfaces a SKIP_RESULT with the text sample.
+ * connector surfaces a bounded structural SKIP_RESULT without statement text.
  */
 export async function parsePdfStatement({
   buffer,
@@ -648,8 +645,6 @@ export async function parsePdfStatement({
       parseMeta: {
         era: "unknown",
         year: closing.closingYear,
-        // Trim to keep SKIP_RESULT lines within JSONL-sane bounds.
-        rawTextSample: text.replace(WS_CLEANUP_RE, " ").slice(0, MAX_RAW_TEXT_SAMPLE),
       },
     };
   }
