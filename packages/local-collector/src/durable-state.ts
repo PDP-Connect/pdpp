@@ -7,12 +7,15 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
-  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
+  readFileSync,
   readSync,
+  renameSync,
   rmSync,
+  statSync,
+  writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
@@ -27,6 +30,12 @@ const LEGACY_MIGRATION_FILE_PATTERN = /\.migration-[^/]+\.tmp$/;
 const DEFAULT_QUEUE_FILE_NAME = "collector-runner-queue.sqlite";
 
 export interface CollectorStatePathInput {
+  /** Test hook that simulates a legacy collector write after canonical installation. */
+  afterMigrationInstall?: (() => void) | undefined;
+  /** Test hook that simulates a crash after the legacy retirement fence commits. */
+  afterRetirementFence?: (() => void) | undefined;
+  /** Test hook that simulates a legacy collector write after the first snapshot. */
+  beforeMigrationReconcile?: (() => void) | undefined;
   /** A queue path supplied by an operator or profile. */
   configuredPath?: string | null | undefined;
   /** Whether `configuredPath` came from an explicit queue configuration. */
@@ -40,10 +49,6 @@ export interface CollectorStatePathInput {
   sourceInstanceId?: string | null | undefined;
   /** Injectable platform state root for deterministic tests. */
   stateRoot?: string | undefined;
-  /** Test hook that simulates a legacy collector write after the first snapshot. */
-  beforeMigrationReconcile?: (() => void) | undefined;
-  /** Test hook that simulates a legacy collector write after canonical installation. */
-  afterMigrationInstall?: (() => void) | undefined;
 }
 
 export class CollectorStateResolutionError extends Error {
@@ -115,13 +120,14 @@ export function canonicalCollectorQueuePath(input: {
  * source-aware default, the resolver first uses the canonical user-state path,
  * then looks through a small set of known legacy roots. A stable legacy store
  * is used in place; a package-local legacy store is reconciled into a
- * consistent SQLite snapshot and the canonical path is hard-linked to the
- * retained legacy inode. Old pathnames are never removed.
+ * consistent SQLite snapshot, retires the migrated source in the old
+ * database, and installs the snapshot at the canonical path. Old pathnames
+ * are never removed.
  */
 export function resolveCollectorQueuePath(input: CollectorStatePathInput = {}): string {
-  const configuredPath = input.configuredPath;
-  const isExplicit = input.configuredPathIsExplicit ?? Boolean(configuredPath?.trim());
-  if (isExplicit && configuredPath) {
+  const { configuredPath, configuredPathIsExplicit } = input;
+  const isExplicit = configuredPathIsExplicit ?? Boolean(configuredPath?.trim());
+  if (isExplicit && typeof configuredPath === "string") {
     return configuredPath;
   }
 
@@ -195,7 +201,8 @@ export function resolveCollectorQueuePath(input: CollectorStatePathInput = {}): 
     canonicalPath,
     sourceInstanceId,
     input.beforeMigrationReconcile,
-    input.afterMigrationInstall
+    input.afterMigrationInstall,
+    input.afterRetirementFence
   );
 }
 
@@ -337,12 +344,18 @@ function migrateLegacyStore(
   canonicalPath: string,
   sourceInstanceId: string,
   beforeReconcile?: (() => void) | undefined,
-  afterInstall?: (() => void) | undefined
+  afterInstall?: (() => void) | undefined,
+  afterRetirementFence?: (() => void) | undefined
 ): string {
   mkdirSync(dirname(canonicalPath), { mode: 0o700, recursive: true });
   const temporaryPath = `${canonicalPath}.migration-${process.pid}-${randomUUID()}.tmp`;
+  const lockPath = `${canonicalPath}.handoff.lock`;
+  let lockAcquired = false;
   let source: DatabaseSync | undefined;
   try {
+    ensureSameFilesystem(legacyPath, canonicalPath);
+    acquireMigrationLock(lockPath);
+    lockAcquired = true;
     source = new DatabaseSync(legacyPath, { readOnly: true });
     source.exec("PRAGMA busy_timeout = 5000");
     const escapedPath = temporaryPath.replaceAll("'", "''");
@@ -363,12 +376,20 @@ function migrateLegacyStore(
       closeSync(snapshotFd);
     }
 
+    afterRetirementFence?.();
+    installSnapshot(temporaryPath, canonicalPath, sourceInstanceId);
     afterInstall?.();
+    if (lockAcquired) {
+      releaseMigrationLock(lockPath);
+    }
     rmSync(temporaryPath, { force: true });
     return canonicalPath;
   } catch (error) {
     source?.close();
     rmSync(temporaryPath, { force: true });
+    if (lockAcquired) {
+      releaseMigrationLock(lockPath);
+    }
     if (error instanceof CollectorStateResolutionError) {
       throw error;
     }
@@ -384,10 +405,10 @@ function migrateLegacyStore(
 /**
  * Fence the still-running legacy collector while reconciling writes that
  * landed after VACUUM INTO's snapshot. BEGIN IMMEDIATE waits for any current
- * writer, then prevents another writer until the rows are copied and the
- * canonical pathname is installed. The canonical pathname is a hard link to
- * the legacy database, so writes through an already-running legacy process
- * remain visible after the handoff. The old pathname is retained deliberately.
+ * writer, then prevents another writer until the rows are copied and a
+ * trigger-enforced retirement fence is committed in the legacy database.
+ * The canonical pathname is a separate complete snapshot; it never aliases
+ * the legacy WAL main file or its path-derived sidecars.
  */
 function reconcileLegacyWrites(
   legacyPath: string,
@@ -402,6 +423,15 @@ function reconcileLegacyWrites(
     source.exec("BEGIN IMMEDIATE");
     const escapedPath = temporaryPath.replaceAll("'", "''");
     source.exec(`ATTACH DATABASE '${escapedPath}' AS migrated`);
+    // VACUUM INTO can carry an earlier retirement fence into the snapshot
+    // during crash recovery. The fence belongs only to the legacy pathname;
+    // copying it to the canonical authority would retire the new writer too.
+    source.exec(`
+      DROP TRIGGER IF EXISTS migrated.pdpp_retire_outbox_insert;
+      DROP TRIGGER IF EXISTS migrated.pdpp_retire_outbox_update;
+      DROP TRIGGER IF EXISTS migrated.pdpp_retire_outbox_delete;
+      DROP TABLE IF EXISTS migrated.pdpp_legacy_retirements;
+    `);
     source.exec(`
       INSERT OR IGNORE INTO migrated.local_device_outbox (
         id, source_instance_id, kind, status, payload_json, body_hash,
@@ -415,7 +445,9 @@ function reconcileLegacyWrites(
        WHERE source_instance_id = '${sourceInstanceId.replaceAll("'", "''")}'
     `);
     const hasObservedStreamTable = source
-      .prepare("SELECT 1 AS present FROM migrated.sqlite_master WHERE type = 'table' AND name = 'local_device_observed_stream'")
+      .prepare(
+        "SELECT 1 AS present FROM migrated.sqlite_master WHERE type = 'table' AND name = 'local_device_observed_stream'"
+      )
       .get();
     if (hasObservedStreamTable) {
       source.exec(`
@@ -425,22 +457,7 @@ function reconcileLegacyWrites(
          WHERE source_instance_id = '${sourceInstanceId.replaceAll("'", "''")}'
       `);
     }
-    try {
-      // Install an alias to the legacy inode while its writer fence is held.
-      // This makes the handoff durable for old collectors that continue to
-      // write through the legacy pathname after this process returns.
-      linkSync(legacyPath, canonicalPath);
-      if (process.platform !== "win32") {
-        chmodSync(canonicalPath, 0o600);
-      }
-    } catch (error) {
-      if (!isAlreadyExistsError(error)) {
-        throw error;
-      }
-      if (!containsSourceRows(canonicalPath, sourceInstanceId)) {
-        throw new Error("a concurrent canonical state file does not contain the requested source", { cause: error });
-      }
-    }
+    installRetirementFence(source, sourceInstanceId, canonicalPath);
     source.exec("COMMIT");
     source.exec("DETACH DATABASE migrated");
   } catch (error) {
@@ -453,6 +470,108 @@ function reconcileLegacyWrites(
   } finally {
     source?.close();
   }
+}
+
+function acquireMigrationLock(path: string): void {
+  try {
+    const fd = openSync(path, "wx", 0o600);
+    try {
+      writeSync(fd, `${process.pid}\n`, undefined, "utf8");
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  } catch (error) {
+    if (!isAlreadyExistsError(error)) {
+      throw error;
+    }
+    let ownerPid: number | undefined;
+    try {
+      ownerPid = Number(readFileSync(path, { encoding: "utf8" }).trim());
+    } catch (lockReadError) {
+      throw new Error(`legacy state handoff is already in progress: ${path}`, { cause: lockReadError });
+    }
+    if (Number.isInteger(ownerPid) && ownerPid > 0) {
+      try {
+        process.kill(ownerPid, 0);
+      } catch (probeError) {
+        if (isNodeError(probeError) && probeError.code === "ESRCH") {
+          rmSync(path, { force: true });
+          acquireMigrationLock(path);
+          return;
+        }
+      }
+    }
+    throw new Error(`legacy state handoff is already in progress: ${path}`, { cause: error });
+  }
+}
+
+function releaseMigrationLock(path: string): void {
+  rmSync(path, { force: true });
+}
+
+function installSnapshot(temporaryPath: string, canonicalPath: string, sourceInstanceId: string): void {
+  if (existsSync(canonicalPath)) {
+    if (!containsSourceRows(canonicalPath, sourceInstanceId)) {
+      throw new Error("a concurrent canonical state file does not contain the requested source");
+    }
+    return;
+  }
+  renameSync(temporaryPath, canonicalPath);
+  if (process.platform !== "win32") {
+    chmodSync(canonicalPath, 0o600);
+  }
+  const canonicalFd = openSync(canonicalPath, "r");
+  try {
+    fsyncSync(canonicalFd);
+  } finally {
+    closeSync(canonicalFd);
+  }
+  const directoryFd = openSync(dirname(canonicalPath), "r");
+  try {
+    fsyncSync(directoryFd);
+  } finally {
+    closeSync(directoryFd);
+  }
+}
+
+function ensureSameFilesystem(legacyPath: string, canonicalPath: string): void {
+  const legacyDevice = statSync(dirname(legacyPath)).dev;
+  const canonicalDevice = statSync(dirname(canonicalPath)).dev;
+  if (legacyDevice !== canonicalDevice) {
+    throw new Error("legacy state handoff crosses filesystems; refusing a non-atomic migration");
+  }
+}
+
+function installRetirementFence(source: DatabaseSync, sourceInstanceId: string, canonicalPath: string): void {
+  const sourceLiteral = sqlStringLiteral(sourceInstanceId);
+  const canonicalLiteral = sqlStringLiteral(canonicalPath);
+  source.exec(`
+    CREATE TABLE IF NOT EXISTS pdpp_legacy_retirements (
+      source_instance_id TEXT PRIMARY KEY,
+      canonical_path TEXT NOT NULL,
+      retired_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TRIGGER IF NOT EXISTS pdpp_retire_outbox_insert
+      BEFORE INSERT ON local_device_outbox
+      WHEN EXISTS (SELECT 1 FROM pdpp_legacy_retirements WHERE source_instance_id = NEW.source_instance_id)
+      BEGIN SELECT RAISE(ABORT, 'legacy collector state retired; use canonical path'); END;
+    CREATE TRIGGER IF NOT EXISTS pdpp_retire_outbox_update
+      BEFORE UPDATE ON local_device_outbox
+      WHEN EXISTS (SELECT 1 FROM pdpp_legacy_retirements WHERE source_instance_id = OLD.source_instance_id OR source_instance_id = NEW.source_instance_id)
+      BEGIN SELECT RAISE(ABORT, 'legacy collector state retired; use canonical path'); END;
+    CREATE TRIGGER IF NOT EXISTS pdpp_retire_outbox_delete
+      BEFORE DELETE ON local_device_outbox
+      WHEN EXISTS (SELECT 1 FROM pdpp_legacy_retirements WHERE source_instance_id = OLD.source_instance_id)
+      BEGIN SELECT RAISE(ABORT, 'legacy collector state retired; use canonical path'); END;
+    INSERT INTO pdpp_legacy_retirements (source_instance_id, canonical_path)
+      VALUES (${sourceLiteral}, ${canonicalLiteral})
+      ON CONFLICT(source_instance_id) DO UPDATE SET canonical_path = excluded.canonical_path;
+  `);
+}
+
+function sqlStringLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 function ambiguousLegacyState(

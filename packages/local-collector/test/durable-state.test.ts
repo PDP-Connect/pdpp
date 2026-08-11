@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chdir } from "node:process";
@@ -109,7 +109,9 @@ test("explicit queue paths preserve valid path bytes", () => {
   );
 });
 
-test("explicit environment and profile queue paths preserve leading and trailing spaces", { concurrency: false }, () => {
+test("explicit environment and profile queue paths preserve leading and trailing spaces", {
+  concurrency: false,
+}, () => {
   withTempRoot("pdpp-durable-state-whitespace-", (root) => {
     const profileDirectory = join(root, "profiles");
     const profileQueuePath = ` ${join(root, "profile queue.sqlite")} `;
@@ -129,10 +131,53 @@ test("explicit environment and profile queue paths preserve leading and trailing
       const options = resolveInspectionOptions(parseArgs(["status", "--source-instance-id", SOURCE_A]));
       assert.equal(options.queuePath, profileQueuePath);
     } finally {
-      if (previousProfileDirectory === undefined) delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
-      else process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = previousProfileDirectory;
-      if (previousQueuePath === undefined) delete process.env.PDPP_COLLECTOR_QUEUE;
-      else process.env.PDPP_COLLECTOR_QUEUE = previousQueuePath;
+      if (previousProfileDirectory === undefined) {
+        delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+      } else {
+        process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = previousProfileDirectory;
+      }
+      if (previousQueuePath === undefined) {
+        delete process.env.PDPP_COLLECTOR_QUEUE;
+      } else {
+        process.env.PDPP_COLLECTOR_QUEUE = previousQueuePath;
+      }
+    }
+  });
+});
+
+test("whitespace-only environment and profile queue paths remain explicit instead of falling back", {
+  concurrency: false,
+}, () => {
+  const previousProfileDirectory = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+  const previousQueuePath = process.env.PDPP_COLLECTOR_QUEUE;
+  withTempRoot("pdpp-durable-state-whitespace-only-", (root) => {
+    const profileDirectory = join(root, "profiles");
+    mkdirSync(profileDirectory, { recursive: true });
+    writeFileSync(
+      join(profileDirectory, "profile.env"),
+      `PDPP_CONNECTION_ID=${SOURCE_A}\nPDPP_COLLECTOR_QUEUE="   "\n`
+    );
+    process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDirectory;
+    process.env.PDPP_COLLECTOR_QUEUE = "   ";
+    try {
+      const fromEnvironment = parseArgs(["status"]);
+      assert.equal(fromEnvironment.queuePath, "   ");
+      assert.equal(fromEnvironment.queuePathExplicit, true);
+      delete process.env.PDPP_COLLECTOR_QUEUE;
+      const fromProfile = resolveInspectionOptions(parseArgs(["status", "--source-instance-id", SOURCE_A]));
+      assert.equal(fromProfile.queuePath, "   ");
+      assert.equal(fromProfile.queuePathExplicit, true);
+    } finally {
+      if (previousProfileDirectory === undefined) {
+        delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+      } else {
+        process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = previousProfileDirectory;
+      }
+      if (previousQueuePath === undefined) {
+        delete process.env.PDPP_COLLECTOR_QUEUE;
+      } else {
+        process.env.PDPP_COLLECTOR_QUEUE = previousQueuePath;
+      }
     }
   });
 });
@@ -330,7 +375,7 @@ test("migration reconciles a legacy write that lands after the snapshot", () => 
   });
 });
 
-test("migration keeps a causal legacy write after canonical installation visible", () => {
+test("migration retires a live WAL legacy writer before canonical installation", () => {
   withTempRoot("pdpp-durable-state-handoff-", (root) => {
     const stateRoot = join(root, "user-state");
     const installRoot = join(root, "npx-temp-package");
@@ -340,20 +385,116 @@ test("migration keeps a causal legacy write after canonical installation visible
       sourceInstanceId: SOURCE_A,
       stateRoot,
     });
-    seedOutbox(legacyPath, SOURCE_A, "before-handoff");
+    const liveLegacyWriter = new LocalDeviceOutbox({ path: legacyPath });
+    liveLegacyWriter.enqueue({
+      id: "before-handoff",
+      kind: "record_batch",
+      payload: { source: SOURCE_A },
+      sourceInstanceId: SOURCE_A,
+    });
+    assert.equal(existsSync(`${legacyPath}-wal`), true);
 
-    const resolved = resolveCollectorQueuePath({
+    try {
+      let canonicalWriter: LocalDeviceOutbox | undefined;
+      const resolved = resolveCollectorQueuePath({
+        connectorId: "claude_code",
+        moduleUrl: modulePath(installRoot),
+        sourceInstanceId: SOURCE_A,
+        stateRoot,
+        afterMigrationInstall: () => {
+          canonicalWriter = new LocalDeviceOutbox({ path: canonicalPath });
+          canonicalWriter.enqueue({
+            id: "canonical-during-handoff",
+            kind: "record_batch",
+            payload: { source: SOURCE_A },
+            sourceInstanceId: SOURCE_A,
+          });
+          assert.throws(() =>
+            liveLegacyWriter.enqueue({
+              id: "after-canonical-install",
+              kind: "record_batch",
+              payload: { source: SOURCE_A },
+              sourceInstanceId: SOURCE_A,
+            })
+          );
+        },
+      });
+
+      assert.equal(resolved, canonicalPath);
+      assert.equal(sourceSummary(canonicalPath, SOURCE_A), 2);
+      assert.equal(sourceSummary(legacyPath, SOURCE_A), 1);
+      assert.notEqual(statSync(legacyPath).ino, statSync(canonicalPath).ino);
+      canonicalWriter?.close();
+    } finally {
+      liveLegacyWriter.close();
+    }
+  });
+});
+
+test("restart completes a handoff after failure between retirement and canonical install", () => {
+  withTempRoot("pdpp-durable-state-crash-restart-", (root) => {
+    const stateRoot = join(root, "user-state");
+    const installRoot = join(root, "npx-temp-package");
+    const legacyPath = packageLegacyPath(installRoot, "collector-runner-queue.sqlite");
+    const canonicalPath = canonicalCollectorQueuePath({
+      connectorId: "claude_code",
+      sourceInstanceId: SOURCE_A,
+      stateRoot,
+    });
+    seedOutbox(legacyPath, SOURCE_A, "before-crash");
+
+    assert.throws(() =>
+      resolveCollectorQueuePath({
+        connectorId: "claude_code",
+        moduleUrl: modulePath(installRoot),
+        sourceInstanceId: SOURCE_A,
+        stateRoot,
+        afterRetirementFence: () => {
+          throw new Error("simulated crash after durable retirement");
+        },
+      })
+    );
+    assert.equal(existsSync(canonicalPath), false);
+    assert.equal(existsSync(legacyPath), true);
+
+    const restarted = resolveCollectorQueuePath({
       connectorId: "claude_code",
       moduleUrl: modulePath(installRoot),
       sourceInstanceId: SOURCE_A,
       stateRoot,
-      afterMigrationInstall: () => seedOutbox(legacyPath, SOURCE_A, "after-canonical-install"),
     });
-
-    assert.equal(resolved, canonicalPath);
-    assert.equal(sourceSummary(canonicalPath, SOURCE_A), 2);
-    assert.equal(sourceSummary(legacyPath, SOURCE_A), 2);
+    assert.equal(restarted, canonicalPath);
+    assert.equal(sourceSummary(canonicalPath, SOURCE_A), 1);
+    assert.equal(sourceSummary(legacyPath, SOURCE_A), 1);
   });
+});
+
+test("migration fails closed when the legacy and canonical roots cross filesystems", () => {
+  if (!existsSync("/dev/shm")) {
+    return;
+  }
+  const crossFilesystemRoot = mkdtempSync(join("/dev/shm", "pdpp-durable-state-cross-"));
+  try {
+    withTempRoot("pdpp-durable-state-cross-source-", (root) => {
+      const legacyPath = packageLegacyPath(join(root, "npx-temp-package"), "collector-runner-queue.sqlite");
+      seedOutbox(legacyPath, SOURCE_A);
+      assert.notEqual(statSync(join(root, "npx-temp-package")).dev, statSync(crossFilesystemRoot).dev);
+      assert.throws(
+        () =>
+          resolveCollectorQueuePath({
+            connectorId: "claude_code",
+            moduleUrl: modulePath(join(root, "npx-temp-package")),
+            sourceInstanceId: SOURCE_A,
+            stateRoot: crossFilesystemRoot,
+          }),
+        (error: unknown) =>
+          error instanceof CollectorStateResolutionError && error.code === "legacy_state_migration_failed"
+      );
+      assert.equal(existsSync(legacyPath), true);
+    });
+  } finally {
+    rmSync(crossFilesystemRoot, { force: true, recursive: true });
+  }
 });
 
 test("migration ignores an orphaned crash artifact and restart reuses the installed canonical copy", () => {

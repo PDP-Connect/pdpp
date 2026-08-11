@@ -2403,15 +2403,14 @@ function applyProfileEnv(options: CliOptions, profile: LocalCollectorProfile): C
   const { env } = profile;
   const explicit = options.explicitOptions;
   const keep = (flag: string): boolean => explicit?.has(flag) === true;
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches the established profile-env idiom.
-  const profileQueuePath = env.PDPP_COLLECTOR_QUEUE?.trim() ? env.PDPP_COLLECTOR_QUEUE : undefined;
+  const profileQueuePath = Object.hasOwn(env, "PDPP_COLLECTOR_QUEUE") ? env.PDPP_COLLECTOR_QUEUE : undefined;
   const configuredQueuePath = hasExplicitQueuePath(options);
   const next: CliOptions = {
     ...options,
     // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     baseUrl: keep("--base-url") ? options.baseUrl : env.PDPP_REFERENCE_BASE_URL?.trim() || options.baseUrl,
-    queuePath: configuredQueuePath ? options.queuePath : profileQueuePath || options.queuePath,
-    queuePathExplicit: configuredQueuePath || Boolean(profileQueuePath),
+    queuePath: configuredQueuePath ? options.queuePath : (profileQueuePath ?? options.queuePath),
+    queuePathExplicit: configuredQueuePath || profileQueuePath !== undefined,
   };
   const sourceInstanceId = profile.source_instance_id ?? options.sourceInstanceId;
   // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
@@ -3074,14 +3073,12 @@ export function parseArgs(args: string[]): CliOptions {
       "usage: pdpp-local-collector <setup|connect|run|status|doctor|logout|connectors|advertise|enroll|recover|retry-dead-letters|prune-sent|compact> --base-url <url> [options]"
     );
   }
-  const configuredQueuePath = process.env.PDPP_COLLECTOR_QUEUE?.trim()
-    ? process.env.PDPP_COLLECTOR_QUEUE
-    : undefined;
+  const configuredQueuePath = process.env.PDPP_COLLECTOR_QUEUE;
   const options: CliOptions = {
     baseUrl: process.env.PDPP_REFERENCE_BASE_URL ?? "http://127.0.0.1:7662",
     command,
     queuePath: configuredQueuePath ?? "",
-    queuePathExplicit: Boolean(configuredQueuePath),
+    queuePathExplicit: configuredQueuePath !== undefined,
   };
   const explicitOptions = new Set<string>();
   options.explicitOptions = explicitOptions;
