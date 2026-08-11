@@ -28,12 +28,25 @@ import { mock, test } from "node:test";
 import type { BrowserContext, Page } from "playwright";
 import type { BrowserCollectContext, EmittedMessage } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
-import { type EmitDeps, extractAccounts, gotoOrRepairSession, runInboxStream, runStatementsStream } from "./index.ts";
+import {
+  type EmitDeps,
+  extractAccounts,
+  gotoOrRepairSession,
+  runInboxStream,
+  runStatementsStream,
+  type UsaaRunState,
+} from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
 const FAKE_CONTEXT = {} as BrowserContext;
 const LOGON_URL = "https://www.usaa.com/my/logon";
 const DASHBOARD_URL = "https://www.usaa.com/my/usaa";
+
+/** Fresh per-run state for each test — mirrors `collect()` constructing
+ *  exactly one `UsaaRunState` per run, shared across every stream. */
+function freshRunState(): UsaaRunState {
+  return { sessionDeadMidRun: false, sessionRepairAttempted: false };
+}
 
 // biome-ignore lint/suspicious/useAwait: mock throws to prove a repaired/never-dead session never reaches sendInteraction
 const NEVER_CALLED_SEND_INTERACTION: BrowserCollectContext["sendInteraction"] = async () => {
@@ -88,7 +101,8 @@ test("gotoOrRepairSession: lands on the real page first try → ok, no reauth at
     NEVER_CALLED_SEND_INTERACTION,
     DASHBOARD_URL,
     { timeout: 1000 },
-    "accounts"
+    "accounts",
+    freshRunState()
   );
 
   assert.deepEqual(result, { ok: true });
@@ -113,7 +127,8 @@ test("gotoOrRepairSession: logon bounce → repair succeeds → retries the SAME
     NEVER_CALLED_SEND_INTERACTION,
     DASHBOARD_URL,
     { timeout: 1000 },
-    "accounts"
+    "accounts",
+    freshRunState()
   );
 
   assert.deepEqual(result, { ok: true });
@@ -142,7 +157,8 @@ test("gotoOrRepairSession: logon bounce persists after repair → terminal ok:fa
     NEVER_CALLED_SEND_INTERACTION,
     DASHBOARD_URL,
     { timeout: 1000 },
-    "accounts"
+    "accounts",
+    freshRunState()
   );
 
   assert.deepEqual(result, { ok: false });
@@ -167,7 +183,8 @@ test("gotoOrRepairSession: repair itself throws → terminal ok:false, no retry 
     NEVER_CALLED_SEND_INTERACTION,
     DASHBOARD_URL,
     { timeout: 1000 },
-    "accounts"
+    "accounts",
+    freshRunState()
   );
 
   assert.deepEqual(result, { ok: false });
@@ -190,7 +207,8 @@ test("gotoOrRepairSession: no reauthenticate override falls through to ensureUsa
     NEVER_CALLED_SEND_INTERACTION,
     DASHBOARD_URL,
     { timeout: 1000 },
-    "accounts"
+    "accounts",
+    freshRunState()
   );
 
   assert.deepEqual(result, { ok: false });
@@ -218,8 +236,9 @@ test("extractAccounts: dashboard nav succeeds first try → parses accounts norm
     Object.assign(page, {
       evaluate: () => Promise.resolve([]),
     });
+    const streamState = freshRunState();
 
-    const accounts = await extractAccounts(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION);
+    const accounts = await extractAccounts(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, streamState);
 
     assert.deepEqual(accounts, []);
     assert.equal(
@@ -227,6 +246,7 @@ test("extractAccounts: dashboard nav succeeds first try → parses accounts norm
       0,
       "no SKIP_RESULT on a clean dashboard load"
     );
+    assert.equal(streamState.sessionDeadMidRun, false);
   });
 });
 
@@ -242,15 +262,17 @@ test("extractAccounts: dashboard bounces to logon, repair succeeds, retried dash
     Object.assign(page, {
       evaluate: () => Promise.resolve([]),
     });
+    const streamState = freshRunState();
 
-    const accounts = await extractAccounts(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION);
+    const accounts = await extractAccounts(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, streamState);
 
     assert.equal(reauthCalls, 1);
     assert.deepEqual(accounts, [], "post-repair retry proceeds to parse the (empty, in this fixture) dashboard");
+    assert.equal(streamState.sessionDeadMidRun, false, "a successful repair must not latch session death");
   });
 });
 
-test("extractAccounts: repair fails → returns [] with a typed SKIP_RESULT, never scrapes the logon page as accounts", async () => {
+test("extractAccounts: repair fails → returns [] with a typed SKIP_RESULT, never scrapes the logon page as accounts, latches session death for later streams", async () => {
   await withFastTimers(async () => {
     // biome-ignore lint/suspicious/useAwait: mock matches EmitDeps["reauthenticate"]'s Promise-returning signature
     const run = makeHarness(async () => {
@@ -264,15 +286,67 @@ test("extractAccounts: repair fails → returns [] with a typed SKIP_RESULT, nev
         return Promise.resolve([]);
       },
     });
+    const streamState = freshRunState();
 
-    const accounts = await extractAccounts(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION);
+    const accounts = await extractAccounts(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, streamState);
 
     assert.deepEqual(accounts, [], "a dead session must never be scraped as zero real accounts");
     assert.equal(evaluateCalled, false, "the logon page's DOM must never be scraped/attributed as account data");
     const skips = run.messages.filter((m) => m.type === "SKIP_RESULT");
     assert.equal(skips.length, 1);
     assert.equal((skips[0] as { reason?: string }).reason, "session_dead_reauth_failed");
+    assert.equal(
+      streamState.sessionDeadMidRun,
+      true,
+      "extractAccounts must latch the shared streamState itself — collect() constructs it BEFORE this call and relies on the latch to skip every later stream"
+    );
   });
+});
+
+// ─── gotoOrRepairSession: the run-scoped repair budget ──────────────────
+
+test("gotoOrRepairSession: budget already spent by an earlier call this run → refuses immediately after the bounce, no reauth, no retry navigation", async () => {
+  let reauthCalls = 0;
+  // biome-ignore lint/suspicious/useAwait: mock matches EmitDeps["reauthenticate"]'s Promise-returning signature
+  const reauthenticate: EmitDeps["reauthenticate"] = async () => {
+    reauthCalls += 1;
+  };
+  const run = makeHarness(reauthenticate);
+  const { page } = makeSequencedPage([LOGON_URL, DASHBOARD_URL]);
+  const streamState = freshRunState();
+
+  const first = await gotoOrRepairSession(
+    run.deps,
+    FAKE_CONTEXT,
+    page,
+    NEVER_CALLED_SEND_INTERACTION,
+    DASHBOARD_URL,
+    { timeout: 1000 },
+    "accounts",
+    streamState
+  );
+  assert.deepEqual(first, { ok: true });
+  assert.equal(reauthCalls, 1, "the first call spends the budget");
+
+  const { calls: secondCalls, page: secondPage } = makeSequencedPage([LOGON_URL]);
+  const second = await gotoOrRepairSession(
+    run.deps,
+    FAKE_CONTEXT,
+    secondPage,
+    NEVER_CALLED_SEND_INTERACTION,
+    "https://www.usaa.com/my/documents",
+    { timeout: 1000 },
+    "statements",
+    streamState
+  );
+
+  assert.deepEqual(second, { ok: false }, "a second call this run must be refused, not attempt its own repair");
+  assert.equal(reauthCalls, 1, "the run-scoped budget must not be spent twice");
+  assert.equal(
+    secondCalls.length,
+    1,
+    "the retry-navigation after repair must never happen — the budget check short-circuits before any second goto"
+  );
 });
 
 // ─── runStatementsStream: statements/inbox class of sub-streams ─────────
@@ -295,7 +369,8 @@ test("runStatementsStream: documents nav bounces to logon, repair succeeds → s
       FAKE_CONTEXT,
       NEVER_CALLED_SEND_INTERACTION,
       [],
-      new Map()
+      new Map(),
+      freshRunState()
     );
 
     assert.equal(reauthCalls, 1);
@@ -323,7 +398,8 @@ test("runStatementsStream: documents nav bounces to logon, repair fails → sess
       FAKE_CONTEXT,
       NEVER_CALLED_SEND_INTERACTION,
       [],
-      new Map()
+      new Map(),
+      freshRunState()
     );
 
     assert.equal(sessionAlive, false, "caller must latch sessionDeadMidRun so later streams don't also attempt repair");
@@ -347,7 +423,8 @@ test("runStatementsStream: a genuine scrape failure (not a logon bounce) still r
       FAKE_CONTEXT,
       NEVER_CALLED_SEND_INTERACTION,
       [],
-      new Map()
+      new Map(),
+      freshRunState()
     );
 
     assert.equal(sessionAlive, true, "a non-auth scrape error must not be conflated with session death");
@@ -372,7 +449,14 @@ test("runInboxStream: inbox nav bounces to logon, repair succeeds → session-al
       evaluate: () => Promise.resolve([{ status: "Read", date_short: "6/1", preview: "hi" }]),
     });
 
-    const sessionAlive = await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {});
+    const sessionAlive = await runInboxStream(
+      run.deps,
+      FAKE_CONTEXT,
+      page,
+      NEVER_CALLED_SEND_INTERACTION,
+      {},
+      freshRunState()
+    );
 
     assert.equal(reauthCalls, 1);
     assert.equal(sessionAlive, true);
@@ -394,7 +478,14 @@ test("runInboxStream: inbox nav bounces to logon, repair fails → session-dead 
       },
     });
 
-    const sessionAlive = await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {});
+    const sessionAlive = await runInboxStream(
+      run.deps,
+      FAKE_CONTEXT,
+      page,
+      NEVER_CALLED_SEND_INTERACTION,
+      {},
+      freshRunState()
+    );
 
     assert.equal(sessionAlive, false, "the caller (collect()) uses this to latch sessionDeadMidRun for later streams");
     assert.equal(evaluateCalled, false, "the logon page must never be scraped as inbox rows");

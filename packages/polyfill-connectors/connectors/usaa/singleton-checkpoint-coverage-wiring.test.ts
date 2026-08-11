@@ -44,7 +44,7 @@ import type {
 } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
-import { type EmitDeps, runCreditCardBillingStream, runInboxStream } from "./index.ts";
+import { type EmitDeps, runCreditCardBillingStream, runInboxStream, type UsaaRunState } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { DashboardAccount, InboxRow } from "./types.ts";
 
@@ -53,6 +53,12 @@ const FAKE_CONTEXT = {} as BrowserContext;
 const NEVER_CALLED_SEND_INTERACTION: BrowserCollectContext["sendInteraction"] = async () => {
   throw new Error("sendInteraction must not be called on the happy path — no session-death signal was produced");
 };
+
+/** Fresh per-run state for each test — mirrors `collect()` constructing
+ *  exactly one `UsaaRunState` per run, shared across every stream/card. */
+function freshRunState(): UsaaRunState {
+  return { sessionDeadMidRun: false, sessionRepairAttempted: false };
+}
 
 function makeHarness(): {
   deps: EmitDeps;
@@ -128,7 +134,7 @@ test("wiring: runInboxStream emits DETAIL_COVERAGE with considered/covered after
       { status: "Read", date_short: "6/1", preview: "Statement ready" },
       { status: "Unread", date_short: "6/2", preview: "New alert" },
     ]);
-    await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {});
+    await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {}, freshRunState());
 
     assert.equal(run.emitted.filter((e) => e.stream === "inbox_messages").length, 2, "both rows emitted");
     const cov = coverageFor(run.messages, "inbox_messages");
@@ -143,7 +149,7 @@ test("wiring: runInboxStream emits SKIP_RESULT and NO coverage when page.goto th
   await withFastTimers(async () => {
     const run = makeHarness();
     const page = makeInboxPage([{ status: "Read", date_short: "6/1", preview: "x" }], /* gotoFails */ true);
-    await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {});
+    await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {}, freshRunState());
 
     assert.equal(run.emitted.filter((e) => e.stream === "inbox_messages").length, 0, "no records on a nav failure");
     const skips = skipsFor(run.messages, "inbox_messages");
@@ -165,7 +171,7 @@ test("wiring: runInboxStream emits SKIP_RESULT and NO coverage when the scrape i
       url: () => "https://www.usaa.com/my/inbox",
       evaluate: () => Promise.reject(new Error("page crashed mid-scrape")),
     });
-    await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {});
+    await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {}, freshRunState());
 
     const skips = skipsFor(run.messages, "inbox_messages");
     assert.equal(skips.length, 1, "a caught scrape failure emits exactly one SKIP_RESULT");
@@ -181,7 +187,7 @@ test("wiring: runInboxStream on a genuinely empty inbox proves verified-empty vi
   await withFastTimers(async () => {
     const run = makeHarness();
     const page = makeInboxPage([]);
-    await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {});
+    await runInboxStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, {}, freshRunState());
 
     assert.equal(run.emitted.length, 0);
     const cov = coverageFor(run.messages, "inbox_messages");
@@ -237,12 +243,20 @@ test("wiring: runCreditCardBillingStream emits DETAIL_COVERAGE for both streams 
 
     const run = makeHarness();
     const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
-    await runCreditCardBillingStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, cards, {
-      emitEntity: true,
-      emitStats: true,
-      fingerprintCursor,
-      observedOn: "2026-06-01",
-    });
+    await runCreditCardBillingStream(
+      run.deps,
+      FAKE_CONTEXT,
+      page,
+      NEVER_CALLED_SEND_INTERACTION,
+      cards,
+      freshRunState(),
+      {
+        emitEntity: true,
+        emitStats: true,
+        fingerprintCursor,
+        observedOn: "2026-06-01",
+      }
+    );
 
     const statsEmitted = run.emitted.filter((e) => e.stream === "credit_card_billing_stats");
     assert.equal(run.emitted.filter((e) => e.stream === "credit_card_billing").length, 2);
@@ -277,12 +291,20 @@ test("wiring: runCreditCardBillingStream emits SKIP_RESULT and NO coverage when 
 
     const run = makeHarness();
     const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
-    await runCreditCardBillingStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, cards, {
-      emitEntity: true,
-      emitStats: true,
-      fingerprintCursor,
-      observedOn: "2026-06-01",
-    });
+    await runCreditCardBillingStream(
+      run.deps,
+      FAKE_CONTEXT,
+      page,
+      NEVER_CALLED_SEND_INTERACTION,
+      cards,
+      freshRunState(),
+      {
+        emitEntity: true,
+        emitStats: true,
+        fingerprintCursor,
+        observedOn: "2026-06-01",
+      }
+    );
 
     const skips = skipsFor(run.messages, "credit_card_billing");
     assert.equal(skips.length, 1, "a caught mid-loop scrape failure emits exactly one SKIP_RESULT");
@@ -304,12 +326,20 @@ test("wiring: a card whose navigation fails does NOT scrape/attribute the wrong 
 
     const run = makeHarness();
     const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
-    await runCreditCardBillingStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, [cc1, cc2], {
-      emitEntity: true,
-      emitStats: true,
-      fingerprintCursor,
-      observedOn: "2026-06-01",
-    });
+    await runCreditCardBillingStream(
+      run.deps,
+      FAKE_CONTEXT,
+      page,
+      NEVER_CALLED_SEND_INTERACTION,
+      [cc1, cc2],
+      freshRunState(),
+      {
+        emitEntity: true,
+        emitStats: true,
+        fingerprintCursor,
+        observedOn: "2026-06-01",
+      }
+    );
 
     assert.deepEqual(gotoCalls, [cc1Url, cc2Url], "both cards were attempted");
 
@@ -389,12 +419,20 @@ test("wiring: a card's navigation lands on the USAA logon page (session died mid
       reauthCalls += 1;
     };
     const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
-    await runCreditCardBillingStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, [cc1], {
-      emitEntity: true,
-      emitStats: true,
-      fingerprintCursor,
-      observedOn: "2026-06-01",
-    });
+    await runCreditCardBillingStream(
+      run.deps,
+      FAKE_CONTEXT,
+      page,
+      NEVER_CALLED_SEND_INTERACTION,
+      [cc1],
+      freshRunState(),
+      {
+        emitEntity: true,
+        emitStats: true,
+        fingerprintCursor,
+        observedOn: "2026-06-01",
+      }
+    );
 
     assert.equal(reauthCalls, 1, "repair attempted exactly once");
     assert.deepEqual(
@@ -435,12 +473,20 @@ test("wiring: a card's navigation lands on the logon page and repair fails → g
       throw new Error("usaa_login_failed");
     };
     const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
-    await runCreditCardBillingStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, [cc1], {
-      emitEntity: true,
-      emitStats: true,
-      fingerprintCursor,
-      observedOn: "2026-06-01",
-    });
+    await runCreditCardBillingStream(
+      run.deps,
+      FAKE_CONTEXT,
+      page,
+      NEVER_CALLED_SEND_INTERACTION,
+      [cc1],
+      freshRunState(),
+      {
+        emitEntity: true,
+        emitStats: true,
+        fingerprintCursor,
+        observedOn: "2026-06-01",
+      }
+    );
 
     const entityEmitted = run.emitted.filter((e) => e.stream === "credit_card_billing");
     assert.equal(
@@ -455,5 +501,122 @@ test("wiring: a card's navigation lands on the logon page and repair fails → g
       "an unrepairable session-death bounce gets the same DETAIL_GAP as a network failure"
     );
     assert.equal(entityGaps[0]?.reason, "temporary_unavailable");
+  });
+});
+
+// ─── N-card run-scoped repair budget (the N-cards-N-logins defect) ─────
+
+test("wiring: 8 cards, session dead from card 1 onward → exactly ONE reauth attempt across the whole run, not one per card", async () => {
+  await withFastTimers(async () => {
+    const cards = Array.from({ length: 8 }, (_unused, i) =>
+      makeCard({
+        account_id_raw: `CC${i + 1}`,
+        account_url: `/my/credit-card?accountId=CC${i + 1}`,
+        last_four: String(i + 1).padStart(4, "0"),
+      })
+    );
+    // Every card's navigation bounces to the logon page — the session died
+    // BEFORE this stream ever ran (e.g. accounts already latched it dead).
+    const gotoCalls: string[] = [];
+    const page = Object.assign({} as Page, {
+      goto: (url: string) => {
+        gotoCalls.push(url);
+        return Promise.resolve(null);
+      },
+      url: () => "https://www.usaa.com/my/logon",
+      evaluate: () => Promise.resolve({}),
+    });
+
+    let reauthCalls = 0;
+    const run = makeHarness();
+    // biome-ignore lint/suspicious/useAwait: mock matches EmitDeps["reauthenticate"]'s Promise-returning signature
+    run.deps.reauthenticate = async () => {
+      reauthCalls += 1;
+      // Repair "succeeds" (doesn't throw) but the session is still dead —
+      // gotoOrRepairSession's own retry-nav will land on logon again, so
+      // repair fails from gotoOrRepairSession's point of view. This models
+      // the worst case: an attacker-visible bank login attempt for EVERY
+      // card if the budget is not run-scoped.
+    };
+    const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
+    const streamState = freshRunState();
+
+    await runCreditCardBillingStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, cards, streamState, {
+      emitEntity: true,
+      emitStats: true,
+      fingerprintCursor,
+      observedOn: "2026-06-01",
+    });
+
+    assert.equal(
+      reauthCalls,
+      1,
+      "DEFECT GUARD: a dead session must drive AT MOST ONE automated bank login attempt across the whole card loop, never N — repeated automated logins risk fraud-detection lockout of the real account"
+    );
+    assert.equal(streamState.sessionDeadMidRun, true, "the loop must latch session death for the caller");
+    assert.equal(
+      run.emitted.filter((e) => e.stream === "credit_card_billing").length,
+      0,
+      "no card is scraped once the session is known dead"
+    );
+    const entityGaps = gapsFor(run.messages, "credit_card_billing");
+    assert.equal(
+      entityGaps.length,
+      8,
+      "every card — including the 7 never actually navigated after the break — gets a gap, not silent loss"
+    );
+    const entityCov = coverageFor(run.messages, "credit_card_billing");
+    assert.equal(
+      entityCov?.considered,
+      8,
+      "considered is still the full 8-card boundary, even though the loop broke early"
+    );
+    assert.equal(entityCov?.covered, 0);
+  });
+});
+
+test("wiring: card 3 of 5 has a plain nav failure (not a logon bounce) → gapped and the loop CONTINUES to cards 4-5, no reauth attempted at all", async () => {
+  await withFastTimers(async () => {
+    const cards = Array.from({ length: 5 }, (_unused, i) =>
+      makeCard({
+        account_id_raw: `CC${i + 1}`,
+        account_url: `/my/credit-card?accountId=CC${i + 1}`,
+        last_four: String(i + 1).padStart(4, "0"),
+      })
+    );
+    const failUrl = `https://www.usaa.com${cards[2]?.account_url}`;
+    const { page, billingByUrl, gotoCalls } = makeCreditCardPage(new Set([failUrl]));
+    for (const c of cards) {
+      const url = `https://www.usaa.com${c.account_url}`;
+      if (url !== failUrl) {
+        billingByUrl[url] = { "Current Balance": "$1.00" };
+      }
+    }
+
+    const run = makeHarness();
+    const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
+    const streamState = freshRunState();
+
+    await runCreditCardBillingStream(run.deps, FAKE_CONTEXT, page, NEVER_CALLED_SEND_INTERACTION, cards, streamState, {
+      emitEntity: true,
+      emitStats: true,
+      fingerprintCursor,
+      observedOn: "2026-06-01",
+    });
+
+    assert.equal(
+      gotoCalls.length,
+      5,
+      "a plain (non-logon-bounce) nav failure must NOT stop the loop — M9 regression guard"
+    );
+    assert.equal(streamState.sessionDeadMidRun, false, "a plain nav failure is not a session-death signal");
+    assert.equal(
+      run.emitted.filter((e) => e.stream === "credit_card_billing").length,
+      4,
+      "the 4 successfully-navigated cards still scrape and emit"
+    );
+    const entityCov = coverageFor(run.messages, "credit_card_billing");
+    assert.equal(entityCov?.considered, 5);
+    assert.equal(entityCov?.covered, 4, "only the one plain-nav-failure card is excluded");
   });
 });
