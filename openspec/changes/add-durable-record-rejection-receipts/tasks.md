@@ -32,7 +32,7 @@
 
 - [ ] 5.1 Add owner-session-only, connection-first read-only list and detail routes with a maximum page size, stable opaque cursor pagination, metadata-only lists, explicit bounded payload retrieval, and non-disclosing cross-owner rejection.
 - [ ] 5.2 Add fixed-field quarantine audit evidence and prove payload bytes plus parser/storage exception text stay out of list, timeline, mutation, audit, health, and log surfaces.
-- [ ] 5.3 Integrate rejection cleanup into the existing SQLite and PostgreSQL connection-deletion transaction or prove active foreign-key cascade parity.
+- [x] 5.3 Integrate rejection cleanup into the existing SQLite and PostgreSQL connection-deletion transaction or prove active foreign-key cascade parity.
 - [ ] 5.4 Prove list/detail authorization, paging bounds, payload non-disclosure, fresh-process retrieval, and connection-deletion cleanup on both backends.
 - [ ] 5.5 Record atomic retry, discard, payload replacement, status resolution, and device-exporter adoption as explicit follow-up scope; add no mutation route or generic unit-of-work seam in this tranche.
 

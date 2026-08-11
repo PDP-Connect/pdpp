@@ -750,6 +750,12 @@ test("shared-blob connection deletion rolls back the full SQLite cascade after t
           now: NOW,
           ownerSubjectId: OWNER_SUBJECT_ID,
           purge: {
+            deleteRecordRejectionsPostgres: (): Promise<number> => {
+              throw new Error(
+                "unreachable: the SQLite connection-purge path never calls deleteRecordRejectionsPostgres"
+              );
+            },
+            deleteRecordRejectionsSqlite: () => 0,
             deleteRecordRowsPostgres: (): Promise<number> => {
               throw new Error("unreachable: the SQLite connection-purge path never calls deleteRecordRowsPostgres");
             },

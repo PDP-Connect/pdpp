@@ -507,6 +507,8 @@ import {
 import { resolveProviderAuthRunEnv } from "./stores/provider-auth-run-credentials.ts";
 import {
   createRecordRejectionStore,
+  deletePostgresRecordRejectionsForConnectionWithClient,
+  deleteSqliteRecordRejectionsForConnectionWithinTransaction,
   type InsertOrReplayRecordRejectionInput,
 } from "./stores/record-rejection-store.ts";
 import {
@@ -5291,6 +5293,13 @@ export function buildAsApp(opts: ServerOpts = {}) {
       createRequestConnectorInstanceStore().deleteConnection(connectorInstanceId, {
         ...(options as Record<string, unknown>),
         purge: {
+          deleteRecordRejectionsPostgres: (client: unknown, id: string, ownerSubjectId: string) =>
+            deletePostgresRecordRejectionsForConnectionWithClient(
+              client as Parameters<typeof deletePostgresRecordRejectionsForConnectionWithClient>[0],
+              { connectorInstanceId: id, ownerSubjectId }
+            ),
+          deleteRecordRejectionsSqlite: (id: string, ownerSubjectId: string) =>
+            deleteSqliteRecordRejectionsForConnectionWithinTransaction({ connectorInstanceId: id, ownerSubjectId }),
           deleteRecordRowsPostgres: (client: unknown, id: string) =>
             deleteConnectionRecordRowsPostgres(client as Parameters<typeof deleteConnectionRecordRowsPostgres>[0], id),
           deleteRecordRowsSqlite: (id: string) => deleteConnectionRecordRowsSqlite(id),
@@ -6728,6 +6737,13 @@ function buildRsApp(opts: ServerOpts = {}) {
       ).deleteConnection?.(connectorInstanceId, {
         ...(options as Record<string, unknown>),
         purge: {
+          deleteRecordRejectionsPostgres: (client: unknown, id: string, ownerSubjectId: string) =>
+            deletePostgresRecordRejectionsForConnectionWithClient(
+              client as Parameters<typeof deletePostgresRecordRejectionsForConnectionWithClient>[0],
+              { connectorInstanceId: id, ownerSubjectId }
+            ),
+          deleteRecordRejectionsSqlite: (id: string, ownerSubjectId: string) =>
+            deleteSqliteRecordRejectionsForConnectionWithinTransaction({ connectorInstanceId: id, ownerSubjectId }),
           deleteRecordRowsPostgres: (client: unknown, id: string) =>
             deleteConnectionRecordRowsPostgres(client as Parameters<typeof deleteConnectionRecordRowsPostgres>[0], id),
           deleteRecordRowsSqlite: (id: string) => deleteConnectionRecordRowsSqlite(id),
