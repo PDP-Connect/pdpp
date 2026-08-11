@@ -2314,24 +2314,17 @@ export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Pr
     }
     const claimed = claimReadyOutboxItems(input);
     if (claimed.length === 0) {
-      const nextRetry = input.outbox.nextRetryTime(
-        input.sourceInstanceId ? { sourceInstanceId: input.sourceInstanceId } : {}
-      );
-      if (!nextRetry) {
+      const outcome = resolveEmptyClaimOutcome(input, elapsedMs);
+      if (outcome.kind === "exit") {
         return result;
       }
-      const nextRetryMs = new Date(nextRetry).getTime();
-      const nowMs = Date.now();
-      if (nextRetryMs <= nowMs) {
-        continue;
-      }
-      const waitMs = nextRetryMs - nowMs;
-      const remainingBudgetMs = input.policy.maxDrainDurationMs - elapsedMs;
-      if (waitMs >= remainingBudgetMs) {
+      if (outcome.kind === "budget_exceeded") {
         result.durationBudgetExceeded = true;
         return result;
       }
-      await waitMs_(waitMs, input.abortSignal);
+      if (outcome.kind === "wait") {
+        await waitMs_(outcome.waitMs, input.abortSignal);
+      }
       continue;
     }
     result.iterations += 1;
@@ -2340,6 +2333,46 @@ export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Pr
     }
   }
   return result;
+}
+
+type EmptyClaimOutcome =
+  | { kind: "budget_exceeded" }
+  | { kind: "exit" }
+  | { kind: "recheck" }
+  | { kind: "wait"; waitMs: number };
+
+/**
+ * Decide how the drain loop proceeds when no ready row was claimable.
+ *
+ * `nextRetryTime` only reports rows strictly in the future
+ * (`next_attempt_at > now`). A row whose backoff elapsed in the gap
+ * between that clock read and `claimReadyOutboxItems`'s own (earlier)
+ * clock read is neither claimable-yet by that stale read nor "in the
+ * future" by this fresh one, so it falls through both checks.
+ * Re-checking claimability with a fresh clock read before giving up
+ * closes that race instead of abandoning a due row. The recheck uses
+ * the claim path's own gate so a permanently unclaimable head (a
+ * checkpoint held back by a dead-lettered predecessor) still exits
+ * instead of spinning out the iteration budget.
+ */
+function resolveEmptyClaimOutcome(input: DrainCollectorOutboxInput, elapsedMs: number): EmptyClaimOutcome {
+  const nextRetry = input.outbox.nextRetryTime(
+    input.sourceInstanceId ? { sourceInstanceId: input.sourceInstanceId } : {}
+  );
+  if (!nextRetry) {
+    return claimableReadyOutboxItem(input) ? { kind: "recheck" } : { kind: "exit" };
+  }
+  const nextRetryMs = new Date(nextRetry).getTime();
+  const nowMs = Date.now();
+  if (nextRetryMs <= nowMs) {
+    return { kind: "recheck" };
+  }
+  const waitMs = nextRetryMs - nowMs;
+  const remainingBudgetMs = input.policy.maxDrainDurationMs - elapsedMs;
+  if (waitMs >= remainingBudgetMs) {
+    return { kind: "budget_exceeded" };
+  }
+  return { kind: "wait", waitMs };
 }
 
 function waitMs_(ms: number, signal?: AbortSignal): Promise<void> {
@@ -2379,11 +2412,8 @@ function waitMs_(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 function claimReadyOutboxItems(input: DrainCollectorOutboxInput): LocalDeviceOutboxItem[] {
-  const nextReady = nextReadyOutboxItem(input);
+  const nextReady = claimableReadyOutboxItem(input);
   if (!nextReady) {
-    return [];
-  }
-  if (nextReady.kind === "checkpoint" && hasCheckpointPredecessorBlockingWork(input.outbox, nextReady)) {
     return [];
   }
   const claimInput: Parameters<LocalDeviceOutbox["claimReady"]>[0] = {
@@ -2400,6 +2430,22 @@ function claimReadyOutboxItems(input: DrainCollectorOutboxInput): LocalDeviceOut
 
 function nextReadyOutboxItem(input: DrainCollectorOutboxInput): LocalDeviceOutboxItem | null {
   return input.outbox.peekReady(input.sourceInstanceId ? { sourceInstanceId: input.sourceInstanceId } : {});
+}
+
+/**
+ * The head of the ready queue if this drain may claim it right now:
+ * `null` when nothing is ready, or when the head is a checkpoint held
+ * back by a non-succeeded record_batch/gap predecessor.
+ */
+function claimableReadyOutboxItem(input: DrainCollectorOutboxInput): LocalDeviceOutboxItem | null {
+  const nextReady = nextReadyOutboxItem(input);
+  if (!nextReady) {
+    return null;
+  }
+  if (nextReady.kind === "checkpoint" && hasCheckpointPredecessorBlockingWork(input.outbox, nextReady)) {
+    return null;
+  }
+  return nextReady;
 }
 
 function hasCheckpointPredecessorBlockingWork(outbox: LocalDeviceOutbox, checkpoint: LocalDeviceOutboxItem): boolean {

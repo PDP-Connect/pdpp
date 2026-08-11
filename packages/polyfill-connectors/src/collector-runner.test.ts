@@ -4729,6 +4729,204 @@ test("drainCollectorOutbox auto-waits for backoff-delayed items and retries with
   outbox.close();
 });
 
+test("drainCollectorOutbox reclaims a row whose deadline falls between the claim read and the retry-time read instead of exiting with due work", async () => {
+  // Deterministic oracle for the drain-exit boundary race. The drain's
+  // empty-claim path reads the clock twice: `claimReadyOutboxItems` first
+  // (via `peekReady`, inclusive `next_attempt_at <= now`), then
+  // `nextRetryTime` (strict `next_attempt_at > now`). A row whose
+  // `next_attempt_at` lands in the gap between those two reads is not yet
+  // due for the first and no longer "in the future" for the second, so an
+  // unfixed drain returns with a due row still ready. The scripted clock
+  // is frozen during setup, then advances exactly 1ms per read once
+  // armed; the row is due exactly 2ms after arming, so read #1 (peek)
+  // sees t+1 < t+2 and read #2 (nextRetryTime) sees exactly t+2, which
+  // the strict filter excludes. Every clock value is scripted — no
+  // sleeps, no retries, no reliance on scheduler timing.
+  const baseMs = new Date("2026-08-11T12:00:00.000Z").getTime();
+  let armed = false;
+  let scriptedMs = baseMs;
+  const clock = () => {
+    if (armed) {
+      scriptedMs += 1;
+    }
+    return new Date(scriptedMs);
+  };
+  const outbox = new LocalDeviceOutbox({ clock, path: await tempQueuePath() });
+  try {
+    let sendAttempts = 0;
+    const client = createTestClient();
+    const originalIngest = client.ingestBatch;
+    client.ingestBatch = (request: IngestBatchRequest) => {
+      sendAttempts += 1;
+      return originalIngest(request);
+    };
+    const srcId = "test-src-boundary-race";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-boundary",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        {
+          data: { id: "m-1" },
+          emitted_at: "2026-08-11T12:00:00.000Z",
+          key: "m-1",
+          stream: "messages",
+          type: "RECORD",
+        },
+      ],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: buildLocalDeviceOutboxId({
+        kind: "record_batch",
+        parts: ["batch-boundary"],
+        sourceInstanceId: srcId,
+      }),
+      kind: "record_batch" as const,
+      nextAttemptAt: new Date(baseMs + 2),
+      payload: {
+        batchId: "batch-boundary",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+    armed = true;
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy: {
+        drainBatchSize: 1,
+        leaseMs: 60_000,
+        maxAttempts: 3,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 20,
+        maxEnqueuedBatchesPerRun: 10_000,
+        maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
+        retryBackoffMs: 2,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    assert.equal(result.sent, 1, "the due row must be sent, not abandoned at the read boundary");
+    assert.equal(result.failed, 0, "no send fails in this scenario");
+    assert.equal(result.deadLettered, 0, "nothing dead-letters in this scenario");
+    assert.equal(result.durationBudgetExceeded, false, "exit must be work-complete, not budget-driven");
+    assert.equal(sendAttempts, 1, "exactly one send serves the row");
+    const summary = outbox.summary({ sourceInstanceId: srcId });
+    assert.equal(summary.ready, 0, "no due row may remain ready after the drain returns");
+    assert.equal(summary.succeeded, 1, "the row must be acknowledged");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox retries a transient 503 whose backoff deadline lands exactly between the claim read and the retry-time read", async () => {
+  // Production shape of the same boundary race: attempt #1 fails with a
+  // transient 503, `failRetryable` anchors `next_attempt_at` to its own
+  // clock read plus the 2ms linear backoff, and the very next drain pass
+  // performs the claim read (1ms later — still early) followed by the
+  // `nextRetryTime` read (2ms later — exactly at the deadline, excluded
+  // by the strict filter). An unfixed drain returns `{sent: 0, failed: 1}`
+  // with the retryable row abandoned while due; the fix must instead
+  // re-check with a fresh read, reclaim, and complete the retry. Transient
+  // classification, attempt accounting, and backoff scheduling all run for
+  // real — only the clock is scripted.
+  const baseMs = new Date("2026-08-11T12:00:00.000Z").getTime();
+  let armed = false;
+  let scriptedMs = baseMs;
+  const clock = () => {
+    if (armed) {
+      scriptedMs += 1;
+    }
+    return new Date(scriptedMs);
+  };
+  const outbox = new LocalDeviceOutbox({ clock, path: await tempQueuePath() });
+  try {
+    let sendAttempts = 0;
+    const client = createTestClient();
+    const originalIngest = client.ingestBatch;
+    client.ingestBatch = (request: IngestBatchRequest) => {
+      sendAttempts += 1;
+      if (sendAttempts === 1) {
+        return Promise.reject(new LocalDeviceHttpError(503, '{"error":{"code":"device_ingest_retryable"}}'));
+      }
+      return originalIngest(request);
+    };
+    const srcId = "test-src-boundary-retry";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-boundary-retry",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        {
+          data: { id: "m-1" },
+          emitted_at: "2026-08-11T12:00:00.000Z",
+          key: "m-1",
+          stream: "messages",
+          type: "RECORD",
+        },
+      ],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: buildLocalDeviceOutboxId({
+        kind: "record_batch",
+        parts: ["batch-boundary-retry"],
+        sourceInstanceId: srcId,
+      }),
+      kind: "record_batch" as const,
+      payload: {
+        batchId: "batch-boundary-retry",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+    armed = true;
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy: {
+        drainBatchSize: 1,
+        leaseMs: 60_000,
+        maxAttempts: 3,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 20,
+        maxEnqueuedBatchesPerRun: 10_000,
+        maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
+        retryBackoffMs: 2,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    assert.equal(result.sent, 1, "the retry must complete instead of being abandoned at the read boundary");
+    assert.equal(result.failed, 1, "the transient first attempt still counts as one failure");
+    assert.equal(result.deadLettered, 0, "a transient failure under maxAttempts must not dead-letter");
+    assert.equal(result.durationBudgetExceeded, false, "exit must be work-complete, not budget-driven");
+    assert.equal(sendAttempts, 2, "exactly two sends: the transient failure and the successful retry");
+    const summary = outbox.summary({ sourceInstanceId: srcId });
+    assert.equal(summary.ready, 0, "no due row may remain ready after the drain returns");
+    assert.equal(summary.succeeded, 1, "the row must be acknowledged after the retry");
+  } finally {
+    outbox.close();
+  }
+});
+
 test("drainCollectorOutbox keeps a record_batch durably retryable under sustained device_ingest_retryable 503s at the production maxAttempts default, instead of dead-lettering on attempt-count exhaustion", async () => {
   // Reproduces the exact incident shape (local-ingest-backpressure-0810
   // audit): a bounded local collector hits the server's admission gate
