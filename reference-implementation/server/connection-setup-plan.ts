@@ -6,6 +6,13 @@ import {
   type CredentialValidationMode,
   credentialValidationMode,
 } from "../../packages/polyfill-connectors/src/credential-probe.ts";
+import {
+  type NormalizedStaticSecretCredentialCapture,
+  type NormalizedStaticSecretField,
+  normalizeStaticSecretCredentialCapture,
+  type StaticSecretCredentialCaptureFieldLike,
+  type StaticSecretFieldType,
+} from "../../packages/polyfill-connectors/src/static-secret-credential-capture.ts";
 import { legacyLocalAliasMap } from "./connector-key.ts";
 import {
   BROWSER_BOUND_KEYS,
@@ -202,45 +209,13 @@ export interface ConnectorManifestLike {
   readonly version?: string | null;
 }
 
-export type StaticSecretSetupFieldType = "email" | "password" | "text";
-
-export interface StaticSecretSetupFieldLike {
-  readonly autocomplete?: string | null;
-  readonly description?: string | null;
-  readonly env?: readonly string[] | null;
-  readonly help_text?: string | null;
-  readonly help_url?: string | null;
-  readonly identity?: boolean | null;
-  readonly label?: string | null;
-  readonly name?: string | null;
-  readonly placeholder?: string | null;
-  readonly required?: boolean | null;
-  readonly secret?: boolean | null;
-  readonly type?: string | null;
-}
-
-export interface StaticSecretSetupField {
-  readonly autocomplete: string | null;
-  readonly description: string | null;
-  readonly env: readonly string[];
-  readonly helpText: string | null;
-  readonly helpUrl: string | null;
-  readonly identity: boolean;
-  readonly label: string;
-  readonly name: string;
-  readonly placeholder: string | null;
-  readonly required: boolean;
-  readonly secret: boolean;
-  readonly type: StaticSecretSetupFieldType;
-}
-
-export interface StaticSecretCredentialCaptureSetup {
-  readonly description: string | null;
-  readonly fields: readonly StaticSecretSetupField[];
-  readonly kind: string;
-  readonly label: string;
-  readonly submitLabel: string | null;
-}
+// Re-exported (not re-declared) from the shared, provider-neutral normalizer
+// so setup and runtime injection's generator describe one field contract,
+// not two independently-maintained copies of the same shape.
+export type StaticSecretSetupFieldType = StaticSecretFieldType;
+export type StaticSecretSetupFieldLike = StaticSecretCredentialCaptureFieldLike;
+export type StaticSecretSetupField = NormalizedStaticSecretField;
+export type StaticSecretCredentialCaptureSetup = NormalizedStaticSecretCredentialCapture;
 
 export interface ManualUploadSetup {
   readonly acceptedFileExtensions: readonly string[];
@@ -506,68 +481,21 @@ function cleanString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function normalizeStaticSecretFieldType(raw: StaticSecretSetupFieldLike): StaticSecretSetupFieldType {
-  const rawType = cleanString(raw.type)?.toLowerCase();
-  if (rawType === "email" || rawType === "password" || rawType === "text") {
-    return rawType;
-  }
-  if (raw.secret === true) {
-    return "password";
-  }
-  return "text";
-}
-
-function normalizeStaticSecretField(raw: StaticSecretSetupFieldLike): StaticSecretSetupField | null {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-  const name = cleanString(raw?.name);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-  const label = cleanString(raw?.label);
-  if (!(name && label)) {
-    return null;
-  }
-  const type = normalizeStaticSecretFieldType(raw);
-  return {
-    autocomplete: cleanString(raw.autocomplete),
-    description: cleanString(raw.description),
-    env: Array.isArray(raw.env) ? raw.env.filter((value): value is string => cleanString(value) !== null) : [],
-    helpText: cleanString(raw.help_text),
-    helpUrl: cleanString(raw.help_url),
-    identity: raw.identity === true,
-    label,
-    name,
-    placeholder: cleanString(raw.placeholder),
-    required: raw.required !== false,
-    secret: raw.secret === true || type === "password",
-    type,
-  };
-}
-
+/**
+ * Delegates to the shared, provider-neutral normalizer
+ * (`packages/polyfill-connectors/src/static-secret-credential-capture.ts`) so
+ * setup and runtime injection's generator derive a connector's static-secret
+ * classification and field contract from ONE predicate. See that module's
+ * doc for why this can throw `StaticSecretCredentialCaptureError` (a secret
+ * field missing `label` or `env` is a manifest contract violation, not a
+ * value to silently drop) and for the `type: "password"` implies-secret
+ * rule.
+ */
 export function staticSecretCredentialCaptureFromManifest(
   manifest: ConnectorManifestLike | null | undefined
 ): StaticSecretCredentialCaptureSetup | null {
-  const capture = manifest?.setup?.credential_capture;
-  if (!capture || typeof capture !== "object") {
-    return null;
-  }
-  const kind = cleanString(capture.credential_kind) ?? cleanString(capture.kind);
-  if (!kind) {
-    return null;
-  }
-  const fields = Array.isArray(capture.fields)
-    ? capture.fields
-        .map((field) => normalizeStaticSecretField(field))
-        .filter((field): field is StaticSecretSetupField => field !== null)
-    : [];
-  if (!fields.some((field) => field.secret)) {
-    return null;
-  }
-  return {
-    description: cleanString(capture.description),
-    fields,
-    kind,
-    label: cleanString(capture.label) ?? kind,
-    submitLabel: cleanString(capture.submit_label),
-  };
+  const connectorKey = cleanString(manifest?.connector_key) ?? cleanString(manifest?.connector_id) ?? "unknown";
+  return normalizeStaticSecretCredentialCapture(connectorKey, manifest?.setup?.credential_capture);
 }
 
 export function manualUploadSetupFromManifest(

@@ -34,6 +34,7 @@ function staticSecretManifest(connectorId: string, credentialKind = "api_key"): 
         credential_capture: {
           fields: [
             {
+              env: ["TEST_PROVIDER_SECRET"],
               label: "Provider secret",
               name: "secret",
               required: true,

@@ -113,7 +113,7 @@ function seedStaticSecretConnector() {
     protocol_version: "0.1.0",
     setup: {
       credential_capture: {
-        fields: [{ label: "App password", name: "app_password", secret: true }],
+        fields: [{ env: ["TEST_APP_PASSWORD"], label: "App password", name: "app_password", secret: true }],
         kind: "app_password",
       },
     },
@@ -1613,8 +1613,8 @@ function seedBrowserBoundStaticSecretConnector({ browserRequired = true } = {}) 
     setup: {
       credential_capture: {
         fields: [
-          { label: "Email", name: "username", secret: true },
-          { label: "Password", name: "password", secret: true },
+          { env: ["TEST_BROWSER_STATIC_SECRET_USERNAME"], label: "Email", name: "username", secret: true },
+          { env: ["TEST_BROWSER_STATIC_SECRET_PASSWORD"], label: "Password", name: "password", secret: true },
         ],
         kind: "username_password",
       },

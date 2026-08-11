@@ -3,14 +3,15 @@
 
 // GENERATED FILE — do not hand-edit. Produced by
 // scripts/generate-static-secret-registry.ts from every shipped connector
-// manifest's setup.credential_capture block (manifests/*.json).
+// manifest's setup.credential_capture block (manifests/*.json), normalized by
+// the same normalizeStaticSecretCredentialCapture
+// (../static-secret-credential-capture.ts) that connection-setup-plan.ts's
+// staticSecretCredentialCaptureFromManifest calls for setup — one shared
+// predicate, not two hand-maintained ones that can silently disagree.
 // scripts/check-generated-artifacts.ts fails CI if this file drifts from what
-// the generator would produce for the manifests currently on disk — this is
-// how runtime static-secret injection stays derived from the exact same
-// manifest fields setup already trusts (connection-setup-plan.ts
-// staticSecretCredentialCaptureFromManifest), instead of a second,
-// hand-maintained connector-id registry that can silently omit an onboarded
-// connector (see the venmo run-injection gap this replaced).
+// the generator would produce for the manifests currently on disk, instead of
+// a second, hand-maintained connector-id registry that can silently omit an
+// onboarded connector (see the venmo run-injection gap this replaced).
 //
 // Two connectors' STORED credentials predate their current manifest shape and
 // are intentionally NOT represented here — see

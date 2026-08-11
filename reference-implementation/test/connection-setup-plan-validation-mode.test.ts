@@ -31,7 +31,16 @@ function staticSecretManifest(connectorId: string, credentialKind: string): Conn
   return manifest(connectorId, {
     setup: {
       credential_capture: {
-        fields: [{ label: "Provider secret", name: "secret", required: true, secret: true, type: "password" }],
+        fields: [
+          {
+            env: ["TEST_PROVIDER_SECRET"],
+            label: "Provider secret",
+            name: "secret",
+            required: true,
+            secret: true,
+            type: "password",
+          },
+        ],
         kind: credentialKind,
         label: `${connectorId} secret`,
       },

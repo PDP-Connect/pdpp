@@ -16,29 +16,49 @@
  * this script, never hand-edited, and `scripts/check-generated-artifacts.ts`
  * fails CI if it drifts from what this script would produce.
  *
+ * Split authority is closed by CONSTRUCTION, not just by agreement: this
+ * generator and `connection-setup-plan.ts`'s
+ * `staticSecretCredentialCaptureFromManifest` both call the same
+ * `normalizeStaticSecretCredentialCapture` (`../src/static-secret-credential-capture.ts`)
+ * to decide which fields are secret and what their contract requires. Setup
+ * and this generator used to each hand-roll an equivalent-looking but subtly
+ * different predicate — one recognized `type: "password"` without
+ * `secret: true` as secret and the other did not, and one silently dropped a
+ * secret field missing `label` while the other kept it. Sharing one function
+ * makes that class of drift impossible rather than merely tested against.
+ *
  * `static-secret-injection.ts` ships inside the publishable
  * `@pdpp/local-collector` runner slice (see `src/runner/index.ts`), so it must
  * stay free of `node:fs` / directory scanning at import time on an owner's
  * machine — this generator does the manifest read once, at build/CI time, and
- * bakes the result into a plain data literal the runtime module imports.
+ * bakes the result into a plain data literal the runtime module imports. The
+ * shared normalizer it and setup both call is equally free of `node:fs`.
  *
- * Derivation rule, straight from the manifest + the console's own capture
- * payload builder (`apps/console/.../static-secret-payload.ts`
+ * Derivation rule, straight from the manifest (via the shared normalizer) +
+ * the console's own capture payload builder
+ * (`apps/console/.../static-secret-payload.ts`
  * `bundledCredentialKind`/`bundledSecretPayload`/`collectStaticSecretSetupFields`,
  * which decide what the sealed `secret` string and `setup_fields` actually
  * contain at capture time):
  *   - `credential_kind` is `username_password` or `secret_bundle`: ALL secret
- *     fields (`field.secret === true`) are sealed together as one JSON object
- *     -> `secretFieldEnvVars` keyed by field name. A secret field with
- *     `required !== true` in a manifest with 2+ secret fields is an
- *     "at least one path" field (e.g. Jellyfin's username+password OR API
- *     key) -> `optionalSecretBundleFields`.
+ *     fields (`field.secret === true`, where `secret` is either explicit or
+ *     implied by `type: "password"` — see the shared normalizer) are sealed
+ *     together as one JSON object -> `secretFieldEnvVars` keyed by field
+ *     name. A secret field with `required !== true` in a manifest with 2+
+ *     secret fields is an "at least one path" field (e.g. Jellyfin's
+ *     username+password OR API key) -> `optionalSecretBundleFields`.
  *   - any other `credential_kind`: there is exactly one secret field -> its
  *     `env` names become `secretEnvVars`.
  *   - every non-secret field (`field.secret !== true`) is always a connector
  *     runtime-config value read from the source binding's `setup_fields` (the
  *     console's `collectStaticSecretSetupFields` populates this regardless of
  *     credential kind) -> `setupFieldEnvVars` keyed by field name.
+ *
+ * The shared normalizer throws `StaticSecretCredentialCaptureError` (failing
+ * this generator, and CI via `check-generated-artifacts.ts`) if a manifest
+ * declares a secret field with no `label` or zero `env` aliases — both are
+ * contract violations that would otherwise let this generator and setup
+ * silently disagree on whether the connector is usable.
  *
  * Two connectors carry credential shapes their CURRENT manifest cannot
  * express, because they predate that manifest shape: Reddit's retired sealed
@@ -62,28 +82,22 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  normalizeStaticSecretCredentialCapture,
+  type StaticSecretCredentialCaptureLike,
+} from "../src/static-secret-credential-capture.ts";
+
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = resolve(scriptDir, "..");
 const targetPath = process.argv[2]
   ? resolve(process.argv[2])
   : resolve(packageDir, "src/generated/static-secret-registry.generated.ts");
 
-interface ManifestCredentialCaptureField {
-  env?: unknown;
-  name?: unknown;
-  required?: unknown;
-  secret?: unknown;
-}
-
 interface ManifestLike {
   connector_id?: unknown;
   connector_key?: unknown;
   setup?: {
-    credential_capture?: {
-      credential_kind?: unknown;
-      fields?: readonly ManifestCredentialCaptureField[];
-      kind?: unknown;
-    } | null;
+    credential_capture?: StaticSecretCredentialCaptureLike | null;
     modality?: unknown;
   } | null;
 }
@@ -108,22 +122,6 @@ function manifestKey(manifest: ManifestLike): string | null {
   return null;
 }
 
-interface NormalizedField {
-  env: string[];
-  name: string;
-  required: boolean;
-  secret: boolean;
-}
-
-function normalizeField(raw: ManifestCredentialCaptureField): NormalizedField | null {
-  const name = typeof raw.name === "string" ? raw.name.trim() : "";
-  if (!name) {
-    return null;
-  }
-  const env = Array.isArray(raw.env) ? raw.env.filter((value): value is string => typeof value === "string") : [];
-  return { env, name, required: raw.required !== false, secret: raw.secret === true };
-}
-
 interface StaticSecretDescriptor {
   credentialKind: string;
   optionalSecretBundleFields?: string[];
@@ -146,21 +144,12 @@ const MULTI_SECRET_FIELD_CREDENTIAL_KINDS = new Set(["username_password", "secre
 // `slack_workspace` must still resolve from the sealed secret alone.
 const FULLY_BUNDLED_CREDENTIAL_KINDS = new Set(["secret_bundle"]);
 
-function descriptorFromManifest(manifest: ManifestLike): StaticSecretDescriptor | null {
-  const capture = manifest.setup?.credential_capture;
-  if (!capture || typeof capture !== "object") {
+function descriptorFromManifest(connectorKey: string, manifest: ManifestLike): StaticSecretDescriptor | null {
+  const normalized = normalizeStaticSecretCredentialCapture(connectorKey, manifest.setup?.credential_capture);
+  if (!normalized) {
     return null;
   }
-  const credentialKind =
-    (typeof capture.credential_kind === "string" && capture.credential_kind.trim()) ||
-    (typeof capture.kind === "string" && capture.kind.trim()) ||
-    "";
-  if (!credentialKind) {
-    return null;
-  }
-  const fields = Array.isArray(capture.fields)
-    ? capture.fields.map(normalizeField).filter((field): field is NormalizedField => field !== null)
-    : [];
+  const { fields, kind: credentialKind } = normalized;
   const secretFields = fields.filter((field) => field.secret);
   if (secretFields.length === 0) {
     return null;
@@ -170,22 +159,20 @@ function descriptorFromManifest(manifest: ManifestLike): StaticSecretDescriptor 
   const setupFields = fullyBundled ? [] : fields.filter((field) => !field.secret);
   const descriptor: StaticSecretDescriptor = { credentialKind };
   if (MULTI_SECRET_FIELD_CREDENTIAL_KINDS.has(credentialKind) && bundleFields.length > 1) {
-    descriptor.secretFieldEnvVars = Object.fromEntries(bundleFields.map((field) => [field.name, field.env]));
+    descriptor.secretFieldEnvVars = Object.fromEntries(bundleFields.map((field) => [field.name, [...field.env]]));
     const optional = bundleFields.filter((field) => !field.required).map((field) => field.name);
     if (optional.length > 0) {
       descriptor.optionalSecretBundleFields = optional;
     }
-  } else if (secretFields.length === 1) {
-    // biome-ignore lint/style/noNonNullAssertion: length === 1 just verified.
-    descriptor.secretEnvVars = secretFields[0]!.env;
   } else {
-    // A bundled kind declared, but with exactly one secret field — still a
-    // single bare-string secret, not a JSON bundle (no field to key it by).
-    // biome-ignore lint/style/noNonNullAssertion: length === 1 just verified.
-    descriptor.secretEnvVars = secretFields[0]!.env;
+    // Either exactly one secret field, or a bundled kind declared with only
+    // one secret field — still a single bare-string secret, not a JSON
+    // bundle (no field to key it by).
+    // biome-ignore lint/style/noNonNullAssertion: length === 1 in both branches reaching here.
+    descriptor.secretEnvVars = [...secretFields[0]!.env];
   }
   if (setupFields.length > 0) {
-    descriptor.setupFieldEnvVars = Object.fromEntries(setupFields.map((field) => [field.name, field.env]));
+    descriptor.setupFieldEnvVars = Object.fromEntries(setupFields.map((field) => [field.name, [...field.env]]));
   }
   return descriptor;
 }
@@ -198,7 +185,7 @@ for (const { manifest } of polyfillManifests) {
   if (!key) {
     continue;
   }
-  const descriptor = descriptorFromManifest(manifest);
+  const descriptor = descriptorFromManifest(key, manifest);
   if (descriptor) {
     entries.push([key, descriptor]);
   }
@@ -244,14 +231,15 @@ const output = `// Copyright The PDP-Connect Contributors
 
 // GENERATED FILE — do not hand-edit. Produced by
 // scripts/generate-static-secret-registry.ts from every shipped connector
-// manifest's setup.credential_capture block (manifests/*.json).
+// manifest's setup.credential_capture block (manifests/*.json), normalized by
+// the same normalizeStaticSecretCredentialCapture
+// (../static-secret-credential-capture.ts) that connection-setup-plan.ts's
+// staticSecretCredentialCaptureFromManifest calls for setup — one shared
+// predicate, not two hand-maintained ones that can silently disagree.
 // scripts/check-generated-artifacts.ts fails CI if this file drifts from what
-// the generator would produce for the manifests currently on disk — this is
-// how runtime static-secret injection stays derived from the exact same
-// manifest fields setup already trusts (connection-setup-plan.ts
-// staticSecretCredentialCaptureFromManifest), instead of a second,
-// hand-maintained connector-id registry that can silently omit an onboarded
-// connector (see the venmo run-injection gap this replaced).
+// the generator would produce for the manifests currently on disk, instead of
+// a second, hand-maintained connector-id registry that can silently omit an
+// onboarded connector (see the venmo run-injection gap this replaced).
 //
 // Two connectors' STORED credentials predate their current manifest shape and
 // are intentionally NOT represented here — see

@@ -263,7 +263,16 @@ function syntheticNoProbeStaticSecretManifest() {
     runtime_requirements: { bindings: { network: { required: true } } },
     setup: {
       credential_capture: {
-        fields: [{ label: "YNAB token", name: "secret", required: true, secret: true, type: "password" }],
+        fields: [
+          {
+            env: ["TEST_YNAB_TOKEN"],
+            label: "YNAB token",
+            name: "secret",
+            required: true,
+            secret: true,
+            type: "password",
+          },
+        ],
         kind: "personal_access_token",
         label: "YNAB personal access token",
       },

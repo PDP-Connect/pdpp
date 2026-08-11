@@ -266,7 +266,16 @@ test("counterweight: a custom third-party connector_id, unknown to every generat
       {
         setup: {
           credential_capture: {
-            fields: [{ label: "API key", name: "secret", required: true, secret: true, type: "password" }],
+            fields: [
+              {
+                env: ["ACME_WIDGETS_API_KEY"],
+                label: "API key",
+                name: "secret",
+                required: true,
+                secret: true,
+                type: "password",
+              },
+            ],
             kind: "api_key",
             label: "Acme Widgets API key",
           },
@@ -338,7 +347,7 @@ test("classifyConnectorSetupModality never special-cases a specific connector id
     customManifest("gmail", bindings, {
       setup: {
         credential_capture: {
-          fields: [{ label: "x", name: "secret", required: true, secret: true, type: "password" }],
+          fields: [{ env: ["X_SECRET"], label: "x", name: "secret", required: true, secret: true, type: "password" }],
           kind: "app_password",
           label: "x",
         },
@@ -351,7 +360,7 @@ test("classifyConnectorSetupModality never special-cases a specific connector id
     customManifest("totally-unrelated-vendor", bindings, {
       setup: {
         credential_capture: {
-          fields: [{ label: "x", name: "secret", required: true, secret: true, type: "password" }],
+          fields: [{ env: ["X_SECRET"], label: "x", name: "secret", required: true, secret: true, type: "password" }],
           kind: "app_password",
           label: "x",
         },

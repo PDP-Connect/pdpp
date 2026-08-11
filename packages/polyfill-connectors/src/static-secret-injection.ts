@@ -26,14 +26,15 @@
  * The injection mapping (which env var(s) each connector's secret/setup
  * fields land on) is manifest-derived, generated data — see
  * `./generated/static-secret-registry.generated.ts` and
- * `scripts/generate-static-secret-registry.ts`. This module used to
- * hand-maintain that mapping as a second, parallel authority
- * (`STATIC_SECRET_CONNECTOR_REGISTRY`), separate from the manifest-driven
- * classification `connection-setup-plan.ts` already uses for setup — the two
- * could (and did, for venmo) drift, since onboarding a connector meant
- * remembering to update both. Only `LEGACY_CREDENTIAL_KIND_MIGRATIONS` below
- * remains hand-maintained: it captures STORED credential shapes that predate
- * a connector's current manifest and so cannot be regenerated from it.
+ * `scripts/generate-static-secret-registry.ts`. That generator and setup's
+ * `connection-setup-plan.ts` both call the same
+ * `normalizeStaticSecretCredentialCapture`
+ * (`./static-secret-credential-capture.ts`) to decide which fields are
+ * secret — one shared predicate, not two independently-hand-maintained ones
+ * that could (and did, for venmo) drift. Only `LEGACY_CREDENTIAL_KIND_MIGRATIONS`
+ * below remains hand-maintained: it captures STORED credential shapes that
+ * predate a connector's current manifest and so cannot be regenerated from
+ * it.
  */
 
 import {
