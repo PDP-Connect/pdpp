@@ -69,6 +69,13 @@
 import { type FetchImpl, resolveOwnerAuthForLive } from "../lib/owner-session.ts";
 import { fetchAllConnectorSummaries } from "../lib/ref-connectors-page-follow.ts";
 import { auditStreamHealth, type StreamHealthAuditResult } from "./audit.ts";
+import {
+  evaluateStreamHealthAuthority,
+  type OwnerSourcesDomEvidence,
+  parseOwnerSourcesDom,
+  type StreamHealthAuthorityInput,
+  type StreamHealthAuthorityResult,
+} from "./authority.ts";
 
 const REGEX_PATTERN = /\/+$/;
 
@@ -232,5 +239,397 @@ export async function runLiveStreamHealthAudit({
       failures: [],
       inconclusive: [],
     };
+  }
+}
+
+export interface LiveStreamHealthAuthorityResult extends StreamHealthAuthorityResult {
+  authCapability: string;
+  authMode: string;
+  connectionCount: number;
+  error: string | null;
+  fetched: boolean;
+  origin: string;
+}
+
+const REVISION_HEADER = "PDPP-Reference-Revision";
+const DOM_PAGE_GUARD = 200;
+
+function responseHeader(res: { headers: { get?: (name: string) => string | null } }, name: string): string | null {
+  return res.headers.get?.(name)?.trim() || null;
+}
+
+function exactRevision(values: readonly (string | null)[]): string | null {
+  if (values.length === 0 || values.some((value) => value === null)) {
+    return null;
+  }
+  const [first] = values;
+  return first && values.every((value) => value === first) ? first : null;
+}
+
+function authorityFailureInput({
+  authResolved,
+  dom,
+  expectedRevision,
+  expectedSha,
+  paginationComplete,
+  revision,
+}: {
+  authResolved: boolean;
+  dom: OwnerSourcesDomEvidence;
+  expectedRevision: string | null;
+  expectedSha: string | null;
+  paginationComplete: boolean;
+  revision: { dom: string | null; summaries: string | null };
+}): Omit<StreamHealthAuthorityInput, "connections"> & { connections: readonly unknown[] } {
+  return {
+    auth: { authenticated: authResolved, mode: "cookie_only", resolved: authResolved },
+    connections: [],
+    dom,
+    expectedSha,
+    paginationComplete,
+    revision: {
+      dom: revision.dom,
+      expected: expectedRevision,
+      sha: expectedSha,
+      summaries: revision.summaries,
+    },
+  };
+}
+
+function withLiveMetadata(
+  result: StreamHealthAuthorityResult,
+  metadata: Pick<
+    LiveStreamHealthAuthorityResult,
+    "authCapability" | "authMode" | "connectionCount" | "error" | "fetched" | "origin"
+  >
+): LiveStreamHealthAuthorityResult {
+  return { ...result, ...metadata };
+}
+
+function ownerDomFailure({
+  authenticated = true,
+  reason,
+  suspense = false,
+}: {
+  authenticated?: boolean;
+  reason: string;
+  suspense?: boolean;
+}): OwnerSourcesDomEvidence {
+  return {
+    authenticated,
+    connectionIds: [],
+    paginationComplete: false,
+    resolved: false,
+    streamKeys: [],
+    suspense,
+    reason,
+  };
+}
+
+interface OwnerSourcesDomFetchResult {
+  evidence: OwnerSourcesDomEvidence;
+  revisions: (string | null)[];
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this is one bounded, fail-closed pagination state machine whose branches each preserve an evidence gate.
+async function fetchOwnerSourcesDom({
+  base,
+  fetchImpl,
+  headers,
+}: {
+  base: string;
+  fetchImpl: FetchImpl;
+  headers: Record<string, string>;
+}): Promise<OwnerSourcesDomFetchResult> {
+  const connectionIds = new Set<string>();
+  const streamKeys = new Set<string>();
+  const revisions: (string | null)[] = [];
+  const pending: string[] = [`${base}/sources`];
+  const seen = new Set<string>();
+  let firstEvidence: OwnerSourcesDomEvidence | null = null;
+  let resolved = true;
+  let authenticated = true;
+  let suspense = false;
+  let paginationComplete = true;
+  let reason: string | null = null;
+
+  for (let page = 0; page < DOM_PAGE_GUARD && pending.length > 0; page += 1) {
+    const href = pending.shift();
+    if (!href) {
+      break;
+    }
+    const pageUrl = new URL(href, `${base}/sources`);
+    if (pageUrl.origin !== new URL(base).origin) {
+      paginationComplete = false;
+      reason = "owner DOM pagination pointed outside the audited origin";
+      continue;
+    }
+    const absolute = pageUrl.toString();
+    if (seen.has(absolute)) {
+      paginationComplete = false;
+      reason = "owner DOM pagination repeated a page";
+      continue;
+    }
+    seen.add(absolute);
+
+    let response: Awaited<ReturnType<FetchImpl>>;
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: each next DOM page is discovered from the prior page's rendered pager link.
+      response = await fetchImpl(absolute, { headers: { accept: "text/html", ...headers } });
+    } catch (err) {
+      return {
+        evidence: ownerDomFailure({ reason: err instanceof Error ? err.message : String(err) }),
+        revisions,
+      };
+    }
+    revisions.push(responseHeader(response, REVISION_HEADER));
+    const html = await response.text();
+    if (response.status < 200 || response.status >= 300) {
+      return {
+        evidence: ownerDomFailure({
+          authenticated: response.status !== 401 && response.status !== 403,
+          reason: `owner /sources returned status ${response.status}`,
+        }),
+        revisions,
+      };
+    }
+    const pageEvidence = parseOwnerSourcesDom(html);
+    firstEvidence ??= pageEvidence;
+    resolved = resolved && pageEvidence.resolved;
+    authenticated = authenticated && pageEvidence.authenticated !== false;
+    suspense = suspense || pageEvidence.suspense === true;
+    if (!pageEvidence.resolved || pageEvidence.authenticated === false || pageEvidence.suspense === true) {
+      reason = pageEvidence.reason ?? reason;
+    }
+    for (const id of pageEvidence.connectionIds) {
+      connectionIds.add(id);
+    }
+    for (const key of pageEvidence.streamKeys ?? []) {
+      streamKeys.add(`${key.connectionId}\u0000${key.stream}`);
+    }
+    for (const next of pageEvidence.nextPageHrefs ?? []) {
+      pending.push(new URL(next, absolute).toString());
+    }
+  }
+
+  if (pending.length > 0) {
+    paginationComplete = false;
+    reason = "owner DOM pagination guard exhausted";
+  }
+  const streamKeyValues = [...streamKeys].map((value) => {
+    const [connectionId, stream] = value.split("\u0000");
+    return { connectionId: connectionId ?? "", stream: stream ?? "" };
+  });
+  const baseEvidence = firstEvidence ?? ownerDomFailure({ reason: reason ?? "owner /sources did not resolve" });
+  return {
+    evidence: {
+      authenticated,
+      connectionIds: [...connectionIds],
+      paginationComplete: paginationComplete && baseEvidence.paginationComplete !== false,
+      resolved,
+      streamKeys: streamKeyValues,
+      suspense,
+      reason,
+    },
+    revisions,
+  };
+}
+
+async function fetchCatalogManifest({
+  base,
+  connectorId,
+  fetchImpl,
+  headers,
+  onRevision,
+}: {
+  base: string;
+  connectorId: string;
+  fetchImpl: FetchImpl;
+  headers: Record<string, string>;
+  onRevision: (revision: string | null) => void;
+}): Promise<unknown | null> {
+  const response = await fetchImpl(`${base}/connectors/${encodeURIComponent(connectorId)}`, {
+    headers: { accept: "application/json", ...headers },
+  });
+  if (response.status === 404) {
+    return { connector_id: connectorId, streams: [] };
+  }
+  onRevision(responseHeader(response, REVISION_HEADER));
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`connector manifest returned status ${response.status}`);
+  }
+  const body = JSON.parse(await response.text()) as unknown;
+  return body !== null && typeof body === "object" && !Array.isArray(body)
+    ? body
+    : { connector_id: connectorId, streams: [] };
+}
+
+async function fetchCatalogManifests({
+  base,
+  connections,
+  fetchImpl,
+  headers,
+  onRevision,
+}: {
+  base: string;
+  connections: readonly unknown[];
+  fetchImpl: FetchImpl;
+  headers: Record<string, string>;
+  onRevision: (revision: string | null) => void;
+}): Promise<unknown[]> {
+  const connectorIds = new Set<string>();
+  for (const value of connections) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      continue;
+    }
+    const object = value as Record<string, unknown>;
+    for (const key of ["connector_id", "connector_key", "provider_id"]) {
+      if (typeof object[key] === "string" && object[key].trim()) {
+        connectorIds.add(object[key].trim());
+        break;
+      }
+    }
+  }
+  const manifests = await Promise.all(
+    [...connectorIds].map((connectorId) => fetchCatalogManifest({ base, connectorId, fetchImpl, headers, onRevision }))
+  );
+  return manifests;
+}
+
+/**
+ * Run the final acceptance authority against a live owner session. This is
+ * deliberately read-only: it exhausts the owner summary pages, resolves the
+ * authenticated `/sources` DOM pages, and reads public connector manifests.
+ */
+export async function runLiveStreamHealthAuthority({
+  env = process.env,
+  expectedRevision = env.PDPP_EXPECTED_REFERENCE_REVISION?.trim() || null,
+  expectedSha = env.PDPP_EXPECTED_SHA?.trim() || null,
+  fetchImpl = fetch as unknown as FetchImpl,
+  origin,
+}: {
+  env?: NodeJS.ProcessEnv;
+  expectedRevision?: string | null;
+  expectedSha?: string | null;
+  fetchImpl?: FetchImpl;
+  origin: string;
+}): Promise<LiveStreamHealthAuthorityResult> {
+  const base = origin.replace(REGEX_PATTERN, "");
+  const auth = await resolveOwnerAuthForStreamHealth({ base, env, fetchImpl });
+  const metadata = {
+    authCapability: "cookie_only",
+    authMode: auth.mode,
+    connectionCount: 0,
+    error: null as string | null,
+    fetched: false,
+    origin: base,
+  };
+
+  if (!auth.supported) {
+    let error: string;
+    if (auth.mode === "bearer") {
+      error =
+        "PDPP_OWNER_TOKEN is not supported for the cookie-gated owner routes; set PDPP_OWNER_SESSION_COOKIE or PDPP_OWNER_PASSWORD.";
+    } else if (auth.mode === "password-session") {
+      error = `Owner login via PDPP_OWNER_PASSWORD failed: ${auth.error}`;
+    } else {
+      error = "No owner session supplied. Set PDPP_OWNER_SESSION_COOKIE or PDPP_OWNER_PASSWORD.";
+    }
+    const authority = evaluateStreamHealthAuthority(
+      authorityFailureInput({
+        authResolved: false,
+        dom: ownerDomFailure({ authenticated: false, reason: "owner authentication was not resolved" }),
+        expectedRevision,
+        expectedSha,
+        paginationComplete: false,
+        revision: { dom: null, summaries: null },
+      })
+    );
+    return withLiveMetadata(authority, { ...metadata, error });
+  }
+
+  const summaryRevisions: (string | null)[] = [];
+  let connections: readonly unknown[] = [];
+  try {
+    const summaryFetch: FetchImpl = async (url, init) => {
+      const response = await fetchImpl(url, init);
+      summaryRevisions.push(responseHeader(response, REVISION_HEADER));
+      return response;
+    };
+    const paged = await fetchAllConnectorSummaries({
+      base,
+      fetchImpl: summaryFetch,
+      headers: { accept: "application/json", ...auth.header },
+    });
+    if (!paged.ok) {
+      const authority = evaluateStreamHealthAuthority(
+        authorityFailureInput({
+          authResolved: paged.status !== 401 && paged.status !== 403,
+          dom: ownerDomFailure({
+            authenticated: paged.status !== 401 && paged.status !== 403,
+            reason: "owner DOM was not resolved because the owner summary inventory did not complete",
+          }),
+          expectedRevision,
+          expectedSha,
+          paginationComplete: false,
+          revision: { dom: null, summaries: exactRevision(summaryRevisions) },
+        })
+      );
+      return withLiveMetadata(authority, {
+        ...metadata,
+        error: paged.error ?? `GET /_ref/connectors returned status ${paged.status}`,
+      });
+    }
+    connections = [...paged.data];
+    const manifests = await fetchCatalogManifests({
+      base,
+      connections,
+      fetchImpl,
+      headers: { accept: "application/json", ...auth.header },
+      onRevision: (revision) => summaryRevisions.push(revision),
+    });
+    const domResult = await fetchOwnerSourcesDom({
+      base,
+      fetchImpl,
+      headers: auth.header,
+    });
+    const authority = evaluateStreamHealthAuthority({
+      auth: { authenticated: true, mode: auth.mode, resolved: true },
+      connections,
+      dom: domResult.evidence,
+      expectedSha,
+      manifests,
+      paginationComplete: true,
+      revision: {
+        dom: exactRevision(domResult.revisions),
+        expected: expectedRevision,
+        sha: expectedSha,
+        summaries: exactRevision(summaryRevisions),
+      },
+    });
+    return withLiveMetadata(authority, {
+      ...metadata,
+      connectionCount: connections.length,
+      error: null,
+      fetched: true,
+    });
+  } catch (err) {
+    const authority = evaluateStreamHealthAuthority({
+      auth: { authenticated: true, mode: auth.mode, resolved: true },
+      connections: [],
+      dom: ownerDomFailure({ reason: "live stream-health evidence collection failed" }),
+      expectedSha,
+      paginationComplete: false,
+      revision: {
+        dom: null,
+        expected: expectedRevision,
+        sha: expectedSha,
+        summaries: exactRevision(summaryRevisions),
+      },
+    });
+    return withLiveMetadata(authority, {
+      ...metadata,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
