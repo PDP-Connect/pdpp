@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { JSONParser } from "@streamparser/json";
-import { parseGoogleMapsExport } from "./parsers.ts";
+import {
+  GOOGLE_MAPS_SHAPE_KEY_TO_FORMAT,
+  GOOGLE_MAPS_SHAPE_KEYS,
+  GoogleMapsElementTooLargeError,
+  streamGoogleMapsExport,
+} from "./archive-stream.ts";
+import { parseGoogleMapsExport, parseGoogleMapsExportElement } from "./parsers.ts";
 import type { GoogleMapsSourceFormat } from "./types.ts";
 
 export type TimelineValidationStatus = "valid" | "duplicate" | "stale" | "empty" | "unsupported" | "too_large";
@@ -25,26 +29,6 @@ export interface GoogleMapsTimelineValidation {
   readonly status: TimelineValidationStatus;
 }
 
-// Read-buffer size for the streaming JSON pass — matches the size already
-// proven for twitter_archive's own @streamparser/json reader
-// (archive-stream.ts), the one other file-backed JSON-streaming primitive in
-// this codebase.
-const STREAM_READ_BUFFER_SIZE = 65_536;
-
-// @streamparser/json must fully materialize one array element's value
-// before emitting it, so total-file boundedness alone doesn't bound a
-// single element's size. 4 MiB is generous for any real Timeline record
-// (a point or segment is a few hundred bytes) while keeping one adversarial
-// or corrupted record from exhausting memory on its own.
-const MAX_SINGLE_ELEMENT_BYTES = 4 * 1024 * 1024;
-
-class GoogleMapsElementTooLargeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "GoogleMapsElementTooLargeError";
-  }
-}
-
 class GoogleMapsMixedShapeError extends Error {
   constructor(message: string) {
     super(message);
@@ -52,26 +36,10 @@ class GoogleMapsMixedShapeError extends Error {
   }
 }
 
-// The single source of truth for the 3 keyed (non-bare-array) shapes'
-// key -> format mapping, shared by BOTH the buffer-backed detector
-// (detectFormat) and the streaming detector (handleContainerKeySignal /
-// formatForElementEvent), so the two paths' notion of "which key means
-// which shape" can never drift apart into two maps someone updates only
-// one of.
-const SHAPE_KEYS = ["locations", "semanticSegments", "timelineObjects"] as const;
-const SHAPE_KEY_TO_FORMAT: Readonly<Record<(typeof SHAPE_KEYS)[number], GoogleMapsSourceFormat>> = {
-  locations: "legacy_records",
-  semanticSegments: "semantic_segments",
-  timelineObjects: "timeline_objects",
-};
-
-/** Safe lookup for a key of unknown provenance (e.g. a string observed from
- *  a streamed JSON key event) against {@link SHAPE_KEY_TO_FORMAT}, which is
- *  typed as a closed record over the known shape keys and so cannot be
- *  indexed directly by an arbitrary string. */
-function formatForShapeKey(key: string): GoogleMapsSourceFormat | null {
-  return (SHAPE_KEY_TO_FORMAT as Readonly<Record<string, GoogleMapsSourceFormat | undefined>>)[key] ?? null;
-}
+// The keyed-shape map is shared by the buffer-backed detector and the
+// streaming event reader, so their format labels cannot drift apart.
+const SHAPE_KEYS = GOOGLE_MAPS_SHAPE_KEYS;
+const SHAPE_KEY_TO_FORMAT = GOOGLE_MAPS_SHAPE_KEY_TO_FORMAT;
 
 /** Shape keys that actually have at least one element -- a present-but-EMPTY
  *  sibling array (e.g. `{ locations: [...], semanticSegments: [] }`) is not
@@ -273,40 +241,6 @@ export interface GoogleMapsTimelineFileValidationOptions {
  * item versus one call for the whole file; negligible next to avoiding a
  * second parser implementation to keep in sync.
  */
-function wrapStreamedElement(detectedFormat: GoogleMapsSourceFormat, value: unknown): unknown {
-  if (detectedFormat === "legacy_records") {
-    return { locations: [value] };
-  }
-  if (detectedFormat === "semantic_segments") {
-    return { semanticSegments: [value] };
-  }
-  return [value];
-}
-
-/**
- * Peeks at the first non-whitespace byte of the file to determine whether
- * the root JSON value is an array (bare `timeline_objects` shape) without
- * parsing or buffering the document — the streaming equivalent of the
- * buffer-backed detector's own `Array.isArray(json)` root check. Reads a
- * small, fixed-size window (matching this codebase's own bounded-peek
- * precedent for the ZIP EOCD scan), never the whole file.
- */
-async function peekRootIsArray(path: string): Promise<boolean> {
-  const PEEK_BYTES = 64;
-  const stream = createReadStream(path, { encoding: "utf8", end: PEEK_BYTES - 1 });
-  try {
-    for await (const chunk of stream as AsyncIterable<string>) {
-      const trimmed = chunk.trimStart();
-      if (trimmed.length > 0) {
-        return trimmed[0] === "[";
-      }
-    }
-    return false;
-  } finally {
-    stream.destroy();
-  }
-}
-
 interface StreamedCounts {
   /** Formats that actually accumulated at least one element. 0 entries at
    *  the end of the stream means "recognized but all-empty" (falls back to
@@ -325,65 +259,9 @@ interface StreamedCounts {
   segmentCount: number;
 }
 
-type StreamStackKey = string | number | undefined;
-interface StreamStackFrame {
-  key: StreamStackKey;
-}
-
-/**
- * Handles a KEY-position partial event (`stack.length === 1`, `key` is the
- * string key just seen on the root object, value not yet parsed). Only
- * records the key into `recognizedFormatsSeen` -- never throws here: seeing
- * a second container KEY does not by itself mean the document is mixed (a
- * present-but-empty sibling array is a single-shape export with an unused
- * key). Mixing is decided later, from {@link accumulateElement}'s
- * `formatsWithElements`, which only grows when a shape actually has data.
- */
-function handleContainerKeySignal(
-  counts: StreamedCounts,
-  key: StreamStackKey,
-  stack: readonly StreamStackFrame[]
-): void {
-  if (stack.length !== 1 || typeof key !== "string") {
-    return;
-  }
-  const format = formatForShapeKey(key);
-  if (format) {
-    counts.recognizedFormatsSeen.add(format);
-  }
-}
-
-/**
- * Determines which of the 4 shapes a non-partial `onValue` element event
- * belongs to, or `null` if it isn't one of their own array elements.
- *
- * A top-level-array element (`stack.length === 1`) has a numeric key.
- * `"$.*"` ALSO matches every direct child of a top-level OBJECT (its
- * property values, string-keyed) -- that case is entirely out of scope here
- * (object property values are handled by {@link handleContainerKeySignal},
- * never here), so a string key at `stack.length === 1` must be ignored, not
- * misread as an array element (a real bug caught by the "unrecognized
- * top-level shape" test: an unrelated top-level property was silently
- * treated as an empty `timeline_objects` array before this check existed).
- *
- * A nested-array element (`stack.length === 2`, matched by
- * `"$.locations.*"`/`"$.semanticSegments.*"`/`"$.timelineObjects.*"`) sits
- * under its parent object's own key -- that key IS the shape signal.
- */
-function formatForElementEvent(key: StreamStackKey, stack: readonly StreamStackFrame[]): GoogleMapsSourceFormat | null {
-  if (stack.length === 1) {
-    return typeof key === "number" ? "timeline_objects" : null;
-  }
-  if (stack.length === 2) {
-    const parentKey = stack[1]?.key;
-    return typeof parentKey === "string" ? formatForShapeKey(parentKey) : null;
-  }
-  return null;
-}
-
 /**
  * Parses one streamed element via {@link parseGoogleMapsExport} (through
- * {@link wrapStreamedElement}) and folds its points/segments into the
+ * {@link parseGoogleMapsExportElement}) and folds its points/segments into the
  * running counts and min/max timestamp -- the per-element accumulation step
  * of {@link streamCounts}, extracted so that function's own dispatch logic
  * stays simple enough to read at a glance. Throws once a SECOND distinct
@@ -399,7 +277,7 @@ function accumulateElement(counts: StreamedCounts, format: GoogleMapsSourceForma
       `more than one Timeline shape has elements: ${[...counts.formatsWithElements].join(", ")}`
     );
   }
-  const parsed = parseGoogleMapsExport(wrapStreamedElement(format, value));
+  const parsed = parseGoogleMapsExportElement(format, value);
   counts.pointCount += parsed.points.length;
   counts.segmentCount += parsed.segments.length;
   for (const timestamp of [
@@ -420,7 +298,7 @@ function accumulateElement(counts: StreamedCounts, format: GoogleMapsSourceForma
  * present) through `@streamparser/json` -- the same streaming JSON parser
  * already proven for twitter_archive's multi-hundred-MB `.js` archives
  * (`archive-stream.ts`) -- feeding each element through
- * {@link parseGoogleMapsExport} one at a time via {@link wrapStreamedElement}.
+ * {@link parseGoogleMapsExportElement} one at a time.
  * Only running counts and a running min/max timestamp are retained. The
  * `paths` list matches each container's per-element children
  * (`$.locations.*` etc), never the container array itself: matching the
@@ -437,88 +315,13 @@ async function streamCounts(path: string): Promise<StreamedCounts> {
     segmentCount: 0,
   };
 
-  // "$.*" matches array elements of a bare top-level array (numeric key) --
-  // the ONLY thing it's used for here, since a bare top-level array's own
-  // presence-when-empty is separately detected via peekRootIsArray, not
-  // through this parser instance at all. emitPartialValues + the KEY-state
-  // partial event on "$.locations"/"$.semanticSegments"/"$.timelineObjects"
-  // fires the moment each key is SEEN, before its value is parsed at all --
-  // giving recognizedFormatsSeen for free, without ever matching (and therefore
-  // never retaining) the container's own array value.
-  const parser = new JSONParser({
-    emitPartialValues: true,
-    keepStack: false,
-    paths: ["$.*", "$.locations.*", "$.semanticSegments.*", "$.timelineObjects.*"],
+  await streamGoogleMapsExport(path, (event) => {
+    if (event.kind === "shape") {
+      counts.recognizedFormatsSeen.add(event.format);
+      return;
+    }
+    accumulateElement(counts, event.format, event.value);
   });
-  let parseError: unknown;
-  // Bounds each array element's byte span BEFORE those bytes reach the
-  // parser: @streamparser/json's tokenizer doesn't emit a STRING token
-  // until the whole string value is already materialized, so checking at
-  // the token or value level is too late for a giant string. Counting raw
-  // chunk bytes since the last element boundary and refusing to feed a
-  // chunk that would cross the bound is the only point early enough.
-  let bytesSinceElementStart = 0;
-  parser.onValue = (info) => {
-    if (info.partial) {
-      handleContainerKeySignal(counts, info.key, info.stack);
-      return;
-    }
-    // Any completed element (recognized shape or not) closes the current
-    // element's measurement window -- the NEXT element starts fresh.
-    bytesSinceElementStart = 0;
-    const format = formatForElementEvent(info.key, info.stack);
-    if (!format) {
-      return;
-    }
-    try {
-      accumulateElement(counts, format, info.value);
-    } catch (err) {
-      parseError = err;
-    }
-  };
-
-  const stream = createReadStream(path, { encoding: "utf8", highWaterMark: STREAM_READ_BUFFER_SIZE });
-  try {
-    for await (const chunk of stream as AsyncIterable<string | Buffer>) {
-      if (parser.isEnded) {
-        break;
-      }
-      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      bytesSinceElementStart += Buffer.byteLength(text, "utf8");
-      if (bytesSinceElementStart > MAX_SINGLE_ELEMENT_BYTES) {
-        throw new GoogleMapsElementTooLargeError(
-          `a single Timeline array element exceeded ${MAX_SINGLE_ELEMENT_BYTES} bytes`
-        );
-      }
-      parser.write(text);
-      if (parseError) {
-        throw parseError;
-      }
-    }
-  } finally {
-    stream.destroy();
-  }
-  if (parseError) {
-    throw parseError;
-  }
-  // The stream ending does not mean the document is well-formed: write()
-  // doesn't throw on a syntactically-incomplete-but-so-far-valid document,
-  // it just stops emitting events, leaving isEnded false. A truncated
-  // upload must fail closed here rather than silently report a valid,
-  // undercounted result -- mirrors archive-stream.ts's own isEnded check.
-  if (!parser.isEnded) {
-    try {
-      parser.end();
-    } catch {
-      // The throw itself is the truncation signal.
-    }
-    if (!parser.isEnded) {
-      throw new Error("google_maps: Timeline document did not close (truncated or malformed)");
-    }
-  }
-  if (counts.recognizedFormatsSeen.size === 0 && (await peekRootIsArray(path))) {
-    counts.recognizedFormatsSeen.add("timeline_objects");
-  }
   return counts;
 }
 

@@ -537,3 +537,15 @@ export function parseGoogleMapsExport(json: unknown): ParseResult {
   }
   return mergeResults(results);
 }
+
+/** Parse one element from a streamed Timeline container through the same
+ * pure dispatch used by the buffer-backed parser. */
+export function parseGoogleMapsExportElement(format: GoogleMapsSourceFormat, value: unknown): ParseResult {
+  if (format === "legacy_records") {
+    return parseGoogleMapsExport({ locations: [value] });
+  }
+  if (format === "semantic_segments") {
+    return parseGoogleMapsExport({ semanticSegments: [value] });
+  }
+  return parseGoogleMapsExport([value]);
+}

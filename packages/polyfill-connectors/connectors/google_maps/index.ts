@@ -11,28 +11,25 @@
  */
 
 import { type Dirent, existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { CollectContext } from "../../src/connector-runtime.ts";
-import { buildDetailCoverageMessage, runConnector } from "../../src/connector-runtime.ts";
-import { parseGoogleMapsExport } from "./parsers.ts";
+import { buildDetailCoverageMessage, buildFullScanCoverageMessage, runConnector } from "../../src/connector-runtime.ts";
+import {
+  GoogleMapsElementTooLargeError,
+  type GoogleMapsStreamEvent,
+  streamGoogleMapsExport,
+} from "./archive-stream.ts";
+import { parseGoogleMapsExportElement } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
-import type { GoogleMapsState, ParseResult, TimelinePointRecord, TimelineSegmentRecord } from "./types.ts";
+import type { GoogleMapsState, TimelinePointRecord, TimelineSegmentRecord } from "./types.ts";
 
 const MAX_DISCOVERY_DEPTH = 5;
 const MAX_DISCOVERY_ENTRIES = 2000;
 const POINT_PROGRESS_INTERVAL = 10_000;
 const SEGMENT_PROGRESS_INTERVAL = 1000;
 const SUPPORTED_FILE_NAMES = new Set(["location-history.json", "timeline.json", "records.json"]);
-
-async function readJson(path: string): Promise<unknown | null> {
-  try {
-    return JSON.parse(await readFile(path, "utf8")) as unknown;
-  } catch {
-    return null;
-  }
-}
 
 function isLikelyTimelineJson(path: string): boolean {
   const fileName = basename(path).toLowerCase();
@@ -83,41 +80,6 @@ async function discoverTimelineFiles(importDir: string): Promise<string[]> {
   return [...new Set(found)].sort();
 }
 
-function mergeResults(results: ParseResult[]): ParseResult {
-  const points = new Map<string, TimelinePointRecord>();
-  const segments = new Map<string, TimelineSegmentRecord>();
-  for (const result of results) {
-    for (const point of result.points) {
-      points.set(point.id, point);
-    }
-    for (const segment of result.segments) {
-      segments.set(segment.id, segment);
-    }
-  }
-  return {
-    points: [...points.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
-    segments: [...segments.values()].sort((a, b) => a.start_time.localeCompare(b.start_time)),
-  };
-}
-
-async function loadExports(ctx: CollectContext, importDir: string): Promise<ParseResult> {
-  const files = await discoverTimelineFiles(importDir);
-  await ctx.progress(`Google Maps phase=index pass=index source_files=${files.length}`);
-  const results: ParseResult[] = [];
-  let fileOrdinal = 0;
-  for (const file of files) {
-    fileOrdinal += 1;
-    await ctx.progress(`Google Maps phase=parse pass=parse source_file=${fileOrdinal}/${files.length}`);
-    const json = await readJson(file);
-    if (!json) {
-      await emitRequestedSkip(ctx, "invalid_json", "A Google Maps Timeline export file could not be parsed as JSON");
-      continue;
-    }
-    results.push(parseGoogleMapsExport(json));
-  }
-  return mergeResults(results);
-}
-
 async function emitRequestedSkip(ctx: CollectContext, reason: string, message: string): Promise<void> {
   for (const stream of ["timeline_points", "timeline_segments"]) {
     if (ctx.requested.has(stream)) {
@@ -126,106 +88,253 @@ async function emitRequestedSkip(ctx: CollectContext, reason: string, message: s
   }
 }
 
-async function emitPoints(
-  ctx: CollectContext,
-  points: TimelinePointRecord[],
-  since: string | undefined
-): Promise<string | undefined> {
-  let latest = since;
-  let emitted = 0;
-  await ctx.progress(`Google Maps phase=emit pass=emit stream=timeline_points total_items=${points.length}`, {
-    stream: "timeline_points",
-  });
+interface LoadSummary {
+  complete: boolean;
+  latestPoint: string | undefined;
+  latestSegment: string | undefined;
+  pointCount: number;
+  pointsEmitted: number;
+  segmentCount: number;
+  segmentsEmitted: number;
+  unrecognizedCount: number;
+  unrecognizedKinds: Set<string>;
+}
+
+const GOOGLE_MAPS_EMISSION_ERROR = Symbol("google_maps_emission_error");
+type GoogleMapsEmissionError = Error & { readonly [GOOGLE_MAPS_EMISSION_ERROR]: true };
+
+function makeGoogleMapsEmissionError(cause: unknown): GoogleMapsEmissionError {
+  const error = new Error("Google Maps protocol emission failed", { cause });
+  Object.defineProperty(error, GOOGLE_MAPS_EMISSION_ERROR, { value: true });
+  return error as GoogleMapsEmissionError;
+}
+
+function isGoogleMapsEmissionError(error: unknown): error is GoogleMapsEmissionError {
+  return error instanceof Error && (error as GoogleMapsEmissionError)[GOOGLE_MAPS_EMISSION_ERROR] === true;
+}
+
+function maxTimestamp(current: string | undefined, candidate: string): string {
+  return !current || candidate > current ? candidate : current;
+}
+
+async function emitRecordSafely(ctx: CollectContext, stream: string, record: Record<string, unknown>): Promise<void> {
+  try {
+    await ctx.emitRecord(stream, record);
+  } catch (error) {
+    throw makeGoogleMapsEmissionError(error);
+  }
+}
+
+async function emitProgressSafely(ctx: CollectContext, message: string, options: { stream: string }): Promise<void> {
+  try {
+    await ctx.progress(message, options);
+  } catch (error) {
+    throw makeGoogleMapsEmissionError(error);
+  }
+}
+
+interface StreamLoadContext {
+  readonly ctx: CollectContext;
+  readonly pointSince: string | undefined;
+  readonly requestedPoints: boolean;
+  readonly requestedSegments: boolean;
+  readonly seenPointIds: Set<string>;
+  readonly seenSegmentIds: Set<string>;
+  readonly segmentSince: string | undefined;
+  readonly summary: LoadSummary;
+}
+
+async function processPointRecords(load: StreamLoadContext, points: readonly TimelinePointRecord[]): Promise<void> {
   for (const point of points) {
-    if (since && point.timestamp <= since) {
+    const pointId = typeof point.id === "string" ? point.id : null;
+    const timestamp = typeof point.timestamp === "string" ? point.timestamp : null;
+    if (!(pointId && timestamp)) {
       continue;
     }
-    await ctx.emitRecord("timeline_points", { ...point });
-    emitted += 1;
-    if (!latest || point.timestamp > latest) {
-      latest = point.timestamp;
+    if (load.seenPointIds.has(pointId)) {
+      continue;
     }
-    if (emitted % POINT_PROGRESS_INTERVAL === 0) {
-      await ctx.progress(
-        `Google Maps phase=emit pass=emit stream=timeline_points emitted=${emitted}/${points.length}`,
-        {
-          stream: "timeline_points",
-        }
+    load.seenPointIds.add(pointId);
+    load.summary.pointCount += 1;
+    load.summary.latestPoint = maxTimestamp(load.summary.latestPoint, timestamp);
+    if (!load.requestedPoints || (load.pointSince && timestamp <= load.pointSince)) {
+      continue;
+    }
+    await emitRecordSafely(load.ctx, "timeline_points", { ...point });
+    load.summary.pointsEmitted += 1;
+    if (load.summary.pointsEmitted % POINT_PROGRESS_INTERVAL === 0) {
+      await emitProgressSafely(
+        load.ctx,
+        `Google Maps phase=emit pass=emit stream=timeline_points emitted=${load.summary.pointsEmitted}/streaming`,
+        { stream: "timeline_points" }
       );
     }
+  }
+}
+
+function recordUnrecognizedSegment(summary: LoadSummary, segment: TimelineSegmentRecord): void {
+  if (segment.segment_kind !== "unrecognized") {
+    return;
+  }
+  summary.unrecognizedCount += 1;
+  summary.unrecognizedKinds.add(segment.unrecognized_kind ?? "(no payload key)");
+}
+
+async function processSegmentRecords(
+  load: StreamLoadContext,
+  segments: readonly TimelineSegmentRecord[]
+): Promise<void> {
+  for (const segment of segments) {
+    const segmentId = typeof segment.id === "string" ? segment.id : null;
+    const startTime = typeof segment.start_time === "string" ? segment.start_time : null;
+    if (!(segmentId && startTime)) {
+      continue;
+    }
+    if (load.seenSegmentIds.has(segmentId)) {
+      continue;
+    }
+    load.seenSegmentIds.add(segmentId);
+    load.summary.segmentCount += 1;
+    load.summary.latestSegment = maxTimestamp(load.summary.latestSegment, startTime);
+    recordUnrecognizedSegment(load.summary, segment);
+    if (!load.requestedSegments || (load.segmentSince && startTime <= load.segmentSince)) {
+      continue;
+    }
+    await emitRecordSafely(load.ctx, "timeline_segments", { ...segment });
+    load.summary.segmentsEmitted += 1;
+    if (load.summary.segmentsEmitted % SEGMENT_PROGRESS_INTERVAL === 0) {
+      await emitProgressSafely(
+        load.ctx,
+        `Google Maps phase=emit pass=emit stream=timeline_segments emitted=${load.summary.segmentsEmitted}/streaming`,
+        { stream: "timeline_segments" }
+      );
+    }
+  }
+}
+
+async function processStreamEvent(load: StreamLoadContext, event: GoogleMapsStreamEvent): Promise<void> {
+  if (event.kind === "shape") {
+    return;
+  }
+  const parsed = parseGoogleMapsExportElement(event.format, event.value);
+  await processPointRecords(load, parsed.points);
+  await processSegmentRecords(load, parsed.segments);
+}
+
+async function streamTimelineFile(load: StreamLoadContext, file: string): Promise<void> {
+  await streamGoogleMapsExport(file, (event) => processStreamEvent(load, event));
+}
+
+async function reportSourceFailure(ctx: CollectContext, error: unknown): Promise<void> {
+  const oversized = error instanceof GoogleMapsElementTooLargeError;
+  await emitRequestedSkip(
+    ctx,
+    oversized ? "record_too_large" : "invalid_json",
+    oversized
+      ? "A Google Maps Timeline export contains a record that is too large to process safely"
+      : "A Google Maps Timeline export file could not be parsed as JSON"
+  );
+}
+
+async function loadExports(ctx: CollectContext, importDir: string, state: GoogleMapsState): Promise<LoadSummary> {
+  const files = await discoverTimelineFiles(importDir);
+  const requestedPoints = ctx.requested.has("timeline_points");
+  const requestedSegments = ctx.requested.has("timeline_segments");
+  const pointSince = state.timeline_points?.last_timestamp;
+  const segmentSince = state.timeline_segments?.last_start_time;
+  const summary: LoadSummary = {
+    complete: true,
+    latestPoint: pointSince,
+    latestSegment: segmentSince,
+    pointCount: 0,
+    pointsEmitted: 0,
+    segmentCount: 0,
+    segmentsEmitted: 0,
+    unrecognizedCount: 0,
+    unrecognizedKinds: new Set(),
+  };
+  const load: StreamLoadContext = {
+    ctx,
+    pointSince,
+    requestedPoints,
+    requestedSegments,
+    segmentSince,
+    seenPointIds: new Set(),
+    seenSegmentIds: new Set(),
+    summary,
+  };
+
+  await ctx.progress(`Google Maps phase=index pass=index source_files=${files.length}`);
+  if (requestedPoints) {
+    await ctx.progress("Google Maps phase=emit pass=emit stream=timeline_points total_items=streaming", {
+      stream: "timeline_points",
+    });
+  }
+  if (requestedSegments) {
+    await ctx.progress("Google Maps phase=emit pass=emit stream=timeline_segments total_items=streaming", {
+      stream: "timeline_segments",
+    });
+  }
+
+  let fileOrdinal = 0;
+  for (const file of files) {
+    fileOrdinal += 1;
+    await ctx.progress(`Google Maps phase=parse pass=parse source_file=${fileOrdinal}/${files.length}`);
+    try {
+      await streamTimelineFile(load, file);
+    } catch (error) {
+      if (isGoogleMapsEmissionError(error)) {
+        throw error.cause;
+      }
+      summary.complete = false;
+      await reportSourceFailure(ctx, error);
+    }
+  }
+
+  return summary;
+}
+
+async function finishPoints(ctx: CollectContext, summary: LoadSummary): Promise<void> {
+  if (!summary.complete) {
+    return;
   }
   await ctx.emit({
     type: "STATE",
     stream: "timeline_points",
-    cursor: { last_timestamp: latest },
+    cursor: { last_timestamp: summary.latestPoint },
   });
-  // `points` is the whole merged, deduplicated import boundary, materialized
-  // before this loop — an independent enumeration-site measurement, never the
-  // emit count. Each point is either emitted or skipped by the incremental
-  // `since` cursor because a prior run already covered it, so the boundary is
-  // fully accounted for and a steady-state re-import reads covered instead of
-  // a false partial.
   await ctx.emit(
     buildDetailCoverageMessage({
       stream: "timeline_points",
       stateStream: "timeline_points",
       requiredKeys: [],
       hydratedKeys: [],
-      considered: points.length,
-      covered: points.length,
+      considered: summary.pointCount,
+      covered: summary.pointCount,
     })
   );
-  return latest;
 }
 
-async function emitSegments(
-  ctx: CollectContext,
-  segments: TimelineSegmentRecord[],
-  since: string | undefined
-): Promise<string | undefined> {
-  let latest = since;
-  let emitted = 0;
-  await ctx.progress(`Google Maps phase=emit pass=emit stream=timeline_segments total_items=${segments.length}`, {
-    stream: "timeline_segments",
-  });
-  for (const segment of segments) {
-    if (since && segment.start_time <= since) {
-      continue;
-    }
-    await ctx.emitRecord("timeline_segments", { ...segment });
-    emitted += 1;
-    if (!latest || segment.start_time > latest) {
-      latest = segment.start_time;
-    }
-    if (emitted % SEGMENT_PROGRESS_INTERVAL === 0) {
-      await ctx.progress(
-        `Google Maps phase=emit pass=emit stream=timeline_segments emitted=${emitted}/${segments.length}`,
-        {
-          stream: "timeline_segments",
-        }
-      );
-    }
+async function finishSegments(ctx: CollectContext, summary: LoadSummary): Promise<void> {
+  if (!summary.complete) {
+    return;
   }
-  // Surface unrecognized segment shapes rather than letting them pass as
-  // ordinary records. The format is undocumented and Google changes it
-  // without notice, so a nonzero count here is the signal that a new payload
-  // key has shipped and needs modeling. The records are still emitted — the
-  // owner's data is retained, just honestly labeled.
-  const unrecognized = segments.filter((s) => s.segment_kind === "unrecognized");
-  if (unrecognized.length > 0) {
-    const kinds = [...new Set(unrecognized.map((s) => s.unrecognized_kind ?? "(no payload key)"))].sort().join(",");
+  if (summary.unrecognizedKinds.size > 0) {
     await ctx.progress(
-      `Google Maps phase=emit pass=emit stream=timeline_segments unrecognized_segments=${unrecognized.length} unrecognized_kinds=${kinds}`,
+      `Google Maps phase=emit pass=emit stream=timeline_segments unrecognized_segments=${summary.unrecognizedCount} unrecognized_kinds=${[
+        ...summary.unrecognizedKinds,
+      ]
+        .sort()
+        .join(",")}`,
       { stream: "timeline_segments" }
     );
   }
-
   await ctx.emit({
     type: "STATE",
     stream: "timeline_segments",
-    cursor: { last_start_time: latest },
+    cursor: { last_start_time: summary.latestSegment },
   });
-  return latest;
+  await ctx.emit(buildFullScanCoverageMessage("timeline_segments", summary.segmentCount));
 }
 
 runConnector({
@@ -236,9 +345,9 @@ runConnector({
     const typedState = ctx.state as GoogleMapsState;
     const requestedPoints = ctx.requested.has("timeline_points");
     const requestedSegments = ctx.requested.has("timeline_segments");
-    const parsed = await loadExports(ctx, importDir);
+    const summary = await loadExports(ctx, importDir, typedState);
 
-    if (requestedPoints && parsed.points.length === 0) {
+    if (requestedPoints && summary.pointCount === 0) {
       await ctx.emit({
         type: "SKIP_RESULT",
         stream: "timeline_points",
@@ -246,7 +355,7 @@ runConnector({
         message: "Google Maps Timeline point records were not found in the configured import directory",
       });
     }
-    if (requestedSegments && parsed.segments.length === 0) {
+    if (requestedSegments && summary.segmentCount === 0) {
       await ctx.emit({
         type: "SKIP_RESULT",
         stream: "timeline_segments",
@@ -256,10 +365,10 @@ runConnector({
     }
 
     if (requestedPoints) {
-      await emitPoints(ctx, parsed.points, typedState.timeline_points?.last_timestamp);
+      await finishPoints(ctx, summary);
     }
     if (requestedSegments) {
-      await emitSegments(ctx, parsed.segments, typedState.timeline_segments?.last_start_time);
+      await finishSegments(ctx, summary);
     }
   },
 });

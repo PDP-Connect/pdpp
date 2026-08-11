@@ -50,7 +50,8 @@ const EXPORT_FIXTURE = {
 
 async function runImport(
   importRoot: string,
-  state: Record<string, unknown> = {}
+  state: Record<string, unknown> = {},
+  streams: readonly string[] = ["timeline_points"]
 ): Promise<{ messages: EmittedMessage[] }> {
   const result = await runConnectorProtocolSubprocess({
     cwd: PACKAGE_ROOT,
@@ -62,7 +63,7 @@ async function runImport(
       RS_URL: "",
     },
     start: {
-      scope: { streams: [{ name: "timeline_points" }] },
+      scope: { streams: streams.map((name) => ({ name })) },
       state,
       type: "START",
     },
@@ -96,6 +97,101 @@ test("google_maps declares the merged point boundary as the timeline_points deno
     assert.equal(coverage.covered, 2);
     assert.deepEqual(coverage.required_keys, []);
     assert.deepEqual(coverage.hydrated_keys, []);
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
+test("google_maps dedupes duplicate archive files and proves both declared streams", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-google-maps-dedupe-"));
+  try {
+    await writeFile(join(importRoot, "Records.json"), JSON.stringify(EXPORT_FIXTURE));
+    await writeFile(join(importRoot, "location-history.json"), JSON.stringify(EXPORT_FIXTURE));
+    await writeFile(
+      join(importRoot, "Timeline.json"),
+      JSON.stringify({
+        semanticSegments: [
+          {
+            activity: { activityType: "WALKING" },
+            duration: { startTimestamp: "2024-06-05T13:45:22.000Z" },
+          },
+        ],
+      })
+    );
+    const { messages } = await runImport(importRoot, {}, ["timeline_points", "timeline_segments"]);
+
+    const pointRecords = messages.filter(
+      (message) => message.type === "RECORD" && message.stream === "timeline_points"
+    );
+    const segmentRecords = messages.filter(
+      (message) => message.type === "RECORD" && message.stream === "timeline_segments"
+    );
+    assert.equal(pointRecords.length, 2, "duplicate archive files must not duplicate stable point IDs");
+    assert.equal(segmentRecords.length, 1, "the semantic segment should be emitted once");
+
+    const segmentCoverage = messages.find(
+      (message): message is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+        message.type === "DETAIL_COVERAGE" && message.stream === "timeline_segments"
+    );
+    assert.ok(segmentCoverage, "expected timeline_segments DETAIL_COVERAGE");
+    assert.equal(segmentCoverage.considered, 1);
+    assert.equal(segmentCoverage.covered, 1);
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
+test("google_maps with a malformed archive does not emit STATE or coverage", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-google-maps-invalid-"));
+  try {
+    await writeFile(join(importRoot, "Records.json"), JSON.stringify(EXPORT_FIXTURE));
+    await writeFile(join(importRoot, "Timeline.json"), '{"locations":[');
+    const { messages } = await runImport(importRoot);
+
+    assert.equal(
+      messages.filter((message) => message.type === "RECORD" && message.stream === "timeline_points").length,
+      2,
+      "valid records before the malformed file may be retained"
+    );
+    assert.ok(
+      messages.some((message) => message.type === "SKIP_RESULT" && message.reason === "invalid_json"),
+      "the malformed archive must be visible as a source failure"
+    );
+    assert.equal(
+      messages.some((message) => message.type === "STATE" && message.stream === "timeline_points"),
+      false,
+      "a source failure must prevent the cursor checkpoint"
+    );
+    assert.equal(
+      messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "timeline_points"),
+      false,
+      "a source failure must prevent a complete-coverage claim"
+    );
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
+test("google_maps rejects trailing non-whitespace after a valid archive", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-google-maps-trailing-"));
+  try {
+    await writeFile(join(importRoot, "Records.json"), `${JSON.stringify(EXPORT_FIXTURE)}${" ".repeat(65_536)}trailing`);
+    const { messages } = await runImport(importRoot);
+
+    assert.equal(
+      messages.filter((message) => message.type === "RECORD" && message.stream === "timeline_points").length,
+      2,
+      "records emitted before the trailing bytes may be retained"
+    );
+    assert.ok(messages.some((message) => message.type === "SKIP_RESULT" && message.reason === "invalid_json"));
+    assert.equal(
+      messages.some((message) => message.type === "STATE"),
+      false
+    );
+    assert.equal(
+      messages.some((message) => message.type === "DETAIL_COVERAGE"),
+      false
+    );
   } finally {
     await rm(importRoot, { force: true, recursive: true });
   }

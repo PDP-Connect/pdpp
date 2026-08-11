@@ -24,20 +24,6 @@ export interface BoundedReadFinding {
 
 export const BOUNDED_READ_EXCEPTIONS: readonly BoundedReadException[] = [
   {
-    connector: "google_maps",
-    file: "index.ts",
-    pattern: "readFile",
-    lineIncludes: 'import { readdir, readFile } from "node:fs/promises";',
-    reason: "Imports readFile for the reviewed single-artifact Timeline JSON read below.",
-  },
-  {
-    connector: "google_maps",
-    file: "index.ts",
-    pattern: "readFile",
-    lineIncludes: 'JSON.parse(await readFile(path, "utf8"))',
-    reason: "Reads one Timeline JSON artifact. Keep reviewed until a streaming JSON parser tranche lands.",
-  },
-  {
     connector: "google_takeout",
     file: "parsers.ts",
     pattern: "readFile",

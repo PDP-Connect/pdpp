@@ -109,6 +109,18 @@ test("twitter_archive streams its JS archive instead of whole-file reading", () 
   );
 });
 
+test("google_maps streams Timeline JSON instead of whole-file reading", () => {
+  const indexSource = readFileSync(new URL("../connectors/google_maps/index.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(indexSource, /\breadFile\b/, "google_maps must not whole-file read Timeline artifacts");
+  const streamSource = readFileSync(new URL("../connectors/google_maps/archive-stream.ts", import.meta.url), "utf8");
+  assert.match(streamSource, /createReadStream/, "google_maps should read Timeline artifacts with createReadStream");
+  assert.match(
+    streamSource,
+    /@streamparser\/json/,
+    "google_maps should parse Timeline artifacts with the streaming JSON parser"
+  );
+});
+
 test("the guard fires when a reviewed exception is removed", () => {
   // Negative control against a still-present exception (ical per-calendar
   // read). Removing it must surface the otherwise-allowlisted readFile.
