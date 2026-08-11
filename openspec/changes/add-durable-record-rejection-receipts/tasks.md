@@ -23,7 +23,7 @@
 ## 4. Gate runtime progress on complete destination evidence
 
 - [x] 4.1 Extend the hosted ingest response reader to validate attempted counts and the full rejection vector before the batch can clear.
-- [ ] 4.2 Replace submitted-as-`totalFlushed` accounting with emitted, attempted, confirmed accepted, permanently rejected, and unresolved retryable counters in progress, spine events, terminal results, and run history; any retained legacy `records_flushed` fields count confirmed accepted records only.
+- [x] 4.2 Replace submitted-as-`totalFlushed` accounting with emitted, attempted, confirmed accepted, permanently rejected, and unresolved retryable counters in progress, spine events, terminal results, and run history; any retained legacy `records_flushed` fields count confirmed accepted records only.
 - [ ] 4.3 Gate per-stream `STATE` staging and final checkpoint commit on complete accepted-or-receipted outcomes while preserving the existing transient-manifest-drift behavior.
 - [ ] 4.4 Add runtime oracles for all-rejected, mixed accepted/rejected, missing/duplicate/out-of-range receipts, response loss after server commit, cancellation, and multi-stream isolation.
 - [ ] 4.5 Re-run the confirmed invalid-identity system journey and prove the run may commit only when the quarantine payload survives a fresh server process and is queryable by its owner.
