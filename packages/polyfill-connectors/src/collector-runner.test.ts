@@ -14,6 +14,7 @@ import {
   buildTerminalCollectionFacts,
   COLLECTOR_STDERR_MAX_BYTES,
   CollectorStateReadError,
+  DEFAULT_COLLECTOR_OUTBOX_POLICY,
   drainCollectorOutbox,
   drainCollectorQueue,
   recoverAndSummarizeOutbox,
@@ -1151,9 +1152,12 @@ test("runCollectorConnector skips state PUT when the queue still has retrying it
 });
 
 test("runCollectorConnector does not checkpoint when record work dead-letters", async () => {
+  // Uses a non-transient 400 (not 503) so the row genuinely exhausts
+  // maxAttempts and dead-letters — a 503/device_ingest_retryable no longer
+  // dead-letters purely on attempt-count exhaustion (local-ingest-backpressure-0810).
   const harness = await startCollectorHarness({
     priorState: {},
-    ingestFailureMode: "always-503",
+    ingestFailureMode: "always-400",
   });
   try {
     const queuePath = await tempQueuePath();
@@ -1902,7 +1906,7 @@ interface CollectorHarnessOptions {
   heartbeatStatus?: number;
   /** Per-heartbeat status overrides. Entries are consumed in request order. */
   heartbeatStatuses?: number[];
-  ingestFailureMode?: "always-503";
+  ingestFailureMode?: "always-400" | "always-503";
   priorState?: Record<string, unknown> | null;
   /** When set, the GET state endpoint returns this status instead of 200. */
   stateReadStatus?: number;
@@ -2067,6 +2071,17 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
       if (options.ingestFailureMode === "always-503") {
         res.writeHead(503, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { code: "synthetic_unavailable" } }));
+        return;
+      }
+      if (options.ingestFailureMode === "always-400") {
+        // A non-retryable, non-transient 400 — does NOT match
+        // TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE (unlike 408/429/5xx),
+        // so it still exhausts maxAttempts and dead-letters. Used by tests
+        // that specifically exercise dead-letter behavior; a 503 no longer
+        // dead-letters purely on attempt-count exhaustion (see
+        // local-ingest-backpressure-0810).
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { code: "synthetic_bad_request" } }));
         return;
       }
       ingestedBatches.push(parsed as { records?: Array<{ data?: Record<string, unknown> }> });
@@ -2601,6 +2616,7 @@ test("drainCollectorOutbox blocks checkpoint behind retry-delayed predecessors b
         maxDrainIterations: 4,
         maxEnqueuedBatchesPerRun: 10_000,
         maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
         retryBackoffMs: 1,
       },
       sourceInstanceId: "src-order",
@@ -3600,6 +3616,7 @@ test("drainCollectorOutbox stops between iterations when the duration budget is 
         maxDrainIterations: 256,
         maxEnqueuedBatchesPerRun: 2048,
         maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
         retryBackoffMs: 30_000,
       },
       sourceInstanceId: "src-1",
@@ -3682,6 +3699,7 @@ test("drainCollectorOutbox does not crash when batch-claimed work expires before
         maxDrainIterations: 4,
         maxEnqueuedBatchesPerRun: 2048,
         maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
         retryBackoffMs: 30_000,
       },
       sourceInstanceId: "src-1",
@@ -4242,6 +4260,7 @@ test("drainCollectorOutbox delivers gap rows via ackLocalCollectorGap and acknow
         maxDrainIterations: 16,
         maxEnqueuedBatchesPerRun: 2048,
         maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
         retryBackoffMs: 1,
       },
       sourceInstanceId: "src-drain-gap",
@@ -4305,6 +4324,7 @@ test("drainCollectorOutbox dead-letters a malformed gap row instead of poisoning
         maxDrainIterations: 4,
         maxEnqueuedBatchesPerRun: 2048,
         maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
         retryBackoffMs: 1,
       },
       sourceInstanceId: "src-bad-gap",
@@ -4390,6 +4410,7 @@ test("drainCollectorOutbox sanitizes secrets out of the persisted last_error on 
         maxDrainIterations: 2,
         maxEnqueuedBatchesPerRun: 2048,
         maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
         retryBackoffMs: 1,
       },
       sourceInstanceId: "src-leak",
@@ -4688,6 +4709,7 @@ test("drainCollectorOutbox auto-waits for backoff-delayed items and retries with
       maxDrainIterations: 100,
       maxEnqueuedBatchesPerRun: 10_000,
       maxQueueDepth: 10_000,
+      maxRetryAfterMs: 60_000,
       retryBackoffMs: 1500,
     },
     sourceInstanceId: srcId,
@@ -4705,6 +4727,191 @@ test("drainCollectorOutbox auto-waits for backoff-delayed items and retries with
   assert.equal(summary.ready, 0, "no items should remain ready");
 
   outbox.close();
+});
+
+test("drainCollectorOutbox keeps a record_batch durably retryable under sustained device_ingest_retryable 503s at the production maxAttempts default, instead of dead-lettering on attempt-count exhaustion", async () => {
+  // Reproduces the exact incident shape (local-ingest-backpressure-0810
+  // audit): a bounded local collector hits the server's admission gate
+  // (connector_instance_write_coordinator) under concurrent hosted-connector
+  // load and gets repeated `503 device_ingest_retryable` with `Retry-After: 1`
+  // — an explicit, authoritative "retry me" signal, not an unclassified
+  // failure. Before the fix, `failOutboxItem` counted every failed attempt
+  // identically regardless of error class, so 5 (production
+  // DEFAULT_COLLECTOR_OUTBOX_POLICY.maxAttempts) consecutive 503s
+  // dead-lettered the row even though the server never stopped saying
+  // "retry". The fix: an explicit-transient error (matching
+  // TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE, the same class
+  // requeueTransientLocalDeviceDeadLetters already treats as self-healing)
+  // must not consume the attempt-count budget that drives dead-letter.
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  try {
+    let sendAttempts = 0;
+    const client = createTestClient();
+    // Mirrors ref-device-exporters.ts's device_ingest_retryable envelope
+    // exactly, including a genuine Retry-After header (kept tiny so the
+    // test runs fast without touching maxAttempts/retryBackoffMs — the
+    // policy under test is the real, unmodified production default).
+    client.ingestBatch = () => {
+      sendAttempts += 1;
+      return Promise.reject(
+        new LocalDeviceHttpError(
+          503,
+          '{"error":{"code":"device_ingest_retryable","message":"Device ingest is temporarily unavailable; retry the same batch"}}',
+          10
+        )
+      );
+    };
+
+    const srcId = "test-src-sustained-503";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-sustained-503",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+      ],
+      sourceInstanceId: srcId,
+    });
+    const itemId = buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-sustained-503"],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: itemId,
+      kind: "record_batch" as const,
+      payload: {
+        batchId: "batch-sustained-503",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    // Real production default: maxAttempts: 5 (unmodified). Only
+    // maxDrainIterations is widened (so ONE drain call can drive well past
+    // 5 attempts) and retryBackoffMs is negligible so the test doesn't wait
+    // through the real production backoff schedule on the transient path —
+    // the fix makes that irrelevant anyway, since an explicit-transient
+    // failure now backs off by the server's own (tiny, real) Retry-After
+    // instead of policy.retryBackoffMs.
+    const policy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, maxDrainIterations: 20, retryBackoffMs: 1 };
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy,
+      sourceInstanceId: srcId,
+    });
+
+    assert.ok(sendAttempts >= 6, `expected more attempts than maxAttempts (5), got ${sendAttempts}`);
+    assert.equal(result.sent, 0);
+    assert.equal(
+      result.deadLettered,
+      0,
+      "an explicit device_ingest_retryable signal must never dead-letter on attempt-count alone"
+    );
+
+    const item = outbox.get(itemId);
+    assert.equal(item?.status, "ready", "row stays durably pending/backed-off, not owner-action dead-letter");
+    assert.ok(
+      (item?.attempt_count ?? 0) > policy.maxAttempts,
+      "attempt_count legitimately exceeds maxAttempts for this class"
+    );
+
+    const summary = outbox.summary({ sourceInstanceId: srcId });
+    assert.equal(summary.deadLetter, 0);
+    assert.ok(summary.retrying > 0 || summary.ready > 0, "work remains durably retryable, not lost");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox honors a server Retry-After for an explicit-transient failure instead of the linear backoff schedule", async () => {
+  // Counterweight to the sustained-503 test above: proves the fix reads the
+  // server's actual Retry-After value (bounded by maxRetryAfterMs) rather
+  // than ignoring it, and that the honored wait is the structural
+  // LocalDeviceHttpError#retryAfterMs field, not a re-parse of the message.
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  try {
+    let sendAttempts = 0;
+    const client = createTestClient();
+    const originalIngest = client.ingestBatch;
+    client.ingestBatch = (request: IngestBatchRequest) => {
+      sendAttempts += 1;
+      if (sendAttempts === 1) {
+        return Promise.reject(new LocalDeviceHttpError(503, '{"error":{"code":"device_ingest_retryable"}}', 300));
+      }
+      return originalIngest(request);
+    };
+
+    const srcId = "test-src-retry-after-honored";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-retry-after",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+      ],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: buildLocalDeviceOutboxId({ kind: "record_batch", parts: ["batch-retry-after"], sourceInstanceId: srcId }),
+      kind: "record_batch" as const,
+      payload: {
+        batchId: "batch-retry-after",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    const startMs = Date.now();
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy: {
+        drainBatchSize: 4,
+        leaseMs: 60_000,
+        maxAttempts: 5,
+        // Generous relative to the 300ms Retry-After: under concurrent test
+        // load elapsed wall-clock can drift well past the server's honored
+        // wait without indicating a defect; the budget only needs to be
+        // comfortably below the 20s linear-backoff schedule to prove that
+        // schedule was NOT used.
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 100,
+        maxEnqueuedBatchesPerRun: 10_000,
+        maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
+        // Deliberately much larger than the server's Retry-After so a pass
+        // here proves the server value (300ms) was honored instead of the
+        // linear schedule (which would wait >= 20_000ms on attempt 1).
+        retryBackoffMs: 20_000,
+      },
+      sourceInstanceId: srcId,
+    });
+    const elapsedMs = Date.now() - startMs;
+
+    assert.equal(result.sent, 1, "should send once (after honoring Retry-After)");
+    assert.ok(elapsedMs >= 300, `elapsed ${elapsedMs}ms should be >= the server's Retry-After (300ms)`);
+    assert.ok(elapsedMs < 20_000, `elapsed ${elapsedMs}ms should not wait the linear-backoff schedule (20s+)`);
+  } finally {
+    outbox.close();
+  }
 });
 
 test("drainCollectorOutbox exits cleanly when abort fires during backoff wait", async () => {
@@ -4749,6 +4956,7 @@ test("drainCollectorOutbox exits cleanly when abort fires during backoff wait", 
       maxDrainIterations: 100,
       maxEnqueuedBatchesPerRun: 10_000,
       maxQueueDepth: 10_000,
+      maxRetryAfterMs: 60_000,
       retryBackoffMs: 30_000,
     },
     sourceInstanceId: srcId,
@@ -4854,6 +5062,7 @@ test("abort signal listener cleanup (regression: listener must be removed on abo
       maxDrainIterations: 100,
       maxEnqueuedBatchesPerRun: 10_000,
       maxQueueDepth: 10_000,
+      maxRetryAfterMs: 60_000,
       retryBackoffMs: 5000,
     },
     sourceInstanceId: srcId,
@@ -4932,6 +5141,7 @@ test("drainCollectorOutbox exits with budget exceeded when wait exceeds duration
       maxDrainIterations: 100,
       maxEnqueuedBatchesPerRun: 10_000,
       maxQueueDepth: 10_000,
+      maxRetryAfterMs: 60_000,
       retryBackoffMs: 5000,
     },
     sourceInstanceId: srcId,
@@ -5101,6 +5311,7 @@ test("drainCollectorOutbox waits for checkpoint blocked by delayed predecessor",
       maxDrainIterations: 100,
       maxEnqueuedBatchesPerRun: 10_000,
       maxQueueDepth: 10_000,
+      maxRetryAfterMs: 60_000,
       retryBackoffMs: 1000,
     },
     sourceInstanceId: srcId,

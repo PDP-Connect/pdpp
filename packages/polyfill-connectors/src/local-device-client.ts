@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { COLLECTOR_PROTOCOL_HEADER, COLLECTOR_PROTOCOL_VERSION } from "./collector-protocol.ts";
+import { retryAfterMsFromHeaders } from "./http-retry.ts";
 import type { LocalDeviceIngestBatchRequest } from "./local-device-envelope.ts";
 
 export const LOCAL_DEVICE_ENDPOINTS = {
@@ -245,8 +246,19 @@ export class LocalDeviceHttpError extends Error {
    * `error.code` field.
    */
   readonly code: string | null;
+  /**
+   * Server-declared retry delay in milliseconds, parsed structurally from
+   * the response's `Retry-After` header (seconds or HTTP-date form) via
+   * {@link retryAfterMsFromHeaders} — never parsed out of prose. `null`
+   * when the header was absent or unparseable. An explicit `Retry-After`
+   * is an authoritative signal from the server (see
+   * `ref-device-exporters.ts`'s `device_ingest_retryable` envelope) and
+   * lets the durable-outbox retry path honor the server's own timing
+   * instead of guessing via linear backoff.
+   */
+  readonly retryAfterMs: number | null;
 
-  constructor(status: number, body: string) {
+  constructor(status: number, body: string, retryAfterMs: number | null = null) {
     const parsed = parseLocalDeviceErrorEnvelope(body);
     const detail = formatLocalDeviceErrorDetail(parsed);
     super(`local device request failed: ${status}${detail}`);
@@ -256,6 +268,7 @@ export class LocalDeviceHttpError extends Error {
     this.code = parsed?.code ?? null;
     this.param = parsed?.param ?? null;
     this.envelopeMessage = parsed?.message ?? null;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -463,7 +476,10 @@ export class LocalDeviceClient {
 
       const text = await response.text();
       if (!response.ok) {
-        throw new LocalDeviceHttpError(response.status, text);
+        const retryAfterMs = retryAfterMsFromHeaders({
+          "retry-after": response.headers.get("retry-after") ?? undefined,
+        });
+        throw new LocalDeviceHttpError(response.status, text, retryAfterMs);
       }
       if (!text) {
         return { ok: true } as TResponse;

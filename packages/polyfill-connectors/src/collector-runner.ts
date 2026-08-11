@@ -37,6 +37,7 @@ import {
   type HeartbeatLastError,
   type HeartbeatOutboxDiagnostics,
   LocalDeviceClient,
+  LocalDeviceHttpError,
   type TerminalCollectionFact,
 } from "./local-device-client.ts";
 import {
@@ -107,7 +108,16 @@ const TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE =
  *   from monopolizing a runner invocation.
  * - `retryBackoffMs`: bounded backoff base; per-attempt grows linearly.
  * - `maxAttempts`: after this many failed attempts, the row dead-letters
- *   so it stops occupying drain bandwidth.
+ *   so it stops occupying drain bandwidth. Does not apply to an error the
+ *   server explicitly marked retryable (see `maxRetryAfterMs`) — those stay
+ *   durably `ready`/backed-off instead of consuming this terminal budget,
+ *   because the server already told the client authoritatively to retry.
+ * - `maxRetryAfterMs`: ceiling on how long a single explicit-retryable
+ *   failure (`device_ingest_retryable`/408/429/5xx/timeout — see
+ *   `TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE`) is allowed to back off
+ *   before the next attempt, honoring the server's `Retry-After` up to this
+ *   bound. Keeps a large or malicious `Retry-After` from stalling the row
+ *   past one drain's `maxDrainDurationMs` budget indefinitely.
  * - `maxQueueDepth`: ceiling on pending-or-retrying outbox depth per
  *   source instance. When pending work crosses this ceiling the runner
  *   skips spawning a new connector child and surfaces an honest
@@ -127,6 +137,7 @@ export interface CollectorOutboxPolicy {
   maxDrainIterations: number;
   maxEnqueuedBatchesPerRun: number;
   maxQueueDepth: number;
+  maxRetryAfterMs: number;
   retryBackoffMs: number;
 }
 
@@ -138,6 +149,7 @@ export const DEFAULT_COLLECTOR_OUTBOX_POLICY: Readonly<CollectorOutboxPolicy> = 
   maxDrainIterations: 256,
   maxEnqueuedBatchesPerRun: 10_000,
   maxQueueDepth: 10_000,
+  maxRetryAfterMs: 60_000,
   retryBackoffMs: 30_000,
 });
 
@@ -2362,8 +2374,24 @@ function failOutboxItem(
   // cookies, OTPs, opaque credentials, or unbounded request/response bodies
   // regardless of which error reached this path.
   const message = sanitizeCollectorGapDetails(error instanceof Error ? error.message : String(error));
+  // An explicit-transient failure (device_ingest_retryable/408/429/5xx,
+  // request timeout, or a network-level error — the same class
+  // `requeueTransientLocalDeviceDeadLetters` already recognizes as
+  // self-healing) is an authoritative "retry me" signal from the server or
+  // transport, not an unclassified failure. It must not dead-letter solely
+  // because the fixed `maxAttempts` counter was exhausted — that would
+  // discard work the server explicitly promised was retryable. It stays
+  // durably `ready`/backed-off instead, honoring `Retry-After` when the
+  // server sent one (bounded by `maxRetryAfterMs` so it cannot stall a row
+  // past one drain's duration budget), falling back to the same linear
+  // backoff schedule otherwise.
+  const isExplicitTransient =
+    !(error instanceof OutboxPayloadShapeError) && TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE.test(message);
+  const isTerminal =
+    error instanceof OutboxPayloadShapeError ||
+    (!isExplicitTransient && item.attempt_count + 1 >= input.policy.maxAttempts);
   try {
-    if (error instanceof OutboxPayloadShapeError || item.attempt_count + 1 >= input.policy.maxAttempts) {
+    if (isTerminal) {
       input.outbox.deadLetter({
         error: message,
         holder: input.holderId,
@@ -2373,12 +2401,17 @@ function failOutboxItem(
       result.deadLettered += 1;
       return;
     }
+    const serverRetryAfterMs = error instanceof LocalDeviceHttpError ? error.retryAfterMs : null;
+    const retryBackoffMs =
+      isExplicitTransient && serverRetryAfterMs !== null
+        ? Math.min(serverRetryAfterMs, input.policy.maxRetryAfterMs)
+        : input.policy.retryBackoffMs * (item.attempt_count + 1);
     input.outbox.failRetryable({
       error: message,
       holder: input.holderId,
       id: item.id,
       leaseEpoch: item.lease_epoch,
-      retryBackoffMs: input.policy.retryBackoffMs * (item.attempt_count + 1),
+      retryBackoffMs,
     });
     result.failed += 1;
   } catch (transitionError) {
