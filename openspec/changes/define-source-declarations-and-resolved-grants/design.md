@@ -269,11 +269,12 @@ The final approval artifact includes the exact resolved instance IDs and all
 decision fields. The approval mutation binds to an immutable review revision
 or digest over source, streams, fields, resources, temporal field and bounds,
 purpose, retention, client identity, and expiry. The same final review
-revision or retained consent evidence binds any rendered `client_claims` as
-client-authored consent context, but those claims are not grant rights and are
-outside authorization equality, the resolved grant, introspection rights, and
-RS enforcement input. If instance eligibility or the reviewed revision is stale
-at approval time, the AS rejects approval and requires a new review. The AS
+artifact and revision bind any rendered `client_claims` as normalized exact
+client-authored consent context, with attribution. Retained consent evidence
+preserves that binding. Those claims are not grant rights and are outside
+authorization equality, the resolved grant, introspection rights, and RS
+enforcement input. If instance eligibility or the reviewed revision is stale at
+approval time, the AS rejects approval and requires a new review. The AS
 freezes fields, time field and bounds, resources, stream names, source ID,
 per-stream instance sets, subject, and client. No omitted member in an issued
 grant means future declaration expansion.

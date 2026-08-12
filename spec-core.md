@@ -687,7 +687,12 @@ The optional `client_claims` object within each `authorization_details` entry ca
 
 **Trust boundary:** Client claims are self-asserted and unverifiable by the server. The AS MUST render `client_claims` content separately from protocol-enforced grant terms and MUST attribute it to the client (e.g., "[client name] says:"). The AS MUST NOT render client claims in the same visual register as protocol-enforced grant terms, structured policy declarations, or declaration-authored data descriptions.
 
-If rendered on the final owner review surface, `client_claims` MUST be bound into the immutable review revision or retained consent evidence with client attribution. They are material consent context, not grant rights. They remain outside authorization equality, the resolved grant, introspection rights, and RS enforcement.
+If rendered on the final owner review surface, `client_claims` MUST be
+normalized and bound exactly, with client attribution, into the immutable final
+approval artifact and review revision. Retained consent evidence MUST preserve
+that binding. They are material consent context, not grant rights. They remain
+outside authorization equality, the resolved grant, introspection rights, and
+RS enforcement.
 
 **Relationship to `purpose_description`:** `purpose_description` is a first-class request field describing what the authorization is for. It is part of the authorization semantics the user reviews. `client_claims.commitments` are supplementary promises that are not reducible to structured protocol fields. Both are client-authored, but `purpose_description` is the primary purpose statement while `commitments` are additional assurances.
 
@@ -864,8 +869,9 @@ choice. The final approval artifact MUST include the exact resolved
 `instance_ids`, stream names, fields, resources, temporal field, `since`,
 `until`, purpose, retention, client identity, and grant expiry. If
 `client_claims` are rendered during final review, the final approval artifact
-or retained consent evidence MUST also bind those exact attributed claims. The
-approval mutation MUST bind to an immutable review revision or digest over the
+and review revision MUST also bind the normalized exact claims with client
+attribution. Retained consent evidence MUST preserve that binding. The approval
+mutation MUST bind to an immutable review revision or digest over the
 authorization decision fields. `client_claims` MUST remain outside the
 resolved grant and RS enforcement. If instance eligibility or the reviewed
 revision becomes stale before approval, the AS MUST reject approval and require
@@ -1374,7 +1380,7 @@ A conformant authorization server:
 4. Expands wildcards and selection presets into explicit stream names, fields, per-stream instance handles, resources, and frozen time constraints before issuing the grant.
 5. Produces a binding-neutral Source validation failure when a request contains both or neither of `streams` and `selection_preset`. The OAuth/RAR binding maps it to RFC 9396 `invalid_authorization_details`.
 6. MUST NOT reject a `purpose_code` solely because it is not in the PDPP registry. For unrecognized codes, displays `purpose_description` if present, or the raw URI. MAY reject a `purpose_code` based on local policy.
-7. Renders requester identity metadata, declaration-authored data descriptions, structured policy declarations, and client-authored claims as semantically distinct categories during consent. MUST attribute `client_claims` to the client and MUST NOT present them as protocol-enforced terms. If `client_claims` are rendered during final review, binds the exact rendered claims into the immutable review revision or retained consent evidence without adding them to the resolved grant or RS enforcement.
+7. Renders requester identity metadata, declaration-authored data descriptions, structured policy declarations, and client-authored claims as semantically distinct categories during consent. MUST attribute `client_claims` to the client and MUST NOT present them as protocol-enforced terms. If `client_claims` are rendered during final review, binds the normalized exact claims into the immutable final approval artifact and review revision, and preserves that binding in retained consent evidence, without adding them to the resolved grant or RS enforcement.
 8. Tracks grant lifecycle (active, expired, revoked). Reflects revocation immediately in introspection responses (`active: false`).
 9. Issues access tokens bound to specific grants. Access tokens include the PDPP introspection extension fields.
 10. For `single_use` grants, consumes the grant atomically with first client-token issuance and rejects subsequent attempts to issue new client access tokens against that grant.
