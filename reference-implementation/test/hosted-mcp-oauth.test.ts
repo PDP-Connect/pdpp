@@ -5,11 +5,14 @@
 
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import http from "node:http";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+// biome-ignore lint/correctness/noUnresolvedImports: Biome resolver cannot model this installed package export
+import Database from "better-sqlite3";
 import {
   buildPendingConsentRequestUri,
   getGrantPackageAccess,
@@ -17,13 +20,23 @@ import {
   revokeGrantPackage,
 } from "../server/auth.ts";
 import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
+import { closeDb, getDb } from "../server/db.ts";
 import { encodeHostedMcpSelection, encodeHostedMcpStreamSelection } from "../server/hosted-mcp-selection.ts";
 import { startServer } from "../server/index.ts";
+import {
+  basicIntrospectionAuthorization,
+  LOCAL_RS_INTROSPECTION_CLIENT_ID,
+  LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
+} from "../server/introspection-http.ts";
 import { ingestRecord, queryRecordsAcrossBindings, resolveReadRequestBindings } from "../server/records.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
+const INTROSPECTION_AUTHORIZATION = basicIntrospectionAuthorization({
+  clientId: LOCAL_RS_INTROSPECTION_CLIENT_ID,
+  clientSecret: LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
+});
 
 interface CloseableTestServer {
   readonly asPort: number;
@@ -779,17 +792,18 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
     assert.equal(refreshed.body.token_type, "Bearer");
     assert.equal(Number.isInteger(refreshed.body.expires_in), true);
     assert.ok((refreshed.body.expires_in as number) > 0);
-    assert.equal(refreshed.body.refresh_token, refreshToken);
+    assert.notEqual(refreshed.body.refresh_token, refreshToken);
     assert.equal(refreshed.body.grant_id, grantId);
     assert.ok(refreshed.body.access_token);
     assert.notEqual(refreshed.body.access_token, accessToken);
     const refreshedAccessToken = stringField(refreshed.body, "access_token");
+    const rotatedRefreshToken = stringField(refreshed.body, "refresh_token");
 
     const wrongClient = await fetchJson(`${asUrl}/oauth/token`, {
       body: new URLSearchParams({
         client_id: "cli_wrong",
         grant_type: "refresh_token",
-        refresh_token: refreshToken,
+        refresh_token: rotatedRefreshToken,
       }).toString(),
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       method: "POST",
@@ -866,15 +880,256 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
       body: new URLSearchParams({
         client_id: client.client_id,
         grant_type: "refresh_token",
-        refresh_token: refreshToken,
+        refresh_token: rotatedRefreshToken,
       }).toString(),
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       method: "POST",
     });
     assert.equal(afterRevoke.status, 400);
     assert.equal(afterRevoke.body.error, "invalid_grant");
+
+    const replayFlow = await completeOauthCodeFlow({ asUrl, client, manifest });
+    const replayedRefreshToken = mustExist(replayFlow.refreshToken, "replay flow must issue a refresh token");
+    const firstRotation = await fetchJson(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: replayedRefreshToken,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(firstRotation.status, 200);
+    const successorRefreshToken = stringField(firstRotation.body, "refresh_token");
+    assert.notEqual(successorRefreshToken, replayedRefreshToken);
+
+    const replayed = await fetchJson(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: replayedRefreshToken,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(replayed.status, 400);
+    assert.equal(replayed.body.error, "invalid_grant");
+    assert.equal(replayed.body.fresh_authorization_required, true);
+
+    const successorAfterReplay = await fetchJson(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: successorRefreshToken,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(successorAfterReplay.status, 400);
+    assert.equal(successorAfterReplay.body.error, "invalid_grant");
+
+    const concurrentFlow = await completeOauthCodeFlow({ asUrl, client, manifest });
+    const concurrentRefreshToken = mustExist(
+      concurrentFlow.refreshToken,
+      "SQLite concurrency flow must issue a refresh token"
+    );
+    const exchangeConcurrently = () =>
+      fetchJson(`${asUrl}/oauth/token`, {
+        body: new URLSearchParams({
+          client_id: client.client_id,
+          grant_type: "refresh_token",
+          refresh_token: concurrentRefreshToken,
+        }).toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+    const concurrentResults = await Promise.all([exchangeConcurrently(), exchangeConcurrently()]);
+    assert.deepEqual(concurrentResults.map(({ status }) => status).sort(), [200, 400]);
+    const concurrentFailure = concurrentResults.find(({ status }) => status === 400);
+    assert.equal(concurrentFailure?.body.error, "invalid_grant");
+    assert.equal(concurrentFailure?.body.fresh_authorization_required, true);
+    const familyRows = getDb()
+      .prepare(
+        `SELECT generation, status
+           FROM oauth_refresh_tokens
+          WHERE family_id = (
+            SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = ?
+          )
+          ORDER BY generation`
+      )
+      .all(createHash("sha256").update(concurrentRefreshToken).digest("base64url")) as Array<{
+      generation: number;
+      status: string;
+    }>;
+    assert.deepEqual(familyRows, [
+      { generation: 0, status: "revoked" },
+      { generation: 1, status: "revoked" },
+    ]);
   } finally {
     await closeServer(server);
+  }
+});
+
+test("pre-family SQLite refresh rows are rejected without reconstruction", async () => {
+  const tempDirectory = mkdtempSync(join(tmpdir(), "pdpp-refresh-legacy-"));
+  const dbPath = join(tempDirectory, "legacy.sqlite");
+  const legacy = new Database(dbPath);
+  legacy.exec(`
+    CREATE TABLE oauth_refresh_tokens (
+      refresh_token_hash TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      grant_id TEXT,
+      package_id TEXT,
+      subject_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      expires_at TEXT,
+      last_used_at TEXT,
+      revoked_at TEXT
+    )
+  `);
+  legacy.close();
+
+  const server = await startServer({ asPort: 0, dbPath, ownerAuthPassword: "", quiet: true, rsPort: 0 });
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    const client = await registerAuthCodeClient(asUrl);
+    const legacyRefreshToken = `rt_${randomBytes(32).toString("base64url")}`;
+    const legacyHash = createHash("sha256").update(legacyRefreshToken).digest("base64url");
+    getDb()
+      .prepare(
+        `INSERT INTO oauth_refresh_tokens(
+           refresh_token_hash, client_id, grant_id, subject_id, status, created_at
+         ) VALUES(?, ?, ?, ?, 'active', ?)`
+      )
+      .run(legacyHash, client.client_id, "grt_legacy", "owner_local", new Date().toISOString());
+
+    const response = await fetchJson(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: legacyRefreshToken,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error, "invalid_grant");
+    const row = getDb()
+      .prepare(
+        `SELECT family_id, generation, parent_generation, status
+           FROM oauth_refresh_tokens
+          WHERE refresh_token_hash = ?`
+      )
+      .get(legacyHash) as Record<string, unknown>;
+    assert.deepEqual(row, {
+      family_id: null,
+      generation: null,
+      parent_generation: null,
+      status: "active",
+    });
+
+    const failedIssuanceToken = `rt_${randomBytes(32).toString("base64url")}`;
+    const failedIssuanceHash = createHash("sha256").update(failedIssuanceToken).digest("base64url");
+    getDb()
+      .prepare(
+        `INSERT INTO oauth_refresh_tokens(
+           refresh_token_hash, family_id, generation, parent_generation, client_id,
+           grant_id, subject_id, status, created_at
+         ) VALUES(?, ?, 0, NULL, ?, ?, ?, 'active', ?)`
+      )
+      .run(
+        failedIssuanceHash,
+        "rtf_failed_access_issuance",
+        client.client_id,
+        "grt_missing_for_fault_injection",
+        "owner_local",
+        new Date().toISOString()
+      );
+    const failedIssuance = await fetchJson(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: failedIssuanceToken,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.notEqual(failedIssuance.status, 200);
+    const failedFamilyRows = getDb()
+      .prepare("SELECT status FROM oauth_refresh_tokens WHERE family_id = ?")
+      .all("rtf_failed_access_issuance") as Array<{ status: string }>;
+    assert.ok(failedFamilyRows.length >= 1);
+    assert.equal(
+      failedFamilyRows.every(({ status }) => status === "revoked"),
+      true,
+      "access-token issuance failure revokes every persisted refresh generation"
+    );
+  } finally {
+    await closeServer(server);
+    closeDb();
+    rmSync(tempDirectory, { force: true, recursive: true });
+  }
+});
+
+test("SQLite refresh failure rolls back rotation and bearer issuance together", async () => {
+  const tempDirectory = mkdtempSync(join(tmpdir(), "pdpp-refresh-fail-closed-"));
+  const dbPath = join(tempDirectory, "refresh.sqlite");
+  const server = await startServer({ asPort: 0, dbPath, ownerAuthPassword: "", quiet: true, rsPort: 0 });
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    const manifest = await registerSpotify(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+    const issued = await completeOauthCodeFlow({ asUrl, client, manifest });
+    const refreshToken = mustExist(issued.refreshToken, "fault flow must issue a refresh token");
+    const grantId = mustExist(issued.grantId, "fault flow must issue a grant id");
+    const activeBefore = getDb()
+      .prepare("SELECT COUNT(*) AS count FROM tokens WHERE grant_id = ? AND revoked = 0")
+      .get(grantId) as { count: number };
+
+    getDb().exec(`
+      CREATE TRIGGER fail_refresh_token_issued_event
+      BEFORE INSERT ON spine_events
+      WHEN NEW.event_type = 'token.issued'
+       AND json_extract(NEW.data_json, '$.issuance_path') = 'oauth_refresh_token'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected refresh token event failure');
+      END
+    `);
+
+    const failed = await fetchJson(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(failed.status, 400);
+
+    const family = getDb()
+      .prepare(
+        `SELECT generation, status
+           FROM oauth_refresh_tokens
+          WHERE family_id = (
+            SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = ?
+          )
+          ORDER BY generation`
+      )
+      .all(createHash("sha256").update(refreshToken).digest("base64url")) as Array<{
+      generation: number;
+      status: string;
+    }>;
+    assert.deepEqual(family, [{ generation: 0, status: "active" }]);
+    const activeAfter = getDb()
+      .prepare("SELECT COUNT(*) AS count FROM tokens WHERE grant_id = ? AND revoked = 0")
+      .get(grantId) as { count: number };
+    assert.equal(activeAfter.count, activeBefore.count, "failed refresh does not add an active bearer");
+  } finally {
+    await closeServer(server);
+    closeDb();
+    rmSync(tempDirectory, { force: true, recursive: true });
   }
 });
 
@@ -1113,7 +1368,10 @@ test("grant-scoped MCP device authorization issues a client token usable at /mcp
 
     const introspected = await fetchJson(`${asUrl}/introspect`, {
       body: new URLSearchParams({ token: tokenAccessToken }).toString(),
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: {
+        Authorization: INTROSPECTION_AUTHORIZATION,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
       method: "POST",
     });
     assert.equal(introspected.status, 200);

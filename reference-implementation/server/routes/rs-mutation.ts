@@ -528,7 +528,10 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
 //
 // See: openspec/changes/add-client-event-subscriptions/
 
-function buildGrantScope(grant: GrantLike, storageBinding: TokenInfo["grant_storage_binding"]): SubscriptionScope {
+function buildGrantScope(
+  grant: GrantLike,
+  storageBinding: TokenInfo["grant_storage_binding"]
+): SubscriptionScope {
   return {
     ...(grant.source
       ? {

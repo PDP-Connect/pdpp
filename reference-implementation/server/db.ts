@@ -1281,6 +1281,9 @@ CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_client_status
 
 CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
   refresh_token_hash   TEXT PRIMARY KEY,
+  family_id            TEXT NOT NULL,
+  generation           INTEGER NOT NULL,
+  parent_generation    INTEGER,
   client_id            TEXT NOT NULL,
   grant_id             TEXT,
   package_id           TEXT,
@@ -1289,6 +1292,7 @@ CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
   created_at           TEXT NOT NULL,
   expires_at           TEXT,
   last_used_at         TEXT,
+  superseded_at        TEXT,
   revoked_at           TEXT
 );
 
@@ -1296,7 +1300,6 @@ CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_grant
   ON oauth_refresh_tokens(grant_id, status);
 CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_client_status
   ON oauth_refresh_tokens(client_id, status, expires_at);
-
 CREATE TABLE IF NOT EXISTS grant_packages (
   package_id        TEXT PRIMARY KEY,
   subject_id        TEXT NOT NULL,
@@ -5018,6 +5021,18 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   );
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "pending_consents", "last_polled_at", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "owner_device_auth", "approval_id", "TEXT"));
+  // Add the v0.1 refresh-family columns without reconstructing legacy token
+  // state. Rows lacking these facts remain unreadable by the current refresh
+  // lifecycle and require fresh authorization.
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "oauth_refresh_tokens", "family_id", "TEXT"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "oauth_refresh_tokens", "generation", "INTEGER"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "oauth_refresh_tokens", "parent_generation", "INTEGER"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "oauth_refresh_tokens", "superseded_at", "TEXT"));
+  runWithSqliteBusyRetrySync(() => {
+    raw.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_family_generation ON oauth_refresh_tokens(family_id, generation)"
+    );
+  });
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_exporters", "agent_version", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_exporters", "collector_protocol_version", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_exporters", "last_heartbeat_at", "TEXT"));

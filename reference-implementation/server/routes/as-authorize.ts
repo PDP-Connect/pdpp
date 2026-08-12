@@ -176,15 +176,18 @@ interface SourceEntryAccumulator {
   storageBindings: Array<{ connector_id: string }>;
 }
 
-// Decides whether the owner's selected connection should be included as a
-// requested `streams[].instance_ids` constraint for the issued child grant.
+// Decides whether the owner's selected connection should be pinned as an
+// enforceable `grant.streams[].connection_id` constraint on the issued child
+// grant, versus omitted to preserve fan-in.
 //
 // Pin iff the owner selected a specific connection AND the connector has more
 // than one active binding — i.e. the picker presented sibling connections and
 // the owner disambiguated among them. When the connector has exactly one active
-// binding (or none), "selecting" it is not a disambiguating choice: the AS can
-// resolve omission only when one eligible instance exists. Omission never means
-// fan-in.
+// binding (or none), "selecting" it is not a disambiguating choice: fan-in over
+// a set of one already resolves to that connection, auto-select covers it, and
+// stamping a `connection_id` would only add a brittle stored id that pressures
+// existing grants without changing what the read returns. This keeps
+// single-connection deployments and existing grants byte-for-byte unchanged.
 //
 // Pure and side-effect free so the pin policy is unit-testable in isolation.
 export function shouldPinSelectedConnection(
@@ -262,8 +265,11 @@ async function accumulateSourceEntry(
     return "skipped";
   }
 
-  // Include the validated connection only when it disambiguates among sibling
-  // instances. Otherwise let the AS resolve the one eligible instance.
+  // Pin the validated connection onto the issued child grant only when it
+  // disambiguates among sibling connections; otherwise omit it to preserve
+  // fan-in. The same value already flows to the package member audit metadata
+  // below via acc.connectionIds, so "what the owner saw" and "what is enforced"
+  // agree when pinned.
   const pinnedConnectionId = shouldPinSelectedConnection(connectionId, activeBindingCount) ? connectionId : null;
   acc.authorizationDetails.push(
     buildHostedMcpAuthorizationDetailForConnector(

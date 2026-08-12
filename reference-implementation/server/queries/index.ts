@@ -178,9 +178,10 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Auth — oauth_refresh_tokens (hosted MCP durable OAuth sessions)
   readonly authOauthRefreshTokensGetByToken: ReadOneQuery;
   readonly authOauthRefreshTokensInsert: MutationQuery;
-  readonly authOauthRefreshTokensMarkUsed: MutationQuery;
   readonly authOauthRefreshTokensRevokeByGrant: MutationQuery;
   readonly authOauthRefreshTokensRevokeByPackage: MutationQuery;
+  readonly authOauthRefreshTokensRevokeFamily: MutationQuery;
+  readonly authOauthRefreshTokensSupersedeActive: MutationQuery;
   // Auth — owner_device_auth (owner CLI device-flow authentication)
   readonly authOwnerDeviceAuthGetByApprovalId: ReadOneQuery;
   readonly authOwnerDeviceAuthGetByDeviceCode: ReadOneQuery;

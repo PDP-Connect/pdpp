@@ -33,7 +33,6 @@ const REGEXP_19 = /widening is forbidden/;
 const REGEXP_20 = /not in the staged field set/;
 const REGEXP_21 = /earlier than the staged bound/;
 const REGEXP_22 = /not a valid ISO-8601 instant/;
-const REGEXP_23 = /^reference\.legacy-connector-projection\.v1:sha256:[0-9a-f]{64}$/;
 const REGEXP_24 = /not in the approved set/;
 const REGEXP_25 = /Narrow this source/;
 const REGEXP_26 = /name="narrow_streams_0"/;
@@ -597,7 +596,10 @@ test("batch consent gate: staged batch remains source-bounded in storage", async
     assert.ok(spotifySnapshot);
     assert.ok(redditSnapshot);
     for (const snapshot of [spotifySnapshot, redditSnapshot]) {
-      assert.match(snapshot.declaration_version, REGEXP_23);
+      assert.match(
+        snapshot.declaration_version,
+        /^reference\.legacy-connector-projection\.v1:sha256:[0-9a-f]{64}$/
+      );
       assert.equal(snapshot.snapshot_version, "reference.source-declaration-snapshot.v1");
       assert.equal(snapshot.declaration.declaration_version, snapshot.declaration_version);
     }

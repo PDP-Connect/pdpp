@@ -2301,8 +2301,9 @@ export const publicManifests = [
     responses: {
       200: { schema: IntrospectionResponseSchema },
       400: { description: "Missing token parameter", schema: ErrorObjectSchema },
+      401: { description: "Confidential resource-server authentication failed", schema: ErrorObjectSchema },
     },
-    summary: "Inspect token activity and, for active client tokens, the bound grant projection.",
+    summary: "Inspect token activity for an authenticated confidential resource server.",
     surface: "public",
     tags: ["oauth"],
   },

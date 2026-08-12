@@ -24,6 +24,7 @@ import {
   admitOwnerRunConnection,
   makeDefaultAccountConnectorInstanceId,
 } from "../server/stores/connector-instance-store.ts";
+import { introspectionHeaders } from "./helpers/introspection.ts";
 
 // Real ingest resolves the acting owner subject from the request's bearer
 // token (`getOwnerTokenSubjectId` in server/index.ts), independent of
@@ -1230,7 +1231,7 @@ async function startOwnerDeviceAuthorization(
 async function introspectToken(asUrl: string, token: string): Promise<FetchJsonResult<IntrospectionResponse>> {
   const response = await fetchJson(`${asUrl}/introspect`, {
     body: JSON.stringify({ token }),
-    headers: { "Content-Type": "application/json" },
+    headers: introspectionHeaders(),
     method: "POST",
   });
   return { ...response, body: parseIntrospectionResponse(response.body) };
@@ -1239,7 +1240,7 @@ async function introspectToken(asUrl: string, token: string): Promise<FetchJsonR
 async function introspectFormToken(asUrl: string, token: string): Promise<FetchJsonResult<IntrospectionResponse>> {
   const response = await fetchJson(`${asUrl}/introspect`, {
     body: new URLSearchParams({ token }).toString(),
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: introspectionHeaders("application/x-www-form-urlencoded"),
     method: "POST",
   });
   return { ...response, body: parseIntrospectionResponse(response.body) };

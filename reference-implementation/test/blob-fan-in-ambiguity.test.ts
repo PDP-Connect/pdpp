@@ -47,6 +47,7 @@ const baseManifest = {
       name: STREAM_A,
       primary_key: ["id"],
       query: { aggregations: { count: true } },
+      semantics: "mutable_state",
       schema: {
         properties: {
           blob_ref: {
@@ -66,7 +67,6 @@ const baseManifest = {
         type: "object",
       },
       selection: { fields: true, resources: false },
-      semantics: "mutable_state",
     },
     {
       consent_time_field: "received_at",
@@ -74,6 +74,7 @@ const baseManifest = {
       name: STREAM_B,
       primary_key: ["id"],
       query: { aggregations: { count: true } },
+      semantics: "mutable_state",
       schema: {
         properties: {
           blob_ref: {
@@ -93,7 +94,6 @@ const baseManifest = {
         type: "object",
       },
       selection: { fields: true, resources: false },
-      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",
@@ -548,7 +548,6 @@ test("client blob reads fail closed for an ungranted stream and an inactive gran
         recordKey,
         stream: STREAM_A,
       });
-      // biome-ignore lint/performance/noAwaitInLoops: this shared SQLite fixture must seed records in deterministic order.
       await ingestRecord(target(INSTANCE_B), {
         data: { blob_ref: { blob_id: blobId }, id: recordKey, received_at: "2026-05-19T00:00:00.000Z" },
         emitted_at: "2026-05-19T00:00:00.000Z",

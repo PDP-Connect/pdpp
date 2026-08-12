@@ -323,8 +323,15 @@ async function handleRefreshTokenExchange(
       ...buildGrantIdPayload(token),
     });
   } catch (err) {
-    const e = err as { code?: string; message?: string };
-    return ctx.oauthError(res, 400, e.code ?? "invalid_grant", e.message ?? "Refresh token exchange failed");
+    const e = err as { code?: string; fresh_authorization_required?: boolean; message?: string };
+    return ctx.oauthError(
+      res,
+      400,
+      e.code ?? "invalid_grant",
+      e.message ?? "Refresh token exchange failed",
+      null,
+      e.fresh_authorization_required ? { fresh_authorization_required: true } : null
+    );
   }
 }
 
@@ -380,12 +387,57 @@ export function mountAsToken(app: AppLike, ctx: MountAsTokenContext): void {
 // POST /introspect
 
 export interface MountAsIntrospectContext {
+  authenticateCaller: (authorization: string | undefined) => boolean;
   /**
    * Resolves a token's grant/introspection payload.
    * Delegated to `auth.js#introspect` via context.
    */
   introspect: (token: string) => Promise<AsIntrospectInfo> | AsIntrospectInfo;
   pdppError: PdppErrorFn;
+  resolveAudience: () => string | null;
+  resolveIssuer: () => string | null;
+}
+
+function authenticateIntrospectionRequest(
+  req: RouteRequest,
+  res: RouteResponse,
+  ctx: MountAsIntrospectContext
+): boolean {
+  if (ctx.authenticateCaller(req.get("Authorization"))) {
+    return true;
+  }
+  res.setHeader("WWW-Authenticate", 'Basic realm="introspection"');
+  ctx.pdppError(res, 401, "context.authentication_failed", "Introspection client authentication failed");
+  return false;
+}
+
+function projectIntrospectionResponse(
+  info: Record<string, unknown>,
+  ctx: MountAsIntrospectContext
+): Record<string, unknown> {
+  const issuer = ctx.resolveIssuer();
+  const audience = ctx.resolveAudience();
+  return {
+    ...info,
+    ...(audience ? { aud: audience } : {}),
+    ...(issuer ? { iss: issuer } : {}),
+  };
+}
+
+function respondToIntrospectionOutcome(
+  res: RouteResponse,
+  ctx: MountAsIntrospectContext,
+  outcome: Awaited<ReturnType<typeof executeAsIntrospect>>
+): unknown {
+  if (outcome.outcome === "success") {
+    return res.json(projectIntrospectionResponse(outcome.publicInfo as Record<string, unknown>, ctx));
+  }
+  return ctx.pdppError(
+    res,
+    outcome.status as number,
+    outcome.errorCode as string,
+    outcome.errorMessage as string | undefined
+  );
 }
 
 export function mountAsIntrospect(app: AppLike, ctx: MountAsIntrospectContext): void {
@@ -393,16 +445,14 @@ export function mountAsIntrospect(app: AppLike, ctx: MountAsIntrospectContext): 
   // validation and the AS-internal `grant_storage_binding` redaction live
   // in the canonical `as.introspect` operation (operations/as-introspect).
   const handler: RouteHandler = async (req, res) => {
-    const outcome = await executeAsIntrospect({ token: bodyString(req.body?.token) }, { introspect: ctx.introspect });
-    if (outcome.outcome === "success") {
-      return res.json(outcome.publicInfo);
+    if (!authenticateIntrospectionRequest(req, res, ctx)) {
+      return;
     }
-    return ctx.pdppError(
-      res,
-      outcome.status as number,
-      outcome.errorCode as string,
-      outcome.errorMessage as string | undefined
+    const outcome = await executeAsIntrospect(
+      { token: bodyString(req.body?.token) },
+      { includeStorageBinding: true, introspect: ctx.introspect }
     );
+    return respondToIntrospectionOutcome(res, ctx, outcome);
   };
   app.post("/introspect", { contract: "introspectToken" } as RouteArg<RouteHandler>, handler);
 }

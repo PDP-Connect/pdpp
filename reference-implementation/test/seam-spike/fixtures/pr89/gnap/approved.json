@@ -1,0 +1,25 @@
+{
+  "access": {
+    "type": "pdpp-approved-authorization",
+    "source_id": "https://sources.example/records/spotify",
+    "access_mode": "single_use",
+    "streams": [
+      {
+        "name": "top_artists",
+        "instance_ids": ["account-a"],
+        "fields": ["id", "name"],
+        "time_constraint": {
+          "field": "played_at",
+          "since": "2026-01-01T00:00:00Z",
+          "until": "2026-04-01T00:00:00Z"
+        },
+        "resources": ["artist:42"]
+      },
+      {
+        "name": "recently_played",
+        "instance_ids": ["account-a"],
+        "fields": ["track_id", "played_at"]
+      }
+    ]
+  }
+}

@@ -28,6 +28,7 @@ import {
   type RegisteredQuery,
   referenceQueries,
   transaction,
+  writeTransaction,
 } from "../lib/db.ts";
 import { postgresEmitSpineEventInTransaction } from "../lib/postgres-spine.ts";
 import { createTraceContext, emitSpineEvent as emitRawSpineEvent, type SpineEventInput } from "../lib/spine.ts";
@@ -40,10 +41,10 @@ import {
   validateConnectorManifest,
 } from "./connector-manifest-validation.ts";
 import {
-  projectResolvedCoreGrantStreams as coreProjectResolvedGrantStreams,
   coreSchemaRequiredFields,
   createRetainedCoreConsentSnapshot,
   materializeCoreResolvedGrant,
+  projectResolvedCoreGrantStreams as coreProjectResolvedGrantStreams,
   readRetainedCoreConsentSnapshot,
   resolveCoreEligibleInstanceIds,
 } from "./core-source-authorization.ts";
@@ -75,6 +76,7 @@ import {
 
 interface AuthError extends Error {
   code?: string;
+  fresh_authorization_required?: boolean;
   param?: string;
   request_id?: string;
   result?: unknown;
@@ -381,8 +383,10 @@ interface GrantPackageListRow extends DbRow {
   created_at: string;
   member_count?: number | string;
   package_id: string;
+  scenario_id: string | null;
   status: string;
   subject_id: string;
+  trace_id: string | null;
 }
 
 interface GrantPackageCursor {
@@ -452,11 +456,15 @@ interface OAuthIssuedCodeRow extends DbRow {
 interface RefreshTokenRow extends DbRow {
   client_id: string;
   expires_at: string | null;
+  family_id: string;
+  generation: number;
   grant_id: string | null;
   package_id: string | null;
+  parent_generation: number | null;
   revoked_at: string | null;
   status: string;
   subject_id: string;
+  superseded_at: string | null;
 }
 
 interface GrantIssuanceRow extends DbRow {
@@ -713,9 +721,11 @@ interface OAuthCodeStore {
 }
 
 interface RefreshTokenStore {
-  getByTokenHash: (refreshTokenHash: string) => MaybePromise<RefreshTokenRow | null>;
   insert: (input: {
     refreshTokenHash: string;
+    familyId: string;
+    generation: number;
+    parentGeneration: number | null;
     clientId: string;
     grantId: string;
     subjectId: string;
@@ -724,13 +734,15 @@ interface RefreshTokenStore {
   }) => MaybePromise<StoreWriteResult>;
   insertForPackage: (input: {
     refreshTokenHash: string;
+    familyId: string;
+    generation: number;
+    parentGeneration: number | null;
     clientId: string;
     packageId: string;
     subjectId: string;
     createdAt: string;
     expiresAt: string | null;
   }) => MaybePromise<StoreWriteResult>;
-  markUsed: (input: { usedAt: string; refreshTokenHash: string }) => MaybePromise<StoreWriteResult>;
 }
 
 interface TokenStore {
@@ -1159,10 +1171,7 @@ function readRetainedSourceDeclarationSnapshot(request: Partial<PendingRequest>)
           : { status: "local_operator_provisioned" },
     };
   } catch (cause: unknown) {
-    const err = bindingError(
-      "invalid_request",
-      cause instanceof Error ? cause.message : "Pending consent snapshot is invalid"
-    );
+    const err = bindingError("invalid_request", cause instanceof Error ? cause.message : "Pending consent snapshot is invalid");
     err.cause = cause;
     throw err;
   }
@@ -1613,7 +1622,7 @@ async function resolveRegisteredSourceStorageConnectorId(sourceBinding: SourceBi
   if (rows.length > 1) {
     throw bindingError("invalid_request", `Source '${sourceBinding.id}' has multiple local fulfillment bindings`);
   }
-  const [row] = rows;
+  const row = rows[0];
   if (!(row && isNonEmptyString(row.connector_id))) {
     throw bindingError("invalid_request", `Source '${sourceBinding.id}' has an invalid local fulfillment binding`);
   }
@@ -2217,7 +2226,9 @@ async function resolveEligibleInstanceIdsForApproval(
     }
   }
   return resolveCoreEligibleInstanceIds({
-    eligibleInstanceIdsByStream: Object.fromEntries(streams.map((stream) => [stream.name, [...eligibleInstanceIds]])),
+    eligibleInstanceIdsByStream: Object.fromEntries(
+      streams.map((stream) => [stream.name, [...eligibleInstanceIds]])
+    ),
     streams,
   }) as StreamSelection[];
 }
@@ -2321,6 +2332,21 @@ function buildGrantInvalidError(context: { request_id?: string | null; trace_id?
     err.trace_id = context.trace_id;
   }
   return err;
+}
+
+function buildUnsupportedLegacyAuthorizationStateError(): AuthError {
+  const err: AuthError = new Error("Persisted authorization state predates PDPP 0.1.0; fresh consent is required");
+  err.code = "authorization_state.unsupported_legacy_shape";
+  return err;
+}
+
+function isUnsupportedLegacyGrantShape(grant: DbRow): boolean {
+  if (grant.version !== "0.1.0" || !isRecord(grant.source_declaration) || !Array.isArray(grant.streams)) {
+    return true;
+  }
+  return grant.streams.some(
+    (stream) => !(isRecord(stream) && Array.isArray(stream.instance_ids) && Array.isArray(stream.fields))
+  );
 }
 
 function requireClosedResolvedGrant(grant: unknown, code: "grant_invalid" | "invalid_request"): DbRow {
@@ -2465,6 +2491,9 @@ export function requirePersistedGrantState(row: DbRow = {}): {
     if (!isRecord(parsedGrant)) {
       throw buildGrantInvalidError();
     }
+    if (isUnsupportedLegacyGrantShape(parsedGrant)) {
+      throw buildUnsupportedLegacyAuthorizationStateError();
+    }
     const grant = requireClosedResolvedGrant(parsedGrant, "grant_invalid");
     let tokenBinding: { clientId: unknown; expiresAt: unknown; grantId: unknown; subjectId: unknown } | undefined;
     if (row.token_kind === "client") {
@@ -2491,6 +2520,9 @@ export function requirePersistedGrantState(row: DbRow = {}): {
       storageBinding: bindings.storageBinding,
     };
   } catch (cause: unknown) {
+    if (isAuthError(cause) && cause.code === "authorization_state.unsupported_legacy_shape") {
+      throw cause;
+    }
     const err = buildGrantInvalidError();
     err.cause = cause;
     throw err;
@@ -2902,6 +2934,14 @@ const postgresConnectorCatalogStore: ConnectorCatalogStore = {
        WHERE connector_id = $1`,
       [connectorId]
     ),
+  listIds: async () =>
+    (
+      await postgresQuery<GrantPackageMemberRow>(
+        `SELECT connector_id
+       FROM connectors
+       ORDER BY connector_id ASC`
+      )
+    ).rows,
   listBySourceId: async (sourceId) =>
     (
       await postgresQuery<DbRow>(
@@ -2911,14 +2951,6 @@ const postgresConnectorCatalogStore: ConnectorCatalogStore = {
           ORDER BY connector_id ASC
           LIMIT 2`,
         [sourceId]
-      )
-    ).rows,
-  listIds: async () =>
-    (
-      await postgresQuery<GrantPackageMemberRow>(
-        `SELECT connector_id
-       FROM connectors
-       ORDER BY connector_id ASC`
       )
     ).rows,
   upsert: ({ connectorId, manifestJson }) =>
@@ -2932,6 +2964,8 @@ const postgresConnectorCatalogStore: ConnectorCatalogStore = {
 
 const sqliteConnectorCatalogStore: ConnectorCatalogStore = {
   getManifestById: (connectorId) => getOne(referenceQueries.authConnectorsGetManifestById, [connectorId]),
+  // REVIEWED-BOUNDED: connectors table is O(registered providers); whole-table scan is acceptable.
+  listIds: () => allowUnboundedReadAcknowledged(referenceQueries.authConnectorsListIds),
   listBySourceId: (sourceId) =>
     getDb()
       .prepare(
@@ -2942,8 +2976,6 @@ const sqliteConnectorCatalogStore: ConnectorCatalogStore = {
           LIMIT 2`
       )
       .all<DbRow>(sourceId),
-  // REVIEWED-BOUNDED: connectors table is O(registered providers); whole-table scan is acceptable.
-  listIds: () => allowUnboundedReadAcknowledged(referenceQueries.authConnectorsListIds),
   upsert: ({ connectorId, manifestJson }) => exec(referenceQueries.authConnectorsUpsert, [connectorId, manifestJson]),
 };
 
@@ -6945,9 +6977,7 @@ export async function approveGrant(
     resolvedStreams,
     retention: selection.retention,
     selectionPreset: selection.selection_preset,
-    snapshot: readRetainedSourceDeclarationSnapshot(
-      request
-    ) as unknown as import("./core-source-authorization.ts").RetainedCoreConsentSnapshot,
+    snapshot: readRetainedSourceDeclarationSnapshot(request) as unknown as import("./core-source-authorization.ts").RetainedCoreConsentSnapshot,
     subjectId,
   }) as unknown as GrantEnvelope;
 
@@ -7169,7 +7199,17 @@ async function issueOAuthRefreshToken({
   const refreshToken = generateOAuthRefreshToken();
   const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
   const createdAt = nowIso();
-  await getRefreshTokenStore().insert({ clientId, createdAt, expiresAt, grantId, refreshTokenHash, subjectId });
+  await getRefreshTokenStore().insert({
+    clientId,
+    createdAt,
+    expiresAt,
+    familyId: generateId("rtf"),
+    generation: 0,
+    grantId,
+    parentGeneration: null,
+    refreshTokenHash,
+    subjectId,
+  });
   return refreshToken;
 }
 
@@ -7191,7 +7231,10 @@ async function issueOAuthRefreshTokenForPackage({
     clientId,
     createdAt,
     expiresAt,
+    familyId: generateId("rtf"),
+    generation: 0,
     packageId,
+    parentGeneration: null,
     refreshTokenHash,
     subjectId,
   });
@@ -7569,58 +7612,84 @@ function getOAuthCodeStore() {
 }
 
 const postgresRefreshTokenStore: RefreshTokenStore = {
-  getByTokenHash: (refreshTokenHash) =>
-    pgOne<RefreshTokenRow>(
-      `SELECT refresh_token_hash, client_id, grant_id, package_id, subject_id, status,
-                created_at, expires_at, last_used_at, revoked_at
-         FROM oauth_refresh_tokens
-         WHERE refresh_token_hash = $1`,
-      [refreshTokenHash]
-    ),
-  insert: ({ refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt }) =>
+  insert: ({
+    refreshTokenHash,
+    familyId,
+    generation,
+    parentGeneration,
+    clientId,
+    grantId,
+    subjectId,
+    createdAt,
+    expiresAt,
+  }) =>
     pgExec(
       `INSERT INTO oauth_refresh_tokens(
-         refresh_token_hash, client_id, grant_id, subject_id, status,
-         created_at, expires_at, last_used_at, revoked_at
-       ) VALUES($1, $2, $3, $4, 'active', $5, $6, NULL, NULL)`,
-      [refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt]
+         refresh_token_hash, family_id, generation, parent_generation, client_id,
+         grant_id, subject_id, status, created_at, expires_at, last_used_at,
+         superseded_at, revoked_at
+       ) VALUES($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, NULL, NULL, NULL)`,
+      [refreshTokenHash, familyId, generation, parentGeneration, clientId, grantId, subjectId, createdAt, expiresAt]
     ),
-  insertForPackage: ({ refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt }) =>
+  insertForPackage: ({
+    refreshTokenHash,
+    familyId,
+    generation,
+    parentGeneration,
+    clientId,
+    packageId,
+    subjectId,
+    createdAt,
+    expiresAt,
+  }) =>
     pgExec(
       `INSERT INTO oauth_refresh_tokens(
-         refresh_token_hash, client_id, grant_id, package_id, subject_id, status,
-         created_at, expires_at, last_used_at, revoked_at
-       ) VALUES($1, $2, NULL, $3, $4, 'active', $5, $6, NULL, NULL)`,
-      [refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt]
-    ),
-  markUsed: ({ usedAt, refreshTokenHash }) =>
-    pgExec(
-      `UPDATE oauth_refresh_tokens
-       SET last_used_at = $1
-       WHERE refresh_token_hash = $2 AND status = 'active'`,
-      [usedAt, refreshTokenHash]
+         refresh_token_hash, family_id, generation, parent_generation, client_id,
+         grant_id, package_id, subject_id, status, created_at, expires_at,
+         last_used_at, superseded_at, revoked_at
+       ) VALUES($1, $2, $3, $4, $5, NULL, $6, $7, 'active', $8, $9, NULL, NULL, NULL)`,
+      [refreshTokenHash, familyId, generation, parentGeneration, clientId, packageId, subjectId, createdAt, expiresAt]
     ),
 };
 
 const sqliteRefreshTokenStore: RefreshTokenStore = {
-  getByTokenHash: (refreshTokenHash) =>
-    getOne<RefreshTokenRow>(referenceQueries.authOauthRefreshTokensGetByToken, [refreshTokenHash]),
-  insert: ({ refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt }) =>
+  insert: ({
+    refreshTokenHash,
+    familyId,
+    generation,
+    parentGeneration,
+    clientId,
+    grantId,
+    subjectId,
+    createdAt,
+    expiresAt,
+  }) =>
     exec(referenceQueries.authOauthRefreshTokensInsert, [
       refreshTokenHash,
+      familyId,
+      generation,
+      parentGeneration,
       clientId,
       grantId,
       subjectId,
       createdAt,
       expiresAt,
     ]),
-  insertForPackage: ({ refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt }) =>
+  insertForPackage: ({
+    refreshTokenHash,
+    familyId,
+    generation,
+    parentGeneration,
+    clientId,
+    packageId,
+    subjectId,
+    createdAt,
+    expiresAt,
+  }) =>
     exec(
       requireMutationQuery(referenceQueries.authOauthRefreshTokensInsertPackage, "authOauthRefreshTokensInsertPackage"),
-      [refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt]
+      [refreshTokenHash, familyId, generation, parentGeneration, clientId, packageId, subjectId, createdAt, expiresAt]
     ),
-  markUsed: ({ usedAt, refreshTokenHash }) =>
-    exec(referenceQueries.authOauthRefreshTokensMarkUsed, [usedAt, refreshTokenHash]),
 };
 
 function getRefreshTokenStore() {
@@ -8956,49 +9025,473 @@ export async function exchangeOAuthAuthorizationCode({
   return response;
 }
 
-function requireActiveOAuthRefreshToken(row: RefreshTokenRow | null, clientId: string): RefreshTokenRow {
-  if (row?.status !== "active" || row.revoked_at) {
-    throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token is invalid");
-  }
-  if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) {
-    throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token has expired");
-  }
-  if (row.client_id !== clientId) {
-    throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token client_id mismatch");
-  }
-  return row;
+type RefreshRotationOutcome =
+  | { kind: "invalid" }
+  | { kind: "reused" }
+  | { accessToken: string; kind: "rotated"; row: RefreshTokenRow };
+
+function isCurrentRefreshFamilyRow(row: RefreshTokenRow | null): row is RefreshTokenRow {
+  return !!(
+    row &&
+    isNonEmptyString(row.family_id) &&
+    Number.isInteger(row.generation) &&
+    row.generation >= 0 &&
+    ((row.generation === 0 && row.parent_generation === null) ||
+      (row.generation > 0 && row.parent_generation === row.generation - 1))
+  );
 }
 
-async function issueAccessTokenForOAuthRefresh(row: RefreshTokenRow): Promise<string> {
-  try {
-    if (isNonEmptyString(row.package_id)) {
-      const grantPackage = await getGrantPackageAccess(row.package_id);
-      if (!grantPackage) {
-        const err: AuthError = new Error("Grant package is no longer active");
-        err.code = "package_revoked";
-        throw err;
-      }
-      return issuePackageToken(row.package_id, row.subject_id, row.client_id, row.expires_at || null, {
-        source: "oauth_refresh_token",
-      });
-    }
-    if (isNonEmptyString(row.grant_id)) {
-      return issueToken(row.grant_id, row.subject_id, row.client_id, row.expires_at || null, {
-        source: "oauth_refresh_token",
-      });
-    }
-    throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token has no grant binding");
-  } catch (err: unknown) {
-    if (!isAuthError(err)) {
-      throw err;
-    }
-    const code =
-      isNonEmptyString(err.code) &&
-      ["grant_revoked", "grant_invalid", "grant_consumed", "package_revoked", "not_found"].includes(err.code)
-        ? "invalid_grant"
-        : err.code || "invalid_grant";
-    throw buildOAuthRefreshTokenError(code, err.message || "Refresh token grant is no longer valid");
+function refreshRowMatchesClientAndLifetime(row: RefreshTokenRow, clientId: string): boolean {
+  if (row.client_id !== clientId) {
+    return false;
   }
+  if (!row.expires_at) {
+    return true;
+  }
+  const expiresAt = Date.parse(row.expires_at);
+  return Number.isFinite(expiresAt) && expiresAt > Date.now();
+}
+
+function hasRefreshAuthorizationBinding(row: RefreshTokenRow): boolean {
+  return isNonEmptyString(row.package_id) !== isNonEmptyString(row.grant_id);
+}
+
+function refreshGrantUnavailable(message: string): AuthError {
+  return buildOAuthRefreshTokenError("invalid_grant", message);
+}
+
+function refreshTokenIssuedEvent({
+  grantId,
+  packageId,
+  persistedGrant,
+  row,
+  scenarioId,
+  tokenId,
+  traceId,
+}: {
+  grantId?: string;
+  packageId?: string;
+  persistedGrant?: DbRow;
+  row: RefreshTokenRow;
+  scenarioId?: string | null;
+  tokenId: string;
+  traceId?: string | null;
+}): SpineEventInput {
+  return {
+    actor_id: "pdpp_as",
+    actor_type: "authorization_server",
+    client_id: row.client_id,
+    data: {
+      issuance_path: "oauth_refresh_token",
+      ...(packageId ? { grant_package_id: packageId } : {}),
+      ...(persistedGrant ? { source: describeGrantSource(persistedGrant) } : {}),
+      token_kind: packageId ? "mcp_package" : "client",
+    },
+    event_type: "token.issued",
+    ...(grantId ? { grant_id: grantId } : {}),
+    object_id: tokenId,
+    object_type: "token",
+    ...(scenarioId ? { scenario_id: scenarioId } : {}),
+    status: "succeeded",
+    subject_id: row.subject_id,
+    subject_type: "subject",
+    token_id: tokenId,
+    ...(traceId ? { trace_id: traceId } : {}),
+  };
+}
+
+interface RefreshAuthorizationRow {
+  client_id: string;
+  status: string;
+  subject_id: string;
+}
+
+function refreshAuthorizationRowMatches(
+  candidate: RefreshAuthorizationRow | null | undefined,
+  refreshRow: RefreshTokenRow
+): candidate is RefreshAuthorizationRow {
+  return !!(
+    candidate &&
+    candidate.status === "active" &&
+    candidate.client_id === refreshRow.client_id &&
+    candidate.subject_id === refreshRow.subject_id
+  );
+}
+
+function requireRefreshGrantRow(
+  candidate: GrantIssuanceRow | null | undefined,
+  refreshRow: RefreshTokenRow
+): GrantIssuanceRow {
+  if (!refreshAuthorizationRowMatches(candidate, refreshRow)) {
+    throw refreshGrantUnavailable("Refresh token grant is no longer active");
+  }
+  return candidate;
+}
+
+function requireRefreshPackageRow(
+  candidate: GrantPackageListRow | null | undefined,
+  refreshRow: RefreshTokenRow
+): GrantPackageListRow {
+  if (!refreshAuthorizationRowMatches(candidate, refreshRow)) {
+    throw refreshGrantUnavailable("Refresh token grant package is no longer active");
+  }
+  return candidate;
+}
+
+function requireRefreshGrantAvailableForConsumption(grantRow: GrantIssuanceRow): void {
+  if (grantRow.access_mode !== "single_use") {
+    return;
+  }
+  if (grantRow.consumed) {
+    throw refreshGrantUnavailable("Refresh token grant has already been consumed");
+  }
+}
+
+async function issuePostgresRefreshGrantAccessToken(
+  client: PostgresTransactionClient,
+  row: RefreshTokenRow,
+  grantId: string,
+  tokenId: string
+): Promise<string> {
+  const grantResult = await client.query<GrantIssuanceRow>(
+    `SELECT grant_id AS persisted_grant_id, subject_id AS grant_subject_id,
+            client_id AS grant_client_id, access_mode AS grant_access_mode,
+            expires_at AS grant_expires_at,
+            access_mode, client_id, consumed, status, subject_id, trace_id, scenario_id,
+            grant_json::text AS grant_json,
+            storage_binding_json::text AS storage_binding_json
+       FROM grants
+      WHERE grant_id = $1
+      FOR UPDATE`,
+    [grantId]
+  );
+  const grantRow = requireRefreshGrantRow(grantResult.rows[0], row);
+  requireRefreshGrantAvailableForConsumption(grantRow);
+  if (grantRow.access_mode === "single_use") {
+    await client.query("UPDATE grants SET consumed = TRUE WHERE grant_id = $1", [grantId]);
+  }
+  const persistedGrant = requirePersistedGrantState(grantRow).grant;
+  await client.query(
+    `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
+     VALUES($1, $2, $3, $4, 'client', $5)`,
+    [tokenId, grantId, row.subject_id, row.client_id, row.expires_at]
+  );
+  await postgresEmitSpineEventInTransaction(
+    client,
+    refreshTokenIssuedEvent({
+      grantId,
+      persistedGrant,
+      row,
+      scenarioId: grantRow.scenario_id,
+      tokenId,
+      traceId: grantRow.trace_id,
+    })
+  );
+  return tokenId;
+}
+
+async function issuePostgresRefreshPackageAccessToken(
+  client: PostgresTransactionClient,
+  row: RefreshTokenRow,
+  packageId: string,
+  tokenId: string
+): Promise<string> {
+  const packageResult = await client.query<GrantPackageListRow>(
+    `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
+            parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
+       FROM grant_packages
+      WHERE package_id = $1
+      FOR UPDATE`,
+    [packageId]
+  );
+  const packageRow = requireRefreshPackageRow(packageResult.rows[0], row);
+  await client.query(
+    `INSERT INTO tokens(token_id, grant_id, package_id, subject_id, client_id, token_kind, expires_at)
+     VALUES($1, NULL, $2, $3, $4, 'mcp_package', $5)`,
+    [tokenId, packageId, row.subject_id, row.client_id, row.expires_at]
+  );
+  await postgresEmitSpineEventInTransaction(
+    client,
+    refreshTokenIssuedEvent({
+      packageId,
+      row,
+      scenarioId: packageRow.scenario_id,
+      tokenId,
+      traceId: packageRow.trace_id,
+    })
+  );
+  return tokenId;
+}
+
+async function issuePostgresOAuthRefreshAccessToken(
+  client: PostgresTransactionClient,
+  row: RefreshTokenRow
+): Promise<string> {
+  const tokenId = generateToken();
+  if (isNonEmptyString(row.grant_id)) {
+    return issuePostgresRefreshGrantAccessToken(client, row, row.grant_id, tokenId);
+  }
+  if (isNonEmptyString(row.package_id)) {
+    return issuePostgresRefreshPackageAccessToken(client, row, row.package_id, tokenId);
+  }
+  throw refreshGrantUnavailable("Refresh token has no authorization binding");
+}
+
+function issueSqliteRefreshGrantAccessToken(row: RefreshTokenRow, grantId: string, tokenId: string): string {
+  const grantRow = requireRefreshGrantRow(
+    getOne<GrantIssuanceRow>(referenceQueries.authGrantsGetForIssuance, [grantId]),
+    row
+  );
+  requireRefreshGrantAvailableForConsumption(grantRow);
+  if (grantRow.access_mode === "single_use") {
+    exec(referenceQueries.authGrantsMarkConsumed, [grantId]);
+  }
+  const persistedGrant = requirePersistedGrantState(grantRow).grant;
+  exec(referenceQueries.authTokensInsertClient, [tokenId, grantId, row.subject_id, row.client_id, row.expires_at]);
+  emitRawSpineEvent(
+    refreshTokenIssuedEvent({
+      grantId,
+      persistedGrant,
+      row,
+      scenarioId: grantRow.scenario_id,
+      tokenId,
+      traceId: grantRow.trace_id,
+    })
+  );
+  return tokenId;
+}
+
+function issueSqliteRefreshPackageAccessToken(row: RefreshTokenRow, packageId: string, tokenId: string): string {
+  const packageRow = requireRefreshPackageRow(
+    getOne<GrantPackageListRow>(referenceQueries.authGrantPackagesGetById, [packageId]),
+    row
+  );
+  exec(referenceQueries.authTokensInsertMcpPackage, [
+    tokenId,
+    packageId,
+    row.subject_id,
+    row.client_id,
+    row.expires_at,
+  ]);
+  emitRawSpineEvent(
+    refreshTokenIssuedEvent({
+      packageId,
+      row,
+      scenarioId: packageRow.scenario_id,
+      tokenId,
+      traceId: packageRow.trace_id,
+    })
+  );
+  return tokenId;
+}
+
+function issueSqliteOAuthRefreshAccessToken(row: RefreshTokenRow): string {
+  const tokenId = generateToken();
+  if (isNonEmptyString(row.grant_id)) {
+    return issueSqliteRefreshGrantAccessToken(row, row.grant_id, tokenId);
+  }
+  if (isNonEmptyString(row.package_id)) {
+    return issueSqliteRefreshPackageAccessToken(row, row.package_id, tokenId);
+  }
+  throw refreshGrantUnavailable("Refresh token has no authorization binding");
+}
+
+async function rotatePostgresOAuthRefreshToken({
+  clientId,
+  refreshTokenHash,
+  rotatedAt,
+  successorTokenHash,
+}: {
+  clientId: string;
+  refreshTokenHash: string;
+  rotatedAt: string;
+  successorTokenHash: string;
+}): Promise<RefreshRotationOutcome> {
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The transaction keeps family validation, bearer issuance, event persistence, and rotation in one rollback boundary.
+  return await withPostgresTransaction(async (client) => {
+    const familyResult = await client.query<{ family_id: string | null }>(
+      `SELECT family_id
+         FROM oauth_refresh_tokens
+        WHERE refresh_token_hash = $1`,
+      [refreshTokenHash]
+    );
+    const familyId = familyResult.rows[0]?.family_id;
+    if (!isNonEmptyString(familyId)) {
+      return { kind: "invalid" };
+    }
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [familyId]);
+    const result = await client.query<RefreshTokenRow>(
+      `SELECT refresh_token_hash, family_id, generation, parent_generation, client_id,
+              grant_id, package_id, subject_id, status, created_at, expires_at,
+              last_used_at, superseded_at, revoked_at
+         FROM oauth_refresh_tokens
+         WHERE refresh_token_hash = $1
+         FOR UPDATE`,
+      [refreshTokenHash]
+    );
+    const row = result.rows[0] ?? null;
+    if (
+      !(
+        isCurrentRefreshFamilyRow(row) &&
+        refreshRowMatchesClientAndLifetime(row, clientId) &&
+        hasRefreshAuthorizationBinding(row)
+      )
+    ) {
+      return { kind: "invalid" };
+    }
+    if (row.family_id !== familyId) {
+      return { kind: "invalid" };
+    }
+    if (row.status === "superseded") {
+      await client.query(
+        `UPDATE oauth_refresh_tokens
+            SET status = 'revoked', revoked_at = $1
+          WHERE family_id = $2 AND status <> 'revoked'`,
+        [rotatedAt, row.family_id]
+      );
+      return { kind: "reused" };
+    }
+    if (row.status !== "active" || row.revoked_at) {
+      return { kind: "invalid" };
+    }
+
+    let accessToken: string;
+    try {
+      accessToken = await issuePostgresOAuthRefreshAccessToken(client, row);
+    } catch (error: unknown) {
+      if (!(isAuthError(error) && error.code === "invalid_grant")) {
+        throw error;
+      }
+      await client.query(
+        `UPDATE oauth_refresh_tokens
+            SET status = 'revoked', revoked_at = $1
+          WHERE family_id = $2 AND status <> 'revoked'`,
+        [rotatedAt, row.family_id]
+      );
+      return { kind: "invalid" };
+    }
+
+    const superseded = await client.query(
+      `UPDATE oauth_refresh_tokens
+          SET status = 'superseded', last_used_at = $1, superseded_at = $1
+        WHERE refresh_token_hash = $2 AND status = 'active'`,
+      [rotatedAt, refreshTokenHash]
+    );
+    if (superseded.rowCount !== 1) {
+      return { kind: "invalid" };
+    }
+    await client.query(
+      `INSERT INTO oauth_refresh_tokens(
+         refresh_token_hash, family_id, generation, parent_generation, client_id,
+         grant_id, package_id, subject_id, status, created_at, expires_at,
+         last_used_at, superseded_at, revoked_at
+       ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, NULL, NULL, NULL)`,
+      [
+        successorTokenHash,
+        row.family_id,
+        row.generation + 1,
+        row.generation,
+        row.client_id,
+        row.grant_id,
+        row.package_id,
+        row.subject_id,
+        rotatedAt,
+        row.expires_at,
+      ]
+    );
+    return { accessToken, kind: "rotated", row };
+  });
+}
+
+function rotateSqliteOAuthRefreshToken({
+  clientId,
+  refreshTokenHash,
+  rotatedAt,
+  successorTokenHash,
+}: {
+  clientId: string;
+  refreshTokenHash: string;
+  rotatedAt: string;
+  successorTokenHash: string;
+}): RefreshRotationOutcome {
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The transaction keeps family validation, bearer issuance, event persistence, and rotation in one rollback boundary.
+  return writeTransaction(() => {
+    const row = getOne<RefreshTokenRow>(referenceQueries.authOauthRefreshTokensGetByToken, [refreshTokenHash]);
+    if (
+      !(
+        isCurrentRefreshFamilyRow(row) &&
+        refreshRowMatchesClientAndLifetime(row, clientId) &&
+        hasRefreshAuthorizationBinding(row)
+      )
+    ) {
+      return { kind: "invalid" };
+    }
+    if (row.status === "superseded") {
+      exec(referenceQueries.authOauthRefreshTokensRevokeFamily, [rotatedAt, row.family_id]);
+      return { kind: "reused" };
+    }
+    if (row.status !== "active" || row.revoked_at) {
+      return { kind: "invalid" };
+    }
+
+    let accessToken: string;
+    try {
+      accessToken = issueSqliteOAuthRefreshAccessToken(row);
+    } catch (error: unknown) {
+      if (!(isAuthError(error) && error.code === "invalid_grant")) {
+        throw error;
+      }
+      exec(referenceQueries.authOauthRefreshTokensRevokeFamily, [rotatedAt, row.family_id]);
+      return { kind: "invalid" };
+    }
+
+    const superseded = exec(referenceQueries.authOauthRefreshTokensSupersedeActive, [
+      rotatedAt,
+      rotatedAt,
+      refreshTokenHash,
+    ]);
+    if (superseded.changes !== 1) {
+      return { kind: "invalid" };
+    }
+    const successor = {
+      clientId: row.client_id,
+      createdAt: rotatedAt,
+      expiresAt: row.expires_at,
+      familyId: row.family_id,
+      generation: row.generation + 1,
+      parentGeneration: row.generation,
+      refreshTokenHash: successorTokenHash,
+      subjectId: row.subject_id,
+    };
+    if (isNonEmptyString(row.package_id)) {
+      sqliteRefreshTokenStore.insertForPackage({ ...successor, packageId: row.package_id });
+    } else if (isNonEmptyString(row.grant_id)) {
+      sqliteRefreshTokenStore.insert({ ...successor, grantId: row.grant_id });
+    } else {
+      return { kind: "invalid" };
+    }
+    return { accessToken, kind: "rotated", row };
+  });
+}
+
+async function rotateOAuthRefreshToken(input: {
+  clientId: string;
+  refreshTokenHash: string;
+  rotatedAt: string;
+  successorTokenHash: string;
+}): Promise<RefreshRotationOutcome> {
+  return await (isPostgresStorageBackend()
+    ? rotatePostgresOAuthRefreshToken(input)
+    : Promise.resolve(rotateSqliteOAuthRefreshToken(input)));
+}
+
+function reusedOAuthRefreshTokenError(): AuthError {
+  const error = buildOAuthRefreshTokenError(
+    "invalid_grant",
+    "Refresh token reuse revoked its family; fresh authorization is required"
+  );
+  error.fresh_authorization_required = true;
+  return error;
 }
 
 export async function exchangeOAuthRefreshToken({
@@ -9015,25 +9508,32 @@ export async function exchangeOAuthRefreshToken({
     throw buildOAuthRefreshTokenError("invalid_request", "client_id is required");
   }
 
-  const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
-  const refreshTokenStore = getRefreshTokenStore();
-  const row = requireActiveOAuthRefreshToken(await refreshTokenStore.getByTokenHash(refreshTokenHash), clientId);
-
   const registeredClient = await getRegisteredClient(clientId);
   if (!(registeredClient && clientSupportsOAuthRefreshToken(registeredClient))) {
     throw buildOAuthRefreshTokenError("invalid_grant", "Client is not registered for refresh_token");
   }
 
-  const accessToken = await issueAccessTokenForOAuthRefresh(row);
-
-  const usedAt = nowIso();
-  await refreshTokenStore.markUsed({ refreshTokenHash, usedAt });
+  const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
+  const successorToken = generateOAuthRefreshToken();
+  const rotatedAt = nowIso();
+  const outcome = await rotateOAuthRefreshToken({
+    clientId,
+    refreshTokenHash,
+    rotatedAt,
+    successorTokenHash: hashOAuthRefreshToken(successorToken),
+  });
+  if (outcome.kind === "reused") {
+    throw reusedOAuthRefreshTokenError();
+  }
+  if (outcome.kind !== "rotated") {
+    throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token is invalid");
+  }
 
   return {
-    access_token: accessToken,
-    refresh_token: refreshToken,
+    access_token: outcome.accessToken,
+    refresh_token: successorToken,
     token_type: "Bearer",
-    ...(row.package_id ? { grant_package_id: row.package_id } : { grant_id: row.grant_id }),
+    ...(outcome.row.package_id ? { grant_package_id: outcome.row.package_id } : { grant_id: outcome.row.grant_id }),
   };
 }
 
@@ -9818,6 +10318,18 @@ function inactiveInvalidGrantToken(row: TokenIntrospectionRow): TokenIntrospecti
   };
 }
 
+function inactiveUnsupportedLegacyGrantToken(row: TokenIntrospectionRow): TokenIntrospectionResult {
+  return {
+    active: false,
+    client_id: row.client_id,
+    grant_id: row.grant_id,
+    inactive_reason: "authorization_state.unsupported_legacy_shape",
+    scenario_id: row.scenario_id,
+    subject_id: row.subject_id,
+    trace_id: row.trace_id,
+  };
+}
+
 function enrichPackageTokenIntrospection(
   row: TokenIntrospectionRow,
   result: TokenIntrospectionResult
@@ -9861,6 +10373,9 @@ function enrichClientTokenIntrospection(
     result.scenario_id = row.scenario_id;
     return result;
   } catch (err: unknown) {
+    if (isAuthError(err) && err.code === "authorization_state.unsupported_legacy_shape") {
+      return inactiveUnsupportedLegacyGrantToken(row);
+    }
     if (!isAuthError(err) || err.code !== "grant_invalid") {
       throw err;
     }

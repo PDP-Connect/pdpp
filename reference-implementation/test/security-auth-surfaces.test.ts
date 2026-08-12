@@ -20,6 +20,7 @@ import type { RefSpineEventsPageEnvelope } from "../operations/ref-spine-events-
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { introspectionHeaders } from "./helpers/introspection.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -300,7 +301,6 @@ test("security: harden reference auth surfaces", async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const approval = await approveSpotifyGrant(asUrl, spotifyManifest);
       const resp = await fetch(`${asUrl}/grants/${approval.grant.grant_id}/revoke`, {
-        headers: { "Content-Type": "application/json" },
         method: "POST",
       });
       assert.equal(resp.status, 401);
@@ -310,7 +310,7 @@ test("security: harden reference auth surfaces", async (t) => {
       // The grant SHALL remain unchanged. Use a fresh introspect call to prove it.
       const introResp = await fetch(`${asUrl}/introspect`, {
         body: JSON.stringify({ token: approval.token }),
-        headers: { "Content-Type": "application/json" },
+        headers: introspectionHeaders(),
         method: "POST",
       });
       const intro = (await introResp.json()) as IntrospectResponseBody;
@@ -354,7 +354,7 @@ test("security: harden reference auth surfaces", async (t) => {
       // A should still be active.
       const introResp = await fetch(`${asUrl}/introspect`, {
         body: JSON.stringify({ token: a.token }),
-        headers: { "Content-Type": "application/json" },
+        headers: introspectionHeaders(),
         method: "POST",
       });
       const intro = (await introResp.json()) as IntrospectResponseBody;

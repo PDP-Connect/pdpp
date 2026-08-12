@@ -49,6 +49,7 @@ import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
 import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from "../server/reference-local-defaults.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { introspectionHeaders } from "./helpers/introspection.ts";
 import { makeTemporaryDir } from "./helpers/temp-dir.ts";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -445,7 +446,7 @@ test("agent-flow: register client, stage PAR, approve inline, store token, verif
     // Introspect to get grant metadata (mirrors what "pdpp agent store" does)
     const introspResp = await fetch(`${asUrl}/introspect`, {
       body: JSON.stringify({ token: approval.token }),
-      headers: { "Content-Type": "application/json" },
+      headers: introspectionHeaders(),
       method: "POST",
     });
     const introspection = (await introspResp.json()) as {
@@ -719,7 +720,7 @@ test("agent-connect: schema verification fails cleanly for invalid bearer", asyn
     });
     const body = await schemaResp.json();
     assert.equal(schemaResp.status, 401);
-    assert.equal(errorCode(body), "authentication_error");
+    assert.equal(errorCode(body), "context.active_false");
     assert.doesNotMatch(JSON.stringify(body), INVALID_TOKEN_PATTERN);
   } finally {
     await closeServer(server);

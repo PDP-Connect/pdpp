@@ -26,10 +26,23 @@ import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
+import {
+  basicIntrospectionAuthorization,
+  LOCAL_RS_INTROSPECTION_CLIENT_ID,
+  LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
+} from "../server/introspection-http.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
 const MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, "manifests");
+const INTROSPECTION_AUTHORIZATION = basicIntrospectionAuthorization({
+  clientId: LOCAL_RS_INTROSPECTION_CLIENT_ID,
+  clientSecret: LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
+});
+
+function introspectionHeaders(contentType = "application/json"): Record<string, string> {
+  return { Authorization: INTROSPECTION_AUTHORIZATION, "Content-Type": contentType };
+}
 
 // ─── shared helpers ─────────────────────────────────────────────────────────
 
@@ -94,7 +107,7 @@ interface ApprovedGrant {
   grant: {
     access_mode: string;
     grant_id: string;
-    source?: { kind: string };
+    source?: { id?: string; kind: string };
     streams: readonly ApprovedGrantStream[];
   };
   token: string;
@@ -116,10 +129,11 @@ interface IntrospectionBody {
   grant?: {
     access_mode?: string;
     grant_id?: string;
-    source?: { kind?: string };
+    source?: { id?: string; kind?: string };
     streams?: readonly ApprovedGrantStream[];
   };
   grant_id?: string;
+  grant_storage_binding?: { connector_id?: string };
   inactive_reason?: string;
   pdpp_token_kind?: string;
   subject_id?: string;
@@ -341,6 +355,42 @@ async function withHarness(
 
 // ─── B3.1 — active client token introspection shape ─────────────────────────
 
+test("introspection: confidential caller credentials are mandatory (B3)", async () => {
+  await withHarness(async ({ asUrl }) => {
+    const authorizations = [
+      undefined,
+      basicIntrospectionAuthorization({
+        clientId: LOCAL_RS_INTROSPECTION_CLIENT_ID,
+        clientSecret: "wrong-secret",
+      }),
+    ];
+    const responses = await Promise.all(
+      authorizations.map((authorization) =>
+        fetch(`${asUrl}/introspect`, {
+          body: new URLSearchParams({ token: "not-relevant" }).toString(),
+          headers: {
+            ...(authorization ? { Authorization: authorization } : {}),
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          method: "POST",
+        })
+      )
+    );
+    const results = await Promise.all(
+      responses.map(async (response) => ({
+        body: (await response.json()) as ErrorBody,
+        status: response.status,
+        wwwAuthenticate: response.headers.get("www-authenticate"),
+      }))
+    );
+    for (const { body, status, wwwAuthenticate } of results) {
+      assert.equal(status, 401);
+      assert.equal(wwwAuthenticate, 'Basic realm="introspection"');
+      assert.equal(typeof body.error === "object" ? body.error?.code : body.error, "context.authentication_failed");
+    }
+  });
+});
+
 test("introspection: active client token returns documented fields (B3)", async () => {
   await withHarness(async ({ asUrl, rsUrl, connectorId }) => {
     const ownerToken = await issueOwnerToken(asUrl, "b3_introspect_owner");
@@ -359,7 +409,7 @@ test("introspection: active client token returns documented fields (B3)", async 
 
     const { status, body } = await fetchJson<IntrospectionBody>(`${asUrl}/introspect`, {
       body: JSON.stringify({ token: approved.token }),
-      headers: { "Content-Type": "application/json" },
+      headers: introspectionHeaders(),
       method: "POST",
     });
 
@@ -386,10 +436,11 @@ test("introspection: active client token returns documented fields (B3)", async 
     // exp: either null or a number
     assert.ok(body.exp === null || typeof body.exp === "number", "exp is null or numeric Unix timestamp");
 
-    // grant_storage_binding MUST NOT appear in the public response (operation redacts it)
-    assert.ok(
-      !("grant_storage_binding" in body),
-      "grant_storage_binding must not appear in public introspection response"
+    // The confidential RS caller needs the physical binding to resolve the approved source.
+    assert.equal(
+      body.grant_storage_binding?.connector_id,
+      body.grant.source?.id,
+      "storage binding matches approved source"
     );
   });
 });
@@ -425,7 +476,7 @@ test("introspection: revoked grant returns active=false with inactive_reason (B3
 
     const { status, body } = await fetchJson<IntrospectionBody>(`${asUrl}/introspect`, {
       body: JSON.stringify({ token: approved.token }),
-      headers: { "Content-Type": "application/json" },
+      headers: introspectionHeaders(),
       method: "POST",
     });
 
@@ -447,7 +498,7 @@ test("introspection: missing token returns 400 invalid_request (B3)", async () =
   await withHarness(async ({ asUrl }) => {
     const { status, body } = await fetchJson<ErrorBody>(`${asUrl}/introspect`, {
       body: JSON.stringify({}),
-      headers: { "Content-Type": "application/json" },
+      headers: introspectionHeaders(),
       method: "POST",
     });
 
@@ -490,7 +541,7 @@ test("resources[] round-trip: grant contains resources, RS enforces them (B3)", 
     // 1. Introspection reflects resources[] in the grant object
     const { body: introBody } = await fetchJson<IntrospectionBody>(`${asUrl}/introspect`, {
       body: JSON.stringify({ token: approved.token }),
-      headers: { "Content-Type": "application/json" },
+      headers: introspectionHeaders(),
       method: "POST",
     });
     assert.ok(introBody, "introspect should return a body");

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { introspectionHeaders } from "./helpers/introspection.ts";
 
 interface CloseableServer {
   close: (callback?: (err?: Error) => void) => unknown;
@@ -209,7 +210,7 @@ async function issueOwnerTokenViaDeviceFlow(
       device_code: device.device_code,
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
     }),
-    headers: { "Content-Type": "application/json" },
+    headers: introspectionHeaders(),
     method: "POST",
   });
   assert.equal(tokenResp.status, 200);
@@ -240,7 +241,7 @@ interface RevokeResult {
 async function introspect(asUrl: string, token: string): Promise<IntrospectResult> {
   const resp = await fetch(`${asUrl}/introspect`, {
     body: JSON.stringify({ token }),
-    headers: { "Content-Type": "application/json" },
+    headers: introspectionHeaders(),
     method: "POST",
   });
   assert.equal(resp.status, 200);

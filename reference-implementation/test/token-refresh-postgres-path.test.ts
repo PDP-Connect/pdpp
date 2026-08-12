@@ -24,8 +24,8 @@
  *     the consume UPDATE), during POST /oauth/token grant_type=authorization_code
  *   - issueOAuthRefreshToken  (oauth_refresh_tokens INSERT), minted alongside the
  *     access token when the client supports refresh_token
- *   - exchangeOAuthRefreshToken  (oauth_refresh_tokens SELECT-by-hash + the
- *     last_used_at UPDATE), during POST /oauth/token grant_type=refresh_token
+ *   - exchangeOAuthRefreshToken  (oauth_refresh_tokens family rotation),
+ *     during POST /oauth/token grant_type=refresh_token
  *   - introspect  (the tokens SELECT join), via GET /oauth/introspect and the
  *     internal exchange validation
  *   - issueOwnerTokenRecord  (tokens INSERT-owner), via the owner device flow
@@ -51,16 +51,29 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { revokeGrant } from "../server/auth.ts";
+import { validateResponse } from "@pdpp/reference-contract";
+
+import { issueToken, revokeGrant } from "../server/auth.ts";
 import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { closeDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
-import { closePostgresStorage } from "../server/postgres-storage.ts";
+import {
+  basicIntrospectionAuthorization,
+  LOCAL_RS_INTROSPECTION_CLIENT_ID,
+  LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
+} from "../server/introspection-http.ts";
+import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
+import { createPostgresConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
+const SPOTIFY_INSTANCE_ID = "cin_pr89_token_refresh_spotify";
+const V01_LEGACY_BYTES = readFileSync(
+  join(REFERENCE_IMPL_DIR, "test/seam-spike/fixtures/pr89/legacy-grant-v01.bytes"),
+  "utf8"
+).trim();
 
 interface CloseableHttpServer {
   close: (callback: () => void) => unknown;
@@ -103,6 +116,18 @@ function pkceChallenge(verifier: string): string {
   return createHash("sha256").update(verifier).digest("base64url");
 }
 
+function refreshTokenHash(refreshToken: string): string {
+  return createHash("sha256").update(refreshToken).digest("base64url");
+}
+
+const INTROSPECTION_HEADERS = {
+  Authorization: basicIntrospectionAuthorization({
+    clientId: LOCAL_RS_INTROSPECTION_CLIENT_ID,
+    clientSecret: LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
+  }),
+  "Content-Type": "application/x-www-form-urlencoded",
+};
+
 interface ConnectorManifest {
   connector_id: string;
   [extension: string]: unknown;
@@ -110,15 +135,31 @@ interface ConnectorManifest {
 
 async function registerConnector(asUrl: string, name: string): Promise<ConnectorManifest> {
   const raw: ConnectorManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `manifests/${name}.json`), "utf8"));
-  const canonical = canonicalConnectorKeyFromManifest(raw);
-  const manifest = !canonical || canonical === raw.connector_id ? raw : { ...raw, connector_id: canonical };
   const { status } = await fetchJson(`${asUrl}/connectors`, {
-    body: JSON.stringify(manifest),
+    body: JSON.stringify(raw),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
   assert.equal(status, 201);
-  return manifest;
+  return raw;
+}
+
+async function seedActiveConnectorInstance(manifest: ConnectorManifest): Promise<void> {
+  const connectorId = canonicalConnectorKeyFromManifest(manifest);
+  assert.ok(connectorId, "registered manifest has a canonical storage connector key");
+  const now = new Date().toISOString();
+  await createPostgresConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId: SPOTIFY_INSTANCE_ID,
+    createdAt: now,
+    displayName: "PR89 token refresh fixture",
+    ownerSubjectId: "owner_local",
+    sourceBinding: { fixture: SPOTIFY_INSTANCE_ID },
+    sourceBindingKey: SPOTIFY_INSTANCE_ID,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
 }
 
 interface RegisteredClient {
@@ -154,11 +195,16 @@ interface OauthCodeFlowResult {
   verifier: string;
 }
 
+interface PreparedOauthCodeFlow {
+  code: string;
+  verifier: string;
+}
+
 // Single-source authorization-code flow. Drives the oauth-code issue +
 // consume seams and (when the client supports refresh) the refresh-token
 // INSERT. Returns the access token, the refresh token, the grant id, and the
 // code so callers can assert single-use replay.
-async function completeOauthCodeFlow({
+async function prepareOauthCodeFlow({
   asUrl,
   client,
   manifest,
@@ -166,7 +212,7 @@ async function completeOauthCodeFlow({
   asUrl: string;
   client: RegisteredClient;
   manifest: ConnectorManifest;
-}): Promise<OauthCodeFlowResult> {
+}): Promise<PreparedOauthCodeFlow> {
   const verifier = randomBytes(32).toString("base64url");
   const authorizationDetails = [
     {
@@ -223,6 +269,20 @@ async function completeOauthCodeFlow({
   const code = callback.searchParams.get("code");
   assert.ok(code, "approve callback carries an authorization code");
 
+  return { code, verifier };
+}
+
+async function completeOauthCodeFlow({
+  asUrl,
+  client,
+  manifest,
+}: {
+  asUrl: string;
+  client: RegisteredClient;
+  manifest: ConnectorManifest;
+}): Promise<OauthCodeFlowResult> {
+  const { code, verifier } = await prepareOauthCodeFlow({ asUrl, client, manifest });
+
   // POST /oauth/token grant_type=authorization_code drives
   // exchangeOAuthAuthorizationCode (oauth_authorization_codes SELECT-by-code +
   // the consume UPDATE), introspect (the tokens SELECT join), and, when the
@@ -264,6 +324,7 @@ if (POSTGRES_URL) {
   // breaks a Postgres-only adapter and this suite goes red.
   let server: TestServer | undefined;
   let asUrl = "";
+  let rsUrl = "";
   let client: RegisteredClient | undefined;
   let spotify: ConnectorManifest | undefined;
 
@@ -280,7 +341,9 @@ if (POSTGRES_URL) {
       rsPort: 0,
     });
     asUrl = `http://localhost:${server.asPort}`;
+    rsUrl = `http://localhost:${server.rsPort}`;
     spotify = await registerConnector(asUrl, "spotify");
+    await seedActiveConnectorInstance(spotify);
     client = await registerAuthCodeClient(asUrl);
   });
 
@@ -288,6 +351,7 @@ if (POSTGRES_URL) {
     if (server) {
       await closeServer(server);
     }
+    await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = $1", [SPOTIFY_INSTANCE_ID]);
     await closePostgresStorage();
     closeDb();
   });
@@ -347,7 +411,7 @@ if (POSTGRES_URL) {
     // Introspect the owner token: the tokens SELECT join (PG introspect adapter).
     const introspectResp = await fetchJson<IntrospectBody>(`${asUrl}/introspect`, {
       body: new URLSearchParams({ token: tokenBody.access_token }).toString(),
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: INTROSPECTION_HEADERS,
       method: "POST",
     });
     assert.equal(introspectResp.status, 200);
@@ -360,8 +424,200 @@ if (POSTGRES_URL) {
   //
   // Exercises the oauth_authorization_codes seams (issue + consume), the
   // oauth_refresh_tokens INSERT, the introspect tokens SELECT, and the
-  // refresh-token exchange (SELECT-by-hash + last_used_at UPDATE).
+  // refresh-token exchange and atomic family rotation.
   // ---------------------------------------------------------------------
+  test("authorization-code redemption has one PostgreSQL race winner", async () => {
+    assert.ok(client, "client must be registered in test.before");
+    assert.ok(spotify, "spotify manifest must be registered in test.before");
+    const registeredClient = client;
+    const prepared = await prepareOauthCodeFlow({ asUrl, client: registeredClient, manifest: spotify });
+    const redeem = () =>
+      fetchJson<{ access_token?: string; error?: string }>(`${asUrl}/oauth/token`, {
+        body: new URLSearchParams({
+          client_id: registeredClient.client_id,
+          code: prepared.code,
+          code_verifier: prepared.verifier,
+          grant_type: "authorization_code",
+          redirect_uri: "https://client.example/callback",
+        }).toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+
+    const results = await Promise.all([redeem(), redeem()]);
+    assert.deepEqual(
+      results.map(({ status }) => status).sort(),
+      [200, 400],
+      "one redemption succeeds and one loses the atomic consume"
+    );
+    assert.equal(results.find(({ status }) => status === 400)?.body.error, "invalid_grant");
+
+    const persisted = await postgresQuery<{
+      consumed_at: string | null;
+      status: string;
+      token_count: number;
+    }>(
+      `SELECT c.consumed_at, c.status, COUNT(t.token_id)::int AS token_count
+         FROM oauth_authorization_codes c
+         LEFT JOIN tokens t ON t.token_id = c.token_id
+        WHERE c.code = $1
+        GROUP BY c.consumed_at, c.status`,
+      [prepared.code]
+    );
+    assert.equal(persisted.rows[0]?.status, "consumed");
+    assert.ok(persisted.rows[0]?.consumed_at, "winner records the consumption timestamp");
+    assert.equal(persisted.rows[0]?.token_count, 1, "the code remains bound to exactly one bearer row");
+
+    const sequentialReplay = await redeem();
+    assert.equal(sequentialReplay.status, 400);
+    assert.equal(sequentialReplay.body.error, "invalid_grant");
+  });
+
+  test("single-use grant issuance has one PostgreSQL race winner", async () => {
+    assert.ok(client, "client must be registered in test.before");
+    assert.ok(spotify, "spotify manifest must be registered in test.before");
+    const registeredClient = client;
+    const grantId = `grt_pr89_single_use_${randomBytes(8).toString("hex")}`;
+    const connectorId = canonicalConnectorKeyFromManifest(spotify);
+    assert.ok(connectorId, "spotify manifest has a canonical storage connector key");
+    const sourceId = spotify.connector_id;
+    await postgresQuery(
+      `INSERT INTO grants(
+         grant_id, subject_id, client_id, storage_binding_json, grant_json,
+         access_mode, status, consumed, issued_at, expires_at
+       ) VALUES($1, $2, $3, $4::jsonb, $5::jsonb, 'single_use', 'active', FALSE, $6, NULL)`,
+      [
+        grantId,
+        "owner_local",
+        registeredClient.client_id,
+        JSON.stringify({ connector_id: connectorId }),
+        JSON.stringify({
+          access_mode: "single_use",
+          client: { client_id: registeredClient.client_id },
+          grant_id: grantId,
+          issued_at: "2026-08-11T12:00:00Z",
+          purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+          source: { id: sourceId, kind: "connector" },
+          source_declaration: { version: "1.0.0" },
+          streams: [{ fields: ["id", "name"], instance_ids: [SPOTIFY_INSTANCE_ID], name: "top_artists" }],
+          subject: { id: "owner_local" },
+          version: "0.1.0",
+        }),
+        "2026-08-11T12:00:00Z",
+      ]
+    );
+
+    const issue = () => issueToken(grantId, "owner_local", registeredClient.client_id, null, { source: "pr89_seam" });
+    const results = await Promise.allSettled([issue(), issue()]);
+    assert.equal(results.filter(({ status }) => status === "fulfilled").length, 1);
+    const loser = results.find(({ status }) => status === "rejected");
+    assert.ok(loser?.status === "rejected");
+    assert.equal((loser.reason as { code?: string }).code, "grant_consumed");
+
+    const persisted = await postgresQuery<{ consumed: boolean; token_count: number }>(
+      `SELECT g.consumed, COUNT(t.token_id)::int AS token_count
+         FROM grants g
+         LEFT JOIN tokens t ON t.grant_id = g.grant_id
+        WHERE g.grant_id = $1
+        GROUP BY g.consumed`,
+      [grantId]
+    );
+    assert.equal(persisted.rows[0]?.consumed, true);
+    assert.equal(persisted.rows[0]?.token_count, 1);
+  });
+
+  test("migrated pre-family PostgreSQL refresh rows fail closed without reconstruction", async () => {
+    assert.ok(client, "client must be registered in test.before");
+    const legacyToken = `rt_${randomBytes(32).toString("base64url")}`;
+    const legacyHash = refreshTokenHash(legacyToken);
+    await postgresQuery("ALTER TABLE oauth_refresh_tokens ALTER COLUMN family_id DROP NOT NULL");
+    await postgresQuery("ALTER TABLE oauth_refresh_tokens ALTER COLUMN generation DROP NOT NULL");
+    try {
+      await postgresQuery(
+        `INSERT INTO oauth_refresh_tokens(
+           refresh_token_hash, family_id, generation, parent_generation,
+           client_id, grant_id, subject_id, status, created_at
+         ) VALUES($1, NULL, NULL, NULL, $2, $3, $4, 'active', $5)`,
+        [legacyHash, client.client_id, "grt_pre_family", "owner_local", "2026-08-11T12:00:00Z"]
+      );
+      const response = await fetchJson<{ error?: string }>(`${asUrl}/oauth/token`, {
+        body: new URLSearchParams({
+          client_id: client.client_id,
+          grant_type: "refresh_token",
+          refresh_token: legacyToken,
+        }).toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+      assert.equal(response.status, 400);
+      assert.equal(response.body.error, "invalid_grant");
+      const row = await postgresQuery<{
+        family_id: string | null;
+        generation: number | null;
+        parent_generation: number | null;
+        status: string;
+      }>(
+        `SELECT family_id, generation, parent_generation, status
+           FROM oauth_refresh_tokens
+          WHERE refresh_token_hash = $1`,
+        [legacyHash]
+      );
+      assert.deepEqual(row.rows[0], {
+        family_id: null,
+        generation: null,
+        parent_generation: null,
+        status: "active",
+      });
+    } finally {
+      await postgresQuery("DELETE FROM oauth_refresh_tokens WHERE refresh_token_hash = $1", [legacyHash]);
+      await postgresQuery("ALTER TABLE oauth_refresh_tokens ALTER COLUMN family_id SET NOT NULL");
+      await postgresQuery("ALTER TABLE oauth_refresh_tokens ALTER COLUMN generation SET NOT NULL");
+    }
+  });
+
+  test("pre-v0.1 PostgreSQL grant bytes fail before the RS route", async () => {
+    assert.ok(client, "client must be registered in test.before");
+    const suffix = randomBytes(8).toString("hex");
+    const grantId = `grt_legacy_${suffix}`;
+    const token = `tok_legacy_${suffix}`;
+    await postgresQuery(
+      `INSERT INTO grants(
+         grant_id, subject_id, client_id, storage_binding_json, grant_json,
+         access_mode, status, consumed, issued_at
+       ) VALUES($1, $2, $3, NULL, $4::jsonb, 'continuous', 'active', FALSE, $5)`,
+      [
+        grantId,
+        "owner_local",
+        client.client_id,
+        V01_LEGACY_BYTES.replace("grt_legacy", grantId).replace("legacy_client", client.client_id),
+        "2026-08-11T12:00:00Z",
+      ]
+    );
+    await postgresQuery(
+      `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at, revoked)
+       VALUES($1, $2, $3, $4, 'client', NULL, FALSE)`,
+      [token, grantId, "owner_local", client.client_id]
+    );
+
+    const introspection = await fetchJson<{
+      active: boolean;
+      inactive_reason?: string;
+    }>(`${asUrl}/introspect`, {
+      body: new URLSearchParams({ token }).toString(),
+      headers: INTROSPECTION_HEADERS,
+      method: "POST",
+    });
+    assert.equal(introspection.status, 200);
+    assert.equal(introspection.body.active, false);
+    assert.equal(introspection.body.inactive_reason, "authorization_state.unsupported_legacy_shape");
+
+    const route = await fetchJson<{ error?: { code?: string } }>(`${rsUrl}/v1/schema`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(route.status, 401);
+    assert.equal(route.body.error?.code, "authorization_state.unsupported_legacy_shape");
+  });
+
   test("authorization-code exchange + refresh rotation through real auth.js postgres adapters", async () => {
     interface IntrospectBody {
       active: boolean;
@@ -369,6 +625,7 @@ if (POSTGRES_URL) {
     interface TokenExchangeBody {
       access_token?: string;
       error?: string;
+      fresh_authorization_required?: boolean;
       refresh_token?: string;
     }
 
@@ -381,7 +638,7 @@ if (POSTGRES_URL) {
     // Introspect the access token: the tokens SELECT join (PG introspect adapter).
     const introspectResp = await fetchJson<IntrospectBody>(`${asUrl}/introspect`, {
       body: new URLSearchParams({ token: issued.accessToken }).toString(),
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: INTROSPECTION_HEADERS,
       method: "POST",
     });
     assert.equal(introspectResp.status, 200);
@@ -403,9 +660,8 @@ if (POSTGRES_URL) {
     assert.equal(replay.status, 400, "replaying a consumed code is rejected");
     assert.equal(replay.body.error, "invalid_grant");
 
-    // grant_type=refresh_token drives exchangeOAuthRefreshToken: the
-    // oauth_refresh_tokens SELECT-by-hash + the last_used_at UPDATE, and mints
-    // a fresh access token via issueToken.
+    // grant_type=refresh_token atomically supersedes the presented generation,
+    // inserts its successor, and mints a fresh access token via issueToken.
     const refreshed = await fetchJson<TokenExchangeBody>(`${asUrl}/oauth/token`, {
       body: new URLSearchParams({
         client_id: client.client_id,
@@ -415,37 +671,252 @@ if (POSTGRES_URL) {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       method: "POST",
     });
-    assert.equal(refreshed.status, 200, "refresh exchange succeeds");
+    assert.equal(refreshed.status, 200, `refresh exchange succeeds: ${JSON.stringify(refreshed.body)}`);
     assert.ok(refreshed.body.access_token, "refresh returns a new access token");
     assert.notEqual(refreshed.body.access_token, issued.accessToken, "refresh mints a distinct access token");
-    assert.equal(
-      refreshed.body.refresh_token,
-      issuedRefreshToken,
-      "refresh token is reusable (last_used_at UPDATE, not rotation)"
-    );
+    assert.ok(refreshed.body.refresh_token, "refresh returns a successor refresh token");
+    assert.notEqual(refreshed.body.refresh_token, issuedRefreshToken, "refresh rotates the presented token");
 
     // The new access token introspects as active (tokens SELECT join again).
     assert.ok(refreshed.body.access_token, "refresh must have returned an access token to introspect");
     const refreshedIntrospect = await fetchJson<IntrospectBody>(`${asUrl}/introspect`, {
       body: new URLSearchParams({ token: refreshed.body.access_token }).toString(),
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: INTROSPECTION_HEADERS,
       method: "POST",
     });
     assert.equal(refreshedIntrospect.body.active, true, "refreshed access token is active");
 
-    // A wrong-client refresh must be rejected (SELECT-by-hash reads the row,
-    // client_id mismatch fails). Proves the SELECT adapter returns the bound row.
+    // A wrong-client refresh must be rejected without consuming the successor.
     const wrongClient = await fetchJson(`${asUrl}/oauth/token`, {
       body: new URLSearchParams({
         client_id: "not-the-issuing-client",
         grant_type: "refresh_token",
-        refresh_token: issued.refreshToken,
+        refresh_token: refreshed.body.refresh_token,
       }).toString(),
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       method: "POST",
     });
     assert.equal(wrongClient.status, 400, "refresh with the wrong client is rejected");
     assert.equal(wrongClient.body.error, "invalid_grant");
+
+    const reuse = await fetchJson<TokenExchangeBody>(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: issuedRefreshToken,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(reuse.status, 400, "reusing a superseded generation is rejected");
+    assert.equal(reuse.body.error, "invalid_grant");
+    assert.equal(reuse.body.fresh_authorization_required, true);
+    assert.deepEqual(validateResponse("exchangeOwnerDeviceToken", { body: reuse.body, status: reuse.status }), {
+      ok: true,
+      skipped: false,
+    });
+
+    const family = await postgresQuery<{
+      family_id: string;
+      generation: number;
+      parent_generation: number | null;
+      status: string;
+    }>(
+      `SELECT family_id, generation, parent_generation, status
+         FROM oauth_refresh_tokens
+        WHERE family_id = (
+          SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = $1
+        )
+        ORDER BY generation`,
+      [refreshTokenHash(issuedRefreshToken)]
+    );
+    assert.deepEqual(
+      family.rows.map(({ generation, parent_generation: parentGeneration, status }) => ({
+        generation,
+        parentGeneration,
+        status,
+      })),
+      [
+        { generation: 0, parentGeneration: null, status: "revoked" },
+        { generation: 1, parentGeneration: 0, status: "revoked" },
+      ]
+    );
+
+    const successorAfterReuse = await fetchJson<TokenExchangeBody>(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: refreshed.body.refresh_token,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(successorAfterReuse.status, 400, "family reuse revokes the active successor");
+    assert.equal(successorAfterReuse.body.error, "invalid_grant");
+
+    const concurrent = await completeOauthCodeFlow({ asUrl, client, manifest: spotify });
+    assert.ok(concurrent.refreshToken, "concurrency flow receives a refresh token");
+    const concurrentClientId = client.client_id;
+    const concurrentRefreshToken = concurrent.refreshToken;
+    const exchangeConcurrently = () =>
+      fetchJson<TokenExchangeBody>(`${asUrl}/oauth/token`, {
+        body: new URLSearchParams({
+          client_id: concurrentClientId,
+          grant_type: "refresh_token",
+          refresh_token: concurrentRefreshToken,
+        }).toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+    const concurrentResults = await Promise.all([exchangeConcurrently(), exchangeConcurrently()]);
+    assert.deepEqual(
+      concurrentResults.map(({ status }) => status).sort(),
+      [200, 400],
+      "exactly one concurrent refresh rotates"
+    );
+    const concurrentFailure = concurrentResults.find(({ status }) => status === 400);
+    assert.equal(concurrentFailure?.body.error, "invalid_grant");
+    assert.equal(concurrentFailure?.body.fresh_authorization_required, true);
+
+    const concurrentFamily = await postgresQuery<{ generation: number; status: string }>(
+      `SELECT generation, status
+         FROM oauth_refresh_tokens
+        WHERE family_id = (
+          SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = $1
+        )
+        ORDER BY generation`,
+      [refreshTokenHash(concurrentRefreshToken)]
+    );
+    assert.deepEqual(
+      concurrentFamily.rows.map(({ generation, status }) => ({ generation, status })),
+      [
+        { generation: 0, status: "revoked" },
+        { generation: 1, status: "revoked" },
+      ],
+      "reuse detection leaves no active successor"
+    );
+
+    const crossGeneration = await completeOauthCodeFlow({ asUrl, client, manifest: spotify });
+    assert.ok(crossGeneration.refreshToken, "cross-generation race receives generation zero");
+    const generationZero = crossGeneration.refreshToken;
+    const generationOneResponse = await fetchJson<TokenExchangeBody>(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: generationZero,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(generationOneResponse.status, 200);
+    assert.ok(generationOneResponse.body.refresh_token, "first rotation returns generation one");
+    const generationOne = generationOneResponse.body.refresh_token;
+    const crossGenerationClientId = client.client_id;
+    const exchangeRefresh = (refreshToken: string) =>
+      fetchJson<TokenExchangeBody>(`${asUrl}/oauth/token`, {
+        body: new URLSearchParams({
+          client_id: crossGenerationClientId,
+          grant_type: "refresh_token",
+          refresh_token: refreshToken,
+        }).toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+    const [generationZeroReplay, generationOneRotation] = await Promise.all([
+      exchangeRefresh(generationZero),
+      exchangeRefresh(generationOne),
+    ]);
+    assert.equal(generationZeroReplay.status, 400);
+    assert.equal(generationZeroReplay.body.error, "invalid_grant");
+    assert.equal(generationZeroReplay.body.fresh_authorization_required, true);
+    assert.ok(
+      generationOneRotation.status === 200 || generationOneRotation.status === 400,
+      "generation one either rotates before replay wins or observes family revocation"
+    );
+
+    const crossGenerationFamily = await postgresQuery<{ generation: number; status: string }>(
+      `SELECT generation, status
+         FROM oauth_refresh_tokens
+        WHERE family_id = (
+          SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = $1
+        )
+        ORDER BY generation`,
+      [refreshTokenHash(generationZero)]
+    );
+    assert.ok(crossGenerationFamily.rows.length === 2 || crossGenerationFamily.rows.length === 3);
+    assert.equal(
+      crossGenerationFamily.rows.some(({ status }) => status === "active"),
+      false,
+      "family lock prevents an active successor surviving cross-generation replay"
+    );
+    assert.equal(
+      crossGenerationFamily.rows.every(({ status }) => status === "revoked"),
+      true
+    );
+
+    const failedIssuance = await completeOauthCodeFlow({ asUrl, client, manifest: spotify });
+    assert.ok(failedIssuance.refreshToken, "fault flow receives a refresh token");
+    const activeBeforeFailure = await postgresQuery<{ count: number }>(
+      "SELECT COUNT(*)::int AS count FROM tokens WHERE grant_id = $1 AND revoked = FALSE",
+      [failedIssuance.grantId]
+    );
+    await postgresQuery(`
+      CREATE OR REPLACE FUNCTION pdpp_test_fail_refresh_token_event()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        IF NEW.event_type = 'token.issued'
+           AND NEW.data_json::jsonb ->> 'issuance_path' = 'oauth_refresh_token' THEN
+          RAISE EXCEPTION 'injected refresh token event failure';
+        END IF;
+        RETURN NEW;
+      END
+      $function$
+    `);
+    await postgresQuery(`
+      CREATE TRIGGER fail_refresh_token_issued_event
+      BEFORE INSERT ON spine_events
+      FOR EACH ROW EXECUTE FUNCTION pdpp_test_fail_refresh_token_event()
+    `);
+    try {
+      const failedRefresh = await fetchJson<TokenExchangeBody>(`${asUrl}/oauth/token`, {
+        body: new URLSearchParams({
+          client_id: client.client_id,
+          grant_type: "refresh_token",
+          refresh_token: failedIssuance.refreshToken,
+        }).toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+      assert.equal(failedRefresh.status, 400);
+    } finally {
+      await postgresQuery("DROP TRIGGER IF EXISTS fail_refresh_token_issued_event ON spine_events");
+      await postgresQuery("DROP FUNCTION IF EXISTS pdpp_test_fail_refresh_token_event() ");
+    }
+
+    const failedFamily = await postgresQuery<{ generation: number; status: string }>(
+      `SELECT generation, status
+         FROM oauth_refresh_tokens
+        WHERE family_id = (
+          SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = $1
+        )
+        ORDER BY generation`,
+      [refreshTokenHash(failedIssuance.refreshToken)]
+    );
+    assert.deepEqual(
+      failedFamily.rows.map(({ generation, status }) => ({ generation, status })),
+      [{ generation: 0, status: "active" }]
+    );
+    const activeAfterFailure = await postgresQuery<{ count: number }>(
+      "SELECT COUNT(*)::int AS count FROM tokens WHERE grant_id = $1 AND revoked = FALSE",
+      [failedIssuance.grantId]
+    );
+    assert.equal(
+      activeAfterFailure.rows[0]?.count,
+      activeBeforeFailure.rows[0]?.count,
+      "failed refresh does not leave an active bearer"
+    );
   });
 
   // ---------------------------------------------------------------------
@@ -475,7 +946,7 @@ if (POSTGRES_URL) {
     // Introspection now reports inactive (tokens SELECT join reads revoked=TRUE).
     const introspectResp = await fetchJson<IntrospectBody>(`${asUrl}/introspect`, {
       body: new URLSearchParams({ token: issued.accessToken }).toString(),
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: INTROSPECTION_HEADERS,
       method: "POST",
     });
     assert.equal(introspectResp.body.active, false, "revoked grant token introspects as inactive");

@@ -925,6 +925,9 @@ export async function bootstrapPostgresSchema({
 
       CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
         refresh_token_hash TEXT PRIMARY KEY,
+        family_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        parent_generation INTEGER,
         client_id TEXT NOT NULL,
         grant_id TEXT NOT NULL,
         subject_id TEXT NOT NULL,
@@ -932,13 +935,13 @@ export async function bootstrapPostgresSchema({
         created_at TEXT NOT NULL,
         expires_at TEXT,
         last_used_at TEXT,
+        superseded_at TEXT,
         revoked_at TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_grant
         ON oauth_refresh_tokens(grant_id, status);
       CREATE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_client_status
         ON oauth_refresh_tokens(client_id, status, expires_at);
-
       CREATE TABLE IF NOT EXISTS grants (
         grant_id TEXT PRIMARY KEY,
         subject_id TEXT NOT NULL,
@@ -1078,11 +1081,21 @@ export async function bootstrapPostgresSchema({
       ALTER TABLE oauth_refresh_tokens
         ADD COLUMN IF NOT EXISTS package_id TEXT;
       ALTER TABLE oauth_refresh_tokens
+        ADD COLUMN IF NOT EXISTS family_id TEXT;
+      ALTER TABLE oauth_refresh_tokens
+        ADD COLUMN IF NOT EXISTS generation INTEGER;
+      ALTER TABLE oauth_refresh_tokens
+        ADD COLUMN IF NOT EXISTS parent_generation INTEGER;
+      ALTER TABLE oauth_refresh_tokens
+        ADD COLUMN IF NOT EXISTS superseded_at TEXT;
+      ALTER TABLE oauth_refresh_tokens
         ALTER COLUMN grant_id DROP NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_pg_tokens_package_id
         ON tokens(package_id);
       CREATE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_package
         ON oauth_refresh_tokens(package_id, status);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_family_generation
+        ON oauth_refresh_tokens(family_id, generation);
       CREATE INDEX IF NOT EXISTS idx_pg_oauth_authorization_codes_package
         ON oauth_authorization_codes(package_id, status);
 

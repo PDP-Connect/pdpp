@@ -30,6 +30,7 @@ import { consumeConsentExchangeCode, createConsentExchangeCode } from "../server
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { introspectionHeaders } from "./helpers/introspection.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -256,7 +257,7 @@ test("security: harden consent token handoff", async (t) => {
       // Redeem and confirm we got a bearer.
       const exchangeResp = await fetch(`${asUrl}/consent/exchange`, {
         body: JSON.stringify({ code }),
-        headers: { "Content-Type": "application/json" },
+        headers: introspectionHeaders(),
         method: "POST",
       });
       assert.equal(exchangeResp.status, 200);
@@ -281,7 +282,7 @@ test("security: harden consent token handoff", async (t) => {
       // The redeemed bearer SHALL introspect as active for the same grant.
       const introResp = await fetch(`${asUrl}/introspect`, {
         body: JSON.stringify({ token: exchangeBody.token }),
-        headers: { "Content-Type": "application/json" },
+        headers: introspectionHeaders(),
         method: "POST",
       });
       const intro = (await introResp.json()) as IntrospectResponse;
