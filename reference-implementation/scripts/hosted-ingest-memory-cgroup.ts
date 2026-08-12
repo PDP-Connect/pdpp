@@ -85,8 +85,8 @@ function repoRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 }
 
-function invalidUtf8Ndjson(totalBytes: number): Readable {
-  let newlineSent = false;
+function invalidUtf8Ndjson(totalBytes: number, includeTrailingNewline: boolean): Readable {
+  let newlineSent = !includeTrailingNewline;
   let remaining = totalBytes;
   return new Readable({
     read() {
@@ -263,12 +263,13 @@ async function assertServerLive(rsPort: number): Promise<number> {
 }
 
 async function driveIngest(ready: ReadyPayload, lineBytes: number, expect: string, containerNameForState: string) {
+  const includeTrailingNewline = !hasFlag("--no-trailing-newline");
   const url = new URL(`http://127.0.0.1:${ready.rs_port}/v1/ingest/${ready.stream}`);
   url.searchParams.set("connector_id", ready.connector_id);
   let response: { status: number; text: string };
   try {
     response = await fetchText(url.toString(), {
-      body: invalidUtf8Ndjson(lineBytes),
+      body: invalidUtf8Ndjson(lineBytes, includeTrailingNewline),
       duplex: "half",
       headers: {
         Authorization: `Bearer ${ready.token}`,
@@ -388,6 +389,7 @@ async function runParent(): Promise<void> {
         memory: memoryLimit(),
         response_status: responseStatus,
         server_container: name,
+        trailing_newline: !hasFlag("--no-trailing-newline"),
       })
     );
   } finally {

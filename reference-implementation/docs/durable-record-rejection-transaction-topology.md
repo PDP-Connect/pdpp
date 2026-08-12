@@ -39,5 +39,5 @@ record rejections onto the accepted #112/#113 durability stack.
   That would conflict with the accepted per-record durable-prefix behavior.
 - This does not add a generic unit-of-work abstraction.
 - This does not close deferred production gates for first/latest provenance,
-  retained-size projection, stale pending resolution, 200 MiB constrained-memory
-  proof, or #108 backup inventory.
+  retained-size projection, stale pending resolution, larger buffered payload
+  support, or #108 backup inventory.
