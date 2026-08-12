@@ -128,7 +128,7 @@ interface IntrospectionBody {
     type?: string;
   }[];
   client_id?: string;
-  exp?: number | null;
+  exp?: number;
   grant?: {
     access_mode?: string;
     grant_id?: string;
@@ -446,8 +446,8 @@ test("introspection: active client token returns documented fields (B3)", async 
     assert.equal(body.pdpp?.grant_id, approved.grant.grant_id, "pdpp.grant_id matches");
     assert.equal(body.pdpp?.source?.id, detail.source?.id, "pdpp.source matches authorization detail source");
 
-    // exp: either null or a number
-    assert.ok(body.exp === null || typeof body.exp === "number", "exp is null or numeric Unix timestamp");
+    // RFC 7662 omits exp when the token has no finite expiry.
+    assert.ok(body.exp === undefined || typeof body.exp === "number", "exp is omitted or a numeric Unix timestamp");
 
     // The confidential RS caller needs the physical binding to resolve the approved source.
     assert.equal(
