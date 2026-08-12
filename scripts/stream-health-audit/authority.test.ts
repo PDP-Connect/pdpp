@@ -271,13 +271,21 @@ test("live DOM browser setup failures fail closed at every setup stage", async (
     throw new Error(`unexpected test URL ${url}`);
   };
   for (const stage of ["browser", "context", "cookies", "page"] as const) {
+    const cleanupCalls: string[] = [];
     // biome-ignore lint/performance/noAwaitInLoops: each stage is a distinct fail-closed lifecycle assertion.
     const result = await runLiveForTest({
       env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
       fetchImpl,
-      browserFactory: browserFactoryFromFetch(fetchImpl, { setupFailure: stage }),
+      browserFactory: browserFactoryFromFetch(fetchImpl, { cleanupCalls, setupFailure: stage }),
       origin: "https://example.test",
     });
+    const expectedCleanupCalls = {
+      browser: [],
+      context: ["browser"],
+      cookies: ["context", "browser"],
+      page: ["context", "browser"],
+    } as const;
+    assert.deepEqual(cleanupCalls, expectedCleanupCalls[stage], stage);
     assert.equal(result.gates.dom, "inconclusive", stage);
     assert.ok(
       result.findings.some(
