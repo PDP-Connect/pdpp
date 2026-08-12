@@ -11,19 +11,42 @@ if (!root) {
   throw new Error("missing PDPP_TEST_SCRATCH_ROOT");
 }
 await writeFile(join(tmpdir(), "child.txt"), `${process.pid}\n`);
+await writeFile(join(root, "child-root.txt"), `${root}\n`);
 if (process.argv.includes("--print-root")) {
   process.stdout.write(`${root}\n`);
 }
-if (process.argv.includes("--grandchild")) {
+function startGrandchild(name: string, throughShell = false): void {
   const grandchildArgs = process.argv.includes("--grandchild-ignore-term") ? ["--ignore-term"] : [];
+  const grandchild = new URL("./grandchild.ts", import.meta.url).pathname;
+  const args = ["--import", "tsx", grandchild, `--name=${name}`, ...grandchildArgs];
+  spawn(
+    throughShell ? "sh" : process.execPath,
+    throughShell ? ["-c", 'exec "$@"', "sh", process.execPath, ...args] : args,
+    { detached: false, env: process.env, stdio: "ignore" }
+  );
+}
+
+if (process.argv.includes("--grandchild") || process.argv.includes("--node-grandchild")) {
+  startGrandchild("node");
+}
+if (process.argv.includes("--shell-grandchild")) {
+  startGrandchild("shell", true);
+}
+if (process.argv.includes("--nested-participant")) {
   spawn(
     process.execPath,
-    ["--import", "tsx", new URL("./grandchild.ts", import.meta.url).pathname, ...grandchildArgs],
-    {
-      detached: false,
-      env: process.env,
-      stdio: "ignore",
-    }
+    [
+      "--import",
+      "tsx",
+      new URL("../run-command.ts", import.meta.url).pathname,
+      "--",
+      process.execPath,
+      "--import",
+      "tsx",
+      new URL("./grandchild.ts", import.meta.url).pathname,
+      "--name=nested",
+    ],
+    { detached: false, env: process.env, stdio: "ignore" }
   );
 }
 const signal = process.argv.find((arg) => arg.startsWith("--self-signal="));

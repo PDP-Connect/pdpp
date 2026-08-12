@@ -83,6 +83,25 @@ function isOwnedPrivateDirectory(stats: Awaited<ReturnType<typeof lstat>>): bool
   );
 }
 
+/** Return a stable recovery reason without following an untrusted candidate. */
+export function scratchCandidateSafetyReason(
+  stats: Awaited<ReturnType<typeof lstat>>,
+  expectedUid = userInfo().uid
+): string | undefined {
+  if (stats.isSymbolicLink()) {
+    return "symlink";
+  }
+  if (!stats.isDirectory()) {
+    return "invalid-root";
+  }
+  if (stats.uid !== expectedUid) {
+    return "wrong-owner";
+  }
+  if (modeOf(stats) !== REQUIRED_DIRECTORY_MODE) {
+    return "wrong-mode";
+  }
+}
+
 async function linuxBootId(): Promise<string | null> {
   if (platform() !== "linux") {
     return null;
@@ -288,7 +307,7 @@ export async function recoverStaleScratch(options: { now?: number; parent?: stri
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: each fail-closed branch is a required recovery classification.
     entries.map(async (entry): Promise<RecoveryResult | undefined> => {
       if (!entry.name.startsWith("run-")) {
-        return;
+        return { path: join(canonicalParent, entry.name), reason: "foreign-entry", removed: false };
       }
       const candidate = join(canonicalParent, entry.name);
       if (!isDirectChild(canonicalParent, candidate)) {
@@ -300,8 +319,9 @@ export async function recoverStaleScratch(options: { now?: number; parent?: stri
       } catch {
         return;
       }
-      if (!isOwnedPrivateDirectory(candidateStats)) {
-        return { path: candidate, reason: "invalid-root", removed: false };
+      const safetyReason = scratchCandidateSafetyReason(candidateStats);
+      if (safetyReason) {
+        return { path: candidate, reason: safetyReason, removed: false };
       }
       const marker = await readMarker(join(candidate, MARKER_NAME));
       if (!marker) {

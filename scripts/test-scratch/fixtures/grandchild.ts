@@ -8,7 +8,9 @@ const root = process.env.PDPP_TEST_SCRATCH_ROOT;
 if (!root) {
   throw new Error("missing PDPP_TEST_SCRATCH_ROOT");
 }
-await writeFile(join(root, "grandchild.txt"), `${process.pid}\n`);
+const name = process.argv.find((arg) => arg.startsWith("--name="))?.slice("--name=".length) ?? "node";
+await writeFile(join(root, `grandchild-${name}.txt`), `${process.pid}\n`);
+await writeFile(join(root, `grandchild-${name}-root.txt`), `${root}\n`);
 if (process.argv.includes("--ignore-term")) {
   process.on("SIGTERM", () => {
     // Intentional fixture: wrapper must escalate a group member that ignores TERM.
