@@ -593,6 +593,11 @@ test("keeps the unscoped fold deadline PostgreSQL skip title in the exact receip
   const name = "real PostgreSQL: an unscoped fold carries one absolute duration deadline across instance folds";
   assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
 });
+test("keeps the source-revision projection-fault PostgreSQL skip title in the exact receipt mapping", () => {
+  const name =
+    "PostgreSQL projection faults preserve canonical record, schedule, and lifecycle writes, then repair passes after recovery";
+  assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
+});
 // Aggregate gate regression (2026-07-30, run-history-backfill-cutover REVISE):
 // test/active-run-summary-zero-spine.test.ts (reference-implementation) added
 // three PostgreSQL tests using the bare-boolean `skip: !POSTGRES_URL` shape
