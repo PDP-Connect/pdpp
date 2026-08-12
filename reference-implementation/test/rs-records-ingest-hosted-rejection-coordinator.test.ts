@@ -18,6 +18,7 @@ const OWNER_PASSWORD = "hosted-rejection-owner-password";
 const CSRF_HIDDEN_FIELD_RE = /<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/;
 const OWNER_INSPECTION_PAGE_CAP = 2;
 const OWNER_INSPECTION_RECEIPT_COUNT = 5;
+const OWNER_QUOTA_ENV = "PDPP_RECORD_REJECTION_OWNER_QUOTA_BYTES";
 
 interface CloseableServer {
   close: (callback?: (err?: Error) => void) => unknown;
@@ -463,6 +464,30 @@ test("SQLite hosted ingest rejection coordinator rolls back joined rejection, qu
   );
 });
 
+test("SQLite hosted ingest quota exhaustion is non-2xx and records no receipt, quota, or audit mutation", async () => {
+  const dbPath = join(mkdtempSync(join(homedir(), ".tmp", "pdpp-hosted-rejection-sqlite-quota-")), "pdpp.sqlite");
+  const connectorId = `hosted-rejection-sqlite-quota-${RUN_ID}`;
+  const ownerSubjectId = `owner_sqlite_rejection_quota_${RUN_ID}`;
+  const previousQuota = process.env[OWNER_QUOTA_ENV];
+  process.env[OWNER_QUOTA_ENV] = "1";
+  try {
+    await withHarness({ dbPath }, async ({ asUrl, rsUrl }) => {
+      await registerConnector(asUrl, connectorId);
+      const token = await issueOwnerToken(asUrl, ownerSubjectId);
+      const response = await ingestBadLine(rsUrl, token, connectorId);
+      assert.equal(response.status, 503, JSON.stringify(response.body));
+      assert.equal(JSON.stringify(response.body).includes("receipt_id"), false);
+      assert.deepEqual(sqliteCounts(connectorId, ownerSubjectId), { audit: 0, quota: 0, rejections: 0 });
+    });
+  } finally {
+    if (previousQuota === undefined) {
+      delete process.env[OWNER_QUOTA_ENV];
+    } else {
+      process.env[OWNER_QUOTA_ENV] = previousQuota;
+    }
+  }
+});
+
 test("SQLite hosted ingest replays response-loss retry with the exact receipt handle", async () => {
   const dbPath = join(mkdtempSync(join(homedir(), ".tmp", "pdpp-hosted-rejection-sqlite-replay-")), "pdpp.sqlite");
   const connectorId = `hosted-rejection-sqlite-replay-${RUN_ID}`;
@@ -511,6 +536,41 @@ test("Postgres hosted ingest rejection coordinator rolls back joined rejection, 
       assert.deepEqual(await postgresCounts(connectorId, ownerSubjectId), { audit: 0, quota: 0, rejections: 0 });
     }
   );
+});
+
+test("Postgres hosted ingest quota exhaustion is non-2xx and records no receipt, quota, or audit mutation", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  assert.ok(POSTGRES_URL);
+  const connectorId = `hosted-rejection-pg-quota-${RUN_ID}`;
+  const connectorInstanceId = `cin_${connectorId}`;
+  const ownerSubjectId = `owner_pg_rejection_quota_${RUN_ID}`;
+  const previousQuota = process.env[OWNER_QUOTA_ENV];
+  process.env[OWNER_QUOTA_ENV] = "1";
+  try {
+    await withHarness(
+      {
+        databaseUrl: POSTGRES_URL,
+        dbPath: ":memory:",
+        storageBackend: "postgres",
+      } as Parameters<typeof startServer>[0],
+      async ({ asUrl, rsUrl }) => {
+        await registerConnector(asUrl, connectorId);
+        await seedPostgresActiveConnection({ connectorId, connectorInstanceId, ownerSubjectId });
+        const token = await issueOwnerToken(asUrl, ownerSubjectId);
+        const response = await ingestBadLine(rsUrl, token, connectorId, connectorInstanceId);
+        assert.equal(response.status, 503, JSON.stringify(response.body));
+        assert.equal(JSON.stringify(response.body).includes("receipt_id"), false);
+        assert.deepEqual(await postgresCounts(connectorId, ownerSubjectId), { audit: 0, quota: 0, rejections: 0 });
+      }
+    );
+  } finally {
+    if (previousQuota === undefined) {
+      delete process.env[OWNER_QUOTA_ENV];
+    } else {
+      process.env[OWNER_QUOTA_ENV] = previousQuota;
+    }
+  }
 });
 
 test("Postgres hosted ingest replays response-loss retry with the exact receipt handle", {
