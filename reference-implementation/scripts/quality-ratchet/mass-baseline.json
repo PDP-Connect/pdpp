@@ -20,7 +20,7 @@
     "runtime/index.ts": 406,
     "runtime/ingest-failure.ts": 1,
     "runtime/ingest-failures.ts": 2,
-    "runtime/owner-state.ts": 12,
+    "runtime/owner-state.ts": 10,
     "runtime/pipe-errors.ts": 1,
     "runtime/progress-validators.ts": 27,
     "runtime/record-message-validator.ts": 1,
@@ -188,7 +188,7 @@
     "server/version-disposition.ts": 6,
     "server/web-push-notifications.ts": 11
   },
-  "total": 6890,
+  "total": 6888,
   "meta": {
     "biomeVersion": "2.5.6",
     "maxAllowedComplexity": 5

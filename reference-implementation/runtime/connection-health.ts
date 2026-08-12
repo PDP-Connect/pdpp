@@ -31,7 +31,7 @@
  *   2. required attention open                     -> needs_attention
  *   3. owner-paused                               -> idle
  *   4. give-up streak crossed                      -> blocked
- *   5. backoff currently delaying retry            -> cooling_off
+ *   5. affirmative scheduled retry with clean evidence -> cooling_off
  *   6. outbox stalled / coverage/run incomplete    -> degraded
  *   7. current evidence without collection verdict -> unknown
  *   7a. current managed remote-surface evidence absent -> unknown
@@ -1218,16 +1218,18 @@ type ClassificationStep = (
 // Ordered precedence: each step returns a snapshot args object when it claims
 // the verdict, otherwise null and we fall through to the next step. The order
 // encodes UI policy: unreliable evidence beats current owner action beats
-// owner pause beats blocking conditions beats retry exhaustion beats backoff
-// beats degraded evidence beats no-verdict beats healthy.
+// owner pause beats blocking conditions beats retry exhaustion beats degrading
+// evidence beats passive backoff beats no-verdict beats healthy. Backoff is
+// allowed to claim `cooling_off` only when the evidence-positive degrading
+// predicate has no independent collection/runtime failure to report.
 const HEALTH_CLASSIFICATION_STEPS: readonly ClassificationStep[] = [
   classifyUnreliableProjection,
   classifyOpenAttention,
   classifyOwnerPaused,
   classifyReadinessBlocked,
   classifyRetryPolicyExhausted,
-  classifyCoolingOff,
   classifyDegradedEvidence,
+  classifyCoolingOff,
   classifyCurrentEvidenceWithoutVerdict,
   classifyCurrentManagedRuntimeUnknown,
   classifyCurrentManagedRemoteSurfaceUnknown,
@@ -1385,9 +1387,18 @@ function classifyRetryPolicyExhausted(ctx: ClassificationContext): ReturnType<Cl
 }
 
 function classifyCoolingOff(ctx: ClassificationContext): ReturnType<ClassificationStep> {
-  // 5. Backoff currently delaying retry -> cooling_off.
+  // Backoff currently delaying retry -> cooling_off, but only when it is the
+  // sole degrading evidence. Collection, coverage, freshness, and runtime
+  // failures are more informative than the scheduler's retry timing.
   const retryPolicy = ctx.conditionSet.get("RetryPolicyClear");
-  if (retryPolicy?.status !== "false") {
+  if (
+    retryPolicy?.status !== "false" ||
+    !hasAffirmativePassiveRecoveryEvidence({
+      axes: ctx.axes,
+      conditions: ctx.conditions,
+      next_attempt_at: ctx.nextAttemptAt,
+    })
+  ) {
     return null;
   }
   return {
@@ -1402,9 +1413,9 @@ function classifyCoolingOff(ctx: ClassificationContext): ReturnType<Classificati
 }
 
 function classifyDegradedEvidence(ctx: ClassificationContext): ReturnType<ClassificationStep> {
-  // 6. Outbox stalled, coverage incomplete, gaps present, or last run failed
+  // Outbox stalled, coverage incomplete, gaps present, or last run failed
   //    -> degraded. Success-with-gaps must not be healthy.
-  if (!hasDegradingCondition(ctx.conditions)) {
+  if (!hasIndependentDegradingEvidence(ctx.conditions)) {
     return null;
   }
   return {
@@ -1678,7 +1689,47 @@ function isDegradingCondition(item: ConnectionHealthCondition): boolean {
   return item.severity === "warning" || item.severity === "error" || item.severity === "blocked";
 }
 
-function hasDegradingCondition(conditions: readonly ConnectionHealthCondition[]): boolean {
+/**
+ * The evidence-positive passive-recovery authority shared by the connection
+ * classifier and downstream owner/fleet projections. Backoff timing is not
+ * enough: collection, complete coverage, freshness, an enabled schedule, and
+ * a clear owner/runtime boundary must all be current affirmative evidence.
+ */
+export function hasAffirmativePassiveRecoveryEvidence(
+  evidence: Pick<ConnectionHealthSnapshot, "axes" | "conditions" | "next_attempt_at">
+): boolean {
+  const hasCurrentCondition = (type: ConnectionConditionType, status: ConnectionHealthCondition["status"]): boolean =>
+    evidence.conditions.some(
+      (candidate) => candidate.current && candidate.type === type && candidate.status === status
+    );
+  const blockerTypes: readonly ConnectionConditionType[] = [
+    "CredentialsValid",
+    "ProjectionReliable",
+    "RuntimeAvailable",
+    "RemoteSurfaceAvailable",
+    "LocalExporterAvailable",
+  ];
+  return (
+    evidence.axes.coverage === "complete" &&
+    evidence.axes.freshness === "fresh" &&
+    evidence.next_attempt_at !== null &&
+    hasCurrentCondition("CollectionSucceeded", "true") &&
+    hasCurrentCondition("SourceCoverageComplete", "true") &&
+    hasCurrentCondition("Fresh", "true") &&
+    hasCurrentCondition("ScheduleEligible", "true") &&
+    hasCurrentCondition("AttentionClear", "true") &&
+    !hasIndependentDegradingEvidence(evidence.conditions) &&
+    !blockerTypes.some((type) => hasCurrentCondition(type, "false"))
+  );
+}
+
+/**
+ * The evidence-positive health authority shared by scheduler and fleet
+ * projections. Policy-only conditions (`RetryPolicyClear`, `ScheduleEligible`,
+ * and `AttentionClear`) do not make a connection degraded; collection,
+ * coverage, freshness, runtime, and terminal evidence do.
+ */
+export function hasIndependentDegradingEvidence(conditions: readonly ConnectionHealthCondition[]): boolean {
   return conditions.some(isDegradingCondition);
 }
 

@@ -630,6 +630,73 @@ test("source actionability headline counts only needs-owner work and exposes sta
   });
 });
 
+test("Sources grouping follows server source_work for degraded wait, passive cooling, and owner attention", () => {
+  const groups = sourceWorkFromConnectors([
+    connector({
+      connection_id: "cin_failed_backoff",
+      source_work: "system_issue",
+      connection_health: health({ state: "degraded" }),
+      owner_state: {
+        evidence_as_of: "2026-08-12T12:00:00Z",
+        owner_of_state: "system",
+        posture: "frozen-since-last-run",
+        resolver: "system_degraded",
+      },
+      rendered_verdict: verdict({
+        channel: "calm",
+        required_actions: [
+          action({
+            audience: "none",
+            cta: "Collecting — no action needed",
+            kind: "wait",
+            satisfied_when: { kind: "none" },
+          }),
+        ],
+      }),
+    }),
+    connector({
+      connection_id: "cin_passive_cooling",
+      source_work: "none",
+      connection_health: health({ state: "cooling_off", next_attempt_at: "2026-08-12T12:30:00Z" }),
+      owner_state: {
+        evidence_as_of: "2026-08-12T11:55:00Z",
+        owner_of_state: "system",
+        posture: "observed",
+        resolver: "healthy",
+      },
+      rendered_verdict: verdict({
+        channel: "calm",
+        pill: { label: "Degraded", tone: "amber" },
+        required_actions: [],
+      }),
+    }),
+    connector({
+      connection_id: "cin_owner_attention",
+      source_work: "needs_owner",
+      owner_state: {
+        evidence_as_of: "2026-08-12T12:00:00Z",
+        owner_of_state: "owner",
+        posture: "frozen-since-last-run",
+        resolver: "needs_owner",
+      },
+    }),
+  ]);
+
+  assert.deepEqual(
+    groups.systemIssues.map((item) => item.routeId),
+    ["cin_failed_backoff"]
+  );
+  assert.deepEqual(
+    groups.needsOwner.map((item) => item.routeId),
+    ["cin_owner_attention"]
+  );
+  assert.equal(groups.review.length, 0);
+  assert.equal(groups.working.length, 0);
+  assert.equal(groups.notMeasured.length, 0);
+  assert.equal(groups.unavailable.length, 0);
+  assert.equal(sourceAttentionHeadline(groups).needsYou, 1);
+});
+
 test("source actionability fails closed for absent, malformed, and collision-key source_work values", () => {
   const groups = sourceWorkFromConnectors([
     connector({ connection_id: "cin_absent", display_name: "Absent source", source_work: undefined }),

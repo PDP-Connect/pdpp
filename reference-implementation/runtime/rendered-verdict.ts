@@ -41,6 +41,7 @@ import {
   type CoverageAxis,
   deriveForwardDisposition,
   type ForwardDisposition,
+  hasAffirmativePassiveRecoveryEvidence,
   isAssistedRefresh,
   isManualRefreshOnly,
   type OwnerActionSurface,
@@ -752,6 +753,37 @@ function exactSyncTargetFromAttention(attention: ConnectionAttentionEvidence | n
 
 function hasOwnerAction(actions: readonly RequiredAction[]): boolean {
   return actions.some((action) => action.audience === "owner" && action.satisfied_when.kind !== "none");
+}
+
+/** Typed owner-sole-resolution predicate shared by owner and fleet projections. */
+export function hasOwnerBlockingAction(verdict: Pick<RenderedVerdict, "channel" | "required_actions">): boolean {
+  // `channel` is the typed owner-interruption decision: advisory actions are
+  // optional accelerants, while attention means the owner is the sole resolver.
+  return verdict.channel === "attention" && hasOwnerAction(verdict.required_actions);
+}
+
+/** Typed maintainer repair predicate shared by owner and fleet projections. */
+export function hasMaintainerCodeFix(verdict: Pick<RenderedVerdict, "required_actions">): boolean {
+  return verdict.required_actions.some((action) => action.audience === "maintainer" && action.kind === "code_fix");
+}
+
+/**
+ * Shared owner/fleet predicate for a passive scheduled retry. This is a narrow
+ * projection predicate, not another health state: connection health must first
+ * establish `cooling_off`, and affirmative collection, coverage, freshness,
+ * schedule, and no-blocker evidence must agree. Independent degrading evidence,
+ * owner action, and maintainer repair always win over scheduler timing.
+ */
+export function isPassiveScheduledRecovery(
+  snapshot: ConnectionHealthSnapshot,
+  verdict: Pick<RenderedVerdict, "channel" | "required_actions">
+): boolean {
+  return (
+    snapshot.state === "cooling_off" &&
+    hasAffirmativePassiveRecoveryEvidence(snapshot) &&
+    !hasOwnerBlockingAction(verdict) &&
+    !hasMaintainerCodeFix(verdict)
+  );
 }
 
 /**

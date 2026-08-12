@@ -68,7 +68,12 @@
 
 import { isNullish } from "../lib/nullish.ts";
 import type { ConnectionHealthSnapshot } from "./connection-health.ts";
-import type { RenderedVerdict, ScheduleEvidence } from "./rendered-verdict.ts";
+import {
+  hasOwnerBlockingAction,
+  isPassiveScheduledRecovery,
+  type RenderedVerdict,
+  type ScheduleEvidence,
+} from "./rendered-verdict.ts";
 
 /**
  * The closed internal resolver enum. Exhaustive: every reachable
@@ -347,7 +352,7 @@ function resolveOwnerStateResolver(
   // source," discarding the exact required action). Checked before the
   // generic "collecting" state, mirroring the existing "attention outranks
   // a paused schedule" precedent below.
-  if (verdict.channel === "attention" && primary && primary.audience === "owner") {
+  if (hasOwnerBlockingAction(verdict)) {
     return "needs_owner";
   }
   // Setup in progress: ONLY from explicit lifecycle evidence (the connector-
@@ -416,9 +421,16 @@ function resolveOwnerStateResolver(
     return "refresh_due";
   }
 
-  // Any remaining amber/red tone is real system-side trouble the owner did
-  // not cause and (per the actions above) cannot single-handedly resolve.
-  if (verdict.pill.tone === "amber" || verdict.pill.tone === "red") {
+  // Passive scheduled recovery is an amber/calm advisory, not system
+  // degradation. All higher-priority owner and maintainer branches above have
+  // already claimed their states, so this preserves their precedence.
+  const systemDegradedForTone = {
+    amber: !isPassiveScheduledRecovery(snapshot, verdict),
+    green: false,
+    grey: false,
+    red: true,
+  }[verdict.pill.tone];
+  if (systemDegradedForTone) {
     return "system_degraded";
   }
 

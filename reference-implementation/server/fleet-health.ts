@@ -15,7 +15,11 @@ import type {
   RemoteSurfaceAxis,
 } from "../runtime/connection-health.ts";
 import type { OwnerStateResolver } from "../runtime/owner-state.ts";
-import type { RenderedVerdict } from "../runtime/rendered-verdict.ts";
+import {
+  hasMaintainerCodeFix,
+  hasOwnerBlockingAction,
+  isPassiveScheduledRecovery,
+} from "../runtime/rendered-verdict.ts";
 import type { ConnectorSummary } from "./ref-control.ts";
 
 export type FleetCoverageAuditState = StreamHealthAuthorityResult["status"];
@@ -95,7 +99,7 @@ type InventoryScope = "excluded" | "operational" | "setup_pending" | "unknown";
 // requires it to be classified here before this module can compile.
 const HEADLINE_EVIDENCE = {
   blocked: "unhealthy",
-  cooling_off: "unhealthy",
+  cooling_off: "advisory",
   degraded: "unhealthy",
   healthy: "healthy",
   idle: "healthy",
@@ -230,19 +234,6 @@ function inventoryScope(connection: FleetConfiguredConnection): InventoryScope {
   }
 }
 
-function hasMaintainerCodeFix(verdict: RenderedVerdict): boolean {
-  return verdict.required_actions.some((action) => action.audience === "maintainer" && action.kind === "code_fix");
-}
-
-function hasOwnerBlockingAction(verdict: RenderedVerdict): boolean {
-  // `channel` is the typed owner-interruption decision: advisory actions are
-  // optional accelerants, while attention means the owner is the sole resolver.
-  return (
-    verdict.channel === "attention" &&
-    verdict.required_actions.some((action) => action.audience === "owner" && action.satisfied_when.kind !== "none")
-  );
-}
-
 function hasCurrentCondition(
   snapshot: ConnectionHealthSnapshot,
   type: "AttentionClear" | "RemoteSurfaceAvailable" | "RuntimeAvailable"
@@ -346,36 +337,46 @@ function collectSummaryEvidence(summary: FleetSummary, evidence: MutableFleetEvi
   const outboxEvidence = evidenceFor(OUTBOX_EVIDENCE, health.axes.outbox);
   const remoteSurfaceEvidence = evidenceFor(REMOTE_SURFACE_EVIDENCE, health.axes.remote_surface);
   const forwardDispositionEvidence = evidenceFor(FORWARD_DISPOSITION_EVIDENCE, health.forward_disposition);
+  const passiveScheduledRecovery = isPassiveScheduledRecovery(health, verdict);
+  const coolingOffWithoutPassiveEvidence = health.state === "cooling_off" && !passiveScheduledRecovery;
   pushIf(
     evidence.needsOwner,
-    hasOwnerBlockingAction(verdict) ||
-      hasCurrentCondition(health, "AttentionClear") ||
-      attentionEvidence === "needs_owner" ||
-      ownerStateEvidence === "needs_owner" ||
+    [
+      hasOwnerBlockingAction(verdict),
+      hasCurrentCondition(health, "AttentionClear"),
+      attentionEvidence === "needs_owner",
+      ownerStateEvidence === "needs_owner",
       forwardDispositionEvidence === "needs_owner",
+    ].some(Boolean),
     ref
   );
   pushIf(
     evidence.degradedOrBroken,
-    headlineEvidence === "unhealthy" ||
-      ownerStateEvidence === "unhealthy" ||
-      coverageEvidence === "unhealthy" ||
-      remoteSurfaceEvidence === "unhealthy" ||
-      outboxEvidence === "unhealthy" ||
-      hasMaintainerCodeFix(verdict) ||
-      hasCurrentCondition(health, "RemoteSurfaceAvailable") ||
+    [
+      headlineEvidence === "unhealthy",
+      coolingOffWithoutPassiveEvidence,
+      ownerStateEvidence === "unhealthy",
+      coverageEvidence === "unhealthy",
+      remoteSurfaceEvidence === "unhealthy",
+      outboxEvidence === "unhealthy",
+      hasMaintainerCodeFix(verdict),
+      hasCurrentCondition(health, "RemoteSurfaceAvailable"),
       hasCurrentCondition(health, "RuntimeAvailable"),
+    ].some(Boolean),
     ref
   );
   pushIf(evidence.retryable, coverageEvidence === "retryable" || forwardDispositionEvidence === "retryable", ref);
   pushIf(evidence.terminal, coverageEvidence === "terminal" || forwardDispositionEvidence === "terminal", ref);
   pushIf(evidence.stalledWork, outboxEvidence === "unhealthy", ref);
   pushIf(evidence.activeWork, isActiveWork(summary), ref);
-  pushIf(
-    evidence.freshnessAdvisories,
-    freshnessEvidence === "advisory" || forwardDispositionEvidence === "advisory" || ownerStateEvidence === "advisory",
-    ref
-  );
+  const otherAdvisory =
+    health.state !== "cooling_off" &&
+    [
+      freshnessEvidence === "advisory",
+      forwardDispositionEvidence === "advisory",
+      ownerStateEvidence === "advisory",
+    ].some(Boolean);
+  pushIf(evidence.freshnessAdvisories, passiveScheduledRecovery || otherAdvisory, ref);
   pushIf(evidence.manual, summary.schedule === null, ref);
   pushIf(evidence.paused, ownerState.resolver === "owner_paused", ref);
   pushIf(evidence.unknownEvidence, hasUnknownEvidence(summary), ref);

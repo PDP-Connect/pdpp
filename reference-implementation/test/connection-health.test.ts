@@ -666,16 +666,54 @@ test("conditions: credential diagnostics redact token-shaped source details", ()
 
 // ─── 5. Cooling off ───────────────────────────────────────────────────────
 
-test("cooling_off: backoffApplied with sub-threshold streak", () => {
+test("degraded: failed collection outranks sub-threshold backoff", () => {
   const snap = computeConnectionHealth(
     input({
       backoff: backoff({ consecutiveFailures: 3, reasonClass: "failure:network_timeout" }),
       run: run({ lastSuccessAt: "2026-05-10T00:00:00.000Z", latestStatus: "failed" }),
     })
   );
-  assert.equal(snap.state, "cooling_off");
+  assert.equal(snap.state, "degraded");
   assert.equal(snap.reason_code, "network_timeout");
   assert.equal(snap.next_attempt_at, "2026-05-19T01:00:00.000Z");
+  assert.equal(findCondition(snap, "CollectionSucceeded")?.status, "false");
+});
+
+test("degraded: partial and stale evidence also outrank active backoff", () => {
+  const partial = computeConnectionHealth(
+    input({
+      backoff: backoff({ reasonClass: "failure:network_timeout" }),
+      coverage: { axis: "partial" },
+      freshness: { axis: "fresh" },
+      run: run({ latestStatus: "failed" }),
+    })
+  );
+  assert.equal(partial.state, "degraded");
+  assert.equal(partial.axes.coverage, "partial");
+
+  const stale = computeConnectionHealth(
+    input({
+      backoff: backoff({ reasonClass: "failure:network_timeout" }),
+      coverage: { axis: "complete" },
+      freshness: { axis: "stale" },
+      run: run(),
+    })
+  );
+  assert.equal(stale.state, "degraded");
+  assert.equal(stale.axes.freshness, "stale");
+});
+
+test("unknown: active backoff without affirmative coverage/freshness evidence is not passive cooling", () => {
+  const snap = computeConnectionHealth(
+    input({
+      backoff: backoff({ reasonClass: "failure:network_timeout" }),
+      run: run(),
+    })
+  );
+  assert.equal(snap.state, "unknown");
+  assert.equal(snap.next_attempt_at, "2026-05-19T01:00:00.000Z");
+  assert.equal(findCondition(snap, "SourceCoverageComplete")?.status, "unknown");
+  assert.equal(findCondition(snap, "Fresh")?.status, "unknown");
 });
 
 test("cooling_off: source-pressure cooldown surfaces reason_code source_pressure (no failures)", () => {
@@ -688,6 +726,8 @@ test("cooling_off: source-pressure cooldown surfaces reason_code source_pressure
   const snap = computeConnectionHealth(
     input({
       backoff: backoff({ consecutiveFailures: 0, reasonClass: "source_pressure" }),
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
       run: run({ latestStatus: "succeeded" }),
     })
   );
