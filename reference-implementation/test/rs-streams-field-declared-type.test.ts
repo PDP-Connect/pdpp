@@ -30,6 +30,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { startServer } from "../server/index.ts";
+import { ingestRecord } from "../server/records.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
@@ -87,7 +88,6 @@ const baseManifest = {
           semantic_fields: ["merchant", "memo"],
         },
       },
-      semantics: "mutable_state",
       schema: {
         properties: {
           // Declares a presentation type AND participates in exact + range +
@@ -106,6 +106,7 @@ const baseManifest = {
         type: "object",
       },
       selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",
@@ -257,6 +258,21 @@ async function withHttpHarness(fn: (urls: { asUrl: string; rsUrl: string }) => P
       status: "active",
       updatedAt: now,
     });
+    await ingestRecord(
+      { connector_id: CONNECTOR_KEY, connector_instance_id: connectorInstanceId },
+      {
+        data: {
+          amount_cents: 1200,
+          count_minor: 12,
+          id: "txn_1",
+          memo: "coffee",
+          merchant: "Aperture Cafe",
+          posted_at: "2026-06-01T00:00:00.000Z",
+        },
+        key: "txn_1",
+        stream: STREAM,
+      }
+    );
     await fn({ asUrl, rsUrl });
   } finally {
     await closeServer(server);
@@ -427,5 +443,17 @@ test("declared type does not alter grant usability under a client token", async 
       assert.ok(fc.merchant.exact_filter, "merchant exact_filter present");
       assert.equal(fc.merchant.exact_filter.usable, false);
     }
+
+    const records = await fetchJson(
+      `${rsUrl}/v1/streams/${encodeURIComponent(STREAM)}/records?connector_id=${encodeURIComponent(CONNECTOR_KEY)}`,
+      { headers: { Authorization: `Bearer ${approved.token}` } }
+    );
+    assert.equal(records.status, 200, JSON.stringify(records.body));
+    const recordsBody = records.body as { data: Array<{ data: Record<string, unknown> }> };
+    assert.deepEqual(recordsBody.data[0]?.data, {
+      amount_cents: 1200,
+      id: "txn_1",
+      posted_at: "2026-06-01T00:00:00.000Z",
+    });
   });
 });

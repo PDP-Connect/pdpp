@@ -2823,25 +2823,22 @@ function buildStreamMetadataEntry({
   grantedConnections?: unknown[] | null;
   manifestStreamNames?: Set<string> | null;
 }) {
-  const projectedManifestStream = streamGrant
-    ? projectManifestStreamForGrant(manifestStream, streamGrant, grantStreams)
-    : manifestStream;
   const expandStreamGrant = streamGrant ? { ...streamGrant, grantStreams } : null;
   const entry: Record<string, unknown> = {
-    consent_time_field: projectedManifestStream.consent_time_field,
-    cursor_field: projectedManifestStream.cursor_field,
-    expand_capabilities: buildExpandCapabilities(projectedManifestStream, expandStreamGrant, manifestStreamNames),
-    field_capabilities: buildFieldCapabilities(projectedManifestStream, streamGrant),
+    consent_time_field: manifestStream.consent_time_field,
+    cursor_field: manifestStream.cursor_field,
+    expand_capabilities: buildExpandCapabilities(manifestStream, expandStreamGrant, manifestStreamNames),
+    field_capabilities: buildFieldCapabilities(manifestStream, streamGrant),
     freshness: freshness ?? buildFreshness(null),
-    name: projectedManifestStream.name,
+    name: manifestStream.name,
     object: "stream_metadata",
-    primary_key: normalizePrimaryKey(projectedManifestStream.primary_key),
-    query: projectedManifestStream.query || {},
-    relationships: projectedManifestStream.relationships || [],
-    schema: projectedManifestStream.schema,
-    selection: projectedManifestStream.selection,
-    semantics: projectedManifestStream.semantics,
-    views: projectedManifestStream.views || [],
+    primary_key: normalizePrimaryKey(manifestStream.primary_key),
+    query: manifestStream.query || {},
+    relationships: manifestStream.relationships || [],
+    schema: manifestStream.schema,
+    selection: manifestStream.selection,
+    semantics: manifestStream.semantics,
+    views: manifestStream.views || [],
   };
   if (streamGrant) {
     entry.instance_ids = Array.isArray(streamGrant.instance_ids) ? [...streamGrant.instance_ids] : [];
@@ -2856,109 +2853,6 @@ function buildStreamMetadataEntry({
     entry.granted_connections = grantedConnections;
   }
   return entry;
-}
-
-function projectManifestStreamForGrant(
-  manifestStream: Record<string, unknown>,
-  streamGrant: Record<string, unknown>,
-  grantStreams: Record<string, unknown>[]
-): Record<string, unknown> {
-  const fields = Array.isArray(streamGrant.fields)
-    ? (streamGrant.fields as unknown[]).filter((field): field is string => typeof field === "string")
-    : [];
-  const grantedFields = new Set(fields);
-  const currentSchema =
-    manifestStream.schema && typeof manifestStream.schema === "object" && !Array.isArray(manifestStream.schema)
-      ? (structuredClone(manifestStream.schema) as Record<string, unknown>)
-      : {};
-  const properties =
-    currentSchema.properties && typeof currentSchema.properties === "object" && !Array.isArray(currentSchema.properties)
-      ? (currentSchema.properties as Record<string, unknown>)
-      : {};
-  const required = Array.isArray(currentSchema.required)
-    ? (currentSchema.required as unknown[]).filter(
-        (field): field is string => typeof field === "string" && grantedFields.has(field)
-      )
-    : [];
-  const schema: Record<string, unknown> = {
-    ...(currentSchema.$schema ? { $schema: currentSchema.$schema } : {}),
-    ...(currentSchema.$defs ? { $defs: currentSchema.$defs } : {}),
-    additionalProperties: false,
-    properties: Object.fromEntries(Object.entries(properties).filter(([field]) => grantedFields.has(field))),
-    required,
-    type: "object",
-  };
-  const timeConstraint =
-    streamGrant.time_constraint && typeof streamGrant.time_constraint === "object"
-      ? (streamGrant.time_constraint as Record<string, unknown>)
-      : null;
-  const frozenTimeField = typeof timeConstraint?.field === "string" ? timeConstraint.field : undefined;
-  const cursorField = typeof manifestStream.cursor_field === "string" ? manifestStream.cursor_field : undefined;
-  const grantStreamByName = new Map(
-    grantStreams.flatMap((stream) => (typeof stream.name === "string" ? [[stream.name, stream] as const] : []))
-  );
-  return {
-    name: streamGrant.name,
-    schema,
-    ...(frozenTimeField ? { consent_time_field: frozenTimeField } : {}),
-    ...(cursorField && grantedFields.has(cursorField) ? { cursor_field: cursorField } : {}),
-    query: projectQueryForGrantedFields(manifestStream.query, grantedFields),
-    relationships: Array.isArray(manifestStream.relationships)
-      ? (manifestStream.relationships as Record<string, unknown>[]).filter((relationship) => {
-          if (!(typeof relationship?.stream === "string" && typeof relationship?.foreign_key === "string")) {
-            return false;
-          }
-          const relatedGrant = grantStreamByName.get(relationship.stream);
-          if (!relatedGrant) {
-            return false;
-          }
-          const foreignKeyFields =
-            relationship.cardinality === "has_many" && Array.isArray(relatedGrant.fields)
-              ? new Set(relatedGrant.fields)
-              : grantedFields;
-          return foreignKeyFields.has(relationship.foreign_key);
-        })
-      : [],
-  };
-}
-
-function projectQueryForGrantedFields(queryValue: unknown, grantedFields: Set<string>): Record<string, unknown> {
-  if (!(queryValue && typeof queryValue === "object") || Array.isArray(queryValue)) {
-    return {};
-  }
-  const query = queryValue as Record<string, unknown>;
-  const projected: Record<string, unknown> = {};
-  if (query.range_filters && typeof query.range_filters === "object" && !Array.isArray(query.range_filters)) {
-    projected.range_filters = Object.fromEntries(
-      Object.entries(query.range_filters as Record<string, unknown>).filter(([field]) => grantedFields.has(field))
-    );
-  }
-  if (query.search && typeof query.search === "object" && !Array.isArray(query.search)) {
-    const search = query.search as Record<string, unknown>;
-    projected.search = Object.fromEntries(
-      ["lexical_fields", "semantic_fields"].flatMap((key) => {
-        const value = search[key];
-        return Array.isArray(value)
-          ? [[key, value.filter((field): field is string => typeof field === "string" && grantedFields.has(field))]]
-          : [];
-      })
-    );
-  }
-  if (query.aggregations && typeof query.aggregations === "object" && !Array.isArray(query.aggregations)) {
-    const aggregationEntries: [string, unknown][] = [];
-    for (const [key, value] of Object.entries(query.aggregations as Record<string, unknown>)) {
-      if (key === "count" && value === true) {
-        aggregationEntries.push([key, true]);
-      } else if (Array.isArray(value)) {
-        aggregationEntries.push([
-          key,
-          value.filter((field): field is string => typeof field === "string" && grantedFields.has(field)),
-        ]);
-      }
-    }
-    projected.aggregations = Object.fromEntries(aggregationEntries);
-  }
-  return projected;
 }
 
 // Emit one `expand_capabilities` entry per enabled parent-stream relation (a
