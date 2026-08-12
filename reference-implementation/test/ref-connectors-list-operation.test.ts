@@ -831,7 +831,7 @@ test("buildConnectorFreshness does not let manual no-policy hide a latest failed
   assert.equal(freshness.status, "stale");
 });
 
-test("connector summary connection health projects durable scheduler backoff as cooling off", () => {
+test("connector summary connection health keeps failed collection degraded during durable scheduler backoff", () => {
   const run = connectorRunSummary({
     event_count: 1,
     failure_reason: "rate_limited",
@@ -859,9 +859,10 @@ test("connector summary connection health projects durable scheduler backoff as 
       },
     },
   });
-  assert.equal(snapshot.state, "cooling_off");
+  assert.equal(snapshot.state, "degraded");
   assert.equal(snapshot.next_attempt_at, "2026-05-19T13:00:00.000Z");
   assert.equal(snapshot.reason_code, "rate_limited");
+  assert.equal(snapshot.conditions.find((condition) => condition.type === "CollectionSucceeded")?.status, "false");
 });
 
 test("connector summary connection health does not treat normal next_due_at as retry backoff", () => {
@@ -895,7 +896,7 @@ test("connector summary connection health does not treat normal next_due_at as r
   );
 });
 
-test("connector summary connection health uses scheduler backoff even when run spine summary is absent", () => {
+test("connector summary connection health keeps scheduler failure evidence degraded when run spine summary is absent", () => {
   const snapshot = projectConnectorSummaryConnectionHealth({
     freshness: { captured_at: "2026-05-19T12:00:00.000Z", status: "unknown" },
     lastRun: null,
@@ -913,8 +914,9 @@ test("connector summary connection health uses scheduler backoff even when run s
       },
     },
   });
-  assert.equal(snapshot.state, "cooling_off");
+  assert.equal(snapshot.state, "degraded");
   assert.equal(snapshot.next_attempt_at, "2026-05-19T13:00:00.000Z");
+  assert.equal(snapshot.reason_code, "rate_limited");
 });
 
 test("connector summary connection health promotes durable scheduler backoff streak to blocked", () => {

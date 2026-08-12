@@ -236,13 +236,14 @@ test(
     const snapshot = projectConnectorSummaryConnectionHealth({
       attentionRecords: [],
       freshness: { captured_at: PRIOR_SUCCESS_ISO, status: "current" },
-      lastRun: failedRun({ failure_reason: "http_502" }),
+      lastRun: succeededRun(),
       lastSuccessfulRun: succeededRun(),
       nowIso: NOW_ISO,
       schedule: {
         active_run_id: null,
         enabled: true,
         last_error_code: "http_502",
+        last_finished_at: "2026-05-19T11:00:00.000Z",
         last_successful_at: PRIOR_SUCCESS_ISO,
         next_due_at: "2026-05-19T12:30:00.000Z",
         scheduler_backoff: {

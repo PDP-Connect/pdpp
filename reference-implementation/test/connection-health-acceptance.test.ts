@@ -541,7 +541,7 @@ test("acceptance 7.1: expired prompt does not heal unresolved session-readiness 
   );
 });
 
-test("acceptance 7.1: cooling_off when scheduler backoff is delaying a retry below the give-up threshold", () => {
+test("acceptance 7.1: failed collection remains degraded while scheduler backoff delays retry", () => {
   const snap = projectConnectorSummaryConnectionHealth({
     freshness: STALE_FRESHNESS,
     lastRun: failedRun({ failure_reason: "rate_limited" }),
@@ -549,9 +549,10 @@ test("acceptance 7.1: cooling_off when scheduler backoff is delaying a retry bel
     nowIso: NOW,
     schedule: backoffSchedule({ failures: 3, reasonClass: "failure:rate_limited" }),
   });
-  assertHeadline(snap, "cooling_off");
+  assertHeadline(snap, "degraded");
   assert.equal(snap.reason_code, "rate_limited");
   assert.equal(snap.next_attempt_at, "2026-05-19T13:00:00.000Z");
+  assert.equal(snap.conditions?.find((condition) => condition.type === "CollectionSucceeded")?.status, "false");
 });
 
 test("acceptance 7.1: blocked when the scheduler give-up streak crosses the promotion threshold", () => {
@@ -637,11 +638,14 @@ test("acceptance 7.1: every canonical headline state is reachable through projec
     },
     {
       input: {
-        freshness: STALE_FRESHNESS,
-        lastRun: failedRun(),
-        lastSuccessfulRun: null,
+        freshness: FRESH,
+        lastRun: succeededRun({ last_at: RUN_AT, finished_at: RUN_AT }),
+        lastSuccessfulRun: succeededRun({ last_at: RUN_AT, finished_at: RUN_AT }),
         nowIso: NOW,
-        schedule: backoffSchedule({ failures: 2 }),
+        schedule: {
+          ...backoffSchedule({ failures: 2 }),
+          last_finished_at: NOW,
+        },
       },
       state: "cooling_off",
     },
