@@ -1,0 +1,36 @@
+# Durable Rejection Transaction Topology
+
+This note records the #123 integration boundary after transplanting durable
+record rejections onto the accepted #112/#113 durability stack.
+
+## Accepted Seams
+
+- Accepted record writes stay per-record transactions. `ingestRecord` enters
+  `withConnectorInstanceWrite`, and PostgreSQL uses the same
+  `lockConnectorInstanceId` transaction lock. The batch path intentionally does
+  not hold one transaction across all input lines.
+- Terminal collector state belongs to `terminal-run-commit-store.ts`. It writes
+  state delta, terminal spine event, and run-history projection inside one
+  caller-owned SQLite handle or PostgreSQL client.
+- Rejection insert/replay is a destination result for one failed input line. It
+  must be atomic with its own quota row and fixed-field audit fact, and it must
+  re-check connection/run writability inside the same backend transaction.
+
+## #123 Boundary
+
+- `insertOrReplaySqliteRecordRejectionInTransaction(db, input)` performs the
+  writable/run check, replay lookup/update, quota admission, receipt insert, and
+  audit insert on the caller's explicit SQLite handle.
+- `insertOrReplayPostgresRecordRejectionWithClient(client, input)` performs the
+  same work on the caller's explicit `PoolClient`.
+- Standalone wrappers only open the backend transaction and delegate to those
+  seams.
+
+## Non-Claims
+
+- This does not make one hosted ingest request into a single batch transaction.
+  That would conflict with the accepted per-record durable-prefix behavior.
+- This does not add a generic unit-of-work abstraction.
+- This does not close deferred production gates for first/latest provenance,
+  retained-size projection, stale pending resolution, 200 MiB constrained-memory
+  proof, or #108 backup inventory.

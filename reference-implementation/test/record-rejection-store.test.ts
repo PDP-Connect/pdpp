@@ -27,7 +27,9 @@ import {
   DEFAULT_RECORD_REJECTION_OWNER_QUOTA_BYTES,
   deletePostgresRecordRejectionsForConnectionWithClient,
   deleteSqliteRecordRejectionsForConnectionWithinTransaction,
+  insertOrReplayPostgresRecordRejectionWithClient,
   insertOrReplaySqliteRecordRejection,
+  insertOrReplaySqliteRecordRejectionInTransaction,
   RECORD_REJECTION_OWNER_QUOTA_ENV,
   RECORD_REJECTION_REPLAY_COUNT_MAX,
   RecordRejectionStoreError,
@@ -39,6 +41,7 @@ const execFileAsync = promisify(execFile);
 const SHA256_HEX_RE = /^[a-f0-9]{64}$/;
 const SIMULATED_AUDIT_WRITE_FAILURE_RE = /simulated audit write failure/;
 const INJECTED_PAYLOAD_BACKFILL_FAILURE_RE = /injected payload backfill failure/;
+const ROLLBACK_CALLER_TRANSACTION_RE = /rollback caller transaction/;
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
 test("record rejection replay generation and key have one shared golden authority", () => {
@@ -388,6 +391,37 @@ test("SQLite record rejection receipt and audit fact roll back together", () => 
       .get<{ count: number }>()?.count,
     0
   );
+});
+
+test("SQLite caller-owned rejection insert seam rolls back receipt quota and audit", () => {
+  initDb();
+  seedSqliteConnection();
+  const db = getDb();
+  assert.throws(
+    () =>
+      writeTransaction(() => {
+        insertOrReplaySqliteRecordRejectionInTransaction(db, {
+          connectorId: "test_connector",
+          connectorInstanceId: "cin_test",
+          inputIndex: 0,
+          ownerSubjectId: "owner_a",
+          rawLine: "caller-rollback",
+          reasonCode: "malformed_ndjson",
+          runId: "run_1",
+          stream: "items",
+        });
+        throw new Error("rollback caller transaction");
+      }),
+    ROLLBACK_CALLER_TRANSACTION_RE
+  );
+  assert.equal(getDb().prepare("SELECT COUNT(*) AS count FROM record_rejections").get<{ count: number }>()?.count, 0);
+  assert.equal(
+    getDb()
+      .prepare("SELECT COUNT(*) AS count FROM spine_events WHERE event_type LIKE 'record_rejection.%'")
+      .get<{ count: number }>()?.count,
+    0
+  );
+  assertSqliteQuotaMatchesRows("owner_a");
 });
 
 test("SQLite record rejection store refuses quota exhaustion without acknowledging progress", () => {
@@ -1116,6 +1150,41 @@ test("Postgres record rejection store contract", {
       )?.payloadText,
       '{"id":null}'
     );
+    await seedPostgresConnection({ connectorInstanceId: "cin_tx", runId: "run_tx", status: "active" });
+    await assert.rejects(
+      withPostgresTransaction(async (client) => {
+        await insertOrReplayPostgresRecordRejectionWithClient(client, {
+          ...input,
+          connectorInstanceId: "cin_tx",
+          inputIndex: 50,
+          rawLine: "pg-caller-rollback",
+          runId: "run_tx",
+        });
+        throw new Error("rollback caller transaction");
+      }),
+      ROLLBACK_CALLER_TRANSACTION_RE
+    );
+    assert.equal(
+      Number(
+        (
+          await postgresQuery<{ count: string }>(
+            "SELECT COUNT(*)::bigint AS count FROM record_rejections WHERE connector_instance_id = 'cin_tx'"
+          )
+        ).rows[0]?.count ?? 0
+      ),
+      0
+    );
+    assert.equal(
+      Number(
+        (
+          await postgresQuery<{ count: string }>(
+            "SELECT COUNT(*)::bigint AS count FROM spine_events WHERE object_type = 'record_rejection' AND data_json->>'connection_id' = 'cin_tx'"
+          )
+        ).rows[0]?.count ?? 0
+      ),
+      0
+    );
+    await assertPostgresQuotaMatchesRows("owner_a");
     await seedPostgresConnection({ connectorInstanceId: "cin_revoked", runId: "run_revoked", status: "revoked" });
     await assert.rejects(
       store.insertOrReplay({

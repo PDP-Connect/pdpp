@@ -3,9 +3,10 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import type { PoolClient, QueryResultRow } from "pg";
-import { exec, getMany, getOne, referenceQueries, writeTransaction } from "../../lib/db.ts";
+import { exec, execOn, getMany, getOne, getOneOn, referenceQueries, writeTransaction } from "../../lib/db.ts";
 import { postgresEmitSpineEventWithClient } from "../../lib/postgres-spine.ts";
 import { emitSqliteSpineEventSynchronously, type SpineEventInput } from "../../lib/spine.ts";
+import { getDb } from "../db.ts";
 import { HOSTED_INGEST_MAX_LINE_BYTES } from "../hosted-ingest-limits.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
 import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "../record-rejection-replay-key.ts";
@@ -179,10 +180,11 @@ function recordRejectionAuditEvent(
 }
 
 function emitSqliteRecordRejectionAudit(
+  db: SqliteRecordRejectionTransactionHandle,
   input: InsertOrReplayRecordRejectionInput,
   facts: RecordRejectionAuditFacts
 ): void {
-  emitSqliteSpineEventSynchronously(recordRejectionAuditEvent(input, facts));
+  emitSqliteSpineEventSynchronously(recordRejectionAuditEvent(input, facts), db);
 }
 
 function emitPostgresRecordRejectionAudit(
@@ -422,13 +424,22 @@ function lastPageItem(items: readonly RecordRejectionMetadata[]): RecordRejectio
   return item;
 }
 
+interface SqliteRecordRejectionTransactionHandle {
+  prepare: (sql: string) => {
+    all: (...params: unknown[]) => unknown[];
+    get: (...params: unknown[]) => unknown;
+    run: (...params: unknown[]) => unknown;
+  };
+}
+
 function assertSqliteWritable(
+  db: SqliteRecordRejectionTransactionHandle,
   ownerSubjectId: string,
   connectorInstanceId: string,
   connectorId: string,
   runId?: string | null
 ) {
-  const connection = getOne<{ status: string }>(referenceQueries.recordRejectionsGetConnectionStatus, [
+  const connection = getOneOn<{ status: string }>(db, referenceQueries.recordRejectionsGetConnectionStatus, [
     ownerSubjectId,
     connectorInstanceId,
     connectorId,
@@ -437,7 +448,7 @@ function assertSqliteWritable(
     throw new RecordRejectionStoreError("connection_not_writable", "Connection is not writable.");
   }
   if (runId) {
-    const run = getOne<{ status: string }>(referenceQueries.controllerGetRunHistoryStatusForRun, [
+    const run = getOneOn<{ status: string }>(db, referenceQueries.controllerGetRunHistoryStatusForRun, [
       runId,
       connectorInstanceId,
     ]);
@@ -449,12 +460,12 @@ function assertSqliteWritable(
 
 interface PreparedRecordRejectionInsert {
   readonly bytes: number;
+  readonly connectionReceiptQuota: number;
   readonly digest: string;
   readonly key: string;
+  readonly ownerReceiptQuota: number;
   readonly quota: number;
   readonly rawLine: Buffer;
-  readonly ownerReceiptQuota: number;
-  readonly connectionReceiptQuota: number;
 }
 
 function prepareRecordRejectionInsert(input: InsertOrReplayRecordRejectionInput): PreparedRecordRejectionInsert {
@@ -479,9 +490,14 @@ function prepareRecordRejectionInsert(input: InsertOrReplayRecordRejectionInput)
   };
 }
 
-function replaySqliteRecordRejection(receiptId: string, reasonCode: string, inputIndex: number): RecordRejectionReceipt {
+function replaySqliteRecordRejection(
+  db: SqliteRecordRejectionTransactionHandle,
+  receiptId: string,
+  reasonCode: string,
+  inputIndex: number
+): RecordRejectionReceipt {
   const lastSeenAt = nowIso();
-  exec(referenceQueries.recordRejectionsUpdateReplay, [
+  execOn(db, referenceQueries.recordRejectionsUpdateReplay, [
     RECORD_REJECTION_REPLAY_COUNT_MAX,
     inputIndex,
     lastSeenAt,
@@ -495,10 +511,14 @@ function replaySqliteRecordRejection(receiptId: string, reasonCode: string, inpu
   };
 }
 
-function admitSqliteRecordRejectionQuota(input: InsertOrReplayRecordRejectionInput, prepared: PreparedRecordRejectionInsert): void {
-  exec(referenceQueries.recordRejectionsEnsureQuotaOwner, [input.ownerSubjectId, nowIso()]);
+function admitSqliteRecordRejectionQuota(
+  db: SqliteRecordRejectionTransactionHandle,
+  input: InsertOrReplayRecordRejectionInput,
+  prepared: PreparedRecordRejectionInsert
+): void {
+  execOn(db, referenceQueries.recordRejectionsEnsureQuotaOwner, [input.ownerSubjectId, nowIso()]);
   const connectionCount =
-    getOne<{ count: number }>(referenceQueries.recordRejectionsCountForConnection, [
+    getOneOn<{ count: number }>(db, referenceQueries.recordRejectionsCountForConnection, [
       input.ownerSubjectId,
       input.connectorInstanceId,
     ])?.count ?? 0;
@@ -508,7 +528,7 @@ function admitSqliteRecordRejectionQuota(input: InsertOrReplayRecordRejectionInp
       "Record rejection connection quota is exhausted."
     );
   }
-  const admitted = exec(referenceQueries.recordRejectionsAdmitQuota, [
+  const admitted = execOn(db, referenceQueries.recordRejectionsAdmitQuota, [
     prepared.bytes,
     nowIso(),
     input.ownerSubjectId,
@@ -524,55 +544,60 @@ function admitSqliteRecordRejectionQuota(input: InsertOrReplayRecordRejectionInp
   }
 }
 
-export function insertOrReplaySqliteRecordRejection(input: InsertOrReplayRecordRejectionInput): RecordRejectionReceipt {
+export function insertOrReplaySqliteRecordRejectionInTransaction(
+  db: SqliteRecordRejectionTransactionHandle,
+  input: InsertOrReplayRecordRejectionInput
+): RecordRejectionReceipt {
   assertInput(input);
   const prepared = prepareRecordRejectionInsert(input);
-  return writeTransaction(() => {
-    assertSqliteWritable(input.ownerSubjectId, input.connectorInstanceId, input.connectorId, input.runId);
-    const existing = getOne<{
-      created_at: string;
-      payload_bytes: number;
-      payload_sha256: string;
-      reason_code: string;
-      receipt_id: string;
-    }>(referenceQueries.recordRejectionsGetByReplayKey, [prepared.key]);
-    if (existing) {
-      return replaySqliteRecordRejection(existing.receipt_id, existing.reason_code, input.inputIndex);
-    }
-    admitSqliteRecordRejectionQuota(input, prepared);
-    const receiptId = newReceiptId();
-    const createdAt = nowIso();
-    exec(referenceQueries.recordRejectionsInsert, [
-      receiptId,
-      input.ownerSubjectId,
-      input.connectorInstanceId,
-      input.connectorId,
-      input.stream,
-      input.runId ?? null,
-      input.inputIndex,
-      input.inputIndex,
-      input.reasonCode,
-      prepared.rawLine,
-      prepared.digest,
-      prepared.bytes,
-      RECORD_REJECTION_GENERATION,
-      prepared.key,
-      createdAt,
-      createdAt,
-    ]);
-    emitSqliteRecordRejectionAudit(input, {
-      connectionId: input.connectorInstanceId,
-      createdAt,
-      lastSeenAt: createdAt,
-      payloadBytes: prepared.bytes,
-      payloadSha256: prepared.digest,
-      reasonCode: input.reasonCode,
-      receiptId,
-      replayed: false,
-      stream: input.stream,
-    });
-    return { code: input.reasonCode, inputIndex: input.inputIndex, receiptId, replayed: false };
+  assertSqliteWritable(db, input.ownerSubjectId, input.connectorInstanceId, input.connectorId, input.runId);
+  const existing = getOneOn<{
+    created_at: string;
+    payload_bytes: number;
+    payload_sha256: string;
+    reason_code: string;
+    receipt_id: string;
+  }>(db, referenceQueries.recordRejectionsGetByReplayKey, [prepared.key]);
+  if (existing) {
+    return replaySqliteRecordRejection(db, existing.receipt_id, existing.reason_code, input.inputIndex);
+  }
+  admitSqliteRecordRejectionQuota(db, input, prepared);
+  const receiptId = newReceiptId();
+  const createdAt = nowIso();
+  execOn(db, referenceQueries.recordRejectionsInsert, [
+    receiptId,
+    input.ownerSubjectId,
+    input.connectorInstanceId,
+    input.connectorId,
+    input.stream,
+    input.runId ?? null,
+    input.inputIndex,
+    input.inputIndex,
+    input.reasonCode,
+    prepared.rawLine,
+    prepared.digest,
+    prepared.bytes,
+    RECORD_REJECTION_GENERATION,
+    prepared.key,
+    createdAt,
+    createdAt,
+  ]);
+  emitSqliteRecordRejectionAudit(db, input, {
+    connectionId: input.connectorInstanceId,
+    createdAt,
+    lastSeenAt: createdAt,
+    payloadBytes: prepared.bytes,
+    payloadSha256: prepared.digest,
+    reasonCode: input.reasonCode,
+    receiptId,
+    replayed: false,
+    stream: input.stream,
   });
+  return { code: input.reasonCode, inputIndex: input.inputIndex, receiptId, replayed: false };
+}
+
+export function insertOrReplaySqliteRecordRejection(input: InsertOrReplayRecordRejectionInput): RecordRejectionReceipt {
+  return writeTransaction(() => insertOrReplaySqliteRecordRejectionInTransaction(getDb(), input));
 }
 
 export function getSqliteRecordRejectionDetail(args: {
@@ -734,80 +759,83 @@ async function admitPostgresRecordRejectionQuota(
   }
 }
 
-export function insertOrReplayPostgresRecordRejection(
+export async function insertOrReplayPostgresRecordRejectionWithClient(
+  client: PoolClient,
   input: InsertOrReplayRecordRejectionInput
 ): Promise<RecordRejectionReceipt> {
   assertInput(input);
   const prepared = prepareRecordRejectionInsert(input);
-  return withPostgresTransaction(
-    async (client) => {
-      await assertPostgresWritable(
-        client,
-        input.ownerSubjectId,
-        input.connectorInstanceId,
-        input.connectorId,
-        input.runId
-      );
-      const existing = await client.query<{
-        created_at: string;
-        payload_bytes: number | string;
-        payload_sha256: string;
-        reason_code: string;
-        receipt_id: string;
-      }>(
-        `SELECT receipt_id, reason_code, payload_sha256, payload_bytes, created_at
-           FROM record_rejections
-          WHERE replay_key = $1
-          LIMIT 1`,
-        [prepared.key]
-      );
-      const [existingRow] = existing.rows;
-      if (existingRow) {
-        return await replayPostgresRecordRejection(client, existingRow.receipt_id, existingRow.reason_code, input.inputIndex);
-      }
-      await admitPostgresRecordRejectionQuota(client, input, prepared);
-      const receiptId = newReceiptId();
-      const createdAt = nowIso();
-      await client.query(
-        `INSERT INTO record_rejections(
-        receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
-        first_input_index, latest_input_index, reason_code, payload, payload_sha256,
-        payload_bytes, rejection_generation, replay_key, replay_count, status, created_at, last_seen_at
-      ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 0, 'pending', $15, $16)`,
-        [
-          receiptId,
-          input.ownerSubjectId,
-          input.connectorInstanceId,
-          input.connectorId,
-          input.stream,
-          input.runId ?? null,
-          input.inputIndex,
-          input.inputIndex,
-          input.reasonCode,
-          prepared.rawLine,
-          prepared.digest,
-          prepared.bytes,
-          RECORD_REJECTION_GENERATION,
-          prepared.key,
-          createdAt,
-          createdAt,
-        ]
-      );
-      await emitPostgresRecordRejectionAudit(client, input, {
-        connectionId: input.connectorInstanceId,
-        createdAt,
-        lastSeenAt: createdAt,
-        payloadBytes: prepared.bytes,
-        payloadSha256: prepared.digest,
-        reasonCode: input.reasonCode,
-        receiptId,
-        replayed: false,
-        stream: input.stream,
-      });
-      return { code: input.reasonCode, inputIndex: input.inputIndex, receiptId, replayed: false };
-    },
-    { lockConnectorInstanceId: input.connectorInstanceId }
+  await assertPostgresWritable(client, input.ownerSubjectId, input.connectorInstanceId, input.connectorId, input.runId);
+  const existing = await client.query<{
+    created_at: string;
+    payload_bytes: number | string;
+    payload_sha256: string;
+    reason_code: string;
+    receipt_id: string;
+  }>(
+    `SELECT receipt_id, reason_code, payload_sha256, payload_bytes, created_at
+       FROM record_rejections
+      WHERE replay_key = $1
+      LIMIT 1`,
+    [prepared.key]
   );
+  const [existingRow] = existing.rows;
+  if (existingRow) {
+    return await replayPostgresRecordRejection(
+      client,
+      existingRow.receipt_id,
+      existingRow.reason_code,
+      input.inputIndex
+    );
+  }
+  await admitPostgresRecordRejectionQuota(client, input, prepared);
+  const receiptId = newReceiptId();
+  const createdAt = nowIso();
+  await client.query(
+    `INSERT INTO record_rejections(
+    receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
+    first_input_index, latest_input_index, reason_code, payload, payload_sha256,
+    payload_bytes, rejection_generation, replay_key, replay_count, status, created_at, last_seen_at
+  ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 0, 'pending', $15, $16)`,
+    [
+      receiptId,
+      input.ownerSubjectId,
+      input.connectorInstanceId,
+      input.connectorId,
+      input.stream,
+      input.runId ?? null,
+      input.inputIndex,
+      input.inputIndex,
+      input.reasonCode,
+      prepared.rawLine,
+      prepared.digest,
+      prepared.bytes,
+      RECORD_REJECTION_GENERATION,
+      prepared.key,
+      createdAt,
+      createdAt,
+    ]
+  );
+  await emitPostgresRecordRejectionAudit(client, input, {
+    connectionId: input.connectorInstanceId,
+    createdAt,
+    lastSeenAt: createdAt,
+    payloadBytes: prepared.bytes,
+    payloadSha256: prepared.digest,
+    reasonCode: input.reasonCode,
+    receiptId,
+    replayed: false,
+    stream: input.stream,
+  });
+  return { code: input.reasonCode, inputIndex: input.inputIndex, receiptId, replayed: false };
+}
+
+export function insertOrReplayPostgresRecordRejection(
+  input: InsertOrReplayRecordRejectionInput
+): Promise<RecordRejectionReceipt> {
+  return withPostgresTransaction((client) => insertOrReplayPostgresRecordRejectionWithClient(client, input), {
+    lockConnectorInstanceId: input.connectorInstanceId,
+  });
 }
 
 export async function getPostgresRecordRejectionDetail(args: {
