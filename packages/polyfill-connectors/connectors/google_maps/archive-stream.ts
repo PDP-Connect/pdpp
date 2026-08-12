@@ -87,6 +87,24 @@ class RootShapeTracker {
     return this.invalidRecognizedKey;
   }
 
+  /**
+   * True while the parser is positioned inside an element of a confirmed
+   * (recognized-shape) array -- i.e. an actual supported Timeline element is
+   * being read, not the array's own brackets or an unrelated sibling field.
+   * A confirmed array frame only reports "inside an element" once its first
+   * value token has opened (`comma_or_end`), never while still awaiting that
+   * first value (`value_or_end`) -- otherwise the still-empty gap between
+   * `[` and the first element's opening token would wrongly count.
+   */
+  get insideConfirmedArrayElement(): boolean {
+    return this.stack.some(
+      (frame, index) =>
+        frame.kind === "array" &&
+        frame.confirmedFormat !== undefined &&
+        (index < this.stack.length - 1 || frame.state === "comma_or_end")
+    );
+  }
+
   onToken(token: TokenType, value: unknown): void {
     if (token === TokenType.SEPARATOR) {
       return;
@@ -259,6 +277,7 @@ async function feedParserChunk(
   text: string,
   maxSingleElementBytes: number,
   bytesSinceElementStart: { value: number },
+  shapeTracker: RootShapeTracker,
   pending: GoogleMapsStreamEvent[],
   onEvent: GoogleMapsStreamEventHandler
 ): Promise<void> {
@@ -268,11 +287,20 @@ async function feedParserChunk(
     parser.write(text);
     return;
   }
-  bytesSinceElementStart.value += Buffer.byteLength(text, "utf8");
-  if (bytesSinceElementStart.value > maxSingleElementBytes) {
-    throw new GoogleMapsElementTooLargeError(
-      `a single Timeline array element exceeded ${String(maxSingleElementBytes)} bytes`
-    );
+  // Only bytes read while actually inside a supported array's element count
+  // toward the per-element bound. An unrelated/unselected trailing root
+  // field (or any byte outside a confirmed array's element) cannot inflate
+  // this counter, however large it is -- the bound protects against one
+  // oversized SUPPORTED element, not against whatever else shares the root.
+  if (shapeTracker.insideConfirmedArrayElement) {
+    bytesSinceElementStart.value += Buffer.byteLength(text, "utf8");
+    if (bytesSinceElementStart.value > maxSingleElementBytes) {
+      throw new GoogleMapsElementTooLargeError(
+        `a single Timeline array element exceeded ${String(maxSingleElementBytes)} bytes`
+      );
+    }
+  } else {
+    bytesSinceElementStart.value = 0;
   }
   parser.write(text);
   await drain(pending, onEvent);
@@ -320,7 +348,15 @@ export async function streamGoogleMapsExport(
         }
         ({ parser, text: toFeed } = initialized);
       }
-      await feedParserChunk(parser, toFeed, maxSingleElementBytes, bytesSinceElementStart, pending, onEvent);
+      await feedParserChunk(
+        parser,
+        toFeed,
+        maxSingleElementBytes,
+        bytesSinceElementStart,
+        shapeTracker,
+        pending,
+        onEvent
+      );
     }
   } finally {
     stream.destroy();
