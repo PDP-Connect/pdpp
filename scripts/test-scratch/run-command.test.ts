@@ -24,6 +24,7 @@ import test from "node:test";
 import {
   allocateScratchOwnership,
   cleanupScratchOwnership,
+  inheritedScratchOwnership,
   recoverStaleScratch,
   scratchCandidateSafetyReason,
 } from "./ownership.ts";
@@ -50,6 +51,13 @@ function startWrapper(args: string[], env: NodeJS.ProcessEnv = process.env) {
   return spawn(process.execPath, ["--import", "tsx", wrapperPath, ...command(args)], {
     env,
     stdio: ["ignore", "pipe", "ignore"],
+  });
+}
+
+function startRawWrapper(argv: string[], env: NodeJS.ProcessEnv = process.env) {
+  return spawn(process.execPath, ["--import", "tsx", wrapperPath, "--", ...argv], {
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
   });
 }
 
@@ -235,6 +243,59 @@ test("participant creates no nested owner", async () => {
   }
 });
 
+test("participant validation fails closed when any inherited temporary path is altered", async () => {
+  const parent = await temporaryParent();
+  const outside = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  try {
+    const altered = { ...ownership.env, TMPDIR: outside };
+    await assert.rejects(inheritedScratchOwnership(altered), {
+      name: "ScratchOwnershipError",
+      reason: "invalid-inherited-ownership",
+    });
+    const nested = startRawWrapper([process.execPath, "--import", "tsx", child, "--exit=0"], altered);
+    assert.deepEqual(await closed(nested), { code: 1, signal: null });
+    await assert.rejects(access(join(outside, "child.txt")));
+    await access(ownership.allocation.root);
+  } finally {
+    await cleanupScratchOwnership(ownership);
+    await rm(parent, { force: true, recursive: true });
+    await rm(outside, { force: true, recursive: true });
+  }
+});
+
+test("launch failure removes its allocated root and returns the infrastructure exit", async () => {
+  const runnerTemp = await temporaryParent();
+  const parent = join(runnerTemp, "pdpp-test-scratch");
+  try {
+    const wrapper = startRawWrapper(["/definitely-not-a-pdpp-command"], { ...process.env, RUNNER_TEMP: runnerTemp });
+    assert.deepEqual(await closed(wrapper), { code: 74, signal: null });
+    assert.deepEqual(await readdir(parent), []);
+  } finally {
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
+test("an unproven group shutdown retains scratch and makes a successful command infrastructure-failed", async () => {
+  const runnerTemp = await temporaryParent();
+  const parent = join(runnerTemp, "pdpp-test-scratch");
+  const previousRunnerTemp = process.env.RUNNER_TEMP;
+  process.env.RUNNER_TEMP = runnerTemp;
+  try {
+    const result = await runScratchCommand(command(["--exit=0"]), { stopGroup: async () => false });
+    assert.deepEqual(result, { code: 74, signal: null });
+    const roots = (await readdir(parent)).filter((entry) => entry.startsWith("run-"));
+    assert.equal(roots.length, 1);
+  } finally {
+    if (previousRunnerTemp === undefined) {
+      delete process.env.RUNNER_TEMP;
+    } else {
+      process.env.RUNNER_TEMP = previousRunnerTemp;
+    }
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
 test("recovery retains fresh and malformed roots", async () => {
   const parent = await temporaryParent();
   const root = join(parent, "run-malformed");
@@ -321,7 +382,7 @@ test("SIGTERM reaches the owned group and cleanup completes before wrapper termi
   await assert.rejects(access(root));
 });
 
-test("SIGTERM escalates a TERM-ignoring group descendant before cleanup", async () => {
+test("SIGTERM starts bounded escalation before a TERM-ignoring direct child closes", async () => {
   let output = "";
   const wrapper = spawn(
     process.execPath,
@@ -329,7 +390,7 @@ test("SIGTERM escalates a TERM-ignoring group descendant before cleanup", async 
       "--import",
       "tsx",
       new URL("./run-command.ts", import.meta.url).pathname,
-      ...command(["--print-root", "--grandchild", "--grandchild-ignore-term", "--wait"]),
+      ...command(["--print-root", "--ignore-term", "--grandchild", "--grandchild-ignore-term", "--wait"]),
     ],
     { stdio: ["ignore", "pipe", "ignore"] }
   );
@@ -349,14 +410,28 @@ test("SIGTERM escalates a TERM-ignoring group descendant before cleanup", async 
     wrapper.once("error", reject);
   });
   const grandchildPid = Number.parseInt(await eventuallyRead(join(root, "grandchild-node.txt")), 10);
+  const childPid = Number.parseInt(await eventuallyRead(join(root, "child.txt")), 10);
+  const marker = JSON.parse(await readFile(join(root, ".pdpp-test-scratch.json"), "utf8")) as { pgid: number };
+  assert.equal(marker.pgid, childPid);
   const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
     wrapper.once("error", reject);
     wrapper.once("close", (code, signal) => resolve({ code, signal }));
     wrapper.kill("SIGTERM");
   });
   assert.deepEqual(result, { code: null, signal: "SIGTERM" });
+  assert.throws(() => process.kill(childPid, 0), { code: "ESRCH" });
   assert.throws(() => process.kill(grandchildPid, 0), { code: "ESRCH" });
   await assert.rejects(access(root));
+});
+
+test("a signal latched before PGID assignment is forwarded after the PGID exists", async () => {
+  const result = await runScratchCommand(command(["--ignore-term", "--wait"]), {
+    beforePgidAssignment: async () => {
+      process.kill(process.pid, "SIGTERM");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    },
+  });
+  assert.deepEqual(result, { code: null, signal: "SIGTERM" });
 });
 
 test("SIGKILL leaves a live orphan, then a later recovery removes its dead group", async () => {

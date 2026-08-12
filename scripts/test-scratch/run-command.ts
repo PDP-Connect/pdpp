@@ -28,11 +28,21 @@ function parseCommand(argv: string[]): string[] {
   return argv.slice(1);
 }
 
-function waitForClose(child: ReturnType<typeof spawn>): Promise<CommandResult> {
-  return new Promise((resolve, reject) => {
-    child.once("error", reject);
+interface ObservedChild {
+  close: Promise<CommandResult>;
+  launchError: () => unknown;
+}
+
+/** Attach error handling before any asynchronous marker work can yield. */
+function observeChild(child: ReturnType<typeof spawn>): ObservedChild {
+  let error: unknown;
+  const close = new Promise<CommandResult>((resolve) => {
+    child.once("error", (launchError) => {
+      error = launchError;
+    });
     child.once("close", (code, signal) => resolve({ code, signal }));
   });
+  return { close, launchError: () => error };
 }
 
 function groupExists(pgid: number): boolean {
@@ -63,15 +73,22 @@ async function waitForGroup(pgid: number, timeoutMs: number): Promise<boolean> {
   return !groupExists(pgid);
 }
 
-async function terminateRemainingGroup(pgid: number): Promise<void> {
+/**
+ * Stop the exact group and prove that it is gone before its scratch can be
+ * removed. `startedAt` is the time the wrapper received its signal, rather
+ * than the time its direct child eventually closes.
+ */
+async function terminateRemainingGroup(pgid: number, startedAt = Date.now()): Promise<boolean> {
   if (!groupExists(pgid)) {
-    return;
+    return true;
   }
   signalGroup(pgid, "SIGTERM");
-  if (!(await waitForGroup(pgid, GROUP_GRACE_MS))) {
-    signalGroup(pgid, "SIGKILL");
-    await waitForGroup(pgid, GROUP_GRACE_MS);
+  const termGraceRemaining = Math.max(0, GROUP_GRACE_MS - (Date.now() - startedAt));
+  if (await waitForGroup(pgid, termGraceRemaining)) {
+    return true;
   }
+  signalGroup(pgid, "SIGKILL");
+  return waitForGroup(pgid, GROUP_GRACE_MS);
 }
 
 function runParticipant(command: string[]): Promise<CommandResult> {
@@ -79,10 +96,26 @@ function runParticipant(command: string[]): Promise<CommandResult> {
   if (!file) {
     throw new ScratchOwnershipError("usage");
   }
-  return waitForClose(spawn(file, args, { cwd: process.cwd(), env: process.env, shell: false, stdio: "inherit" }));
+  const observed = observeChild(
+    spawn(file, args, { cwd: process.cwd(), env: process.env, shell: false, stdio: "inherit" })
+  );
+  return observed.close.then((result) => {
+    if (observed.launchError()) {
+      throw observed.launchError();
+    }
+    return result;
+  });
 }
 
-async function cleanupWithResult(ownership: ScratchOwnership, result: CommandResult): Promise<CommandResult> {
+async function cleanupWithResult(
+  ownership: ScratchOwnership,
+  result: CommandResult,
+  groupStopped = true
+): Promise<CommandResult> {
+  if (!groupStopped) {
+    process.stderr.write("test scratch cleanup failed: group-still-live\n");
+    return result.code === 0 ? { code: INFRASTRUCTURE_EXIT_CODE, signal: null } : result;
+  }
   try {
     await cleanupScratchOwnership(ownership);
     return result;
@@ -93,7 +126,17 @@ async function cleanupWithResult(ownership: ScratchOwnership, result: CommandRes
   }
 }
 
-export async function runScratchCommand(argv: string[]): Promise<CommandResult> {
+export interface RunScratchCommandOptions {
+  /** Test seam for the signal window before the child PID is latched as PGID. */
+  beforePgidAssignment?: () => Promise<void>;
+  /** Test seam for the fail-closed path after a process-group shutdown attempt. */
+  stopGroup?: (pgid: number, startedAt?: number) => Promise<boolean>;
+}
+
+export async function runScratchCommand(
+  argv: string[],
+  options: RunScratchCommandOptions = {}
+): Promise<CommandResult> {
   const command = parseCommand(argv);
   const participant = await inheritedScratchOwnership();
   if (participant) {
@@ -115,15 +158,18 @@ export async function runScratchCommand(argv: string[]): Promise<CommandResult> 
   }
   let firstSignal: Signal | undefined;
   let pgid: number | undefined;
+  let signalReceivedAt: number | undefined;
+  let signalShutdown: Promise<boolean> | undefined;
+  const stopGroup = options.stopGroup ?? terminateRemainingGroup;
+  const startSignalShutdown = () => {
+    if (firstSignal && pgid !== undefined && !signalShutdown) {
+      signalShutdown = stopGroup(pgid, signalReceivedAt);
+    }
+  };
   const forwardSignal = (signal: Signal) => {
     firstSignal ??= signal;
-    if (pgid !== undefined) {
-      try {
-        signalGroup(pgid, signal);
-      } catch {
-        // Cleanup reports the final infrastructure failure if the root cannot be removed.
-      }
-    }
+    signalReceivedAt ??= Date.now();
+    startSignalShutdown();
   };
   process.on("SIGINT", forwardSignal);
   process.on("SIGTERM", forwardSignal);
@@ -135,21 +181,31 @@ export async function runScratchCommand(argv: string[]): Promise<CommandResult> 
       shell: false,
       stdio: "inherit",
     });
+    const observed = observeChild(child);
     if (!child.pid) {
       throw new ScratchOwnershipError("spawn-failed");
     }
+    await options.beforePgidAssignment?.();
     pgid = child.pid;
+    startSignalShutdown();
     await markScratchRunning(ownership, pgid);
-    let result = await waitForClose(child);
-    await terminateRemainingGroup(pgid);
+    let result = await observed.close;
+    if (observed.launchError()) {
+      throw observed.launchError();
+    }
+    const groupStopped = signalShutdown ? await signalShutdown : await stopGroup(pgid);
     if (firstSignal) {
       result = { code: null, signal: firstSignal };
     }
-    return await cleanupWithResult(ownership, result);
+    return await cleanupWithResult(ownership, result, groupStopped);
   } catch (error) {
     const reason = error instanceof ScratchOwnershipError ? error.reason : "spawn-failed";
     process.stderr.write(`test scratch command failed: ${reason}\n`);
-    return await cleanupWithResult(ownership, { code: INFRASTRUCTURE_EXIT_CODE, signal: null });
+    let groupStopped = true;
+    if (pgid !== undefined) {
+      groupStopped = signalShutdown ? await signalShutdown : await stopGroup(pgid, signalReceivedAt);
+    }
+    return await cleanupWithResult(ownership, { code: INFRASTRUCTURE_EXIT_CODE, signal: null }, groupStopped);
   } finally {
     process.off("SIGINT", forwardSignal);
     process.off("SIGTERM", forwardSignal);

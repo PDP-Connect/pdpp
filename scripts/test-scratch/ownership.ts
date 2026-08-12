@@ -386,13 +386,21 @@ export async function inheritedScratchOwnership(
   }
   const marker = await readMarker(markerPath);
   const rootStats = await lstat(root).catch(() => undefined);
+  const expectedMarkerPath = join(root, MARKER_NAME);
+  const expectedOwnerPid = marker?.owner_pid === undefined ? undefined : String(marker.owner_pid);
   if (
     !(marker && rootStats && isOwnedPrivateDirectory(rootStats)) ||
     marker.nonce !== nonce ||
     marker.root !== root ||
     marker.parent !== dirname(root) ||
     marker.dev !== rootStats.dev ||
-    marker.ino !== rootStats.ino
+    marker.ino !== rootStats.ino ||
+    markerPath !== expectedMarkerPath ||
+    env.TMPDIR !== root ||
+    env.TMP !== root ||
+    env.TEMP !== root ||
+    env.TEST_TMPDIR !== root ||
+    env.PDPP_TEST_SCRATCH_OWNER_PID !== expectedOwnerPid
   ) {
     throw new ScratchOwnershipError("invalid-inherited-ownership");
   }

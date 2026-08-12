@@ -15,6 +15,11 @@ await writeFile(join(root, "child-root.txt"), `${root}\n`);
 if (process.argv.includes("--print-root")) {
   process.stdout.write(`${root}\n`);
 }
+if (process.argv.includes("--ignore-term")) {
+  process.on("SIGTERM", () => {
+    // Intentional fixture: both the direct child and descendant can require KILL.
+  });
+}
 function startGrandchild(name: string, throughShell = false): void {
   const grandchildArgs = process.argv.includes("--grandchild-ignore-term") ? ["--ignore-term"] : [];
   const grandchild = new URL("./grandchild.ts", import.meta.url).pathname;
