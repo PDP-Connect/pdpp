@@ -187,7 +187,7 @@ test("ref.source-webhook canonicalizes a URL-shaped configured connector id for 
         captured = payload;
         return { errors: [], records_accepted: 1, records_rejected: 0, stream: payload.streamName };
       },
-      resolveConnectorId: () => "https://registry.pdpp.org/connectors/gmail",
+      resolveConnectorId: () => "https://registry.pdpp.dev/connectors/gmail",
     })
   );
   assert.equal(result.action, "ingest_records");
@@ -225,7 +225,7 @@ test("ref.source-webhook canonicalizes a URL-shaped configured connector id for 
         capturedRunRequest = payload;
         return { run_id: "run_1", status: "started", trace_id: "trc_1", trigger_kind: "webhook" };
       },
-      resolveConnectorId: () => "https://registry.pdpp.org/connectors/slack",
+      resolveConnectorId: () => "https://registry.pdpp.dev/connectors/slack",
     })
   );
   assert.equal(result.action, "schedule_run");

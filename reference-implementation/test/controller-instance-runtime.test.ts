@@ -17,7 +17,7 @@ import type {
   SchedulerStore,
 } from "../server/stores/scheduler-store.ts";
 
-const CONNECTOR_ID = "https://registry.pdpp.org/connectors/instance-runtime-test";
+const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/instance-runtime-test";
 const MANIFEST = {
   connector_id: CONNECTOR_ID,
   name: "Instance Runtime Test",

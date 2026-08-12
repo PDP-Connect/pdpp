@@ -838,9 +838,9 @@ async function mintScopedClientToken({
   }
   const authorizationDetails = [
     {
-      type: "https://pdpp.org/data-access",
+      type: "https://pdpp.dev/data-access",
       source: { kind: "connector", id: connectorId },
-      purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+      purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
       purpose_description: "PDPP read-surface smoke",
       access_mode: "continuous",
       streams: [streamGrant],

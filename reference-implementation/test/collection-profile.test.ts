@@ -10247,11 +10247,11 @@ async function startGrantRequest(asUrl: string, params: { connectorId: string })
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Collection Profile conformance test grant",
           source: { id: params.connectorId, kind: "connector" },
           streams: [{ name: "items" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: "longview",

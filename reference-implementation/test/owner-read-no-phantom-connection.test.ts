@@ -34,7 +34,7 @@ const manualArtifactManifest = {
   connector_id: CONNECTOR_ID,
   connector_key: "test-manual-artifact",
   display_name: "Test Manual Artifact",
-  manifest_uri: "https://registry.pdpp.org/connectors/test-manual-artifact",
+  manifest_uri: "https://registry.pdpp.dev/connectors/test-manual-artifact",
   protocol_version: "0.1.0",
   setup: {
     manual_or_upload: {

@@ -34,7 +34,7 @@ import { closeDb, initDb } from "../server/db.ts";
 import type { ActiveRunRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
-const CONNECTOR_ID = "https://registry.pdpp.org/connectors/generation-fence-test";
+const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/generation-fence-test";
 const MANIFEST = {
   connector_id: CONNECTOR_ID,
   name: "Generation Fence Test",

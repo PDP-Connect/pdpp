@@ -34,7 +34,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const POLYFILL_MANIFESTS_DIR = resolve(__dirname, "..", "..", "packages", "polyfill-connectors", "manifests");
 const REFERENCE_MANIFESTS_DIR = resolve(__dirname, "..", "manifests");
 
-const REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
+const REGISTRY_PREFIX = "https://registry.pdpp.dev/connectors/";
 
 test("connectorKeyFromRegistryUrl returns the canonical slug for every first-party URL", () => {
   for (const key of firstPartyConnectorKeys()) {
@@ -46,7 +46,7 @@ test("connectorKeyFromRegistryUrl rejects non-first-party / malformed URLs", () 
   // Slug not in the allowlist — fail closed.
   assert.equal(connectorKeyFromRegistryUrl(`${REGISTRY_PREFIX}fictional`), null);
   // Wrong host or scheme.
-  assert.equal(connectorKeyFromRegistryUrl("http://registry.pdpp.org/connectors/gmail"), null);
+  assert.equal(connectorKeyFromRegistryUrl("http://registry.pdpp.dev/connectors/gmail"), null);
   assert.equal(connectorKeyFromRegistryUrl("https://other.example/connectors/gmail"), null);
   // Extra path segments / query / fragment.
   assert.equal(connectorKeyFromRegistryUrl(`${REGISTRY_PREFIX}gmail/extra`), null);

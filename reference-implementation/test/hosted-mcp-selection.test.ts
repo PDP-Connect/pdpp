@@ -7,7 +7,7 @@
  * The hosted MCP authorize-package consent form previously concatenated raw
  * connector ids with `:` delimiters (`connection:<connector_id>:<connection_id>`).
  * That collapsed when `connector_id` was URL-shaped — the first-party
- * reference connectors use `https://registry.pdpp.org/connectors/<name>` —
+ * reference connectors use `https://registry.pdpp.dev/connectors/<name>` —
  * because `String.prototype.indexOf(':')` split on the scheme separator and
  * the AS tried to resolve `https` as a connector id.
  *
@@ -37,7 +37,7 @@ function mustExist<T>(value: T | null | undefined, description: string): T {
 }
 
 test("round-trips a URL-shaped connector id without delimiter collapse", () => {
-  const urlShaped = "https://registry.pdpp.org/connectors/gmail";
+  const urlShaped = "https://registry.pdpp.dev/connectors/gmail";
   const encoded = encodeHostedMcpSelection({ connectionId: null, connectorId: urlShaped });
 
   // The encoded form MUST NOT contain a literal `:` or `/`, so no downstream
@@ -50,7 +50,7 @@ test("round-trips a URL-shaped connector id without delimiter collapse", () => {
 });
 
 test("round-trips a (connector, connection) tuple with URL-shaped connector id", () => {
-  const urlShaped = "https://registry.pdpp.org/connectors/gmail";
+  const urlShaped = "https://registry.pdpp.dev/connectors/gmail";
   const connectionId = "conn_01HXYZ";
   const encoded = encodeHostedMcpSelection({ connectionId, connectorId: urlShaped });
   const parsed = parseHostedMcpSelection(encoded);
@@ -60,14 +60,14 @@ test("round-trips a (connector, connection) tuple with URL-shaped connector id",
 test('regression: literal "connection:<url>:<id>" is rejected, not split', () => {
   // This is the exact shape the old parser produced and accepted. The
   // structural parser MUST refuse it rather than guessing a connector id.
-  const legacy = "connection:https://registry.pdpp.org/connectors/gmail:conn_01HXYZ";
+  const legacy = "connection:https://registry.pdpp.dev/connectors/gmail:conn_01HXYZ";
   assert.equal(parseHostedMcpSelection(legacy), null);
   assert.deepEqual(parseHostedMcpSelections([legacy]), []);
   assert.deepEqual(parseHostedMcpSelections(legacy), []);
 });
 
 test('regression: literal "connector:<url>" is rejected, not slice-parsed', () => {
-  const legacy = "connector:https://registry.pdpp.org/connectors/gmail";
+  const legacy = "connector:https://registry.pdpp.dev/connectors/gmail";
   assert.equal(parseHostedMcpSelection(legacy), null);
   assert.deepEqual(parseHostedMcpSelections([legacy]), []);
 });
@@ -161,7 +161,7 @@ test("encoder rejects inputs without a usable connectorId", () => {
 });
 
 test("stream selection round-trips a (connector, connection, stream) tuple", () => {
-  const urlShaped = "https://registry.pdpp.org/connectors/gmail";
+  const urlShaped = "https://registry.pdpp.dev/connectors/gmail";
   const encoded = encodeHostedMcpStreamSelection({
     connectionId: "conn_01HXYZ",
     connectorId: urlShaped,

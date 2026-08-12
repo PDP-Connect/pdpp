@@ -145,7 +145,7 @@ async function createAgentConnectRequest({
       accessMode: "single_use",
       clientId: registered.client_id,
       clientName,
-      purposeCode: "https://pdpp.org/purpose/personal_assistant",
+      purposeCode: "https://pdpp.dev/purpose/personal_assistant",
       purposeDescription: "Test agent-connect access.",
       sourceId: spotifyManifest.connector_id,
       sourceKind: "connector",
@@ -266,7 +266,7 @@ test("cache: writeGrant / readGrant / listGrants round-trips without token mater
     issued_at: new Date().toISOString(),
     purpose_description: "Test purpose",
     revoked: false,
-    source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+    source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
     streams: [{ name: "listening_history" }],
   };
   writeGrant(cacheRoot, "grant_xyz", grantMeta);
@@ -308,13 +308,13 @@ test("cache: hasUsableGrant finds a cached grant matching connector and streams"
     expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
     grant_id: "grant_match",
     revoked: false,
-    source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+    source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
     streams: [{ name: "listening_history" }],
   });
   await writeToken(cacheRoot, "grant_match", "tok");
 
   const found = hasUsableGrant(cacheRoot, {
-    sourceId: "https://registry.pdpp.org/connectors/spotify",
+    sourceId: "https://registry.pdpp.dev/connectors/spotify",
     streams: ["listening_history"],
   });
   assert.ok(found, "should find a matching usable grant");
@@ -328,11 +328,11 @@ test("cache: hasUsableGrant rejects expired grants", async () => {
     expires_at: new Date(Date.now() - 1000).toISOString(),
     grant_id: "grant_exp",
     revoked: false,
-    source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+    source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
     streams: [{ name: "listening_history" }],
   });
   await writeToken(cacheRoot, "grant_exp", "tok");
-  const found = hasUsableGrant(cacheRoot, { sourceId: "https://registry.pdpp.org/connectors/spotify" });
+  const found = hasUsableGrant(cacheRoot, { sourceId: "https://registry.pdpp.dev/connectors/spotify" });
   assert.equal(found, null, "expired grant must not be returned");
 });
 
@@ -343,11 +343,11 @@ test("cache: hasUsableGrant rejects revoked grants", async () => {
     expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
     grant_id: "grant_rev",
     revoked: true,
-    source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+    source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
     streams: [{ name: "listening_history" }],
   });
   await writeToken(cacheRoot, "grant_rev", "tok");
-  const found = hasUsableGrant(cacheRoot, { sourceId: "https://registry.pdpp.org/connectors/spotify" });
+  const found = hasUsableGrant(cacheRoot, { sourceId: "https://registry.pdpp.dev/connectors/spotify" });
   assert.equal(found, null, "revoked grant must not be returned");
 });
 
@@ -360,7 +360,7 @@ test("cache: redactGrantForDisplay never exposes token material", () => {
     issued_at: new Date().toISOString(),
     purpose_description: "Test",
     revoked: false,
-    source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+    source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
     streams: [{ name: "listening_history" }],
   };
   const display = redactGrantForDisplay(grant);
@@ -400,7 +400,7 @@ test("agent-flow: register client, stage PAR, approve inline, store token, verif
       accessMode: "single_use",
       clientId: registered.client_id,
       clientName: "Agent CLI Test",
-      purposeCode: "https://pdpp.org/purpose/personal_assistant",
+      purposeCode: "https://pdpp.dev/purpose/personal_assistant",
       purposeDescription: "Test agent access to listening history.",
       sourceId: connectorId,
       sourceKind: "connector",
@@ -519,7 +519,7 @@ test("agent-flow: deny path — no token is cached after denial", async () => {
         accessMode: "single_use",
         clientId: registered.client_id,
         clientName: "Agent CLI Deny Test",
-        purposeCode: "https://pdpp.org/purpose/personal_assistant",
+        purposeCode: "https://pdpp.dev/purpose/personal_assistant",
         purposeDescription: "Test denial path",
         sourceId: spotifyManifest.connector_id,
         sourceKind: "connector",
@@ -711,7 +711,7 @@ test("agent-flow: forget removes local files, does not contact AS", async () => 
     expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
     grant_id: "grant_forget_test",
     revoked: false,
-    source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+    source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
     streams: [{ name: "listening_history" }],
   });
   await writeToken(cacheRoot, "grant_forget_test", "test-token-value");
@@ -736,7 +736,7 @@ test("agent-flow: status output shape contains no token material", async () => {
     issued_at: new Date().toISOString(),
     purpose_description: "Status test purpose",
     revoked: false,
-    source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+    source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
     streams: [{ name: "listening_history" }],
   });
   await writeToken(cacheRoot, "grant_status", "must-not-appear-in-display");
@@ -806,7 +806,7 @@ test("agent wait: returns immediately when a usable token is already cached", as
     expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
     grant_id: "grant_wait_ready",
     revoked: false,
-    source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+    source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
     streams: [{ name: "listening_history" }],
   });
   await writeToken(cacheRoot, "grant_wait_ready", "ready-token-value");
@@ -830,7 +830,7 @@ test("agent wait: returns for a specific grant-id when that grant is cached", as
     expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
     grant_id: "grant_other",
     revoked: false,
-    source: { id: "https://registry.pdpp.org/connectors/github", kind: "connector" },
+    source: { id: "https://registry.pdpp.dev/connectors/github", kind: "connector" },
     streams: [{ name: "issues" }],
   });
   // No token for grant_other yet
@@ -839,7 +839,7 @@ test("agent wait: returns for a specific grant-id when that grant is cached", as
     expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
     grant_id: "grant_target",
     revoked: false,
-    source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+    source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
     streams: [{ name: "listening_history" }],
   });
   await writeToken(cacheRoot, "grant_target", "target-token");
@@ -906,7 +906,7 @@ test("agent wait --grant-id: does not succeed for an expired grant", async () =>
     expires_at: new Date(Date.now() - 1000).toISOString(), // already expired
     grant_id: "grant_expired_wait",
     revoked: false,
-    source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+    source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
     streams: [{ name: "listening_history" }],
   });
   await writeToken(cacheRoot, "grant_expired_wait", "expired-token");
@@ -924,7 +924,7 @@ test("agent wait --grant-id: does not succeed for a locally revoked grant", asyn
     expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
     grant_id: "grant_revoked_wait",
     revoked: true, // locally marked revoked
-    source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+    source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
     streams: [{ name: "listening_history" }],
   });
   await writeToken(cacheRoot, "grant_revoked_wait", "revoked-token");

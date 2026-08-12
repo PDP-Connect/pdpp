@@ -8,7 +8,7 @@
  * manifest can share a `connector_id`. GitHub is the live example today:
  * both reference-implementation/manifests/github.json and
  * packages/polyfill-connectors/manifests/github.json use connector_id
- * https://registry.pdpp.org/connectors/github. Before the fix in
+ * https://registry.pdpp.dev/connectors/github. Before the fix in
  * runtime/controller.ts, a controller-triggered polyfill GitHub run
  * executed the reference seed connector, whose GitHub fixture emits a
  * `commits` PROGRESS stream the polyfill manifest does not declare.

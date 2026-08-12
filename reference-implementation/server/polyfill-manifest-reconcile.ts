@@ -128,7 +128,7 @@ function isNonEmptyString(value: unknown): value is string {
  * (auth.js) rewrites `connector_id`/`connector_key` to the canonical short
  * key and may add `manifest_uri`, so the persisted row never byte-matches a
  * shipped manifest that declares a long-form `connector_id` (e.g.
- * `https://registry.pdpp.org/connectors/amazon`). Every first-party shipped
+ * `https://registry.pdpp.dev/connectors/amazon`). Every first-party shipped
  * manifest uses that long form, so comparing raw shipped bytes against the
  * persisted row made `manifestsEqual` return false on EVERY reconcile pass
  * for EVERY first-party connector, even when nothing changed — triggering

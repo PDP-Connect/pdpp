@@ -13,8 +13,8 @@
  * dates are plausible but fabricated. This is fixture data, not a captured run.
  */
 
-export const CHASE_CONNECTOR_ID = "https://registry.pdpp.org/connectors/chase";
-export const GMAIL_CONNECTOR_ID = "https://registry.pdpp.org/connectors/gmail";
+export const CHASE_CONNECTOR_ID = "https://registry.pdpp.dev/connectors/chase";
+export const GMAIL_CONNECTOR_ID = "https://registry.pdpp.dev/connectors/gmail";
 
 // chase `transactions` — drives the MONEY card via declared `amount: currency`.
 export const CHASE_TRANSACTIONS = [

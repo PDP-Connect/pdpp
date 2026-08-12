@@ -121,7 +121,7 @@ test("redactStderrTail: tolerates empty/null input", () => {
 // ─── 3. Spawn proof — runtime persists the diagnostic on connector exit ──────
 
 const TEST_MANIFEST = {
-  connector_id: "https://registry.pdpp.org/connectors/test-failure-diagnostics-stub",
+  connector_id: "https://registry.pdpp.dev/connectors/test-failure-diagnostics-stub",
   runtime_requirements: {},
   streams: [
     {

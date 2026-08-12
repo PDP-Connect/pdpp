@@ -6765,7 +6765,7 @@ export async function resolveReadRequestBindings({
 }: ReadRequestBindingsArgs) {
   // Canonicalize the storage binding's connector_id at the shared admission
   // boundary. A grant or owner storage binding may still carry the legacy
-  // URL-shaped connector id (e.g. https://registry.pdpp.org/connectors/gmail);
+  // URL-shaped connector id (e.g. https://registry.pdpp.dev/connectors/gmail);
   // connector_instances and records are keyed by the canonical key (`gmail`),
   // so listActiveByConnector must look up under that same canonical key or it
   // returns zero rows and the read fails connection_not_found. This mirrors

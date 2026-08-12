@@ -57,7 +57,7 @@ function persistedGrant(grantId: string): string {
     client_id: CLIENT_ID,
     grant_id: grantId,
     manifest_version: MANIFEST.version,
-    purpose_code: "https://pdpp.org/purpose/analytics",
+    purpose_code: "https://pdpp.dev/purpose/analytics",
     source: { id: CONNECTOR_ID, kind: "connector" },
     streams: [{ name: "items" }],
     subject_id: SUBJECT_ID,

@@ -1,8 +1,8 @@
 {
   "protocol_version": "0.1.0",
-  "connector_id": "https://registry.pdpp.org/connectors/wholefoods",
+  "connector_id": "https://registry.pdpp.dev/connectors/wholefoods",
   "connector_key": "wholefoods",
-  "manifest_uri": "https://registry.pdpp.org/connectors/wholefoods",
+  "manifest_uri": "https://registry.pdpp.dev/connectors/wholefoods",
   "version": "0.1.0",
   "display_name": "Whole Foods",
   "runtime_requirements": {

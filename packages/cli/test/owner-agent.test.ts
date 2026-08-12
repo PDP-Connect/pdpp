@@ -565,7 +565,7 @@ test("control lists capabilities and connections without printing the bearer", a
           connection_id: "cin_shared",
           connector_id: "amazon",
           connector_key: "amazon",
-          display_name: "https://registry.pdpp.org/connectors/amazon",
+          display_name: "https://registry.pdpp.dev/connectors/amazon",
           label_status: "fallback",
           status: "active",
         },

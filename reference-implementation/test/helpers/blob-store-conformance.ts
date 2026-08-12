@@ -131,8 +131,8 @@ export interface BlobStoreDriver {
 
 type TestFn = (name: string, fn: () => Promise<void>) => void;
 
-const CONNECTOR_A = "https://test.pdpp.org/connectors/blob-a";
-const CONNECTOR_B = "https://test.pdpp.org/connectors/blob-b";
+const CONNECTOR_A = "https://test.pdpp.dev/connectors/blob-a";
+const CONNECTOR_B = "https://test.pdpp.dev/connectors/blob-b";
 const STREAM_ATTACHMENTS = "attachments";
 const STREAM_PHOTOS = "photos";
 

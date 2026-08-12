@@ -144,11 +144,11 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
         authorization_details: [
           {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/analytics",
+            purpose_code: "https://pdpp.dev/purpose/analytics",
             purpose_description: "owner-connection intent boundary test",
             source: { id: connectorId, kind: "connector" },
             streams: [{ fields: ["id"], name: streamName }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_id: "longview",
@@ -355,7 +355,7 @@ test("owner-agent initiates a local-collector connection and receives a real enr
       body: rawBody,
       resp,
     } = await createIntent(rsUrl, ownerToken, {
-      connector_id: " https://registry.pdpp.org/connectors/codex ",
+      connector_id: " https://registry.pdpp.dev/connectors/codex ",
       display_name: "My laptop Codex",
     });
     const body = rawBody as IntentResponseBody;
@@ -456,7 +456,7 @@ test("owner-agent initiating Amazon gets browser runtime class plus static-secre
       body: rawBody,
       resp,
     } = await createIntent(rsUrl, ownerToken, {
-      connector_id: "https://registry.pdpp.org/connectors/amazon",
+      connector_id: "https://registry.pdpp.dev/connectors/amazon",
     });
     const body = rawBody as IntentResponseBody;
     assert.equal(status, 201);
@@ -549,7 +549,7 @@ test("a trusted owner agent initiates an Amazon SECOND account up to the owner-m
       body: rawBody,
       resp,
     } = await createIntent(rsUrl, ownerToken, {
-      connector_id: "https://registry.pdpp.org/connectors/amazon",
+      connector_id: "https://registry.pdpp.dev/connectors/amazon",
       display_name: "Shared Amazon",
     });
     const body = rawBody as IntentResponseBody;
@@ -724,7 +724,7 @@ test("owner-agent initiating provider authorization returns deployment blockers,
       connector_id: "fitness_oauth",
       connector_key: "fitness_oauth",
       display_name: "Fitness OAuth",
-      manifest_uri: "https://registry.pdpp.org/connectors/fitness-oauth",
+      manifest_uri: "https://registry.pdpp.dev/connectors/fitness-oauth",
     });
     const { status, body: rawBody } = await createIntent(rsUrl, ownerToken, { connector_id: "fitness_oauth" });
     const body = rawBody as IntentResponseBody;

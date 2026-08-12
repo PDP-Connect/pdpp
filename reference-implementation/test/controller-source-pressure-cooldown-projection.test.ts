@@ -23,7 +23,7 @@ import type {
 } from "../server/stores/scheduler-store.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
-const CONNECTOR_ID = "https://registry.pdpp.org/connectors/cooldown-projection-test";
+const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/cooldown-projection-test";
 const INSTANCE_ID = "cin_cooldown_projection";
 
 interface PendingDetailGapRowFixture {
@@ -273,7 +273,7 @@ const MANUAL_CONNECTOR_MANIFEST = {
       recommended_mode: "manual",
     },
   },
-  connector_id: "https://registry.pdpp.org/connectors/chatgpt",
+  connector_id: "https://registry.pdpp.dev/connectors/chatgpt",
   connector_key: "chatgpt",
   display_name: "Manual catch-up test",
   protocol_version: "0.1.0",

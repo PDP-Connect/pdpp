@@ -132,7 +132,7 @@ export interface StreamMetadata {
 export interface ConnectorManifest {
   connector_id: string;
   // Canonical short key (e.g. "usaa", "claude-code"). Bundled manifests set
-  // `connector_id` to the registry URI (https://registry.pdpp.org/connectors/usaa)
+  // `connector_id` to the registry URI (https://registry.pdpp.dev/connectors/usaa)
   // but `connector_key` to the plain key — and stored records carry the plain key.
   // Anything keying per-connector metadata against record rows must use this.
   connector_key?: string;

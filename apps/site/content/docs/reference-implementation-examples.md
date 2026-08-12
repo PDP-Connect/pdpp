@@ -44,7 +44,7 @@ Content-Type: application/json
   },
   "authorization_details": [
     {
-      "type": "https://pdpp.org/data-access",
+      "type": "https://pdpp.dev/data-access",
       "source": {
         "kind": "provider_native",
         "id": "northstar_hr"
@@ -386,8 +386,8 @@ instead of `grant_id`, and a `package` object instead of `grant`.
   "package": {
     "package_id": "gpkg_7f8a9b0c1d2e3f40",
     "grants": [
-      { "grant_id": "grt_abc1", "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/gmail" } },
-      { "grant_id": "grt_abc2", "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/github" } }
+      { "grant_id": "grt_abc1", "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/gmail" } },
+      { "grant_id": "grt_abc2", "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/github" } }
     ]
   },
   "trace_id": "trc_b2c3d4e5f6a70002"
@@ -412,8 +412,8 @@ curl -sX POST "$AS_URL/oauth/par" \
   -d '{
     "client_id": "my_client",
     "authorization_details": [{
-      "type": "https://pdpp.org/data-access",
-      "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
+      "type": "https://pdpp.dev/data-access",
+      "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
       "purpose_code": "assist.summarize",
       "purpose_description": "Retrieve the three named artists for a comparison task.",
       "access_mode": "single_use",
@@ -488,9 +488,9 @@ REQUEST_URI=$(curl -sX POST "$AS_URL/oauth/par" \
   -d '{
     "client_id": "longview",
     "authorization_details": [{
-      "type": "https://pdpp.org/data-access",
+      "type": "https://pdpp.dev/data-access",
       "source": { "kind": "connector", "id": "spotify" },
-      "purpose_code": "https://pdpp.org/purpose/personalization",
+      "purpose_code": "https://pdpp.dev/purpose/personalization",
       "purpose_description": "One-time recommendation bootstrap",
       "access_mode": "single_use",
       "streams": [{ "name": "top_artists", "fields": ["id", "name", "popularity"] }]
@@ -527,7 +527,7 @@ reference default is 24h from issuance:
     },
     "source": { "kind": "connector", "id": "spotify" },
     "manifest_version": "1.0.0",
-    "purpose_code": "https://pdpp.org/purpose/personalization",
+    "purpose_code": "https://pdpp.dev/purpose/personalization",
     "purpose_description": "One-time recommendation bootstrap",
     "access_mode": "single_use",
     "streams": [{ "name": "top_artists", "fields": ["id", "name", "popularity"] }],
@@ -593,7 +593,7 @@ distinct; a reviewer can map every field in the JSON above to exactly one class.
 | Semantic class | What it is | v0.1 fields | Trust treatment |
 | --- | --- | --- | --- |
 | **Protocol-enforced constraints** | Values the AS and/or RS actually validate or enforce | `streams`, field projection, `time_range`, `resources`, `access_mode` | Authoritative. Rendered as the binding terms of the grant. |
-| **Structured policy declarations** | Machine-readable statements that matter for consent and audit but are not generally self-enforcing | `purpose_code`, `purpose_description`, `retention` | Displayed as declared policy. (`https://pdpp.org/purpose/ai_training` is the one exception that adds a protocol-level consent requirement.) |
+| **Structured policy declarations** | Machine-readable statements that matter for consent and audit but are not generally self-enforcing | `purpose_code`, `purpose_description`, `retention` | Displayed as declared policy. (`https://pdpp.dev/purpose/ai_training` is the one exception that adds a protocol-level consent requirement.) |
 | **Attributed client claims** | Client-authored, unverifiable statements about this request | `client_claims.commitments` | Rendered separately and attributed to the client (e.g. "Longview says:"). MUST NOT share the visual register of enforced terms. |
 
 `client_display` is a **separate category**, not one of the three classes:
@@ -610,9 +610,9 @@ software statement → inline → `client_id` fallback).
 {
   "client_display": { "name": "Longview", "uri": "https://longview.example" },
   "authorization_details": [{
-    "type": "https://pdpp.org/data-access",
+    "type": "https://pdpp.dev/data-access",
     "access_mode": "single_use",
-    "purpose_code": "https://pdpp.org/purpose/personalization",
+    "purpose_code": "https://pdpp.dev/purpose/personalization",
     "client_claims": { "commitments": ["Data used only for this study"] }
   }]
 }

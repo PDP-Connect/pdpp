@@ -14,10 +14,10 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const SRC = `${HERE}overview-hero.tsx`;
 
-test("overview-hero does not contain registry.pdpp.org URL patterns", async () => {
+test("overview-hero does not contain registry.pdpp.dev URL patterns", async () => {
   const src = await readFile(SRC, "utf8");
   assert.ok(
-    !src.includes("registry.pdpp.org"),
+    !src.includes("registry.pdpp.dev"),
     "connector_id is canonical post-migration; registry URL must not appear in display code"
   );
 });

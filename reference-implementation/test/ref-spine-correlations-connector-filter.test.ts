@@ -9,7 +9,7 @@
  * Spine events bind their source under the canonical connector key (e.g.
  * `spotify`), never the URL-shaped registry id. An owner who filters with a
  * URL-shaped value
- * (`?connector_id=https://registry.pdpp.org/connectors/spotify`) must see the
+ * (`?connector_id=https://registry.pdpp.dev/connectors/spotify`) must see the
  * same canonically-keyed correlations as `?connector_id=spotify`, mirroring
  * the already-fixed `/_ref/connections` boundary
  * (`server/routes/ref-connectors.ts`). Without canonicalization in
@@ -30,7 +30,7 @@ type TestServer = Awaited<ReturnType<typeof startServer>>;
 type JsonObject = Record<string, unknown>;
 
 const CANONICAL_KEY = "spotify";
-const URL_ID = "https://registry.pdpp.org/connectors/spotify";
+const URL_ID = "https://registry.pdpp.dev/connectors/spotify";
 
 async function closeServer(server: TestServer): Promise<void> {
   server.schedulerManager?.stop?.();

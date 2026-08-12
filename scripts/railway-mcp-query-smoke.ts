@@ -73,7 +73,7 @@ import {
 // rather than inventing a connector. The records are hand-built here, NOT
 // produced by running the seed connector — task 3.2 is explicit that the seed is
 // a hand-imported fixture with no connector run.
-export const SEED_CONNECTOR_ID = "https://registry.pdpp.org/connectors/spotify";
+export const SEED_CONNECTOR_ID = "https://registry.pdpp.dev/connectors/spotify";
 export const SEED_STREAM = "top_artists";
 
 export interface SeedRecord {
@@ -501,9 +501,9 @@ async function mintClientToken(origin: string, sessionCookie: string, log: LogFn
   const verifier = crypto.randomBytes(32).toString("base64url");
   const authorizationDetails = [
     {
-      type: "https://pdpp.org/data-access",
+      type: "https://pdpp.dev/data-access",
       source: { kind: "connector", id: SEED_CONNECTOR_ID },
-      purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+      purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
       purpose_description: "Railway MCP query smoke",
       access_mode: "continuous",
       streams: [{ name: "*" }],

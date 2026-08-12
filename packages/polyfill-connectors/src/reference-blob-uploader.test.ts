@@ -11,7 +11,7 @@ import type { AttachmentRecord } from "../connectors/gmail/types.ts";
 import { makeReferenceBlobUploader, ReferenceBlobUploadFailure } from "./reference-blob-uploader.ts";
 
 const baseArgs = {
-  connectorId: "https://registry.pdpp.org/connectors/test",
+  connectorId: "https://registry.pdpp.dev/connectors/test",
   content: [Buffer.from("attachment")],
   mimeType: "text/plain",
   recordKey: "record-key",
@@ -65,7 +65,7 @@ function composedHydrator(content: AsyncIterable<Buffer>, fetchFn: typeof fetch,
     rsUrl: "https://pdpp.example.test",
   });
   return makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/test",
+    connectorId: "https://registry.pdpp.dev/connectors/test",
     fetchAttachment: () => Promise.resolve({ content, expectedSize: null, mimeType: "text/plain" }),
     maxBytes,
     uploadBlob,

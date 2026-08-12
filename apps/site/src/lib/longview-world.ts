@@ -47,7 +47,7 @@ export const LONGVIEW_STREAM_DETAILS = {
 } as const;
 
 export const LONGVIEW_CONNECTOR_SPECIMEN: ConnectorCardProps = {
-  connectorId: "https://registry.pdpp.org/profiles/compensation-v1",
+  connectorId: "https://registry.pdpp.dev/profiles/compensation-v1",
   displayName: "Compensation profile",
   profiles: [{ id: "career-move", label: "Career move planning", streamCount: 3 }],
   streams: [

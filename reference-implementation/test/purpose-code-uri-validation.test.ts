@@ -41,7 +41,7 @@ function baseRequest(purposeCode: string): Record<string, unknown> {
         purpose_description: "purpose-code syntax coverage",
         source: { id: "demo", kind: "connector" },
         streams: [{ fields: ["id"], name: "items" }],
-        type: "https://pdpp.org/data-access",
+        type: "https://pdpp.dev/data-access",
       },
     ],
     client_id: registeredClientId,
@@ -73,7 +73,7 @@ async function purposeCodeOutcome(
 }
 
 test("a recognized absolute-URI purpose_code is accepted", async () => {
-  const out = await purposeCodeOutcome("https://pdpp.org/purpose/analytics");
+  const out = await purposeCodeOutcome("https://pdpp.dev/purpose/analytics");
   assert.equal(out.ok, true, `expected accept, got ${JSON.stringify(out)}`);
 });
 

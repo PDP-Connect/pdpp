@@ -395,7 +395,7 @@ test("resolveReadRequestBindings forwards deprecated_alias_used warning when ali
 //
 // Regression guard for the grant/owner-read `connection_not_found` cluster:
 // a first-party connector registers under its URL-shaped manifest connector_id
-// (`https://registry.pdpp.org/connectors/<slug>`), which the catalog, the
+// (`https://registry.pdpp.dev/connectors/<slug>`), which the catalog, the
 // connector_instances row, and the records rows all collapse to the canonical
 // key (`<slug>`) at write time. A grant or owner storage binding can still
 // carry the legacy URL form, so `resolveReadRequestBindings` MUST canonicalize
@@ -403,7 +403,7 @@ test("resolveReadRequestBindings forwards deprecated_alias_used warning when ali
 // admission finds zero rows and the read fails connection_not_found.
 // See canonicalize-connector-keys Decision 1.
 
-const FIRST_PARTY_URL_CONNECTOR_ID = "https://registry.pdpp.org/connectors/gmail";
+const FIRST_PARTY_URL_CONNECTOR_ID = "https://registry.pdpp.dev/connectors/gmail";
 const FIRST_PARTY_CANONICAL_KEY = "gmail";
 
 const firstPartyManifest = {

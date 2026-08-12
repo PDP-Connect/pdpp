@@ -24,7 +24,7 @@ test("connectorRetainsSurfaceProcess: ChatGPT is a retained credential boundary"
 });
 
 test("connectorRetainsSurfaceProcess: ChatGPT URL / registry form resolves via canonical key", () => {
-  assert.equal(connectorRetainsSurfaceProcess("https://registry.pdpp.org/connectors/chatgpt"), true);
+  assert.equal(connectorRetainsSurfaceProcess("https://registry.pdpp.dev/connectors/chatgpt"), true);
 });
 
 test("connectorRetainsSurfaceProcess: unregistered connectors are NOT retained", () => {

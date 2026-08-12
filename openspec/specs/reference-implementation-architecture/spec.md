@@ -7293,7 +7293,7 @@ The reference implementation SHALL use canonical `connector_key` values for conn
 
 #### Scenario: Grant-scoped or owner read resolves a connection from a legacy storage binding
 
-- **WHEN** a grant-scoped client read, owner self-export read, or blob fetch resolves the active connection set from a storage binding whose `connector_id` still carries a legacy URL-shaped first-party id (e.g. `https://registry.pdpp.org/connectors/gmail`)
+- **WHEN** a grant-scoped client read, owner self-export read, or blob fetch resolves the active connection set from a storage binding whose `connector_id` still carries a legacy URL-shaped first-party id (e.g. `https://registry.pdpp.dev/connectors/gmail`)
 - **THEN** the admission resolver SHALL canonicalize that `connector_id` to its `connector_key` (e.g. `gmail`) before enumerating active `connector_instances`
 - **AND** it SHALL resolve the same connection set it would for the bare canonical key, because records, blob bindings, and `connector_instances` are all keyed by `connector_key`
 - **AND** it SHALL NOT return `connection_not_found` solely because the storage binding carried the legacy URL alias rather than the canonical key.

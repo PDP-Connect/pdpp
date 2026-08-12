@@ -93,11 +93,11 @@ async function startPendingConsent(asUrl: string): Promise<string> {
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: SPOTIFY_MANIFEST.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_display: { name: "Longview" },

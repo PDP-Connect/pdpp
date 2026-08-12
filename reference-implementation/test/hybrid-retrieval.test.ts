@@ -190,7 +190,7 @@ async function approveClientGrant(asUrl: string, params: ApproveClientGrantParam
           purpose_description: params.purpose_description,
           source: { id: params.connector_id, kind: "connector" },
           streams: params.streams,
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: params.client_id,
@@ -505,7 +505,7 @@ test("client-token hybrid search respects the same grant projection as lexical +
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorA,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "hybrid test",
       streams: [{ fields: ["id", "title"], name: "posts" }],
     });
@@ -538,7 +538,7 @@ test("client-token hybrid search rejects streams[] not in grant (same as lexical
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorA,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "grant enforcement",
       streams: [{ fields: ["id", "title"], name: "posts" }],
     });

@@ -348,11 +348,11 @@ async function completeOauthCodeFlow({
   const authorizationDetails = [
     {
       access_mode: "continuous",
-      purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+      purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
       purpose_description: "Use PDPP data through hosted MCP.",
       source: { id: manifest.connector_id, kind: "connector" },
       streams: [{ name: "*" }],
-      type: "https://pdpp.org/data-access",
+      type: "https://pdpp.dev/data-access",
     },
   ];
   const authorizeUrl = new URL(`${asUrl}/oauth/authorize`);
@@ -419,11 +419,11 @@ function hostedMcpAuthorizationDetails(manifest: ConnectorManifest): Record<stri
   return [
     {
       access_mode: "continuous",
-      purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+      purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
       purpose_description: "Use PDPP data through hosted MCP.",
       source: { id: manifest.connector_id, kind: "connector" },
       streams: [{ name: "*" }],
-      type: "https://pdpp.org/data-access",
+      type: "https://pdpp.dev/data-access",
     },
   ];
 }
@@ -820,7 +820,7 @@ test('POST /oauth/authorize/mcp-package rejects legacy delimited selection witho
     // AS no longer stores manifests under URL keys, but the parser still
     // needs to reject this shape without leaking "https" or collapsing the
     // URL into the "Unknown connector" error branch.
-    const legacyUrlShapedConnectorId = "https://registry.pdpp.org/connectors/spotify";
+    const legacyUrlShapedConnectorId = "https://registry.pdpp.dev/connectors/spotify";
     const client = await registerAuthCodeClient(asUrl);
 
     const verifier = randomBytes(32).toString("base64url");
@@ -902,7 +902,7 @@ test("hosted MCP source selection uses hosted-ui option styles", async () => {
     // human meta copy alongside the display name. See
     // `openspec/changes/canonicalize-connector-keys/`.
     assert.equal(
-      html.includes("https://registry.pdpp.org"),
+      html.includes("https://registry.pdpp.dev"),
       false,
       "picker meta copy MUST NOT show registry URLs; expected canonical connector keys"
     );
@@ -1080,7 +1080,7 @@ test("/mcp rejects missing and owner bearers", async () => {
     };
     assert.equal(agentDiscovery.mcp.endpoint, `${rsUrl}/mcp`);
     assert.deepEqual(agentDiscovery.mcp.authorization.device_code, {
-      authorization_details_type: "https://pdpp.org/data-access",
+      authorization_details_type: "https://pdpp.dev/data-access",
       device_authorization_endpoint: `${asUrl}/oauth/device_authorization`,
       flow: "device_code",
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
@@ -2844,7 +2844,7 @@ test('GET /oauth/authorize?connector_id=<URL-shaped id> resolves canonically wit
     const url = buildAuthorizeGetUrl({
       asUrl,
       client,
-      extra: { connector_id: "https://registry.pdpp.org/connectors/spotify" },
+      extra: { connector_id: "https://registry.pdpp.dev/connectors/spotify" },
     });
     const resp = await fetch(url, { redirect: "manual" });
     // A URL-shaped first-party connector id must canonicalize and stage a
@@ -2939,7 +2939,7 @@ test("GET /oauth/authorize?connector_id=<URL> stages pending consent with canoni
     url.searchParams.set("code_challenge_method", "S256");
     // URL-shaped connector id — the bug: before the fix this staged a pending
     // consent with storage_binding.connector_id = 'https://...'
-    url.searchParams.set("connector_id", "https://registry.pdpp.org/connectors/spotify");
+    url.searchParams.set("connector_id", "https://registry.pdpp.dev/connectors/spotify");
 
     const resp = await fetch(url, { redirect: "manual" });
     assert.equal(resp.status, 302, "URL-shaped connector_id must stage a pending grant and redirect");
@@ -3368,7 +3368,7 @@ test("picker hides URL-shaped default connection labels from owner-visible copy"
       "URL-shaped connector ids must not render as connection-name copy"
     );
     assert.equal(
-      visibleText.includes("https://registry.pdpp.org/connectors/spotify"),
+      visibleText.includes("https://registry.pdpp.dev/connectors/spotify"),
       false,
       "URL-shaped connector ids must not appear in owner-visible picker text"
     );
