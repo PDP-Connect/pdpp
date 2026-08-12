@@ -145,6 +145,8 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authAgentConnectAttemptsMarkApproved: MutationQuery;
   readonly authAgentConnectAttemptsMarkFailed: MutationQuery;
   readonly authAgentConnectAttemptsPrune: MutationQuery;
+  readonly authAgentConnectAttemptsRecoverApproved: ReadOneQuery;
+  readonly authAgentConnectAttemptsRevokeToken: MutationQuery;
   readonly authAgentConnectAttemptsSetResponseJson: MutationQuery;
   readonly authAgentConnectAttemptsTokenActive: ReadOneQuery;
   readonly authConnectorInstancesGetReviewedActive: ReadOneQuery;

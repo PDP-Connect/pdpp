@@ -49,6 +49,7 @@ import { startServer } from "../server/index.ts";
 import { closePostgresStorage } from "../server/postgres-storage.ts";
 import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from "../server/reference-local-defaults.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { __setAgentConnectCompleteFailureForTest } from "../server/routes/as-agent-connect.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { introspectionHeaders } from "./helpers/introspection.ts";
 import { TEST_INTROSPECTION_SERVER_OPTS } from "./helpers/introspection-test-credentials.ts";
@@ -668,6 +669,39 @@ test("agent-connect: approved handoff survives AS restart before polling", async
   }
 });
 
+test("agent-connect: approval committed before completion recovers at poll time", async () => {
+  const { server, asUrl } = await spinUpServer();
+  try {
+    const { staged, start } = await createAgentConnectRequest({
+      asUrl,
+      clientName: "Agent Connect Crash Seam Test",
+    });
+    let tripped = false;
+    __setAgentConnectCompleteFailureForTest(() => {
+      if (!tripped) {
+        tripped = true;
+        throw new Error("agent-connect completion seam crash");
+      }
+    });
+    await assert.rejects(
+      approveInline({ asUrl, requestUri: staged.request_uri, subjectId: "owner_local" }),
+      /completion seam crash/
+    );
+    __setAgentConnectCompleteFailureForTest(null);
+
+    const completedPoll = await pollAgentConnectToken({
+      pollingCode: start.polling_code,
+      tokenUrl: start.token_url,
+    });
+    assert.equal(completedPoll.resp.status, 200);
+    assert.equal(completedPoll.body.token_type, "Bearer");
+    assert.equal(typeof completedPoll.body.access_token, "string");
+  } finally {
+    __setAgentConnectCompleteFailureForTest(null);
+    await closeServer(server);
+  }
+});
+
 test("agent-connect: live Postgres approved handoff survives AS restart before polling", async (t) => {
   const baseUrl = dedicatedPostgresTestUrl(
     process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
@@ -819,6 +853,123 @@ test("agent-connect: expired polling handle returns bounded expired_token", asyn
   } finally {
     await closeServer(server);
   }
+});
+
+test("agent-connect: approved attempt that expires before delivery revokes the stranded bearer", async () => {
+  const { server, asUrl, rsUrl } = await spinUpServer({ agentConnectTtlMs: 1 });
+  try {
+    const { staged, start } = await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Approved Expiry" });
+    const approval = await approveInline({ asUrl, requestUri: staged.request_uri, subjectId: "owner_local" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const expiredPoll = await pollAgentConnectToken({
+      pollingCode: start.polling_code,
+      tokenUrl: start.token_url,
+    });
+    assert.equal(expiredPoll.resp.status, 400);
+    assert.equal(errorCode(expiredPoll.body), "expired_token");
+    assert.doesNotMatch(JSON.stringify(expiredPoll.body), EXPIRED_POLL_SECRET_PATTERN);
+
+    const schemaResp = await fetch(`${rsUrl}/v1/schema`, {
+      headers: { Authorization: `Bearer ${approval.token}` },
+    });
+    assert.ok(
+      schemaResp.status === 401 || schemaResp.status === 403,
+      "expired approved delivery must revoke the already-minted bearer"
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("agent-connect: approved attempt fails closed when the grant is revoked before delivery", async () => {
+  const { server, asUrl } = await spinUpServer();
+  try {
+    const { staged, start } = await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Approved Revoke" });
+    const approval = await approveInline({ asUrl, requestUri: staged.request_uri, subjectId: "owner_local" });
+    assert.ok(approval.grantId, "approval should include grant_id");
+    const revokeResp = await fetch(`${asUrl}/grants/${encodeURIComponent(approval.grantId)}/revoke`, {
+      headers: { Authorization: `Bearer ${approval.token}` },
+      method: "POST",
+    });
+    assert.ok(revokeResp.ok, "grant revoke should succeed before agent delivery");
+
+    const revokedPoll = await pollAgentConnectToken({
+      pollingCode: start.polling_code,
+      tokenUrl: start.token_url,
+    });
+    assert.equal(revokedPoll.resp.status, 401);
+    assert.equal(errorCode(revokedPoll.body), "invalid_grant");
+    assert.doesNotMatch(JSON.stringify(revokedPoll.body), /access_token/);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("agent-connect: live Postgres approved expiry and revocation fail closed before delivery", async (t) => {
+  const baseUrl = dedicatedPostgresTestUrl(
+    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
+  );
+  if (!baseUrl) {
+    t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
+    return;
+  }
+
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: baseUrl,
+      databaseName: "pdpp_test_agent_connect_expiry_revoke",
+    },
+    async (databaseUrl) => {
+      const expiryServer = await spinUpServer({ agentConnectTtlMs: 1, databaseUrl, storageBackend: "postgres" });
+      try {
+        const { staged, start } = await createAgentConnectRequest({
+          asUrl: expiryServer.asUrl,
+          clientName: "Agent Connect PG Approved Expiry",
+        });
+        await approveInline({ asUrl: expiryServer.asUrl, requestUri: staged.request_uri, subjectId: "owner_local" });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        const expiredPoll = await pollAgentConnectToken({
+          pollingCode: start.polling_code,
+          tokenUrl: start.token_url,
+        });
+        assert.equal(expiredPoll.resp.status, 400);
+        assert.equal(errorCode(expiredPoll.body), "expired_token");
+      } finally {
+        await closeServer(expiryServer.server);
+        await closePostgresStorage();
+      }
+
+      const revokeServer = await spinUpServer({ databaseUrl, storageBackend: "postgres" });
+      try {
+        const { staged, start } = await createAgentConnectRequest({
+          asUrl: revokeServer.asUrl,
+          clientName: "Agent Connect PG Approved Revoke",
+        });
+        const approval = await approveInline({
+          asUrl: revokeServer.asUrl,
+          requestUri: staged.request_uri,
+          subjectId: "owner_local",
+        });
+        assert.ok(approval.grantId, "approval should include grant_id");
+        const revokeResp = await fetch(`${revokeServer.asUrl}/grants/${encodeURIComponent(approval.grantId)}/revoke`, {
+          headers: { Authorization: `Bearer ${approval.token}` },
+          method: "POST",
+        });
+        assert.ok(revokeResp.ok, "grant revoke should succeed before agent delivery");
+        const revokedPoll = await pollAgentConnectToken({
+          pollingCode: start.polling_code,
+          tokenUrl: start.token_url,
+        });
+        assert.equal(revokedPoll.resp.status, 401);
+        assert.equal(errorCode(revokedPoll.body), "invalid_grant");
+      } finally {
+        await closeServer(revokeServer.server);
+        await closePostgresStorage();
+      }
+    }
+  );
 });
 
 test("agent-connect: approved scoped token cannot access ungranted stream", async () => {

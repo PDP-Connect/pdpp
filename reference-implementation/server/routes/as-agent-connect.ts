@@ -23,6 +23,7 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { exec, getOne, referenceQueries } from "../../lib/db.ts";
+import { parsePendingConsentRequestUri } from "../auth.ts";
 import { applyCredentialResponseNoStoreHeaders } from "../credential-response-cache.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
 import type { PdppErrorFn, RouteArg } from "./_route-contract.ts";
@@ -91,6 +92,12 @@ export interface AgentConnectAttemptStore {
     | { outcome: "failed"; status: "denied" | "expired" }
     | { outcome: "approved"; body: Record<string, unknown>; replay: boolean }
   >;
+}
+
+let completeFailureForTest: (() => void) | null = null;
+
+export function __setAgentConnectCompleteFailureForTest(fn: (() => void) | null): void {
+  completeFailureForTest = fn;
 }
 
 export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
@@ -162,12 +169,102 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
     ]);
     return Boolean(row?.ok);
   };
+  const revokeToken = async (tokenId: string | undefined): Promise<void> => {
+    if (!tokenId) {
+      return;
+    }
+    if (isPostgresStorageBackend()) {
+      await postgresQuery("UPDATE tokens SET revoked = TRUE WHERE token_id = $1 AND revoked = FALSE", [tokenId]);
+      return;
+    }
+    exec(referenceQueries.authAgentConnectAttemptsRevokeToken, [tokenId]);
+  };
+  const markAttemptApproved = async (
+    requestUri: string,
+    token: string,
+    grant: Record<string, unknown>,
+    grantId: string | null
+  ): Promise<void> => {
+    const completedAt = new Date().toISOString();
+    const storedGrantId = (grant.grant_id as string | null | undefined) ?? grantId;
+    if (isPostgresStorageBackend()) {
+      await postgresQuery(
+        `UPDATE agent_connect_attempts
+            SET status = 'approved', completed_at = $2, token = $3, grant_json = $4::jsonb, grant_id = $5
+          WHERE request_uri = $1 AND status = 'pending'`,
+        [requestUri, completedAt, token, JSON.stringify(grant), storedGrantId]
+      );
+      return;
+    }
+    exec(referenceQueries.authAgentConnectAttemptsMarkApproved, [
+      completedAt,
+      token,
+      JSON.stringify(grant),
+      storedGrantId,
+      requestUri,
+    ]);
+  };
+  const recoverApprovedAttempt = async (
+    attempt: AgentConnectAttempt,
+    now: number
+  ): Promise<AgentConnectAttempt> => {
+    if (attempt.status !== "pending" || attempt.expiresAt <= now) {
+      return attempt;
+    }
+    const deviceCode = parsePendingConsentRequestUri(attempt.requestUri);
+    if (!deviceCode) {
+      return attempt;
+    }
+    let recovered:
+      | { grant_id?: string | null; grant_json?: unknown; package_json?: unknown; token_id?: string | null }
+      | undefined;
+    if (isPostgresStorageBackend()) {
+      const result = await postgresQuery(
+        `SELECT pc.grant_id, pc.token_id, g.grant_json, gp.package_json
+           FROM pending_consents pc
+           LEFT JOIN grants g ON g.grant_id = pc.grant_id
+           LEFT JOIN grant_packages gp ON gp.package_id = pc.grant_id
+          WHERE pc.device_code = $1
+            AND pc.status = 'approved'
+            AND pc.token_id IS NOT NULL
+            AND pc.grant_id IS NOT NULL
+          LIMIT 1`,
+        [deviceCode]
+      );
+      recovered = result.rows[0];
+    } else {
+      recovered =
+        getOne<{ grant_id?: string | null; grant_json?: unknown; package_json?: unknown; token_id?: string | null }>(
+          referenceQueries.authAgentConnectAttemptsRecoverApproved,
+          [deviceCode]
+        ) ?? undefined;
+    }
+    if (!recovered?.token_id) {
+      return attempt;
+    }
+    const grant =
+      typeof recovered.grant_json === "string"
+        ? (JSON.parse(recovered.grant_json) as Record<string, unknown>)
+        : typeof recovered.package_json === "string"
+          ? (JSON.parse(recovered.package_json) as Record<string, unknown>)
+          : recovered.grant_json && typeof recovered.grant_json === "object"
+            ? (recovered.grant_json as Record<string, unknown>)
+            : recovered.package_json && typeof recovered.package_json === "object"
+              ? (recovered.package_json as Record<string, unknown>)
+              : null;
+    if (!grant || !(await tokenIsActive(recovered.token_id))) {
+      return attempt;
+    }
+    await markAttemptApproved(attempt.requestUri, recovered.token_id, grant, recovered.grant_id ?? null);
+    return (await getRow(attempt.id)) ?? attempt;
+  };
 
   return {
     async complete(requestUri, outcome): Promise<void> {
       if (!requestUri) {
         return;
       }
+      completeFailureForTest?.();
       const completedAt = new Date().toISOString();
       if (isPostgresStorageBackend()) {
         if (outcome.status === "approved") {
@@ -284,12 +381,14 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
     },
 
     async redeem(id, pollingCode, now = Date.now()) {
-      const attempt = await getRow(id);
+      let attempt = await getRow(id);
       if (!(attempt?.pollingCodeHash && pollingCodeMatches(attempt.pollingCodeHash, pollingCode))) {
         return { outcome: "missing" };
       }
-      if (attempt.status === "pending" && attempt.expiresAt <= now) {
-        await this.complete(attempt.requestUri, { status: "expired" });
+      attempt = await recoverApprovedAttempt(attempt, now);
+      if (attempt.expiresAt <= now) {
+        await revokeToken(attempt.token);
+        await this.delete(attempt.id);
         return { outcome: "failed", status: "expired" };
       }
       if (attempt.status === "pending") {

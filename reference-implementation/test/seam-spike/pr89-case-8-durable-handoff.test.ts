@@ -10,6 +10,7 @@ const REFERENCE_ROOT = resolve(import.meta.dirname, "../..");
 
 function runPortfolio(): Promise<string> {
   const files = [
+    "test/agent-cli.test.ts",
     "test/security-consent-token-handoff.test.ts",
     "test/batch-consent-per-source-gate.test.ts",
     "test/auth-consent-device-postgres-path.test.ts",
@@ -47,6 +48,10 @@ test("durable consent handoff portfolio passes on SQLite and PostgreSQL", async 
     "an exchange code survives a SQLite-backed server restart",
     "an already-committed approval can create a fresh HTML handoff",
     "concurrent SQLite redemptions converge on one stored transition",
+    "agent-connect: approval committed before completion recovers at poll time",
+    "agent-connect: approved attempt that expires before delivery revokes the stranded bearer",
+    "agent-connect: approved attempt fails closed when the grant is revoked before delivery",
+    "agent-connect: live Postgres approved expiry and revocation fail closed before delivery",
     "HTML approval hands off the package token durably",
     "a revoked package is not delivered by a stored exchange code",
     "concurrent Postgres redemption converges on one persisted token",
