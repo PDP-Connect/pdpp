@@ -24,6 +24,7 @@ import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.
 
 const POINTER = "https://declarations.example.test/current.json";
 const RESOURCE = "https://resource.example.test/owner/example";
+const UNIQUE_CONSTRAINT_VIOLATION = /duplicate key value violates unique constraint/;
 const VALID_DECLARATION = {
   declaration_version: "opaque:a",
   display: { name: "Example" },
@@ -845,6 +846,27 @@ if (POSTGRES_URL) {
           assert.deepEqual(
             (await pool.query("SELECT accepted_revision_reference FROM accepted_source_declaration_revisions")).rows,
             [{ accepted_revision_reference: expectedReference }]
+          );
+          const duplicateReferenceKey = {
+            authorityBinding: "metadata:https://duplicate.example.test",
+            declarationVersion: "opaque:legacy-duplicate",
+            sourceId: RESOURCE,
+          };
+          await assert.rejects(
+            pool.query(
+              `INSERT INTO accepted_source_declaration_revisions
+               (authority_binding, source_id, declaration_version, accepted_revision_reference, canonical_content, content_fingerprint)
+               VALUES ($1, $2, $3, $4, $5, $6)`,
+              [
+                duplicateReferenceKey.authorityBinding,
+                duplicateReferenceKey.sourceId,
+                duplicateReferenceKey.declarationVersion,
+                expectedReference,
+                canonicalContent,
+                sha256(canonicalContent),
+              ]
+            ),
+            UNIQUE_CONSTRAINT_VIOLATION
           );
           assert.deepEqual(
             (
