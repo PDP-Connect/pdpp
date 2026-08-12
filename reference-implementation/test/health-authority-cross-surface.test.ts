@@ -155,6 +155,7 @@ test("one health authority discriminates failure, passive cooling, owner action,
   const passive = project(input());
   assert.equal(passive.snapshot.state, "cooling_off");
   assert.equal(passive.verdict.pill.tone, "amber");
+  assert.equal(passive.verdict.pill.label, "Needs refresh");
   assert.equal(passive.verdict.channel, "calm");
   assert.equal(passive.ownerState.resolver, "healthy");
   assert.equal(sourceWorkGroupFromOwnerState(passive.ownerState.resolver), "none");
