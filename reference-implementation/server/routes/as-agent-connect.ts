@@ -374,26 +374,41 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
       undefined;
     await revokeTokenIfNoLiveSibling(token, requestUri, attempt.id, now);
   };
-  const deleteExpiredTombstoneIfConsentTerminal = async (attempt: AgentConnectAttempt): Promise<boolean> => {
+  const deleteExpiredTombstoneIfConsentTerminal = (
+    attempt: AgentConnectAttempt,
+    now: number
+  ): Promise<boolean> | boolean => {
     const deviceCode = parsePendingConsentRequestUri(attempt.requestUri);
     if (!deviceCode) {
       return false;
     }
+    const nowIso = new Date(now).toISOString();
     if (isPostgresStorageBackend()) {
-      const result = await postgresQuery(
-        `DELETE FROM agent_connect_attempts
-          WHERE id = $1
-            AND status = 'expired'
-            AND NOT EXISTS (
-              SELECT 1
-                FROM pending_consents
-               WHERE device_code = $2
-                 AND status IN ('pending', 'approving', 'approved')
-            )`,
-        [attempt.id, deviceCode]
-      );
-      return (result.rowCount ?? 0) > 0;
+      return withPostgresTransaction(async (client) => {
+        await client.query(
+          `UPDATE pending_consents
+              SET status = 'expired'
+            WHERE device_code = $1
+              AND status = 'pending'
+              AND expires_at <= $2`,
+          [deviceCode, nowIso]
+        );
+        const result = await client.query(
+          `DELETE FROM agent_connect_attempts
+            WHERE id = $1
+              AND status = 'expired'
+              AND NOT EXISTS (
+                SELECT 1
+                  FROM pending_consents
+                 WHERE device_code = $2
+                   AND status IN ('pending', 'approving', 'approved')
+              )`,
+          [attempt.id, deviceCode]
+        );
+        return (result.rowCount ?? 0) > 0;
+      });
     }
+    exec(referenceQueries.authPendingConsentsMarkExpiredIfDue, [deviceCode, nowIso]);
     const result = exec(referenceQueries.authAgentConnectAttemptsDeleteExpiredIfConsentTerminal, [
       attempt.id,
       deviceCode,
@@ -438,19 +453,26 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
       if (isPostgresStorageBackend()) {
         // biome-ignore lint/performance/noAwaitInLoops: each page observes prior safe deletes.
         const result = await postgresQuery(
-          `SELECT *
-             FROM agent_connect_attempts
-            WHERE status = 'expired'
-              AND expires_at_ms <= $1
-            ORDER BY id
+          `SELECT attempts.*
+             FROM agent_connect_attempts AS attempts
+             LEFT JOIN pending_consents AS consent
+               ON attempts.request_uri = 'urn:pdpp:pending-consent:' || consent.device_code
+            WHERE attempts.status = 'expired'
+              AND attempts.expires_at_ms <= $1
+              AND (
+                consent.device_code IS NULL
+                OR consent.status IN ('denied', 'expired')
+                OR (consent.status = 'pending' AND consent.expires_at <= $2)
+              )
+            ORDER BY attempts.id
             LIMIT 1000`,
-          [now]
+          [now, new Date(now).toISOString()]
         );
         attempts = result.rows.map((row) => rowToAttempt(row as Record<string, unknown>));
       } else {
         const page = getMany<Record<string, unknown>>(
           referenceQueries.authAgentConnectAttemptsListExpiredTombstones,
-          [now],
+          [now, new Date(now).toISOString()],
           { limit: 1000 }
         );
         attempts = page.rows.map(rowToAttempt);
@@ -458,19 +480,16 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
       if (attempts.length === 0) {
         return;
       }
-      let deleted = 0;
       for (const attempt of attempts) {
-        // The delete predicate observes consent state in the same durable mutation.
-        // Pending/approving rows can still mint a token; approved rows retain the
-        // stable expired-token response for their old polling handle.
+        // The candidate query skips retained rows, avoiding head-of-line starvation.
+        // The delete still CAS-expires consent in the same durable state transition.
         // biome-ignore lint/performance/noAwaitInLoops: each durable delete must complete before the next page is inspected.
-        const tombstoneDeleted = await deleteExpiredTombstoneIfConsentTerminal(attempt);
+        const tombstoneDeleted = await deleteExpiredTombstoneIfConsentTerminal(attempt, now);
         if (tombstoneDeleted) {
           await cleanupExpiredAttempt(attempt, now);
-          deleted += 1;
         }
       }
-      if (deleted === 0 || attempts.length < 1000) {
+      if (attempts.length < 1000) {
         return;
       }
     }

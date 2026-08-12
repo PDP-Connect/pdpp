@@ -220,6 +220,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authPendingConsentsMarkApproved: MutationQuery;
   readonly authPendingConsentsMarkDenied: MutationQuery;
   readonly authPendingConsentsMarkExpired: MutationQuery;
+  readonly authPendingConsentsMarkExpiredIfDue: MutationQuery;
   // Auth — tokens
   readonly authTokensCountActiveByClientId: ReadOneQuery;
   readonly authTokensGetIntrospection: ReadOneQuery;

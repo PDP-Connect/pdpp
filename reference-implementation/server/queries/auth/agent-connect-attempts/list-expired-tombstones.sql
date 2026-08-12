@@ -1,9 +1,16 @@
 -- @terminator: many
 -- @cursor_field: rowid
-SELECT rowid,
-       *
-FROM agent_connect_attempts
-WHERE status = 'expired'
-  AND expires_at_ms <= ?
-ORDER BY rowid
+SELECT attempts.rowid,
+       attempts.*
+FROM agent_connect_attempts AS attempts
+LEFT JOIN pending_consents AS consent
+  ON attempts.request_uri = 'urn:pdpp:pending-consent:' || consent.device_code
+WHERE attempts.status = 'expired'
+  AND attempts.expires_at_ms <= ?
+  AND (
+    consent.device_code IS NULL
+    OR consent.status IN ('denied', 'expired')
+    OR (consent.status = 'pending' AND consent.expires_at <= ?)
+  )
+ORDER BY attempts.rowid
 LIMIT ?

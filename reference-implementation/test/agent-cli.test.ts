@@ -1005,51 +1005,106 @@ test("agent-connect: prune reconciles more than one expired SQLite batch", async
   }
 });
 
-test("agent-connect: expired tombstone volume is garbage-collected after terminal recovery window", async () => {
+test("agent-connect: retained tombstones do not starve a later collectible SQLite volume", async () => {
   const { server, asUrl } = await spinUpServer();
   try {
     const expiredAt = Date.now() - 1;
     const createdAt = new Date(expiredAt - 1).toISOString();
+    const retainedDeviceCode = "retained-tombstone-sqlite";
+    const retainedRequestUri = `urn:pdpp:pending-consent:${retainedDeviceCode}`;
+    dbExec(referenceQueries.authPendingConsentsInsert, [
+      retainedDeviceCode,
+      "RETAINED-SQLITE",
+      "{}",
+      null,
+      null,
+      null,
+      createdAt,
+      new Date(Date.now() + 60_000).toISOString(),
+      null,
+    ]);
+    dbExec(referenceQueries.authPendingConsentsMarkApproved, [
+      "owner_local",
+      "retained-grant-sqlite",
+      "retained-token-sqlite",
+      null,
+      createdAt,
+      retainedDeviceCode,
+    ]);
     for (let index = 0; index < 1001; index += 1) {
+      if (index < 1000) {
+        dbExec(referenceQueries.authAgentConnectAttemptsInsert, [
+          `retained-tombstone-${index}`,
+          retainedRequestUri,
+          null,
+          `retained-tombstone-hash-${index}`,
+          `${asUrl}/consent?request_uri=retained-tombstone-${index}`,
+          `${asUrl}/token`,
+          createdAt,
+          expiredAt,
+        ]);
+        dbExec(referenceQueries.authAgentConnectAttemptsMarkExpiredById, [createdAt, `retained-tombstone-${index}`]);
+      }
       dbExec(referenceQueries.authAgentConnectAttemptsInsert, [
-        `expired-tombstone-${index}`,
+        `collectible-tombstone-${index}`,
         `urn:pdpp:pending-consent:missing-tombstone-${index}`,
         null,
-        `expired-tombstone-hash-${index}`,
-        `${asUrl}/consent?request_uri=expired-tombstone-${index}`,
+        `collectible-tombstone-hash-${index}`,
+        `${asUrl}/consent?request_uri=collectible-tombstone-${index}`,
         `${asUrl}/token`,
         createdAt,
         expiredAt,
       ]);
-      dbExec(referenceQueries.authAgentConnectAttemptsMarkExpiredById, [createdAt, `expired-tombstone-${index}`]);
+      dbExec(referenceQueries.authAgentConnectAttemptsMarkExpiredById, [createdAt, `collectible-tombstone-${index}`]);
     }
-    assert.equal(sqliteAgentConnectAttemptCountByStatus("expired"), 1001);
+    assert.equal(sqliteAgentConnectAttemptCountByStatus("expired"), 2001);
 
     await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Tombstone GC Trigger" });
-    assert.equal(sqliteAgentConnectAttemptCountByStatus("expired"), 0);
+    assert.equal(sqliteAgentConnectAttemptCountByStatus("expired"), 1000);
   } finally {
     await closeServer(server);
   }
 });
 
-test("agent-connect: tombstone remains until its pending consent is expired", async () => {
-  const { server, asUrl } = await spinUpServer({ agentConnectTtlMs: 60_000 });
+test("agent-connect: natural pending-consent expiry enables tombstone GC", async () => {
+  const { server, asUrl } = await spinUpServer();
   try {
-    const first = await createAgentConnectRequest({
-      asUrl,
-      clientName: "Agent Connect Tombstone Pending SQLite",
-    });
-    setSqliteAgentConnectAttemptExpiresAt(first.start.id, Date.now() - 1);
-
-    await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Tombstone Pending Trigger" });
-    assert.equal(sqliteAgentConnectAttemptCountByStatus("expired"), 1);
-
-    const deviceCode = parsePendingConsentRequestUri(first.staged.request_uri);
-    assert.ok(deviceCode);
-    dbExec(referenceQueries.authPendingConsentsMarkExpired, [deviceCode]);
+    const expiredAt = Date.now() - 1;
+    const createdAt = new Date(expiredAt - 1).toISOString();
+    const deviceCode = "natural-timeout-sqlite";
+    dbExec(referenceQueries.authPendingConsentsInsert, [
+      deviceCode,
+      "NATURAL-TIMEOUT-SQLITE",
+      "{}",
+      null,
+      null,
+      null,
+      createdAt,
+      new Date(expiredAt).toISOString(),
+      null,
+    ]);
+    dbExec(referenceQueries.authAgentConnectAttemptsInsert, [
+      "natural-timeout-tombstone-sqlite",
+      `urn:pdpp:pending-consent:${deviceCode}`,
+      null,
+      "natural-timeout-hash-sqlite",
+      `${asUrl}/consent`,
+      `${asUrl}/token`,
+      createdAt,
+      expiredAt,
+    ]);
+    dbExec(referenceQueries.authAgentConnectAttemptsMarkExpiredById, [createdAt, "natural-timeout-tombstone-sqlite"]);
+    assert.equal(
+      getOne<{ status?: string }>(referenceQueries.authPendingConsentsGetByDeviceCode, [deviceCode])?.status,
+      "pending"
+    );
 
     await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Tombstone Terminal Trigger" });
     assert.equal(sqliteAgentConnectAttemptCountByStatus("expired"), 0);
+    assert.equal(
+      getOne<{ status?: string }>(referenceQueries.authPendingConsentsGetByDeviceCode, [deviceCode])?.status,
+      "expired"
+    );
   } finally {
     await closeServer(server);
   }
@@ -1478,18 +1533,53 @@ test("agent-connect: live Postgres tombstone GC and staggered same-request deliv
       try {
         const expiredAt = Date.now() - 1;
         const createdAt = new Date(expiredAt - 1).toISOString();
+        const retainedDeviceCode = "retained-tombstone-postgres";
+        const retainedRequestUri = `urn:pdpp:pending-consent:${retainedDeviceCode}`;
+        await postgresQuery(
+          `INSERT INTO pending_consents(
+             device_code, user_code, params_json, status, subject_id, grant_id, token_id,
+             created_at, expires_at, approved_at
+           ) VALUES($1, $2, $3::jsonb, 'approved', $4, $5, $6, $7, $8, $7)`,
+          [
+            retainedDeviceCode,
+            "RETAINED-POSTGRES",
+            "{}",
+            "owner_local",
+            "retained-grant-postgres",
+            "retained-token-postgres",
+            createdAt,
+            new Date(Date.now() + 60_000).toISOString(),
+          ]
+        );
         await Promise.all(
           Array.from({ length: 1001 }, async (_, index) => {
+            if (index < 1000) {
+              await postgresQuery(
+                `INSERT INTO agent_connect_attempts(
+                 id, request_uri, client_id, polling_code_hash, status, approval_url, token_url,
+                 interval_seconds, created_at, expires_at_ms, completed_at
+               ) VALUES($1, $2, NULL, $3, 'expired', $4, $5, 2, $6, $7, $6)`,
+                [
+                  `pg-retained-tombstone-${index}`,
+                  retainedRequestUri,
+                  `pg-retained-tombstone-hash-${index}`,
+                  `${gcServer.asUrl}/consent?request_uri=pg-retained-tombstone-${index}`,
+                  `${gcServer.asUrl}/token`,
+                  createdAt,
+                  expiredAt,
+                ]
+              );
+            }
             await postgresQuery(
               `INSERT INTO agent_connect_attempts(
                id, request_uri, client_id, polling_code_hash, status, approval_url, token_url,
                interval_seconds, created_at, expires_at_ms, completed_at
              ) VALUES($1, $2, NULL, $3, 'expired', $4, $5, 2, $6, $7, $6)`,
               [
-                `pg-expired-tombstone-${index}`,
+                `pg-collectible-tombstone-${index}`,
                 `urn:pdpp:pending-consent:pg-missing-tombstone-${index}`,
-                `pg-expired-tombstone-hash-${index}`,
-                `${gcServer.asUrl}/consent?request_uri=pg-expired-tombstone-${index}`,
+                `pg-collectible-tombstone-hash-${index}`,
+                `${gcServer.asUrl}/consent?request_uri=pg-collectible-tombstone-${index}`,
                 `${gcServer.asUrl}/token`,
                 createdAt,
                 expiredAt,
@@ -1497,32 +1587,56 @@ test("agent-connect: live Postgres tombstone GC and staggered same-request deliv
             );
           })
         );
-        assert.equal(await postgresAgentConnectAttemptCountByStatus("expired"), 1001);
+        assert.equal(await postgresAgentConnectAttemptCountByStatus("expired"), 2001);
         await createAgentConnectRequest({
           asUrl: gcServer.asUrl,
           clientName: "Agent Connect PG Tombstone GC Trigger",
         });
-        assert.equal(await postgresAgentConnectAttemptCountByStatus("expired"), 0);
+        assert.equal(await postgresAgentConnectAttemptCountByStatus("expired"), 1000);
 
-        const pending = await createAgentConnectRequest({
-          asUrl: gcServer.asUrl,
-          clientName: "Agent Connect PG Tombstone Pending",
-        });
-        await setPostgresAgentConnectAttemptExpiresAt(pending.start.id, Date.now() - 1);
+        const naturalDeviceCode = "natural-timeout-postgres";
+        await postgresQuery(
+          `INSERT INTO pending_consents(
+             device_code, user_code, params_json, status, created_at, expires_at
+           ) VALUES($1, $2, $3::jsonb, 'pending', $4, $5)`,
+          [naturalDeviceCode, "NATURAL-TIMEOUT-POSTGRES", "{}", createdAt, new Date(expiredAt).toISOString()]
+        );
+        await postgresQuery(
+          `INSERT INTO agent_connect_attempts(
+             id, request_uri, client_id, polling_code_hash, status, approval_url, token_url,
+             interval_seconds, created_at, expires_at_ms, completed_at
+           ) VALUES($1, $2, NULL, $3, 'expired', $4, $5, 2, $6, $7, $6)`,
+          [
+            "pg-natural-timeout-tombstone",
+            `urn:pdpp:pending-consent:${naturalDeviceCode}`,
+            "pg-natural-timeout-hash",
+            `${gcServer.asUrl}/consent`,
+            `${gcServer.asUrl}/token`,
+            createdAt,
+            expiredAt,
+          ]
+        );
+        assert.equal(
+          (
+            await postgresQuery<{ status?: string }>("SELECT status FROM pending_consents WHERE device_code = $1", [
+              naturalDeviceCode,
+            ])
+          ).rows[0]?.status,
+          "pending"
+        );
         await createAgentConnectRequest({
           asUrl: gcServer.asUrl,
-          clientName: "Agent Connect PG Tombstone Pending Trigger",
+          clientName: "Agent Connect PG Tombstone Natural Timeout Trigger",
         });
-        assert.equal(await postgresAgentConnectAttemptCountByStatus("expired"), 1);
-
-        const deviceCode = parsePendingConsentRequestUri(pending.staged.request_uri);
-        assert.ok(deviceCode);
-        await postgresQuery("UPDATE pending_consents SET status = 'expired' WHERE device_code = $1", [deviceCode]);
-        await createAgentConnectRequest({
-          asUrl: gcServer.asUrl,
-          clientName: "Agent Connect PG Tombstone Terminal Trigger",
-        });
-        assert.equal(await postgresAgentConnectAttemptCountByStatus("expired"), 0);
+        assert.equal(await postgresAgentConnectAttemptCountByStatus("expired"), 1000);
+        assert.equal(
+          (
+            await postgresQuery<{ status?: string }>("SELECT status FROM pending_consents WHERE device_code = $1", [
+              naturalDeviceCode,
+            ])
+          ).rows[0]?.status,
+          "expired"
+        );
       } finally {
         await closeServer(gcServer.server);
         await closePostgresStorage();
