@@ -16,11 +16,11 @@ metadata extension `pdpp_source_declaration_uri` SHALL be one HTTPS URI string
 with no fragment or user information when the protected resource is being
 onboarded as a provider-native source. The extension MAY be absent from generic
 protected-resource metadata for resources that do not map to one Source
-Declaration. PDPP SHALL require
-`SourceDeclaration.source.id` to equal the accepted protected-resource
-identifier under the Source Declaration contract. The AS SHALL consume the
-Source schema and accepted snapshot defined by that contract and SHALL fail
-closed on any mismatch.
+Declaration. PDPP SHALL require `SourceDeclaration.source.kind` to be
+`provider_native` and `SourceDeclaration.source.id` to equal the accepted
+protected-resource identifier under the Source Declaration contract. The AS
+SHALL consume the Source schema and accepted snapshot defined by that contract
+and SHALL fail closed on any mismatch.
 
 #### Scenario: Metadata points to the matching declaration
 
@@ -41,6 +41,12 @@ closed on any mismatch.
 #### Scenario: Declaration names another resource
 
 - **WHEN** `SourceDeclaration.source.id` does not equal the provider-native protected resource
+- **THEN** the AS SHALL reject the declaration and SHALL NOT use it for consent
+
+#### Scenario: Declaration has the wrong source kind
+
+- **WHEN** provider-native discovery retrieves a declaration whose
+  `SourceDeclaration.source.kind` is not `provider_native`
 - **THEN** the AS SHALL reject the declaration and SHALL NOT use it for consent
 
 ### Requirement: Source onboarding SHALL precede ordinary authorization
@@ -129,16 +135,30 @@ An accepted revision SHALL be keyed by its accepted authority binding,
 validation, later content under the same key SHALL compare equal as parsed
 JSON. An implementation MAY use an internal content fingerprint to accelerate
 that comparison, but its algorithm SHALL NOT be a protocol identity or
-cross-implementation digest. A different parsed document under the same key
-SHALL be rejected as equivocation. A current pointer to a prior revision SHALL
-be accepted or rejected only under explicit publisher or local policy; the AS
-SHALL NOT infer ordering or freshness from `declaration_version`.
+cross-implementation digest. When the AS uses provider-native discovery for
+consent, its consent and audit evidence SHALL retain an unambiguous AS-local
+accepted-revision reference to the accepted authority binding and parsed
+revision retained by this AS. That reference SHALL NOT be a portable
+authorization right, grant identity, bearer handle, or cross-AS declaration
+credential. A different parsed document under the same
+key SHALL be rejected as equivocation. A current pointer to a prior revision
+SHALL be accepted or rejected only under explicit publisher or local policy;
+the AS SHALL NOT infer ordering or freshness from `declaration_version`.
 
 #### Scenario: Same revision returns different parsed JSON
 
 - **WHEN** a later response under the same authority, source ID, and version key parses to a different JSON value
 - **THEN** the AS SHALL reject the response as equivocation
 - **AND** it SHALL retain the accepted parsed content
+
+#### Scenario: Accepted revision reference is retained as audit evidence only
+
+- **WHEN** the AS uses provider-native discovery for consent
+- **THEN** consent and audit evidence SHALL retain an unambiguous AS-local
+  reference to the accepted authority binding, source ID, and declaration
+  version
+- **AND** the reference SHALL NOT authorize access, replace grant rights, or be
+  treated as portable identity outside that AS
 
 #### Scenario: Version values are opaque
 
