@@ -4760,7 +4760,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       clearTerminateTimer();
       const stderrTailRaw = stderrTail.finalize();
       if (stderrTailRaw.text) {
-        onProgress({ text: stderrTailRaw.text, type: "stderr" });
+        onProgress({ text: redactStderrTail(stderrTailRaw.text).text, type: "stderr" });
       }
       // Connector stderr is untrusted; redact recognized secret markers before
       // retaining the bounded diagnostic for owner/control-plane evidence.

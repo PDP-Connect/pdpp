@@ -2282,7 +2282,7 @@ export function resolveConnectorEnvironmentPolicy(
     }
     return parseConnectorEnvironmentPolicy(policy, "connectorEnvironmentPolicy");
   }
-  if (process.env.NODE_TEST_CONTEXT) {
+  if (process.env.NODE_TEST_CONTEXT && process.env.PDPP_CONNECTOR_ENVIRONMENT_POLICY === undefined) {
     return parseConnectorEnvironmentPolicy(undefined);
   }
   return parseConnectorEnvironmentPolicy(
