@@ -191,6 +191,7 @@ const KNOWN_EVIDENCE_REASON_CODES = new Set([
   "retained_bytes_unavailable",
   "summary_evidence_unavailable",
   "summary_missing",
+  "terminal_facts_historical",
   "terminal_fold_failed",
 ]);
 const KNOWN_CONDITION_REASONS = new Set([
@@ -211,6 +212,9 @@ const KNOWN_CONDITION_REASONS = new Set([
   "credentials_accepted",
   "credentials_not_probed",
   "external_tool_unavailable",
+  "interaction_timeout",
+  "connector_reported_failed",
+  "credentials_required",
   "fresh",
   "freshness_unknown",
   "local_exporter_active",

@@ -166,9 +166,15 @@ test("derives an exact green numerator/denominator from active production stream
   assert.equal(result.perClass.green, 2);
 });
 
-test("accepts producer coverage-axis condition reasons but rejects unknown reasons", () => {
+test("accepts canonical RI producer reasons but rejects unknown reasons", () => {
   const baseHealth = healthyConnection().connection_health as Json;
-  for (const reason of ["complete", "terminal_gap"]) {
+  for (const reason of [
+    "complete",
+    "terminal_gap",
+    "interaction_timeout",
+    "connector_reported_failed",
+    "credentials_required",
+  ]) {
     const condition = {
       current: reason === "complete",
       expires_at: null,
@@ -187,6 +193,13 @@ test("accepts producer coverage-axis condition reasons but rejects unknown reaso
     const result = evaluate(healthyConnection({ connection_health: { ...baseHealth, conditions: [condition] } }));
     assert.equal(result.perClass.unknown_vocabulary, 0, reason);
   }
+
+  const historicalFacts = evaluate(
+    healthyConnection({
+      terminal_facts: { state: "stale", event_seq: 1, as_of: EVIDENCE_AT, reason_code: "terminal_facts_historical" },
+    })
+  );
+  assert.equal(historicalFacts.perClass.unknown_vocabulary, 0, "terminal_facts_historical");
 
   const unknown = evaluate(
     healthyConnection({
