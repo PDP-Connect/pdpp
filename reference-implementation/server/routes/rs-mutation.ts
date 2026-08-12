@@ -76,6 +76,7 @@ import {
   executeRecordsIngest,
   type IngestLineFailure,
   type InsertOrReplayRejectionInput,
+  parseLines as parseIngestLines,
   type RecordsIngestDependencies,
   RecordsIngestInvalidRequestError,
   RecordsIngestNotFoundError,
@@ -461,7 +462,7 @@ export interface MountRsMutationContext {
     connectorInstanceId: string;
     inputIndex: number;
     ownerSubjectId: string;
-    rawLine: string;
+    rawLine: Buffer;
     runId?: string | null;
     stream: string;
   }) => Promise<RejectionReceipt> | RejectionReceipt;
@@ -1121,6 +1122,16 @@ export function mountRsRecordsDelete(app: AppLike, ctx: MountRsMutationContext):
 // response writing. It MUST NOT recompute line splitting, connector_id
 // presence, manifest visibility, JSON parse handling, the
 // accepted/rejected counters, or the response envelope locally.
+function requestBodyBytes(body: unknown): Buffer {
+  if (Buffer.isBuffer(body)) {
+    return body;
+  }
+  if (typeof body === "string") {
+    return Buffer.from(body);
+  }
+  return Buffer.alloc(0);
+}
+
 export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext): void {
   app.post("/v1/ingest/:stream", ctx.requireToken, ctx.requireOwner, async (req: RouteRequest, res: RouteResponse) => {
     const connectorId = canonicalizeConnectorId(ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id));
@@ -1135,9 +1146,8 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
     // the mutation context must be computed here using the same parser.
     // Index.js imported `parseLines as parseIngestLines` from the operation
     // module and called it here. We replicate that call with the same body arg.
-    const rawBody = typeof req.body === "string" ? req.body : "";
-    // Inline line-count: split on newlines, filter empty — mirrors parseLines.
-    const lineCount = rawBody.split("\n").filter((l: string) => l.trim().length > 0).length;
+    const rawBody = requestBodyBytes(req.body);
+    const lineCount = parseIngestLines(rawBody).length;
     const mutationContext = ctx.buildMutationContext(req, res, {
       connectorId,
       connectorInstanceId,
@@ -1159,25 +1169,26 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
       // omitted (not set to undefined) so it doesn't trip exactOptionalPropertyTypes.
       const draftAdmission = (cin: string | null) => (cin ? { allowStatuses: ["active", "draft"] as const } : {});
       const { ingestRecords } = ctx;
+      const resolveAdmittedNamespace = async (
+        cid: string,
+        requestedConnectorInstanceId: string | null
+      ): Promise<ConnectorNamespaceLike> => {
+        storageNamespace ??= await ctx.resolveOwnerConnectorNamespace(req, cid, {
+          ...draftAdmission(requestedConnectorInstanceId),
+          connectorInstanceId: requestedConnectorInstanceId,
+        });
+        if (!storageNamespace.connectorInstanceId) {
+          throw new Error("connector instance is required for hosted ingest");
+        }
+        return storageNamespace;
+      };
       const dependencies: RecordsIngestDependencies = {
         hasManifestStream: async (cid: string, streamName: string) => {
           const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
-          const visible = Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
-          if (visible) {
-            storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, cid, {
-              ...draftAdmission(connectorInstanceId),
-              connectorInstanceId,
-            });
-          }
-          return visible;
+          return Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
         },
-        ingestRecord: async (cid: string, cin: string | null, record: Record<string, unknown>) => {
-          const namespace =
-            storageNamespace ??
-            (await ctx.resolveOwnerConnectorNamespace(req, cid, {
-              ...draftAdmission(cin),
-              connectorInstanceId: cin,
-            }));
+        ingestRecord: async (cid: string, _cin: string | null, record: Record<string, unknown>) => {
+          const namespace = storageNamespace ?? (await resolveAdmittedNamespace(cid, _cin));
           const result = await ingestRecordClassified(ctx, namespace, record, runId);
           if (ctx.getLatestAcquisitionBatchForConnection && namespace.connectorInstanceId) {
             acquisitionBatchPromise ??= Promise.resolve(
@@ -1198,15 +1209,10 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
           ? {
               ingestRecords: async (
                 cid: string,
-                cin: string | null,
+                _cin: string | null,
                 records: readonly Record<string, unknown>[]
               ): Promise<readonly (IngestLineFailure | null)[]> => {
-                const namespace =
-                  storageNamespace ??
-                  (await ctx.resolveOwnerConnectorNamespace(req, cid, {
-                    ...draftAdmission(cin),
-                    connectorInstanceId: cin,
-                  }));
+                const namespace = storageNamespace ?? (await resolveAdmittedNamespace(cid, _cin));
                 // biome-ignore lint/suspicious/noUnnecessaryConditions: Express route params are nullable at runtime even though the local adapter type narrows them.
                 const streamName = req.params.stream ?? "";
                 const getLatestAcquisitionBatch = ctx.getLatestAcquisitionBatchForConnection;
@@ -1251,12 +1257,12 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
           : {}),
         insertOrReplayRejection: async (input) => {
           const namespace =
-            storageNamespace ??
-            (await ctx.resolveOwnerConnectorNamespace(req, input.connectorId, {
-              ...draftAdmission(connectorInstanceId),
-              connectorInstanceId,
-            }));
+            storageNamespace ?? (await resolveAdmittedNamespace(input.connectorId, input.connectorInstanceId ?? null));
           return insertHostedRejectionReceipt(ctx, req, input, namespace, runId, mutationContext.traceId);
+        },
+        resolveAdmittedConnectorInstance: async (cid: string, requestedConnectorInstanceId: string | null) => {
+          const namespace = await resolveAdmittedNamespace(cid, requestedConnectorInstanceId);
+          return namespace.connectorInstanceId;
         },
       };
       let output: RecordsIngestOutput;

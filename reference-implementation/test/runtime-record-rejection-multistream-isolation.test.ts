@@ -348,7 +348,7 @@ test("runtime/server SQLite isolates durable record rejections and cursor commit
 
     const rows = getDb()
       .prepare(
-        `SELECT receipt_id, reason_code, stream, first_input_index, latest_input_index, payload_text, payload_sha256,
+        `SELECT receipt_id, reason_code, stream, first_input_index, latest_input_index, payload, payload_sha256,
                 payload_bytes, owner_subject_id, run_id
          FROM record_rejections
          WHERE connector_instance_id = ?
@@ -360,7 +360,7 @@ test("runtime/server SQLite isolates durable record rejections and cursor commit
         owner_subject_id: string;
         payload_bytes: number;
         payload_sha256: string;
-        payload_text: string;
+        payload: Buffer;
         reason_code: string;
         receipt_id: string;
         run_id: string;
@@ -374,7 +374,7 @@ test("runtime/server SQLite isolates durable record rejections and cursor commit
     assert.equal(row.reason_code, "invalid_record_identity");
     assert.equal(row.first_input_index, 0);
     assert.equal(row.latest_input_index, 0);
-    assert.equal(row.payload_text, rejectedPayloadLine);
+    assert.equal(row.payload.toString("utf8"), rejectedPayloadLine);
     assert.equal(row.payload_bytes, Buffer.byteLength(rejectedPayloadLine));
     assert.equal(row.run_id, runId);
     assert.ok(row.receipt_id.length > 0);
@@ -398,7 +398,7 @@ test("runtime/server SQLite isolates durable record rejections and cursor commit
     assert.equal(item.payload_sha256, row.payload_sha256);
     assert.equal(item.status, "pending");
     assert.equal(item.run_id, runId);
-    assert.equal("payload_text" in item, false);
+    assert.equal("payload" in item, false);
     assertOmitsPrivatePayload("owner rejection list", listBody, forbiddenPayloadNeedles);
 
     const stateEvents = getDb()

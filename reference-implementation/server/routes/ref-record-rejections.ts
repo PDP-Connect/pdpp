@@ -9,6 +9,7 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
+  header?: (name: string, value: string) => RouteResponse;
   json: (body: unknown) => unknown;
   status: (code: number) => RouteResponse;
 }
@@ -38,6 +39,7 @@ interface RecordRejectionMetadata {
   readonly latestInputIndex: number;
   readonly payloadBytes: number;
   readonly payloadSha256: string;
+  readonly quotaNearLimit: boolean;
   readonly reasonCode: string;
   readonly receiptId: string;
   readonly replayCount: number;
@@ -47,7 +49,9 @@ interface RecordRejectionMetadata {
 }
 
 interface RecordRejectionDetail extends RecordRejectionMetadata {
-  readonly payloadText: string;
+  readonly payloadBase64: string;
+  readonly payloadEncoding: "base64";
+  readonly payloadText: string | null;
 }
 
 interface RecordRejectionPage {
@@ -142,6 +146,7 @@ function projectMetadata(item: RecordRejectionMetadata): Record<string, unknown>
     latest_input_index: item.latestInputIndex,
     payload_bytes: item.payloadBytes,
     payload_sha256: item.payloadSha256,
+    quota_near_limit: item.quotaNearLimit,
     reason_code: item.reasonCode,
     receipt_id: item.receiptId,
     replay_count: item.replayCount,
@@ -154,8 +159,14 @@ function projectMetadata(item: RecordRejectionMetadata): Record<string, unknown>
 function projectDetail(item: RecordRejectionDetail): Record<string, unknown> {
   return {
     ...projectMetadata(item),
+    payload_base64: item.payloadBase64,
+    payload_encoding: item.payloadEncoding,
     payload_text: item.payloadText,
   };
+}
+
+function noStore(res: RouteResponse): void {
+  res.header?.("Cache-Control", "private, no-store");
 }
 
 export function mountRefRecordRejections(app: AppLike, ctx: MountRefRecordRejectionsContext): void {
@@ -166,6 +177,7 @@ export function mountRefRecordRejections(app: AppLike, ctx: MountRefRecordReject
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
+        noStore(res);
         const owned = await resolveOwnedConnection(ctx, req, connectorInstanceId);
         if (!owned) {
           return sendNotFound(ctx, res);
@@ -203,6 +215,7 @@ export function mountRefRecordRejections(app: AppLike, ctx: MountRefRecordReject
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
+        noStore(res);
         const receiptId = decodeURIComponent(req.params.receiptId as string);
         const owned = await resolveOwnedConnection(ctx, req, connectorInstanceId);
         if (!owned) {

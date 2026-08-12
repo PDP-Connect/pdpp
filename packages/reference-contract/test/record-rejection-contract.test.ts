@@ -15,6 +15,7 @@ const metadata = {
   latest_input_index: 1,
   payload_bytes: 21,
   payload_sha256: "a".repeat(64),
+  quota_near_limit: false,
   reason_code: "invalid_record_identity",
   receipt_id: "rr_opaque",
   replay_count: 0,
@@ -54,12 +55,17 @@ test("record-rejection list contract admits metadata and rejects payload disclos
   assert.equal(validateResponse("refListRecordRejections", { body: disclosed, status: 200 }).ok, false);
 });
 
-test("record-rejection detail contract returns the exact retained payload field", () => {
-  const detail = { ...metadata, payload_text: '{"id":"bad"}' };
+test("record-rejection detail contract returns the exact retained payload fields", () => {
+  const detail = {
+    ...metadata,
+    payload_base64: Buffer.from('{"id":"bad"}').toString("base64"),
+    payload_encoding: "base64",
+    payload_text: '{"id":"bad"}',
+  };
   assert.deepEqual(validateResponse("refGetRecordRejection", { body: detail, status: 200 }), {
     ok: true,
     skipped: false,
   });
-  const { payload_text: _payloadText, ...missingPayload } = detail;
+  const { payload_base64: _payloadBase64, ...missingPayload } = detail;
   assert.equal(validateResponse("refGetRecordRejection", { body: missingPayload, status: 200 }).ok, false);
 });

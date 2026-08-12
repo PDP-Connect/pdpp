@@ -12,6 +12,8 @@ type MountApp = Parameters<typeof mountRefRecordRejections>[0];
 
 interface FakeResponse {
   body: unknown;
+  headers: Record<string, string>;
+  header: (name: string, value: string) => FakeResponse;
   json: (body: unknown) => unknown;
   status: (code: number) => FakeResponse;
   statusCode: number | null;
@@ -32,6 +34,7 @@ const baseMetadata = {
   ownerSubjectId: "owner-1",
   payloadBytes: 42,
   payloadSha256: "sha256",
+  quotaNearLimit: false,
   reasonCode: "invalid_record_identity",
   receiptId: "rr_1",
   replayCount: 2,
@@ -57,6 +60,11 @@ function makeApp(): { app: MountApp; routes: Record<string, MountedRoute> } {
 function makeResponse(): FakeResponse {
   const response: FakeResponse = {
     body: undefined,
+    headers: {},
+    header(name, value) {
+      response.headers[name.toLowerCase()] = value;
+      return response;
+    },
     json(body) {
       response.body = body;
       return body;
@@ -85,6 +93,8 @@ function makeContext(overrides: Partial<MountRefRecordRejectionsContext> = {}) {
         detailCalls.push(input);
         return {
           ...baseMetadata,
+          payloadBase64: Buffer.from('{"id":"bad"}').toString("base64"),
+          payloadEncoding: "base64" as const,
           payloadText: '{"id":"bad"}',
         };
       },
@@ -166,6 +176,7 @@ test("list clamps page size, passes opaque cursor, and returns metadata only", a
         latest_input_index: 3,
         payload_bytes: 42,
         payload_sha256: "sha256",
+        quota_near_limit: false,
         reason_code: "invalid_record_identity",
         receipt_id: "rr_1",
         replay_count: 2,
@@ -178,6 +189,7 @@ test("list clamps page size, passes opaque cursor, and returns metadata only", a
     next_cursor: "opaque-next",
     object: "list",
   });
+  assert.equal(response.headers["cache-control"], "private, no-store");
   assert.equal(JSON.stringify(response.body).includes("payloadText"), false);
   assert.equal(JSON.stringify(response.body).includes("parser exploded"), false);
   assert.equal(JSON.stringify(response.body).includes("storage exploded"), false);
@@ -199,7 +211,27 @@ test("detail returns exact bounded payload after connection ownership is proven"
       receiptId: "rr_1",
     },
   ]);
-  assert.equal((response.body as { payload_text?: unknown }).payload_text, '{"id":"bad"}');
+  assert.deepEqual(response.body, {
+    connection_id: "connection-1",
+    connector_id: "connector-1",
+    created_at: "2026-08-11T00:00:00.000Z",
+    first_input_index: 1,
+    last_seen_at: "2026-08-11T00:01:00.000Z",
+    latest_input_index: 3,
+    payload_base64: Buffer.from('{"id":"bad"}').toString("base64"),
+    payload_bytes: 42,
+    payload_encoding: "base64",
+    payload_sha256: "sha256",
+    payload_text: '{"id":"bad"}',
+    quota_near_limit: false,
+    reason_code: "invalid_record_identity",
+    receipt_id: "rr_1",
+    replay_count: 2,
+    run_id: "run-1",
+    status: "pending",
+    stream: "items",
+  });
+  assert.equal(response.headers["cache-control"], "private, no-store");
 });
 
 test("wrong owner and missing receipt use the same non-disclosing not-found surface", async () => {

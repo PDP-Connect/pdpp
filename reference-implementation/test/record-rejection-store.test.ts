@@ -3,15 +3,17 @@
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 // biome-ignore lint/correctness/noUnresolvedImports: better-sqlite3 is a declared workspace runtime dependency resolved by pnpm/Node.
 import Database from "better-sqlite3";
 import { Pool } from "pg";
 import { writeTransaction } from "../lib/db.ts";
+import { scanDirectPrepareText } from "../scripts/check-direct-prepare-conformance.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import {
   closePostgresStorage,
@@ -19,6 +21,7 @@ import {
   postgresQuery,
   withPostgresTransaction,
 } from "../server/postgres-storage.ts";
+import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "../server/record-rejection-replay-key.ts";
 import {
   createRecordRejectionStore,
   DEFAULT_RECORD_REJECTION_OWNER_QUOTA_BYTES,
@@ -26,6 +29,7 @@ import {
   deleteSqliteRecordRejectionsForConnectionWithinTransaction,
   insertOrReplaySqliteRecordRejection,
   RECORD_REJECTION_OWNER_QUOTA_ENV,
+  RECORD_REJECTION_REPLAY_COUNT_MAX,
   RecordRejectionStoreError,
   recordRejectionOwnerQuotaBytes,
 } from "../server/stores/record-rejection-store.ts";
@@ -34,6 +38,48 @@ const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 const execFileAsync = promisify(execFile);
 const SHA256_HEX_RE = /^[a-f0-9]{64}$/;
 const SIMULATED_AUDIT_WRITE_FAILURE_RE = /simulated audit write failure/;
+const INJECTED_PAYLOAD_BACKFILL_FAILURE_RE = /injected payload backfill failure/;
+const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
+
+test("record rejection replay generation and key have one shared golden authority", () => {
+  assert.equal(RECORD_REJECTION_GENERATION, "record-rejection-v2");
+  assert.equal(
+    recordRejectionReplayKey({
+      connectorInstanceId: "cin_test",
+      ownerSubjectId: "owner_a",
+      payload: Buffer.from('{"id":null}'),
+      reasonCode: "malformed_ndjson",
+      stream: "items",
+    }),
+    "ac523764da7aaf6651f5af6667e855256f32ef75233ea9c35451af3ea9a8e2c2"
+  );
+});
+
+test("direct-prepare conformance fails for a record-rejection-store production call-site counterexample", async () => {
+  const counterexample = [
+    "// Copyright The PDP-Connect Contributors",
+    "// SPDX-License-Identifier: Apache-2.0",
+    'import { getDb } from "../../db.ts";',
+    "export function forbiddenRecordRejectionStorePrepareCounterexample() {",
+    '  return getDb().prepare("SELECT 1").get();',
+    "}",
+    "",
+  ].join("\n");
+  const target = "reference-implementation/server/stores/record-rejection-store.ts";
+  assert.deepEqual(scanDirectPrepareText(target, counterexample), [
+    {
+      line: 5,
+      path: target,
+      text: 'return getDb().prepare("SELECT 1").get();',
+    },
+  ]);
+  assert.equal(existsSync(join(REPO_ROOT, target)), true);
+  await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "reference-implementation/scripts/check-direct-prepare-conformance.ts", target],
+    { cwd: REPO_ROOT }
+  );
+});
 
 test("deployment quota configuration is explicit, byte-based, and fails closed when malformed", () => {
   assert.equal(recordRejectionOwnerQuotaBytes({}), DEFAULT_RECORD_REJECTION_OWNER_QUOTA_BYTES);
@@ -90,10 +136,10 @@ async function seedPostgresConnection({
   runId = "run_1",
   status = "active",
 } = {}) {
-  await postgresQuery("INSERT INTO connectors(connector_id, manifest, created_at) VALUES($1, '{}'::jsonb, $2)", [
-    connectorId,
-    now(),
-  ]);
+  await postgresQuery(
+    "INSERT INTO connectors(connector_id, manifest, created_at) VALUES($1, '{}'::jsonb, $2) ON CONFLICT(connector_id) DO NOTHING",
+    [connectorId, now()]
+  );
   await postgresQuery(
     `INSERT INTO connector_instances(
       connector_instance_id, owner_subject_id, connector_id, display_name, status,
@@ -116,15 +162,42 @@ async function seedPostgresConnection({
 }
 
 function assertSqliteQuotaMatchesRows(ownerSubjectId: string) {
-  const quota =
+  const quota = getDb()
+    .prepare(
+      "SELECT pending_payload_bytes, pending_receipt_count FROM record_rejection_quota WHERE owner_subject_id = ?"
+    )
+    .get<{ pending_payload_bytes: number; pending_receipt_count: number }>(ownerSubjectId) ?? {
+    pending_payload_bytes: 0,
+    pending_receipt_count: 0,
+  };
+  const rows = getDb()
+    .prepare(
+      "SELECT COALESCE(SUM(payload_bytes), 0) AS bytes, COUNT(*) AS count FROM record_rejections WHERE owner_subject_id = ?"
+    )
+    .get<{ bytes: number; count: number }>(ownerSubjectId) ?? { bytes: 0, count: 0 };
+  assert.equal(quota.pending_payload_bytes, rows.bytes);
+  assert.equal(quota.pending_receipt_count, rows.count);
+}
+
+async function assertPostgresQuotaMatchesRows(ownerSubjectId: string) {
+  const quota = await postgresQuery<{ matches: boolean }>(
+    `SELECT q.pending_payload_bytes = COALESCE(SUM(r.payload_bytes), 0)
+            AND q.pending_receipt_count = COUNT(r.receipt_id) AS matches
+       FROM record_rejection_quota q
+       LEFT JOIN record_rejections r ON r.owner_subject_id = q.owner_subject_id
+      WHERE q.owner_subject_id = $1
+      GROUP BY q.pending_payload_bytes, q.pending_receipt_count`,
+    [ownerSubjectId]
+  );
+  assert.equal(quota.rows[0]?.matches, true);
+}
+
+function sqliteAuditEventCount(receiptId: string): number {
+  return (
     getDb()
-      .prepare("SELECT pending_payload_bytes FROM record_rejection_quota WHERE owner_subject_id = ?")
-      .get<{ pending_payload_bytes: number }>(ownerSubjectId)?.pending_payload_bytes ?? 0;
-  const rows =
-    getDb()
-      .prepare("SELECT COALESCE(SUM(payload_bytes), 0) AS bytes FROM record_rejections WHERE owner_subject_id = ?")
-      .get<{ bytes: number }>(ownerSubjectId)?.bytes ?? 0;
-  assert.equal(quota, rows);
+      .prepare("SELECT COUNT(*) AS count FROM spine_events WHERE object_type = 'record_rejection' AND object_id = ?")
+      .get<{ count: number }>(receiptId)?.count ?? 0
+  );
 }
 
 async function insertFromSeparateSqliteProcess(
@@ -177,17 +250,37 @@ test("SQLite record rejection store replays exact inputs and keeps payload metad
     stream: "items",
   };
   const first = await store.insertOrReplay(input);
-  const second = await store.insertOrReplay({ ...input, inputIndex: 5, reasonCode: "malformed_ndjson" });
+  const second = await store.insertOrReplay({ ...input, inputIndex: 5 });
   assert.equal(second.receiptId, first.receiptId);
   assert.equal(second.replayed, true);
   assert.equal(second.code, "invalid_record_identity");
+  const auditCountAfterReplay = sqliteAuditEventCount(first.receiptId);
+  assert.equal(auditCountAfterReplay, 1);
+  getDb()
+    .prepare("UPDATE record_rejections SET replay_count = ? WHERE receipt_id = ?")
+    .run(RECORD_REJECTION_REPLAY_COUNT_MAX - 1, first.receiptId);
+  await store.insertOrReplay({ ...input, inputIndex: 6 });
+  await store.insertOrReplay({ ...input, inputIndex: 7 });
+  assert.equal(
+    getDb()
+      .prepare("SELECT replay_count FROM record_rejections WHERE receipt_id = ?")
+      .get<{ replay_count: number }>(first.receiptId)?.replay_count,
+    RECORD_REJECTION_REPLAY_COUNT_MAX
+  );
+  assert.equal(sqliteAuditEventCount(first.receiptId), auditCountAfterReplay);
+
+  const changedReason = await store.insertOrReplay({ ...input, inputIndex: 8, reasonCode: "malformed_ndjson" });
+  assert.notEqual(changedReason.receiptId, first.receiptId);
+  assert.equal(changedReason.replayed, false);
+  assert.equal(changedReason.code, "malformed_ndjson");
 
   const page = await store.list({ connectorInstanceId: "cin_test", limit: 10, ownerSubjectId: "owner_a" });
-  assert.equal(page.items.length, 1);
+  assert.equal(page.items.length, 2);
   const [item] = page.items;
   assert.ok(item);
   assert.equal(item.payloadBytes, Buffer.byteLength(input.rawLine));
-  assert.equal(item.latestInputIndex, 5);
+  assert.equal(item.latestInputIndex, 7);
+  assert.equal(item.replayCount, RECORD_REJECTION_REPLAY_COUNT_MAX);
   assert.equal("payloadText" in item, false);
 
   const detail = await store.getDetail({
@@ -200,9 +293,12 @@ test("SQLite record rejection store replays exact inputs and keeps payload metad
   assert.match(detail.payloadSha256, SHA256_HEX_RE);
 
   const quota = getDb()
-    .prepare("SELECT pending_payload_bytes FROM record_rejection_quota WHERE owner_subject_id = ?")
-    .get<{ pending_payload_bytes: number }>("owner_a");
-  assert.equal(quota?.pending_payload_bytes, Buffer.byteLength(input.rawLine));
+    .prepare(
+      "SELECT pending_payload_bytes, pending_receipt_count FROM record_rejection_quota WHERE owner_subject_id = ?"
+    )
+    .get<{ pending_payload_bytes: number; pending_receipt_count: number }>("owner_a");
+  assert.equal(quota?.pending_payload_bytes, Buffer.byteLength(input.rawLine) * 2);
+  assert.equal(quota?.pending_receipt_count, 2);
   assertSqliteQuotaMatchesRows("owner_a");
 
   const auditEvents = getDb()
@@ -223,12 +319,12 @@ test("SQLite record rejection store replays exact inputs and keeps payload metad
   assert.equal(auditEvents.length, 2);
   assert.deepEqual(
     auditEvents.map((event) => event.event_type),
-    ["record_rejection.quarantined", "record_rejection.replayed"]
+    ["record_rejection.quarantined", "record_rejection.quarantined"]
   );
-  for (const event of auditEvents) {
+  for (const [index, event] of auditEvents.entries()) {
     assert.equal(event.actor_id, "pdpp_reference");
     assert.equal(event.actor_type, "system");
-    assert.equal(event.object_id, first.receiptId);
+    assert.equal(event.object_id, index === 0 ? first.receiptId : changedReason.receiptId);
     assert.equal(event.object_type, "record_rejection");
     const data = JSON.parse(event.data_json) as Record<string, unknown>;
     assert.deepEqual(Object.keys(data).sort(), [
@@ -241,10 +337,10 @@ test("SQLite record rejection store replays exact inputs and keeps payload metad
       "receipt_id",
       "stream",
     ]);
-    assert.equal(data.receipt_id, first.receiptId);
+    assert.equal(data.receipt_id, index === 0 ? first.receiptId : changedReason.receiptId);
     assert.equal(data.connection_id, "cin_test");
     assert.equal(data.stream, "items");
-    assert.equal(data.reason_code, "invalid_record_identity");
+    assert.equal(data.reason_code, index === 0 ? "invalid_record_identity" : "malformed_ndjson");
     assert.equal(data.payload_bytes, Buffer.byteLength(input.rawLine));
     assert.equal(data.payload_sha256, detail.payloadSha256);
     assert.equal(JSON.stringify(data).includes(input.rawLine), false);
@@ -359,10 +455,106 @@ test("SQLite record rejection store enforces the UTF-8 line-byte ceiling before 
   );
 });
 
+test("SQLite record rejection store preserves NUL, distinct invalid UTF-8, and multibyte payload bytes", async () => {
+  initDb();
+  seedSqliteConnection();
+  const store = createRecordRejectionStore();
+  const cases = [
+    { expectedText: "{\u0000}", rawLine: Buffer.from([0x7b, 0x00, 0x7d]), reasonCode: "malformed_ndjson" },
+    { expectedText: null, rawLine: Buffer.from([0xc0, 0xaf]), reasonCode: "invalid_utf8" },
+    { expectedText: null, rawLine: Buffer.from([0xe0, 0x80, 0xaf]), reasonCode: "invalid_utf8" },
+    { expectedText: "é水", rawLine: Buffer.from("é水", "utf8"), reasonCode: "malformed_ndjson" },
+  ] as const;
+  const receipts = await Promise.all(
+    cases.map((entry, inputIndex) =>
+      store.insertOrReplay({
+        connectorId: "test_connector",
+        connectorInstanceId: "cin_test",
+        inputIndex,
+        ownerSubjectId: "owner_a",
+        quotaBytes: 1000,
+        rawLine: entry.rawLine,
+        reasonCode: entry.reasonCode,
+        runId: "run_1",
+        stream: "items",
+      })
+    )
+  );
+  assert.notEqual(receipts[1]?.receiptId, receipts[2]?.receiptId);
+  const details = await Promise.all(
+    receipts.map((receipt) =>
+      store.getDetail({ connectorInstanceId: "cin_test", ownerSubjectId: "owner_a", receiptId: receipt.receiptId })
+    )
+  );
+  for (const [index, detail] of details.entries()) {
+    assert.equal(detail?.payloadBase64, cases[index]?.rawLine.toString("base64"));
+    assert.equal(detail?.payloadText, cases[index]?.expectedText);
+    assert.equal(detail?.payloadBytes, cases[index]?.rawLine.byteLength);
+  }
+  assertSqliteQuotaMatchesRows("owner_a");
+});
+
+test("SQLite record rejection store enforces owner and connection receipt-count quotas with multi-owner isolation", async () => {
+  initDb();
+  seedSqliteConnection();
+  seedSqliteConnection({ connectorInstanceId: "cin_b", runId: "run_b", status: "draft" });
+  seedSqliteConnection({ connectorInstanceId: "cin_c", ownerSubjectId: "owner_b", runId: "run_c", status: "draft" });
+  const store = createRecordRejectionStore();
+  const input = {
+    connectorId: "test_connector",
+    connectorInstanceId: "cin_test",
+    maxConnectionReceipts: 2,
+    maxOwnerReceipts: 3,
+    ownerSubjectId: "owner_a",
+    quotaBytes: 1000,
+    reasonCode: "malformed_ndjson",
+    runId: "run_1",
+    stream: "items",
+  };
+  await store.insertOrReplay({ ...input, inputIndex: 0, rawLine: "connection-one" });
+  await store.insertOrReplay({ ...input, inputIndex: 1, rawLine: "connection-two" });
+  await assert.rejects(
+    store.insertOrReplay({ ...input, inputIndex: 2, rawLine: "connection-three" }),
+    (error) => error instanceof RecordRejectionStoreError && error.code === "record_rejection_connection_quota_exceeded"
+  );
+  await store.insertOrReplay({
+    ...input,
+    connectorInstanceId: "cin_b",
+    inputIndex: 0,
+    rawLine: "owner-third",
+    runId: "run_b",
+  });
+  await assert.rejects(
+    store.insertOrReplay({
+      ...input,
+      connectorInstanceId: "cin_b",
+      inputIndex: 1,
+      rawLine: "owner-fourth",
+      runId: "run_b",
+    }),
+    (error) => error instanceof RecordRejectionStoreError && error.code === "record_rejection_quota_exceeded"
+  );
+  await store.insertOrReplay({
+    connectorId: "test_connector",
+    connectorInstanceId: "cin_c",
+    inputIndex: 0,
+    maxOwnerReceipts: 1,
+    ownerSubjectId: "owner_b",
+    quotaBytes: 1000,
+    rawLine: "owner-b-isolated",
+    reasonCode: "malformed_ndjson",
+    runId: "run_c",
+    stream: "items",
+  });
+  assertSqliteQuotaMatchesRows("owner_a");
+  assertSqliteQuotaMatchesRows("owner_b");
+});
+
 test("SQLite record rejection store matches ingest lifecycle and exact run-history fences", () => {
   initDb();
   seedSqliteConnection({ connectorInstanceId: "cin_draft", runId: "run_draft", status: "draft" });
   seedSqliteConnection({ connectorInstanceId: "cin_paused", runId: "run_paused", status: "paused" });
+  seedSqliteConnection({ connectorInstanceId: "cin_revoked", runId: "run_revoked", status: "revoked" });
   for (const [connectorInstanceId, runId] of [
     ["cin_draft", "run_draft"],
     ["cin_paused", "run_paused"],
@@ -380,6 +572,20 @@ test("SQLite record rejection store matches ingest lifecycle and exact run-histo
       })
     );
   }
+  assert.throws(
+    () =>
+      insertOrReplaySqliteRecordRejection({
+        connectorId: "test_connector",
+        connectorInstanceId: "cin_revoked",
+        inputIndex: 0,
+        ownerSubjectId: "owner_a",
+        rawLine: "revoked",
+        reasonCode: "malformed_ndjson",
+        runId: "run_revoked",
+        stream: "items",
+      }),
+    (err) => err instanceof RecordRejectionStoreError && err.code === "connection_not_writable"
+  );
   getDb().prepare("UPDATE run_history SET status = 'cancelled' WHERE run_id = 'run_draft'").run();
   assert.throws(
     () =>
@@ -594,6 +800,184 @@ test("SQLite record rejection migration upgrades legacy DBs and retains rollback
   }
 });
 
+test("SQLite record rejection migration converts legacy text payloads, rekeys v2, is idempotent, and rolls back faults", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-record-rejections-v2-migration-"));
+  const dbPath = join(dir, "legacy.sqlite");
+  try {
+    const legacy = new Database(dbPath);
+    const createdAt = now();
+    legacy.exec(`
+      CREATE TABLE connectors(connector_id TEXT PRIMARY KEY, manifest TEXT NOT NULL, created_at TEXT NOT NULL);
+      INSERT INTO connectors VALUES('test_connector', '{}', '${createdAt}');
+      CREATE TABLE connector_instances(
+        connector_instance_id TEXT PRIMARY KEY, owner_subject_id TEXT NOT NULL, connector_id TEXT NOT NULL,
+        display_name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', source_kind TEXT NOT NULL,
+        source_binding_key TEXT NOT NULL, source_binding_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, revoked_at TEXT
+      );
+      INSERT INTO connector_instances(
+        connector_instance_id, owner_subject_id, connector_id, display_name, status,
+        source_kind, source_binding_key, source_binding_json, created_at, updated_at
+      ) VALUES('cin_test', 'owner_a', 'test_connector', 'Test', 'active', 'account', 'cin_test', '{}', '${createdAt}', '${createdAt}');
+      CREATE TABLE record_rejection_quota(owner_subject_id TEXT PRIMARY KEY, pending_payload_bytes INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
+      INSERT INTO record_rejection_quota VALUES('owner_a', 999, '${createdAt}');
+      CREATE TABLE record_rejections(
+        receipt_id TEXT PRIMARY KEY, owner_subject_id TEXT NOT NULL, connector_instance_id TEXT NOT NULL,
+        connector_id TEXT NOT NULL, stream TEXT NOT NULL, run_id TEXT, first_input_index INTEGER NOT NULL,
+        latest_input_index INTEGER NOT NULL, reason_code TEXT NOT NULL, payload_text TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL, payload_bytes INTEGER NOT NULL, replay_key TEXT NOT NULL UNIQUE,
+        replay_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL
+      );
+    `);
+    legacy
+      .prepare(
+        `INSERT INTO record_rejections VALUES(
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )`
+      )
+      .run(
+        "rr_legacy",
+        "owner_a",
+        "cin_test",
+        "test_connector",
+        "items",
+        "run_1",
+        0,
+        0,
+        "malformed_ndjson",
+        '{"id":null}',
+        "8bdf592a5d687a7aaee0ac11c053c7bf2efc0a2bacebeb180a9dc2ba06f80c00",
+        11,
+        "legacy-key-without-reason",
+        0,
+        "pending",
+        createdAt,
+        createdAt
+      );
+    legacy.close();
+    initDb(dbPath);
+    const columns = getDb().prepare("PRAGMA table_info(record_rejections)").all<{ name: string }>();
+    assert.equal(
+      columns.some((column) => column.name === "payload_text"),
+      false
+    );
+    const row = getDb()
+      .prepare("SELECT payload, rejection_generation, replay_key FROM record_rejections WHERE receipt_id = 'rr_legacy'")
+      .get<{ payload: Buffer; rejection_generation: string; replay_key: string }>();
+    assert.equal(row?.payload.toString("utf8"), '{"id":null}');
+    assert.equal(row?.rejection_generation, RECORD_REJECTION_GENERATION);
+    assert.equal(
+      row?.replay_key,
+      recordRejectionReplayKey({
+        connectorInstanceId: "cin_test",
+        ownerSubjectId: "owner_a",
+        payload: Buffer.from('{"id":null}'),
+        reasonCode: "malformed_ndjson",
+        stream: "items",
+      })
+    );
+    assertSqliteQuotaMatchesRows("owner_a");
+    assert.equal(
+      (
+        await createRecordRejectionStore().getDetail({
+          connectorInstanceId: "cin_test",
+          ownerSubjectId: "owner_a",
+          receiptId: "rr_legacy",
+        })
+      )?.payloadBase64,
+      Buffer.from('{"id":null}').toString("base64")
+    );
+    getDb().exec(`
+      CREATE TABLE record_rejection_update_probe(update_count INTEGER NOT NULL DEFAULT 0);
+      INSERT INTO record_rejection_update_probe VALUES(0);
+      CREATE TRIGGER count_record_rejection_update_probe AFTER UPDATE ON record_rejections
+      BEGIN
+        UPDATE record_rejection_update_probe SET update_count = update_count + 1;
+      END;
+    `);
+    closeDb();
+    initDb(dbPath);
+    assert.equal(
+      getDb().prepare("SELECT update_count FROM record_rejection_update_probe").get<{ update_count: number }>()
+        ?.update_count,
+      0
+    );
+  } finally {
+    closeDb();
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("SQLite record rejection migration rolls back injected text-to-BLOB failures and reopens cleanly", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-record-rejections-v2-migration-fault-"));
+  const dbPath = join(dir, "legacy.sqlite");
+  try {
+    const legacy = new Database(dbPath);
+    const createdAt = now();
+    legacy.exec(`
+      CREATE TABLE connectors(connector_id TEXT PRIMARY KEY, manifest TEXT NOT NULL, created_at TEXT NOT NULL);
+      INSERT INTO connectors VALUES('test_connector', '{}', '${createdAt}');
+      CREATE TABLE connector_instances(
+        connector_instance_id TEXT PRIMARY KEY, owner_subject_id TEXT NOT NULL, connector_id TEXT NOT NULL,
+        display_name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', source_kind TEXT NOT NULL,
+        source_binding_key TEXT NOT NULL, source_binding_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, revoked_at TEXT
+      );
+      INSERT INTO connector_instances(
+        connector_instance_id, owner_subject_id, connector_id, display_name, status,
+        source_kind, source_binding_key, source_binding_json, created_at, updated_at
+      ) VALUES('cin_test', 'owner_a', 'test_connector', 'Test', 'active', 'account', 'cin_test', '{}', '${createdAt}', '${createdAt}');
+      CREATE TABLE record_rejection_quota(
+        owner_subject_id TEXT PRIMARY KEY, pending_payload_bytes INTEGER NOT NULL DEFAULT 0,
+        pending_receipt_count INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+      );
+      INSERT INTO record_rejection_quota VALUES('owner_a', 0, 0, '${createdAt}');
+      CREATE TABLE record_rejections(
+        receipt_id TEXT PRIMARY KEY, owner_subject_id TEXT NOT NULL, connector_instance_id TEXT NOT NULL,
+        connector_id TEXT NOT NULL, stream TEXT NOT NULL, run_id TEXT, first_input_index INTEGER NOT NULL,
+        latest_input_index INTEGER NOT NULL, reason_code TEXT NOT NULL, payload BLOB, payload_text TEXT,
+        payload_sha256 TEXT NOT NULL, payload_bytes INTEGER NOT NULL, replay_key TEXT NOT NULL UNIQUE,
+        replay_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL
+      );
+      INSERT INTO record_rejections VALUES(
+        'rr_fault', 'owner_a', 'cin_test', 'test_connector', 'items', 'run_1', 0, 0,
+        'malformed_ndjson', NULL, '{"id":null}', '8bdf592a5d687a7aaee0ac11c053c7bf2efc0a2bacebeb180a9dc2ba06f80c00',
+        11, 'fault-key', 0, 'pending', '${createdAt}', '${createdAt}'
+      );
+      CREATE TRIGGER fail_payload_backfill BEFORE UPDATE OF payload ON record_rejections
+      BEGIN
+        SELECT RAISE(FAIL, 'injected payload backfill failure');
+      END;
+    `);
+    legacy.close();
+    assert.throws(() => initDb(dbPath), INJECTED_PAYLOAD_BACKFILL_FAILURE_RE);
+    closeDb();
+    const failed = new Database(dbPath);
+    const failedColumns = failed.prepare("PRAGMA table_info(record_rejections)").all() as { name: string }[];
+    assert.equal(
+      failedColumns.some((column) => column.name === "payload_text"),
+      true
+    );
+    const failedRow = failed
+      .prepare("SELECT payload IS NULL AS payload_is_null FROM record_rejections WHERE receipt_id = 'rr_fault'")
+      .get() as { payload_is_null: number } | undefined;
+    assert.equal(failedRow?.payload_is_null, 1);
+    failed.prepare("DROP TRIGGER fail_payload_backfill").run();
+    failed.close();
+    initDb(dbPath);
+    const recoveredColumns = getDb().prepare("PRAGMA table_info(record_rejections)").all<{ name: string }>();
+    assert.equal(
+      recoveredColumns.some((column) => column.name === "payload_text"),
+      false
+    );
+  } finally {
+    closeDb();
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("Postgres record rejection store contract", {
   skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL not set",
 }, async () => {
@@ -615,7 +999,7 @@ test("Postgres record rejection store contract", {
       connectorInstanceId: "cin_test",
       inputIndex: 0,
       ownerSubjectId: "owner_a",
-      quotaBytes: Buffer.byteLength('{"id":null}'),
+      quotaBytes: 1000,
       rawLine: '{"id":null}',
       reasonCode: "invalid_record_identity",
       runId: "run_1",
@@ -631,8 +1015,19 @@ test("Postgres record rejection store contract", {
       inputIndex: 2,
       reasonCode: "malformed_ndjson",
     });
-    assert.equal(changedReasonReplay.receiptId, first.receiptId);
-    assert.equal(changedReasonReplay.code, "invalid_record_identity");
+    assert.notEqual(changedReasonReplay.receiptId, first.receiptId);
+    assert.equal(changedReasonReplay.code, "malformed_ndjson");
+    await postgresQuery("UPDATE record_rejections SET replay_count = $1 WHERE receipt_id = $2", [
+      RECORD_REJECTION_REPLAY_COUNT_MAX - 1,
+      first.receiptId,
+    ]);
+    await store.insertOrReplay({ ...input, inputIndex: 20 });
+    await store.insertOrReplay({ ...input, inputIndex: 21 });
+    const saturated = await postgresQuery<{ replay_count: string }>(
+      "SELECT replay_count FROM record_rejections WHERE receipt_id = $1",
+      [first.receiptId]
+    );
+    assert.equal(Number(saturated.rows[0]?.replay_count), RECORD_REJECTION_REPLAY_COUNT_MAX);
     const boundary = await store.insertOrReplay({
       ...input,
       inputIndex: 3,
@@ -643,25 +1038,51 @@ test("Postgres record rejection store contract", {
     });
     assert.equal(boundary.replayed, false);
     await assert.rejects(
-      store.insertOrReplay({
-        ...input,
-        inputIndex: 4,
-        maxPayloadBytes: 4,
-        quotaBytes: 100,
-        rawLine: "ééa",
-        reasonCode: "malformed_ndjson",
-      }),
+      async () =>
+        store.insertOrReplay({
+          ...input,
+          inputIndex: 4,
+          maxPayloadBytes: 4,
+          quotaBytes: 100,
+          rawLine: "ééa",
+          reasonCode: "malformed_ndjson",
+        }),
       (error) => error instanceof RecordRejectionStoreError && error.code === "record_rejection_payload_too_large"
     );
-    const quota = await postgresQuery<{ matches: boolean }>(
-      `SELECT q.pending_payload_bytes = COALESCE(SUM(r.payload_bytes), 0) AS matches
-         FROM record_rejection_quota q
-         LEFT JOIN record_rejections r ON r.owner_subject_id = q.owner_subject_id
-        WHERE q.owner_subject_id = $1
-        GROUP BY q.pending_payload_bytes`,
-      ["owner_a"]
+    const byteCases = [
+      { expectedText: "{\u0000}", rawLine: Buffer.from([0x7b, 0x00, 0x7d]), reasonCode: "malformed_ndjson" },
+      { expectedText: null, rawLine: Buffer.from([0xc0, 0xaf]), reasonCode: "invalid_utf8" },
+      { expectedText: null, rawLine: Buffer.from([0xe0, 0x80, 0xaf]), reasonCode: "invalid_utf8" },
+      { expectedText: "é水", rawLine: Buffer.from("é水", "utf8"), reasonCode: "malformed_ndjson" },
+    ] as const;
+    const byteReceipts = await Promise.all(
+      byteCases.map((byteCase, offset) =>
+        store.insertOrReplay({
+          ...input,
+          inputIndex: 30 + offset,
+          rawLine: byteCase.rawLine,
+          reasonCode: byteCase.reasonCode,
+        })
+      )
     );
-    assert.equal(quota.rows[0]?.matches, true);
+    assert.notEqual(byteReceipts[1]?.receiptId, byteReceipts[2]?.receiptId);
+    const byteDetails = await Promise.all(
+      byteReceipts.map((receipt) =>
+        store.getDetail({
+          connectorInstanceId: "cin_test",
+          ownerSubjectId: "owner_a",
+          receiptId: receipt.receiptId,
+        })
+      )
+    );
+    for (const [offset, byteCase] of byteCases.entries()) {
+      const detail = byteDetails[offset];
+      assert.ok(detail);
+      assert.equal(detail?.payloadBase64, byteCase.rawLine.toString("base64"));
+      assert.equal(detail?.payloadText, byteCase.expectedText);
+      assert.equal(detail?.payloadBytes, byteCase.rawLine.byteLength);
+    }
+    await assertPostgresQuotaMatchesRows("owner_a");
     assert.equal(
       (await store.list({ connectorInstanceId: "cin_test", limit: 1, ownerSubjectId: "owner_a" })).items.length,
       1
@@ -695,16 +1116,69 @@ test("Postgres record rejection store contract", {
       )?.payloadText,
       '{"id":null}'
     );
-    assert.equal(await store.deleteForConnection({ connectorInstanceId: "cin_test", ownerSubjectId: "owner_a" }), 2);
-    const postDeleteQuota = await postgresQuery<{ matches: boolean }>(
-      `SELECT q.pending_payload_bytes = COALESCE(SUM(r.payload_bytes), 0) AS matches
-         FROM record_rejection_quota q
-         LEFT JOIN record_rejections r ON r.owner_subject_id = q.owner_subject_id
-        WHERE q.owner_subject_id = $1
-        GROUP BY q.pending_payload_bytes`,
-      ["owner_a"]
+    await seedPostgresConnection({ connectorInstanceId: "cin_revoked", runId: "run_revoked", status: "revoked" });
+    await assert.rejects(
+      store.insertOrReplay({
+        ...input,
+        connectorInstanceId: "cin_revoked",
+        inputIndex: 40,
+        rawLine: "revoked",
+        runId: "run_revoked",
+      }),
+      (error) => error instanceof RecordRejectionStoreError && error.code === "connection_not_writable"
     );
-    assert.equal(postDeleteQuota.rows[0]?.matches, true);
+    await seedPostgresConnection({ connectorInstanceId: "cin_b", runId: "run_b", status: "draft" });
+    await seedPostgresConnection({
+      connectorInstanceId: "cin_c",
+      ownerSubjectId: "owner_b",
+      runId: "run_c",
+      status: "draft",
+    });
+    await assert.rejects(
+      store.insertOrReplay({
+        ...input,
+        inputIndex: 41,
+        maxConnectionReceipts: 7,
+        rawLine: "connection-count-overflow",
+      }),
+      (error) =>
+        error instanceof RecordRejectionStoreError && error.code === "record_rejection_connection_quota_exceeded"
+    );
+    await store.insertOrReplay({
+      ...input,
+      connectorInstanceId: "cin_b",
+      inputIndex: 0,
+      maxOwnerReceipts: 8,
+      rawLine: "owner-fill",
+      runId: "run_b",
+    });
+    await assert.rejects(
+      store.insertOrReplay({
+        ...input,
+        connectorInstanceId: "cin_b",
+        inputIndex: 1,
+        maxOwnerReceipts: 8,
+        rawLine: "owner-count-overflow",
+        runId: "run_b",
+      }),
+      (error) => error instanceof RecordRejectionStoreError && error.code === "record_rejection_quota_exceeded"
+    );
+    await store.insertOrReplay({
+      connectorId: "test_connector",
+      connectorInstanceId: "cin_c",
+      inputIndex: 0,
+      maxOwnerReceipts: 1,
+      ownerSubjectId: "owner_b",
+      quotaBytes: 1000,
+      rawLine: "owner-b-isolated",
+      reasonCode: "malformed_ndjson",
+      runId: "run_c",
+      stream: "items",
+    });
+    await assertPostgresQuotaMatchesRows("owner_a");
+    await assertPostgresQuotaMatchesRows("owner_b");
+    assert.equal(await store.deleteForConnection({ connectorInstanceId: "cin_test", ownerSubjectId: "owner_a" }), 7);
+    await assertPostgresQuotaMatchesRows("owner_a");
   } finally {
     await closePostgresStorage();
   }

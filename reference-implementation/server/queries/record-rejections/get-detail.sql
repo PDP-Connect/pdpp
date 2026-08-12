@@ -1,9 +1,22 @@
 -- @terminator: one
-SELECT receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
-       first_input_index, latest_input_index, reason_code, payload_text, payload_sha256,
-       payload_bytes, replay_count, status, created_at, last_seen_at
+SELECT record_rejections.receipt_id, record_rejections.owner_subject_id,
+       record_rejections.connector_instance_id, record_rejections.connector_id,
+       record_rejections.stream, record_rejections.run_id,
+       record_rejections.first_input_index, record_rejections.latest_input_index,
+       record_rejections.reason_code, record_rejections.payload, record_rejections.payload_sha256,
+       record_rejections.payload_bytes, record_rejections.replay_count,
+       record_rejections.status, record_rejections.created_at, record_rejections.last_seen_at,
+       record_rejection_quota.pending_payload_bytes,
+       record_rejection_quota.pending_receipt_count,
+       (
+         SELECT COUNT(*)
+         FROM record_rejections connection_record_rejections
+         WHERE connection_record_rejections.owner_subject_id = record_rejections.owner_subject_id
+           AND connection_record_rejections.connector_instance_id = record_rejections.connector_instance_id
+       ) AS connection_receipt_count
 FROM record_rejections
-WHERE owner_subject_id = ?
-  AND connector_instance_id = ?
-  AND receipt_id = ?
+JOIN record_rejection_quota ON record_rejection_quota.owner_subject_id = record_rejections.owner_subject_id
+WHERE record_rejections.owner_subject_id = ?
+  AND record_rejections.connector_instance_id = ?
+  AND record_rejections.receipt_id = ?
 LIMIT 1

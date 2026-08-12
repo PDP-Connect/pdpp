@@ -48,7 +48,8 @@
  */
 
 import { readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DirectPrepareAllowlistEntry } from "./direct-prepare-allowlist.ts";
 import { DIRECT_PREPARE_ALLOWLIST } from "./direct-prepare-allowlist.ts";
 
@@ -67,8 +68,9 @@ const EXEMPT_PATHS: ReadonlySet<string> = new Set([
 
 /** The policy's scope, mirroring the lefthook `glob`. */
 const SCOPE_PATTERN = /^reference-implementation\/(lib|server|runtime|cli)\/.*\.(ts|js)$/;
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
-interface LiveHit {
+export interface DirectPrepareLiveHit {
   line: number;
   path: string;
   text: string;
@@ -96,17 +98,8 @@ export function selectInspectableFiles(paths: readonly string[]): string[] {
   return [...new Set(paths.filter((p) => p.length > 0 && SCOPE_PATTERN.test(p) && !EXEMPT_PATHS.has(p)))].sort();
 }
 
-function scanFile(path: string): LiveHit[] {
-  let contents: string;
-  try {
-    contents = readFileSync(path, "utf8");
-  } catch {
-    // Staged deletions/renames can name a path that no longer exists on
-    // disk. Nothing to scan; the allowlist's stale check will surface a
-    // genuinely removed site on the next run that does include the file.
-    return [];
-  }
-  const hits: LiveHit[] = [];
+export function scanDirectPrepareText(path: string, contents: string): DirectPrepareLiveHit[] {
+  const hits: DirectPrepareLiveHit[] = [];
   const lines = contents.split("\n");
   for (const [index, text] of lines.entries()) {
     if (DIRECT_PREPARE_PATTERN.test(text)) {
@@ -116,7 +109,20 @@ function scanFile(path: string): LiveHit[] {
   return hits;
 }
 
-function reportUnlisted(unlisted: readonly LiveHit[]): void {
+function scanFile(path: string): DirectPrepareLiveHit[] {
+  let contents: string;
+  try {
+    contents = readFileSync(resolve(REPO_ROOT, path), "utf8");
+  } catch {
+    // Staged deletions/renames can name a path that no longer exists on
+    // disk. Nothing to scan; the allowlist's stale check will surface a
+    // genuinely removed site on the next run that does include the file.
+    return [];
+  }
+  return scanDirectPrepareText(path, contents);
+}
+
+function reportUnlisted(unlisted: readonly DirectPrepareLiveHit[]): void {
   console.error(`\n✗ ${unlisted.length} NEW direct .prepare(...) call site(s) — not in the reviewed allowlist:`);
   for (const hit of unlisted) {
     console.error(`    ${hit.path}:${hit.line}  ${hit.text}`);

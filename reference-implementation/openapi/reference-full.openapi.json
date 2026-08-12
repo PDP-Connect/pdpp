@@ -14612,6 +14612,9 @@
                             "pattern": "^[a-f0-9]{64}$",
                             "type": "string"
                           },
+                          "quota_near_limit": {
+                            "type": "boolean"
+                          },
                           "reason_code": {
                             "minLength": 1,
                             "type": "string"
@@ -14647,6 +14650,7 @@
                           "latest_input_index",
                           "payload_bytes",
                           "payload_sha256",
+                          "quota_near_limit",
                           "reason_code",
                           "receipt_id",
                           "replay_count",
@@ -15018,6 +15022,9 @@
                       "pattern": "^[a-f0-9]{64}$",
                       "type": "string"
                     },
+                    "quota_near_limit": {
+                      "type": "boolean"
+                    },
                     "reason_code": {
                       "minLength": 1,
                       "type": "string"
@@ -15043,8 +15050,17 @@
                       "minLength": 1,
                       "type": "string"
                     },
-                    "payload_text": {
+                    "payload_base64": {
                       "type": "string"
+                    },
+                    "payload_encoding": {
+                      "const": "base64"
+                    },
+                    "payload_text": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "required": [
@@ -15056,12 +15072,15 @@
                     "latest_input_index",
                     "payload_bytes",
                     "payload_sha256",
+                    "quota_near_limit",
                     "reason_code",
                     "receipt_id",
                     "replay_count",
                     "run_id",
                     "status",
                     "stream",
+                    "payload_base64",
+                    "payload_encoding",
                     "payload_text"
                   ],
                   "type": "object"

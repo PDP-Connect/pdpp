@@ -35,7 +35,7 @@
 
 export interface RecordsIngestInput {
   /** Raw NDJSON body as received by the host. */
-  readonly body: string | null | undefined;
+  readonly body: Buffer | string | null | undefined;
   /** Connector id parsed from the query string. May be null/empty. */
   readonly connectorId: string | null;
   /** Connector instance id parsed from the query string. Optional for legacy connector-only compatibility. */
@@ -76,9 +76,9 @@ export interface IngestLineFailure {
 export interface InsertOrReplayRejectionInput {
   readonly code: string;
   readonly connectorId: string;
-  readonly connectorInstanceId: string;
+  readonly connectorInstanceId?: string | null;
   readonly inputIndex: number;
-  readonly rawLine: string;
+  readonly rawLine: Buffer;
   readonly runId?: string | null;
   readonly stream: string;
 }
@@ -118,6 +118,10 @@ export interface RecordsIngestDependencies {
     records: readonly Record<string, unknown>[]
   ) => readonly (IngestLineFailure | null)[] | Promise<readonly (IngestLineFailure | null)[]>;
   insertOrReplayRejection?: (input: InsertOrReplayRejectionInput) => RejectionReceipt | Promise<RejectionReceipt>;
+  resolveAdmittedConnectorInstance?: (
+    connectorId: string,
+    requestedConnectorInstanceId: string | null
+  ) => string | null | Promise<string | null>;
 }
 
 export interface RecordsIngestEnvelope {
@@ -149,7 +153,7 @@ interface ParsedRecordLines {
 interface ParsedRecordInput {
   readonly inputIndex: number;
   readonly parsedRecord: Record<string, unknown>;
-  readonly rawLine: string;
+  readonly rawLine: Buffer;
 }
 
 export class RecordsIngestInvalidRequestError extends Error {
@@ -220,20 +224,63 @@ export class RecordsIngestSystemicFailureError extends Error {
  * `mutation.requested` event before invoking the operation, without
  * duplicating the line-model rule.
  */
-export function parseLines(body: string | null | undefined): string[] {
-  if (typeof body !== "string" || body.length === 0) {
-    return [];
-  }
-  return body.split("\n").filter((line) => line.trim().length > 0);
+function isAsciiWhitespace(byte: number): boolean {
+  return byte === 0x20 || byte === 0x09 || byte === 0x0d || byte === 0x0a;
 }
 
-function parseRecordLines(lines: readonly string[], streamName: string): ParsedRecordLines {
+function hasNonWhitespaceByte(line: Buffer): boolean {
+  for (const byte of line) {
+    if (!isAsciiWhitespace(byte)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function parseLines(body: Buffer | string | null | undefined): Buffer[] {
+  let bytes: Buffer | null = null;
+  if (Buffer.isBuffer(body)) {
+    bytes = body;
+  } else if (typeof body === "string") {
+    bytes = Buffer.from(body, "utf8");
+  }
+  if (!bytes || bytes.length === 0) {
+    return [];
+  }
+  const lines: Buffer[] = [];
+  let start = 0;
+  for (let offset = 0; offset <= bytes.length; offset += 1) {
+    if (offset === bytes.length || bytes[offset] === 0x0a) {
+      const line = bytes.subarray(start, offset);
+      if (hasNonWhitespaceByte(line)) {
+        lines.push(Buffer.from(line));
+      }
+      start = offset + 1;
+    }
+  }
+  return lines;
+}
+
+const strictUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
+
+function parseRecordLines(lines: readonly Buffer[], streamName: string): ParsedRecordLines {
   const lineErrors = new Array<IngestLineFailure | null>(lines.length).fill(null);
   const parsedInputs: ParsedRecordInput[] = [];
 
   for (const [lineIndex, line] of lines.entries()) {
+    let decoded: string;
     try {
-      const parsed = JSON.parse(line) as Record<string, unknown>;
+      decoded = strictUtf8Decoder.decode(line);
+    } catch {
+      lineErrors[lineIndex] = {
+        code: "invalid_utf8",
+        message: "Input line is not valid UTF-8",
+        retryable: false,
+      };
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(decoded) as Record<string, unknown>;
       parsedInputs.push({ inputIndex: lineIndex, parsedRecord: { ...parsed, stream: streamName }, rawLine: line });
     } catch (err) {
       // Malformed NDJSON is permanent by construction: the same bytes will
@@ -340,7 +387,7 @@ async function buildRejectionReceipts(args: {
   connectorId: string;
   connectorInstanceId: string | null;
   dependencies: RecordsIngestDependencies;
-  lines: readonly string[];
+  lines: readonly Buffer[];
   lineErrors: readonly (IngestLineFailure | null)[];
   runId?: string | null;
   streamName: string;
@@ -359,7 +406,6 @@ async function buildRejectionReceipts(args: {
       args.lines.length
     );
   }
-
   const receipts: RejectionReceipt[] = [];
   try {
     for (const [inputIndex, error] of args.lineErrors.entries()) {
@@ -377,7 +423,7 @@ async function buildRejectionReceipts(args: {
           connectorId: args.connectorId,
           connectorInstanceId: args.connectorInstanceId,
           inputIndex,
-          rawLine: args.lines[inputIndex] ?? "",
+          rawLine: args.lines[inputIndex] ?? Buffer.alloc(0),
           runId: args.runId ?? null,
           stream: args.streamName,
         })
@@ -422,6 +468,10 @@ function validateRejectionReceipts(
       rejection.code.length === 0
     ) {
       throw new Error("malformed rejection receipt");
+    }
+    const expected = lineErrors[rejection.input_index];
+    if (expected === undefined || expected === null || expected.code !== rejection.code) {
+      throw new Error("rejection receipt code does not match classified line error");
     }
     indexes.add(rejection.input_index);
   }
@@ -504,14 +554,12 @@ export async function executeRecordsIngest(
   if (!visible) {
     throw new RecordsIngestNotFoundError(`Stream '${input.streamName}' not found for connector ${connectorId}`);
   }
+  const connectorInstanceId = dependencies.resolveAdmittedConnectorInstance
+    ? await dependencies.resolveAdmittedConnectorInstance(connectorId, input.connectorInstanceId ?? null)
+    : (input.connectorInstanceId ?? null);
 
   const parsed = parseRecordLines(lines, input.streamName);
-  const ingestErrors = await ingestParsedRecords(
-    connectorId,
-    input.connectorInstanceId ?? null,
-    parsed.parsedInputs,
-    dependencies
-  );
+  const ingestErrors = await ingestParsedRecords(connectorId, connectorInstanceId, parsed.parsedInputs, dependencies);
   applyIngestErrors(parsed.lineErrors, parsed.parsedInputs, ingestErrors);
 
   // Commit every permanent rejection receipt before deciding whether a
@@ -522,7 +570,7 @@ export async function executeRecordsIngest(
     input.hostedRejectionReceipts === true
       ? await buildRejectionReceipts({
           connectorId,
-          connectorInstanceId: input.connectorInstanceId ?? null,
+          connectorInstanceId,
           dependencies,
           lineErrors: parsed.lineErrors,
           lines,

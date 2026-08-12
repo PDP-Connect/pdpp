@@ -129,6 +129,24 @@ async function post(handler: RouteHandler, body: string): Promise<FakeResponse> 
   return response;
 }
 
+async function postConnectorOnly(handler: RouteHandler, body: string): Promise<FakeResponse> {
+  const response = makeResponse();
+  await handler(
+    {
+      body: Buffer.from(body),
+      headers: {},
+      params: { stream: "items" },
+      query: {
+        connector_id: "connector-1",
+        run_id: "run-1",
+      },
+      tokenInfo: { subject_id: "token-info-owner" },
+    },
+    response
+  );
+  return response;
+}
+
 test("hosted route returns additive receipt envelope for accepted-only ingest", async () => {
   const response = await post(mountRoute(), '{"id":"ok"}');
 
@@ -171,11 +189,80 @@ test("hosted route persists invalid_record_identity receipt with raw non-empty i
       connectorInstanceId: "connection-1",
       inputIndex: 1,
       ownerSubjectId: "owner-token-subject",
-      rawLine: '{"id":"bad"}',
+      rawLine: Buffer.from('{"id":"bad"}'),
       runId: "run-1",
       stream: "items",
     },
   ]);
+});
+
+test("connector-only hosted route uses one resolved instance for accepted records and rejection receipts", async () => {
+  const persisted: unknown[] = [];
+  const targets: unknown[] = [];
+  const handler = mountRoute({
+    ingestRecords: (target: unknown, records: readonly Record<string, unknown>[]) => {
+      targets.push(target);
+      return Promise.resolve(
+        records.map((record) =>
+          record.id === "bad"
+            ? {
+                accepted: false,
+                error: { code: "invalid_record_identity", message: "invalid identity", retryable: false },
+              }
+            : { accepted: true }
+        )
+      );
+    },
+    insertOrReplayRecordRejection: (input: unknown) => {
+      persisted.push(input);
+      return { code: "invalid_record_identity", input_index: 1, receipt_id: "rr_invalid" };
+    },
+    resolveOwnerConnectorNamespace: (
+      _req: unknown,
+      _connectorId: string,
+      opts?: { connectorInstanceId?: string | null }
+    ) => {
+      assert.equal(opts?.connectorInstanceId ?? null, null);
+      return { connectorId: "connector-1", connectorInstanceId: "resolved-connection-1" };
+    },
+    storageTargetForConnectorNamespace: (namespace: unknown) => namespace,
+  } as unknown as Partial<MountRsMutationContext>);
+
+  const response = await postConnectorOnly(handler, '{"id":"ok"}\n{"id":"bad"}');
+
+  assert.equal(response.statusCode, null);
+  assert.deepEqual(targets, [{ connectorId: "connector-1", connectorInstanceId: "resolved-connection-1" }]);
+  assert.deepEqual(
+    persisted.map((input) => ({
+      connectorInstanceId: (input as { connectorInstanceId: string }).connectorInstanceId,
+      rawLine: (input as { rawLine: Buffer }).rawLine.toString("utf8"),
+    })),
+    [{ connectorInstanceId: "resolved-connection-1", rawLine: '{"id":"bad"}' }]
+  );
+});
+
+test("hosted route checks manifest visibility before connector-only namespace admission", async () => {
+  let namespaceCalls = 0;
+  let rejectionCalls = 0;
+  const handler = mountRoute({
+    insertOrReplayRecordRejection: () => {
+      rejectionCalls += 1;
+      return { code: "invalid_record_identity", input_index: 0, receipt_id: "rr_unreachable" };
+    },
+    rejectMutation: async (res: FakeResponse, _req: unknown, _ctx: unknown, err: Error & { code?: string }) =>
+      res.status(err.code === "not_found" ? 404 : 400).json({ code: err.code, error: err.message }),
+    resolveOwnerConnectorNamespace: () => {
+      namespaceCalls += 1;
+      throw new Error("namespace resolution must wait for manifest visibility");
+    },
+    resolveRegisteredConnectorManifest: async () => ({ streams: [{ name: "other" }] }),
+  } as unknown as Partial<MountRsMutationContext>);
+  const response = await postConnectorOnly(handler, '{"id":"bad"}');
+
+  assert.equal(response.statusCode, 404);
+  assert.equal((response.body as { code?: string }).code, "not_found");
+  assert.equal(namespaceCalls, 0);
+  assert.equal(rejectionCalls, 0);
 });
 
 test("hosted route fails non-2xx when rejection persistence is missing or malformed", async () => {

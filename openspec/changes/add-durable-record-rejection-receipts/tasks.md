@@ -42,3 +42,12 @@
 - [x] 6.2 Run a fresh-process hosted journey on SQLite and PostgreSQL when configured: reject, commit cursor only with a complete receipt, restart the server, and retrieve the exact pending payload through the owning connection.
 - [x] 6.3 Document the additive reference-hosted response, read-only owner inspection routes, non-empty-line indexing, quota configuration, privacy/retention behavior, server-first deployment, and server-rollback run-disable requirement.
 - [x] 6.4 Have a different agent review the implementation and evidence against the confirmed reproduction, backend parity, transaction boundaries, payload privacy, and heterogeneous-host constraints before landing.
+
+## 7. Independent-review follow-up corrections
+
+- [x] 7.1 Make hosted rejection identity byte-native from `application/x-ndjson` transport through LF slicing, strict UTF-8 classification, SHA-256 replay identity, SQLite `BLOB`, PostgreSQL `BYTEA`, and owner detail `payload_base64` retrieval.
+- [x] 7.2 Resolve connector-only hosted ingestion to one exact admitted connector instance before `executeRecordsIngest`, and use that instance for accepted writes and rejection receipts.
+- [x] 7.3 Add owner receipt-count and per-connection receipt-count limits, coalesce replay evidence into bounded receipt metadata, and expose near-limit owner observability.
+- [x] 7.4 Add explicit SQLite and PostgreSQL migrations from the first #123 `payload_text`/byte-only quota draft to byte-native payload storage with backfilled receipt counts and idempotent restart behavior.
+- [x] 7.5 Prove raw NUL, invalid UTF-8 distinct byte sequences, multibyte roundtrip, connector-only mixed accepted/rejected identity, tiny-unique amplification, replay storms across restart, and multi-owner/connection quota isolation on focused SQLite and live PostgreSQL tests.
+- [ ] 7.6 Release gate: add first/latest run provenance or bounded occurrence facts, include quarantine payloads in retained-size accounting, resolve stale-pending semantics after later acceptance, prove or reduce the 200 MiB single-line memory boundary, and rerun the #108 schema-derived backup inventory after the final schema shape.

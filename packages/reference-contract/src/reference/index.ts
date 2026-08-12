@@ -274,6 +274,7 @@ const RecordRejectionMetadataProperties = {
   latest_input_index: { minimum: 0, type: "integer" },
   payload_bytes: { minimum: 0, type: "integer" },
   payload_sha256: { pattern: "^[a-f0-9]{64}$", type: "string" },
+  quota_near_limit: { type: "boolean" },
   reason_code: { minLength: 1, type: "string" },
   receipt_id: { minLength: 1, type: "string" },
   replay_count: { minimum: 0, type: "integer" },
@@ -293,9 +294,11 @@ const RecordRejectionDetailSchema = {
   additionalProperties: false,
   properties: {
     ...RecordRejectionMetadataProperties,
-    payload_text: { type: "string" },
+    payload_base64: { type: "string" },
+    payload_encoding: { const: "base64" },
+    payload_text: { type: ["string", "null"] },
   },
-  required: [...Object.keys(RecordRejectionMetadataProperties), "payload_text"],
+  required: [...Object.keys(RecordRejectionMetadataProperties), "payload_base64", "payload_encoding", "payload_text"],
   type: "object",
 };
 

@@ -428,7 +428,7 @@ test("runtime/server SQLite journey durably receipts invalid identity rejections
 
     const row = getDb()
       .prepare(
-        `SELECT receipt_id, reason_code, first_input_index, latest_input_index, payload_text, payload_sha256,
+        `SELECT receipt_id, reason_code, first_input_index, latest_input_index, payload, payload_sha256,
                 payload_bytes, created_at, last_seen_at
          FROM record_rejections
          WHERE connector_instance_id = ?`
@@ -440,7 +440,7 @@ test("runtime/server SQLite journey durably receipts invalid identity rejections
         latest_input_index: number;
         payload_bytes: number;
         payload_sha256: string;
-        payload_text: string;
+        payload: Buffer;
         reason_code: string;
         receipt_id: string;
       }>(connectorInstanceId);
@@ -448,7 +448,7 @@ test("runtime/server SQLite journey durably receipts invalid identity rejections
     assert.equal(row.reason_code, "invalid_record_identity");
     assert.equal(row.first_input_index, 1);
     assert.equal(row.latest_input_index, 1);
-    assert.equal(row.payload_text, rejectedPayloadLine);
+    assert.equal(row.payload.toString("utf8"), rejectedPayloadLine);
     assert.equal(row.payload_bytes, Buffer.byteLength(rejectedPayloadLine));
     assert.ok(row.receipt_id.length > 0);
     assert.notEqual(row.receipt_id, row.payload_sha256);
@@ -570,12 +570,11 @@ test("runtime/server SQLite journey durably receipts invalid identity rejections
     assert.equal(item.payload_sha256, row.payload_sha256);
     assert.equal(item.status, "pending");
     assert.equal(item.run_id, runId);
-    assert.equal("payload_text" in item, false);
+    assert.equal("payload" in item, false);
     assert.equal("payloadText" in item, false);
     assertOmitsPrivatePayload("owner rejection list", listBody, [
       ...forbiddenPayloadNeedles,
       "payloadText",
-      "payload_text",
       "rawLine",
       "raw_line",
       "storage exploded",
@@ -589,6 +588,7 @@ test("runtime/server SQLite journey durably receipts invalid identity rejections
     assert.equal(detailStatus, 200);
     const detail = detailBody as Record<string, unknown>;
     assert.equal(detail.receipt_id, row.receipt_id);
+    assert.equal(detail.payload_base64, Buffer.from(rejectedPayloadLine).toString("base64"));
     assert.equal(detail.payload_text, rejectedPayloadLine);
     assert.equal(JSON.stringify(detail).includes("storage exploded"), false);
     assert.equal(JSON.stringify(detail).includes("parser exploded"), false);
@@ -660,13 +660,13 @@ test("prior-runtime count reader is loss-safe against a fresh new SQLite server"
 
     const committedReceipt = getDb()
       .prepare(
-        `SELECT payload_text, receipt_id
+        `SELECT payload, receipt_id
            FROM record_rejections
           WHERE connector_instance_id = ?`
       )
-      .get<{ payload_text: string; receipt_id: string }>(connectorInstanceId);
+      .get<{ payload: Buffer; receipt_id: string }>(connectorInstanceId);
     assert.ok(committedReceipt, "new server commits rejection evidence before the legacy reader sees success");
-    assert.equal(committedReceipt.payload_text, rejectedPayloadLine);
+    assert.equal(committedReceipt.payload.toString("utf8"), rejectedPayloadLine);
 
     await closeServer(serverA);
     serverA = null;
@@ -697,6 +697,7 @@ test("prior-runtime count reader is loss-safe against a fresh new SQLite server"
       { headers: { Cookie: ownerSessionB } }
     );
     assert.equal(detailStatus, 200);
+    assert.equal((detailBody as { payload_base64?: unknown }).payload_base64, Buffer.from(rejectedPayloadLine).toString("base64"));
     assert.equal((detailBody as { payload_text?: unknown }).payload_text, rejectedPayloadLine);
 
     // Only after restart retrieval proves recoverability do the prior
@@ -802,16 +803,16 @@ test("runtime/server SQLite response loss replays the same durable rejection rec
 
     const rowAfterLoss = getDb()
       .prepare(
-        `SELECT receipt_id, reason_code, payload_text, replay_count
+        `SELECT receipt_id, reason_code, payload, replay_count
          FROM record_rejections
          WHERE connector_instance_id = ?`
       )
-      .get<{ payload_text: string; reason_code: string; receipt_id: string; replay_count: number }>(
+      .get<{ payload: Buffer; reason_code: string; receipt_id: string; replay_count: number }>(
         connectorInstanceId
       );
     assert.ok(rowAfterLoss, "server must commit the receipt before the response is lost");
     assert.equal(rowAfterLoss.reason_code, "invalid_record_identity");
-    assert.equal(rowAfterLoss.payload_text, rejectedPayloadLine);
+    assert.equal(rowAfterLoss.payload.toString("utf8"), rejectedPayloadLine);
     assert.equal(rowAfterLoss.replay_count, 0);
     const firstEnvelope = ingestObserver.captured().find((envelope) => envelope.runId === firstRunId);
     assert.ok(firstEnvelope, "lost response envelope must be captured before the simulated transport loss");
@@ -880,14 +881,14 @@ test("runtime/server SQLite response loss replays the same durable rejection rec
 
     const rowAfterReplay = getDb()
       .prepare(
-        `SELECT receipt_id, payload_text, replay_count
+        `SELECT receipt_id, payload, replay_count
          FROM record_rejections
          WHERE connector_instance_id = ?`
       )
-      .get<{ payload_text: string; receipt_id: string; replay_count: number }>(connectorInstanceId);
+      .get<{ payload: Buffer; receipt_id: string; replay_count: number }>(connectorInstanceId);
     assert.ok(rowAfterReplay);
     assert.equal(rowAfterReplay.receipt_id, rowAfterLoss.receipt_id);
-    assert.equal(rowAfterReplay.payload_text, rejectedPayloadLine);
+    assert.equal(rowAfterReplay.payload.toString("utf8"), rejectedPayloadLine);
     assert.equal(rowAfterReplay.replay_count, 1);
     const secondEnvelope = ingestObserver.captured().find((envelope) => envelope.runId === secondRunId);
     assert.ok(secondEnvelope, "replay response envelope must be captured");
@@ -918,7 +919,7 @@ test("runtime/server SQLite response loss replays the same durable rejection rec
       .all<{ actor_id: string; data_json: string; event_type: string }>(rowAfterReplay.receipt_id);
     assert.deepEqual(
       replayAuditEvents.map((event) => event.event_type),
-      ["record_rejection.quarantined", "record_rejection.replayed"]
+      ["record_rejection.quarantined"]
     );
     for (const event of replayAuditEvents) {
       assert.equal(event.actor_id, OWNER_SUBJECT_ID);
@@ -1072,14 +1073,14 @@ test("runtime cancellation after a committed rejection response preserves the re
 
       const receiptBeforeCancellation = getDb()
         .prepare(
-          `SELECT payload_text, receipt_id
+          `SELECT payload, receipt_id
            FROM record_rejections
            WHERE connector_instance_id = ?`
         )
-        .get<{ payload_text: string; receipt_id: string }>(connectorInstanceId);
+        .get<{ payload: Buffer; receipt_id: string }>(connectorInstanceId);
       assert.ok(receiptBeforeCancellation, "receipt transaction committed before the response boundary");
       assert.equal(receiptBeforeCancellation.receipt_id, responseBody.rejections[0]?.receipt_id);
-      assert.equal(receiptBeforeCancellation.payload_text, rejectedPayloadLine);
+      assert.equal(receiptBeforeCancellation.payload.toString("utf8"), rejectedPayloadLine);
 
       cancellation.abort();
       releaseResponse();
@@ -1109,11 +1110,11 @@ test("runtime cancellation after a committed rejection response preserves the re
 
       const receiptAfterCancellation = getDb()
         .prepare(
-          `SELECT payload_text, receipt_id
+          `SELECT payload, receipt_id
            FROM record_rejections
            WHERE connector_instance_id = ?`
         )
-        .get<{ payload_text: string; receipt_id: string }>(connectorInstanceId);
+        .get<{ payload: Buffer; receipt_id: string }>(connectorInstanceId);
       assert.deepEqual(
         receiptAfterCancellation,
         receiptBeforeCancellation,

@@ -8,10 +8,15 @@ import { postgresEmitSpineEventWithClient } from "../../lib/postgres-spine.ts";
 import { emitSqliteSpineEventSynchronously, type SpineEventInput } from "../../lib/spine.ts";
 import { HOSTED_INGEST_MAX_LINE_BYTES } from "../hosted-ingest-limits.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
+import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "../record-rejection-replay-key.ts";
 
-export const RECORD_REJECTION_GENERATION = "record-rejection-v1";
 export const DEFAULT_RECORD_REJECTION_OWNER_QUOTA_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_RECORD_REJECTION_OWNER_QUOTA_COUNT = 1000;
+export const DEFAULT_RECORD_REJECTION_CONNECTION_QUOTA_COUNT = 250;
 export const RECORD_REJECTION_OWNER_QUOTA_ENV = "PDPP_RECORD_REJECTION_OWNER_QUOTA_BYTES";
+export const RECORD_REJECTION_OWNER_QUOTA_COUNT_ENV = "PDPP_RECORD_REJECTION_OWNER_QUOTA_COUNT";
+export const RECORD_REJECTION_CONNECTION_QUOTA_COUNT_ENV = "PDPP_RECORD_REJECTION_CONNECTION_QUOTA_COUNT";
+export const RECORD_REJECTION_REPLAY_COUNT_MAX = 1_000_000;
 const MAX_PAGE_SIZE = 100;
 
 export class RecordRejectionStoreError extends Error {
@@ -33,10 +38,12 @@ export interface InsertOrReplayRecordRejectionInput {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
   readonly inputIndex: number;
+  readonly maxConnectionReceipts?: number;
+  readonly maxOwnerReceipts?: number;
   readonly maxPayloadBytes?: number;
   readonly ownerSubjectId: string;
   readonly quotaBytes?: number;
-  readonly rawLine: string;
+  readonly rawLine: Buffer | string;
   readonly reasonCode: string;
   readonly runId?: string | null;
   readonly stream: string;
@@ -59,6 +66,7 @@ export interface RecordRejectionMetadata {
   readonly ownerSubjectId: string;
   readonly payloadBytes: number;
   readonly payloadSha256: string;
+  readonly quotaNearLimit: boolean;
   readonly reasonCode: string;
   readonly receiptId: string;
   readonly replayCount: number;
@@ -68,7 +76,9 @@ export interface RecordRejectionMetadata {
 }
 
 export interface RecordRejectionDetail extends RecordRejectionMetadata {
-  readonly payloadText: string;
+  readonly payloadBase64: string;
+  readonly payloadEncoding: "base64";
+  readonly payloadText: string | null;
 }
 
 export interface RecordRejectionPage {
@@ -77,6 +87,7 @@ export interface RecordRejectionPage {
 }
 
 interface RecordRejectionRow extends QueryResultRow {
+  connection_receipt_count?: number | string;
   connector_id: string;
   connector_instance_id: string;
   created_at: string;
@@ -84,9 +95,13 @@ interface RecordRejectionRow extends QueryResultRow {
   last_seen_at: string;
   latest_input_index: number | string;
   owner_subject_id: string;
+  payload?: Buffer;
   payload_bytes: number | string;
   payload_sha256: string;
   payload_text?: string;
+  pending_payload_bytes?: number | string;
+  pending_receipt_count?: number | string;
+  quota_near_limit?: number | boolean;
   reason_code: string;
   receipt_id: string;
   replay_count: number | string;
@@ -110,18 +125,26 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function sha256Hex(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
+function sha256Hex(value: Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
-function payloadBytes(value: string): number {
-  return Buffer.byteLength(value, "utf8");
+function decodeUtf8IfLossless(value: Buffer): string | null {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(value);
+  } catch {
+    return null;
+  }
 }
 
-function replayKey(input: InsertOrReplayRecordRejectionInput, digest: string): string {
-  return sha256Hex(
-    JSON.stringify([input.ownerSubjectId, input.connectorInstanceId, input.stream, digest, RECORD_REJECTION_GENERATION])
-  );
+function replayKey(input: InsertOrReplayRecordRejectionInput): string {
+  return recordRejectionReplayKey({
+    connectorInstanceId: input.connectorInstanceId,
+    ownerSubjectId: input.ownerSubjectId,
+    payload: rawLineBytes(input),
+    reasonCode: input.reasonCode,
+    stream: input.stream,
+  });
 }
 
 function newReceiptId(): string {
@@ -145,7 +168,7 @@ function recordRejectionAuditEvent(
       receipt_id: facts.receiptId,
       stream: facts.stream,
     },
-    event_type: facts.replayed ? "record_rejection.replayed" : "record_rejection.quarantined",
+    event_type: facts.replayed ? "record_rejection.replay_coalesced" : "record_rejection.quarantined",
     object_id: facts.receiptId,
     object_type: "record_rejection",
     occurred_at: facts.lastSeenAt,
@@ -188,6 +211,34 @@ export function recordRejectionOwnerQuotaBytes(
   return value;
 }
 
+function integerLimitFromEnv(
+  envName: string,
+  defaultValue: number,
+  env: Readonly<Record<string, string | undefined>> = process.env
+): number {
+  const raw = env[envName];
+  if (raw === undefined || raw.trim() === "") {
+    return defaultValue;
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RecordRejectionStoreError("invalid_quota", `${envName} must be a non-negative safe integer.`, {
+      retryable: false,
+    });
+  }
+  return value;
+}
+
+function normalizeCountLimit(value: number | undefined, envName: string, defaultValue: number): number {
+  const limit = value ?? integerLimitFromEnv(envName, defaultValue);
+  if (!Number.isSafeInteger(limit) || limit < 0) {
+    throw new RecordRejectionStoreError("invalid_quota", "Record rejection count quota must be non-negative.", {
+      retryable: false,
+    });
+  }
+  return limit;
+}
+
 function normalizeQuota(value: number | undefined): number {
   if (value === undefined) {
     return recordRejectionOwnerQuotaBytes();
@@ -219,7 +270,7 @@ function normalizePayloadLimit(value: number | undefined): number {
 }
 
 function boundedPayloadBytes(input: InsertOrReplayRecordRejectionInput): number {
-  const bytes = payloadBytes(input.rawLine);
+  const bytes = rawLineBytes(input).byteLength;
   if (bytes > normalizePayloadLimit(input.maxPayloadBytes)) {
     throw new RecordRejectionStoreError(
       "record_rejection_payload_too_large",
@@ -235,12 +286,18 @@ function assertInput(input: InsertOrReplayRecordRejectionInput): void {
       retryable: false,
     });
   }
+  assertRequiredInputStrings(input);
+  if (!hasNonEmptyRawLine(input.rawLine)) {
+    throw new RecordRejectionStoreError("invalid_rejection_input", "rawLine is required.", { retryable: false });
+  }
+}
+
+function assertRequiredInputStrings(input: InsertOrReplayRecordRejectionInput): void {
   for (const [name, value] of [
     ["ownerSubjectId", input.ownerSubjectId],
     ["connectorInstanceId", input.connectorInstanceId],
     ["connectorId", input.connectorId],
     ["stream", input.stream],
-    ["rawLine", input.rawLine],
     ["reasonCode", input.reasonCode],
   ] as const) {
     if (typeof value !== "string" || value.length === 0) {
@@ -249,7 +306,38 @@ function assertInput(input: InsertOrReplayRecordRejectionInput): void {
   }
 }
 
-function mapMetadata(row: RecordRejectionRow): RecordRejectionMetadata {
+function hasNonEmptyRawLine(rawLine: Buffer | string): boolean {
+  return (Buffer.isBuffer(rawLine) || typeof rawLine === "string") && rawLine.length > 0;
+}
+
+function rawLineBytes(input: InsertOrReplayRecordRejectionInput): Buffer {
+  return Buffer.isBuffer(input.rawLine) ? input.rawLine : Buffer.from(input.rawLine, "utf8");
+}
+
+interface RecordRejectionQuotaPolicy {
+  readonly connectionReceiptCount: number;
+  readonly ownerPayloadBytes: number;
+  readonly ownerReceiptCount: number;
+}
+
+function defaultQuotaPolicy(): RecordRejectionQuotaPolicy {
+  return {
+    connectionReceiptCount: integerLimitFromEnv(
+      RECORD_REJECTION_CONNECTION_QUOTA_COUNT_ENV,
+      DEFAULT_RECORD_REJECTION_CONNECTION_QUOTA_COUNT
+    ),
+    ownerPayloadBytes: recordRejectionOwnerQuotaBytes(),
+    ownerReceiptCount: integerLimitFromEnv(
+      RECORD_REJECTION_OWNER_QUOTA_COUNT_ENV,
+      DEFAULT_RECORD_REJECTION_OWNER_QUOTA_COUNT
+    ),
+  };
+}
+
+function mapMetadata(
+  row: RecordRejectionRow,
+  policy: RecordRejectionQuotaPolicy = defaultQuotaPolicy()
+): RecordRejectionMetadata {
   return {
     connectorId: row.connector_id,
     connectorInstanceId: row.connector_instance_id,
@@ -260,6 +348,7 @@ function mapMetadata(row: RecordRejectionRow): RecordRejectionMetadata {
     ownerSubjectId: row.owner_subject_id,
     payloadBytes: Number(row.payload_bytes),
     payloadSha256: row.payload_sha256,
+    quotaNearLimit: quotaNearLimit(row, policy),
     reasonCode: row.reason_code,
     receiptId: row.receipt_id,
     replayCount: Number(row.replay_count),
@@ -269,10 +358,29 @@ function mapMetadata(row: RecordRejectionRow): RecordRejectionMetadata {
   };
 }
 
-function mapDetail(row: RecordRejectionRow): RecordRejectionDetail {
+function quotaNearLimit(row: RecordRejectionRow, policy: RecordRejectionQuotaPolicy): boolean {
+  return (
+    Boolean(row.quota_near_limit) ||
+    quotaRatioNearLimit(Number(row.pending_payload_bytes ?? 0), policy.ownerPayloadBytes) ||
+    quotaRatioNearLimit(Number(row.pending_receipt_count ?? 0), policy.ownerReceiptCount) ||
+    quotaRatioNearLimit(Number(row.connection_receipt_count ?? 0), policy.connectionReceiptCount)
+  );
+}
+
+function quotaRatioNearLimit(value: number, limit: number): boolean {
+  return limit > 0 && value / limit >= 0.8;
+}
+
+function mapDetail(
+  row: RecordRejectionRow,
+  policy: RecordRejectionQuotaPolicy = defaultQuotaPolicy()
+): RecordRejectionDetail {
+  const payload = Buffer.isBuffer(row.payload) ? row.payload : Buffer.from(row.payload_text ?? "", "utf8");
   return {
-    ...mapMetadata(row),
-    payloadText: row.payload_text ?? "",
+    ...mapMetadata(row, policy),
+    payloadBase64: payload.toString("base64"),
+    payloadEncoding: "base64",
+    payloadText: decodeUtf8IfLossless(payload),
   };
 }
 
@@ -339,12 +447,86 @@ function assertSqliteWritable(
   }
 }
 
+interface PreparedRecordRejectionInsert {
+  readonly bytes: number;
+  readonly digest: string;
+  readonly key: string;
+  readonly quota: number;
+  readonly rawLine: Buffer;
+  readonly ownerReceiptQuota: number;
+  readonly connectionReceiptQuota: number;
+}
+
+function prepareRecordRejectionInsert(input: InsertOrReplayRecordRejectionInput): PreparedRecordRejectionInsert {
+  const bytes = boundedPayloadBytes(input);
+  const rawLine = rawLineBytes(input);
+  return {
+    bytes,
+    connectionReceiptQuota: normalizeCountLimit(
+      input.maxConnectionReceipts,
+      RECORD_REJECTION_CONNECTION_QUOTA_COUNT_ENV,
+      DEFAULT_RECORD_REJECTION_CONNECTION_QUOTA_COUNT
+    ),
+    digest: sha256Hex(rawLine),
+    key: replayKey(input),
+    ownerReceiptQuota: normalizeCountLimit(
+      input.maxOwnerReceipts,
+      RECORD_REJECTION_OWNER_QUOTA_COUNT_ENV,
+      DEFAULT_RECORD_REJECTION_OWNER_QUOTA_COUNT
+    ),
+    quota: normalizeQuota(input.quotaBytes),
+    rawLine,
+  };
+}
+
+function replaySqliteRecordRejection(receiptId: string, reasonCode: string, inputIndex: number): RecordRejectionReceipt {
+  const lastSeenAt = nowIso();
+  exec(referenceQueries.recordRejectionsUpdateReplay, [
+    RECORD_REJECTION_REPLAY_COUNT_MAX,
+    inputIndex,
+    lastSeenAt,
+    receiptId,
+  ]);
+  return {
+    code: reasonCode,
+    inputIndex,
+    receiptId,
+    replayed: true,
+  };
+}
+
+function admitSqliteRecordRejectionQuota(input: InsertOrReplayRecordRejectionInput, prepared: PreparedRecordRejectionInsert): void {
+  exec(referenceQueries.recordRejectionsEnsureQuotaOwner, [input.ownerSubjectId, nowIso()]);
+  const connectionCount =
+    getOne<{ count: number }>(referenceQueries.recordRejectionsCountForConnection, [
+      input.ownerSubjectId,
+      input.connectorInstanceId,
+    ])?.count ?? 0;
+  if (connectionCount + 1 > prepared.connectionReceiptQuota) {
+    throw new RecordRejectionStoreError(
+      "record_rejection_connection_quota_exceeded",
+      "Record rejection connection quota is exhausted."
+    );
+  }
+  const admitted = exec(referenceQueries.recordRejectionsAdmitQuota, [
+    prepared.bytes,
+    nowIso(),
+    input.ownerSubjectId,
+    prepared.bytes,
+    prepared.quota,
+    prepared.ownerReceiptQuota,
+  ]);
+  if (admitted.changes !== 1) {
+    throw new RecordRejectionStoreError(
+      "record_rejection_quota_exceeded",
+      "Record rejection owner quota is exhausted."
+    );
+  }
+}
+
 export function insertOrReplaySqliteRecordRejection(input: InsertOrReplayRecordRejectionInput): RecordRejectionReceipt {
   assertInput(input);
-  const bytes = boundedPayloadBytes(input);
-  const digest = sha256Hex(input.rawLine);
-  const key = replayKey(input, digest);
-  const quota = normalizeQuota(input.quotaBytes);
+  const prepared = prepareRecordRejectionInsert(input);
   return writeTransaction(() => {
     assertSqliteWritable(input.ownerSubjectId, input.connectorInstanceId, input.connectorId, input.runId);
     const existing = getOne<{
@@ -353,39 +535,11 @@ export function insertOrReplaySqliteRecordRejection(input: InsertOrReplayRecordR
       payload_sha256: string;
       reason_code: string;
       receipt_id: string;
-    }>(referenceQueries.recordRejectionsGetByReplayKey, [key]);
+    }>(referenceQueries.recordRejectionsGetByReplayKey, [prepared.key]);
     if (existing) {
-      const lastSeenAt = nowIso();
-      exec(referenceQueries.recordRejectionsUpdateReplay, [input.inputIndex, lastSeenAt, existing.receipt_id]);
-      emitSqliteRecordRejectionAudit(input, {
-        connectionId: input.connectorInstanceId,
-        createdAt: existing.created_at,
-        lastSeenAt,
-        payloadBytes: Number(existing.payload_bytes),
-        payloadSha256: existing.payload_sha256,
-        reasonCode: existing.reason_code,
-        receiptId: existing.receipt_id,
-        replayed: true,
-        stream: input.stream,
-      });
-      return {
-        code: existing.reason_code,
-        inputIndex: input.inputIndex,
-        receiptId: existing.receipt_id,
-        replayed: true,
-      };
+      return replaySqliteRecordRejection(existing.receipt_id, existing.reason_code, input.inputIndex);
     }
-    exec(referenceQueries.recordRejectionsEnsureQuotaOwner, [input.ownerSubjectId, nowIso()]);
-    const admitted = exec(referenceQueries.recordRejectionsAdmitQuota, [
-      bytes,
-      nowIso(),
-      input.ownerSubjectId,
-      bytes,
-      quota,
-    ]);
-    if (admitted.changes !== 1) {
-      throw new RecordRejectionStoreError("record_rejection_quota_exceeded", "Record rejection quota is exhausted.");
-    }
+    admitSqliteRecordRejectionQuota(input, prepared);
     const receiptId = newReceiptId();
     const createdAt = nowIso();
     exec(referenceQueries.recordRejectionsInsert, [
@@ -398,10 +552,11 @@ export function insertOrReplaySqliteRecordRejection(input: InsertOrReplayRecordR
       input.inputIndex,
       input.inputIndex,
       input.reasonCode,
-      input.rawLine,
-      digest,
-      bytes,
-      key,
+      prepared.rawLine,
+      prepared.digest,
+      prepared.bytes,
+      RECORD_REJECTION_GENERATION,
+      prepared.key,
       createdAt,
       createdAt,
     ]);
@@ -409,8 +564,8 @@ export function insertOrReplaySqliteRecordRejection(input: InsertOrReplayRecordR
       connectionId: input.connectorInstanceId,
       createdAt,
       lastSeenAt: createdAt,
-      payloadBytes: bytes,
-      payloadSha256: digest,
+      payloadBytes: prepared.bytes,
+      payloadSha256: prepared.digest,
       reasonCode: input.reasonCode,
       receiptId,
       replayed: false,
@@ -437,7 +592,10 @@ export function listSqliteRecordRejections(args: {
   connectorInstanceId: string;
   cursor?: string | null;
   limit: number;
+  maxConnectionReceipts?: number;
+  maxOwnerReceipts?: number;
   ownerSubjectId: string;
+  quotaBytes?: number;
 }): RecordRejectionPage {
   const limit = pageSize(args.limit);
   const cursor = decodeCursor(args.cursor);
@@ -448,7 +606,20 @@ export function listSqliteRecordRejections(args: {
     ? [args.ownerSubjectId, args.connectorInstanceId, cursor.createdAt, cursor.receiptId]
     : [args.ownerSubjectId, args.connectorInstanceId];
   const page = getMany<RecordRejectionRow>(query, params, { limit });
-  const items = page.rows.map(mapMetadata);
+  const policy = {
+    connectionReceiptCount: normalizeCountLimit(
+      args.maxConnectionReceipts,
+      RECORD_REJECTION_CONNECTION_QUOTA_COUNT_ENV,
+      DEFAULT_RECORD_REJECTION_CONNECTION_QUOTA_COUNT
+    ),
+    ownerPayloadBytes: normalizeQuota(args.quotaBytes),
+    ownerReceiptCount: normalizeCountLimit(
+      args.maxOwnerReceipts,
+      RECORD_REJECTION_OWNER_QUOTA_COUNT_ENV,
+      DEFAULT_RECORD_REJECTION_OWNER_QUOTA_COUNT
+    ),
+  };
+  const items = page.rows.map((row) => mapMetadata(row, policy));
   return { items, nextCursor: page.truncated ? encodeCursor(lastPageItem(items)) : null };
 }
 
@@ -466,7 +637,7 @@ export function deleteSqliteRecordRejectionsForConnectionWithinTransaction(args:
     args.connectorInstanceId,
   ]);
   if (deleted.changes > 0) {
-    exec(referenceQueries.recordRejectionsReleaseQuota, [total, nowIso(), args.ownerSubjectId]);
+    exec(referenceQueries.recordRejectionsReleaseQuota, [total, deleted.changes, nowIso(), args.ownerSubjectId]);
   }
   return deleted.changes;
 }
@@ -507,14 +678,67 @@ async function assertPostgresWritable(
   }
 }
 
+async function replayPostgresRecordRejection(
+  client: PoolClient,
+  receiptId: string,
+  reasonCode: string,
+  inputIndex: number
+): Promise<RecordRejectionReceipt> {
+  const lastSeenAt = nowIso();
+  await client.query(
+    `UPDATE record_rejections
+      SET replay_count = LEAST(replay_count + 1, $1),
+          latest_input_index = $2,
+          last_seen_at = $3
+    WHERE receipt_id = $4`,
+    [RECORD_REJECTION_REPLAY_COUNT_MAX, inputIndex, lastSeenAt, receiptId]
+  );
+  return { code: reasonCode, inputIndex, receiptId, replayed: true };
+}
+
+async function admitPostgresRecordRejectionQuota(
+  client: PoolClient,
+  input: InsertOrReplayRecordRejectionInput,
+  prepared: PreparedRecordRejectionInsert
+): Promise<void> {
+  await client.query(
+    `INSERT INTO record_rejection_quota(owner_subject_id, pending_payload_bytes, pending_receipt_count, updated_at)
+     VALUES($1, 0, 0, $2)
+     ON CONFLICT(owner_subject_id) DO NOTHING`,
+    [input.ownerSubjectId, nowIso()]
+  );
+  const connectionCount = await client.query<{ count: string }>(
+    `SELECT COUNT(*)::bigint AS count
+       FROM record_rejections
+      WHERE owner_subject_id = $1 AND connector_instance_id = $2`,
+    [input.ownerSubjectId, input.connectorInstanceId]
+  );
+  if (Number(connectionCount.rows[0]?.count ?? 0) + 1 > prepared.connectionReceiptQuota) {
+    throw new RecordRejectionStoreError(
+      "record_rejection_connection_quota_exceeded",
+      "Record rejection connection quota is exhausted."
+    );
+  }
+  const admitted = await client.query(
+    `UPDATE record_rejection_quota
+      SET pending_payload_bytes = pending_payload_bytes + $1,
+          pending_receipt_count = pending_receipt_count + 1,
+          updated_at = $2
+    WHERE owner_subject_id = $3
+      AND pending_payload_bytes + $1 <= $4
+      AND pending_receipt_count + 1 <= $5`,
+    [prepared.bytes, nowIso(), input.ownerSubjectId, prepared.quota, prepared.ownerReceiptQuota]
+  );
+  if (admitted.rowCount !== 1) {
+    throw new RecordRejectionStoreError("record_rejection_quota_exceeded", "Record rejection quota is exhausted.");
+  }
+}
+
 export function insertOrReplayPostgresRecordRejection(
   input: InsertOrReplayRecordRejectionInput
 ): Promise<RecordRejectionReceipt> {
   assertInput(input);
-  const bytes = boundedPayloadBytes(input);
-  const digest = sha256Hex(input.rawLine);
-  const key = replayKey(input, digest);
-  const quota = normalizeQuota(input.quotaBytes);
+  const prepared = prepareRecordRejectionInsert(input);
   return withPostgresTransaction(
     async (client) => {
       await assertPostgresWritable(
@@ -535,58 +759,21 @@ export function insertOrReplayPostgresRecordRejection(
            FROM record_rejections
           WHERE replay_key = $1
           LIMIT 1`,
-        [key]
+        [prepared.key]
       );
       const [existingRow] = existing.rows;
       if (existingRow) {
-        const receiptId = existingRow.receipt_id;
-        const lastSeenAt = nowIso();
-        await client.query(
-          `UPDATE record_rejections
-            SET replay_count = replay_count + 1,
-                latest_input_index = $1,
-                last_seen_at = $2
-          WHERE receipt_id = $3`,
-          [input.inputIndex, lastSeenAt, receiptId]
-        );
-        await emitPostgresRecordRejectionAudit(client, input, {
-          connectionId: input.connectorInstanceId,
-          createdAt: existingRow.created_at,
-          lastSeenAt,
-          payloadBytes: Number(existingRow.payload_bytes),
-          payloadSha256: existingRow.payload_sha256,
-          reasonCode: existingRow.reason_code,
-          receiptId,
-          replayed: true,
-          stream: input.stream,
-        });
-        return { code: existingRow.reason_code, inputIndex: input.inputIndex, receiptId, replayed: true };
+        return await replayPostgresRecordRejection(client, existingRow.receipt_id, existingRow.reason_code, input.inputIndex);
       }
-      await client.query(
-        `INSERT INTO record_rejection_quota(owner_subject_id, pending_payload_bytes, updated_at)
-       VALUES($1, 0, $2)
-       ON CONFLICT(owner_subject_id) DO NOTHING`,
-        [input.ownerSubjectId, nowIso()]
-      );
-      const admitted = await client.query(
-        `UPDATE record_rejection_quota
-          SET pending_payload_bytes = pending_payload_bytes + $1,
-              updated_at = $2
-        WHERE owner_subject_id = $3
-          AND pending_payload_bytes + $1 <= $4`,
-        [bytes, nowIso(), input.ownerSubjectId, quota]
-      );
-      if (admitted.rowCount !== 1) {
-        throw new RecordRejectionStoreError("record_rejection_quota_exceeded", "Record rejection quota is exhausted.");
-      }
+      await admitPostgresRecordRejectionQuota(client, input, prepared);
       const receiptId = newReceiptId();
       const createdAt = nowIso();
       await client.query(
         `INSERT INTO record_rejections(
         receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
-        first_input_index, latest_input_index, reason_code, payload_text, payload_sha256,
-        payload_bytes, replay_key, replay_count, status, created_at, last_seen_at
-      ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, 'pending', $14, $15)`,
+        first_input_index, latest_input_index, reason_code, payload, payload_sha256,
+        payload_bytes, rejection_generation, replay_key, replay_count, status, created_at, last_seen_at
+      ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 0, 'pending', $15, $16)`,
         [
           receiptId,
           input.ownerSubjectId,
@@ -597,10 +784,11 @@ export function insertOrReplayPostgresRecordRejection(
           input.inputIndex,
           input.inputIndex,
           input.reasonCode,
-          input.rawLine,
-          digest,
-          bytes,
-          key,
+          prepared.rawLine,
+          prepared.digest,
+          prepared.bytes,
+          RECORD_REJECTION_GENERATION,
+          prepared.key,
           createdAt,
           createdAt,
         ]
@@ -609,8 +797,8 @@ export function insertOrReplayPostgresRecordRejection(
         connectionId: input.connectorInstanceId,
         createdAt,
         lastSeenAt: createdAt,
-        payloadBytes: bytes,
-        payloadSha256: digest,
+        payloadBytes: prepared.bytes,
+        payloadSha256: prepared.digest,
         reasonCode: input.reasonCode,
         receiptId,
         replayed: false,
@@ -628,8 +816,16 @@ export async function getPostgresRecordRejectionDetail(args: {
   receiptId: string;
 }): Promise<RecordRejectionDetail | null> {
   const row = await postgresQuery<RecordRejectionRow>(
-    `SELECT * FROM record_rejections
-      WHERE owner_subject_id = $1 AND connector_instance_id = $2 AND receipt_id = $3
+    `SELECT r.*, q.pending_payload_bytes, q.pending_receipt_count,
+            (
+              SELECT COUNT(*)::bigint
+                FROM record_rejections cr
+               WHERE cr.owner_subject_id = r.owner_subject_id
+                 AND cr.connector_instance_id = r.connector_instance_id
+            ) AS connection_receipt_count
+       FROM record_rejections r
+       JOIN record_rejection_quota q ON q.owner_subject_id = r.owner_subject_id
+      WHERE r.owner_subject_id = $1 AND r.connector_instance_id = $2 AND r.receipt_id = $3
       LIMIT 1`,
     [args.ownerSubjectId, args.connectorInstanceId, args.receiptId]
   );
@@ -640,7 +836,10 @@ export async function listPostgresRecordRejections(args: {
   connectorInstanceId: string;
   cursor?: string | null;
   limit: number;
+  maxConnectionReceipts?: number;
+  maxOwnerReceipts?: number;
   ownerSubjectId: string;
+  quotaBytes?: number;
 }): Promise<RecordRejectionPage> {
   const limit = pageSize(args.limit);
   const cursor = decodeCursor(args.cursor);
@@ -655,15 +854,36 @@ export async function listPostgresRecordRejections(args: {
   const rows = await postgresQuery<RecordRejectionRow>(
     `SELECT receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
             first_input_index, latest_input_index, reason_code, payload_sha256,
-            payload_bytes, replay_count, status, created_at, last_seen_at
+            payload_bytes, replay_count, status, created_at, last_seen_at,
+            record_rejection_quota.pending_receipt_count,
+            record_rejection_quota.pending_payload_bytes,
+            (
+              SELECT COUNT(*)::bigint FROM record_rejections AS connection_rejections
+               WHERE connection_rejections.owner_subject_id = record_rejections.owner_subject_id
+                 AND connection_rejections.connector_instance_id = record_rejections.connector_instance_id
+            ) AS connection_receipt_count
        FROM record_rejections
+       JOIN record_rejection_quota USING (owner_subject_id)
       WHERE owner_subject_id = $1 AND connector_instance_id = $2
         ${cursorClause}
       ORDER BY created_at ASC, receipt_id ASC
       LIMIT $${limitIndex}`,
     params
   );
-  const mapped = rows.rows.map(mapMetadata);
+  const policy = {
+    connectionReceiptCount: normalizeCountLimit(
+      args.maxConnectionReceipts,
+      RECORD_REJECTION_CONNECTION_QUOTA_COUNT_ENV,
+      DEFAULT_RECORD_REJECTION_CONNECTION_QUOTA_COUNT
+    ),
+    ownerPayloadBytes: normalizeQuota(args.quotaBytes),
+    ownerReceiptCount: normalizeCountLimit(
+      args.maxOwnerReceipts,
+      RECORD_REJECTION_OWNER_QUOTA_COUNT_ENV,
+      DEFAULT_RECORD_REJECTION_OWNER_QUOTA_COUNT
+    ),
+  };
+  const mapped = rows.rows.map((row) => mapMetadata(row, policy));
   const items = mapped.slice(0, limit);
   return { items, nextCursor: mapped.length > limit ? encodeCursor(lastPageItem(items)) : null };
 }
@@ -689,9 +909,10 @@ export async function deletePostgresRecordRejectionsForConnectionWithClient(
     await client.query(
       `UPDATE record_rejection_quota
             SET pending_payload_bytes = pending_payload_bytes - $1,
-                updated_at = $2
-          WHERE owner_subject_id = $3`,
-      [Number(total.rows[0]?.bytes ?? 0), nowIso(), args.ownerSubjectId]
+                pending_receipt_count = pending_receipt_count - $2,
+                updated_at = $3
+          WHERE owner_subject_id = $4`,
+      [Number(total.rows[0]?.bytes ?? 0), deleted.rowCount ?? 0, nowIso(), args.ownerSubjectId]
     );
   }
   return deleted.rowCount ?? 0;

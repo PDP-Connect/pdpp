@@ -27,6 +27,7 @@ import {
   makeConnectorInstanceSourceBindingKey as canonicalSourceBindingKey,
 } from "./connector-instance-utils.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
+import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "./record-rejection-replay-key.ts";
 import { bumpStorageGeneration } from "./storage-generation.ts";
 
 const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000;
@@ -545,6 +546,7 @@ CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_identity_page
 CREATE TABLE IF NOT EXISTS record_rejection_quota (
   owner_subject_id      TEXT PRIMARY KEY,
   pending_payload_bytes INTEGER NOT NULL DEFAULT 0 CHECK (pending_payload_bytes >= 0),
+  pending_receipt_count INTEGER NOT NULL DEFAULT 0 CHECK (pending_receipt_count >= 0),
   updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -558,9 +560,10 @@ CREATE TABLE IF NOT EXISTS record_rejections (
   first_input_index     INTEGER NOT NULL CHECK (first_input_index >= 0),
   latest_input_index    INTEGER NOT NULL CHECK (latest_input_index >= 0),
   reason_code           TEXT NOT NULL,
-  payload_text          TEXT NOT NULL,
+  payload               BLOB NOT NULL,
   payload_sha256        TEXT NOT NULL,
   payload_bytes         INTEGER NOT NULL CHECK (payload_bytes >= 0),
+  rejection_generation  TEXT NOT NULL DEFAULT '${RECORD_REJECTION_GENERATION}',
   replay_key            TEXT NOT NULL UNIQUE,
   replay_count          INTEGER NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
   status                TEXT NOT NULL DEFAULT 'pending' CHECK (status = 'pending'),
@@ -2091,6 +2094,135 @@ function addColumnIfMissing(raw: SqliteDatabase, table: string, column: string, 
     return;
   }
   raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+}
+
+function rekeyRecordRejectionReplayKeys(raw: SqliteDatabase): void {
+  const rows = raw
+    .prepare(
+      `SELECT receipt_id, owner_subject_id, connector_instance_id, stream, payload, reason_code
+         FROM record_rejections
+        WHERE rejection_generation <> ?`
+    )
+    .all<{
+      connector_instance_id: string;
+      owner_subject_id: string;
+      payload: Buffer;
+      reason_code: string;
+      receipt_id: string;
+      stream: string;
+    }>(RECORD_REJECTION_GENERATION);
+  const update = raw.prepare(
+    "UPDATE record_rejections SET replay_key = ?, rejection_generation = ? WHERE receipt_id = ?"
+  );
+  for (const row of rows) {
+    update.run(
+      recordRejectionReplayKey({
+        connectorInstanceId: row.connector_instance_id,
+        ownerSubjectId: row.owner_subject_id,
+        payload: row.payload,
+        reasonCode: row.reason_code,
+        stream: row.stream,
+      }),
+      RECORD_REJECTION_GENERATION,
+      row.receipt_id
+    );
+  }
+}
+
+function migrateRecordRejectionBytePayload(raw: SqliteDatabase): void {
+  raw.exec("BEGIN IMMEDIATE");
+  try {
+    addColumnIfMissing(raw, "record_rejection_quota", "pending_receipt_count", "INTEGER NOT NULL DEFAULT 0");
+    const columns = raw.prepare("PRAGMA table_info(record_rejections)").all<{ name: string }>();
+    const hasPayloadText = columns.some((column) => column.name === "payload_text");
+    const hasPayload = columns.some((column) => column.name === "payload");
+    const hasGeneration = columns.some((column) => column.name === "rejection_generation");
+    if (!hasGeneration) {
+      addColumnIfMissing(
+        raw,
+        "record_rejections",
+        "rejection_generation",
+        "TEXT NOT NULL DEFAULT 'record-rejection-v1'"
+      );
+    }
+    if (hasPayloadText && hasPayload) {
+      raw.exec(`
+        UPDATE record_rejections
+           SET payload = COALESCE(payload, CAST(payload_text AS BLOB));
+        ALTER TABLE record_rejections DROP COLUMN payload_text;
+      `);
+    } else if (hasPayloadText) {
+      raw.exec("DROP TABLE IF EXISTS record_rejections_text_payload");
+      raw.exec(`
+        ALTER TABLE record_rejections RENAME TO record_rejections_text_payload;
+    CREATE TABLE record_rejections (
+      receipt_id            TEXT PRIMARY KEY,
+      owner_subject_id      TEXT NOT NULL,
+      connector_instance_id TEXT NOT NULL,
+      connector_id          TEXT NOT NULL,
+      stream                TEXT NOT NULL,
+      run_id                TEXT,
+      first_input_index     INTEGER NOT NULL CHECK (first_input_index >= 0),
+      latest_input_index    INTEGER NOT NULL CHECK (latest_input_index >= 0),
+      reason_code           TEXT NOT NULL,
+      payload               BLOB NOT NULL,
+      payload_sha256        TEXT NOT NULL,
+      payload_bytes         INTEGER NOT NULL CHECK (payload_bytes >= 0),
+      rejection_generation  TEXT NOT NULL DEFAULT 'record-rejection-v1',
+      replay_key            TEXT NOT NULL UNIQUE,
+      replay_count          INTEGER NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
+      status                TEXT NOT NULL DEFAULT 'pending' CHECK (status = 'pending'),
+      created_at            TEXT NOT NULL,
+      last_seen_at          TEXT NOT NULL,
+      FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+      FOREIGN KEY(owner_subject_id) REFERENCES record_rejection_quota(owner_subject_id) ON DELETE RESTRICT
+    );
+      `);
+      const payloadExpression = hasPayload
+        ? "COALESCE(payload, CAST(payload_text AS BLOB))"
+        : "CAST(payload_text AS BLOB)";
+      raw.exec(`
+    INSERT INTO record_rejections(
+      receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
+      first_input_index, latest_input_index, reason_code, payload, payload_sha256,
+      payload_bytes, rejection_generation, replay_key, replay_count, status, created_at, last_seen_at
+    )
+    SELECT receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
+           first_input_index, latest_input_index, reason_code, ${payloadExpression}, payload_sha256,
+           payload_bytes, 'record-rejection-v1', replay_key, replay_count, status, created_at, last_seen_at
+      FROM record_rejections_text_payload;
+    DROP TABLE record_rejections_text_payload;
+    CREATE INDEX IF NOT EXISTS idx_record_rejections_connection_page
+      ON record_rejections(owner_subject_id, connector_instance_id, created_at, receipt_id);
+    CREATE INDEX IF NOT EXISTS idx_record_rejections_connection_receipt
+      ON record_rejections(owner_subject_id, connector_instance_id, receipt_id);
+      `);
+    }
+    raw.exec(`
+    UPDATE record_rejection_quota
+       SET pending_payload_bytes = (
+           SELECT COALESCE(SUM(payload_bytes), 0) FROM record_rejections
+            WHERE record_rejections.owner_subject_id = record_rejection_quota.owner_subject_id
+       ),
+           pending_receipt_count = (
+          SELECT COUNT(*) FROM record_rejections
+           WHERE record_rejections.owner_subject_id = record_rejection_quota.owner_subject_id
+       )
+     WHERE pending_payload_bytes <> (
+           SELECT COALESCE(SUM(payload_bytes), 0) FROM record_rejections
+            WHERE record_rejections.owner_subject_id = record_rejection_quota.owner_subject_id
+        )
+        OR pending_receipt_count <> (
+           SELECT COUNT(*) FROM record_rejections
+            WHERE record_rejections.owner_subject_id = record_rejection_quota.owner_subject_id
+        )
+  `);
+    rekeyRecordRejectionReplayKeys(raw);
+    raw.exec("COMMIT");
+  } catch (error) {
+    raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function migrateDeviceIngestBatchOutcomes(raw: SqliteDatabase): void {
@@ -5363,6 +5495,7 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindCheck(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindBrowserCollector(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesStatusDraft(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateRecordRejectionBytePayload(raw));
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheck(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialStatusRejected(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheckAccessTokenApiKey(raw, opts));

@@ -265,8 +265,6 @@ function buildRouteSchema(manifest: RouteManifest): Record<string, JsonValue> | 
   return Object.keys(schema).length ? schema : undefined;
 }
 
-const PASSTHROUGH_CONTENT_TYPES = ["application/x-ndjson", "text/plain"];
-
 /**
  * Build a fresh Fastify instance wired up the way PDPP wants it.
  *
@@ -373,13 +371,12 @@ function buildFastify({ loggerInstance }: { loggerInstance: FastifyBaseLogger })
     );
   });
 
-  // application/x-ndjson + text/plain come in as raw strings. Handlers that
-  // care read `req.body` and parse line-by-line themselves (runtime ingest).
-  for (const type of PASSTHROUGH_CONTENT_TYPES) {
-    fastify.addContentTypeParser(type, { parseAs: "string" }, (_req, body, done) => {
-      done(null, body);
-    });
-  }
+  fastify.addContentTypeParser("application/x-ndjson", { parseAs: "buffer" }, (_req, body, done) => {
+    done(null, body);
+  });
+  fastify.addContentTypeParser("text/plain", { parseAs: "string" }, (_req, body, done) => {
+    done(null, body);
+  });
 
   // Large owner import artifacts must not hit the wildcard buffer parser.
   // Route handlers that opt into this exact content type receive the raw

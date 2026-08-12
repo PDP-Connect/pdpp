@@ -45,6 +45,7 @@ import {
 const STORE_DOWN_RE = /store down/;
 const DERIVED_INDEX_ERROR_RE = /derived index failed/;
 const MALFORMED_REJECTION_RECEIPT_RE = /malformed rejection receipt/;
+const REJECTION_RECEIPT_CODE_MISMATCH_RE = /rejection receipt code does not match classified line error/;
 const SYSTEMIC_SUMMARY_RE = /systemic\/retryable record failure/;
 
 function defaultDeps(overrides: Partial<RecordsIngestDependencies> = {}): RecordsIngestDependencies {
@@ -83,7 +84,7 @@ test("parseLines splits NDJSON, filters empty lines, returns empty for null/unde
   assert.deepEqual(parseLines(undefined), []);
   assert.deepEqual(parseLines(""), []);
   assert.deepEqual(parseLines("\n\n"), []);
-  assert.deepEqual(parseLines("a\n\nb\n   \n"), ["a", "b"]);
+  assert.deepEqual(parseLines("a\n\nb\n   \n").map((line) => line.toString("utf8")), ["a", "b"]);
 });
 
 test("rs.records.ingest reports submittedRecordCount derived from non-empty lines", async () => {
@@ -370,7 +371,7 @@ test("hosted ingest commits permanent receipt evidence before a later systemic s
   );
 
   assert.deepEqual(
-    persisted.map(({ code, inputIndex, rawLine }) => ({ code, inputIndex, rawLine })),
+    persisted.map(({ code, inputIndex, rawLine }) => ({ code, inputIndex, rawLine: rawLine.toString("utf8") })),
     [
       {
         code: "invalid_record_identity",
@@ -485,12 +486,30 @@ test("rs.records.ingest hosted receipts use zero-based non-empty-line indexes an
     stream: "messages",
   });
   assert.deepEqual(
-    persisted.map(({ code, inputIndex, rawLine }) => ({ code, inputIndex, rawLine })),
+    persisted.map(({ code, inputIndex, rawLine }) => ({ code, inputIndex, rawLine: rawLine.toString("utf8") })),
     [
       { code: "malformed_ndjson", inputIndex: 1, rawLine: "NOT_JSON" },
       { code: "invalid_record_identity", inputIndex: 2, rawLine: '{"id":"bad"}' },
     ]
   );
+});
+
+test("rs.records.ingest quarantines invalid UTF-8 using the exact submitted bytes", async () => {
+  const persisted: InsertOrReplayRejectionInput[] = [];
+  const invalidBytes = Buffer.from([0xc0, 0xaf]);
+  const out = await executeRecordsIngest(
+    defaultInput({ body: invalidBytes, connectorInstanceId: "cin_gmail_work", hostedRejectionReceipts: true }),
+    defaultDeps({
+      insertOrReplayRejection: (input) => {
+        persisted.push(input);
+        return receiptFor(input);
+      },
+    })
+  );
+
+  assert.deepEqual(out.envelope.rejections, [{ code: "invalid_utf8", input_index: 0, receipt_id: "rr_0_invalid_utf8" }]);
+  assert.equal(persisted.length, 1);
+  assert.deepEqual(persisted[0]?.rawLine, invalidBytes);
 });
 
 test("rs.records.ingest hosted mode emits additive shape for accepted-only batches", async () => {
@@ -613,6 +632,30 @@ test("rs.records.ingest rejects malformed hosted receipt envelopes fail-closed",
         })
       ),
     MALFORMED_REJECTION_RECEIPT_RE
+  );
+});
+
+test("rs.records.ingest rejects stale replay receipts whose code no longer matches the current classifier", async () => {
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({
+          body: '{"id":"bad"}',
+          connectorInstanceId: "cin_gmail_work",
+          hostedRejectionReceipts: true,
+        }),
+        defaultDeps({
+          ingestRecord: () => {
+            throw permanentThrow("invalid record identity");
+          },
+          insertOrReplayRejection: () => ({
+            code: "malformed_ndjson",
+            input_index: 0,
+            receipt_id: "rr_stale_reason",
+          }),
+        })
+      ),
+    REJECTION_RECEIPT_CODE_MISMATCH_RE
   );
 });
 

@@ -325,6 +325,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly recordRejectionsEnsureQuotaOwner: MutationQuery;
   readonly recordRejectionsGetByReplayKey: ReadOneQuery;
   readonly recordRejectionsGetConnectionStatus: ReadOneQuery;
+  readonly recordRejectionsCountForConnection: ReadOneQuery;
   readonly recordRejectionsGetDetail: ReadOneQuery;
   readonly recordRejectionsInsert: MutationQuery;
   readonly recordRejectionsListAfterCursor: ReadManyQuery;

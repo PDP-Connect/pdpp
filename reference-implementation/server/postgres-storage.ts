@@ -26,6 +26,10 @@ import {
   connectorInstanceLockWaitMs,
 } from "./connector-instance-write-coordinator.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
+import {
+  RECORD_REJECTION_GENERATION,
+  recordRejectionReplayKey,
+} from "./record-rejection-replay-key.ts";
 import { bumpStorageGeneration } from "./storage-generation.ts";
 
 const VALID_BACKENDS = new Set(["sqlite", "postgres"]);
@@ -462,6 +466,81 @@ export function postgresQuery<Row extends QueryResultRow = QueryResultRow>(sql: 
   return getPostgresPool().query<Row>(sql, params);
 }
 
+async function migratePostgresRecordRejectionBytePayload(client: PoolClient): Promise<void> {
+  await client.query("BEGIN");
+  try {
+    await client.query(`
+    ALTER TABLE record_rejection_quota
+      ADD COLUMN IF NOT EXISTS pending_receipt_count BIGINT NOT NULL DEFAULT 0 CHECK (pending_receipt_count >= 0)
+  `);
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS payload BYTEA");
+    await client.query(
+      "ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS rejection_generation TEXT NOT NULL DEFAULT 'record-rejection-v1'"
+    );
+    const legacyTextColumn = await client.query(
+      `SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'record_rejections'
+        AND column_name = 'payload_text'
+      LIMIT 1`
+    );
+    if ((legacyTextColumn.rowCount ?? 0) > 0) {
+      await client.query("UPDATE record_rejections SET payload = convert_to(payload_text, 'UTF8') WHERE payload IS NULL");
+    }
+    await client.query(`
+    UPDATE record_rejection_quota
+       SET pending_payload_bytes = counts.payload_bytes,
+           pending_receipt_count = counts.receipt_count
+      FROM (
+        SELECT owner_subject_id,
+               COALESCE(SUM(payload_bytes), 0)::bigint AS payload_bytes,
+               COUNT(*)::bigint AS receipt_count
+          FROM record_rejections
+         GROUP BY owner_subject_id
+      ) counts
+     WHERE record_rejection_quota.owner_subject_id = counts.owner_subject_id
+       AND (
+         record_rejection_quota.pending_payload_bytes IS DISTINCT FROM counts.payload_bytes
+         OR record_rejection_quota.pending_receipt_count IS DISTINCT FROM counts.receipt_count
+       )
+  `);
+    await client.query("ALTER TABLE record_rejections ALTER COLUMN payload SET NOT NULL");
+    if ((legacyTextColumn.rowCount ?? 0) > 0) {
+      await client.query("ALTER TABLE record_rejections DROP COLUMN payload_text");
+    }
+    const rows = await client.query<{
+      connector_instance_id: string;
+      owner_subject_id: string;
+      payload: Buffer;
+      reason_code: string;
+      receipt_id: string;
+      stream: string;
+    }>(
+      `SELECT receipt_id, owner_subject_id, connector_instance_id, stream, payload, reason_code
+         FROM record_rejections`
+      + " WHERE rejection_generation <> $1",
+      [RECORD_REJECTION_GENERATION]
+    );
+    for (const row of rows.rows) {
+      await client.query("UPDATE record_rejections SET replay_key = $1, rejection_generation = $2 WHERE receipt_id = $3", [
+        recordRejectionReplayKey({
+          connectorInstanceId: row.connector_instance_id,
+          ownerSubjectId: row.owner_subject_id,
+          payload: row.payload,
+          reasonCode: row.reason_code,
+          stream: row.stream,
+        }),
+        RECORD_REJECTION_GENERATION,
+        row.receipt_id,
+      ]);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
+}
+
 // ─── Physical storage footprint (read-only operator diagnostics) ─────────────
 //
 // Surfaces the database's on-disk size so an operator can reconcile the
@@ -822,6 +901,7 @@ export async function bootstrapPostgresSchema({
       CREATE TABLE IF NOT EXISTS record_rejection_quota (
         owner_subject_id TEXT PRIMARY KEY,
         pending_payload_bytes BIGINT NOT NULL DEFAULT 0 CHECK (pending_payload_bytes >= 0),
+        pending_receipt_count BIGINT NOT NULL DEFAULT 0 CHECK (pending_receipt_count >= 0),
         updated_at TEXT NOT NULL DEFAULT (now() AT TIME ZONE 'utc')::text
       );
 
@@ -835,9 +915,10 @@ export async function bootstrapPostgresSchema({
         first_input_index BIGINT NOT NULL CHECK (first_input_index >= 0),
         latest_input_index BIGINT NOT NULL CHECK (latest_input_index >= 0),
         reason_code TEXT NOT NULL,
-        payload_text TEXT NOT NULL,
+        payload BYTEA NOT NULL,
         payload_sha256 TEXT NOT NULL,
         payload_bytes BIGINT NOT NULL CHECK (payload_bytes >= 0),
+        rejection_generation TEXT NOT NULL DEFAULT '${RECORD_REJECTION_GENERATION}',
         replay_key TEXT NOT NULL UNIQUE,
         replay_count BIGINT NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
         status TEXT NOT NULL DEFAULT 'pending' CHECK (status = 'pending'),
@@ -2407,6 +2488,7 @@ export async function bootstrapPostgresSchema({
     await ensurePostgresBrowserSurfaceLeaseColumnsAndIndexes(client);
     await migratePostgresBrowserSurfaceLeaseLifecycleChecks(client);
     await migratePostgresBrowserSurfaceLeasePriority(client);
+    await migratePostgresRecordRejectionBytePayload(client);
     await migratePostgresSpineSourceColumns(client);
     await migratePostgresDeviceExporterColumns(client);
     await migratePostgresManifestWriteViolations(client);
