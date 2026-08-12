@@ -194,8 +194,8 @@ const REGEXP_150 = /Record not found/;
 const REGEXP_151 = /Record not found/;
 const REGEXP_152 = /Filter on field 'popularity' not in grant/;
 const REGEXP_153 = /Filter on field 'popularity' not in grant/;
-const REGEXP_154 = /View includes fields not in grant: popularity/;
-const REGEXP_155 = /View includes fields not in grant: popularity/;
+const REGEXP_154 = /Client record reads must use explicit fields/;
+const REGEXP_155 = /Client record reads must use explicit fields/;
 const REGEXP_156 = /Filter on field 'popularity' not in grant/;
 const REGEXP_157 = /Filter on field 'popularity' not in grant/;
 const REGEXP_158 = /view and fields are mutually exclusive/;
@@ -8078,81 +8078,78 @@ test("PDPP reference implementation integration", async (t) => {
     }
   );
 
-  await t.test(
-    "field-limited client grants reject manifest views that expand beyond granted fields and preserve the rejection in the timeline",
-    async () => {
-      await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
-        const ownerToken = await issueOwnerToken(asUrl, "u1");
-        await seedSpotify(rsUrl, spotifyManifest, ownerToken);
+  await t.test("client grants reject query-time views without interpreting current manifest definitions", async () => {
+    await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+      const ownerToken = await issueOwnerToken(asUrl, "u1");
+      await seedSpotify(rsUrl, spotifyManifest, ownerToken);
 
-        const approved = await approveGrant(asUrl, "u1", {
-          access_mode: "single_use",
-          client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.dev/purpose/personalization",
-          purpose_description: "Recommend concerts using the basic top-artist subset",
-          source: { id: sourceIdForConnectorId(spotifyManifest.connector_id), kind: "connector" },
-          streams: [
-            {
-              fields: ["id", "name", "genres"],
-              name: "top_artists",
-            },
-          ],
-        });
-
-        const rejectedResp = await fetch(`${rsUrl}/v1/streams/top_artists/records?view=full`, {
-          headers: { Authorization: `Bearer ${approved.token}` },
-        });
-        assert.equal(rejectedResp.status, 403);
-        const rejectedRequestId = rejectedResp.headers.get("Request-Id");
-        const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
-        assert.ok(rejectedRequestId?.startsWith("req_"));
-        assert.ok(rejectedTraceId?.startsWith("trc_"));
-        const rejectedBody = parseErrorResponse(await rejectedResp.json());
-        assert.equal(rejectedBody.error.code, "field_not_granted");
-        assert.match(rejectedBody.error.message, REGEXP_154);
-
-        const { body: timeline } = await fetchGrantTimeline(asUrl, approved.grant.grant_id);
-        const queryReceivedEvent = timeline.data.find(
-          (event) => event.event_type === "query.received" && event.object_id === rejectedRequestId
-        );
-        assert.ok(
-          queryReceivedEvent,
-          "grant timeline should include query.received for rejected view-based record-list reads"
-        );
-        assert.equal(queryReceivedEvent.trace_id, rejectedTraceId);
-        assert.equal(queryReceivedEvent.stream_id, "top_artists");
-        assert.equal(queryReceivedEvent.data.query_shape, "record_list");
-        assert.equal(queryReceivedEvent.data.requested_view, "full");
-        assert.equal(queryReceivedEvent.data.source?.kind, "connector");
-        assert.equal(queryReceivedEvent.data.source?.id, SPOTIFY_SOURCE_ID);
-
-        const rejectedEvent = timeline.data.find(
-          (event) => event.event_type === "query.rejected" && event.object_id === rejectedRequestId
-        );
-        assert.ok(
-          rejectedEvent,
-          "grant timeline should include query.rejected for rejected view-based record-list reads"
-        );
-        assert.equal(rejectedEvent.trace_id, rejectedTraceId);
-        assert.equal(rejectedEvent.stream_id, "top_artists");
-        assert.equal(rejectedEvent.data.query_shape, "record_list");
-        assert.equal(rejectedEvent.data.requested_view, "full");
-        assert.equal(rejectedEvent.data.source?.kind, "connector");
-        assert.equal(rejectedEvent.data.source?.id, SPOTIFY_SOURCE_ID);
-        assert.equal(rejectedEvent.data.error?.code, "field_not_granted");
-        assert.match(rejectedEvent.data.error?.message || "", REGEXP_155);
-
-        const servedEvent = timeline.data.find(
-          (event) => event.event_type === "disclosure.served" && event.object_id === rejectedRequestId
-        );
-        assert.equal(
-          servedEvent,
-          undefined,
-          "rejected view-based record-list reads should not produce disclosure.served"
-        );
+      const approved = await approveGrant(asUrl, "u1", {
+        access_mode: "single_use",
+        client_id: "concert_recommendation_app",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
+        purpose_description: "Recommend concerts using the basic top-artist subset",
+        source: { id: sourceIdForConnectorId(spotifyManifest.connector_id), kind: "connector" },
+        streams: [
+          {
+            fields: ["id", "name", "genres"],
+            name: "top_artists",
+          },
+        ],
       });
-    }
-  );
+
+      const rejectedResp = await fetch(`${rsUrl}/v1/streams/top_artists/records?view=full`, {
+        headers: { Authorization: `Bearer ${approved.token}` },
+      });
+      assert.equal(rejectedResp.status, 400);
+      const rejectedRequestId = rejectedResp.headers.get("Request-Id");
+      const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
+      assert.ok(rejectedRequestId?.startsWith("req_"));
+      assert.ok(rejectedTraceId?.startsWith("trc_"));
+      const rejectedBody = parseErrorResponse(await rejectedResp.json());
+      assert.equal(rejectedBody.error.code, "invalid_request");
+      assert.match(rejectedBody.error.message, REGEXP_154);
+
+      const { body: timeline } = await fetchGrantTimeline(asUrl, approved.grant.grant_id);
+      const queryReceivedEvent = timeline.data.find(
+        (event) => event.event_type === "query.received" && event.object_id === rejectedRequestId
+      );
+      assert.ok(
+        queryReceivedEvent,
+        "grant timeline should include query.received for rejected view-based record-list reads"
+      );
+      assert.equal(queryReceivedEvent.trace_id, rejectedTraceId);
+      assert.equal(queryReceivedEvent.stream_id, "top_artists");
+      assert.equal(queryReceivedEvent.data.query_shape, "record_list");
+      assert.equal(queryReceivedEvent.data.requested_view, "full");
+      assert.equal(queryReceivedEvent.data.source?.kind, "connector");
+      assert.equal(queryReceivedEvent.data.source?.id, SPOTIFY_SOURCE_ID);
+
+      const rejectedEvent = timeline.data.find(
+        (event) => event.event_type === "query.rejected" && event.object_id === rejectedRequestId
+      );
+      assert.ok(
+        rejectedEvent,
+        "grant timeline should include query.rejected for rejected view-based record-list reads"
+      );
+      assert.equal(rejectedEvent.trace_id, rejectedTraceId);
+      assert.equal(rejectedEvent.stream_id, "top_artists");
+      assert.equal(rejectedEvent.data.query_shape, "record_list");
+      assert.equal(rejectedEvent.data.requested_view, "full");
+      assert.equal(rejectedEvent.data.source?.kind, "connector");
+      assert.equal(rejectedEvent.data.source?.id, SPOTIFY_SOURCE_ID);
+      assert.equal(rejectedEvent.data.error?.code, "invalid_request");
+      assert.match(rejectedEvent.data.error?.message || "", REGEXP_155);
+
+      const servedEvent = timeline.data.find(
+        (event) => event.event_type === "disclosure.served" && event.object_id === rejectedRequestId
+      );
+      assert.equal(
+        servedEvent,
+        undefined,
+        "rejected view-based record-list reads should not produce disclosure.served"
+      );
+    });
+  });
 
   await t.test(
     "field-limited client grants project changes_since disclosures to the granted field subset",

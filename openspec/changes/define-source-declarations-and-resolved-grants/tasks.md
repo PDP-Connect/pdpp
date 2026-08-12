@@ -135,3 +135,8 @@
   transaction seam. The finalized batch review binds approved source indexes,
   exact resolved source/stream facts, parent linkage, member order, and the
   posted review revision before issuing the package.
+- [x] Client-token record reads reject query-time views and use only explicit
+  fields or the grant's frozen projection; owner-token reads may resolve
+  current views.
+- [x] Client source descriptors fail closed when the resolved grant has no
+  valid public source instead of exposing a private storage connector ID.

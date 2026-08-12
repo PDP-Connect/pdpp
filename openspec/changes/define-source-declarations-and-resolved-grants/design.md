@@ -328,6 +328,9 @@ resolved constraint, but it must not replace the grant projection with current
 declaration metadata. The owner/discovery mode may describe a newer
 declaration, but it must not be reused to authorize a client read. This
 distinction applies even when both modes are implemented by one route handler.
+In v0.1, query-time views are owner-only current capability. Client reads use
+explicit fields or the resolved field projection already frozen in the grant;
+the RS rejects a client `view` instead of resolving it from current metadata.
 
 ## Upgrade boundary
 

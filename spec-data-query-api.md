@@ -146,6 +146,12 @@ GET /v1/streams/{stream}/records
 
 Returns records from a stream, filtered by grant constraints and request parameters.
 
+A client-token request MUST use explicit `fields` when it wants a narrower
+projection. It MUST NOT use a query-time `view`; the resource server rejects
+that request as `invalid_request` because views are resolved into frozen
+fields when the grant is issued. An owner-token request MAY use a current
+named view.
+
 **Query parameters:**
 
 | Parameter | Type | Description |

@@ -2340,16 +2340,7 @@ function ownerSubjectIdForBindings(tokenInfo: TokenInfo | null | undefined) {
 
 function buildClientSourceDescriptor(tokenInfo: TokenInfo | null | undefined) {
   const grant = tokenInfo?.grant as Record<string, unknown> | null | undefined;
-  const grantSource = buildSourceDescriptor((grant?.source as { kind?: string; id?: string } | null) ?? null);
-  if (grantSource) {
-    return grantSource;
-  }
-
-  const storageBinding = resolveGrantStorageBinding(tokenInfo);
-  if (storageBinding?.connector_id) {
-    return { id: storageBinding.connector_id as string, kind: "connector" };
-  }
-  return null;
+  return buildSourceDescriptor((grant?.source as { kind?: string; id?: string } | null) ?? null);
 }
 
 function buildOwnerQuerySourceDescriptor(req: ReqLike, opts: ServerOpts = {}) {

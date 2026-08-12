@@ -26,8 +26,8 @@
  *   - view/fields mutual exclusion;
  *   - manifest stream visibility for owner actors (`not_found`);
  *   - grant stream visibility for client actors (`grant_stream_not_allowed`);
- *   - view → fields resolution against the grant
- *     (`field_not_granted` when a view names ungranted fields);
+ *   - owner view → fields resolution against current capability metadata;
+ *   - client view rejection because grants carry the frozen field projection;
  *   - field/filter validation against the manifest stream;
  *   - owner read-grant construction;
  *   - output envelope shape and `query.received` / `disclosure.served` data
@@ -262,12 +262,18 @@ export async function executeRecordsList(
   if (rawView && rawFields) {
     throw new RecordsListVisibilityError("invalid_request", "view and fields are mutually exclusive");
   }
+  if (rawView && input.actor.kind !== "owner") {
+    throw new RecordsListVisibilityError(
+      "invalid_request",
+      "Client record reads must use explicit fields; views are resolved when the grant is issued"
+    );
+  }
 
   const mStream = manifest.streams.find((s) => s.name === input.streamName) ?? null;
 
   dependencies.validateRequestFields(input.requestParams, mStream);
 
-  // View → fields resolution. Only runs when the request asks for a view
+  // Owner view → fields resolution. Only runs when the request asks for a view
   // and `fields` was not already promoted by the validator (preserves
   // prior native ordering: validate fields if present, then resolve view
   // if no fields were supplied). View id comparison uses `===` against
@@ -275,21 +281,14 @@ export async function executeRecordsList(
   // the "Unknown view" rejection, matching the previous native behavior
   // (which embedded `req.query.view` directly into the template literal,
   // coercing arrays/objects to their default string form).
-  if (rawView && (input.requestParams.fields === null || input.requestParams.fields === undefined)) {
+  if (
+    input.actor.kind === "owner" &&
+    rawView &&
+    (input.requestParams.fields === null || input.requestParams.fields === undefined)
+  ) {
     const viewDef = (mStream?.views ?? []).find((v) => v.id === rawView);
     if (!viewDef) {
       throw new RecordsListVisibilityError("invalid_request", `Unknown view: ${String(rawView)}`);
-    }
-    const streamGrant = grant.streams.find((s) => s.name === input.streamName);
-    if (streamGrant?.fields) {
-      const granted = streamGrant.fields;
-      const unauthorized = viewDef.fields.filter((f) => !granted.includes(f));
-      if (unauthorized.length) {
-        throw new RecordsListVisibilityError(
-          "field_not_granted",
-          `View includes fields not in grant: ${unauthorized.join(", ")}`
-        );
-      }
     }
     input.requestParams.fields = viewDef.fields;
     Reflect.deleteProperty(input.requestParams, "view");
