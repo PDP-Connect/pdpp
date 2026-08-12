@@ -88,15 +88,7 @@ Returns the streams available under the current grant.
 GET /v1/streams/{stream}
 ```
 
-Returns stream metadata for the caller's authorization context, including
-schema, primary key, cursor field, and expandable relations. Owner-token and
-discovery/catalog metadata MAY describe the live current declaration and
-serving capabilities. For a client-token request, the response MUST be
-projected from the token's frozen resolved grant: it MUST expose only granted
-streams and fields and MUST NOT expose or reinterpret ungranted or newly
-current declaration metadata. Current metadata MAY be consulted for routing or
-to reject an unsupported resolved constraint, but it MUST NOT widen, replace,
-or re-resolve the grant projection.
+Returns full source stream metadata, including schema, primary key, cursor field, and expandable relations. This endpoint is not grant-projected: grants constrain which reads or queries are allowed, but they do not rewrite the stream metadata document.
 
 **Response:**
 ```json
@@ -145,12 +137,6 @@ GET /v1/streams/{stream}/records
 ```
 
 Returns records from a stream, filtered by grant constraints and request parameters.
-
-A client-token request MUST use explicit `fields` when it wants a narrower
-projection. It MUST NOT use a query-time `view`; the resource server rejects
-that request as `invalid_request` because views are resolved into frozen
-fields when the grant is issued. An owner-token request MAY use a current
-named view.
 
 **Query parameters:**
 
