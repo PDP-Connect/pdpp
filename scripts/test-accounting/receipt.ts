@@ -108,6 +108,7 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "real PostgreSQL: foldConnectorSummaryStreamFacts respects an explicit maxEvents budget, reports incomplete, and a follow-up call resumes to the unbounded oracle value",
   "real PostgreSQL: getConnectorSummaryForRoute (discovery + fold + synthesis) query count for N=25 stays within a small constant factor of N=1",
   "real PostgreSQL: multi-round resume — bounded rounds accumulate and only the genuinely converged final round reads current",
+  "real PostgreSQL: an unscoped fold carries one absolute duration deadline across instance folds",
   "real PostgreSQL: recompute/self-heal — a full rebuild from existing event history reproduces the same monotonic result as the incremental fold",
   "real PostgreSQL: recovery-only interaction — genuine success -> recovery-only successes -> interleaved cancelled attempt -> stored fact still reads the original committed proof",
   "real PostgreSQL: repair work is proportional to K candidates, not N total connections",
