@@ -9915,6 +9915,7 @@ export async function exchangeOAuthRefreshToken({
 }
 
 const CONSENT_EXCHANGE_CODE_TTL_MS = 5 * 60 * 1000;
+const CONSENT_EXCHANGE_CODE_RE = /^cex_[0-9a-f]{64}$/;
 
 function buildConsentPackageGrant(
   packageId: string,
@@ -9940,7 +9941,7 @@ function consentExchangeTokenIsActive(row: ConsentExchangeRow): boolean {
 }
 
 function parseConsentExchangeCodeCredential(code: string): { codeHash: string } | null {
-  if (!/^cex_[0-9a-f]{64}$/.test(code)) {
+  if (!CONSENT_EXCHANGE_CODE_RE.test(code)) {
     return null;
   }
   return { codeHash: base64UrlSha256(code) };
@@ -9969,7 +9970,8 @@ export async function createConsentExchangeCode({
   }
   const codeSecret = `cex_${randomBytes(32).toString("hex")}`;
   const codeHash = base64UrlSha256(codeSecret);
-  const proofHash = typeof recoveryProof === "string" && recoveryProof.length > 0 ? base64UrlSha256(recoveryProof) : null;
+  const proofHash =
+    typeof recoveryProof === "string" && recoveryProof.length > 0 ? base64UrlSha256(recoveryProof) : null;
   const createdAt = nowIso();
   const expiresAt = new Date(Date.now() + ttlMs).toISOString();
   if (isPostgresStorageBackend()) {
@@ -10068,7 +10070,10 @@ async function loadPostgresConsentExchangeGrant(
   };
 }
 
-export async function consumeConsentExchangeCode(code: unknown, recoveryProof?: unknown): Promise<{
+export async function consumeConsentExchangeCode(
+  code: unknown,
+  recoveryProof?: unknown
+): Promise<{
   ok: boolean;
   reason?: string;
   grantId?: string;

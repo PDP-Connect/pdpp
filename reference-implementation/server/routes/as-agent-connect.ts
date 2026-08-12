@@ -23,9 +23,9 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { exec, getOne, referenceQueries } from "../../lib/db.ts";
+import { applyCredentialResponseNoStoreHeaders } from "../credential-response-cache.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
 import type { PdppErrorFn, RouteArg } from "./_route-contract.ts";
-import { applyCredentialResponseNoStoreHeaders } from "../credential-response-cache.ts";
 
 // ─── Attempt store ───────────────────────────────────────────────────────────
 
