@@ -26,19 +26,13 @@ import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
-import {
-  basicIntrospectionAuthorization,
-  LOCAL_RS_INTROSPECTION_CLIENT_ID,
-  LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
-} from "../server/introspection-http.ts";
+import { basicIntrospectionAuthorization } from "../server/introspection-http.ts";
+import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
 const MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, "manifests");
-const INTROSPECTION_AUTHORIZATION = basicIntrospectionAuthorization({
-  clientId: LOCAL_RS_INTROSPECTION_CLIENT_ID,
-  clientSecret: LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
-});
+const INTROSPECTION_AUTHORIZATION = basicIntrospectionAuthorization(TEST_RS_INTROSPECTION_CREDENTIALS);
 
 function introspectionHeaders(contentType = "application/json"): Record<string, string> {
   return { Authorization: INTROSPECTION_AUTHORIZATION, "Content-Type": contentType };
@@ -360,7 +354,7 @@ test("introspection: confidential caller credentials are mandatory (B3)", async 
     const authorizations = [
       undefined,
       basicIntrospectionAuthorization({
-        clientId: LOCAL_RS_INTROSPECTION_CLIENT_ID,
+        clientId: TEST_RS_INTROSPECTION_CREDENTIALS.clientId,
         clientSecret: "wrong-secret",
       }),
     ];

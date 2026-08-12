@@ -183,8 +183,6 @@ import {
   authenticateIntrospectionCaller,
   createRemoteIntrospector,
   type IntrospectionCallerCredentials,
-  LOCAL_RS_INTROSPECTION_CLIENT_ID,
-  LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
 } from "./introspection-http.ts";
 import {
   buildAuthorizationServerMetadata,
@@ -823,7 +821,6 @@ function configuredNativeSourceId(opts: ServerOpts): string | null {
   const { source } = declaration as { source?: { id?: unknown } };
   return typeof source?.id === "string" && source.id ? source.id : null;
 }
-
 interface OwnerDeviceAuthStore {
   approve: (userCode: string, subjectId?: string) => Promise<unknown>;
   deny: (userCode: string, subjectId?: string) => Promise<void>;
@@ -4369,10 +4366,10 @@ export function buildAsApp(opts: ServerOpts = {}) {
     },
   } as unknown as Parameters<typeof mountAsDeviceUi>[1]);
 
-  const introspectionCallerCredentials = opts.introspectionCallerCredentials ?? {
-    clientId: LOCAL_RS_INTROSPECTION_CLIENT_ID,
-    clientSecret: LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
-  };
+  const introspectionCallerCredentials = opts.introspectionCallerCredentials ?? readIntrospectionCredentialsFromEnv();
+  if (!introspectionCallerCredentials) {
+    throw new Error("AS introspection caller credentials must be configured");
+  }
   mountAsIntrospect(app, {
     authenticateCaller: (authorization) =>
       authenticateIntrospectionCaller(authorization, introspectionCallerCredentials),
@@ -5784,10 +5781,10 @@ function buildRsApp(opts: ServerOpts = {}) {
   const internalResource = opts.rsInternalUrl ?? null;
   const trustedMetadataHosts =
     opts.trustedMetadataHosts ?? (opts.ignoreAmbientPublicUrls ? null : process.env.PDPP_TRUSTED_HOSTS);
-  const rsIntrospectionCredentials = opts.rsIntrospectionCredentials ?? {
-    clientId: LOCAL_RS_INTROSPECTION_CLIENT_ID,
-    clientSecret: LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
-  };
+  const rsIntrospectionCredentials = opts.rsIntrospectionCredentials ?? readIntrospectionCredentialsFromEnv();
+  if (!rsIntrospectionCredentials) {
+    throw new Error("RS introspection credentials must be configured");
+  }
   const introspectToken = createRemoteIntrospector({
     ...rsIntrospectionCredentials,
     endpoint: opts.rsIntrospectionEndpoint ?? `http://127.0.0.1:${opts.asPort ?? AS_PORT}/introspect`,
@@ -6573,6 +6570,7 @@ function buildRsApp(opts: ServerOpts = {}) {
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 export async function startServer(opts: ServerOpts = {}) {
+  const introspectionCredentials = resolveIntrospectionCredentials(opts);
   const logger = opts.logger ?? buildLogger({ quiet: !!opts.quiet });
   setConnectorSummaryReconcileObservationSink(createConnectorSummaryReconcileObservationSink(logger));
   const nativeConfig = validateNativeConfiguration(opts);
@@ -7086,7 +7084,7 @@ export async function startServer(opts: ServerOpts = {}) {
     dynamicClientRegistrationInitialAccessTokens: resolveDynamicClientRegistrationInitialAccessTokens(opts),
     enableDynamicClientRegistration: resolveDynamicClientRegistrationEnabled(opts),
     ignoreAmbientPublicUrls,
-    introspectionCallerCredentials: opts.introspectionCallerCredentials,
+    introspectionCallerCredentials: introspectionCredentials,
     isNekoProxyTargetApproved: opts.isNekoProxyTargetApproved,
     makePresentationAttachmentId: opts.makePresentationAttachmentId,
     makeStreamingBrowserSessionId: opts.makeStreamingBrowserSessionId,
@@ -7204,7 +7202,7 @@ export async function startServer(opts: ServerOpts = {}) {
     // the adapter falls back to the public resource). See explicitRsInternalUrl.
     // Spec: openspec/changes/route-hosted-mcp-adapter-self-calls-internally/
     rsInternalUrl: explicitRsInternalUrl,
-    rsIntrospectionCredentials: opts.rsIntrospectionCredentials,
+    rsIntrospectionCredentials: introspectionCredentials,
     rsIntrospectionEndpoint: opts.rsIntrospectionEndpoint ?? `http://127.0.0.1:${asPort}/introspect`,
     rsPublicUrl: configuredRsPublicUrl,
     semanticRetrievalCapability: opts.semanticRetrievalCapability,

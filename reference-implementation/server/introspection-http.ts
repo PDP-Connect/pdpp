@@ -6,9 +6,6 @@ import { resolveSourceIntrospectionContext, SourceIntrospectionContextError } fr
 
 const BASIC_AUTHORIZATION_PATTERN = /^Basic\s+([^\s]+)$/i;
 
-export const LOCAL_RS_INTROSPECTION_CLIENT_ID = "pr89-rs";
-export const LOCAL_RS_INTROSPECTION_CLIENT_SECRET = "pr89-rs-secret";
-
 export interface IntrospectionCallerCredentials {
   readonly clientId: string;
   readonly clientSecret: string;

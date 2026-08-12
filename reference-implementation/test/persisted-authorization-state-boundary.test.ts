@@ -11,6 +11,7 @@ import { requirePersistedGrantState } from "../server/auth.ts";
 import { closeDb, getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { introspectionHeaders } from "./helpers/introspection.ts";
+import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const VERSIONLESS_LEGACY_BYTES = readFileSync(
@@ -62,7 +63,14 @@ test("pre-contract persisted bytes are rejected by the current grant reader", ()
 });
 
 test("legacy persisted grant state fails before the SQLite RS route", async () => {
-  const server = (await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 })) as TestServer;
+  const server = (await startServer({
+    asPort: 0,
+    dbPath: ":memory:",
+    introspectionCallerCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
+    quiet: true,
+    rsIntrospectionCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
+    rsPort: 0,
+  })) as TestServer;
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   const token = "tok_legacy_authorization_state";

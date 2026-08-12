@@ -23,20 +23,14 @@ import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../ser
 import { closeDb, getDb } from "../server/db.ts";
 import { encodeHostedMcpSelection, encodeHostedMcpStreamSelection } from "../server/hosted-mcp-selection.ts";
 import { startServer } from "../server/index.ts";
-import {
-  basicIntrospectionAuthorization,
-  LOCAL_RS_INTROSPECTION_CLIENT_ID,
-  LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
-} from "../server/introspection-http.ts";
+import { basicIntrospectionAuthorization } from "../server/introspection-http.ts";
 import { ingestRecord, queryRecordsAcrossBindings, resolveReadRequestBindings } from "../server/records.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
-const INTROSPECTION_AUTHORIZATION = basicIntrospectionAuthorization({
-  clientId: LOCAL_RS_INTROSPECTION_CLIENT_ID,
-  clientSecret: LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
-});
+const INTROSPECTION_AUTHORIZATION = basicIntrospectionAuthorization(TEST_RS_INTROSPECTION_CREDENTIALS);
 
 interface CloseableTestServer {
   readonly asPort: number;

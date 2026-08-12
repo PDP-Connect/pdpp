@@ -43,6 +43,7 @@
         "reference-implementation/test/*.test.js",
         "reference-implementation/test/*.test.mjs",
         "reference-implementation/test/*.test.ts",
+        "reference-implementation/test/seam-spike/*.test.ts",
         "reference-implementation/server/streaming/*.test.js",
         "reference-implementation/server/streaming/*.test.mjs",
         "reference-implementation/server/streaming/*.test.ts",

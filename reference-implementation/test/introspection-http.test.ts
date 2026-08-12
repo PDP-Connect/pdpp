@@ -10,7 +10,7 @@ import {
   createRemoteIntrospector,
 } from "../server/introspection-http.ts";
 
-const CREDENTIALS = { clientId: "pr89-rs", clientSecret: "pr89-rs-secret" };
+const CREDENTIALS = { clientId: "pr89-rs-test", clientSecret: "pr89-rs-test-secret" };
 const CLOCK_MS = Date.parse("2026-08-11T12:00:00Z");
 const ISSUER = "https://as.example";
 const AUDIENCE = "https://rs.example";

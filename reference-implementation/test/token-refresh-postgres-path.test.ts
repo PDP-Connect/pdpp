@@ -57,13 +57,10 @@ import { issueToken, revokeGrant } from "../server/auth.ts";
 import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { closeDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
-import {
-  basicIntrospectionAuthorization,
-  LOCAL_RS_INTROSPECTION_CLIENT_ID,
-  LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
-} from "../server/introspection-http.ts";
+import { basicIntrospectionAuthorization } from "../server/introspection-http.ts";
 import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import { createPostgresConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
@@ -121,10 +118,7 @@ function refreshTokenHash(refreshToken: string): string {
 }
 
 const INTROSPECTION_HEADERS = {
-  Authorization: basicIntrospectionAuthorization({
-    clientId: LOCAL_RS_INTROSPECTION_CLIENT_ID,
-    clientSecret: LOCAL_RS_INTROSPECTION_CLIENT_SECRET,
-  }),
+  Authorization: basicIntrospectionAuthorization(TEST_RS_INTROSPECTION_CREDENTIALS),
   "Content-Type": "application/x-www-form-urlencoded",
 };
 

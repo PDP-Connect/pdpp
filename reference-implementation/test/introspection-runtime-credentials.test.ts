@@ -67,7 +67,6 @@ test("test-run startup also generates credentials unless the test injects them",
     await closeServer(server);
   }
 });
-
 test("operator-provided introspection credentials are accepted", async () => {
   await withoutNodeTestContext(async () => {
     const credentials = { clientId: "operator-rs", clientSecret: "operator-rs-secret" };
