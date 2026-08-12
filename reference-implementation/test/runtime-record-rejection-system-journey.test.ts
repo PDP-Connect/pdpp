@@ -10,13 +10,18 @@ import { test } from "node:test";
 import { loadSyncState, runConnector } from "../runtime/index.ts";
 import { closeDb, getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
+import { __setAdmissionPreCheckPhaseHookForTest } from "../server/records.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
+import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
+import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
 const OWNER_SUBJECT_ID = "owner_alice";
 const OWNER_PASSWORD = "runtime-record-rejection-password";
 const CSRF_RE = /<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/;
 const SIMULATED_RESPONSE_LOSS_RE = /simulated response loss/;
+const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
 
 function capturedLogger() {
   const entries: unknown[][] = [];
@@ -236,6 +241,208 @@ function sqliteRunHistoryFacts(runId: string): Record<string, unknown> {
     | undefined;
   assert.ok(row, `expected run_history row for ${runId}`);
   return JSON.parse(row.facts_json ?? "{}") as Record<string, unknown>;
+}
+
+async function countPostgresRecords(connectorInstanceId: string): Promise<number> {
+  const result = await postgresQuery<{ count: number }>(
+    "SELECT COUNT(*)::int AS count FROM records WHERE connector_instance_id = $1 AND deleted = false",
+    [connectorInstanceId]
+  );
+  return result.rows[0]?.count ?? 0;
+}
+
+async function countPostgresRejections(connectorInstanceId: string): Promise<number> {
+  const result = await postgresQuery<{ count: number }>(
+    "SELECT COUNT(*)::int AS count FROM record_rejections WHERE connector_instance_id = $1",
+    [connectorInstanceId]
+  );
+  return result.rows[0]?.count ?? 0;
+}
+
+async function readPostgresRejectedPayload(
+  connectorInstanceId: string
+): Promise<{ payload: Buffer; receipt_id: string }> {
+  const result = await postgresQuery<{ payload: Buffer; receipt_id: string }>(
+    `SELECT payload, receipt_id
+       FROM record_rejections
+      WHERE connector_instance_id = $1
+      ORDER BY created_at ASC
+      LIMIT 1`,
+    [connectorInstanceId]
+  );
+  const [row] = result.rows;
+  assert.ok(row, "expected one Postgres rejection receipt row");
+  return row;
+}
+
+type RecordRejectionBackend = { kind: "sqlite"; dbPath: string } | { databaseUrl: string; kind: "postgres" };
+
+async function startJourneyServer(backend: RecordRejectionBackend): Promise<ClosableServer> {
+  const opts: Parameters<typeof startServer>[0] & { databaseUrl?: string; storageBackend?: string } = {
+    asPort: 0,
+    ownerAuthPassword: OWNER_PASSWORD,
+    ownerAuthSubjectId: OWNER_SUBJECT_ID,
+    quiet: true,
+    rsPort: 0,
+    ...(backend.kind === "sqlite"
+      ? { dbPath: backend.dbPath }
+      : { databaseUrl: backend.databaseUrl, storageBackend: "postgres" }),
+  };
+  return await startServer(opts);
+}
+
+async function countDurableRecords(backend: RecordRejectionBackend, connectorInstanceId: string): Promise<number> {
+  if (backend.kind === "postgres") {
+    return await countPostgresRecords(connectorInstanceId);
+  }
+  return (
+    getDb()
+      .prepare("SELECT COUNT(*) AS count FROM records WHERE connector_instance_id = ? AND deleted = 0")
+      .get<{ count: number }>(connectorInstanceId)?.count ?? 0
+  );
+}
+
+async function countDurableRejections(backend: RecordRejectionBackend, connectorInstanceId: string): Promise<number> {
+  if (backend.kind === "postgres") {
+    return await countPostgresRejections(connectorInstanceId);
+  }
+  return (
+    getDb()
+      .prepare("SELECT COUNT(*) AS count FROM record_rejections WHERE connector_instance_id = ?")
+      .get<{ count: number }>(connectorInstanceId)?.count ?? 0
+  );
+}
+
+async function readRejectedPayload(
+  backend: RecordRejectionBackend,
+  connectorInstanceId: string
+): Promise<{ payload: Buffer; receipt_id: string }> {
+  if (backend.kind === "postgres") {
+    return await readPostgresRejectedPayload(connectorInstanceId);
+  }
+  const row = getDb()
+    .prepare(
+      `SELECT payload, receipt_id
+         FROM record_rejections
+        WHERE connector_instance_id = ?
+        ORDER BY created_at ASC
+        LIMIT 1`
+    )
+    .get<{ payload: Buffer; receipt_id: string }>(connectorInstanceId);
+  assert.ok(row, "expected one SQLite rejection receipt row");
+  return row;
+}
+
+async function assertLaterSystemicSiblingPreservesDurablePrefix(backend: RecordRejectionBackend): Promise<void> {
+  const connectorId = `route-systemic-prefix-${backend.kind}`;
+  const acceptedRecord = JSON.stringify({
+    data: { id: "accepted-prefix", value: "accepted" },
+    emitted_at: "2026-08-11T13:00:00.000Z",
+    key: "accepted-prefix",
+  });
+  const rejectedRecord = JSON.stringify({
+    data: { id: "rejected-private-data", value: "private" },
+    emitted_at: "2026-08-11T13:00:01.000Z",
+    key: "rejected-private-key",
+  });
+  const systemicRecord = JSON.stringify({
+    data: { id: "later-systemic", value: "accepted-on-replay" },
+    emitted_at: "2026-08-11T13:00:02.000Z",
+    key: "later-systemic",
+  });
+  const body = `${acceptedRecord}\n${rejectedRecord}\n${systemicRecord}`;
+  const forbidden = [rejectedRecord, "rejected-private-key", "rejected-private-data"];
+  let server: ClosableServer | null = null;
+
+  try {
+    server = await startJourneyServer(backend);
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const ownerSession = await login(asUrl);
+    await registerManifest(asUrl, ownerSession, manifest(connectorId));
+    const ownerToken = await issueOwnerToken(asUrl, ownerSession);
+    const { connectorInstanceId } = await admitOwnerRunConnection({
+      connectorId,
+      connectorInstanceId: null,
+      connectorInstanceStore: createRequestConnectorInstanceStore(),
+      ownerSubjectId: OWNER_SUBJECT_ID,
+    });
+    const ingestUrl = `${rsUrl}/v1/ingest/items?connector_id=${encodeURIComponent(connectorId)}&connector_instance_id=${encodeURIComponent(connectorInstanceId)}`;
+
+    let admittedRecordWrites = 0;
+    __setAdmissionPreCheckPhaseHookForTest((point: string) => {
+      if (point !== "after-admission-pre-check") {
+        return;
+      }
+      admittedRecordWrites += 1;
+      if (admittedRecordWrites === 3) {
+        throw Object.assign(new Error("selected later sibling systemic failure"), { code: "ingest_storage_error" });
+      }
+    });
+    const failed = await fetchJson(ingestUrl, {
+      body,
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        "Content-Type": "application/x-ndjson",
+      },
+      method: "POST",
+    });
+    assert.equal(failed.status, 503, `${backend.kind}: later systemic sibling must make the route non-2xx`);
+    assert.equal(
+      JSON.stringify(failed.body).includes("receipt_id"),
+      false,
+      "non-2xx response must not claim a receipt"
+    );
+    assert.equal(
+      JSON.stringify(failed.body).includes("rejections"),
+      false,
+      "non-2xx response must not claim rejections"
+    );
+    assert.equal(
+      JSON.stringify(failed.body).includes("next_cursor"),
+      false,
+      "non-2xx response must not claim a cursor"
+    );
+    assertOmitsPrivatePayload(`${backend.kind} systemic error body`, failed.body, forbidden);
+
+    assert.equal(await countDurableRecords(backend, connectorInstanceId), 1);
+    assert.equal(await countDurableRejections(backend, connectorInstanceId), 1);
+    const receiptAfterFailure = await readRejectedPayload(backend, connectorInstanceId);
+    assert.equal(receiptAfterFailure.payload.toString("utf8"), rejectedRecord);
+
+    __setAdmissionPreCheckPhaseHookForTest(null);
+    const replay = await fetchJson(ingestUrl, {
+      body,
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        "Content-Type": "application/x-ndjson",
+      },
+      method: "POST",
+    });
+    assert.equal(replay.status, 200, `${backend.kind}: exact replay must succeed once the systemic fault clears`);
+    const replayBody = replay.body as {
+      records_accepted?: number;
+      records_rejected?: number;
+      rejections?: { receipt_id?: string }[];
+    };
+    assert.equal(replayBody.records_rejected, 1);
+    assert.equal(replayBody.rejections?.[0]?.receipt_id, receiptAfterFailure.receipt_id);
+    assertOmitsPrivatePayload(`${backend.kind} replay body`, replayBody, forbidden);
+    assert.equal(await countDurableRecords(backend, connectorInstanceId), 2, "replay must not duplicate the prefix");
+    assert.equal(await countDurableRejections(backend, connectorInstanceId), 1, "replay must reuse the receipt");
+
+    const receiptAfterReplay = await readRejectedPayload(backend, connectorInstanceId);
+    assert.equal(receiptAfterReplay.receipt_id, receiptAfterFailure.receipt_id);
+    assert.equal(receiptAfterReplay.payload.toString("utf8"), rejectedRecord);
+  } finally {
+    __setAdmissionPreCheckPhaseHookForTest(null);
+    if (server) {
+      await closeServer(server);
+    } else if (backend.kind === "postgres") {
+      await closePostgresStorage();
+      closeDb();
+    }
+  }
 }
 
 function assertOmitsPrivatePayload(surfaceName: string, surface: unknown, forbidden: readonly string[]) {
@@ -697,7 +904,10 @@ test("prior-runtime count reader is loss-safe against a fresh new SQLite server"
       { headers: { Cookie: ownerSessionB } }
     );
     assert.equal(detailStatus, 200);
-    assert.equal((detailBody as { payload_base64?: unknown }).payload_base64, Buffer.from(rejectedPayloadLine).toString("base64"));
+    assert.equal(
+      (detailBody as { payload_base64?: unknown }).payload_base64,
+      Buffer.from(rejectedPayloadLine).toString("base64")
+    );
     assert.equal((detailBody as { payload_text?: unknown }).payload_text, rejectedPayloadLine);
 
     // Only after restart retrieval proves recoverability do the prior
@@ -713,6 +923,42 @@ test("prior-runtime count reader is loss-safe against a fresh new SQLite server"
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("SQLite route systemic sibling after a durable prefix keeps accepted record and rejection receipt replay-safe", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-route-systemic-prefix-sqlite-"));
+  try {
+    await assertLaterSystemicSiblingPreservesDurablePrefix({
+      dbPath: join(dir, "store.sqlite"),
+      kind: "sqlite",
+    });
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+if (POSTGRES_URL) {
+  test("Postgres route systemic sibling after a durable prefix keeps accepted record and rejection receipt replay-safe", async () => {
+    await withTemporaryPostgresDatabase(
+      {
+        closeConnections: closePostgresStorage,
+        connectionString: POSTGRES_URL,
+        databaseName: "pdpp_test_route_systemic_prefix",
+      },
+      async (databaseUrl) => {
+        await assertLaterSystemicSiblingPreservesDurablePrefix({
+          databaseUrl,
+          kind: "postgres",
+        });
+      }
+    );
+  });
+} else {
+  test("Postgres route systemic sibling durable-prefix parity (skipped: PDPP_TEST_POSTGRES_URL unset)", {
+    skip: true,
+  }, () => {
+    // See this file's SQLite route proof and the repo's Postgres test convention.
+  });
+}
 
 test("runtime/server SQLite response loss replays the same durable rejection receipt before committing cursor", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pdpp-runtime-record-rejection-response-loss-"));
@@ -807,9 +1053,7 @@ test("runtime/server SQLite response loss replays the same durable rejection rec
          FROM record_rejections
          WHERE connector_instance_id = ?`
       )
-      .get<{ payload: Buffer; reason_code: string; receipt_id: string; replay_count: number }>(
-        connectorInstanceId
-      );
+      .get<{ payload: Buffer; reason_code: string; receipt_id: string; replay_count: number }>(connectorInstanceId);
     assert.ok(rowAfterLoss, "server must commit the receipt before the response is lost");
     assert.equal(rowAfterLoss.reason_code, "invalid_record_identity");
     assert.equal(rowAfterLoss.payload.toString("utf8"), rejectedPayloadLine);
