@@ -404,16 +404,33 @@ node scripts/migrate-storage/cli.ts plan \
 
 ## What gets migrated, what doesn't
 
-### Migrated tables (25 non-derived)
+### Migrated tables (61 non-derived)
 
-All owner/grant/connector/ingest/scheduling/runtime state:
+All owner/grant/connector/ingest/scheduling/runtime state is preserved. The
+inventory is schema-derived from the current PostgreSQL bootstrap DDL; every
+non-search table below remains conservative `backup_required` data for
+operator backup/restore and storage migration.
 
 - `connectors` — registered connectors and metadata
+- `connector_instances` — per-owner connector identities and lifecycle
+- `record_rejection_quota` — owner-level pending rejection byte/count quota
+- `record_rejections` — owner-bound durable hosted-ingest rejection payloads, replay facts, first/latest run provenance, and stale-after-acceptance status
+- `connector_instance_tombstones` — owner-deleted connector identity tombstones
+- `connector_instance_credentials` — per-connection sealed static-secret credentials
+- `acquisition_batches` — source acquisition batch provenance
+- `manual_upload_artifacts` — manual upload artifact metadata
+- `record_acquisition_provenance` — record acquisition provenance facts
 - `oauth_clients` — third-party OAuth client registrations
+- `cimd_client_documents` — CIMD client document registrations
+- `oauth_authorization_codes` — OAuth authorization code exchange state
+- `oauth_refresh_tokens` — hosted MCP durable OAuth sessions
 - `grants` — user grants to connectors (scopes, expiry, refresh tokens)
 - `tokens` — derived OAuth tokens; refreshed on access
+- `grant_packages` — grouped grant packages
+- `grant_package_members` — grant package membership
 - `pending_consents` — awaiting user signature/approval
 - `owner_device_auth` — device enrollment state for local exporters
+- `web_push_subscriptions` — owner notification subscriptions
 - `device_exporters` — remote ingest device registrations
 - `device_ingest_credentials` — short-lived device tokens
 - `device_enrollment_codes` — one-time codes for device bootstrap
@@ -423,16 +440,38 @@ All owner/grant/connector/ingest/scheduling/runtime state:
 - `source_webhook_run_receipts` — durable source-event-to-run handles; retain this table in every backup and restore so a replay cannot admit a second run
 - `connector_state` — per-connector key-value store (durable config, cursor)
 - `grant_connector_state` — per-grant connector runtime state
+- `connector_detail_gaps` — durable pending detail-gap recovery state
+- `connector_attention_records` — durable owner attention and notification state
 - `connector_schedules` — scheduled run timing
 - `controller_active_runs` — in-flight connector runs (if persistent across restarts)
-- `scheduler_run_history` — job queue history and statistics
+- `browser_surfaces` — managed browser surface inventory
+- `presentation_screen_states` — presentation restore obligations
+- `browser_surface_leases` — durable browser surface lease state
+- `browser_surface_replacement_receipts` — browser surface replacement audit receipts
+- `browser_surface_replacement_selection_overrides` — reviewed replacement selector overrides
+- `browser_surface_replacement_selection_override_batches` — selector override batch metadata
+- `browser_surface_replacement_selection_override_audit_outbox` — selector override audit outbox
+- `run_history` — job queue history and statistics
 - `scheduler_last_run_times` — scheduler checkpoints for resumption
-- `version_counter` — global migration/schema versioning
-- `blobs` — raw ingested data (PII, structured records)
-- `blob_bindings` — record→blob relationships
 - `records` — user-facing data (derived from blobs via connectors)
 - `record_changes` — change log for audit and replication
+- `version_counter` — global migration/schema versioning
+- `blobs` — raw ingested data (PII, structured records)
+- `blob_bindings` — record-to-blob relationships
 - `spine_events` — event sourcing backbone (optional; depends on PDPP profile)
+- `retained_size_global` — retained-size global projection rows
+- `retained_size_connection` — retained-size connection projection rows
+- `retained_size_stream` — retained-size stream projection rows
+- `retained_size_record_family` — retained-size record-family projection rows
+- `retained_size_top_rows` — retained-size ranked rows
+- `connector_summary_evidence` — durable connector summary evidence
+- `connector_maintenance_cursor` — bounded maintenance sweep cursors
+- `manifest_write_violations` — exact manifest-generation rejected-write provenance
+- `search_index_dirty` — same-transaction dirty markers for search-index repair
+- `client_event_subscriptions` — client event subscription state
+- `client_event_queue` — queued client events
+- `client_event_attempts` — client event delivery attempts
+- `provider_app_config` — provider app configuration
 
 ### Rebuilt tables (7 derived, not migrated)
 
