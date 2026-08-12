@@ -45,7 +45,10 @@ import {
   type RecoveredStaticSecret,
   STATIC_SECRET_CONNECTOR_REGISTRY,
 } from "../../packages/polyfill-connectors/src/static-secret-injection.ts";
-import { composeConnectorChildEnvironment } from "../runtime/connector-child-environment.ts";
+import {
+  type ConnectorConnectionEnvironment,
+  composeConnectorChildEnvironment,
+} from "../runtime/connector-child-environment.ts";
 import { runConnector } from "../runtime/index.ts";
 import { createScheduler } from "../runtime/scheduler.ts";
 import type { RunRecord } from "../runtime/scheduler-domain-types.ts";
@@ -191,7 +194,6 @@ test("connector platform env keeps cross-host execution inputs without ambient s
       APPDATA: "C:\\Users\\pdpp\\AppData\\Roaming",
       ComSpec: "C:\\Windows\\System32\\cmd.exe",
       HOME: "/home/pdpp",
-      HTTPS_PROXY: "http://proxy.internal:8080",
       LOCALAPPDATA: "C:\\Users\\pdpp\\AppData\\Local",
       PATHEXT: ".COM;.EXE;.BAT;.CMD",
       Path: "C:\\PDPP\\bin;C:\\Windows\\System32",
@@ -215,7 +217,6 @@ test("connector platform env keeps cross-host execution inputs without ambient s
       APPDATA: "C:\\Users\\pdpp\\AppData\\Roaming",
       ComSpec: "C:\\Windows\\System32\\cmd.exe",
       HOME: "/home/pdpp",
-      HTTPS_PROXY: "http://proxy.internal:8080",
       LOCALAPPDATA: "C:\\Users\\pdpp\\AppData\\Local",
       PATHEXT: ".COM;.EXE;.BAT;.CMD",
       Path: "C:\\PDPP\\bin;C:\\Windows\\System32",
@@ -249,7 +250,10 @@ test("connector fragments reject platform and run controls in every casing", () 
   for (const name of ["PATH", "PDPP_OWNER_TOKEN", "PDPP_RS_URL", "PDPP_CONNECTOR_ID"]) {
     for (const variant of [name, name.toLowerCase(), `${name.slice(0, 1)}${name.slice(1).toLowerCase()}`]) {
       const env = composeConnectorChildEnvironment({
-        connectionEnv: { [variant]: "must-not-cross", CONNECTION_SECRET: "allowed" },
+        connectionEnv: {
+          kind: "connection",
+          values: { [variant]: "must-not-cross", CONNECTION_SECRET: "allowed" },
+        } satisfies ConnectorConnectionEnvironment,
         explicitRunEnv: {},
         manifest: {},
         platform: "linux",

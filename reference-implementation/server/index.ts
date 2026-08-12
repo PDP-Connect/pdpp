@@ -58,6 +58,10 @@ import {
   createDefaultBrowserSurfaceReadinessProbe,
 } from "../runtime/browser-surface-readiness.ts";
 import {
+  type ConnectorEnvironmentPolicy,
+  parseConnectorEnvironmentPolicy,
+} from "../runtime/connector-child-environment.ts";
+import {
   type ConnectorManifest,
   type Controller,
   createController,
@@ -651,6 +655,8 @@ interface ServerOpts {
   clientEventSubscriptionsCapability?: unknown;
   clientEventSubscriptionsSupported?: boolean;
   configuredProviderAuthConnectorKeys?: readonly string[];
+  /** Operator-owned connector child environment policy; defaults to the JSON env contract. */
+  connectorEnvironmentPolicy?: ConnectorEnvironmentPolicy | null;
   connectorInstanceId?: string;
   connectorPathResolver?: ((connectorId: string, manifest?: ConnectorManifest) => string | null) | null;
   controller?: Controller | null;
@@ -2246,6 +2252,43 @@ function publicClientMetadataForAuthorizationServer(clients: Record<string, unkn
       };
     })
     .filter(Boolean);
+}
+
+export function resolveConnectorEnvironmentPolicy(
+  opts: { connectorEnvironmentPolicy?: unknown } = {}
+): ConnectorEnvironmentPolicy {
+  if (opts.connectorEnvironmentPolicy !== undefined) {
+    const policy = opts.connectorEnvironmentPolicy;
+    if (typeof policy === "string" || policy === null) {
+      return parseConnectorEnvironmentPolicy(policy, "connectorEnvironmentPolicy");
+    }
+    if (policy && typeof policy === "object" && "approvedBindings" in policy && "approvedProxyConnectorIds" in policy) {
+      const typedPolicy = policy as ConnectorEnvironmentPolicy;
+      if (!(Array.isArray(typedPolicy.approvedBindings) && Array.isArray(typedPolicy.approvedProxyConnectorIds))) {
+        throw new Error("connectorEnvironmentPolicy.approvedBindings and approvedProxyConnectorIds must be arrays");
+      }
+      return parseConnectorEnvironmentPolicy(
+        {
+          bindings: typedPolicy.approvedBindings.map((binding) => ({
+            connector_id: binding.connectorId,
+            logical_key: binding.logicalKey,
+            source: binding.source,
+            target_key: binding.targetKey,
+          })),
+          proxy_connector_ids: typedPolicy.approvedProxyConnectorIds,
+        },
+        "connectorEnvironmentPolicy"
+      );
+    }
+    return parseConnectorEnvironmentPolicy(policy, "connectorEnvironmentPolicy");
+  }
+  if (process.env.NODE_TEST_CONTEXT) {
+    return parseConnectorEnvironmentPolicy(undefined);
+  }
+  return parseConnectorEnvironmentPolicy(
+    process.env.PDPP_CONNECTOR_ENVIRONMENT_POLICY,
+    "PDPP_CONNECTOR_ENVIRONMENT_POLICY"
+  );
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
@@ -6326,6 +6369,7 @@ function buildRsApp(opts: ServerOpts = {}) {
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 export async function startServer(opts: ServerOpts = {}) {
   const logger = opts.logger ?? buildLogger({ quiet: !!opts.quiet });
+  const connectorEnvironmentPolicy = resolveConnectorEnvironmentPolicy(opts);
   setConnectorSummaryReconcileObservationSink(createConnectorSummaryReconcileObservationSink(logger));
   const nativeConfig = validateNativeConfiguration(opts);
   const storageBackend = (resolveStorageBackend as (...args: unknown[]) => { backend: string; databaseUrl?: string })({
@@ -6610,6 +6654,12 @@ export async function startServer(opts: ServerOpts = {}) {
   } = { invoke: null, releaseLease: null };
   const controller = createController({
     ...(configuredAsPublicUrl === null ? {} : { asPublicUrl: configuredAsPublicUrl }),
+    ...(connectorEnvironmentPolicy.approvedBindings.length > 0
+      ? { approvedEnvironmentBindings: connectorEnvironmentPolicy.approvedBindings }
+      : {}),
+    ...(connectorEnvironmentPolicy.approvedProxyConnectorIds.length > 0
+      ? { approvedProxyConnectorIds: connectorEnvironmentPolicy.approvedProxyConnectorIds }
+      : {}),
     admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId, runAdmission }) => {
       const namespace =
         runAdmission === "browser_enrollment"
@@ -7015,6 +7065,7 @@ export async function startServer(opts: ServerOpts = {}) {
   }
 
   schedulerManager = createReferenceSchedulerManager({
+    connectorEnvironmentPolicy,
     connectorPathResolver: opts.connectorPathResolver || resolveDefaultConnectorPath,
     controller,
     logger,
@@ -7452,6 +7503,7 @@ export function isManagedNekoSurfaceApproved(
 
 function createReferenceSchedulerManager({
   controller,
+  connectorEnvironmentPolicy,
   logger,
   runtimeContext,
   schedulerStore = getDefaultSchedulerStore(),
@@ -7461,6 +7513,7 @@ function createReferenceSchedulerManager({
   webPushSubscriptionStore = createWebPushSubscriptionStore(),
 }: {
   controller: Controller;
+  connectorEnvironmentPolicy?: ConnectorEnvironmentPolicy;
   logger: LoggerLike;
   runtimeContext: { rsUrl: string | null; referenceBaseUrl: string | null };
   schedulerStore?: SchedulerStore;
@@ -7633,6 +7686,12 @@ function createReferenceSchedulerManager({
       : null;
     scheduler = createScheduler({
       connectors,
+      ...(connectorEnvironmentPolicy?.approvedBindings.length
+        ? { approvedEnvironmentBindings: connectorEnvironmentPolicy.approvedBindings }
+        : {}),
+      ...(connectorEnvironmentPolicy?.approvedProxyConnectorIds.length
+        ? { approvedProxyConnectorIds: connectorEnvironmentPolicy.approvedProxyConnectorIds }
+        : {}),
       ...(runtimeContext.rsUrl === null ? {} : { rsUrl: runtimeContext.rsUrl }),
       ...(runtimeContext.referenceBaseUrl === null ? {} : { referenceBaseUrl: runtimeContext.referenceBaseUrl }),
       admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId: admittedOwnerSubjectId }) => {

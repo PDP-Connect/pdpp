@@ -24,7 +24,11 @@ import {
 import type { AttentionWriterOptions } from "./attention-writer.ts";
 import { createAttentionWriter } from "./attention-writer.ts";
 import { classifyRuntimeFailure } from "./classify-runtime-failure.ts";
-import { type ConnectorEnvironmentBinding, composeConnectorChildEnvironment } from "./connector-child-environment.ts";
+import {
+  type ConnectorConnectionEnvironment,
+  type ConnectorEnvironmentBinding,
+  composeConnectorChildEnvironment,
+} from "./connector-child-environment.ts";
 import {
   boundConnectorErrorMessage,
   boundConsideredCount,
@@ -396,6 +400,8 @@ export interface RuntimeRunConnectorOptions {
   }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>;
   /** Operator-owned logical connector-input bindings. */
   approvedEnvironmentBindings?: readonly ConnectorEnvironmentBinding[];
+  /** Operator-authorized connector IDs that may receive ambient proxy aliases. */
+  approvedProxyConnectorIds?: readonly string[];
   automationMode?: RuntimeRunAutomationMode | null;
   /**
    * Explicit browser-surface child env override for tests and integration
@@ -1874,6 +1880,7 @@ function reportRuntimeStart(
   }
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This runtime launch boundary owns ordered admission, child-env policy, stream validation, and terminalization invariants that must remain together.
 export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<RuntimeRunConnectorResult> {
   const defaultOnProgress =
     process.env.PDPP_RUNTIME_QUIET === "1"
@@ -1884,6 +1891,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   const {
     admitRunConnection,
     approvedEnvironmentBindings,
+    approvedProxyConnectorIds,
     connectorPath,
     connectorId: rawConnectorId,
     connectorInstanceId = null,
@@ -2032,7 +2040,9 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     detached: true,
     env: composeConnectorChildEnvironment({
       ...(approvedEnvironmentBindings ? { approvedBindings: approvedEnvironmentBindings } : {}),
-      connectionEnv: staticSecretLaunchEnv,
+      approvedProxyConnectorIds: approvedProxyConnectorIds ?? [],
+      connectionEnv: { kind: "connection", values: staticSecretLaunchEnv } satisfies ConnectorConnectionEnvironment,
+      connectorId,
       explicitRunEnv: {
         PDPP_CONNECTOR_ID: connectorId,
         ...connectorInstanceEnv,

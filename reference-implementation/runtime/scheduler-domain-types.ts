@@ -353,6 +353,8 @@ export interface SchedulerOptions {
   }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>;
   /** Operator-owned logical connector-input bindings for direct scheduled runs. */
   approvedEnvironmentBindings?: readonly ConnectorEnvironmentBinding[];
+  /** Operator-authorized connector IDs that may receive ambient proxy aliases. */
+  approvedProxyConnectorIds?: readonly string[];
   connectors: readonly ConnectorSchedule[];
   /**
    * Deadline on `executeRun`'s pre-run gate (`readinessChecker`/`getState`),

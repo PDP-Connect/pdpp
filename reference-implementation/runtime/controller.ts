@@ -420,6 +420,8 @@ export interface ControllerOptions {
   }) => Promise<{ connectorId: string; connectorInstanceId: string }>;
   /** Operator-owned logical connector-input bindings for manual runs. */
   approvedEnvironmentBindings?: readonly ConnectorEnvironmentBinding[];
+  /** Operator-authorized connector IDs that may receive ambient proxy aliases. */
+  approvedProxyConnectorIds?: readonly string[];
   asPublicUrl?: string;
   /** Awaited before a managed surface lease becomes reusable after run cleanup. */
   beforeBrowserSurfaceLeaseRelease?: (args: { readonly runId: string }) => Promise<void> | void;
@@ -3684,6 +3686,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           ...(opts.approvedEnvironmentBindings
             ? { approvedEnvironmentBindings: opts.approvedEnvironmentBindings }
             : {}),
+          ...(opts.approvedProxyConnectorIds ? { approvedProxyConnectorIds: opts.approvedProxyConnectorIds } : {}),
           connectorInstanceId,
           connectorPath,
           manifest,
