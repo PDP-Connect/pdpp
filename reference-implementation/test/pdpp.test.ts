@@ -7897,11 +7897,15 @@ test("PDPP reference implementation integration", async (t) => {
       assert.deepEqual((metadataBody.schema.required || []).sort(), ["id", "name"]);
       // biome-ignore lint/suspicious/noUnnecessaryConditions: Runtime guard protects an untyped external/test boundary.
       assert.deepEqual((metadataBody.views || []).map((view) => view.id).sort(), ["basic", "full"]);
-      assert.equal(metadataBody.field_capabilities.id?.granted, true);
-      assert.equal(metadataBody.field_capabilities.name?.granted, true);
-      assert.equal(metadataBody.field_capabilities.genres?.granted, true);
-      assert.equal(metadataBody.field_capabilities.popularity?.granted, false);
-      assert.deepEqual(metadataBody.field_capabilities.popularity?.exact_filter, {
+      const fieldCapabilities = metadataBody.field_capabilities as Record<
+        "genres" | "id" | "name" | "popularity",
+        { exact_filter?: unknown; granted?: boolean }
+      >;
+      assert.equal(fieldCapabilities.id.granted, true);
+      assert.equal(fieldCapabilities.name.granted, true);
+      assert.equal(fieldCapabilities.genres.granted, true);
+      assert.equal(fieldCapabilities.popularity.granted, false);
+      assert.deepEqual(fieldCapabilities.popularity.exact_filter, {
         declared: true,
         reason: "field_not_granted",
         usable: false,
