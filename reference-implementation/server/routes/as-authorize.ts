@@ -65,6 +65,11 @@ interface AppLike {
   post: (path: string, ...args: RouteArg<RouteHandler | MiddlewareHandler>[]) => AppLike;
 }
 
+const OAUTH_AUTHORIZATION_ERROR_CODES: Readonly<Record<string, string>> = {
+  "source.authorization_details_invalid": "invalid_authorization_details",
+  undefined: "invalid_request",
+};
+
 // Shape expected by requireRegisteredRedirectUri (mirrors as-consent-ui-helpers.ts internal type).
 interface OAuthClient {
   readonly metadata?: { redirect_uris?: string[] } | null;
@@ -640,7 +645,7 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
         );
       }
 
-      return initiateGrantAndRedirect(
+      return await initiateGrantAndRedirect(
         res,
         authorizationDetails,
         selectedConnectorId,
@@ -649,10 +654,11 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
         req
       );
     } catch (err) {
+      const errorCode = (err as { code?: string }).code;
       return ctx.oauthError(
         res,
         400,
-        (err as { code?: string }).code || "invalid_request",
+        OAUTH_AUTHORIZATION_ERROR_CODES[String(errorCode)] ?? String(errorCode),
         (err as Error).message || "Authorization request rejected"
       );
     }

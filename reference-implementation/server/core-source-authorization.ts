@@ -511,13 +511,19 @@ export function materializeCoreResolvedGrant({
     subject: { id: subjectId },
     version: "0.1.0" as const,
   };
+  return parseCoreResolvedGrant(candidate);
+}
+
+/** Parse the closed Source resolved-grant contract used by every binding. */
+export function parseCoreResolvedGrant(value: unknown): ResolvedGrant {
+  const candidate = cloneJson(value);
   if (!validateResolvedGrantSchema(candidate)) {
     const details = (validateResolvedGrantSchema.errors ?? [])
       .map((error) => `${error.instancePath || "/"} ${error.message || "is invalid"}`)
       .join("; ");
     fail(`Resolved grant is invalid: ${details}`);
   }
-  const grant = candidate as unknown as ResolvedGrant;
+  const grant = candidate as ResolvedGrant;
   const semantic = validateResolvedGrantSemantics(grant);
   if (!semantic.ok) {
     fail(`Resolved grant semantics are invalid: ${semantic.failures.map((item) => item.code).join(", ")}`);

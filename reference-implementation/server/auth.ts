@@ -16,7 +16,6 @@ import {
   BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
   BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
   ResolvedGrantSchema,
-  SelectionRequestSchema,
   validateResponse,
 } from "@pdpp/reference-contract";
 import {
@@ -47,6 +46,7 @@ import {
   projectResolvedCoreGrantStreams as coreProjectResolvedGrantStreams,
   readRetainedCoreConsentSnapshot,
   resolveCoreEligibleInstanceIds,
+  validateCoreSelectionRequest,
 } from "./core-source-authorization.ts";
 import { getDb, runWithSqliteBusyRetry } from "./db.ts";
 import {
@@ -58,6 +58,7 @@ import {
   SUPPORTED_AUTHORIZATION_CODE_CHALLENGE_METHODS,
 } from "./oauth-substrate/primitives.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "./postgres-storage.ts";
+import { buildGrantedAuthorizationDetail } from "./source-approved-authorization.ts";
 import { snapshotSourceDeclaration } from "./source-declaration.ts";
 import { snapshotContentAddressedSourceDeclarationFromLegacyConnectorManifest } from "./source-declaration-legacy-collection.ts";
 import {
@@ -820,17 +821,6 @@ const SUPPORTED_PENDING_REQUEST_FIELDS = new Set([
   "parent_package_id",
   "scenario_id",
 ]);
-const SUPPORTED_AUTHORIZATION_DETAIL_FIELDS = new Set([
-  "access_mode",
-  "client_claims",
-  "purpose_code",
-  "purpose_description",
-  "retention",
-  "selection_preset",
-  "source",
-  "streams",
-  "type",
-]);
 const SUPPORTED_STREAM_SELECTION_FIELDS = new Set([
   "fields",
   "instance_ids",
@@ -852,7 +842,6 @@ const SUPPORTED_NORMALIZED_PENDING_REQUEST_FIELDS = new Set([
   "trace_context",
 ]);
 const SUPPORTED_PENDING_CLIENT_FIELDS = new Set(["client_display", "client_id", "registration_mode"]);
-const SUPPORTED_ACCESS_MODES = new Set(["single_use", "continuous"]);
 const SUPPORTED_PENDING_SELECTION_FIELDS = new Set([
   "access_mode",
   "client_claims",
@@ -888,7 +877,6 @@ const ContractAjv2020 = requireFromReferenceContract("ajv/dist/2020.js") as new 
 const addContractFormats = requireFromReferenceContract("ajv-formats") as (ajv: ContractAjv) => void;
 const contractAjv = new ContractAjv2020({ allErrors: true, strict: false });
 addContractFormats(contractAjv);
-const validateSelectionRequestContract = contractAjv.compile(SelectionRequestSchema);
 const validateResolvedGrantContract = contractAjv.compile(ResolvedGrantSchema);
 
 function contractValidationMessage(validator: ContractSchemaValidator): string {
@@ -1483,7 +1471,7 @@ function applyRegisteredClientToPendingRequestClient(
   });
 }
 
-function normalizeStreamSelection(stream: Record<string, unknown>): RawStreamSelection {
+function normalizeStreamSelection(stream: RawStreamSelection): RawStreamSelection {
   return {
     fields: Array.isArray(stream.fields) ? stream.fields : undefined,
     instance_ids: Array.isArray(stream.instance_ids) ? stream.instance_ids : undefined,
@@ -1554,63 +1542,18 @@ function isAbsoluteUriPurposeCode(value: unknown): boolean {
 interface AuthorizationDetailInput extends Record<string, unknown> {
   access_mode: string;
   selection_preset?: string;
-  streams?: Record<string, unknown>[];
+  streams?: RawStreamSelection[];
 }
 
-function requireAuthorizationDetailInput(detail: unknown, index: number): AuthorizationDetailInput {
-  const at = `authorization_details[${index}]`;
-  if (!isRecord(detail)) {
-    throw bindingError("invalid_request", "Unsupported authorization_details type");
-  }
-  if (detail.type !== "https://pdpp.dev/data-access") {
-    invalidGrantInitiationRequest("Unsupported authorization_details type");
-  }
-  if ("connector_id" in detail || "provider_id" in detail) {
-    invalidGrantInitiationRequest(
-      "authorization_details must use source: { id, kind?: 'connector' | 'provider_native' }"
-    );
-  }
-  const unsupportedDetailFields = Object.keys(detail).filter(
-    (field) => !SUPPORTED_AUTHORIZATION_DETAIL_FIELDS.has(field)
-  );
-  if (unsupportedDetailFields.length) {
-    invalidGrantInitiationRequest(`Unsupported authorization_details fields: ${unsupportedDetailFields.join(", ")}`);
-  }
-  if (!validateSelectionRequestContract(detail)) {
-    invalidGrantInitiationRequest(`${at} is invalid: ${contractValidationMessage(validateSelectionRequestContract)}`);
-  }
-  const hasStreams = Array.isArray(detail.streams) && detail.streams.length > 0;
-  const hasPreset = isNonEmptyString(detail.selection_preset);
-  if (hasStreams === hasPreset) {
-    throw bindingError("invalid_request", `${at} must include exactly one of streams or selection_preset`);
-  }
-  if (typeof detail.access_mode !== "string" || !SUPPORTED_ACCESS_MODES.has(detail.access_mode)) {
-    throw bindingError("invalid_request", `${at}.access_mode must be "single_use" or "continuous"`);
-  }
-  // The schema requires an absolute URI but does not restrict it to a registry.
-  if (!isAbsoluteUriPurposeCode(detail.purpose_code)) {
-    invalidGrantInitiationRequest(`${at}.purpose_code must be a syntactically valid absolute URI`);
-  }
-  const streams: Record<string, unknown>[] = [];
-  const requestedStreams = Array.isArray(detail.streams) ? detail.streams : [];
-  for (const stream of requestedStreams) {
-    if (!isRecord(stream)) {
-      invalidGrantInitiationRequest(`${at}.streams entries must be objects`);
-    }
-    const unsupportedStreamFields = Object.keys(stream).filter(
-      (field) => !SUPPORTED_STREAM_SELECTION_FIELDS.has(field)
-    );
-    if (unsupportedStreamFields.length) {
-      invalidGrantInitiationRequest(
-        `Unsupported stream selection fields on '${stream.name || "unknown"}': ${unsupportedStreamFields.join(", ")}`
-      );
-    }
-    streams.push(stream);
-  }
+function requireAuthorizationDetailInput(detail: unknown, _index: number): AuthorizationDetailInput {
+  const validated = validateCoreSelectionRequest(detail);
+  const hasPreset = isNonEmptyString(validated.selection_preset);
   return {
-    ...detail,
-    access_mode: detail.access_mode,
-    ...(hasPreset ? { selection_preset: detail.selection_preset as string } : { streams }),
+    ...validated,
+    access_mode: validated.access_mode,
+    ...(hasPreset
+      ? { selection_preset: validated.selection_preset as string }
+      : { streams: (validated.streams ?? []).map((stream) => ({ ...stream })) }),
   };
 }
 
@@ -5869,7 +5812,8 @@ function narrowResolvedSelectionForSource(
   baselineResolved: StreamSelection[],
   narrowing: Record<string, unknown> | null | undefined,
   sourceLabel: string,
-  declaration: DbRow
+  declaration: DbRow,
+  requiredStreamNames: readonly string[] = []
 ): StreamSelection[] {
   const baseline = Array.isArray(baselineResolved) ? baselineResolved : [];
   if (!narrowingHasAnyDirective(narrowing)) {
@@ -5877,6 +5821,13 @@ function narrowResolvedSelectionForSource(
   }
   const baselineByName = new Map(baseline.map((stream) => [stream.name, stream]));
   const keptNames = resolveKeptStreamNames(baseline, narrowing.streams, baselineByName, sourceLabel);
+  const droppedRequired = requiredStreamNames.filter((name) => !keptNames.includes(name));
+  if (droppedRequired.length > 0) {
+    throw bindingError(
+      "invalid_request",
+      `Cannot drop required streams for '${sourceLabel}': ${droppedRequired.join(", ")}`
+    );
+  }
   const fieldsNarrowing = isRecord(narrowing.fields) ? narrowing.fields : {};
   const sinceNarrowing = isRecord(narrowing.since) ? narrowing.since : {};
   requireNarrowingTargetsKept(keptNames, [fieldsNarrowing, sinceNarrowing], sourceLabel);
@@ -6929,7 +6880,25 @@ export async function approveGrant(
     ({ sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(request));
     request.source_binding = describeSourceBinding(sourceBinding);
     request.storage_binding = normalizeStorageBinding(storageBinding);
-    resolvedStreams = await resolvePendingRequestForApproval(request, sourceBinding, storageBinding, subjectId);
+    const baselineStreams = resolvePendingRequestAgainstSnapshot(request);
+    const retainedDeclaration = readRetainedSourceDeclarationSnapshot(request).declaration;
+    const singleSourceNarrowing = isRecord(opts.sourceNarrowing?.["0"]) ? opts.sourceNarrowing["0"] : null;
+    const requiredStreamNames = (request.selection.streams ?? [])
+      .filter((stream) => stream.necessity !== "optional" && isNonEmptyString(stream.name) && stream.name !== "*")
+      .map((stream) => stream.name as string);
+    const narrowedStreams = narrowResolvedSelectionForSource(
+      baselineStreams,
+      singleSourceNarrowing,
+      sourceBinding.id,
+      retainedDeclaration,
+      requiredStreamNames
+    );
+    resolvedStreams = await resolveSnapshotStreamsForApproval(
+      narrowedStreams,
+      sourceBinding,
+      storageBinding,
+      subjectId
+    );
   } catch (err: unknown) {
     if (!isAuthError(err)) {
       throw err;
@@ -8941,18 +8910,9 @@ function requireRedeemableOAuthAuthorizationCode(
 async function addOAuthRefreshTokenToAuthorizationResponse(
   response: Record<string, unknown>,
   row: OAuthIssuedCodeRow,
-  clientId: string
+  clientId: string,
+  tokenInfo: TokenIntrospectionResult & { subject_id: string }
 ): Promise<void> {
-  const tokenInfo = await introspect(row.token_id);
-  const tokenMatches = row.package_id
-    ? tokenInfo.grant_package_id === row.package_id && tokenInfo.pdpp_token_kind === "mcp_package"
-    : tokenInfo.grant_id === row.grant_id && tokenInfo.pdpp_token_kind === "client";
-  if (!tokenInfo.active || tokenInfo.client_id !== clientId || !tokenMatches) {
-    throw buildOAuthAuthorizationCodeError("invalid_grant", "Issued grant token is no longer active");
-  }
-  if (!isNonEmptyString(tokenInfo.subject_id)) {
-    throw buildOAuthAuthorizationCodeError("invalid_grant", "Issued grant token is missing its subject binding");
-  }
   const expiresAt = typeof tokenInfo.exp === "number" ? new Date(tokenInfo.exp * 1000).toISOString() : null;
   if (isNonEmptyString(row.package_id)) {
     response.refresh_token = await issueOAuthRefreshTokenForPackage({
@@ -8972,6 +8932,23 @@ async function addOAuthRefreshTokenToAuthorizationResponse(
     grantId: row.grant_id,
     subjectId: tokenInfo.subject_id,
   });
+}
+
+async function requireOAuthAuthorizationCodeTokenInfo(
+  row: OAuthIssuedCodeRow,
+  clientId: string
+): Promise<TokenIntrospectionResult & { subject_id: string }> {
+  const tokenInfo = await introspect(row.token_id);
+  const tokenMatches = row.package_id
+    ? tokenInfo.grant_package_id === row.package_id && tokenInfo.pdpp_token_kind === "mcp_package"
+    : tokenInfo.grant_id === row.grant_id && tokenInfo.pdpp_token_kind === "client";
+  if (!tokenInfo.active || tokenInfo.client_id !== clientId || !tokenMatches) {
+    throw buildOAuthAuthorizationCodeError("invalid_grant", "Issued grant token is no longer active");
+  }
+  if (!isNonEmptyString(tokenInfo.subject_id)) {
+    throw buildOAuthAuthorizationCodeError("invalid_grant", "Issued grant token is missing its subject binding");
+  }
+  return tokenInfo as TokenIntrospectionResult & { subject_id: string };
 }
 
 export async function exchangeOAuthAuthorizationCode({
@@ -9018,8 +8995,12 @@ export async function exchangeOAuthAuthorizationCode({
     ...(row.package_id ? { grant_package_id: row.package_id } : { grant_id: row.grant_id }),
   };
 
+  const tokenInfo = await requireOAuthAuthorizationCodeTokenInfo(row, normalized.clientId);
+  if (row.grant_id) {
+    response.authorization_details = [buildGrantedAuthorizationDetail(tokenInfo.grant)];
+  }
   if (clientSupportsOAuthRefreshToken(registeredClient)) {
-    await addOAuthRefreshTokenToAuthorizationResponse(response, row, normalized.clientId);
+    await addOAuthRefreshTokenToAuthorizationResponse(response, row, normalized.clientId, tokenInfo);
   }
 
   return response;

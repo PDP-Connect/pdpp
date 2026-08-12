@@ -249,6 +249,7 @@ export interface MountAsTokenContext {
     codeVerifier: unknown;
   }) => Promise<{
     access_token: string;
+    authorization_details?: unknown[];
     token_type: string;
     refresh_token?: string | null;
     grant_id?: string | null;
@@ -294,6 +295,7 @@ async function handleAuthCodeExchange(
     });
     return res.json({
       access_token: token.access_token,
+      ...(token.authorization_details ? { authorization_details: token.authorization_details } : {}),
       expires_in: HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS,
       token_type: token.token_type,
       ...(token.refresh_token ? { refresh_token: token.refresh_token } : {}),

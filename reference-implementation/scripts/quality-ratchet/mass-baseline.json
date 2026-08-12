@@ -68,7 +68,7 @@
     "server/connector-summary-read-model.ts": 102,
     "server/connector-summary-reconcile-observability.ts": 13,
     "server/contract-validation.ts": 4,
-    "server/core-source-authorization.ts": 33,
+    "server/core-source-authorization.ts": 32,
     "server/dataset-summary-read-model.ts": 56,
     "server/db-sqlite-busy-retry.ts": 31,
     "server/db.ts": 112,
@@ -200,9 +200,10 @@
     "server/streaming/run-target-registry.ts": 1,
     "server/transport.ts": 77,
     "server/version-disposition.ts": 6,
-    "server/web-push-notifications.ts": 11
+    "server/web-push-notifications.ts": 11,
+    "server/source-approved-authorization.ts": 30
   },
-  "total": 7308,
+  "total": 7307,
   "meta": {
     "biomeVersion": "2.5.7",
     "maxAllowedComplexity": 5
