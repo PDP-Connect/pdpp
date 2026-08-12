@@ -47,8 +47,6 @@ const httpGovernor = createConnectorHttpGovernor({
   maxAttempts: 1,
   profile: spotifyPacingProfile(),
 });
-const MAX_PAGES = 200;
-
 interface ProgressExtra {
   cursor_present?: boolean;
   item_count?: number;
@@ -223,43 +221,56 @@ async function sp<T>(
   return JSON.parse(raw.body) as T;
 }
 
-async function paginate<T>(
+async function paginate<T, Accumulator extends PaginationTally>(
   path: string,
   token: string,
   progress: (message: string, extra?: ProgressExtra) => Promise<void>,
-  stream: string
-): Promise<T[]> {
-  const all: T[] = [];
+  stream: string,
+  initial: Accumulator,
+  fold: (accumulator: Accumulator, item: T) => Promise<Accumulator> | Accumulator
+): Promise<Accumulator> {
+  let accumulator = initial;
   let next: string | null = path;
   let pageIndex = 0;
+  const seenPaths = new Set<string>([path]);
   while (next) {
-    if (pageIndex >= MAX_PAGES) {
-      throw new Error(`spotify_pagination_max_pages_exceeded: ${String(MAX_PAGES)}`);
-    }
     const pageExtra = {
       stream,
       phase: "fetch",
       page_index: pageIndex,
       offset_ordinal: pageIndex,
-      total_seen: all.length,
+      total_seen: accumulator.totalSeen,
       cursor_present: pageIndex > 0,
     };
     await progress("Fetching Spotify page", pageExtra);
     const json = parseSpotifyPage<T>(await sp<unknown>(next, token, progress, pageExtra));
-    all.push(...json.items);
+    for (const item of json.items) {
+      accumulator = await fold(accumulator, item);
+    }
     await progress("Fetched Spotify page", {
       stream,
       phase: "page",
       page_index: pageIndex,
       offset_ordinal: pageIndex,
       item_count: json.items.length,
-      total_seen: all.length,
+      total_seen: accumulator.totalSeen,
       cursor_present: Boolean(json.next),
     });
     next = spotifyNextPath(json.next, next);
+    if (next !== null) {
+      if (seenPaths.has(next)) {
+        throw new Error("spotify_pagination_cycle");
+      }
+      seenPaths.add(next);
+    }
     pageIndex += 1;
   }
-  return all;
+  return accumulator;
+}
+
+interface PaginationTally {
+  covered: number;
+  totalSeen: number;
 }
 
 async function collectPlaylists(
@@ -269,15 +280,19 @@ async function collectPlaylists(
   progress: (message: string, extra?: ProgressExtra) => Promise<void>
 ): Promise<void> {
   await progress("Fetching playlists", { stream: "playlists", phase: "start" });
-  const items = await paginate<SpotifyPlaylist>("/me/playlists?limit=50", token, progress, "playlists");
-  let covered = 0;
-  for (const p of items) {
-    const record = spotifyPlaylistRecord(p);
-    if (validateRecord("playlists", record).ok) {
-      covered += 1;
+  const tally = await paginate<SpotifyPlaylist, PaginationTally>(
+    "/me/playlists?limit=50",
+    token,
+    progress,
+    "playlists",
+    { totalSeen: 0, covered: 0 },
+    async (current, p) => {
+      const record = spotifyPlaylistRecord(p);
+      const covered = current.covered + (validateRecord("playlists", record).ok ? 1 : 0);
+      await emitRecord("playlists", record);
+      return { totalSeen: current.totalSeen + 1, covered };
     }
-    await emitRecord("playlists", record);
-  }
+  );
   // `playlists` is a full_inventory list with no drop/filter path: the page
   // scan enumerates every playlist, so considered === covered === the exact
   // count fetched, every run (including a genuine zero-playlist account).
@@ -288,8 +303,8 @@ async function collectPlaylists(
       stateStream: "playlists",
       requiredKeys: [],
       hydratedKeys: [],
-      considered: items.length,
-      covered,
+      considered: tally.totalSeen,
+      covered: tally.covered,
     }
   );
 }
@@ -306,42 +321,43 @@ async function collectSavedTracks(
   progress: (message: string, extra?: ProgressExtra) => Promise<void>
 ): Promise<void> {
   await progress("Fetching saved tracks", { stream: "saved_tracks", phase: "start" });
-  const items = await paginate<SpotifySavedTrack>("/me/tracks?limit=50", token, progress, "saved_tracks");
   const savedState = state.saved_tracks as SavedTracksState | undefined;
-  let latest: string | undefined = savedState?.last_added_at;
-  let covered = 0;
-  for (const item of items) {
-    const t = item.track;
-    if (!t) {
-      continue;
+  const tally = await paginate<SpotifySavedTrack, PaginationTally & { latest: string | undefined }>(
+    "/me/tracks?limit=50",
+    token,
+    progress,
+    "saved_tracks",
+    { totalSeen: 0, covered: 0, latest: savedState?.last_added_at },
+    async (current, item) => {
+      const t = item.track;
+      if (!t) {
+        return { ...current, totalSeen: current.totalSeen + 1 };
+      }
+      const addedAt = item.added_at;
+      const record = {
+        id: t.id ?? null,
+        name: t.name,
+        artist_names: (t.artists || []).map((a) => a.name),
+        album_name: t.album?.name ?? null,
+        duration_ms: t.duration_ms ?? null,
+        popularity: t.popularity ?? null,
+        added_at: addedAt,
+        isrc: t.external_ids?.isrc ?? null,
+      };
+      const recordValid = validateRecord("saved_tracks", record).ok;
+      const covered = current.covered + (recordValid ? 1 : 0);
+      if (savedState?.last_added_at && addedAt < savedState.last_added_at) {
+        return { ...current, totalSeen: current.totalSeen + 1, covered };
+      }
+      await emitRecord("saved_tracks", record);
+      const latest = recordValid && addedAt && (!current.latest || addedAt > current.latest) ? addedAt : current.latest;
+      return { totalSeen: current.totalSeen + 1, covered, latest };
     }
-    const addedAt = item.added_at;
-    const record = {
-      id: t.id ?? null,
-      name: t.name,
-      artist_names: (t.artists || []).map((a) => a.name),
-      album_name: t.album?.name ?? null,
-      duration_ms: t.duration_ms ?? null,
-      popularity: t.popularity ?? null,
-      added_at: addedAt,
-      isrc: t.external_ids?.isrc ?? null,
-    };
-    const recordValid = validateRecord("saved_tracks", record).ok;
-    if (recordValid) {
-      covered += 1;
-    }
-    if (savedState?.last_added_at && addedAt < savedState.last_added_at) {
-      continue;
-    }
-    await emitRecord("saved_tracks", record);
-    if (recordValid && addedAt && (!latest || addedAt > latest)) {
-      latest = addedAt;
-    }
-  }
+  );
   await emit({
     type: "STATE",
     stream: "saved_tracks",
-    cursor: { last_added_at: latest || null },
+    cursor: { last_added_at: tally.latest || null },
   });
   await emitDetailCoverage(
     { emit },
@@ -350,8 +366,8 @@ async function collectSavedTracks(
       stateStream: "saved_tracks",
       requiredKeys: [],
       hydratedKeys: [],
-      considered: items.length,
-      covered,
+      considered: tally.totalSeen,
+      covered: tally.covered,
     }
   );
 }
@@ -380,36 +396,40 @@ async function collectTopArtists(
       cursor_present: i > 0,
     };
     await progress("Fetching Spotify top artists window", pageExtra);
-    const artists = await paginate<SpotifyArtist>(
+    const windowTally = await paginate<SpotifyArtist, PaginationTally>(
       `/me/top/artists?time_range=${range}&limit=50`,
       token,
       progress,
-      "top_artists"
+      "top_artists",
+      { totalSeen: 0, covered: 0 },
+      async (current, a) => {
+        const record = {
+          id: a.id ?? null,
+          name: a.name,
+          genres: a.genres || [],
+          popularity: a.popularity ?? null,
+          followers: a.followers?.total ?? null,
+          time_range: range,
+        };
+        const nextTally = {
+          totalSeen: current.totalSeen + 1,
+          covered: current.covered + (validateRecord("top_artists", record).ok ? 1 : 0),
+        };
+        await emitRecord("top_artists", record);
+        return nextTally;
+      }
     );
-    totalSeen += artists.length;
+    totalSeen += windowTally.totalSeen;
+    covered += windowTally.covered;
     await progress("Fetched Spotify top artists window", {
       stream: "top_artists",
       phase: "page",
       page_index: i,
       offset_ordinal: i,
-      item_count: artists.length,
+      item_count: windowTally.totalSeen,
       total_seen: totalSeen,
       cursor_present: i < ranges.length - 1,
     });
-    for (const a of artists) {
-      const record = {
-        id: a.id ?? null,
-        name: a.name,
-        genres: a.genres || [],
-        popularity: a.popularity ?? null,
-        followers: a.followers?.total ?? null,
-        time_range: range,
-      };
-      if (validateRecord("top_artists", record).ok) {
-        covered += 1;
-      }
-      await emitRecord("top_artists", record);
-    }
   }
   // `top_artists` fans out across 3 fixed time-range windows. Count the API
   // boundary separately from valid emitted records so a malformed source row
@@ -442,34 +462,35 @@ async function collectRecentlyPlayed(
   const rpState = state.recently_played as RecentlyPlayedState | undefined;
   const after = recentlyPlayedAfterCursor(rpState?.last_played_at_unix);
   const path = `/me/player/recently-played?limit=50${after === undefined ? "" : `&after=${String(after)}`}`;
-  const items = await paginate<SpotifyPlayHistory>(path, token, progress, "recently_played");
-  let latest: number | null = rpState?.last_played_at_unix ?? null;
-  let covered = 0;
-  for (const p of items) {
-    const playedAt = p.played_at;
-    const id = `${String(p.track.id)}:${String(new Date(playedAt).getTime())}`;
-    const record = {
-      id,
-      track_id: p.track.id,
-      track_name: p.track.name,
-      artist_names: (p.track.artists || []).map((a) => a.name),
-      album_name: p.track.album?.name ?? null,
-      played_at: playedAt,
-      context_type: p.context?.type ?? null,
-    };
-    if (validateRecord("recently_played", record).ok) {
-      covered += 1;
+  const tally = await paginate<SpotifyPlayHistory, PaginationTally & { latest: number | null }>(
+    path,
+    token,
+    progress,
+    "recently_played",
+    { totalSeen: 0, covered: 0, latest: rpState?.last_played_at_unix ?? null },
+    async (current, p) => {
+      const playedAt = p.played_at;
+      const id = `${String(p.track.id)}:${String(new Date(playedAt).getTime())}`;
+      const record = {
+        id,
+        track_id: p.track.id,
+        track_name: p.track.name,
+        artist_names: (p.track.artists || []).map((a) => a.name),
+        album_name: p.track.album?.name ?? null,
+        played_at: playedAt,
+        context_type: p.context?.type ?? null,
+      };
+      const covered = current.covered + (validateRecord("recently_played", record).ok ? 1 : 0);
+      await emitRecord("recently_played", record);
+      const ms = new Date(playedAt).getTime();
+      const latest = Number.isFinite(ms) && (current.latest === null || ms > current.latest) ? ms : current.latest;
+      return { totalSeen: current.totalSeen + 1, covered, latest };
     }
-    await emitRecord("recently_played", record);
-    const ms = new Date(playedAt).getTime();
-    if (Number.isFinite(ms) && (latest === null || ms > latest)) {
-      latest = ms;
-    }
-  }
+  );
   await emit({
     type: "STATE",
     stream: "recently_played",
-    cursor: { last_played_at_unix: latest },
+    cursor: { last_played_at_unix: tally.latest },
   });
   await emitDetailCoverage(
     { emit },
@@ -478,8 +499,8 @@ async function collectRecentlyPlayed(
       stateStream: "recently_played",
       requiredKeys: [],
       hydratedKeys: [],
-      considered: items.length,
-      covered,
+      considered: tally.totalSeen,
+      covered: tally.covered,
     }
   );
 }
