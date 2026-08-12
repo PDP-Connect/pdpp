@@ -21,7 +21,9 @@ import type { CachedGrant } from "../cli/lib/cache.ts";
 
 const DENIED_POLL_SECRET_PATTERN = /Bearer|owner_local|access_token/;
 const EXPIRED_POLL_SECRET_PATTERN = /access_token|polling_code/;
+const COMPLETION_SEAM_CRASH_PATTERN = /completion seam crash/;
 const INVALID_TOKEN_PATTERN = /not-a-real-token/;
+const ACCESS_TOKEN_PATTERN = /access_token/;
 
 import {
   deleteGrantFiles,
@@ -685,7 +687,7 @@ test("agent-connect: approval committed before completion recovers at poll time"
     });
     await assert.rejects(
       approveInline({ asUrl, requestUri: staged.request_uri, subjectId: "owner_local" }),
-      /completion seam crash/
+      COMPLETION_SEAM_CRASH_PATTERN
     );
     __setAgentConnectCompleteFailureForTest(null);
 
@@ -900,7 +902,7 @@ test("agent-connect: approved attempt fails closed when the grant is revoked bef
     });
     assert.equal(revokedPoll.resp.status, 401);
     assert.equal(errorCode(revokedPoll.body), "invalid_grant");
-    assert.doesNotMatch(JSON.stringify(revokedPoll.body), /access_token/);
+    assert.doesNotMatch(JSON.stringify(revokedPoll.body), ACCESS_TOKEN_PATTERN);
   } finally {
     await closeServer(server);
   }

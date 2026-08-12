@@ -70,7 +70,7 @@ export async function retrieveAndAcceptProviderNativeDeclaration(
   };
 }
 
-export async function getAcceptedProviderNativeDeclarationRevision(
+export function getAcceptedProviderNativeDeclarationRevision(
   input: { readonly acceptedRevisionReference: string },
   dependencies: { readonly revisionStore: AcceptedSourceDeclarationRevisionStore }
 ): Promise<AcceptedProviderNativeDeclarationRevision | null> {

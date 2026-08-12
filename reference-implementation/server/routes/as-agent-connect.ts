@@ -100,6 +100,27 @@ export function __setAgentConnectCompleteFailureForTest(fn: (() => void) | null)
   completeFailureForTest = fn;
 }
 
+interface RecoveredApprovedConsent {
+  grant_id?: string | null;
+  grant_json?: unknown;
+  package_json?: unknown;
+  token_id?: string | null;
+}
+
+function objectFromStoredJson(value: unknown): Record<string, unknown> | null {
+  if (typeof value === "string") {
+    return JSON.parse(value) as Record<string, unknown>;
+  }
+  if (value && typeof value === "object") {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+function grantFromRecoveredConsent(recovered: RecoveredApprovedConsent): Record<string, unknown> | null {
+  return objectFromStoredJson(recovered.grant_json) ?? objectFromStoredJson(recovered.package_json);
+}
+
 export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
   const hashPollingCode = (code: string) => createHash("sha256").update(code, "utf8").digest("base64url");
   const pollingCodeMatches = (hash: string, code: string) => {
@@ -204,10 +225,7 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
       requestUri,
     ]);
   };
-  const recoverApprovedAttempt = async (
-    attempt: AgentConnectAttempt,
-    now: number
-  ): Promise<AgentConnectAttempt> => {
+  const recoverApprovedAttempt = async (attempt: AgentConnectAttempt, now: number): Promise<AgentConnectAttempt> => {
     if (attempt.status !== "pending" || attempt.expiresAt <= now) {
       return attempt;
     }
@@ -215,9 +233,7 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
     if (!deviceCode) {
       return attempt;
     }
-    let recovered:
-      | { grant_id?: string | null; grant_json?: unknown; package_json?: unknown; token_id?: string | null }
-      | undefined;
+    let recovered: RecoveredApprovedConsent | undefined;
     if (isPostgresStorageBackend()) {
       const result = await postgresQuery(
         `SELECT pc.grant_id, pc.token_id, g.grant_json, gp.package_json
@@ -231,28 +247,17 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
           LIMIT 1`,
         [deviceCode]
       );
-      recovered = result.rows[0];
+      [recovered] = result.rows as RecoveredApprovedConsent[];
     } else {
       recovered =
-        getOne<{ grant_id?: string | null; grant_json?: unknown; package_json?: unknown; token_id?: string | null }>(
-          referenceQueries.authAgentConnectAttemptsRecoverApproved,
-          [deviceCode]
-        ) ?? undefined;
+        getOne<RecoveredApprovedConsent>(referenceQueries.authAgentConnectAttemptsRecoverApproved, [deviceCode]) ??
+        undefined;
     }
     if (!recovered?.token_id) {
       return attempt;
     }
-    const grant =
-      typeof recovered.grant_json === "string"
-        ? (JSON.parse(recovered.grant_json) as Record<string, unknown>)
-        : typeof recovered.package_json === "string"
-          ? (JSON.parse(recovered.package_json) as Record<string, unknown>)
-          : recovered.grant_json && typeof recovered.grant_json === "object"
-            ? (recovered.grant_json as Record<string, unknown>)
-            : recovered.package_json && typeof recovered.package_json === "object"
-              ? (recovered.package_json as Record<string, unknown>)
-              : null;
-    if (!grant || !(await tokenIsActive(recovered.token_id))) {
+    const grant = grantFromRecoveredConsent(recovered);
+    if (!(grant && (await tokenIsActive(recovered.token_id)))) {
       return attempt;
     }
     await markAttemptApproved(attempt.requestUri, recovered.token_id, grant, recovered.grant_id ?? null);

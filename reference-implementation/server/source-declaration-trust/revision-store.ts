@@ -30,8 +30,8 @@ export interface AcceptedSourceDeclarationRevisionStore {
 }
 
 interface StoredRevision {
-  readonly authority_binding: string;
   readonly accepted_revision_reference: string;
+  readonly authority_binding: string;
   readonly canonical_content: string;
   readonly content_fingerprint: string;
   readonly declaration_version: string;
@@ -293,9 +293,9 @@ export function createSqliteAcceptedSourceDeclarationRevisionStore(
           : { accepted: false, reason: "equivocation" }
       );
     },
-    async getByReference(acceptedRevisionReference) {
+    getByReference(acceptedRevisionReference) {
       const stored = readByReference.get(...([acceptedRevisionReference] as never[]));
-      return stored ? decodeStoredRevision(stored) : null;
+      return Promise.resolve(stored ? decodeStoredRevision(stored) : null);
     },
   };
 }

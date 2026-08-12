@@ -197,19 +197,22 @@ async function seedNorthstar(nativeManifest: NorthstarManifest, ownerSubjectId: 
     status: "active",
     updatedAt: now,
   });
-  await ingestRecord({ connector_id: connectorId, connector_instance_id: connectorInstanceId }, {
-    data: {
-      currency: "USD",
-      employee_id: "emp_123",
-      employer: "Northstar HR",
-      gross_pay: 5400,
-      net_pay: 3912,
-      statement_id: "ps_owner_agent_1",
-    },
-    emitted_at: "2026-05-31T00:00:00Z",
-    key: "ps_owner_agent_1",
-    stream: "pay_statements",
-  });
+  await ingestRecord(
+    { connector_id: connectorId, connector_instance_id: connectorInstanceId },
+    {
+      data: {
+        currency: "USD",
+        employee_id: "emp_123",
+        employer: "Northstar HR",
+        gross_pay: 5400,
+        net_pay: 3912,
+        statement_id: "ps_owner_agent_1",
+      },
+      emitted_at: "2026-05-31T00:00:00Z",
+      key: "ps_owner_agent_1",
+      stream: "pay_statements",
+    }
+  );
 }
 
 test("trusted owner-agent bearer reaches owner-visible REST discovery and read surfaces", async () => {

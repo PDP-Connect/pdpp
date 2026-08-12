@@ -3,11 +3,10 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
+import { Pool } from "pg";
 
-import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.js";
+import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
-const { Pool } = pg;
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 function adminUrl(connectionString) {
@@ -16,10 +15,10 @@ function adminUrl(connectionString) {
   return url.toString();
 }
 
-async function assertDatabaseDropped(databaseName) {
+async function assertDatabaseDropped(targetDatabaseName) {
   const admin = new Pool({ connectionString: adminUrl(POSTGRES_URL) });
   try {
-    const result = await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", [databaseName]);
+    const result = await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", [targetDatabaseName]);
     assert.equal(result.rowCount, 0);
   } finally {
     await admin.end();
@@ -62,7 +61,7 @@ if (POSTGRES_URL) {
     const callbackError = new Error("callback failed");
 
     await assert.rejects(
-      withTemporaryPostgresDatabase({ connectionString: POSTGRES_URL, databaseName: temporaryDatabase }, async () => {
+      withTemporaryPostgresDatabase({ connectionString: POSTGRES_URL, databaseName: temporaryDatabase }, () => {
         throw callbackError;
       }),
       (error) => error === callbackError
@@ -78,13 +77,13 @@ if (POSTGRES_URL) {
     await assert.rejects(
       withTemporaryPostgresDatabase(
         {
-          closeConnections: async () => {
+          closeConnections: () => {
             throw cleanupError;
           },
           connectionString: POSTGRES_URL,
           databaseName: temporaryDatabase,
         },
-        async () => {}
+        () => undefined
       ),
       (error) => error === cleanupError
     );
@@ -100,13 +99,13 @@ if (POSTGRES_URL) {
     await assert.rejects(
       withTemporaryPostgresDatabase(
         {
-          closeConnections: async () => {
+          closeConnections: () => {
             throw cleanupError;
           },
           connectionString: POSTGRES_URL,
           databaseName: temporaryDatabase,
         },
-        async () => {
+        () => {
           throw callbackError;
         }
       ),
@@ -120,5 +119,5 @@ if (POSTGRES_URL) {
     await assertDatabaseDropped(temporaryDatabase);
   });
 } else {
-  test("temporary Postgres database helper (skipped: PDPP_TEST_POSTGRES_URL unset)", { skip: true }, () => {});
+  test("temporary Postgres database helper (skipped: PDPP_TEST_POSTGRES_URL unset)", { skip: true }, () => undefined);
 }

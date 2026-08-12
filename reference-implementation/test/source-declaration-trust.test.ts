@@ -27,6 +27,8 @@ import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.
 
 const POINTER = "https://declarations.example.test/current.json";
 const RESOURCE = "https://resource.example.test/owner/example";
+const AUTHORITY_BINDING_RE = /authority binding/;
+const FINGERPRINT_MISMATCH_RE = /fingerprint mismatch/;
 const UNIQUE_CONSTRAINT_VIOLATION = /duplicate key value violates unique constraint/;
 const VALID_DECLARATION = {
   declaration_version: "opaque:a",
@@ -670,15 +672,17 @@ test("SQLite accepted revision lookup fails closed when stored evidence is tampe
     database
       .prepare("UPDATE accepted_source_declaration_revisions SET source_id = ? WHERE accepted_revision_reference = ?")
       .run("https://resource.example.test/owner/changed", expectedReference);
-    await assert.rejects(store.getByReference(expectedReference), /authority binding/);
+    await assert.rejects(store.getByReference(expectedReference), AUTHORITY_BINDING_RE);
 
     database
       .prepare("UPDATE accepted_source_declaration_revisions SET source_id = ? WHERE accepted_revision_reference = ?")
       .run(key.sourceId, expectedReference);
     database
-      .prepare("UPDATE accepted_source_declaration_revisions SET canonical_content = ? WHERE accepted_revision_reference = ?")
+      .prepare(
+        "UPDATE accepted_source_declaration_revisions SET canonical_content = ? WHERE accepted_revision_reference = ?"
+      )
       .run('{"display":{"name":"Changed"},"streams":["a"]}', expectedReference);
-    await assert.rejects(store.getByReference(expectedReference), /fingerprint mismatch/);
+    await assert.rejects(store.getByReference(expectedReference), FINGERPRINT_MISMATCH_RE);
   } finally {
     database.close();
   }
@@ -987,7 +991,7 @@ if (POSTGRES_URL) {
             "UPDATE accepted_source_declaration_revisions SET source_id = $1 WHERE accepted_revision_reference = $2",
             ["https://resource.example.test/owner/changed", expectedReference]
           );
-          await assert.rejects(store.getByReference(expectedReference), /authority binding/);
+          await assert.rejects(store.getByReference(expectedReference), AUTHORITY_BINDING_RE);
 
           await pool.query(
             "UPDATE accepted_source_declaration_revisions SET source_id = $1 WHERE accepted_revision_reference = $2",
@@ -997,7 +1001,7 @@ if (POSTGRES_URL) {
             "UPDATE accepted_source_declaration_revisions SET canonical_content = $1 WHERE accepted_revision_reference = $2",
             ['{"display":{"name":"Changed"},"streams":["a"]}', expectedReference]
           );
-          await assert.rejects(store.getByReference(expectedReference), /fingerprint mismatch/);
+          await assert.rejects(store.getByReference(expectedReference), FINGERPRINT_MISMATCH_RE);
         } finally {
           await pool.end();
         }
