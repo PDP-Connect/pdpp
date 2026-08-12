@@ -21,6 +21,7 @@ const SUCCESSFUL_RUNTIME_EVIDENCE_PATTERN = /successful runtime evidence/;
 const DISAGREEMENT_PATTERN = /disagrees/;
 const PROJECTION_PATTERN = /projection/;
 const SOCKET_FAILURE_PATTERN = /socket failed/;
+const FUTURE_PROVIDER_REASON_PATTERN = /future_provider_reason/;
 
 function manifest(overrides: Json = {}): Json {
   return {
@@ -163,6 +164,56 @@ test("derives an exact green numerator/denominator from active production stream
   assert.equal(result.activeConnectionCount, 2);
   assert.equal(result.productionStreamCount, 2);
   assert.equal(result.perClass.green, 2);
+});
+
+test("accepts producer coverage-axis condition reasons but rejects unknown reasons", () => {
+  const baseHealth = healthyConnection().connection_health as Json;
+  for (const reason of ["complete", "terminal_gap"]) {
+    const condition = {
+      current: reason === "complete",
+      expires_at: null,
+      id: `source-coverage-${reason}`,
+      message: "Source coverage status",
+      observed_at: EVIDENCE_AT,
+      origin: "connector",
+      reason,
+      reason_code: null,
+      remediation: null,
+      sensitivity: "public",
+      severity: reason === "complete" ? "info" : "blocked",
+      status: reason === "complete" ? "true" : "false",
+      type: "SourceCoverageComplete",
+    };
+    const result = evaluate(healthyConnection({ connection_health: { ...baseHealth, conditions: [condition] } }));
+    assert.equal(result.perClass.unknown_vocabulary, 0, reason);
+  }
+
+  const unknown = evaluate(
+    healthyConnection({
+      connection_health: {
+        ...baseHealth,
+        conditions: [
+          {
+            current: true,
+            expires_at: null,
+            id: "source-coverage-future",
+            message: "Source coverage status",
+            observed_at: EVIDENCE_AT,
+            origin: "connector",
+            reason: "future_provider_reason",
+            reason_code: null,
+            remediation: null,
+            sensitivity: "public",
+            severity: "info",
+            status: "true",
+            type: "SourceCoverageComplete",
+          },
+        ],
+      },
+    })
+  );
+  assert.ok(unknown.perClass.unknown_vocabulary > 0);
+  assert.match(streamResult(unknown).reason, FUTURE_PROVIDER_REASON_PATTERN);
 });
 
 test("a healthy empty stream requires explicit verified-empty proof", () => {

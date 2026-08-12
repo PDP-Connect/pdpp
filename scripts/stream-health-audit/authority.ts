@@ -254,6 +254,7 @@ const KNOWN_CONDITION_REASONS = new Set([
   "stale",
   "stale_assisted_refresh",
   "stale_manual_refresh",
+  ...KNOWN_COVERAGE_AXES,
 ]);
 const KNOWN_CONDITION_REMEDIATION_ACTIONS = new Set([
   "check_runtime",
