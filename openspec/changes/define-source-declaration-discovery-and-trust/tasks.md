@@ -48,8 +48,21 @@
 - [x] Add deterministic retrieval, metadata, SQLite, and real PostgreSQL
   parity coverage for this standalone boundary.
 
-Onboarding adapters, consent integration, local blocking, and lifecycle
-behavior remain outside this standalone implementation slice.
+Onboarding adapters, local blocking, and lifecycle behavior remain outside
+this standalone implementation slice.
+
+## Accepted revision consent handoff
+
+- [x] Resolve one internal source-bound accepted-revision reference from the
+  accepted store and retain its exact declaration in consent without refetch.
+- [x] Retain the accepted reference, resource authority, and separate
+  unverified publisher attribution in immutable review and audit evidence,
+  but not in resolved grant rights.
+- [x] Label direct provider-native configuration as local operator
+  provisioning and fail closed on missing, mismatched, stale, or tampered
+  accepted-revision evidence.
+- [x] Prove the HTTP PAR, review, HTML resume, approval, and audit path on
+  SQLite and live PostgreSQL, including pointer drift and offline retrieval.
 
 ## Validation
 

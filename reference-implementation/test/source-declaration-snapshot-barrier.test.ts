@@ -578,7 +578,7 @@ test("provider-native grant snapshots its trusted declaration and binds its loca
         ],
         client_id: driver.getRegisteredClientId(),
       },
-      { nativeManifest }
+      { nativeManifest, nativeManifestMode: "local_operator_provisioning" }
     );
     const deviceCode = parsePendingConsentRequestUri(started.request_uri);
     assert.ok(deviceCode);
@@ -594,6 +594,14 @@ test("provider-native grant snapshots its trusted declaration and binds its loca
     assert.deepEqual(pending.source_declaration_snapshot.declaration.publisher, {
       id: "https://pdpp.dev/reference-implementation",
     });
+    assert.equal(pending.source_declaration_snapshot.accepted_revision_reference, undefined);
+    assert.deepEqual(pending.source_declaration_snapshot.resource_authority, {
+      status: "local_operator_provisioned",
+    });
+    assert.deepEqual(pending.source_declaration_snapshot.publisher_attribution, {
+      id: "https://pdpp.dev/reference-implementation",
+      status: "unverified",
+    });
 
     const nativeOwnerId = "owner_native_alice";
     const reviewed = await getPendingConsent(deviceCode, {
@@ -602,6 +610,16 @@ test("provider-native grant snapshots its trusted declaration and binds its loca
       subjectId: nativeOwnerId,
     });
     assert.ok(typeof reviewed?.reviewRevision === "string");
+    const reviewedRow = getDb()
+      .prepare("SELECT approval_review_json FROM pending_consents WHERE device_code = ?")
+      .get(deviceCode) as { approval_review_json: string };
+    const reviewedArtifact = JSON.parse(reviewedRow.approval_review_json) as {
+      source_declaration: Record<string, unknown>;
+    };
+    assert.deepEqual(reviewedArtifact.source_declaration.resource_authority, {
+      status: "local_operator_provisioned",
+    });
+    assert.equal(reviewedArtifact.source_declaration.accepted_revision_reference, undefined);
     const approved = await approveGrant(deviceCode, nativeOwnerId, {
       approval_review_revision: reviewed?.reviewRevision,
       nativeManifest,
@@ -640,7 +658,7 @@ test("provider-native grant snapshots its trusted declaration and binds its loca
         ],
         client_id: driver.getRegisteredClientId(),
       },
-      { nativeManifest }
+      { nativeManifest, nativeManifestMode: "local_operator_provisioning" }
     );
     assert.ok(parsePendingConsentRequestUri(explicitStarted.request_uri));
 
@@ -657,7 +675,7 @@ test("provider-native grant snapshots its trusted declaration and binds its loca
         ],
         client_id: driver.getRegisteredClientId(),
       },
-      { nativeManifest }
+      { nativeManifest, nativeManifestMode: "local_operator_provisioning" }
     );
     const forgedNativeDeviceCode = parsePendingConsentRequestUri(forgedNativeStarted.request_uri);
     assert.ok(forgedNativeDeviceCode);

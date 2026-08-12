@@ -647,7 +647,10 @@ interface ApprovalReviewSource {
 }
 
 interface ApprovalReviewSourceDeclaration {
+  accepted_revision_reference?: string;
   digest: string;
+  publisher_attribution?: { id: string; status: "unverified" };
+  resource_authority?: { authority_binding: string; status: "verified" } | { status: "local_operator_provisioned" };
   version: string;
 }
 
@@ -917,11 +920,36 @@ function buildReviewedSourceFacts(
   source: ApprovalReviewSource,
   declaration: ApprovalReviewSourceDeclaration
 ): Array<{ label: string; value: string }> {
+  const resourceAuthority = declaration.resource_authority;
+  const authorityFacts: Array<{ label: string; value: string }> = [];
+  if (resourceAuthority?.status === "verified") {
+    authorityFacts.push({
+      label: "Resource authority",
+      value: `Verified (${resourceAuthority.authority_binding})`,
+    });
+  } else if (resourceAuthority?.status === "local_operator_provisioned") {
+    authorityFacts.push({
+      label: "Resource authority",
+      value: "Local operator provisioning (not verified discovery)",
+    });
+  }
   return [
     { label: "Source ID", value: source.id },
     { label: "Source kind", value: source.kind },
     { label: "Declaration version", value: declaration.version },
     { label: "Declaration digest", value: declaration.digest },
+    ...(declaration.accepted_revision_reference
+      ? [{ label: "Accepted revision", value: declaration.accepted_revision_reference }]
+      : []),
+    ...authorityFacts,
+    ...(declaration.publisher_attribution
+      ? [
+          {
+            label: "Publisher attribution",
+            value: `${declaration.publisher_attribution.id} (unverified)`,
+          },
+        ]
+      : []),
   ];
 }
 

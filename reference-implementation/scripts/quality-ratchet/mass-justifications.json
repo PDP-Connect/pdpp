@@ -145,8 +145,8 @@
     "date": "2026-07-30"
   },
   "server/auth.ts": {
-    "allowed_mass": 441,
-    "reason": "PR114 approval-review authority (2026-08-12): single and batch consent now have an explicit two-phase state machine. The authorization server must distinguish unreviewed, reviewed, stale, malformed, terminal, and transaction-time-ineligible states; bind a canonical artifact digest and revision; and issue the pending-row CAS, grants, tokens, packages, and events atomically on both SQLite and PostgreSQL. These branches are the security boundary that prevents post-review widening and partial issuance, not extraction opportunities: artifact construction/parsing remains separate from persistence, while the backend transaction adapters must retain explicit parity and failure ordering. Focused exact-artifact HTML/JSON, stale-revision, concurrent approval, injected rollback, SQLite, and live-PostgreSQL regressions prove the states.",
+    "allowed_mass": 467,
+    "reason": "PR114 approval-review authority and PR116 accepted-revision handoff (2026-08-12): single and batch consent have an explicit two-phase state machine. The authorization server distinguishes unreviewed, reviewed, stale, malformed, terminal, and transaction-time-ineligible states; binds a canonical artifact digest and revision; and issues the pending-row CAS, grants, tokens, packages, and events atomically on SQLite and PostgreSQL. PR116 adds a fail-closed provider-native trust boundary: exact accepted-revision lookup, separate verified resource authority and unverified publisher attribution, explicit local-operator provisioning, source-bound fulfillment, and retained evidence validation. These branches prevent authority substitution, post-review widening, and partial issuance. Artifact construction, trust lookup, and persistence remain separate, while backend transaction adapters retain explicit parity and failure ordering. Focused HTTP PAR/review/HTML/approval, stale/tampered evidence, pointer drift/offline retrieval, SQLite, and live-PostgreSQL regressions prove the states.",
     "date": "2026-08-12"
   },
   "runtime/detail-gap-paging.ts": {

@@ -60,6 +60,11 @@ import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from
 import { snapshotSourceDeclaration } from "./source-declaration.ts";
 import { snapshotContentAddressedSourceDeclarationFromLegacyConnectorManifest } from "./source-declaration-legacy-collection.ts";
 import {
+  type AcceptedSourceDeclarationRevisionStore,
+  acceptedRevisionEvidenceReference,
+} from "./source-declaration-trust/revision-store.ts";
+import { getAcceptedProviderNativeDeclarationRevision } from "./source-declaration-trust/service.ts";
+import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
   makeDefaultAccountConnectorInstanceId,
@@ -84,10 +89,17 @@ interface TraceContext {
 }
 
 interface InitiateGrantOptions {
+  acceptedProviderNativeRevision?: AcceptedProviderNativeRevisionForConsent;
+  /** Internal handle produced by provider-native onboarding. It is evidence, never a grant right. */
+  acceptedRevisionReference?: string;
+  acceptedRevisionStore?: AcceptedSourceDeclarationRevisionStore;
   baseUrl?: string;
   cimdFetchDependencies?: CimdFetchDependencies;
   issuerBase?: string;
+  /** Explicit local/test operator provisioning. This is not verified provider-native discovery. */
   nativeManifest?: DbRow | null;
+  /** Required when nativeManifest supplies storage only for an accepted provider-native revision. */
+  nativeManifestMode?: "fulfillment_only" | "local_operator_provisioning";
   onCimdTransportFailure?: (event: CimdTransportFailureEvent) => void;
   scenarioId?: string;
 }
@@ -321,13 +333,25 @@ interface ResolvedGrantStream extends Record<string, unknown> {
 }
 
 interface SourceDeclarationSnapshot {
+  accepted_revision_reference?: string;
   declaration: DbRow;
   declaration_version: string;
+  publisher_attribution?: SourcePublisherAttribution;
   resolved_streams: StreamSelection[];
+  resource_authority?: SourceResourceAuthority;
   snapshot_version: "reference.source-declaration-snapshot.v1";
   source: SourceBinding;
   source_sensitivity: string;
 }
+
+interface SourcePublisherAttribution {
+  id: string;
+  status: "unverified";
+}
+
+type SourceResourceAuthority =
+  | { authority_binding: string; status: "verified" }
+  | { status: "local_operator_provisioned" };
 
 interface RegisteredClientRow extends DbRow {
   client_id: string;
@@ -944,6 +968,82 @@ function retainableSourceDeclaration(
   };
 }
 
+interface RetainedSourceDeclarationTrust {
+  accepted_revision_reference?: string;
+  publisher_attribution: SourcePublisherAttribution;
+  resource_authority: SourceResourceAuthority;
+}
+
+interface AcceptedProviderNativeRevisionForConsent {
+  declaration: DbRow;
+  source: SourceBinding;
+  trust: RetainedSourceDeclarationTrust & { accepted_revision_reference: string };
+}
+
+async function prepareInitiateGrantOptions(opts: InitiateGrantOptions): Promise<InitiateGrantOptions> {
+  const { acceptedRevisionReference, acceptedRevisionStore } = opts;
+  if (!(acceptedRevisionReference || acceptedRevisionStore)) {
+    return opts;
+  }
+  if (!(isNonEmptyString(acceptedRevisionReference) && acceptedRevisionStore)) {
+    throw bindingError(
+      "invalid_request",
+      "Accepted provider-native revision reference and revision store must be supplied together"
+    );
+  }
+  if (opts.acceptedProviderNativeRevision) {
+    throw bindingError("invalid_request", "Accepted provider-native revision was supplied through two authority paths");
+  }
+  if (resolveConfiguredNativeManifest(opts) && opts.nativeManifestMode !== "fulfillment_only") {
+    throw bindingError(
+      "invalid_request",
+      "Accepted provider-native revisions require nativeManifest to be explicitly marked fulfillment_only"
+    );
+  }
+
+  const accepted = await getAcceptedProviderNativeDeclarationRevision(
+    { acceptedRevisionReference },
+    { revisionStore: acceptedRevisionStore }
+  );
+  if (!accepted) {
+    throw bindingError("invalid_request", "Accepted provider-native declaration revision was not found");
+  }
+  const declaration = snapshotSourceDeclaration(accepted.parsedDeclaration);
+  if (
+    accepted.acceptedRevisionReference !== acceptedRevisionReference ||
+    accepted.declarationVersion !== declaration.declaration_version ||
+    accepted.sourceId !== declaration.source.id ||
+    declaration.source.kind !== "provider_native" ||
+    !isNonEmptyString(accepted.authorityBinding)
+  ) {
+    throw bindingError("invalid_request", "Accepted provider-native declaration revision does not match the request");
+  }
+
+  return {
+    ...opts,
+    acceptedProviderNativeRevision: {
+      declaration: declaration as unknown as DbRow,
+      source: { id: declaration.source.id, kind: "provider_native" },
+      trust: {
+        accepted_revision_reference: accepted.acceptedRevisionReference,
+        publisher_attribution: { id: declaration.publisher.id, status: "unverified" },
+        resource_authority: { authority_binding: accepted.authorityBinding, status: "verified" },
+      },
+    },
+  };
+}
+
+function localOperatorProvisioningTrust(declaration: DbRow): RetainedSourceDeclarationTrust {
+  const publisher = isRecord(declaration.publisher) ? declaration.publisher.id : null;
+  if (!isNonEmptyString(publisher)) {
+    throw bindingError("invalid_request", "Operator-provisioned SourceDeclaration publisher is invalid");
+  }
+  return {
+    publisher_attribution: { id: publisher, status: "unverified" },
+    resource_authority: { status: "local_operator_provisioned" },
+  };
+}
+
 /**
  * Persistence boundary for the declaration retained with a pending consent.
  * Today the carrier is params_json; keeping construction and reads here lets
@@ -952,30 +1052,112 @@ function retainableSourceDeclaration(
 async function retainSourceDeclarationSnapshot(
   request: PendingRequest,
   sourceBinding: SourceBinding,
-  declaration: DbRow
+  storageBinding: StorageBinding,
+  manifest: DbRow,
+  opts: InitiateGrantOptions = {}
 ): Promise<SourceDeclarationSnapshot> {
-  const retained = await retainableSourceDeclaration(sourceBinding, declaration);
-  const snapshot = createRetainedCoreConsentSnapshot({
+  const preparedAccepted = opts.acceptedProviderNativeRevision ?? null;
+  const accepted = preparedAccepted && preparedAccepted.source.id === sourceBinding.id ? preparedAccepted : null;
+  if (accepted && accepted.source.kind !== sourceBinding.kind) {
+    throw bindingError("invalid_request", "Accepted provider-native declaration revision does not match the request");
+  }
+  const retained = accepted
+    ? { declaration: accepted.declaration, declarationVersion: accepted.declaration.declaration_version as string }
+    : await retainableSourceDeclaration(sourceBinding, manifest);
+  const coreSnapshot = createRetainedCoreConsentSnapshot({
     declaration: retained.declaration,
     selection: request.selection as unknown as import("./core-source-authorization.ts").CoreSelection,
     source: sourceBinding,
-    sourceSensitivity: resolveManifestSensitivity(declaration),
+    sourceSensitivity: resolveManifestSensitivity(manifest),
   }) as unknown as SourceDeclarationSnapshot;
+  let trust: RetainedSourceDeclarationTrust | null = accepted ? accepted.trust : null;
+  if (!trust && sourceBinding.kind === "provider_native") {
+    if (
+      opts.nativeManifestMode !== "local_operator_provisioning" ||
+      !isConfiguredFulfillment(sourceBinding, storageBinding, opts)
+    ) {
+      throw bindingError(
+        "invalid_request",
+        "Provider-native consent requires an accepted revision or explicit local operator provisioning"
+      );
+    }
+    trust = localOperatorProvisioningTrust(coreSnapshot.declaration);
+  }
+  const snapshot: SourceDeclarationSnapshot = trust ? { ...coreSnapshot, ...trust } : coreSnapshot;
   request.source_declaration_snapshot = snapshot;
   request.manifest_version = retained.declarationVersion;
   return snapshot;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This is one fail-closed persistence evidence boundary; splitting its coupled shape checks would obscure the invariant.
 function readRetainedSourceDeclarationSnapshot(request: Partial<PendingRequest>): SourceDeclarationSnapshot {
   if (!request.selection) {
     throw bindingError("invalid_request", "Pending consent selection is missing");
   }
   try {
-    return readRetainedCoreConsentSnapshot({
+    if (!isRecord(request.source_declaration_snapshot)) {
+      throw new Error("Pending consent declaration snapshot is missing");
+    }
+    const {
+      accepted_revision_reference: acceptedRevisionReference,
+      publisher_attribution: publisherAttribution,
+      resource_authority: resourceAuthority,
+      ...coreSnapshot
+    } = request.source_declaration_snapshot;
+    const retained = readRetainedCoreConsentSnapshot({
       selection: request.selection as unknown as import("./core-source-authorization.ts").CoreSelection,
-      snapshot: request.source_declaration_snapshot,
+      snapshot: coreSnapshot,
       source: request.source_binding,
     }) as unknown as SourceDeclarationSnapshot;
+    const hasTrustEvidence =
+      acceptedRevisionReference !== undefined || publisherAttribution !== undefined || resourceAuthority !== undefined;
+    if (retained.source.kind !== "provider_native") {
+      if (hasTrustEvidence) {
+        throw new Error("Connector declaration snapshot must not contain provider-native trust evidence");
+      }
+      return retained;
+    }
+    if (!(isRecord(publisherAttribution) && publisherAttribution.status === "unverified")) {
+      throw new Error("Provider-native publisher attribution evidence is missing or invalid");
+    }
+    const declarationPublisher = isRecord(retained.declaration.publisher) ? retained.declaration.publisher.id : null;
+    if (!isNonEmptyString(publisherAttribution.id) || publisherAttribution.id !== declarationPublisher) {
+      throw new Error("Provider-native publisher attribution does not match the retained declaration");
+    }
+    if (!isRecord(resourceAuthority)) {
+      throw new Error("Provider-native resource authority evidence is missing");
+    }
+    if (acceptedRevisionReference !== undefined) {
+      if (
+        !isNonEmptyString(acceptedRevisionReference) ||
+        resourceAuthority.status !== "verified" ||
+        !isNonEmptyString(resourceAuthority.authority_binding)
+      ) {
+        throw new Error("Accepted provider-native resource authority evidence is invalid");
+      }
+      const expectedReference = acceptedRevisionEvidenceReference({
+        authorityBinding: resourceAuthority.authority_binding as string,
+        declarationVersion: retained.declaration_version,
+        sourceId: retained.source.id,
+      });
+      if (acceptedRevisionReference !== expectedReference) {
+        throw new Error("Accepted provider-native revision evidence is stale or tampered");
+      }
+    } else if (
+      resourceAuthority.status !== "local_operator_provisioned" ||
+      Object.keys(resourceAuthority).some((key) => key !== "status")
+    ) {
+      throw new Error("Operator-provisioned provider-native authority evidence is invalid");
+    }
+    return {
+      ...retained,
+      ...(acceptedRevisionReference ? { accepted_revision_reference: acceptedRevisionReference } : {}),
+      publisher_attribution: { id: publisherAttribution.id, status: "unverified" },
+      resource_authority:
+        resourceAuthority.status === "verified"
+          ? { authority_binding: resourceAuthority.authority_binding as string, status: "verified" }
+          : { status: "local_operator_provisioned" },
+    };
   } catch (cause: unknown) {
     const err = bindingError(
       "invalid_request",
@@ -1021,6 +1203,13 @@ function isConfiguredFulfillment(
   const configuredSource = resolveConfiguredSourceBinding(opts);
   const configuredStorage = resolveConfiguredNativeStorageBinding(opts);
   return configuredSource?.id === sourceBinding.id && configuredStorage?.connector_id === storageBinding.connector_id;
+}
+
+function isConfiguredStorageFulfillment(
+  storageBinding: StorageBinding,
+  opts: { nativeManifest?: DbRow | null } = {}
+): boolean {
+  return resolveConfiguredNativeStorageBinding(opts)?.connector_id === storageBinding.connector_id;
 }
 
 export function buildPendingConsentRequestUri(deviceCode: string): string {
@@ -1466,10 +1655,11 @@ async function resolveRegisteredSourceBindingById(sourceId: string): Promise<{
 async function resolveAuthorizationDetailBindings(
   detail: AuthorizationDetailInput,
   index: number,
-  opts: { nativeManifest?: DbRow | null }
+  opts: InitiateGrantOptions
 ): Promise<{ sourceBinding: SourceBinding; storageBinding: StorageBinding }> {
   const at = `authorization_details[${index}]`;
-  const configuredSource = resolveConfiguredSourceBinding(opts);
+  const acceptedSource = opts.acceptedProviderNativeRevision ? opts.acceptedProviderNativeRevision.source : null;
+  const configuredSource = opts.nativeManifestMode === "fulfillment_only" ? null : resolveConfiguredSourceBinding(opts);
   const configuredNativeStorageBinding = resolveConfiguredNativeStorageBinding(opts);
   const configuredNativeStorageConnectorId = configuredNativeStorageBinding?.connector_id || null;
   const detailSource = detail.source;
@@ -1506,15 +1696,28 @@ async function resolveAuthorizationDetailBindings(
     throw bindingError("invalid_request", `${at}.source.id must be an absolute URI`);
   }
   const selectsConfiguredSource = configuredSource?.id === sourceId;
+  const selectsAcceptedSource = acceptedSource !== null && acceptedSource.id === sourceId;
+  if (selectsAcceptedSource && explicitKind && explicitKind !== "provider_native") {
+    invalidGrantInitiationRequest(`Source kind does not match the accepted declaration for '${sourceId}'`);
+  }
   if (selectsConfiguredSource && explicitKind && configuredSource.kind !== explicitKind) {
     invalidGrantInitiationRequest(`Source kind does not match the retained declaration for '${sourceId}'`);
   }
   let sourceBinding: SourceBinding = {
     id: sourceId,
-    kind: explicitKind || configuredSource?.kind || "connector",
+    kind: explicitKind || (acceptedSource ? acceptedSource.kind : null) || configuredSource?.kind || "connector",
   };
   let rawSourceConnectorId: string | null = null;
-  if (selectsConfiguredSource) {
+  if (selectsAcceptedSource) {
+    if (opts.nativeManifestMode !== "fulfillment_only") {
+      throw bindingError(
+        "invalid_request",
+        "Accepted provider-native source has no explicit local fulfillment binding"
+      );
+    }
+    sourceBinding = acceptedSource;
+    rawSourceConnectorId = configuredNativeStorageConnectorId;
+  } else if (selectsConfiguredSource) {
     rawSourceConnectorId = configuredNativeStorageConnectorId;
   } else {
     const registered = explicitKind
@@ -1536,7 +1739,7 @@ async function resolveAuthorizationDetailBindings(
 async function normalizeAuthorizationDetail(
   rawDetail: unknown,
   index: number,
-  opts: { nativeManifest?: DbRow | null } = {}
+  opts: InitiateGrantOptions = {}
 ): Promise<{ selection: GrantSelection; source_binding: SourceBinding; storage_binding: StorageBinding }> {
   const detail = requireAuthorizationDetailInput(rawDetail, index);
   const { sourceBinding, storageBinding } = await resolveAuthorizationDetailBindings(detail, index, opts);
@@ -1560,7 +1763,7 @@ async function normalizeAuthorizationDetail(
 
 async function normalizePendingGrantRequest(
   input: Record<string, unknown>,
-  opts: { nativeManifest?: DbRow | null } = {}
+  opts: InitiateGrantOptions = {}
 ): Promise<PendingRequest> {
   const envelope = requireStagedRequestEnvelope(input);
   const clientId = envelope.client_id;
@@ -1575,6 +1778,12 @@ async function normalizePendingGrantRequest(
     invalidGrantInitiationRequest("parent_package_id is only supported on the staged batch path");
   }
   const entry = await normalizeAuthorizationDetail(envelope.authorization_details[0], 0, opts);
+  if (
+    opts.acceptedProviderNativeRevision &&
+    entry.source_binding.id !== opts.acceptedProviderNativeRevision.source.id
+  ) {
+    invalidGrantInitiationRequest("Accepted provider-native declaration revision does not match the requested source");
+  }
   return {
     client: {
       client_display: normalizeClientDisplay(input.client_display),
@@ -1590,13 +1799,27 @@ async function normalizePendingGrantRequest(
 
 async function normalizeStagedGrantRequestBatch(
   input: Record<string, unknown>,
-  opts: { nativeManifest?: DbRow | null } = {}
+  opts: InitiateGrantOptions = {}
 ): Promise<StagedBatchRequest> {
   const envelope = requireStagedRequestEnvelope(input);
   const clientId = envelope.client_id;
   const entries = await Promise.all(
     envelope.authorization_details.map((detail, index) => normalizeAuthorizationDetail(detail, index, opts))
   );
+  if (opts.acceptedProviderNativeRevision) {
+    const acceptedSourceId = opts.acceptedProviderNativeRevision.source.id;
+    const acceptedSourceCount = entries.filter((entry) => entry.source_binding.id === acceptedSourceId).length;
+    if (acceptedSourceCount === 0) {
+      invalidGrantInitiationRequest(
+        "Accepted provider-native declaration revision does not match any requested source"
+      );
+    }
+    if (acceptedSourceCount > 1) {
+      invalidGrantInitiationRequest(
+        "One accepted provider-native declaration revision can authorize only one staged source"
+      );
+    }
+  }
   const entryCount = entries.length;
   const overSoftCap = entryCount > BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP;
   // The soft cap is a reference-contract policy constant, not a hard limit
@@ -1732,8 +1955,13 @@ function buildResolvedSnapshotEvidence(
       ...(stream.time_constraint ? { time_constraint: cloneJson(stream.time_constraint) } : {}),
     })),
     source_declaration_snapshot: {
+      ...(snapshot.accepted_revision_reference
+        ? { accepted_revision_reference: snapshot.accepted_revision_reference }
+        : {}),
       declaration: snapshot.declaration,
       declaration_version: snapshot.declaration_version,
+      ...(snapshot.publisher_attribution ? { publisher_attribution: snapshot.publisher_attribution } : {}),
+      ...(snapshot.resource_authority ? { resource_authority: snapshot.resource_authority } : {}),
       snapshot_version: snapshot.snapshot_version,
       source: snapshot.source,
     },
@@ -1937,12 +2165,15 @@ async function resolveEligibleInstanceIdsForApproval(
   streams: StreamSelection[],
   sourceBinding: SourceBinding,
   storageBinding: StorageBinding,
-  subjectId: string
+  subjectId: string,
+  opts: { acceptedRevisionFulfillment?: boolean } = {}
 ): Promise<StreamSelection[]> {
   const connectorInstanceStore = isPostgresStorageBackend()
     ? createPostgresConnectorInstanceStore()
     : createSqliteConnectorInstanceStore();
-  const configuredFulfillment = isConfiguredFulfillment(sourceBinding, storageBinding);
+  const configuredFulfillment = opts.acceptedRevisionFulfillment
+    ? isConfiguredStorageFulfillment(storageBinding)
+    : isConfiguredFulfillment(sourceBinding, storageBinding);
   const configuredDefaultInstanceId = configuredFulfillment
     ? makeDefaultAccountConnectorInstanceId(subjectId, storageBinding.connector_id)
     : null;
@@ -2173,13 +2404,15 @@ async function resolveSnapshotStreamsForApproval(
   streams: StreamSelection[],
   sourceBinding: SourceBinding,
   storageBinding: StorageBinding,
-  subjectId: string
+  subjectId: string,
+  opts: { acceptedRevisionFulfillment?: boolean } = {}
 ): Promise<ResolvedGrantStream[]> {
   const eligibleStreams = await resolveEligibleInstanceIdsForApproval(
     streams,
     sourceBinding,
     storageBinding,
-    subjectId
+    subjectId,
+    opts
   );
   return projectResolvedGrantStreams(eligibleStreams);
 }
@@ -2190,11 +2423,13 @@ function resolvePendingRequestForApproval(
   storageBinding: StorageBinding,
   subjectId: string
 ): Promise<ResolvedGrantStream[]> {
+  const snapshot = readRetainedSourceDeclarationSnapshot(request);
   return resolveSnapshotStreamsForApproval(
-    resolvePendingRequestAgainstSnapshot(request),
+    cloneJson(snapshot.resolved_streams),
     sourceBinding,
     storageBinding,
-    subjectId
+    subjectId,
+    { acceptedRevisionFulfillment: Boolean(snapshot.accepted_revision_reference) }
   );
 }
 
@@ -3007,16 +3242,25 @@ function buildApprovalReviewArtifact(input: {
     retention: selection.retention ?? null,
     selection_preset: selection.selection_preset ?? null,
     source: describeSourceBinding(request.source_binding),
-    source_declaration: {
-      digest: `sha256:${base64UrlSha256(canonicalApprovalReviewJson(snapshot.declaration))}`,
-      version: snapshot.declaration_version,
-    },
+    source_declaration: buildApprovalReviewSourceDeclaration(snapshot),
     subject: { id: input.subjectId },
     version: "reference.approval-review.v1",
   };
   const artifactJson = canonicalApprovalReviewJson(artifact);
   const digest = `sha256:${base64UrlSha256(artifactJson)}`;
   return { artifactJson, digest, revision: `reference.approval-review.v1:${digest}` };
+}
+
+function buildApprovalReviewSourceDeclaration(snapshot: SourceDeclarationSnapshot): Record<string, unknown> {
+  return {
+    ...(snapshot.accepted_revision_reference
+      ? { accepted_revision_reference: snapshot.accepted_revision_reference }
+      : {}),
+    digest: `sha256:${base64UrlSha256(canonicalApprovalReviewJson(snapshot.declaration))}`,
+    ...(snapshot.publisher_attribution ? { publisher_attribution: snapshot.publisher_attribution } : {}),
+    ...(snapshot.resource_authority ? { resource_authority: snapshot.resource_authority } : {}),
+    version: snapshot.declaration_version,
+  };
 }
 
 function buildBatchApprovalReviewArtifact(input: {
@@ -3052,10 +3296,7 @@ function buildBatchApprovalReviewArtifact(input: {
         retention: request.selection.retention ?? null,
         selection_preset: request.selection.selection_preset ?? null,
         source: describeSourceBinding(request.source_binding),
-        source_declaration: {
-          digest: `sha256:${base64UrlSha256(canonicalApprovalReviewJson(snapshot.declaration))}`,
-          version: snapshot.declaration_version,
-        },
+        source_declaration: buildApprovalReviewSourceDeclaration(snapshot),
       };
     }),
     subject: { id: input.subjectId },
@@ -3183,7 +3424,32 @@ function parsePersistedApprovalReviewRow(
   if (validation.ok !== true) {
     throw bindingError("invalid_request", "Pending consent review is malformed; review the request again");
   }
+  requireReviewSourceTrustMatchesSourceKind(parsed);
   return parsed;
+}
+
+function requireReviewSourceTrustMatchesSourceKind(review: Record<string, unknown>): void {
+  const sources = review.version === "reference.batch-approval-review.v1" ? review.sources : [review];
+  if (!Array.isArray(sources)) {
+    throw bindingError("invalid_request", "Pending consent review is malformed; review the request again");
+  }
+  for (const item of sources) {
+    const source = isRecord(item) && isRecord(item.source) ? item.source : null;
+    const declaration = isRecord(item) && isRecord(item.source_declaration) ? item.source_declaration : null;
+    if (!(source && declaration)) {
+      throw bindingError("invalid_request", "Pending consent review is malformed; review the request again");
+    }
+    const hasTrust =
+      declaration.accepted_revision_reference !== undefined ||
+      declaration.publisher_attribution !== undefined ||
+      declaration.resource_authority !== undefined;
+    if ((source.kind === "provider_native") !== hasTrust) {
+      throw bindingError(
+        "invalid_request",
+        "Pending consent review source authority is malformed; review the request again"
+      );
+    }
+  }
 }
 
 function hasPersistedApprovalReview(row: PendingConsentRow): boolean {
@@ -3298,12 +3564,16 @@ interface ReviewedInstanceCheck {
 }
 
 function reviewedInstanceChecksForGrant(input: {
+  acceptedRevisionFulfillment?: boolean;
   resolvedStreams: ResolvedGrantStream[];
   sourceBinding: SourceBinding;
   storageBinding: StorageBinding;
   subjectId: string;
 }): ReviewedInstanceCheck[] {
-  const configuredDefaultInstanceId = isConfiguredFulfillment(input.sourceBinding, input.storageBinding)
+  const configuredFulfillment = input.acceptedRevisionFulfillment
+    ? isConfiguredStorageFulfillment(input.storageBinding)
+    : isConfiguredFulfillment(input.sourceBinding, input.storageBinding);
+  const configuredDefaultInstanceId = configuredFulfillment
     ? makeDefaultAccountConnectorInstanceId(input.subjectId, input.storageBinding.connector_id)
     : null;
   const seen = new Set<string>();
@@ -5058,10 +5328,11 @@ export async function initiateGrant(
   input: Record<string, unknown>,
   opts: InitiateGrantOptions = {}
 ): Promise<Record<string, unknown>> {
+  const preparedOpts = await prepareInitiateGrantOptions(opts);
   if (requiresStagedGrantBatch(input)) {
-    return initiateStagedGrantBatch(input, opts);
+    return initiateStagedGrantBatch(input, preparedOpts);
   }
-  const normalized = await normalizePendingGrantRequest(input, opts);
+  const normalized = await normalizePendingGrantRequest(input, preparedOpts);
   requireStructuredPendingRequestShape(normalized);
   const traceContext = getRequestTraceContext(
     normalized,
@@ -5071,12 +5342,12 @@ export async function initiateGrant(
   const sourceBinding = getRequestSourceBinding(normalized);
 
   try {
-    const registeredClient = await requireInitiationRegisteredClient(normalized, opts, traceContext);
+    const registeredClient = await requireInitiationRegisteredClient(normalized, preparedOpts, traceContext);
     applyRegisteredClientToPendingRequestClient(normalized, registeredClient);
     const { sourceBinding: validatedSourceBinding, storageBinding } =
       requireStructuredPendingRequestBindings(normalized);
-    const manifest = await requireGrantManifestForBindings(validatedSourceBinding, storageBinding, opts);
-    await retainSourceDeclarationSnapshot(normalized, validatedSourceBinding, manifest);
+    const manifest = await requireGrantManifestForBindings(validatedSourceBinding, storageBinding, preparedOpts);
+    await retainSourceDeclarationSnapshot(normalized, validatedSourceBinding, storageBinding, manifest, preparedOpts);
     resolvePendingRequestAgainstSnapshot(normalized);
 
     const deviceCode = generateId("dc");
@@ -5206,7 +5477,7 @@ async function initiateStagedGrantBatch(
       entry.source_binding = describeSourceBinding(sourceBinding);
       entry.storage_binding = normalizeStorageBinding(storageBinding);
       const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
-      await retainSourceDeclarationSnapshot(slice, sourceBinding, manifest);
+      await retainSourceDeclarationSnapshot(slice, sourceBinding, storageBinding, manifest, opts);
       resolvePendingRequestAgainstSnapshot(slice);
       entry.source_declaration_snapshot = slice.source_declaration_snapshot;
       entry.manifest_version = slice.manifest_version;
@@ -6173,6 +6444,9 @@ async function persistApprovedBatchRowsAtomically(input: {
         client,
         input.resolvedEntries.flatMap((entry) =>
           reviewedInstanceChecksForGrant({
+            acceptedRevisionFulfillment: Boolean(
+              readRetainedSourceDeclarationSnapshot(entry.slice).accepted_revision_reference
+            ),
             resolvedStreams: entry.resolvedStreams,
             sourceBinding: entry.slice.source_binding as SourceBinding,
             storageBinding: entry.storageBinding,
@@ -6320,6 +6594,9 @@ async function persistApprovedBatchRowsAtomically(input: {
     requireSqliteReviewedInstancesActive(
       input.resolvedEntries.flatMap((entry) =>
         reviewedInstanceChecksForGrant({
+          acceptedRevisionFulfillment: Boolean(
+            readRetainedSourceDeclarationSnapshot(entry.slice).accepted_revision_reference
+          ),
           resolvedStreams: entry.resolvedStreams,
           sourceBinding: entry.slice.source_binding as SourceBinding,
           storageBinding: entry.storageBinding,
@@ -6706,6 +6983,7 @@ export async function approveGrant(
     issuedAt,
     persistedStorageBinding,
     reviewedInstanceChecks: reviewedInstanceChecksForGrant({
+      acceptedRevisionFulfillment: Boolean(readRetainedSourceDeclarationSnapshot(request).accepted_revision_reference),
       resolvedStreams,
       sourceBinding,
       storageBinding,
@@ -7841,7 +8119,7 @@ export async function createHostedMcpGrantPackage({
     request.source_binding = describeSourceBinding(sourceBinding);
     request.storage_binding = normalizeStorageBinding(storageBinding);
     const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
-    await retainSourceDeclarationSnapshot(request, sourceBinding, manifest);
+    await retainSourceDeclarationSnapshot(request, sourceBinding, storageBinding, manifest, opts);
     const resolvedStreams = await resolvePendingRequestForApproval(request, sourceBinding, storageBinding, subjectId);
     const { grant, token } = await persistChildGrantForPackage({
       registeredClient: childRegisteredClient,
