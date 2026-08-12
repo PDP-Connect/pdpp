@@ -1724,6 +1724,7 @@ test("grant-scoped MCP device authorization issues a client token usable at /mcp
     assert.ok(token.body.access_token);
     assert.ok(token.body.grant_id);
     assert.equal(token.body.grant_package_id, undefined);
+    assert.equal(token.body.expires_in, undefined, "device token response omits an expiry absent from storage");
     const tokenAccessToken = stringField(token.body, "access_token");
 
     const introspected = await fetchJson(`${asUrl}/introspect`, {
@@ -1739,6 +1740,7 @@ test("grant-scoped MCP device authorization issues a client token usable at /mcp
     assert.equal(introspected.body.pdpp_token_kind, "client");
     assert.equal(introspected.body.client_id, client.client_id);
     assert.equal(introspected.body.grant_id, token.body.grant_id);
+    assert.equal(Object.hasOwn(introspected.body, "exp"), false, "introspection omits an absent expiry");
 
     const tools = await postMcpJson(rsUrl, tokenAccessToken, {
       id: 2,

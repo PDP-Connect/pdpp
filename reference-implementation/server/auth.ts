@@ -7185,16 +7185,14 @@ async function buildGrantScopedDeviceTokenPayload(row: DbRow, clientId: string):
   if (tokenInfo.client_id !== clientId) {
     throw buildGrantScopedDeviceExchangeError("invalid_client", "Client token is not bound to this client_id", row);
   }
-  const exp =
-    typeof tokenInfo.exp === "number" && Number.isFinite(tokenInfo.exp) && tokenInfo.exp
-      ? tokenInfo.exp
-      : Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
   const payload: Record<string, unknown> = {
     access_token: row.token_id,
-    expires_in: Math.max(exp - Math.floor(Date.now() / 1000), 0),
     token_type: "Bearer",
     trace_context: getPersistedPendingTraceContext(row),
   };
+  if (typeof tokenInfo.exp === "number" && Number.isFinite(tokenInfo.exp)) {
+    payload.expires_in = Math.max(tokenInfo.exp - Math.floor(Date.now() / 1000), 0);
+  }
   if (tokenInfo.pdpp_token_kind === "mcp_package") {
     payload.grant_package_id = tokenInfo.grant_package_id || row.grant_id || null;
   } else {
