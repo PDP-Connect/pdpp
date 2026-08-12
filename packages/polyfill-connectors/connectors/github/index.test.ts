@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { after, afterEach, before, test } from "node:test";
+import { after, before, type TestContext, test } from "node:test";
 import { evaluateStreamCoherence } from "@pdpp/reference-contract/evidence";
 import { closeDb, getDb, initDb } from "../../../../reference-implementation/server/db.ts";
 import { drainConnectorInstanceIndexWork, ingestRecord } from "../../../../reference-implementation/server/records.ts";
@@ -23,8 +23,6 @@ import {
   resolvePrSearchWindows,
   type StreamCtx,
 } from "./index.ts";
-
-const ORIGINAL_FETCH = globalThis.fetch;
 
 // The connector now ships adaptive pacing on by default (the shared governor's
 // default-on rate control). A per-run governor sleeps the real GCRA interval
@@ -59,26 +57,31 @@ after(async () => {
   closeDb();
 });
 
-afterEach(() => {
-  globalThis.fetch = ORIGINAL_FETCH;
-});
+type GithubFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-function installUserFetch(): void {
-  globalThis.fetch = async () =>
-    new Response(
-      JSON.stringify({
-        id: 42,
-        login: "octocat",
-        name: "Octo Cat",
-        public_repos: 10,
-        public_gists: 2,
-        followers: 100,
-        following: 5,
-        created_at: "2020-01-01T00:00:00Z",
-        updated_at: "2026-06-03T00:00:00Z",
-      }),
-      { status: 200 }
-    );
+function mockFetch(t: TestContext, implementation: GithubFetch): void {
+  t.mock.method(globalThis, "fetch", implementation);
+}
+
+function installUserFetch(t: TestContext): void {
+  mockFetch(
+    t,
+    async () =>
+      new Response(
+        JSON.stringify({
+          id: 42,
+          login: "octocat",
+          name: "Octo Cat",
+          public_repos: 10,
+          public_gists: 2,
+          followers: 100,
+          following: 5,
+          created_at: "2020-01-01T00:00:00Z",
+          updated_at: "2026-06-03T00:00:00Z",
+        }),
+        { status: 200 }
+      )
+  );
 }
 
 interface CapturedSkip {
@@ -171,8 +174,8 @@ function makeCtx(
   };
 }
 
-test("collectUser: user_stats-only scope emits only user_stats records and state", async () => {
-  installUserFetch();
+test("collectUser: user_stats-only scope emits only user_stats records and state", async (t: TestContext) => {
+  installUserFetch(t);
   const { ctx, records, states } = makeCtx(["user_stats"]);
   await collectUser(ctx);
 
@@ -188,8 +191,8 @@ test("collectUser: user_stats-only scope emits only user_stats records and state
   assert.equal(records[0]?.data.followers, 100);
 });
 
-test("collectUser: user-only scope emits only user entity records and state", async () => {
-  installUserFetch();
+test("collectUser: user-only scope emits only user entity records and state", async (t: TestContext) => {
+  installUserFetch(t);
   const { ctx, records, states } = makeCtx(["user"]);
   await collectUser(ctx);
 
@@ -205,8 +208,8 @@ test("collectUser: user-only scope emits only user entity records and state", as
   assert.equal("followers" in (records[0]?.data ?? {}), false);
 });
 
-test("collectUser: records the user cursor on ctx.userCursor as the warm-start carrier", async () => {
-  installUserFetch();
+test("collectUser: records the user cursor on ctx.userCursor as the warm-start carrier", async (t: TestContext) => {
+  installUserFetch(t);
   const { ctx, states } = makeCtx(["user"]);
   await collectUser(ctx);
 
@@ -220,8 +223,8 @@ test("collectUser: records the user cursor on ctx.userCursor as the warm-start c
   );
 });
 
-test("warm-start: pacing fields merged onto the user cursor round-trip through readPersistedPacingInterval", () => {
-  installUserFetch();
+test("warm-start: pacing fields merged onto the user cursor round-trip through readPersistedPacingInterval", (t: TestContext) => {
+  installUserFetch(t);
   // Simulate the collect-end persist: the user cursor + the learned pacing fields.
   const now = 2_000_000;
   const persistedUserCursor = {
@@ -256,10 +259,11 @@ function starredEntry(id: number, withRepo: boolean): Record<string, unknown> {
   };
 }
 
-test("collectStarred: entries with no repo are counted and surfaced as one bounded SKIP_RESULT", async () => {
+test("collectStarred: entries with no repo are counted and surfaced as one bounded SKIP_RESULT", async (t: TestContext) => {
   // One valid entry, two with a missing `repo` (repo deleted/private since star).
-  globalThis.fetch = () =>
-    Promise.resolve(jsonResponse([starredEntry(1, true), starredEntry(2, false), starredEntry(3, false)]));
+  mockFetch(t, () =>
+    Promise.resolve(jsonResponse([starredEntry(1, true), starredEntry(2, false), starredEntry(3, false)]))
+  );
   const { ctx, records, skips, states } = makeCtx(["starred"]);
   await collectStarred(ctx);
 
@@ -281,8 +285,8 @@ test("collectStarred: entries with no repo are counted and surfaced as one bound
   );
 });
 
-test("collectStarred: no drops emits no SKIP_RESULT (run looks complete only when it is)", async () => {
-  globalThis.fetch = () => Promise.resolve(jsonResponse([starredEntry(1, true), starredEntry(2, true)]));
+test("collectStarred: no drops emits no SKIP_RESULT (run looks complete only when it is)", async (t: TestContext) => {
+  mockFetch(t, () => Promise.resolve(jsonResponse([starredEntry(1, true), starredEntry(2, true)])));
   const { ctx, records, skips } = makeCtx(["starred"]);
   await collectStarred(ctx);
 
@@ -290,8 +294,8 @@ test("collectStarred: no drops emits no SKIP_RESULT (run looks complete only whe
   assert.equal(skips.length, 0);
 });
 
-test("collectStarred: singular grammar for a single dropped entry", async () => {
-  globalThis.fetch = () => Promise.resolve(jsonResponse([starredEntry(1, false)]));
+test("collectStarred: singular grammar for a single dropped entry", async (t: TestContext) => {
+  mockFetch(t, () => Promise.resolve(jsonResponse([starredEntry(1, false)])));
   const { ctx, skips } = makeCtx(["starred"]);
   await collectStarred(ctx);
 
@@ -319,8 +323,12 @@ function prSearchItem(id: number, repo: string): Record<string, unknown> {
  *  - GET /repos/{owner}/{repo}/pulls/{n} → per-PR detail (may 500)
  * `failDetailForRepos` returns a non-fatal 400 for those repos' detail fetch.
  */
-function installPrFetch(items: Record<string, unknown>[], failDetailForRepos: ReadonlySet<string>): void {
-  globalThis.fetch = (input: string | URL | Request) => {
+function installPrFetch(
+  t: TestContext,
+  items: Record<string, unknown>[],
+  failDetailForRepos: ReadonlySet<string>
+): void {
+  mockFetch(t, (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.endsWith("/user")) {
       return Promise.resolve(jsonResponse({ id: 42, login: "octocat" }));
@@ -338,7 +346,7 @@ function installPrFetch(items: Record<string, unknown>[], failDetailForRepos: Re
       return Promise.resolve(jsonResponse({ merged_at: "2026-05-10T00:00:00Z", commits: 3 }));
     }
     return Promise.resolve(jsonResponse({}));
-  };
+  });
 }
 
 const REPLAY_CONNECTOR_ID = "github";
@@ -390,9 +398,9 @@ function readDurablePullRequestRows(connectorInstanceId: string): Array<{
   }>;
 }
 
-test("collectPullRequests: detail-fetch failures emit one bounded degradation SKIP_RESULT, records still emitted", async () => {
+test("collectPullRequests: detail-fetch failures emit one bounded degradation SKIP_RESULT, records still emitted", async (t: TestContext) => {
   const items = [prSearchItem(1, "owner/a"), prSearchItem(2, "owner/b"), prSearchItem(3, "owner/c")];
-  installPrFetch(items, new Set(["owner/b", "owner/c"]));
+  installPrFetch(t, items, new Set(["owner/b", "owner/c"]));
   const { ctx, records, skips } = makeCtx(["pull_requests"]);
   await collectPullRequests(ctx);
 
@@ -411,9 +419,9 @@ test("collectPullRequests: detail-fetch failures emit one bounded degradation SK
   assert.deepEqual(skips[0]?.diagnostics, { detail_failed: 2, total_emitted: 3, total_seen: 3 });
 });
 
-test("collectPullRequests: all details fetched → no degradation SKIP_RESULT", async () => {
+test("collectPullRequests: all details fetched → no degradation SKIP_RESULT", async (t: TestContext) => {
   const items = [prSearchItem(1, "owner/a"), prSearchItem(2, "owner/b")];
-  installPrFetch(items, new Set());
+  installPrFetch(t, items, new Set());
   const { ctx, records, skips } = makeCtx(["pull_requests"]);
   await collectPullRequests(ctx);
 
@@ -421,9 +429,9 @@ test("collectPullRequests: all details fetched → no degradation SKIP_RESULT", 
   assert.equal(skips.length, 0);
 });
 
-test("collectPullRequests: degradation denominator counts emitted records, not filtered search hits", async () => {
+test("collectPullRequests: degradation denominator counts emitted records, not filtered search hits", async (t: TestContext) => {
   const items = [prSearchItem(1, "owner/a"), prSearchItem(2, "owner/b"), prSearchItem(3, "owner/c")];
-  installPrFetch(items, new Set(["owner/b"]));
+  installPrFetch(t, items, new Set(["owner/b"]));
   const { ctx, records, skips } = makeCtx(["pull_requests"]);
   ctx.requested.set("pull_requests", {
     name: "pull_requests",
@@ -511,12 +519,13 @@ interface WindowedPrFetch {
  * ignore the query (which would hide double-counting).
  */
 function installWindowedPrFetch(
+  t: TestContext,
   createdAt: string,
   itemsByYear: Record<number, Record<string, unknown>[]>,
   totalCountByYear: Record<number, number> = {}
 ): WindowedPrFetch {
   const handle: WindowedPrFetch = { searchPaths: [] };
-  globalThis.fetch = (input: string | URL | Request) => {
+  mockFetch(t, (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.endsWith("/user")) {
       return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: createdAt }));
@@ -534,7 +543,7 @@ function installWindowedPrFetch(
       return Promise.resolve(jsonResponse({ merged_at: "2025-01-01T00:00:00Z", commits: 1 }));
     }
     return Promise.resolve(jsonResponse({}));
-  };
+  });
   return handle;
 }
 
@@ -550,9 +559,9 @@ function prSearchItemCreated(id: number, repo: string, createdYear: number): Rec
   };
 }
 
-test("collectPullRequests: full resync partitions by created-year and unions every window", async () => {
+test("collectPullRequests: full resync partitions by created-year and unions every window", async (t: TestContext) => {
   // Account created mid-2024 → windows 2026, 2025, 2024. A PR in each year.
-  const fetchHandle = installWindowedPrFetch("2024-03-01T00:00:00Z", {
+  const fetchHandle = installWindowedPrFetch(t, "2024-03-01T00:00:00Z", {
     2026: [prSearchItemCreated(1, "owner/a", 2026)],
     2025: [prSearchItemCreated(2, "owner/b", 2025)],
     2024: [prSearchItemCreated(3, "owner/c", 2024)],
@@ -581,9 +590,10 @@ test("collectPullRequests: full resync partitions by created-year and unions eve
   assert.equal((states[0]?.cursor as { last_updated_at?: string })?.last_updated_at, "2026-07-01T00:00:00Z");
 });
 
-test("collectPullRequests: a window over the search cap fails without a checkpoint", async () => {
+test("collectPullRequests: a window over the search cap fails without a checkpoint", async (t: TestContext) => {
   // Single window (account created this year) but it reports 1023 PRs > 1000.
   const fetchHandle = installWindowedPrFetch(
+    t,
     "2026-01-01T00:00:00Z",
     { 2026: [prSearchItemCreated(1, "owner/a", 2026), prSearchItemCreated(2, "owner/b", 2026)] },
     { 2026: 1023 }
@@ -609,8 +619,9 @@ test("collectPullRequests: a window over the search cap fails without a checkpoi
   assert.equal(states.length, 0, "a search cap gap must not advance the pull-request cursor");
 });
 
-test("collectPullRequests: windows under the cap emit no cap gap (honest only when truncated)", async () => {
+test("collectPullRequests: windows under the cap emit no cap gap (honest only when truncated)", async (t: TestContext) => {
   installWindowedPrFetch(
+    t,
     "2025-01-01T00:00:00Z",
     { 2026: [prSearchItemCreated(1, "owner/a", 2026)], 2025: [prSearchItemCreated(2, "owner/b", 2025)] },
     { 2026: 1000, 2025: 999 }
@@ -624,15 +635,15 @@ test("collectPullRequests: windows under the cap emit no cap gap (honest only wh
   assert.equal(skips.filter((s) => s.reason === "pr_search_cap_truncated").length, 0);
 });
 
-test("collectPullRequests: incremental run (cursor set) issues one unwindowed updated:>= query", async () => {
-  const fetchHandle = installWindowedPrFetch("2018-01-01T00:00:00Z", {});
+test("collectPullRequests: incremental run (cursor set) issues one unwindowed updated:>= query", async (t: TestContext) => {
+  const fetchHandle = installWindowedPrFetch(t, "2018-01-01T00:00:00Z", {});
   // Route the unwindowed query (no created: qualifier) to a couple of items.
   // Both updated after the cursor so neither is filtered by the since cutoff.
   const items = [
     { ...prSearchItemCreated(1, "owner/a", 2026), updated_at: "2026-05-20T00:00:00Z" },
     { ...prSearchItemCreated(2, "owner/b", 2018), updated_at: "2026-05-10T00:00:00Z" },
   ];
-  globalThis.fetch = (input: string | URL | Request) => {
+  mockFetch(t, (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.endsWith("/user")) {
       return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2018-01-01T00:00:00Z" }));
@@ -645,7 +656,7 @@ test("collectPullRequests: incremental run (cursor set) issues one unwindowed up
       return Promise.resolve(jsonResponse({ merged_at: "2025-01-01T00:00:00Z", commits: 1 }));
     }
     return Promise.resolve(jsonResponse({}));
-  };
+  });
   const { ctx, records } = makeCtx(["pull_requests"], {
     pull_requests: { last_updated_at: "2026-05-01T00:00:00Z" },
   });
@@ -702,9 +713,10 @@ function gistItem(id: number, updatedAt: string): Record<string, unknown> {
   };
 }
 
-test("collectRepositories: declares considered = repositories enumerated (complete when all emitted)", async () => {
-  globalThis.fetch = () =>
-    Promise.resolve(jsonResponse([repoItem(1, "2026-06-01T00:00:00Z"), repoItem(2, "2026-05-01T00:00:00Z")]));
+test("collectRepositories: declares considered = repositories enumerated (complete when all emitted)", async (t: TestContext) => {
+  mockFetch(t, () =>
+    Promise.resolve(jsonResponse([repoItem(1, "2026-06-01T00:00:00Z"), repoItem(2, "2026-05-01T00:00:00Z")]))
+  );
   const { ctx, records, coverages } = makeCtx(["repositories"]);
   await collectRepositories(ctx);
 
@@ -718,10 +730,11 @@ test("collectRepositories: declares considered = repositories enumerated (comple
   assert.equal(cov?.considered, 2);
 });
 
-test("collectRepositories: cursor-stop page counts toward considered (enumerated, not collected)", async () => {
+test("collectRepositories: cursor-stop page counts toward considered (enumerated, not collected)", async (t: TestContext) => {
   // Page has a new repo then one at/older than the cursor → stop after the first.
-  globalThis.fetch = () =>
-    Promise.resolve(jsonResponse([repoItem(1, "2026-06-01T00:00:00Z"), repoItem(2, "2026-01-01T00:00:00Z")]));
+  mockFetch(t, () =>
+    Promise.resolve(jsonResponse([repoItem(1, "2026-06-01T00:00:00Z"), repoItem(2, "2026-01-01T00:00:00Z")]))
+  );
   const { ctx, records, coverages } = makeCtx(["repositories"], {
     repositories: { last_pushed_at: "2026-03-01T00:00:00Z" },
   });
@@ -735,9 +748,10 @@ test("collectRepositories: cursor-stop page counts toward considered (enumerated
   assert.equal(cov?.considered, 2);
 });
 
-test("collectStarred: dropped malformed entries make considered exceed collected (honest partial)", async () => {
-  globalThis.fetch = () =>
-    Promise.resolve(jsonResponse([starredEntry(1, true), starredEntry(2, false), starredEntry(3, true)]));
+test("collectStarred: dropped malformed entries make considered exceed collected (honest partial)", async (t: TestContext) => {
+  mockFetch(t, () =>
+    Promise.resolve(jsonResponse([starredEntry(1, true), starredEntry(2, false), starredEntry(3, true)]))
+  );
   const { ctx, records, coverages } = makeCtx(["starred"]);
   await collectStarred(ctx);
 
@@ -747,15 +761,16 @@ test("collectStarred: dropped malformed entries make considered exceed collected
   assert.equal(cov?.considered, 3);
 });
 
-test("collectIssues: until-filtered issues are considered-not-collected (considered > collected)", async () => {
-  globalThis.fetch = () =>
+test("collectIssues: until-filtered issues are considered-not-collected (considered > collected)", async (t: TestContext) => {
+  mockFetch(t, () =>
     Promise.resolve(
       jsonResponse([
         issueItem(1, "2026-06-01T00:00:00Z"),
         issueItem(2, "2026-06-10T00:00:00Z"),
         issueItem(3, "2026-05-01T00:00:00Z"),
       ])
-    );
+    )
+  );
   const { ctx, records, coverages } = makeCtx(["issues"]);
   // until cutoff excludes the two issues updated at/after it; they were still
   // fetched and weighed → considered counts them, collected does not.
@@ -767,9 +782,10 @@ test("collectIssues: until-filtered issues are considered-not-collected (conside
   assert.equal(cov?.considered, 3);
 });
 
-test("collectGists: declares considered = gists enumerated", async () => {
-  globalThis.fetch = () =>
-    Promise.resolve(jsonResponse([gistItem(1, "2026-06-01T00:00:00Z"), gistItem(2, "2026-05-20T00:00:00Z")]));
+test("collectGists: declares considered = gists enumerated", async (t: TestContext) => {
+  mockFetch(t, () =>
+    Promise.resolve(jsonResponse([gistItem(1, "2026-06-01T00:00:00Z"), gistItem(2, "2026-05-20T00:00:00Z")]))
+  );
   const { ctx, records, coverages } = makeCtx(["gists"]);
   await collectGists(ctx);
 
@@ -778,9 +794,9 @@ test("collectGists: declares considered = gists enumerated", async () => {
   assert.equal(cov?.considered, 2);
 });
 
-test("collectPullRequests: declares considered = search hits drained when no window is cap-truncated", async () => {
+test("collectPullRequests: declares considered = search hits drained when no window is cap-truncated", async (t: TestContext) => {
   const items = [prSearchItem(1, "owner/a"), prSearchItem(2, "owner/b")];
-  installPrFetch(items, new Set());
+  installPrFetch(t, items, new Set());
   const { ctx, coverages } = makeCtx(["pull_requests"]);
   await collectPullRequests(ctx);
 
@@ -789,10 +805,11 @@ test("collectPullRequests: declares considered = search hits drained when no win
   assert.equal(cov?.considered, 2);
 });
 
-test("collectPullRequests: a cap-truncated window declares NO considered (inventory unknowable)", async () => {
+test("collectPullRequests: a cap-truncated window declares NO considered (inventory unknowable)", async (t: TestContext) => {
   // 1023 reported > 1000 cap → the full inventory cannot be enumerated, so the
   // run must leave considered unknown and rely on its terminal-gap SKIP_RESULT.
   installWindowedPrFetch(
+    t,
     "2026-01-01T00:00:00Z",
     { 2026: [prSearchItemCreated(1, "owner/a", 2026), prSearchItemCreated(2, "owner/b", 2026)] },
     { 2026: 1023 }
@@ -809,11 +826,11 @@ test("collectPullRequests: a cap-truncated window declares NO considered (invent
   assert.ok(skips.some((s) => s.reason === "pr_search_cap_truncated"));
 });
 
-test("declareListConsidered: never aliases considered to the emitted count", async () => {
+test("declareListConsidered: never aliases considered to the emitted count", async (t: TestContext) => {
   // A repositories page where every item is collected still declares considered
   // from the enumerated page size, not by reading back the emit counter. Proven
   // by an empty page: zero enumerated → considered 0, never omitted-as-unknown.
-  globalThis.fetch = () => Promise.resolve(jsonResponse([]));
+  mockFetch(t, () => Promise.resolve(jsonResponse([])));
   const { ctx, records, coverages } = makeCtx(["repositories"]);
   await collectRepositories(ctx);
 
@@ -834,8 +851,8 @@ test("declareListConsidered: never aliases considered to the emitted count", asy
 // the real `evaluateStreamCoherence` oracle from `@pdpp/reference-contract`, not
 // a reimplementation of its rules.
 
-test("collectUser: FIX proof — user declares singleton_presence coverage so the coherence contract proves it, not checkpoint_only", async () => {
-  installUserFetch();
+test("collectUser: FIX proof — user declares singleton_presence coverage so the coherence contract proves it, not checkpoint_only", async (t: TestContext) => {
+  installUserFetch(t);
   const { ctx, coverages } = makeCtx(["user"]);
   await collectUser(ctx);
 
@@ -876,8 +893,8 @@ test("collectUser: BEFORE-FIX regression guard — a considered-less declaration
   assert.deepEqual(verdict, { proven: false, reason: "checkpoint_only" });
 });
 
-test("collectUser: user_stats also declares singleton_presence coverage", async () => {
-  installUserFetch();
+test("collectUser: user_stats also declares singleton_presence coverage", async (t: TestContext) => {
+  installUserFetch(t);
   const { ctx, coverages } = makeCtx(["user_stats"]);
   await collectUser(ctx);
 
@@ -887,8 +904,8 @@ test("collectUser: user_stats also declares singleton_presence coverage", async 
   assert.equal(cov?.covered, 1);
 });
 
-test("collectUser: no coverage declared for a stream that was not requested", async () => {
-  installUserFetch();
+test("collectUser: no coverage declared for a stream that was not requested", async (t: TestContext) => {
+  installUserFetch(t);
   const { ctx, coverages } = makeCtx(["user"]);
   await collectUser(ctx);
 
@@ -899,11 +916,11 @@ test("collectUser: no coverage declared for a stream that was not requested", as
   );
 });
 
-test("collectRepositories: zero-changed steady state declares covered === considered (proves complete, not partial)", async () => {
+test("collectRepositories: zero-changed steady state declares covered === considered (proves complete, not partial)", async (t: TestContext) => {
   // Every repo on the page is already at/older than the cursor: the FIRST item
   // triggers the stop, so evaluated = considered = covered = 1 even though
   // collected = 0. This is the honest positive proof of a real no-op run.
-  globalThis.fetch = () => Promise.resolve(jsonResponse([repoItem(1, "2026-01-01T00:00:00Z")]));
+  mockFetch(t, () => Promise.resolve(jsonResponse([repoItem(1, "2026-01-01T00:00:00Z")])));
   const { ctx, records, coverages } = makeCtx(["repositories"], {
     repositories: { last_pushed_at: "2026-03-01T00:00:00Z" },
   });
@@ -928,21 +945,22 @@ test("collectRepositories: zero-changed steady state declares covered === consid
   assert.deepEqual(verdict, { proven: true, reason: "enumeration_boundary" });
 });
 
-test("collectRepositories: FIX proof — a page tail past the cursor stop is never counted toward considered", async () => {
+test("collectRepositories: FIX proof — a page tail past the cursor stop is never counted toward considered", async (t: TestContext) => {
   // Three items on one page: item 1 is new, item 2 matches the cursor (stop),
   // item 3 sits after the match and is never visited by the loop. Before the
   // fix, `considered` used the raw page length (3); the honest count is only
   // the 2 items the loop actually walked (item1 emitted, item2 confirmed the
   // stop) — item3 was never inspected, so counting it would be a fabricated
   // boundary claim, not a measured one.
-  globalThis.fetch = () =>
+  mockFetch(t, () =>
     Promise.resolve(
       jsonResponse([
         repoItem(1, "2026-06-01T00:00:00Z"),
         repoItem(2, "2026-01-01T00:00:00Z"),
         repoItem(3, "2025-01-01T00:00:00Z"),
       ])
-    );
+    )
+  );
   const { ctx, records, coverages } = makeCtx(["repositories"], {
     repositories: { last_pushed_at: "2026-03-01T00:00:00Z" },
   });
@@ -958,9 +976,10 @@ test("collectRepositories: FIX proof — a page tail past the cursor stop is nev
   assert.equal(cov?.covered, 2, "both evaluated items were accounted for: one emitted, one the confirming stop match");
 });
 
-test("collectStarred: covered excludes dropped entries so a drop reads an honest partial under the real oracle", async () => {
-  globalThis.fetch = () =>
-    Promise.resolve(jsonResponse([starredEntry(1, true), starredEntry(2, false), starredEntry(3, true)]));
+test("collectStarred: covered excludes dropped entries so a drop reads an honest partial under the real oracle", async (t: TestContext) => {
+  mockFetch(t, () =>
+    Promise.resolve(jsonResponse([starredEntry(1, true), starredEntry(2, false), starredEntry(3, true)]))
+  );
   const { ctx, coverages } = makeCtx(["starred"]);
   await collectStarred(ctx);
 
@@ -986,8 +1005,8 @@ test("collectStarred: covered excludes dropped entries so a drop reads an honest
   );
 });
 
-test("collectStarred: zero drops → covered === considered (steady state proves complete)", async () => {
-  globalThis.fetch = () => Promise.resolve(jsonResponse([starredEntry(1, true), starredEntry(2, true)]));
+test("collectStarred: zero drops → covered === considered (steady state proves complete)", async (t: TestContext) => {
+  mockFetch(t, () => Promise.resolve(jsonResponse([starredEntry(1, true), starredEntry(2, true)])));
   const { ctx, coverages } = makeCtx(["starred"]);
   await collectStarred(ctx);
 
@@ -996,15 +1015,16 @@ test("collectStarred: zero drops → covered === considered (steady state proves
   assert.equal(cov?.covered, 2);
 });
 
-test("collectIssues: considered > collected (until-filtered) but fully covered — proves complete, not partial", async () => {
-  globalThis.fetch = () =>
+test("collectIssues: considered > collected (until-filtered) but fully covered — proves complete, not partial", async (t: TestContext) => {
+  mockFetch(t, () =>
     Promise.resolve(
       jsonResponse([
         issueItem(1, "2026-06-01T00:00:00Z"),
         issueItem(2, "2026-06-10T00:00:00Z"),
         issueItem(3, "2026-05-01T00:00:00Z"),
       ])
-    );
+    )
+  );
   const { ctx, records, coverages } = makeCtx(["issues"]);
   ctx.requested.set("issues", { name: "issues", time_range: { until: "2026-06-05T00:00:00Z" } });
   await collectIssues(ctx);
@@ -1036,9 +1056,10 @@ test("collectIssues: considered > collected (until-filtered) but fully covered �
   );
 });
 
-test("collectGists: covered equals considered (every fetched gist is accounted for)", async () => {
-  globalThis.fetch = () =>
-    Promise.resolve(jsonResponse([gistItem(1, "2026-06-01T00:00:00Z"), gistItem(2, "2026-05-20T00:00:00Z")]));
+test("collectGists: covered equals considered (every fetched gist is accounted for)", async (t: TestContext) => {
+  mockFetch(t, () =>
+    Promise.resolve(jsonResponse([gistItem(1, "2026-06-01T00:00:00Z"), gistItem(2, "2026-05-20T00:00:00Z")]))
+  );
   const { ctx, coverages } = makeCtx(["gists"]);
   await collectGists(ctx);
 
@@ -1047,9 +1068,9 @@ test("collectGists: covered equals considered (every fetched gist is accounted f
   assert.equal(cov?.covered, 2);
 });
 
-test("collectPullRequests: covered equals considered when no detail fetch fails (degraded records still count as accounted for)", async () => {
+test("collectPullRequests: covered equals considered when no detail fetch fails (degraded records still count as accounted for)", async (t: TestContext) => {
   const items = [prSearchItem(1, "owner/a"), prSearchItem(2, "owner/b")];
-  installPrFetch(items, new Set(["owner/b"]));
+  installPrFetch(t, items, new Set(["owner/b"]));
   const { ctx, coverages } = makeCtx(["pull_requests"]);
   await collectPullRequests(ctx);
 
@@ -1062,8 +1083,9 @@ test("collectPullRequests: covered equals considered when no detail fetch fails 
   );
 });
 
-test("collectPullRequests: provider/list failure counterweight — a cap-truncated window still declares no covered (unknowable, not falsely proven)", async () => {
+test("collectPullRequests: provider/list failure counterweight — a cap-truncated window still declares no covered (unknowable, not falsely proven)", async (t: TestContext) => {
   installWindowedPrFetch(
+    t,
     "2026-01-01T00:00:00Z",
     { 2026: [prSearchItemCreated(1, "owner/a", 2026), prSearchItemCreated(2, "owner/b", 2026)] },
     { 2026: 1023 }
@@ -1080,9 +1102,9 @@ test("collectPullRequests: provider/list failure counterweight — a cap-truncat
 
 // ─── Pagination guard mutation coverage ───────────────────────────────────
 
-function installRepeatingNextFetch(stream: string): { calls: () => number } {
+function installRepeatingNextFetch(t: TestContext, stream: string): { calls: () => number } {
   let callCount = 0;
-  globalThis.fetch = (input: string | URL | Request) => {
+  mockFetch(t, (input: string | URL | Request) => {
     callCount += 1;
     const url = typeof input === "string" ? input : input.toString();
     if (url.endsWith("/user")) {
@@ -1093,7 +1115,7 @@ function installRepeatingNextFetch(stream: string): { calls: () => number } {
       return Promise.resolve(jsonResponse({ total_count: 0, items: [] }, { headers: { link: next } }));
     }
     return Promise.resolve(jsonResponse([], { headers: { link: next } }));
-  };
+  });
   return { calls: () => callCount };
 }
 
@@ -1110,8 +1132,8 @@ const githubListCollectors: Array<{
 ];
 
 for (const { collect, name, stream } of githubListCollectors) {
-  test(`GitHub ${name}: repeated next link fails with retryable gap and no checkpoint`, async () => {
-    const handle = installRepeatingNextFetch(stream);
+  test(`GitHub ${name}: repeated next link fails with retryable gap and no checkpoint`, async (t: TestContext) => {
+    const handle = installRepeatingNextFetch(t, stream);
     const { ctx, coverages, skips, states } = makeCtx([stream]);
 
     await assert.rejects(() => collect(ctx), isRetryableGithubGap);
@@ -1127,8 +1149,8 @@ for (const { collect, name, stream } of githubListCollectors) {
 for (const { collect, name, stream: entryStream } of githubListCollectors.filter(
   ({ stream }) => stream !== "pull_requests"
 )) {
-  test(`GitHub ${name}: object list envelope fails closed without coverage or state`, async () => {
-    globalThis.fetch = () => Promise.resolve(jsonResponse({ items: [] }));
+  test(`GitHub ${name}: object list envelope fails closed without coverage or state`, async (t: TestContext) => {
+    mockFetch(t, () => Promise.resolve(jsonResponse({ items: [] })));
     const { ctx, coverages, records, states } = makeCtx([entryStream]);
 
     await assert.rejects(
@@ -1141,7 +1163,7 @@ for (const { collect, name, stream: entryStream } of githubListCollectors.filter
     assert.equal(states.length, 0, `${entryStream} malformed envelope must not advance state`);
   });
 
-  test(`GitHub ${name}: valid prefix survives a later malformed page without coverage or state`, async () => {
+  test(`GitHub ${name}: valid prefix survives a later malformed page without coverage or state`, async (t: TestContext) => {
     const firstPage = {
       repositories: [repoItem(1, "2026-06-01T00:00:00Z")],
       starred: [starredEntry(1, true)],
@@ -1149,7 +1171,7 @@ for (const { collect, name, stream: entryStream } of githubListCollectors.filter
       gists: [gistItem(1, "2026-06-01T00:00:00Z")],
     }[entryStream] as Record<string, unknown>[];
     let first = true;
-    globalThis.fetch = (input: string | URL | Request) => {
+    mockFetch(t, (input: string | URL | Request) => {
       const url = typeof input === "string" ? input : input.toString();
       if (first) {
         first = false;
@@ -1157,7 +1179,7 @@ for (const { collect, name, stream: entryStream } of githubListCollectors.filter
         return Promise.resolve(jsonResponse(firstPage, { headers: { link: `<${next}>; rel="next"` } }));
       }
       return Promise.resolve(jsonResponse({ items: [] }));
-    };
+    });
     const { ctx, coverages, records, states } = makeCtx([entryStream]);
 
     await assert.rejects(
@@ -1172,16 +1194,16 @@ for (const { collect, name, stream: entryStream } of githubListCollectors.filter
   });
 }
 
-test("GitHub repositories: fresh next links stop at the bounded page cap with a retryable gap", async () => {
+test("GitHub repositories: fresh next links stop at the bounded page cap with a retryable gap", async (t: TestContext) => {
   __setMaxGithubListPages(2);
   let calls = 0;
-  globalThis.fetch = (input: string | URL | Request) => {
+  mockFetch(t, (input: string | URL | Request) => {
     calls += 1;
     const current = new URL(typeof input === "string" ? input : input.toString());
     const next = new URL(current);
     next.searchParams.set("page", String(Number(current.searchParams.get("page") ?? "1") + 1));
     return Promise.resolve(jsonResponse([], { headers: { link: `<${next.href}>; rel="next"` } }));
-  };
+  });
   const { ctx, coverages, skips, states } = makeCtx(["repositories"]);
 
   try {
@@ -1207,8 +1229,8 @@ test("GitHub retryability: exhausted transient 503 text remains retryable", () =
   );
 });
 
-test("collectPullRequests: malformed search 200 fails closed without 0/0 coverage or state", async () => {
-  globalThis.fetch = (input: string | URL | Request) => {
+test("collectPullRequests: malformed search 200 fails closed without 0/0 coverage or state", async (t: TestContext) => {
+  mockFetch(t, (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.endsWith("/user")) {
       return Promise.resolve(
@@ -1218,7 +1240,7 @@ test("collectPullRequests: malformed search 200 fails closed without 0/0 coverag
       );
     }
     return Promise.resolve(jsonResponse({ total_count: 0 }));
-  };
+  });
   const { ctx, coverages, states } = makeCtx(["pull_requests"]);
 
   await assert.rejects(
@@ -1232,14 +1254,14 @@ test("collectPullRequests: malformed search 200 fails closed without 0/0 coverag
   assert.equal(states.length, 0, "malformed search must not advance the PR cursor");
 });
 
-test("collectPullRequests: positive total_count with empty items fails closed", async () => {
-  globalThis.fetch = (input: string | URL | Request) => {
+test("collectPullRequests: positive total_count with empty items fails closed", async (t: TestContext) => {
+  mockFetch(t, (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.endsWith("/user")) {
       return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
     }
     return Promise.resolve(jsonResponse({ total_count: 1, items: [] }));
-  };
+  });
   const { ctx, coverages, states, records } = makeCtx(["pull_requests"]);
 
   await assert.rejects(
@@ -1252,14 +1274,14 @@ test("collectPullRequests: positive total_count with empty items fails closed", 
   assert.equal(states.length, 0, "an impossible empty page must not advance the PR cursor");
 });
 
-test("collectPullRequests: invalid JSON search 200 also fails closed without state", async () => {
-  globalThis.fetch = (input: string | URL | Request) => {
+test("collectPullRequests: invalid JSON search 200 also fails closed without state", async (t: TestContext) => {
+  mockFetch(t, (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.endsWith("/user")) {
       return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
     }
     return Promise.resolve(new Response("<html>bad gateway</html>", { status: 200 }));
-  };
+  });
   const { ctx, coverages, states } = makeCtx(["pull_requests"]);
 
   await assert.rejects(
@@ -1271,10 +1293,10 @@ test("collectPullRequests: invalid JSON search 200 also fails closed without sta
   assert.equal(states.length, 0);
 });
 
-test("collectPullRequests: shared Retry-After retry recovers a transient search 429", async () => {
+test("collectPullRequests: shared Retry-After retry recovers a transient search 429", async (t: TestContext) => {
   const sleeps: number[] = [];
   let searchCalls = 0;
-  globalThis.fetch = (input: string | URL | Request) => {
+  mockFetch(t, (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.endsWith("/user")) {
       return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
@@ -1288,7 +1310,7 @@ test("collectPullRequests: shared Retry-After retry recovers a transient search 
       );
     }
     return Promise.resolve(jsonResponse({}));
-  };
+  });
   const { ctx, states } = makeCtx(
     ["pull_requests"],
     {},
@@ -1306,11 +1328,11 @@ test("collectPullRequests: shared Retry-After retry recovers a transient search 
 });
 
 for (const failure of ["429", "transport"] as const) {
-  test(`collectPullRequests: ${failure} on a later detail retains only the valid prefix and withholds completion`, async () => {
+  test(`collectPullRequests: ${failure} on a later detail retains only the valid prefix and withholds completion`, async (t: TestContext) => {
     const connectorInstanceId = `cin_github_api_green_replay_${failure}`;
     const items = [prSearchItem(1, "owner/a"), prSearchItem(2, "owner/b")];
     let detailCalls = 0;
-    globalThis.fetch = (input: string | URL | Request) => {
+    mockFetch(t, (input: string | URL | Request) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.endsWith("/user")) {
         return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
@@ -1328,7 +1350,7 @@ for (const failure of ["429", "transport"] as const) {
           : Promise.reject(new Error("fetch failed", { cause: new Error("socket reset ECONNRESET") }));
       }
       return Promise.resolve(jsonResponse({}));
-    };
+    });
     const { ctx, coverages, records, states } = makeCtx(["pull_requests"]);
 
     await assert.rejects(() => collectPullRequests(ctx));
@@ -1350,7 +1372,7 @@ for (const failure of ["429", "transport"] as const) {
       "the fatal run's retained prefix is durably present before replay"
     );
 
-    installPrFetch(items, new Set());
+    installPrFetch(t, items, new Set());
     const replay = makeCtx(["pull_requests"]);
     await collectPullRequests(replay.ctx);
     assert.deepEqual(
@@ -1388,8 +1410,8 @@ for (const failure of ["429", "transport"] as const) {
   });
 }
 
-test("collectPullRequests: exhausted transient detail 503 bubbles instead of degrading to a checkpoint", async () => {
-  globalThis.fetch = (input: string | URL | Request) => {
+test("collectPullRequests: exhausted transient detail 503 bubbles instead of degrading to a checkpoint", async (t: TestContext) => {
+  mockFetch(t, (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.endsWith("/user")) {
       return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
@@ -1401,7 +1423,7 @@ test("collectPullRequests: exhausted transient detail 503 bubbles instead of deg
       return Promise.resolve(new Response("temporary", { status: 503 }));
     }
     return Promise.resolve(jsonResponse({}));
-  };
+  });
   const { ctx, states } = makeCtx(["pull_requests"]);
 
   await assert.rejects(
@@ -1412,8 +1434,8 @@ test("collectPullRequests: exhausted transient detail 503 bubbles instead of deg
 });
 
 for (const status of [502, 504]) {
-  test(`collectPullRequests: exhausted transient detail ${status} bubbles as incomplete`, async () => {
-    globalThis.fetch = (input: string | URL | Request) => {
+  test(`collectPullRequests: exhausted transient detail ${status} bubbles as incomplete`, async (t: TestContext) => {
+    mockFetch(t, (input: string | URL | Request) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.endsWith("/user")) {
         return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
@@ -1425,7 +1447,7 @@ for (const status of [502, 504]) {
         return Promise.resolve(new Response("temporary", { status }));
       }
       return Promise.resolve(jsonResponse({}));
-    };
+    });
     const { ctx, states } = makeCtx(["pull_requests"]);
 
     await assert.rejects(
@@ -1436,8 +1458,8 @@ for (const status of [502, 504]) {
   });
 }
 
-test("collectPullRequests: PR-detail 429 is terminal without progress, coverage, records, or state", async () => {
-  globalThis.fetch = (input: string | URL | Request) => {
+test("collectPullRequests: PR-detail 429 is terminal without progress, coverage, records, or state", async (t: TestContext) => {
+  mockFetch(t, (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.endsWith("/user")) {
       return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
@@ -1449,7 +1471,7 @@ test("collectPullRequests: PR-detail 429 is terminal without progress, coverage,
       return Promise.resolve(new Response("rate limited", { status: 429, headers: { "Retry-After": "0" } }));
     }
     return Promise.resolve(jsonResponse({}));
-  };
+  });
   const { ctx, coverages, records, states, progresses } = makeCtx(["pull_requests"]);
 
   await assert.rejects(
@@ -1462,8 +1484,8 @@ test("collectPullRequests: PR-detail 429 is terminal without progress, coverage,
   assert.equal(progresses.filter(({ extra }) => extra?.phase === "page").length, 0);
 });
 
-test("collectPullRequests: PR-detail transport failure is terminal without progress, coverage, records, or state", async () => {
-  globalThis.fetch = (input: string | URL | Request) => {
+test("collectPullRequests: PR-detail transport failure is terminal without progress, coverage, records, or state", async (t: TestContext) => {
+  mockFetch(t, (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.endsWith("/user")) {
       return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2026-01-01T00:00:00Z" }));
@@ -1475,7 +1497,7 @@ test("collectPullRequests: PR-detail transport failure is terminal without progr
       return Promise.reject(new Error("fetch failed", { cause: new Error("socket reset ECONNRESET") }));
     }
     return Promise.resolve(jsonResponse({}));
-  };
+  });
   const { ctx, coverages, records, states, progresses } = makeCtx(["pull_requests"]);
 
   await assert.rejects(
