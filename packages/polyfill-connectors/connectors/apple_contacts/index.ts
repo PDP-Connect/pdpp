@@ -438,7 +438,7 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   }
 
   let groupsEmitted = 0;
-  if (requested.has("contact_groups")) {
+  if (requested.has("contact_groups") && groupsBoundaryEstablished) {
     for (const group of deriveGroups(book.url, seenCards)) {
       await emitRecord("contact_groups", group);
       groupsEmitted += 1;
