@@ -58,6 +58,7 @@ import {
   __setAgentConnectCleanupBeforeExpireForTest,
   __setAgentConnectCompleteBeforeMarkForTest,
   __setAgentConnectCompleteFailureForTest,
+  __setAgentConnectCreateBeforePersistForTest,
 } from "../server/routes/as-agent-connect.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { introspectionHeaders } from "./helpers/introspection.ts";
@@ -139,6 +140,7 @@ interface SpotifyManifest {
 
 interface AgentConnectStart {
   approval_url: string;
+  id: string;
   polling_code: string;
   status: string;
   token_url: string;
@@ -253,6 +255,27 @@ async function tokenIsIntrospectionActive(asUrl: string, token: string): Promise
   });
   const body = (await resp.json()) as { active?: boolean };
   return body.active === true;
+}
+
+function setSqliteAgentConnectAttemptExpiresAt(id: string, expiresAt: number): void {
+  dbExec(referenceQueries.authAgentConnectAttemptsSetExpiresAtById, [expiresAt, id]);
+}
+
+function sqliteAgentConnectAttemptCountByStatus(status: string): number {
+  const row = getOne<{ count?: number }>(referenceQueries.authAgentConnectAttemptsCountByStatus, [status]);
+  return Number(row?.count ?? 0);
+}
+
+async function setPostgresAgentConnectAttemptExpiresAt(id: string, expiresAt: number): Promise<void> {
+  await postgresQuery("UPDATE agent_connect_attempts SET expires_at_ms = $1 WHERE id = $2", [expiresAt, id]);
+}
+
+async function postgresAgentConnectAttemptCountByStatus(status: string): Promise<number> {
+  const result = await postgresQuery<{ count?: string | number }>(
+    "SELECT COUNT(*) AS count FROM agent_connect_attempts WHERE status = $1",
+    [status]
+  );
+  return Number(result.rows[0]?.count ?? 0);
 }
 
 function createCleanupPause() {
@@ -982,6 +1005,139 @@ test("agent-connect: prune reconciles more than one expired SQLite batch", async
   }
 });
 
+test("agent-connect: expired tombstone volume is garbage-collected after terminal recovery window", async () => {
+  const { server, asUrl } = await spinUpServer();
+  try {
+    const expiredAt = Date.now() - 1;
+    const createdAt = new Date(expiredAt - 1).toISOString();
+    for (let index = 0; index < 1001; index += 1) {
+      dbExec(referenceQueries.authAgentConnectAttemptsInsert, [
+        `expired-tombstone-${index}`,
+        `urn:pdpp:pending-consent:missing-tombstone-${index}`,
+        null,
+        `expired-tombstone-hash-${index}`,
+        `${asUrl}/consent?request_uri=expired-tombstone-${index}`,
+        `${asUrl}/token`,
+        createdAt,
+        expiredAt,
+      ]);
+      dbExec(referenceQueries.authAgentConnectAttemptsMarkExpiredById, [createdAt, `expired-tombstone-${index}`]);
+    }
+    assert.equal(sqliteAgentConnectAttemptCountByStatus("expired"), 1001);
+
+    await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Tombstone GC Trigger" });
+    assert.equal(sqliteAgentConnectAttemptCountByStatus("expired"), 0);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("agent-connect: tombstone remains until its pending consent is expired", async () => {
+  const { server, asUrl } = await spinUpServer({ agentConnectTtlMs: 60_000 });
+  try {
+    const first = await createAgentConnectRequest({
+      asUrl,
+      clientName: "Agent Connect Tombstone Pending SQLite",
+    });
+    setSqliteAgentConnectAttemptExpiresAt(first.start.id, Date.now() - 1);
+
+    await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Tombstone Pending Trigger" });
+    assert.equal(sqliteAgentConnectAttemptCountByStatus("expired"), 1);
+
+    const deviceCode = parsePendingConsentRequestUri(first.staged.request_uri);
+    assert.ok(deviceCode);
+    dbExec(referenceQueries.authPendingConsentsMarkExpired, [deviceCode]);
+
+    await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Tombstone Terminal Trigger" });
+    assert.equal(sqliteAgentConnectAttemptCountByStatus("expired"), 0);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("agent-connect: expired same-request attempt does not revoke valid staggered attempt", async () => {
+  const { server, asUrl } = await spinUpServer({ agentConnectTtlMs: 60_000 });
+  try {
+    const first = await createAgentConnectRequest({
+      asUrl,
+      clientName: "Agent Connect Staggered Old SQLite",
+    });
+    setSqliteAgentConnectAttemptExpiresAt(first.start.id, Date.now() - 1);
+    const second = await fetch(`${asUrl}/agent-connect`, {
+      body: JSON.stringify({
+        client_id: first.registered.client_id,
+        request_uri: first.staged.request_uri,
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    const secondStart = (await second.json()) as AgentConnectStart;
+    assert.equal(second.status, 201, JSON.stringify(secondStart));
+
+    await approveInline({
+      asUrl,
+      requestUri: first.staged.request_uri,
+      subjectId: "owner_local",
+    });
+    const oldPoll = await pollAgentConnectToken({
+      pollingCode: first.start.polling_code,
+      tokenUrl: first.start.token_url,
+    });
+    assert.equal(oldPoll.resp.status, 400);
+    assert.equal(errorCode(oldPoll.body), "expired_token");
+
+    const newPoll = await pollAgentConnectToken({
+      pollingCode: secondStart.polling_code,
+      tokenUrl: secondStart.token_url,
+    });
+    assert.equal(newPoll.resp.status, 200, JSON.stringify(newPoll.body));
+    const deliveredToken = newPoll.body.access_token;
+    assert.ok(deliveredToken);
+    assert.equal(await tokenIsIntrospectionActive(asUrl, deliveredToken), true);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("agent-connect: registration rechecks durable pending consent after approval", async () => {
+  const { server, asUrl } = await spinUpServer({ agentConnectTtlMs: 60_000 });
+  try {
+    const first = await createAgentConnectRequest({
+      asUrl,
+      clientName: "Agent Connect Registration CAS SQLite",
+    });
+    const pause = createPause();
+    __setAgentConnectCreateBeforePersistForTest(pause.hook);
+    const lateRegistration = fetch(`${asUrl}/agent-connect`, {
+      body: JSON.stringify({
+        client_id: first.registered.client_id,
+        request_uri: first.staged.request_uri,
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    await pause.paused;
+    const approval = await approveInline({
+      asUrl,
+      requestUri: first.staged.request_uri,
+      subjectId: "owner_local",
+    });
+    assert.equal(await tokenIsIntrospectionActive(asUrl, approval.token), true);
+
+    pause.release();
+    const late = await lateRegistration;
+    assert.equal(late.status, 400);
+    const firstPoll = await pollAgentConnectToken({
+      pollingCode: first.start.polling_code,
+      tokenUrl: first.start.token_url,
+    });
+    assert.equal(firstPoll.resp.status, 200, JSON.stringify(firstPoll.body));
+  } finally {
+    __setAgentConnectCreateBeforePersistForTest(null);
+    await closeServer(server);
+  }
+});
+
 test("agent-connect: live Postgres approved handoff survives AS restart before polling", async (t) => {
   const baseUrl = dedicatedPostgresTestUrl(
     process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
@@ -1296,6 +1452,166 @@ test("agent-connect: live Postgres expiry CAS interleavings revoke committed tok
       } finally {
         __setAgentConnectCompleteBeforeMarkForTest(null);
         await closeServer(tombstoneServer.server);
+        await closePostgresStorage();
+      }
+    }
+  );
+});
+
+test("agent-connect: live Postgres tombstone GC and staggered same-request delivery", async (t) => {
+  const baseUrl = dedicatedPostgresTestUrl(
+    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
+  );
+  if (!baseUrl) {
+    t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
+    return;
+  }
+
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: baseUrl,
+      databaseName: "pdpp_test_agent_connect_gc_staggered",
+    },
+    async (databaseUrl) => {
+      const gcServer = await spinUpServer({ databaseUrl, storageBackend: "postgres" });
+      try {
+        const expiredAt = Date.now() - 1;
+        const createdAt = new Date(expiredAt - 1).toISOString();
+        await Promise.all(
+          Array.from({ length: 1001 }, async (_, index) => {
+            await postgresQuery(
+              `INSERT INTO agent_connect_attempts(
+               id, request_uri, client_id, polling_code_hash, status, approval_url, token_url,
+               interval_seconds, created_at, expires_at_ms, completed_at
+             ) VALUES($1, $2, NULL, $3, 'expired', $4, $5, 2, $6, $7, $6)`,
+              [
+                `pg-expired-tombstone-${index}`,
+                `urn:pdpp:pending-consent:pg-missing-tombstone-${index}`,
+                `pg-expired-tombstone-hash-${index}`,
+                `${gcServer.asUrl}/consent?request_uri=pg-expired-tombstone-${index}`,
+                `${gcServer.asUrl}/token`,
+                createdAt,
+                expiredAt,
+              ]
+            );
+          })
+        );
+        assert.equal(await postgresAgentConnectAttemptCountByStatus("expired"), 1001);
+        await createAgentConnectRequest({
+          asUrl: gcServer.asUrl,
+          clientName: "Agent Connect PG Tombstone GC Trigger",
+        });
+        assert.equal(await postgresAgentConnectAttemptCountByStatus("expired"), 0);
+
+        const pending = await createAgentConnectRequest({
+          asUrl: gcServer.asUrl,
+          clientName: "Agent Connect PG Tombstone Pending",
+        });
+        await setPostgresAgentConnectAttemptExpiresAt(pending.start.id, Date.now() - 1);
+        await createAgentConnectRequest({
+          asUrl: gcServer.asUrl,
+          clientName: "Agent Connect PG Tombstone Pending Trigger",
+        });
+        assert.equal(await postgresAgentConnectAttemptCountByStatus("expired"), 1);
+
+        const deviceCode = parsePendingConsentRequestUri(pending.staged.request_uri);
+        assert.ok(deviceCode);
+        await postgresQuery("UPDATE pending_consents SET status = 'expired' WHERE device_code = $1", [deviceCode]);
+        await createAgentConnectRequest({
+          asUrl: gcServer.asUrl,
+          clientName: "Agent Connect PG Tombstone Terminal Trigger",
+        });
+        assert.equal(await postgresAgentConnectAttemptCountByStatus("expired"), 0);
+      } finally {
+        await closeServer(gcServer.server);
+        await closePostgresStorage();
+      }
+
+      const staggeredServer = await spinUpServer({
+        agentConnectTtlMs: 60_000,
+        databaseUrl,
+        storageBackend: "postgres",
+      });
+      try {
+        const first = await createAgentConnectRequest({
+          asUrl: staggeredServer.asUrl,
+          clientName: "Agent Connect PG Staggered Old",
+        });
+        await setPostgresAgentConnectAttemptExpiresAt(first.start.id, Date.now() - 1);
+        const second = await fetch(`${staggeredServer.asUrl}/agent-connect`, {
+          body: JSON.stringify({
+            client_id: first.registered.client_id,
+            request_uri: first.staged.request_uri,
+          }),
+          headers: { "Content-Type": "application/json" },
+          method: "POST",
+        });
+        const secondStart = (await second.json()) as AgentConnectStart;
+        assert.equal(second.status, 201, JSON.stringify(secondStart));
+        await approveInline({
+          asUrl: staggeredServer.asUrl,
+          requestUri: first.staged.request_uri,
+          subjectId: "owner_local",
+        });
+        const oldPoll = await pollAgentConnectToken({
+          pollingCode: first.start.polling_code,
+          tokenUrl: first.start.token_url,
+        });
+        assert.equal(oldPoll.resp.status, 400);
+        assert.equal(errorCode(oldPoll.body), "expired_token");
+
+        const newPoll = await pollAgentConnectToken({
+          pollingCode: secondStart.polling_code,
+          tokenUrl: secondStart.token_url,
+        });
+        assert.equal(newPoll.resp.status, 200, JSON.stringify(newPoll.body));
+        const deliveredToken = newPoll.body.access_token;
+        assert.ok(deliveredToken);
+        assert.equal(await tokenIsIntrospectionActive(staggeredServer.asUrl, deliveredToken), true);
+      } finally {
+        await closeServer(staggeredServer.server);
+        await closePostgresStorage();
+      }
+
+      const lateRaceServer = await spinUpServer({
+        agentConnectTtlMs: 60_000,
+        databaseUrl,
+        storageBackend: "postgres",
+      });
+      try {
+        const first = await createAgentConnectRequest({
+          asUrl: lateRaceServer.asUrl,
+          clientName: "Agent Connect PG Registration CAS",
+        });
+        const pause = createPause();
+        __setAgentConnectCreateBeforePersistForTest(pause.hook);
+        const lateRegistration = fetch(`${lateRaceServer.asUrl}/agent-connect`, {
+          body: JSON.stringify({
+            client_id: first.registered.client_id,
+            request_uri: first.staged.request_uri,
+          }),
+          headers: { "Content-Type": "application/json" },
+          method: "POST",
+        });
+        await pause.paused;
+        const approval = await approveInline({
+          asUrl: lateRaceServer.asUrl,
+          requestUri: first.staged.request_uri,
+          subjectId: "owner_local",
+        });
+        assert.equal(await tokenIsIntrospectionActive(lateRaceServer.asUrl, approval.token), true);
+        pause.release();
+        const late = await lateRegistration;
+        assert.equal(late.status, 400);
+        const firstPoll = await pollAgentConnectToken({
+          pollingCode: first.start.polling_code,
+          tokenUrl: first.start.token_url,
+        });
+        assert.equal(firstPoll.resp.status, 200, JSON.stringify(firstPoll.body));
+      } finally {
+        __setAgentConnectCreateBeforePersistForTest(null);
+        await closeServer(lateRaceServer.server);
         await closePostgresStorage();
       }
     }

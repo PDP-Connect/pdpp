@@ -139,17 +139,23 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Approvals — `/_ref/approvals` projection.
   readonly approvalsListPendingConsents: SmallEnumerationQuery;
   readonly approvalsListPendingOwnerDevices: SmallEnumerationQuery;
+  readonly authAgentConnectAttemptsCountByStatus: ReadOneQuery;
   readonly authAgentConnectAttemptsDeleteById: MutationQuery;
+  readonly authAgentConnectAttemptsDeleteExpiredIfConsentTerminal: MutationQuery;
   readonly authAgentConnectAttemptsGetById: ReadOneQuery;
   readonly authAgentConnectAttemptsGetExpiredByRequestUri: ReadOneQuery;
   readonly authAgentConnectAttemptsInsert: MutationQuery;
+  readonly authAgentConnectAttemptsInsertIfConsentPending: MutationQuery;
   readonly authAgentConnectAttemptsListExpiredPending: ReadManyQuery;
+  readonly authAgentConnectAttemptsListExpiredTombstones: ReadManyQuery;
   readonly authAgentConnectAttemptsMarkApproved: MutationQuery;
   readonly authAgentConnectAttemptsMarkExpiredById: MutationQuery;
   readonly authAgentConnectAttemptsMarkFailed: MutationQuery;
   readonly authAgentConnectAttemptsPrune: MutationQuery;
   readonly authAgentConnectAttemptsRecoverApproved: ReadOneQuery;
   readonly authAgentConnectAttemptsRevokeToken: MutationQuery;
+  readonly authAgentConnectAttemptsRevokeTokenIfNoLiveSibling: MutationQuery;
+  readonly authAgentConnectAttemptsSetExpiresAtById: MutationQuery;
   readonly authAgentConnectAttemptsSetResponseJson: MutationQuery;
   readonly authAgentConnectAttemptsTokenActive: ReadOneQuery;
   readonly authConnectorInstancesGetReviewedActive: ReadOneQuery;

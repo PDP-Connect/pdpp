@@ -61,16 +61,17 @@ export interface AgentConnectAttemptStore {
       | { status: "approved"; token: string; grant: Record<string, unknown>; grantId?: string | null }
       | { status: "denied" | "expired" }
   ) => Promise<void>;
-  /** Create and register a new pending attempt. Returns the stored attempt. */
+  /** Create and register a new pending attempt, if consent remains pending. */
   create: (opts: {
     id: string;
+    now: number;
     pollingCode: string;
     requestUri: string;
     clientId: string | null;
     expiresAt: number;
     approvalUrl: string;
     tokenUrl: string;
-  }) => Promise<AgentConnectAttempt>;
+  }) => Promise<AgentConnectAttempt | undefined>;
   /** Remove an attempt by id. */
   delete: (id: string) => Promise<void>;
   /**
@@ -97,6 +98,7 @@ export interface AgentConnectAttemptStore {
 let completeFailureForTest: (() => void) | null = null;
 let cleanupAfterMissForTest: (() => void | Promise<void>) | null = null;
 let cleanupBeforeExpireForTest: (() => void | Promise<void>) | null = null;
+let createBeforePersistForTest: (() => void | Promise<void>) | null = null;
 let completeBeforeMarkForTest: (() => void | Promise<void>) | null = null;
 
 export function __setAgentConnectCompleteFailureForTest(fn: (() => void) | null): void {
@@ -109,6 +111,10 @@ export function __setAgentConnectCleanupAfterMissForTest(fn: (() => void | Promi
 
 export function __setAgentConnectCleanupBeforeExpireForTest(fn: (() => void | Promise<void>) | null): void {
   cleanupBeforeExpireForTest = fn;
+}
+
+export function __setAgentConnectCreateBeforePersistForTest(fn: (() => void | Promise<void>) | null): void {
+  createBeforePersistForTest = fn;
 }
 
 export function __setAgentConnectCompleteBeforeMarkForTest(fn: (() => void | Promise<void>) | null): void {
@@ -205,15 +211,34 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
     ]);
     return Boolean(row?.ok);
   };
-  const revokeToken = async (tokenId: string | undefined): Promise<void> => {
+  const revokeTokenIfNoLiveSibling = async (
+    tokenId: string | undefined,
+    requestUri: string,
+    excludingId: string,
+    now: number
+  ): Promise<void> => {
     if (!tokenId) {
       return;
     }
     if (isPostgresStorageBackend()) {
-      await postgresQuery("UPDATE tokens SET revoked = TRUE WHERE token_id = $1 AND revoked = FALSE", [tokenId]);
+      await postgresQuery(
+        `UPDATE tokens
+            SET revoked = TRUE
+          WHERE token_id = $1
+            AND revoked = FALSE
+            AND NOT EXISTS (
+              SELECT 1
+                FROM agent_connect_attempts
+               WHERE request_uri = $2
+                 AND id != $3
+                 AND status IN ('pending', 'approved')
+                 AND expires_at_ms > $4
+            )`,
+        [tokenId, requestUri, excludingId, now]
+      );
       return;
     }
-    exec(referenceQueries.authAgentConnectAttemptsRevokeToken, [tokenId]);
+    exec(referenceQueries.authAgentConnectAttemptsRevokeTokenIfNoLiveSibling, [tokenId, requestUri, excludingId, now]);
   };
   const deleteAttempt = async (id: string): Promise<void> => {
     if (isPostgresStorageBackend()) {
@@ -245,8 +270,9 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
           "SELECT id FROM agent_connect_attempts WHERE request_uri = $1 AND status = 'expired' LIMIT 1",
           [requestUri]
         );
-        if (expired.rows.length > 0) {
-          await revokeToken(token);
+        const expiredId = expired.rows[0]?.id;
+        if (expiredId) {
+          await revokeTokenIfNoLiveSibling(token, requestUri, expiredId, Date.now());
         }
       }
       return;
@@ -263,7 +289,7 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
         requestUri,
       ]);
       if (expired) {
-        await revokeToken(token);
+        await revokeTokenIfNoLiveSibling(token, requestUri, expired.id, Date.now());
       }
     }
   };
@@ -323,23 +349,56 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
     const result = exec(referenceQueries.authAgentConnectAttemptsMarkExpiredById, [completedAt, id]);
     return result.changes > 0;
   };
-  const cleanupExpiredAttempt = async (attempt: AgentConnectAttempt): Promise<void> => {
+  const cleanupExpiredAttempt = async (attempt: AgentConnectAttempt, now: number): Promise<void> => {
     const { requestUri, status } = attempt;
-    let { token } = attempt;
-    if (!token && (status === "pending" || status === "expired")) {
-      token = (await getRecoveredApprovedConsent(requestUri))?.token_id ?? undefined;
-      if (!token && cleanupAfterMissForTest) {
+    if (!(attempt.token || status === "pending" || status === "expired")) {
+      return;
+    }
+    let recovered = await getRecoveredApprovedConsent(requestUri);
+    if (!(attempt.token || recovered?.token_id)) {
+      if (cleanupAfterMissForTest) {
         await cleanupAfterMissForTest();
-        token = (await getRecoveredApprovedConsent(requestUri))?.token_id ?? undefined;
       }
+      recovered = await getRecoveredApprovedConsent(requestUri);
     }
     if (cleanupBeforeExpireForTest) {
       await cleanupBeforeExpireForTest();
     }
     await markAttemptExpired(attempt.id);
     const latest = await getRow(attempt.id);
-    token = token || latest?.token || (await getRecoveredApprovedConsent(requestUri))?.token_id || undefined;
-    await revokeToken(token);
+    const token =
+      latest?.token ||
+      attempt.token ||
+      recovered?.token_id ||
+      (await getRecoveredApprovedConsent(requestUri))?.token_id ||
+      undefined;
+    await revokeTokenIfNoLiveSibling(token, requestUri, attempt.id, now);
+  };
+  const deleteExpiredTombstoneIfConsentTerminal = async (attempt: AgentConnectAttempt): Promise<boolean> => {
+    const deviceCode = parsePendingConsentRequestUri(attempt.requestUri);
+    if (!deviceCode) {
+      return false;
+    }
+    if (isPostgresStorageBackend()) {
+      const result = await postgresQuery(
+        `DELETE FROM agent_connect_attempts
+          WHERE id = $1
+            AND status = 'expired'
+            AND NOT EXISTS (
+              SELECT 1
+                FROM pending_consents
+               WHERE device_code = $2
+                 AND status IN ('pending', 'approving', 'approved')
+            )`,
+        [attempt.id, deviceCode]
+      );
+      return (result.rowCount ?? 0) > 0;
+    }
+    const result = exec(referenceQueries.authAgentConnectAttemptsDeleteExpiredIfConsentTerminal, [
+      attempt.id,
+      deviceCode,
+    ]);
+    return result.changes > 0;
   };
   const cleanupExpiredPendingAttempts = async (now: number): Promise<void> => {
     for (;;) {
@@ -369,7 +428,50 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
       }
       for (const attempt of attempts) {
         // biome-ignore lint/performance/noAwaitInLoops: cleanup is intentionally ordered so each CAS/revoke completes before the next batch row is observed.
-        await cleanupExpiredAttempt(attempt);
+        await cleanupExpiredAttempt(attempt, now);
+      }
+    }
+  };
+  const pruneExpiredTombstones = async (now: number): Promise<void> => {
+    for (;;) {
+      let attempts: AgentConnectAttempt[];
+      if (isPostgresStorageBackend()) {
+        // biome-ignore lint/performance/noAwaitInLoops: each page observes prior safe deletes.
+        const result = await postgresQuery(
+          `SELECT *
+             FROM agent_connect_attempts
+            WHERE status = 'expired'
+              AND expires_at_ms <= $1
+            ORDER BY id
+            LIMIT 1000`,
+          [now]
+        );
+        attempts = result.rows.map((row) => rowToAttempt(row as Record<string, unknown>));
+      } else {
+        const page = getMany<Record<string, unknown>>(
+          referenceQueries.authAgentConnectAttemptsListExpiredTombstones,
+          [now],
+          { limit: 1000 }
+        );
+        attempts = page.rows.map(rowToAttempt);
+      }
+      if (attempts.length === 0) {
+        return;
+      }
+      let deleted = 0;
+      for (const attempt of attempts) {
+        // The delete predicate observes consent state in the same durable mutation.
+        // Pending/approving rows can still mint a token; approved rows retain the
+        // stable expired-token response for their old polling handle.
+        // biome-ignore lint/performance/noAwaitInLoops: each durable delete must complete before the next page is inspected.
+        const tombstoneDeleted = await deleteExpiredTombstoneIfConsentTerminal(attempt);
+        if (tombstoneDeleted) {
+          await cleanupExpiredAttempt(attempt, now);
+          deleted += 1;
+        }
+      }
+      if (deleted === 0 || attempts.length < 1000) {
+        return;
       }
     }
   };
@@ -400,7 +502,7 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
       }
       exec(referenceQueries.authAgentConnectAttemptsMarkFailed, [outcome.status, completedAt, requestUri]);
     },
-    async create(opts): Promise<AgentConnectAttempt> {
+    async create(opts): Promise<AgentConnectAttempt | undefined> {
       const createdAt = new Date().toISOString();
       const pollingCodeHash = hashPollingCode(opts.pollingCode);
       const attempt: AgentConnectAttempt = {
@@ -416,34 +518,60 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
         status: "pending",
         tokenUrl: opts.tokenUrl,
       };
+      const deviceCode = parsePendingConsentRequestUri(opts.requestUri);
+      if (!deviceCode) {
+        return;
+      }
+      if (createBeforePersistForTest) {
+        await createBeforePersistForTest();
+      }
       if (isPostgresStorageBackend()) {
-        await postgresQuery(
-          `INSERT INTO agent_connect_attempts(
+        return withPostgresTransaction(async (client) => {
+          const pending = await client.query(
+            `SELECT 1
+               FROM pending_consents
+              WHERE device_code = $1
+                AND status = 'pending'
+                AND expires_at > $2
+              FOR UPDATE`,
+            [deviceCode, new Date(opts.now).toISOString()]
+          );
+          if (pending.rowCount !== 1) {
+            return;
+          }
+          await client.query(
+            `INSERT INTO agent_connect_attempts(
              id, request_uri, client_id, polling_code_hash, status, approval_url, token_url,
              interval_seconds, created_at, expires_at_ms
            ) VALUES($1, $2, $3, $4, 'pending', $5, $6, 2, $7, $8)`,
-          [
-            opts.id,
-            opts.requestUri,
-            opts.clientId,
-            pollingCodeHash,
-            opts.approvalUrl,
-            opts.tokenUrl,
-            createdAt,
-            opts.expiresAt,
-          ]
-        );
-      } else {
-        exec(referenceQueries.authAgentConnectAttemptsInsert, [
-          opts.id,
-          opts.requestUri,
-          opts.clientId,
-          pollingCodeHash,
-          opts.approvalUrl,
-          opts.tokenUrl,
-          createdAt,
-          opts.expiresAt,
-        ]);
+            [
+              opts.id,
+              opts.requestUri,
+              opts.clientId,
+              pollingCodeHash,
+              opts.approvalUrl,
+              opts.tokenUrl,
+              createdAt,
+              opts.expiresAt,
+            ]
+          );
+          return attempt;
+        });
+      }
+      const result = exec(referenceQueries.authAgentConnectAttemptsInsertIfConsentPending, [
+        opts.id,
+        opts.requestUri,
+        opts.clientId,
+        pollingCodeHash,
+        opts.approvalUrl,
+        opts.tokenUrl,
+        createdAt,
+        opts.expiresAt,
+        deviceCode,
+        new Date(opts.now).toISOString(),
+      ]);
+      if (result.changes !== 1) {
+        return;
       }
       return attempt;
     },
@@ -462,6 +590,7 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
 
     async prune(now = Date.now()): Promise<void> {
       await cleanupExpiredPendingAttempts(now);
+      await pruneExpiredTombstones(now);
       if (isPostgresStorageBackend()) {
         await postgresQuery(
           `DELETE FROM agent_connect_attempts
@@ -481,7 +610,7 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
       }
       attempt = await recoverApprovedAttempt(attempt, now);
       if (attempt.expiresAt <= now) {
-        await cleanupExpiredAttempt(attempt);
+        await cleanupExpiredAttempt(attempt, now);
         return { outcome: "failed", status: "expired" };
       }
       if (attempt.status === "pending") {
@@ -702,10 +831,14 @@ export function mountAsAgentConnect(app: AppLike, ctx: MountAsAgentConnectContex
         clientId: pendingClientId ?? clientId,
         expiresAt: now + ctx.agentConnectTtlMs,
         id,
+        now,
         pollingCode,
         requestUri,
         tokenUrl: ctx.buildTokenUrl(baseUrl, id),
       });
+      if (!attempt) {
+        return ctx.pdppError(res, 400, "expired_token", "Pending grant request is unknown or expired");
+      }
 
       return res.status(201).json({
         ...publicAttemptEnvelope(attempt, now),
