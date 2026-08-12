@@ -493,6 +493,7 @@ async function withHttpHarness(
 
 interface WireStream {
   consent_time_field?: string;
+  expand_capabilities?: Record<string, unknown>[];
   field_capabilities?: Record<string, unknown>;
   freshness?: { captured_at?: string; status?: string };
   granted_connections?: GrantedConnection[];
@@ -515,6 +516,16 @@ function findStream(connector: WireConnector, name: string): WireStream {
   const stream = connector.streams.find((s) => s.name === name);
   assert.ok(stream, `expected stream "${name}" to be present`);
   return stream;
+}
+
+function findFieldCapability(stream: WireStream, field: string): Record<string, unknown> {
+  assert.ok(stream.field_capabilities, `expected stream "${stream.name}" to publish field capabilities`);
+  const capability = stream.field_capabilities[field];
+  assert.ok(
+    typeof capability === "object" && capability !== null && !Array.isArray(capability),
+    `expected stream "${stream.name}" to publish a capability for "${field}"`
+  );
+  return capability as Record<string, unknown>;
 }
 
 test("GET /v1/schema emits granted_connections for multi-connection owner scope", async () => {
@@ -702,7 +713,7 @@ test("client metadata uses the approving subject's granted instance and never ow
   );
 });
 
-test("client schema and stream metadata remain a closed resolved-grant projection after manifest changes", async () => {
+test("client metadata stays current while grant capabilities remain frozen after manifest changes", async () => {
   await withHttpHarness(
     async ({ asUrl, rsUrl }) => {
       const approved = await approveGrant(asUrl, "owner_local", {
@@ -757,19 +768,34 @@ test("client schema and stream metadata remain a closed resolved-grant projectio
           assert.deepEqual(Object.keys(schema.properties as Record<string, unknown>).sort(), [
             "id",
             "received_at",
+            "secret",
             "subject",
           ]);
-          assert.deepEqual(schema.required, ["id", "received_at"]);
-          assert.equal(schema.additionalProperties, false);
-          assert.equal("patternProperties" in schema, false);
-          assert.equal("allOf" in schema, false);
-          assert.equal(stream.consent_time_field, "received_at");
+          assert.deepEqual(schema.required, ["id", "received_at", "secret"]);
+          assert.equal(schema.additionalProperties, true);
+          assert.deepEqual(schema.patternProperties, { "^secret_": { type: "string" } });
+          assert.deepEqual(schema.allOf, [{ required: ["secret"] }]);
+          assert.equal(stream.consent_time_field, "secret");
+          assert.deepEqual(stream.selection, { fields: false, resources: false });
+          assert.deepEqual(
+            (stream.views ?? []).map((view) => (view as { id?: string }).id),
+            ["secret"]
+          );
           assert.deepEqual(stream.instance_ids, [INSTANCE_A]);
           assert.deepEqual(stream.time_constraint, {
             field: "received_at",
             since: "2026-01-01T00:00:00Z",
           });
-          assert.equal(JSON.stringify(stream).includes("secret"), false);
+          assert.equal(findFieldCapability(stream, "id").granted, true);
+          assert.equal(findFieldCapability(stream, "received_at").granted, true);
+          assert.equal(findFieldCapability(stream, "subject").granted, true);
+          const secretCapability = findFieldCapability(stream, "secret");
+          assert.equal(secretCapability.granted, false);
+          assert.deepEqual(secretCapability.exact_filter, {
+            declared: true,
+            reason: "field_not_granted",
+            usable: false,
+          });
         })
       );
 
@@ -797,7 +823,7 @@ test("client schema and stream metadata remain a closed resolved-grant projectio
   );
 });
 
-test("client relationship metadata checks has_many foreign keys against the related stream grant", async () => {
+test("client relationship metadata stays visible while child field capabilities reflect the grant", async () => {
   await withHttpHarness(
     async ({ asUrl, rsUrl }) => {
       const manifest = structuredClone(baseManifest) as Record<string, unknown>;
@@ -811,6 +837,9 @@ test("client relationship metadata checks has_many foreign keys against the rela
           stream: "replies",
         },
       ];
+      parent.query = {
+        expand: [{ default_limit: 25, max_limit: 100, name: "replies" }],
+      };
       (manifest.streams as Record<string, unknown>[]).push({
         name: "replies",
         primary_key: ["id"],
@@ -847,17 +876,50 @@ test("client relationship metadata checks has_many foreign keys against the rela
       await Promise.all(
         (
           [
-            [withForeignKey, 1],
-            [withoutForeignKey, 0],
+            [withForeignKey, true],
+            [withoutForeignKey, false],
           ] as const
-        ).map(async ([approval, expectedCount]) => {
+        ).map(async ([approval, foreignKeyGranted]) => {
           const response = await fetchJson(`${rsUrl}/v1/schema`, {
             headers: { Authorization: `Bearer ${String(approval.token)}` },
           });
           assert.equal(response.status, 200, JSON.stringify(response.body));
           const body = asRecord(response.body);
-          const stream = findStream(at(body.connectors as WireConnector[], 0), STREAM);
-          assert.equal(stream.relationships?.length, expectedCount, JSON.stringify(stream));
+          const connector = at(body.connectors as WireConnector[], 0);
+          const stream = findStream(connector, STREAM);
+          assert.deepEqual(stream.relationships, [
+            {
+              cardinality: "has_many",
+              foreign_key: "message_id",
+              name: "replies",
+              stream: "replies",
+            },
+          ]);
+          assert.deepEqual(stream.expand_capabilities, [
+            {
+              cardinality: "has_many",
+              child_parent_key_field: "message_id",
+              default_limit: 25,
+              foreign_key: "message_id",
+              granted: true,
+              max_limit: 100,
+              name: "replies",
+              stream: "replies",
+              target_stream: "replies",
+              usable: true,
+            },
+          ]);
+          const replies = findStream(connector, "replies");
+          assert.equal(findFieldCapability(replies, "id").granted, true);
+          const foreignKeyCapability = findFieldCapability(replies, "message_id");
+          assert.equal(foreignKeyCapability.granted, foreignKeyGranted);
+          if (!foreignKeyGranted) {
+            assert.deepEqual(foreignKeyCapability.exact_filter, {
+              declared: true,
+              reason: "field_not_granted",
+              usable: false,
+            });
+          }
         })
       );
     },
