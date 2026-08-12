@@ -598,6 +598,10 @@ test("keeps the source-revision projection-fault PostgreSQL skip title in the ex
     "PostgreSQL projection faults preserve canonical record, schedule, and lifecycle writes, then repair passes after recovery";
   assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
 });
+test("keeps the source-revision stale-publication PostgreSQL skip title in the exact receipt mapping", () => {
+  const name = "PostgreSQL stale failure publication cannot overwrite newer evidence";
+  assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
+});
 // Aggregate gate regression (2026-07-30, run-history-backfill-cutover REVISE):
 // test/active-run-summary-zero-spine.test.ts (reference-implementation) added
 // three PostgreSQL tests using the bare-boolean `skip: !POSTGRES_URL` shape

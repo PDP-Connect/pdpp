@@ -89,6 +89,7 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "Postgres startup does not require pg_search and keeps native FTS as fallback",
   "Postgres store factory is consistent with the resolver",
   "PostgreSQL projection faults preserve canonical record, schedule, and lifecycle writes, then repair passes after recovery",
+  "PostgreSQL stale failure publication cannot overwrite newer evidence",
   "Postgres: every setup-binding kind promotes on success, stays hidden on abandon, survives its revoke path",
   "postgresFetchUpcoming: live Postgres in-flight partition workers never exceed the configured limit",
   "sqliteFetchUpcoming & postgresFetchUpcoming: output is bit-identical and deterministic",
