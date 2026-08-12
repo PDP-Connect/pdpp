@@ -63,6 +63,7 @@ import { readOptions } from "../../src/connector-options.ts";
 import {
   buildDetailCoverageMessage,
   buildDetailGap,
+  buildFullScanCoverageMessage,
   type CollectContext,
   type DetailGapMessage,
   type DetailGapStartEntry,
@@ -849,6 +850,7 @@ function mergeMessagesPassResults(left: MessagesPassResult, right: MessagesPassR
   return {
     channelMaxTs: selectCommittedChannelLastTs(left.channelMaxTs, right.channelMaxTs),
     maxMessageTs: selectMaxSlackTs(left.maxMessageTs, right.maxMessageTs),
+    considered: left.considered + right.considered,
   };
 }
 
@@ -1519,6 +1521,7 @@ export interface MessagesPassDeps {
 
 export interface MessagesPassResult {
   channelMaxTs: Record<string, string>;
+  considered: number;
   maxMessageTs: string | null;
 }
 
@@ -1592,7 +1595,9 @@ export async function emitMessagesPass(
 
   const channelMaxTs: Record<string, string> = {};
   let maxMessageTs: string | null = null;
+  let considered = 0;
   for (const r of rows) {
+    considered += 1;
     const parsed = parseMessageRow(r, nowIso());
     const { ts } = parsed;
     // Track the max ts seen in this run for the post-loop STATE emit.
@@ -1614,7 +1619,7 @@ export async function emitMessagesPass(
       }
     }
   }
-  return { channelMaxTs, maxMessageTs };
+  return { channelMaxTs, maxMessageTs, considered };
 }
 
 // ─── Per-stream helpers ────────────────────────────────────────────────
@@ -1824,15 +1829,28 @@ async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
 
 export async function runChannelsStream(deps: StreamDeps): Promise<void> {
   // Dedupe across chunks; keep the latest (max CHUNK_ID) snapshot per ID.
-  const rows = safeAll<ChannelRow>(
-    deps.db,
-    `
+  let rows: ChannelRow[];
+  try {
+    const rawRows = deps.db
+      .prepare(
+        `
     SELECT c.ID AS id, c.NAME AS name, c.DATA AS data
     FROM CHANNEL c
     JOIN (SELECT ID, MAX(CHUNK_ID) AS mx FROM CHANNEL GROUP BY ID) m
       ON m.ID = c.ID AND m.mx = c.CHUNK_ID
   `
-  );
+      )
+      .all();
+    rows = rawRows.map((raw) => ({
+      id: raw.id as string,
+      name: (raw.name as string | null) ?? null,
+      data: (raw.data as Uint8Array | string | null) ?? null,
+    }));
+  } catch {
+    // A failed archive enumeration is not an empty archive. Leave coverage
+    // unmeasured so the shared projection exposes the exact run failure.
+    return;
+  }
   const observedOn = deps.emittedAt.slice(0, 10);
   const wantsChannels = deps.requested.has("channels");
   let channelsCovered = 0;
@@ -1859,6 +1877,9 @@ export async function runChannelsStream(deps: StreamDeps): Promise<void> {
   // never aliased to the emitted count.
   if (wantsChannels) {
     await declareListConsidered(deps, "channels", rows.length, channelsCovered);
+  }
+  if (deps.requested.has("channel_stats")) {
+    await deps.emit(buildFullScanCoverageMessage("channel_stats", rows.length));
   }
 }
 
@@ -2541,7 +2562,7 @@ async function runRequestedStreams(
     await runUsersStream(deps);
   }
   // Messages, reactions, message_attachments share one pass for efficiency.
-  let result: MessagesPassResult = { channelMaxTs: {}, maxMessageTs: null };
+  let result: MessagesPassResult = { channelMaxTs: {}, maxMessageTs: null, considered: 0 };
   if (deps.requested.has("messages") || deps.requested.has("reactions") || deps.requested.has("message_attachments")) {
     const messagesState = state.messages as MessagesState | undefined;
     const priorTs = options.allowLegacyMessageCursorFallback === false ? null : (messagesState?.last_ts ?? null);
@@ -2554,6 +2575,19 @@ async function runRequestedStreams(
       legacyLastTs: priorTs,
       sinceTs: options.sinceTs ?? null,
     });
+    // One archive traversal supplies the parent denominator. Reactions and
+    // attachments ride this checkpoint window via manifest state_stream and
+    // must not receive a fabricated child-row denominator.
+    await deps.emit(
+      buildDetailCoverageMessage({
+        stream: "messages",
+        stateStream: "messages",
+        requiredKeys: [],
+        hydratedKeys: [],
+        considered: result.considered,
+        covered: result.considered,
+      })
+    );
   }
   if (deps.requested.has("files")) {
     deps.progress("Slack: emitting files", { stream: "files" });

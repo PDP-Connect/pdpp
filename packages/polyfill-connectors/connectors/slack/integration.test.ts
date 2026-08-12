@@ -129,15 +129,24 @@ function makeChannelDeps(requestedStreams: readonly string[]): {
   close: () => void;
   deps: StreamDeps;
   emitted: EmittedRecord[];
+  coverage: { stream: string; considered?: number; covered?: number }[];
 } {
   const db = makeChannelDb();
   const harness = makeRecordingEmit();
+  const coverage: { stream: string; considered?: number; covered?: number }[] = [];
   const requested = new Map<string, StreamScope>(requestedStreams.map((name) => [name, { name }]));
   return {
     close: () => db.close(),
     deps: {
       db,
-      emit: harness.emit,
+      emit: (message) => {
+        coverage.push({
+          stream: message.stream,
+          ...(message.considered === undefined ? {} : { considered: message.considered }),
+          ...(message.covered === undefined ? {} : { covered: message.covered }),
+        });
+        return Promise.resolve();
+      },
       emitRecord: harness.emitRecord,
       emittedAt: "2026-06-03T12:00:00.000Z",
       fingerprintCursors: new Map([["channels", openFingerprintCursor({}, { excludeFromFingerprint: [] })]]),
@@ -145,6 +154,7 @@ function makeChannelDeps(requestedStreams: readonly string[]): {
       requested,
     },
     emitted: harness.emitted,
+    coverage,
   };
 }
 
@@ -178,6 +188,38 @@ test("runChannelsStream: channels-only scope emits no channel_stats observations
   );
   assert.equal(emitted[0]?.data.id, "C0001");
   assert.equal("num_members" in (emitted[0]?.data ?? {}), false);
+});
+
+test("runChannelsStream: channel_stats uses the channel enumeration as honest 1/1 coverage", async () => {
+  const { close, deps, coverage } = makeChannelDeps(["channel_stats"]);
+  try {
+    await runChannelsStream(deps);
+  } finally {
+    close();
+  }
+  assert.deepEqual(coverage, [{ stream: "channel_stats", considered: 1, covered: 1 }]);
+});
+
+test("runChannelsStream: an empty channel enumeration proves 0/0, not unknown", async () => {
+  const { close, deps, coverage } = makeChannelDeps(["channel_stats"]);
+  deps.db.exec("DELETE FROM CHANNEL");
+  try {
+    await runChannelsStream(deps);
+  } finally {
+    close();
+  }
+  assert.deepEqual(coverage, [{ stream: "channel_stats", considered: 0, covered: 0 }]);
+});
+
+test("runChannelsStream: archive enumeration failure emits no empty coverage claim", async () => {
+  const { close, deps, coverage } = makeChannelDeps(["channel_stats"]);
+  deps.db.exec("DROP TABLE CHANNEL");
+  try {
+    await runChannelsStream(deps);
+  } finally {
+    close();
+  }
+  assert.deepEqual(coverage, []);
 });
 
 // ─── Invariant 7a: parent-before-child within a single row ───────────────
