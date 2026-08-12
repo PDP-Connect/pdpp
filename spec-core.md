@@ -1052,7 +1052,10 @@ On every request, the resource server:
 5. If all checks pass, returns records filtered accordingly.
 6. If any check fails, returns a structured error (see Errors below).
 
-The RS computes `effective_filter = grant_filter AND request_filter`. Request filters can only narrow what the grant allows; they cannot widen it.
+For owner-token current-capability reads, the RS MAY compute
+`effective_filter = grant_filter AND request_filter`; request filters can only
+narrow the current owner read and cannot widen it. In v0.1, client-token reads
+do not have request-time predicate filters (see List records below).
 
 The RS MUST NOT re-validate authorization against the current SourceDeclaration. All enforcement constraints are in the resolved grant. Current serving metadata MAY route a granted instance, describe current schemas or query capabilities, or reject a request that cannot currently be served. It MUST NOT widen or reinterpret a stream, instance, field, time field, bound, or resource key.
 
@@ -1198,26 +1201,36 @@ Returns records from a stream, filtered by the grant and any additional request 
 | `limit` | integer | Records per page. Default 25, max 100. A request for more than 100 is clamped to 100 and the response carries a non-fatal `limit_clamped` warning (see below), not an error. |
 | `cursor` | string | Opaque pagination token from a previous response. Clients MUST NOT parse or construct cursor tokens. |
 | `order` | enum | `desc` (default) or `asc`. |
-| `filter[{field}]` | string | Exact match filter on an authorized top-level scalar field. |
-| `filter[{field}][gte]` | string | Greater than or equal. Valid only for fields declared in `query.range_filters`. |
-| `filter[{field}][gt]` | string | Greater than. Valid only for fields declared in `query.range_filters`. |
-| `filter[{field}][lte]` | string | Less than or equal. Valid only for fields declared in `query.range_filters`. |
-| `filter[{field}][lt]` | string | Less than. Valid only for fields declared in `query.range_filters`. |
+| `filter[{field}]` and `filter[{field}][op]` | string | Owner-token current-capability filters only. Client-token requests MUST reject exact and range forms in v0.1. |
 | `view` | string | Owner-token current-capability request for records projected to a named view. Client-token records requests MUST reject `view`; clients use explicit `fields` or the field projection already frozen into the grant. Mutually exclusive with `fields`. |
 | `fields` | comma-separated | Sparse fieldset. Schema-required fields are always included. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
 | `expand[]` | string | Expand a relation declared under `query.expand`. Depth is 1. Expanded relations appear under the `expanded` key on the parent record. |
 | `expand_limit[{relation}]` | integer | Max records per expanded `has_many` relation. Valid only for relations declared under `query.expand`; defaults and limits come from that declaration. |
 | `changes_since` | string | Opaque incremental-sync token from a previous session (distinct token space from `cursor`). Returns only records whose grant-authorized projection changed since that cursor, plus tombstones for deletions. Use `next_changes_since` from the terminal page to seed the next session. Returns HTTP 410 Gone with error code `cursor_expired` if the cursor has expired. |
 
-The durable client-token base query surface in v0.1 is: `limit`, `cursor`, `order`, exact top-level scalar `filter[{field}]`, `fields`, `changes_since`, and blob fetch. Owner-token current-capability reads MAY also support `view`. Advanced stream-specific query power MUST be declared in stream metadata under `query`.
+The durable client-token base query surface in v0.1 is: `limit`, `cursor`,
+`order`, `fields`, `changes_since`, and blob fetch. Exact and range
+`filter[...]` parameters are not part of the client-token surface. Owner-token
+current-capability reads MAY support exact and declared range filters and
+`view`; those reads consult current serving metadata. Advanced stream-specific
+query power MUST be declared in stream metadata under `query`.
 
 Unknown query parameters and unsupported query shapes MUST be rejected with HTTP 400 and MUST NOT be silently ignored.
 
 **Non-fatal warnings:** A list response MAY carry a `meta.warnings[]` array reporting non-fatal lossiness that the server resolved without failing the request. Each entry has a stable `code` and a human-readable `message`; clients SHOULD branch on `code`, not on message text. A `limit` above the maximum is the canonical case: the RS returns the bounded page and a `limit_clamped` warning rather than silently dropping the excess or returning an error. Clients page forward with the returned cursor instead of expecting a larger page. Warnings are not errors and MUST NOT change the HTTP status.
 
-Exact `filter[{field}]` applies only to authorized top-level scalar fields. Unknown fields and non-scalar fields are HTTP 400. Fields outside the grant's authorized projection are HTTP 403 `field_not_granted`.
+Client-token requests that contain any exact or range `filter[...]` parameter
+MUST be rejected with HTTP 400 `invalid_request` before the RS consults current
+SourceDeclaration or serving metadata. This rejection applies regardless of
+whether the field or operator would otherwise be declared. Owner-token
+current-capability reads MAY accept exact filters on authorized top-level
+scalar fields and declared range filters; unknown fields and non-scalar fields
+are HTTP 400, and fields outside the grant's authorized projection are HTTP 403
+`field_not_granted`.
 
-Range filters (`gte`, `gt`, `lte`, `lt`) apply only to fields declared in `query.range_filters`. Nested paths, arrays, OR grammar, and full-text search are not part of v0.1.
+For owner-token current-capability reads, range filters (`gte`, `gt`, `lte`,
+`lt`) apply only to fields declared in `query.range_filters`. Nested paths,
+arrays, OR grammar, and full-text search are not part of v0.1.
 
 Expansion is declaration-driven. A relation is structurally present if listed under `relationships`, but it is only expandable if declared under `query.expand`. `expand_limit[{relation}]` is only valid for declared `has_many` relations.
 
@@ -1231,7 +1244,10 @@ Eligibility for `changes_since` MUST be computed on the grant-authorized project
 
 If a `changes_since` response is paginated, all pages in that session MUST be anchored to the same session horizon selected on the first page. New writes arriving after page 1 MUST NOT appear in later pages of that same session; they surface in the next session via the terminal-page `next_changes_since`.
 
-**Filter on unauthorized field:** RS MUST reject a `filter[{field}]` parameter targeting a field outside the grant's authorized projection with 403 `field_not_granted`.
+**Filter on unauthorized field:** For owner-token current-capability reads, RS
+MUST reject a `filter[{field}]` parameter targeting a field outside the grant's
+authorized projection with 403 `field_not_granted`. Client-token requests are
+rejected earlier by the v0.1 client-filter rule above.
 
 **Expansion:** Requesting an undeclared relation returns 400 `invalid_expand`. Requesting expansion of a stream not in the grant returns 403 `insufficient_scope`. Expansion never widens stream or field permissions beyond the grant.
 
@@ -1407,7 +1423,9 @@ A conformant Core RS:
 6. Returns structured errors as defined in Section 8 (unified error table).
 7. Supports incremental sync via `changes_since` for `mutable_state` streams, including tombstone entries, omission of records whose grant-authorized projection did not change, and HTTP 410 with error code `cursor_expired` on cursor expiry.
 8. Returns `next_changes_since` on the terminal page of every `changes_since` response.
-9. Rejects `filter[{field}]` on fields outside the grant's authorized projection with 403 `field_not_granted`.
+9. Rejects client-token exact and range `filter[...]` parameters with 400
+   `invalid_request` before consulting current declaration metadata; owner-token
+   current-capability reads MAY retain declared filter behavior.
 10. Rejects unknown query parameters and unsupported query shapes with 400 instead of silently ignoring them.
 11. Implements the `PDPP-Version` header negotiation.
 12. Scopes owner token access to a single subject's data store; derives `subject_id` from introspection response.
@@ -1547,7 +1565,11 @@ The `retention` field is a structured policy declaration and policy commitment b
 
 v0.1 grants narrow access only by stream selection, named view or field projection, time range, and explicit resource identifiers. Generic predicate expressions (e.g., `filter[sender_domain]=amazon.com` as a grant parameter) are not supported.
 
-**Request-time filters are not grant scope.** The `filter[{field}]` query parameters on `GET /v1/streams/{stream}/records` narrow the result set returned for a particular request but do not narrow the authorization scope of the underlying grant. A client authorized for a stream may request a filtered subset of that stream; the grant remains a grant to the stream as issued.
+**Request-time filters are not grant scope.** Owner-token current-capability
+reads MAY use `filter[...]` to narrow a result set, but those filters do not
+narrow any client grant. Client-token requests do not support request-time
+filters in v0.1; a client that needs a semantically bounded subset requests a
+named stream declared by the SourceDeclaration.
 
 **Derived subset streams (non-normative).** A stream MAY represent either a source-native collection or a derived subset, provided its semantics are stable, versioned through the SourceDeclaration, and human-reviewable in consent UI. Implementations that need semantically bounded consent in v0.1 SHOULD prefer named streams with human-readable semantics (e.g., a source that exposes `amazon_messages` as a distinct stream) over ad hoc technical predicates. Stream names MUST NOT encode predicate logic or synthesize per-request subsets; derived streams MUST be statically declared in the SourceDeclaration.
 

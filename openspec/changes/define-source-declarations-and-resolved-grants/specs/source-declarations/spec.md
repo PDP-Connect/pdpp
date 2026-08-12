@@ -235,6 +235,13 @@ projection already frozen into the grant. Owner-token reads MAY resolve a
 current view because they are current-capability requests, not grant
 reinterpretation.
 
+In v0.1, client-token reads SHALL also reject every request-time `filter[...]`
+parameter, including exact `filter[field]` and range
+`filter[field][gte|gt|lte|lt]` forms. The rejection SHALL occur before the RS
+consults current SourceDeclaration or serving metadata, and SHALL use HTTP 400
+`invalid_request`. Owner-token current-capability reads MAY retain exact and
+declaration-driven range filters against current serving metadata.
+
 #### Scenario: Current serving metadata changes
 
 - **WHEN** the current declaration or serving metadata changes after grant
@@ -276,6 +283,25 @@ grant.
 - **WHEN** a client-token records request includes `view`
 - **THEN** the RS SHALL reject the request with `invalid_request`
 - **AND** the RS SHALL NOT resolve the named view from current metadata
+
+#### Scenario: Client-token reads reject exact and range filters before metadata
+
+- **WHEN** a client-token request includes `filter[field]=value` or
+  `filter[field][op]=value`
+- **THEN** the RS SHALL reject the request with HTTP 400 `invalid_request`
+- **AND** the RS SHALL reject it before consulting current SourceDeclaration
+  or serving metadata
+- **AND** the RS SHALL NOT advertise typed exact or range filter capabilities
+  in client grant metadata
+
+#### Scenario: Owner reads retain current filters
+
+- **WHEN** an owner-token current-capability read includes an exact or declared
+  range `filter[...]`
+- **THEN** the RS MAY validate and apply that filter against current serving
+  metadata
+- **AND** this owner behavior SHALL NOT make the filter available to
+  client-token reads
 
 ### Requirement: Collection mechanisms are outside Core conformance
 

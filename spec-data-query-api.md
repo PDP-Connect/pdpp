@@ -145,16 +145,16 @@ Returns records from a stream, filtered by grant constraints and request paramet
 | `limit` | integer | Records per page. Default 25, max 100. |
 | `cursor` | string | Opaque pagination token from a previous response's `next_cursor` or `prev_cursor`. The server generates these tokens; clients pass them back verbatim. |
 | `order` | enum | `desc` (default) or `asc` |
-| `filter[{field}]` | string | Exact match filter |
-| `filter[{field}][gte]` | string | Greater than or equal (ISO 8601 for dates) |
-| `filter[{field}][gt]` | string | Greater than |
-| `filter[{field}][lte]` | string | Less than or equal |
-| `filter[{field}][lt]` | string | Less than |
+| `filter[{field}]` and `filter[{field}][op]` | string | Owner-token current-capability filters only. Client-token requests reject exact and range forms in v0.1. |
 | `fields` | comma-separated | Sparse fieldset. `id` is always included. Schema-required fields are always included. |
 | `expand[]` | string | Expand a foreign key relation inline (e.g., `expand[]=messages`). |
 | `expand_limit[{relation}]` | integer | Max records per expanded relation. Default 10, max 50. |
 
-**Grant enforcement:** The resource server computes `effective_filter = grant_filter AND request_filter`. Request filters can only narrow what the grant allows; they cannot widen it.
+**Grant enforcement:** Owner-token current-capability reads MAY compute
+`effective_filter = grant_filter AND request_filter`. Client-token requests do
+not support request-time `filter[...]` in v0.1 and reject those parameters
+before consulting current source metadata. See Core Section 8, which is
+authoritative for the current query contract.
 
 Note: `limit` on this API is **page size** (how many records per response). The grant constrains access through `time_range`, `fields`, and stream selection — not through record count limits. "Top 50 artists" or "recent 100 posts" are modeled as manifest-defined streams or profiles, not as grant-level constraints.
 
