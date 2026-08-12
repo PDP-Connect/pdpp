@@ -4774,23 +4774,21 @@ export function buildAsApp(opts: ServerOpts = {}) {
       } catch (err) {
         // Failed restore is terminal, never a route to a connector resuming
         // against a phone-shaped shared surface.
-        try {
-          // The runtime may still be blocked in its interaction promise. Give
-          // it a terminal cancelled envelope before aborting the child so a
-          // failed restore cannot leave a live run waiting indefinitely.
-          originalRespondToInteraction(runId, {
-            interaction_id: interactionId,
-            status: "cancelled",
-          });
-        } finally {
-          // Same trusted internal resolution as onPresentationRestoreFailure
-          // above: this is system-initiated teardown of a run already known
-          // to the controller, not an owner-facing cancel request.
-          const restoreFailureOwnerSubjectId = controller?.getActiveRunOwnerSubjectId(runId);
-          if (restoreFailureOwnerSubjectId) {
-            await originalCancelRun?.(runId, restoreFailureOwnerSubjectId);
-          }
-        }
+        // Same trusted internal resolution as onPresentationRestoreFailure
+        // above: this is system-initiated teardown of a run already known
+        // to the controller, not an owner-facing cancel request. Start the
+        // cancellation before resolving the blocked interaction so the
+        // runtime cannot record success, but resolve before awaiting the
+        // cancellation because the connector may need it in order to exit.
+        const restoreFailureOwnerSubjectId = controller?.getActiveRunOwnerSubjectId(runId);
+        const cancellation = restoreFailureOwnerSubjectId
+          ? originalCancelRun?.(runId, restoreFailureOwnerSubjectId)
+          : undefined;
+        await originalRespondToInteraction(runId, {
+          interaction_id: interactionId,
+          status: "cancelled",
+        });
+        await cancellation;
         throw err;
       } finally {
         await runTargetRegistry.forceUnregister({ interactionId, runId });

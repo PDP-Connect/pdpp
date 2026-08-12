@@ -19,7 +19,7 @@
     "runtime/controller.ts": 226,
     "runtime/detail-gap-paging.ts": 24,
     "runtime/done-validators.ts": 10,
-    "runtime/index.ts": 406,
+    "runtime/index.ts": 403,
     "runtime/ingest-failure.ts": 1,
     "runtime/ingest-failures.ts": 2,
     "runtime/owner-state.ts": 12,

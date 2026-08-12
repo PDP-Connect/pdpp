@@ -614,7 +614,7 @@ test("POST /_ref/grant-packages/:id/revoke surfaces partial child failure withou
     const [notRevokedChild] = revokeResult.not_revoked_child_grants;
     assert.ok(notRevokedChild);
     assert.equal(notRevokedChild.grant_id, brokenChild.grant_id);
-    assert.equal(notRevokedChild.error.code, "authorization_state.unsupported_legacy_shape");
+    assert.equal(notRevokedChild.error.code, "grant_invalid");
     assertNoSecretMaterial(revokeResult);
 
     const detail = await fetchJson(`${asUrl}/_ref/grant-packages/${encodeURIComponent(packageId)}`);
