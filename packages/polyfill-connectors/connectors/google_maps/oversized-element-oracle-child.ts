@@ -10,9 +10,10 @@
  * spent exclusively on the validation call itself.
  */
 
+import { streamGoogleMapsExport } from "./archive-stream.ts";
 import { validateGoogleMapsTimelineArtifactFromFile } from "./validation.ts";
 
-const [, , path, fileSizeArg] = process.argv;
+const [, , path, fileSizeArg, mode] = process.argv;
 if (!(path && fileSizeArg)) {
   console.error("usage: oversized-element-oracle-child.ts <path> <fileSize>");
   process.exit(2);
@@ -20,15 +21,32 @@ if (!(path && fileSizeArg)) {
 
 const fileSize = Number(fileSizeArg);
 
-validateGoogleMapsTimelineArtifactFromFile(path, fileSize, {
-  fileSha256: "oracle-probe",
-  maxFileBytes: 200 * 1024 * 1024,
-})
-  .then((result) => {
-    process.stdout.write(`${JSON.stringify({ status: result.status })}\n`);
-    process.exit(0);
+if (mode === "stream") {
+  let elements = 0;
+  streamGoogleMapsExport(path, (event) => {
+    if (event.kind === "element") {
+      elements += 1;
+    }
   })
-  .catch((err) => {
-    process.stdout.write(`${JSON.stringify({ error: String(err) })}\n`);
-    process.exit(1);
-  });
+    .then(() => {
+      process.stdout.write(`${JSON.stringify({ elements, status: "valid" })}\n`);
+      process.exit(0);
+    })
+    .catch((err) => {
+      process.stdout.write(`${JSON.stringify({ error: String(err) })}\n`);
+      process.exit(1);
+    });
+} else {
+  validateGoogleMapsTimelineArtifactFromFile(path, fileSize, {
+    fileSha256: "oracle-probe",
+    maxFileBytes: 200 * 1024 * 1024,
+  })
+    .then((result) => {
+      process.stdout.write(`${JSON.stringify({ status: result.status })}\n`);
+      process.exit(0);
+    })
+    .catch((err) => {
+      process.stdout.write(`${JSON.stringify({ error: String(err) })}\n`);
+      process.exit(1);
+    });
+}

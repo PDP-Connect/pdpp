@@ -14,7 +14,8 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createWriteStream, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -23,6 +24,7 @@ import {
   GoogleMapsUnsupportedShapeError,
   streamGoogleMapsExport,
 } from "./archive-stream.ts";
+import { parseGoogleMapsExport, parseGoogleMapsExportElement } from "./parsers.ts";
 
 function writeTmpFile(content: string): { dir: string; path: string } {
   const dir = mkdtempSync(join(tmpdir(), "pdpp-google-maps-archive-stream-"));
@@ -71,6 +73,125 @@ test("a genuinely oversized SUPPORTED array element still throws GoogleMapsEleme
   const oversizedNote = "x".repeat(maxSingleElementBytes + 1024 * 1024);
   const content = JSON.stringify({
     locations: [{ note: oversizedNote, timestampMs: "1717595122000" }],
+  });
+  const { dir, path } = writeTmpFile(content);
+  try {
+    await assert.rejects(
+      () => streamGoogleMapsExport(path, () => undefined, { maxSingleElementBytes }),
+      GoogleMapsElementTooLargeError
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a large semanticSegments aggregate is normalized incrementally instead of rejected as record_too_large", async () => {
+  const pathPoints = Array.from({ length: 80_000 }, (_, index) => ({
+    point: `geo:37.${String(index % 10).padStart(6, "0")},-122.${String(index % 10).padStart(6, "0")}`,
+    time: `2024-06-05T13:${String(Math.floor(index / 60) % 60).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}Z`,
+  }));
+  const content = JSON.stringify({
+    semanticSegments: [
+      {
+        duration: { startTimestamp: "2024-06-05T13:45:22.000Z" },
+        timelinePath: pathPoints,
+      },
+    ],
+  });
+  assert.ok(Buffer.byteLength(content, "utf8") > 4 * 1024 * 1024, "fixture must exceed the old element bound");
+  const { dir, path } = writeTmpFile(content);
+  try {
+    let elementCount = 0;
+    await streamGoogleMapsExport(path, (event) => {
+      if (event.kind === "element") {
+        elementCount += 1;
+      }
+    });
+    assert.equal(elementCount, pathPoints.length, "each path point must reach the normalizer exactly once");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("streamed semantic segments match buffered segments in either field order without synthetic duplicates", async () => {
+  const segmentBeforePath = {
+    duration: { startTimestamp: "2024-06-05T13:45:22Z", endTimestamp: "2024-06-05T14:00:00Z" },
+    activity: { activityType: "WALKING" },
+    timelinePath: [{ point: "geo:37.4219999,-122.0840575", time: "2024-06-05T13:45:22Z" }],
+  };
+  const segmentAfterPath = {
+    timelinePath: [{ point: "geo:37.4219999,-122.0840575", time: "2024-06-05T13:45:22Z" }],
+    activity: { activityType: "WALKING" },
+    duration: { startTimestamp: "2024-06-05T13:45:22Z", endTimestamp: "2024-06-05T14:00:00Z" },
+  };
+  for (const segment of [segmentBeforePath, segmentAfterPath]) {
+    const content = JSON.stringify({ semanticSegments: [segment] });
+    const { dir, path } = writeTmpFile(content);
+    try {
+      const streamedValues: unknown[] = [];
+      await streamGoogleMapsExport(path, (event) => {
+        if (event.kind === "element" && event.format === "semantic_segments") {
+          streamedValues.push(event.value);
+        }
+      });
+      const streamedSegments = streamedValues.flatMap(
+        (value) => parseGoogleMapsExportElement("semantic_segments", value).segments
+      );
+      const bufferedSegments = parseGoogleMapsExport(JSON.parse(content)).segments;
+      assert.equal(streamedSegments.length, bufferedSegments.length);
+      assert.deepEqual(
+        streamedSegments.map(({ id, segment_kind }) => ({ id, segment_kind })),
+        bufferedSegments.map(({ id, segment_kind }) => ({ id, segment_kind }))
+      );
+      assert.deepEqual(
+        streamedSegments[0],
+        bufferedSegments[0],
+        "streaming must preserve the complete semantic segment"
+      );
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  }
+});
+
+test("a huge timelinePath stays bounded under a hard heap limit while unrelated fields remain guarded", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-google-maps-huge-path-oracle-"));
+  const path = join(dir, "Timeline.json");
+  try {
+    const point = JSON.stringify({ point: "geo:37.4219999,-122.0840575", time: "2024-06-05T13:45:22Z" });
+    const out = createWriteStream(path);
+    out.write('{"semanticSegments":[{"duration":{"startTimestamp":"2024-06-05T13:45:22Z"},"timelinePath":[');
+    const repetitions = Math.ceil((70 * 1024 * 1024) / (point.length + 1));
+    for (let index = 0; index < repetitions; index += 1) {
+      out.write((index === 0 ? "" : ",") + point);
+    }
+    out.write("]}]}");
+    await new Promise<void>((resolve, reject) =>
+      out.end((error?: Error | null) => (error ? reject(error) : resolve()))
+    );
+
+    const childPath = new URL("./oversized-element-oracle-child.ts", import.meta.url);
+    const result = spawnSync(
+      process.execPath,
+      ["--max-old-space-size=96", "--import", "tsx", childPath.pathname, path, String(statSync(path).size), "stream"],
+      { encoding: "utf8", timeout: 60_000 }
+    );
+    assert.equal(result.status, 0, `huge path must stream under the heap limit: ${result.stderr}`);
+    assert.equal(JSON.parse(result.stdout.trim()).status, "valid");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a giant non-path field inside a semantic segment still trips the element guard", async () => {
+  const maxSingleElementBytes = 4 * 1024 * 1024;
+  const content = JSON.stringify({
+    semanticSegments: [
+      {
+        startTime: "2024-06-05T13:45:22Z",
+        providerExtension: "x".repeat(maxSingleElementBytes + 1),
+      },
+    ],
   });
   const { dir, path } = writeTmpFile(content);
   try {

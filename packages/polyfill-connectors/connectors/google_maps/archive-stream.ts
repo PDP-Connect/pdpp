@@ -15,7 +15,41 @@ const READ_BUFFER_SIZE = 65_536;
 const DEFAULT_MAX_SINGLE_ELEMENT_BYTES = 4 * 1024 * 1024;
 const FIRST_JSON_VALUE_RE = /[^\u0020\t\r\n\uFEFF]/u;
 const ROOT_ARRAY_PATHS = ["$.*"];
-const WRAPPED_ARRAY_ELEMENT_PATHS = ["$.locations.*", "$.semanticSegments.*", "$.timelineObjects.*"];
+const SEMANTIC_SEGMENT_PROJECTION_PATHS = [
+  "$.semanticSegments.*.startTime",
+  "$.semanticSegments.*.startTimestamp",
+  "$.semanticSegments.*.endTime",
+  "$.semanticSegments.*.endTimestamp",
+  "$.semanticSegments.*.duration.startTimestamp",
+  "$.semanticSegments.*.duration.startTime",
+  "$.semanticSegments.*.duration.endTimestamp",
+  "$.semanticSegments.*.duration.endTime",
+  "$.semanticSegments.*.visit.topCandidate.placeLocation",
+  "$.semanticSegments.*.visit.topCandidate.location",
+  "$.semanticSegments.*.visit.topCandidate.placeId",
+  "$.semanticSegments.*.visit.topCandidate.placeID",
+  "$.semanticSegments.*.visit.topCandidate.semanticType",
+  "$.semanticSegments.*.visit.topCandidate.probability",
+  "$.semanticSegments.*.visit.topPlace.placeLocation",
+  "$.semanticSegments.*.visit.topPlace.location",
+  "$.semanticSegments.*.visit.topPlace.placeId",
+  "$.semanticSegments.*.visit.topPlace.placeID",
+  "$.semanticSegments.*.visit.topPlace.semanticType",
+  "$.semanticSegments.*.visit.topPlace.probability",
+  "$.semanticSegments.*.placeLocation",
+  "$.semanticSegments.*.location",
+  "$.semanticSegments.*.placeId",
+  "$.semanticSegments.*.placeID",
+  "$.semanticSegments.*.semanticType",
+  "$.semanticSegments.*.probability",
+  "$.semanticSegments.*.activity.topCandidate.type",
+  "$.semanticSegments.*.activity.topCandidate.probability",
+  "$.semanticSegments.*.activity.topActivity.type",
+  "$.semanticSegments.*.activity.activityType",
+  "$.semanticSegments.*.activity.probability",
+  "$.semanticSegments.*.timelinePath.*",
+];
+const WRAPPED_ARRAY_ELEMENT_PATHS = ["$.locations.*", ...SEMANTIC_SEGMENT_PROJECTION_PATHS, "$.timelineObjects.*"];
 
 export const GOOGLE_MAPS_SHAPE_KEYS = ["locations", "semanticSegments", "timelineObjects"] as const;
 export const GOOGLE_MAPS_SHAPE_KEY_TO_FORMAT: Readonly<
@@ -27,6 +61,120 @@ export const GOOGLE_MAPS_SHAPE_KEY_TO_FORMAT: Readonly<
 };
 
 type StreamStackKey = string | number | undefined;
+
+type SemanticProjection = Record<string, unknown> & { timelinePath: unknown[] | undefined };
+interface SemanticProjectionRun {
+  readonly onComplete: (index: number, projection: SemanticProjection, hasPath: boolean) => void;
+  readonly onPoint?: (index: number, point: unknown) => void;
+}
+
+function semanticProjectionPath(
+  stack: readonly { readonly key: StreamStackKey }[],
+  key: StreamStackKey
+): string[] | null {
+  if (stack.length < 3 || stack[1]?.key !== "semanticSegments" || typeof stack[2]?.key !== "number") {
+    return null;
+  }
+  return [...stack.slice(3).map((entry) => String(entry.key)), String(key)];
+}
+
+function setProjectionValue(target: SemanticProjection, path: readonly string[], value: unknown): void {
+  let cursor: Record<string, unknown> = target;
+  for (const part of path.slice(0, -1)) {
+    const existing = cursor[part];
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+      cursor[part] = {};
+    }
+    cursor = cursor[part] as Record<string, unknown>;
+  }
+  const leaf = path.at(-1);
+  if (leaf) {
+    cursor[leaf] = value;
+  }
+}
+
+function cloneProjection(projection: SemanticProjection): SemanticProjection {
+  return structuredClone(projection);
+}
+
+const SEMANTIC_SEGMENT_KNOWN_KEYS = new Set([
+  "startTime",
+  "startTimestamp",
+  "endTime",
+  "endTimestamp",
+  "duration",
+  "visit",
+  "activity",
+  "timelinePath",
+]);
+
+class SemanticSegmentKeyTracker {
+  private readonly stack: Array<{
+    kind: "object" | "array";
+    pendingKey: string | undefined;
+    segmentIndex: number | undefined;
+  }> = [];
+  private readonly onUnknownKey: (index: number, key: string) => void;
+  private nextSegmentIndex = 0;
+
+  constructor(onUnknownKey: (index: number, key: string) => void) {
+    this.onUnknownKey = onUnknownKey;
+  }
+
+  onToken(token: TokenType, value: unknown): void {
+    if (token === TokenType.STRING) {
+      this.handleString(value);
+      return;
+    }
+    if (token === TokenType.LEFT_BRACE || token === TokenType.LEFT_BRACKET) {
+      this.handleOpen(token);
+      return;
+    }
+    if (token === TokenType.COMMA) {
+      this.handleComma();
+      return;
+    }
+    if (token === TokenType.RIGHT_BRACE || token === TokenType.RIGHT_BRACKET) {
+      this.stack.pop();
+    }
+  }
+
+  private handleString(value: unknown): void {
+    const frame = this.stack.at(-1);
+    if (frame?.kind !== "object" || frame.pendingKey !== undefined) {
+      return;
+    }
+    const key = typeof value === "string" ? value : undefined;
+    frame.pendingKey = key;
+    if (key && this.stack.length === 3 && !SEMANTIC_SEGMENT_KNOWN_KEYS.has(key) && frame.segmentIndex !== undefined) {
+      this.onUnknownKey(frame.segmentIndex, key);
+    }
+  }
+
+  private handleOpen(token: TokenType.LEFT_BRACE | TokenType.LEFT_BRACKET): void {
+    const parent = this.stack.at(-1);
+    const isSegment = token === TokenType.LEFT_BRACE && parent?.kind === "array" && parent.segmentIndex === undefined;
+    let segmentIndex = parent?.segmentIndex;
+    if (isSegment) {
+      segmentIndex = this.nextSegmentIndex;
+      this.nextSegmentIndex += 1;
+    }
+    this.stack.push({
+      kind: token === TokenType.LEFT_BRACE ? "object" : "array",
+      pendingKey: undefined,
+      segmentIndex,
+    });
+  }
+
+  private handleComma(): void {
+    const frame = this.stack.at(-1);
+    if (frame?.kind === "object") {
+      frame.pendingKey = undefined;
+    } else if (frame?.kind === "array") {
+      frame.segmentIndex = undefined;
+    }
+  }
+}
 
 export type GoogleMapsStreamEvent =
   | { readonly format: GoogleMapsSourceFormat; readonly kind: "element"; readonly value: unknown }
@@ -76,6 +224,7 @@ type ByteTrackerFrame =
   | {
       activeElement: boolean;
       elementBytes: number;
+      excludeFromParentElementBytes: boolean;
       format: GoogleMapsSourceFormat | undefined;
       kind: "array";
       state: "comma_or_end" | "primitive" | "value_or_end";
@@ -313,7 +462,14 @@ class ElementByteTracker {
       this.stack.push(
         kind === "object"
           ? { kind, pendingKey: undefined, root: true, state: "key_or_end" }
-          : { activeElement: false, elementBytes: 0, format: "timeline_objects", kind, state: "value_or_end" }
+          : {
+              activeElement: false,
+              elementBytes: 0,
+              excludeFromParentElementBytes: false,
+              format: "timeline_objects",
+              kind,
+              state: "value_or_end",
+            }
       );
       return;
     }
@@ -322,12 +478,20 @@ class ElementByteTracker {
         return;
       }
       const format = parent.root ? (formatForShapeKey(parent.pendingKey ?? "") ?? undefined) : undefined;
+      const isTimelinePath = parent.pendingKey === "timelinePath";
       parent.pendingKey = undefined;
       parent.state = "comma_or_end";
       this.stack.push(
         kind === "object"
           ? { kind, pendingKey: undefined, root: false, state: "key_or_end" }
-          : { activeElement: false, elementBytes: 0, format, kind, state: "value_or_end" }
+          : {
+              activeElement: false,
+              elementBytes: 0,
+              excludeFromParentElementBytes: isTimelinePath,
+              format,
+              kind,
+              state: "value_or_end",
+            }
       );
       return;
     }
@@ -339,7 +503,14 @@ class ElementByteTracker {
     this.stack.push(
       kind === "object"
         ? { kind, pendingKey: undefined, root: false, state: "key_or_end" }
-        : { activeElement: false, elementBytes: 0, format: undefined, kind, state: "value_or_end" }
+        : {
+            activeElement: false,
+            elementBytes: 0,
+            excludeFromParentElementBytes: false,
+            format: undefined,
+            kind,
+            state: "value_or_end",
+          }
     );
   }
 
@@ -424,11 +595,37 @@ class ElementByteTracker {
   }
 
   private count(bytes: number): void {
+    const pathFrame = this.stack.find(
+      (candidate): candidate is Extract<ByteTrackerFrame, { kind: "array" }> =>
+        candidate.kind === "array" && candidate.excludeFromParentElementBytes && candidate.activeElement
+    );
+    if (pathFrame) {
+      pathFrame.elementBytes += bytes;
+      if (pathFrame.elementBytes > this.maxElementBytes) {
+        throw new GoogleMapsElementTooLargeError(
+          `a single Timeline path point exceeded ${String(this.maxElementBytes)} bytes`
+        );
+      }
+      return;
+    }
     const frame = this.stack.find(
       (candidate): candidate is Extract<ByteTrackerFrame, { kind: "array" }> =>
         candidate.kind === "array" && candidate.format !== undefined && candidate.activeElement
     );
     if (!frame) {
+      return;
+    }
+    // `semanticSegments` entries are provider aggregates. In particular, a
+    // single segment can contain an arbitrarily long timelinePath, while the
+    // collector turns that path into one bounded point record per location.
+    // Applying the per-element guard here rejects the aggregate before that
+    // semantic normalization can happen and reports record_too_large on both
+    // output streams. The guard remains active for the already-bounded
+    // location/timeline-object element shapes.
+    if (
+      frame.format === "semantic_segments" &&
+      this.stack.some((candidate) => candidate.kind === "array" && candidate.excludeFromParentElementBytes)
+    ) {
       return;
     }
     frame.elementBytes += bytes;
@@ -487,14 +684,86 @@ async function drain(pending: GoogleMapsStreamEvent[], onEvent: GoogleMapsStream
 }
 
 function createParser(
-  paths: string[],
+  paths: readonly string[],
   shapeTracker: RootShapeTracker,
-  onElement: (format: GoogleMapsSourceFormat, value: unknown) => void
+  onElement: (format: GoogleMapsSourceFormat, value: unknown) => void,
+  onEnd: () => void,
+  semanticRun: SemanticProjectionRun | undefined
 ): JSONParser {
-  const parser = new JSONParser({ emitPartialValues: true, keepStack: false, paths });
-  parser.onToken = ({ token, value }) => shapeTracker.onToken(token, value);
+  const parser = new JSONParser({ emitPartialValues: true, keepStack: false, paths: [...paths] });
+  const unknownKeys = new Map<number, Set<string>>();
+  const keyTracker = new SemanticSegmentKeyTracker((index, key) => {
+    const keys = unknownKeys.get(index) ?? new Set<string>();
+    keys.add(key);
+    unknownKeys.set(index, keys);
+  });
+  parser.onToken = ({ token, value }) => {
+    shapeTracker.onToken(token, value);
+    keyTracker.onToken(token, value);
+  };
+  let semanticIndex: number | null = null;
+  let semanticProjection: SemanticProjection | null = null;
+  let semanticHasPath = false;
+  const flushSemanticProjection = (): void => {
+    if (semanticProjection) {
+      const index = semanticIndex;
+      if (index !== null) {
+        for (const key of unknownKeys.get(index) ?? []) {
+          semanticProjection[key] ??= {};
+        }
+        if (semanticRun) {
+          semanticRun.onComplete(index, cloneProjection(semanticProjection), semanticHasPath);
+        } else if (!semanticHasPath) {
+          onElement("semantic_segments", cloneProjection(semanticProjection));
+        }
+      }
+    }
+    if (semanticIndex !== null) {
+      unknownKeys.delete(semanticIndex);
+    }
+    semanticProjection = null;
+    semanticIndex = null;
+    semanticHasPath = false;
+  };
+  const handleSemanticValue = (info: {
+    readonly key?: StreamStackKey;
+    readonly stack: readonly { readonly key: StreamStackKey }[];
+    readonly value?: unknown;
+  }): boolean => {
+    const semanticPath = semanticProjectionPath(info.stack, info.key);
+    if (!semanticPath) {
+      return false;
+    }
+    const nextIndex = info.stack[2]?.key;
+    if (typeof nextIndex !== "number") {
+      return true;
+    }
+    if (semanticIndex !== null && semanticIndex !== nextIndex) {
+      flushSemanticProjection();
+    }
+    semanticIndex = nextIndex;
+    semanticProjection ??= { timelinePath: undefined };
+    if (semanticPath.at(-2) === "timelinePath") {
+      semanticHasPath = true;
+      semanticProjection.timelinePath = [info.value];
+      for (const key of unknownKeys.get(nextIndex) ?? []) {
+        semanticProjection[key] ??= {};
+      }
+      semanticRun?.onPoint?.(nextIndex, info.value);
+      if (!semanticRun) {
+        onElement("semantic_segments", cloneProjection(semanticProjection));
+      }
+      semanticProjection.timelinePath = undefined;
+    } else {
+      setProjectionValue(semanticProjection, semanticPath, info.value);
+    }
+    return true;
+  };
   parser.onValue = (info) => {
     if (info.partial) {
+      return;
+    }
+    if (handleSemanticValue(info)) {
       return;
     }
     const format = formatForElementEvent(info.key, info.stack, info.parent);
@@ -503,20 +772,27 @@ function createParser(
     }
     onElement(format, info.value);
   };
+  parser.onEnd = () => {
+    flushSemanticProjection();
+    onEnd();
+  };
   return parser;
 }
 
 function initializeParser(
   text: string,
   shapeTracker: RootShapeTracker,
-  onElement: (format: GoogleMapsSourceFormat, value: unknown) => void
+  onElement: (format: GoogleMapsSourceFormat, value: unknown) => void,
+  onEnd: () => void,
+  semanticRun: SemanticProjectionRun | undefined,
+  pathsOverride?: readonly string[]
 ): { parser: JSONParser; text: string } | null {
   const firstIndex = text.search(FIRST_JSON_VALUE_RE);
   if (firstIndex === -1) {
     return null;
   }
-  const paths = text[firstIndex] === "[" ? ROOT_ARRAY_PATHS : WRAPPED_ARRAY_ELEMENT_PATHS;
-  return { parser: createParser(paths, shapeTracker, onElement), text: text.slice(firstIndex) };
+  const paths = pathsOverride ?? (text[firstIndex] === "[" ? ROOT_ARRAY_PATHS : WRAPPED_ARRAY_ELEMENT_PATHS);
+  return { parser: createParser(paths, shapeTracker, onElement, onEnd, semanticRun), text: text.slice(firstIndex) };
 }
 
 async function feedParserChunk(
@@ -537,6 +813,61 @@ async function feedParserChunk(
   await drain(pending, onEvent);
 }
 
+async function replaySemanticPath(
+  path: string,
+  maxSingleElementBytes: number,
+  semanticProjections: Map<number, SemanticProjection>,
+  onEvent: GoogleMapsStreamEventHandler
+): Promise<void> {
+  const pending: GoogleMapsStreamEvent[] = [];
+  const onElement = (format: GoogleMapsSourceFormat, value: unknown): void => {
+    pending.push({ format, kind: "element", value });
+  };
+  const semanticRun: SemanticProjectionRun = {
+    onComplete(index) {
+      semanticProjections.delete(index);
+    },
+    onPoint(index, point) {
+      const projection = semanticProjections.get(index);
+      if (!projection) {
+        return;
+      }
+      onElement("semantic_segments", { ...cloneProjection(projection), timelinePath: [point] });
+    },
+  };
+  const shapeTracker = new RootShapeTracker(() => undefined);
+  const elementByteTracker = new ElementByteTracker(maxSingleElementBytes);
+  let parser: JSONParser | null = null;
+  const stream = createReadStream(path, { encoding: "utf8", highWaterMark: READ_BUFFER_SIZE });
+  try {
+    for await (const chunk of stream as AsyncIterable<string | Buffer>) {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      let toFeed = text;
+      if (!parser) {
+        const initialized = initializeParser(
+          text,
+          shapeTracker,
+          onElement,
+          () => undefined,
+          semanticRun,
+          SEMANTIC_SEGMENT_PROJECTION_PATHS
+        );
+        if (!initialized) {
+          continue;
+        }
+        ({ parser, text: toFeed } = initialized);
+      }
+      await feedParserChunk(parser, toFeed, elementByteTracker, pending, onEvent);
+    }
+  } finally {
+    stream.destroy();
+  }
+  if (parser && !parser.isEnded) {
+    parser.end();
+  }
+  await drain(pending, onEvent);
+}
+
 /**
  * Stream Timeline array elements without materializing the source file.
  * `shape` events preserve the empty-container evidence needed by the upload
@@ -550,6 +881,7 @@ export async function streamGoogleMapsExport(
   const maxSingleElementBytes = options.maxSingleElementBytes ?? DEFAULT_MAX_SINGLE_ELEMENT_BYTES;
   const pending: GoogleMapsStreamEvent[] = [];
   const seenShapes = new Set<GoogleMapsSourceFormat>();
+  const semanticProjections = new Map<number, SemanticProjection>();
 
   const markShape = (format: GoogleMapsSourceFormat): void => {
     if (seenShapes.has(format)) {
@@ -564,6 +896,15 @@ export async function streamGoogleMapsExport(
   const onElement = (format: GoogleMapsSourceFormat, value: unknown): void => {
     pending.push({ format, kind: "element", value });
   };
+  const firstSemanticRun: SemanticProjectionRun = {
+    onComplete(index, projection, hasPath) {
+      if (hasPath) {
+        semanticProjections.set(index, projection);
+      } else {
+        onElement("semantic_segments", projection);
+      }
+    },
+  };
   let parser: JSONParser | null = null;
 
   const stream = createReadStream(path, { encoding: "utf8", highWaterMark: READ_BUFFER_SIZE });
@@ -572,7 +913,7 @@ export async function streamGoogleMapsExport(
       const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
       let toFeed = text;
       if (!parser) {
-        const initialized = initializeParser(text, shapeTracker, onElement);
+        const initialized = initializeParser(text, shapeTracker, onElement, () => undefined, firstSemanticRun);
         if (!initialized) {
           continue;
         }
@@ -592,6 +933,10 @@ export async function streamGoogleMapsExport(
     if (!parser.isEnded) {
       throw new Error("google_maps: Timeline document did not close (truncated or malformed)");
     }
+  }
+
+  if (seenShapes.has("semantic_segments")) {
+    await replaySemanticPath(path, maxSingleElementBytes, semanticProjections, onEvent);
   }
 
   if (shapeTracker.invalidKey) {

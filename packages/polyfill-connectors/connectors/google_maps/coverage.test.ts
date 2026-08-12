@@ -148,6 +148,44 @@ test("google_maps dedupes duplicate archive files and proves both declared strea
   }
 });
 
+test("google_maps imports a large semantic segment on both streams without terminal record_too_large gaps", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-google-maps-large-segment-"));
+  try {
+    const timelinePath = Array.from({ length: 80_000 }, (_, index) => ({
+      point: `geo:37.${String(index % 10).padStart(6, "0")},-122.${String(index % 10).padStart(6, "0")}`,
+      time: `2024-06-05T13:${String(Math.floor(index / 60) % 60).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}Z`,
+    }));
+    const exportContent = JSON.stringify({
+      semanticSegments: [
+        {
+          duration: { startTimestamp: "2024-06-05T13:45:22.000Z" },
+          timelinePath,
+        },
+      ],
+    });
+    assert.ok(Buffer.byteLength(exportContent, "utf8") > 4 * 1024 * 1024, "fixture must exceed the old element bound");
+    await writeFile(join(importRoot, "Timeline.json"), exportContent);
+
+    const { messages } = await runImport(importRoot, {}, ["timeline_points", "timeline_segments"]);
+    for (const stream of ["timeline_points", "timeline_segments"]) {
+      assert.equal(
+        messages.some(
+          (message) =>
+            message.type === "SKIP_RESULT" && message.stream === stream && message.reason === "record_too_large"
+        ),
+        false,
+        `${stream} must not receive a terminal record_too_large gap`
+      );
+    }
+    assert.ok(messages.some((message) => message.type === "RECORD" && message.stream === "timeline_points"));
+    assert.ok(messages.some((message) => message.type === "RECORD" && message.stream === "timeline_segments"));
+    assert.ok(messages.some((message) => message.type === "STATE" && message.stream === "timeline_points"));
+    assert.ok(messages.some((message) => message.type === "STATE" && message.stream === "timeline_segments"));
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
 test("google_maps with a malformed archive does not emit STATE or coverage", async () => {
   const importRoot = await mkdtemp(join(tmpdir(), "pdpp-google-maps-invalid-"));
   try {
