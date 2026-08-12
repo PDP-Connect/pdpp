@@ -25,6 +25,7 @@ import {
   makeDefaultAccountConnectorInstanceId,
 } from "../server/stores/connector-instance-store.ts";
 import { introspectionHeaders } from "./helpers/introspection.ts";
+import { TEST_INTROSPECTION_SERVER_OPTS } from "./helpers/introspection-test-credentials.ts";
 
 // Real ingest resolves the acting owner subject from the request's bearer
 // token (`getOwnerTokenSubjectId` in server/index.ts), independent of
@@ -1071,6 +1072,7 @@ async function withHarness(fn: (harness: Harness) => Promise<void>): Promise<voi
     dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -1102,6 +1104,7 @@ async function withNativeHarness(fn: (harness: NativeHarness) => Promise<void>):
     nativeManifest,
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -1535,7 +1538,7 @@ test("PDPP reference implementation integration", async (t) => {
     const { dbPath, cleanup } = createTempDbPath();
     const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
 
-    let server = await startServer({ asPort: 0, dbPath, quiet: true, rsPort: 0 });
+    let server = await startServer({ asPort: 0, dbPath, quiet: true, rsPort: 0, ...TEST_INTROSPECTION_SERVER_OPTS });
     const asUrl = `http://localhost:${server.asPort}`;
 
     try {
@@ -1558,7 +1561,13 @@ test("PDPP reference implementation integration", async (t) => {
       assert.ok(initiate.request_uri);
 
       await closeServer(server);
-      server = await startServer({ asPort: server.asPort, dbPath, quiet: true, rsPort: server.rsPort });
+      server = await startServer({
+        asPort: server.asPort,
+        dbPath,
+        quiet: true,
+        rsPort: server.rsPort,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
+      });
 
       const consentResp = await fetch(`${asUrl}/consent?request_uri=${encodeURIComponent(initiate.request_uri)}`);
       assert.equal(consentResp.status, 200);
@@ -1581,7 +1590,7 @@ test("PDPP reference implementation integration", async (t) => {
   await t.test("expired pending consent is rejected consistently across display and approve paths", async () => {
     const { dbPath, cleanup } = createTempDbPath();
     const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
-    const server = await startServer({ asPort: 0, dbPath, quiet: true, rsPort: 0 });
+    const server = await startServer({ asPort: 0, dbPath, quiet: true, rsPort: 0, ...TEST_INTROSPECTION_SERVER_OPTS });
     const asUrl = `http://localhost:${server.asPort}`;
 
     try {
@@ -1780,6 +1789,7 @@ test("PDPP reference implementation integration", async (t) => {
       dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
       quiet: true,
       rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
@@ -4685,6 +4695,7 @@ test("PDPP reference implementation integration", async (t) => {
       nativeManifest,
       quiet: true,
       rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
@@ -4716,6 +4727,7 @@ test("PDPP reference implementation integration", async (t) => {
         nativeManifest,
         quiet: true,
         rsPort: server.rsPort,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
 
       async function assertMalformedNativeClientRead(
@@ -4762,6 +4774,7 @@ test("PDPP reference implementation integration", async (t) => {
       nativeManifest,
       quiet: true,
       rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
@@ -4793,6 +4806,7 @@ test("PDPP reference implementation integration", async (t) => {
         nativeManifest,
         quiet: true,
         rsPort: server.rsPort,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
 
       const streamsResp = await fetchJson(`${rsUrl}/v1/streams`, {

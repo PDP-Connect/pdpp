@@ -1,6 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { basicIntrospectionAuthorization } from "../../server/introspection-http.ts";
 import type { CliFlags } from "../lib/args.ts";
 import { parseArgs } from "../lib/args.ts";
 import { resolveAsUrl } from "../lib/common.ts";
@@ -45,17 +46,35 @@ async function runAuthIntrospect(flags: CliFlags): Promise<void> {
     throw new PdppUsageError("Missing required flag: --token");
   }
 
+  const introspectionCredentials = resolveIntrospectionCallerCredentials();
   const authSurface = await resolveAuthSurface(flags, {
     requireIntrospectionEndpoint: true,
   });
 
   const { body } = await fetchJson(`${authSurface.introspectionEndpoint}`, {
     body: JSON.stringify({ token }),
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      Authorization: basicIntrospectionAuthorization(introspectionCredentials),
+      "Content-Type": "application/json",
+    },
     method: "POST",
   });
 
   writeData(body, resolveFormat(flags, "json", "json"));
+}
+
+function resolveIntrospectionCallerCredentials(): { clientId: string; clientSecret: string } {
+  // Introspection credentials authenticate the CLI as a confidential resource
+  // server caller. Keep the secret out of argv, shell history, and process
+  // listings by accepting it through the environment only.
+  const clientId = process.env.PDPP_RS_INTROSPECTION_CLIENT_ID;
+  const clientSecret = process.env.PDPP_RS_INTROSPECTION_CLIENT_SECRET;
+  if (!(clientId && clientSecret)) {
+    throw new PdppUsageError(
+      "Missing introspection caller credentials: set PDPP_RS_INTROSPECTION_CLIENT_ID and PDPP_RS_INTROSPECTION_CLIENT_SECRET"
+    );
+  }
+  return { clientId, clientSecret };
 }
 
 // One device-flow token-endpoint poll attempt: returns true when a token

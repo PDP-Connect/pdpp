@@ -26,7 +26,10 @@ import { startServer } from "../server/index.ts";
 import { basicIntrospectionAuthorization } from "../server/introspection-http.ts";
 import { ingestRecord, queryRecordsAcrossBindings, resolveReadRequestBindings } from "../server/records.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
-import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
+import {
+  TEST_INTROSPECTION_SERVER_OPTS,
+  TEST_RS_INTROSPECTION_CREDENTIALS,
+} from "./helpers/introspection-test-credentials.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -728,6 +731,7 @@ function startOpenTestServer(): Promise<CloseableTestServer> {
     ownerAuthPassword: "",
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
 }
 
@@ -984,7 +988,14 @@ test("pre-family SQLite refresh rows are rejected without reconstruction", async
   `);
   legacy.close();
 
-  const server = await startServer({ asPort: 0, dbPath, ownerAuthPassword: "", quiet: true, rsPort: 0 });
+  const server = await startServer({
+    asPort: 0,
+    dbPath,
+    ownerAuthPassword: "",
+    quiet: true,
+    rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
+  });
   const asUrl = `http://localhost:${server.asPort}`;
   try {
     const client = await registerAuthCodeClient(asUrl);
@@ -1069,7 +1080,14 @@ test("pre-family SQLite refresh rows are rejected without reconstruction", async
 test("SQLite refresh failure rolls back rotation and bearer issuance together", async () => {
   const tempDirectory = mkdtempSync(join(tmpdir(), "pdpp-refresh-fail-closed-"));
   const dbPath = join(tempDirectory, "refresh.sqlite");
-  const server = await startServer({ asPort: 0, dbPath, ownerAuthPassword: "", quiet: true, rsPort: 0 });
+  const server = await startServer({
+    asPort: 0,
+    dbPath,
+    ownerAuthPassword: "",
+    quiet: true,
+    rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
+  });
   const asUrl = `http://localhost:${server.asPort}`;
   try {
     const manifest = await registerSpotify(asUrl);

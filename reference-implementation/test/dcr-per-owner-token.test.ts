@@ -7,6 +7,7 @@ import test from "node:test";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { introspectionHeaders } from "./helpers/introspection.ts";
+import { TEST_INTROSPECTION_SERVER_OPTS } from "./helpers/introspection-test-credentials.ts";
 
 const REGEXP_1 = /<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/;
 
@@ -32,9 +33,11 @@ interface StartServerOptions {
   asPort?: number;
   dbPath?: string;
   dynamicClientRegistrationInitialAccessTokens?: string[];
+  introspectionCallerCredentials?: unknown;
   ownerAuthPassword?: string;
   ownerAuthSubjectId?: string;
   quiet?: boolean;
+  rsIntrospectionCredentials?: unknown;
   rsPort?: number;
 }
 
@@ -151,6 +154,7 @@ async function withServer(fn: (ctx: { asUrl: string }) => Promise<void>): Promis
     ownerAuthSubjectId: TEST_SUBJECT,
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   try {
     await fn({ asUrl: `http://localhost:${server.asPort}` });

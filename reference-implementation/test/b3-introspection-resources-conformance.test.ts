@@ -24,10 +24,13 @@ import { fileURLToPath } from "node:url";
 
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { basicIntrospectionAuthorization } from "../server/introspection-http.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
-import { basicIntrospectionAuthorization } from "../server/introspection-http.ts";
-import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
+import {
+  TEST_INTROSPECTION_SERVER_OPTS,
+  TEST_RS_INTROSPECTION_CREDENTIALS,
+} from "./helpers/introspection-test-credentials.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -118,6 +121,12 @@ interface IssueClientGrantParams {
 
 interface IntrospectionBody {
   active: boolean;
+  authorization_details?: readonly {
+    access_mode?: string;
+    source?: { id?: string; kind?: string };
+    streams?: readonly ApprovedGrantStream[];
+    type?: string;
+  }[];
   client_id?: string;
   exp?: number | null;
   grant?: {
@@ -129,6 +138,10 @@ interface IntrospectionBody {
   grant_id?: string;
   grant_storage_binding?: { connector_id?: string };
   inactive_reason?: string;
+  pdpp?: {
+    grant_id?: string;
+    source?: { id?: string; kind?: string };
+  };
   pdpp_token_kind?: string;
   subject_id?: string;
 }
@@ -316,6 +329,7 @@ async function withHarness(
     dbPath: ":memory:",
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   })) as TestServer;
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -417,15 +431,20 @@ test("introspection: active client token returns documented fields (B3)", async 
     assert.equal(body.grant_id, approved.grant.grant_id, "grant_id matches issued grant");
     assert.equal(body.client_id, "longview", "client_id matches requester");
 
-    // grant object must be present and contain the source + streams
-    assert.ok(body.grant, "grant object present");
-    assert.equal(body.grant.grant_id, approved.grant.grant_id, "grant.grant_id matches");
-    assert.equal(body.grant.source?.kind, "connector", "grant.source.kind = connector");
-    assert.equal(body.grant.access_mode, "continuous", "grant.access_mode matches");
-    assert.ok(Array.isArray(body.grant.streams), "grant.streams is an array");
-    const firstStream = body.grant.streams?.[0];
-    assert.ok(firstStream, "introspected grant has at least one stream");
+    // Public introspection projects the grant into RFC 9396 authorization_details
+    // plus PDPP context instead of exposing the AS-internal grant object.
+    assert.ok(Array.isArray(body.authorization_details), "authorization_details is an array");
+    const [detail] = body.authorization_details;
+    assert.ok(detail, "introspected grant has an authorization detail");
+    assert.equal(detail.type, "https://pdpp.org/data-access", "authorization detail type is PDPP data access");
+    assert.equal(detail.source?.kind, "connector", "authorization detail source.kind = connector");
+    assert.equal(detail.access_mode, "continuous", "authorization detail access_mode matches");
+    assert.ok(Array.isArray(detail.streams), "authorization detail streams is an array");
+    const firstStream = detail.streams?.[0];
+    assert.ok(firstStream, "introspected authorization detail has at least one stream");
     assert.equal(firstStream.name, "top_artists", "stream name preserved");
+    assert.equal(body.pdpp?.grant_id, approved.grant.grant_id, "pdpp.grant_id matches");
+    assert.equal(body.pdpp?.source?.id, detail.source?.id, "pdpp.source matches authorization detail source");
 
     // exp: either null or a number
     assert.ok(body.exp === null || typeof body.exp === "number", "exp is null or numeric Unix timestamp");
@@ -433,7 +452,7 @@ test("introspection: active client token returns documented fields (B3)", async 
     // The confidential RS caller needs the physical binding to resolve the approved source.
     assert.equal(
       body.grant_storage_binding?.connector_id,
-      body.grant.source?.id,
+      canonicalConnectorKey(detail.source?.id ?? null),
       "storage binding matches approved source"
     );
   });
@@ -532,7 +551,7 @@ test("resources[] round-trip: grant contains resources, RS enforces them (B3)", 
       ],
     });
 
-    // 1. Introspection reflects resources[] in the grant object
+    // 1. Introspection reflects resources[] in authorization_details.
     const { body: introBody } = await fetchJson<IntrospectionBody>(`${asUrl}/introspect`, {
       body: JSON.stringify({ token: approved.token }),
       headers: introspectionHeaders(),
@@ -540,7 +559,7 @@ test("resources[] round-trip: grant contains resources, RS enforces them (B3)", 
     });
     assert.ok(introBody, "introspect should return a body");
     assert.equal(introBody.active, true, "token is active");
-    const introspectedStream = introBody.grant?.streams?.[0];
+    const introspectedStream = introBody.authorization_details?.[0]?.streams?.[0];
     assert.ok(introspectedStream, "stream present in introspected grant");
     assert.deepEqual(
       introspectedStream.resources,

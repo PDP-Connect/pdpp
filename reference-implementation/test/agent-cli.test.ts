@@ -21,7 +21,6 @@ import type { CachedGrant } from "../cli/lib/cache.ts";
 
 const DENIED_POLL_SECRET_PATTERN = /Bearer|owner_local|access_token/;
 const EXPIRED_POLL_SECRET_PATTERN = /access_token|polling_code/;
-const FORBIDDEN_SCOPE_PATTERN = /permission|scope|grant|forbidden/i;
 const INVALID_TOKEN_PATTERN = /not-a-real-token/;
 
 import {
@@ -50,6 +49,7 @@ import { startServer } from "../server/index.ts";
 import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from "../server/reference-local-defaults.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 import { introspectionHeaders } from "./helpers/introspection.ts";
+import { TEST_INTROSPECTION_SERVER_OPTS } from "./helpers/introspection-test-credentials.ts";
 import { makeTemporaryDir } from "./helpers/temp-dir.ts";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -98,7 +98,14 @@ async function closeServer(server: TestServer): Promise<void> {
 async function spinUpServer(
   opts: Record<string, unknown> = {}
 ): Promise<{ server: TestServer; asUrl: string; rsUrl: string }> {
-  const server = (await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0, ...opts })) as TestServer;
+  const server = (await startServer({
+    asPort: 0,
+    dbPath: ":memory:",
+    quiet: true,
+    rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
+    ...opts,
+  })) as TestServer;
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   return { asUrl, rsUrl, server };
@@ -705,8 +712,8 @@ test("agent-connect: approved scoped token cannot access ungranted stream", asyn
       headers: { Authorization: `Bearer ${completedPoll.body.access_token}` },
     });
     const body = await streamResp.json();
-    assert.equal(streamResp.status, 403);
-    assert.match(errorCode(body) || JSON.stringify(body), FORBIDDEN_SCOPE_PATTERN);
+    assert.equal(streamResp.status, 401, JSON.stringify(body));
+    assert.equal(errorCode(body), "context.stream_not_allowed");
   } finally {
     await closeServer(server);
   }

@@ -21,6 +21,10 @@ import {
   admitOwnerRunConnection,
   makeDefaultAccountConnectorInstanceId,
 } from "../server/stores/connector-instance-store.ts";
+import {
+  TEST_INTROSPECTION_SERVER_OPTS,
+  TEST_RS_INTROSPECTION_CREDENTIALS,
+} from "./helpers/introspection-test-credentials.ts";
 
 type RuntimeConnectorManifest = NonNullable<Parameters<typeof runConnector>[0]["manifest"]>;
 
@@ -159,6 +163,8 @@ const TOP_LEVEL_REGEX_133 = /Reference trace ID: (trc_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_134 = /Stream 'not_a_stream' not found/;
 const TOP_LEVEL_REGEX_135 = /connector_id must be a single non-empty string for polyfill owner access/;
 const TOP_LEVEL_REGEX_136 = /request\.source_binding must include only kind and id/;
+const TOP_LEVEL_REGEX_137 =
+  /Missing introspection caller credentials: set PDPP_RS_INTROSPECTION_CLIENT_ID and PDPP_RS_INTROSPECTION_CLIENT_SECRET/;
 const CLI_GRANT_FIXTURE_OWNER_SUBJECTS = ["cli_owner", "u1", "employee_1"] as const;
 
 const execFile = promisify(execFileCallback);
@@ -422,6 +428,7 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>) {
     dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -453,6 +460,7 @@ async function withNativeHarness(fn: (ctx: NativeHarnessContext) => Promise<void
     nativeManifest,
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -931,6 +939,7 @@ async function withMalformedPolyfillClientGrant(fn: (ctx: MalformedPolyfillClien
       dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
       quiet: true,
       rsPort: server.rsPort,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
 
     const reRegisterResp = await fetchJson(`${asUrl}/connectors`, {
@@ -1038,6 +1047,8 @@ async function runCli(args: readonly string[], env: Record<string, string> = {})
       ...process.env,
       AS_URL: "",
       PDPP_AS_URL: "",
+      PDPP_RS_INTROSPECTION_CLIENT_ID: TEST_RS_INTROSPECTION_CREDENTIALS.clientId,
+      PDPP_RS_INTROSPECTION_CLIENT_SECRET: TEST_RS_INTROSPECTION_CREDENTIALS.clientSecret,
       PDPP_RS_URL: "",
       RS_URL: "",
       ...env,
@@ -1068,6 +1079,8 @@ async function runCliExpectFailure(args: readonly string[], env: Record<string, 
         ...process.env,
         AS_URL: "",
         PDPP_AS_URL: "",
+        PDPP_RS_INTROSPECTION_CLIENT_ID: TEST_RS_INTROSPECTION_CREDENTIALS.clientId,
+        PDPP_RS_INTROSPECTION_CLIENT_SECRET: TEST_RS_INTROSPECTION_CREDENTIALS.clientSecret,
         PDPP_RS_URL: "",
         RS_URL: "",
         ...env,
@@ -1115,7 +1128,7 @@ test("PDPP CLI smoke", async (t) => {
   });
 
   await t.test(
-    "auth introspect preserves the current native client grant shape without storage-binding leakage",
+    "auth introspect exposes native client authorization details without storage-binding leakage",
     async () => {
       await withNativeHarness(async ({ asUrl, rsUrl, nativeManifest }) => {
         await seedNorthstar(nativeManifest);
@@ -1140,10 +1153,13 @@ test("PDPP CLI smoke", async (t) => {
         assert.equal(result.json.subject_id, "cli_owner");
         assert.ok(typeof result.json.trace_id === "string" && result.json.trace_id.startsWith("trc_"));
         assert.ok(typeof result.json.scenario_id === "string" && result.json.scenario_id.startsWith("scn_"));
-        const resultGrantSource = asRecord(asRecord(result.json.grant).source);
+        const resultAuthorizationDetails = asRecord(
+          (result.json.authorization_details as readonly unknown[] | undefined)?.[0]
+        );
+        const resultGrantSource = asRecord(resultAuthorizationDetails.source);
         assert.equal(resultGrantSource.kind, "provider_native");
         assert.equal(resultGrantSource.id, nativeManifest.provider_id);
-        assert.equal("grant_storage_binding" in result.json, false);
+        assert.equal("grant_storage_binding" in resultAuthorizationDetails, false);
         assert.equal(result.stderr, "");
 
         const recordsResponse = await fetch(`${rsUrl}/v1/streams/pay_statements/records`, {
@@ -1156,6 +1172,19 @@ test("PDPP CLI smoke", async (t) => {
     }
   );
 
+  await t.test("auth introspect requires caller credentials from the environment", async () => {
+    const result = await runCliExpectFailure(
+      ["auth", "introspect", "--rs-url", "http://localhost:1", "--token", "token"],
+      {
+        PDPP_RS_INTROSPECTION_CLIENT_ID: "",
+        PDPP_RS_INTROSPECTION_CLIENT_SECRET: "",
+      }
+    );
+
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, TOP_LEVEL_REGEX_137);
+  });
+
   await t.test("auth introspect preserves grant_invalid client context", async () => {
     const { dbPath, cleanup } = createTempDbPath();
     const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/northstar-hr.json"), "utf8"));
@@ -1165,6 +1194,7 @@ test("PDPP CLI smoke", async (t) => {
       nativeManifest,
       quiet: true,
       rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
@@ -1188,6 +1218,7 @@ test("PDPP CLI smoke", async (t) => {
         nativeManifest,
         quiet: true,
         rsPort: server.rsPort,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
 
       const result = await runCli([
@@ -1307,7 +1338,15 @@ test("PDPP CLI smoke", async (t) => {
         ],
         {
           cwd: REFERENCE_IMPL_DIR,
-          env: { ...process.env, AS_URL: "", PDPP_AS_URL: "", PDPP_RS_URL: "", RS_URL: "" },
+          env: {
+            ...process.env,
+            AS_URL: "",
+            PDPP_AS_URL: "",
+            PDPP_RS_INTROSPECTION_CLIENT_ID: TEST_RS_INTROSPECTION_CREDENTIALS.clientId,
+            PDPP_RS_INTROSPECTION_CLIENT_SECRET: TEST_RS_INTROSPECTION_CREDENTIALS.clientSecret,
+            PDPP_RS_URL: "",
+            RS_URL: "",
+          },
           stdio: ["ignore", "pipe", "pipe"],
         }
       );
@@ -3627,7 +3666,13 @@ test("PDPP CLI smoke", async (t) => {
   });
 
   await t.test("agent bootstrap uses the reference-local DCR default without an explicit token", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startServer({
+      asPort: 0,
+      dbPath: ":memory:",
+      quiet: true,
+      rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
+    });
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
     const cacheRoot = mkdtempSync(join(tmpdir(), "pdpp-agent-bootstrap-"));
@@ -7215,6 +7260,7 @@ rl.on('line', (line) => {
       dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
       quiet: true,
       rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
     const asUrl = `http://localhost:${server.asPort}`;
     const committedState: unknown[] = [];
@@ -7849,6 +7895,7 @@ rl.on('line', (line) => {
         nativeManifest,
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;
@@ -7880,6 +7927,7 @@ rl.on('line', (line) => {
           nativeManifest,
           quiet: true,
           rsPort: server.rsPort,
+          ...TEST_INTROSPECTION_SERVER_OPTS,
         });
 
         const result = await runCliExpectFailure(["query", "streams", "--rs-url", rsUrl], {
@@ -7988,6 +8036,7 @@ rl.on('line', (line) => {
             nativeManifest,
             quiet: true,
             rsPort: server.rsPort,
+            ...TEST_INTROSPECTION_SERVER_OPTS,
           });
         },
       },
@@ -8032,6 +8081,7 @@ rl.on('line', (line) => {
         nativeManifest,
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;
@@ -8112,6 +8162,7 @@ rl.on('line', (line) => {
               nativeManifest,
               quiet: true,
               rsPort: server.rsPort,
+              ...TEST_INTROSPECTION_SERVER_OPTS,
             });
           },
         },
@@ -8156,6 +8207,7 @@ rl.on('line', (line) => {
           nativeManifest,
           quiet: true,
           rsPort: 0,
+          ...TEST_INTROSPECTION_SERVER_OPTS,
         });
         const asUrl = `http://localhost:${server.asPort}`;
         const rsUrl = `http://localhost:${server.rsPort}`;
@@ -8261,6 +8313,7 @@ rl.on('line', (line) => {
         nativeManifest,
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;

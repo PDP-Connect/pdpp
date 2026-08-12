@@ -30,6 +30,7 @@ import { consumeConsentExchangeCode, createConsentExchangeCode } from "../server
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 import { introspectionHeaders } from "./helpers/introspection.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -151,7 +152,13 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>): Promise<
   const spotifyManifest = JSON.parse(
     readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
   ) as SpotifyManifest;
-  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const server = await startServer({
+    asPort: 0,
+    dbPath: ":memory:",
+    introspectionCallerCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
+    quiet: true,
+    rsPort: 0,
+  });
   const asUrl = `http://localhost:${server.asPort}`;
   try {
     const registerResp = await fetch(`${asUrl}/connectors`, {

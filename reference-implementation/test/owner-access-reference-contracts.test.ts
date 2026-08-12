@@ -7,6 +7,7 @@ import test from "node:test";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { introspectionHeaders } from "./helpers/introspection.ts";
+import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
 interface CloseableServer {
   close: (callback?: (err?: Error) => void) => unknown;
@@ -61,9 +62,11 @@ async function withServer(fn: (ctx: { asUrl: string }) => Promise<void>): Promis
     asPort: 0,
     dbPath: ":memory:",
     dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+    introspectionCallerCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
     ownerAuthPassword: TEST_PASSWORD,
     ownerAuthSubjectId: TEST_SUBJECT,
     quiet: true,
+    rsIntrospectionCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
     rsPort: 0,
   })) as StartedServer;
   try {
