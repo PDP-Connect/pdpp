@@ -37,6 +37,9 @@ interface AppLike {
   post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
+const SOURCE_AUTHORIZATION_DETAILS_INVALID = "source.authorization_details_invalid";
+const OAUTH_INVALID_AUTHORIZATION_DETAILS = "invalid_authorization_details";
+
 // ─── Injected capabilities ───────────────────────────────────────────────────
 
 export interface MountAsParContext {
@@ -82,9 +85,21 @@ export function mountAsPar(app: AppLike, ctx: MountAsParContext): void {
       }
       res.status(output.status).json(output.envelope);
     } catch (err) {
-      ctx.handleError(res, err);
+      ctx.handleError(res, mapParProtocolError(err));
     }
   };
 
   app.post("/oauth/par", { contract: "createPushedAuthorizationRequest" } as RouteArg<RouteHandler>, handler);
+}
+
+function mapParProtocolError(err: unknown): unknown {
+  if (!err || typeof err !== "object") {
+    return err;
+  }
+  const coded = err as { code?: unknown };
+  if (coded.code !== SOURCE_AUTHORIZATION_DETAILS_INVALID) {
+    return err;
+  }
+  coded.code = OAUTH_INVALID_AUTHORIZATION_DETAILS;
+  return err;
 }

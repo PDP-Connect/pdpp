@@ -66,10 +66,10 @@ const REGEXP_11 = /authorization_details/;
 const REGEXP_12 = /requires client_id/;
 const REGEXP_13 = /^urn:pdpp:pending-consent:/;
 const REGEXP_14 = /Unsupported request fields: code_challenge, redirect_uri, response_type/;
-const REGEXP_15 = /Unsupported authorization_details type/;
+const REGEXP_15 = /type must be equal to constant/;
 const REGEXP_16 = /access_mode must be equal to one of the allowed values/;
 const REGEXP_17 = /streams must NOT have fewer than 1 items/;
-const REGEXP_18 = /Unsupported authorization_details fields: locations/;
+const REGEXP_18 = /must NOT have additional properties/;
 const REGEXP_19 = /streams\/0 must NOT have additional properties/;
 const REGEXP_21 = /Unknown stream: not_a_real_stream/;
 const REGEXP_22 = /Unknown view 'not_a_real_view' on stream 'top_artists'/;
@@ -2058,7 +2058,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(badTypeResp.status, 400);
       const badTypeBody = parseErrorResponse(await badTypeResp.json());
-      assert.equal(badTypeBody.error.code, "invalid_request");
+      assert.equal(badTypeBody.error.code, "invalid_authorization_details");
       assert.match(badTypeBody.error.message, REGEXP_15);
 
       const unsupportedAccessModeResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2079,7 +2079,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(unsupportedAccessModeResp.status, 400);
       const unsupportedAccessModeBody = parseErrorResponse(await unsupportedAccessModeResp.json());
-      assert.equal(unsupportedAccessModeBody.error.code, "invalid_request");
+      assert.equal(unsupportedAccessModeBody.error.code, "invalid_authorization_details");
       assert.match(unsupportedAccessModeBody.error.message, REGEXP_16);
 
       const emptyStreamsResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2100,7 +2100,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(emptyStreamsResp.status, 400);
       const emptyStreamsBody = parseErrorResponse(await emptyStreamsResp.json());
-      assert.equal(emptyStreamsBody.error.code, "invalid_request");
+      assert.equal(emptyStreamsBody.error.code, "invalid_authorization_details");
       assert.match(emptyStreamsBody.error.message, REGEXP_17);
 
       const unsupportedAuthorizationDetailFieldsResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2124,7 +2124,7 @@ test("PDPP reference implementation integration", async (t) => {
       const unsupportedAuthorizationDetailFieldsBody = parseErrorResponse(
         await unsupportedAuthorizationDetailFieldsResp.json()
       );
-      assert.equal(unsupportedAuthorizationDetailFieldsBody.error.code, "invalid_request");
+      assert.equal(unsupportedAuthorizationDetailFieldsBody.error.code, "invalid_authorization_details");
       assert.match(unsupportedAuthorizationDetailFieldsBody.error.message, REGEXP_18);
 
       const unsupportedStreamSelectionFieldsResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2147,7 +2147,7 @@ test("PDPP reference implementation integration", async (t) => {
       const unsupportedStreamSelectionFieldsBody = parseErrorResponse(
         await unsupportedStreamSelectionFieldsResp.json()
       );
-      assert.equal(unsupportedStreamSelectionFieldsBody.error.code, "invalid_request");
+      assert.equal(unsupportedStreamSelectionFieldsBody.error.code, "invalid_authorization_details");
       assert.match(unsupportedStreamSelectionFieldsBody.error.message, REGEXP_19);
 
       const unknownConnectorResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2168,7 +2168,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(unknownConnectorResp.status, 400);
       const unknownConnectorBody = parseErrorResponse(await unknownConnectorResp.json());
-      assert.equal(unknownConnectorBody.error.code, "invalid_request");
+      assert.equal(unknownConnectorBody.error.code, "invalid_authorization_details");
       assert.match(unknownConnectorBody.error.message, REGEXP_87);
 
       const unknownStreamResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2189,7 +2189,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(unknownStreamResp.status, 400);
       const unknownStreamBody = parseErrorResponse(await unknownStreamResp.json());
-      assert.equal(unknownStreamBody.error.code, "source.authorization_details_invalid");
+      assert.equal(unknownStreamBody.error.code, "invalid_authorization_details");
       assert.match(unknownStreamBody.error.message, REGEXP_21);
 
       const unknownViewResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2210,7 +2210,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(unknownViewResp.status, 400);
       const unknownViewBody = parseErrorResponse(await unknownViewResp.json());
-      assert.equal(unknownViewBody.error.code, "source.authorization_details_invalid");
+      assert.equal(unknownViewBody.error.code, "invalid_authorization_details");
       assert.match(unknownViewBody.error.message, REGEXP_22);
 
       const contradictorySelectionResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2231,7 +2231,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(contradictorySelectionResp.status, 400);
       const contradictorySelectionBody = parseErrorResponse(await contradictorySelectionResp.json());
-      assert.equal(contradictorySelectionBody.error.code, "invalid_request");
+      assert.equal(contradictorySelectionBody.error.code, "invalid_authorization_details");
       assert.match(contradictorySelectionBody.error.message, REGEXP_23);
 
       const unknownFieldsResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2252,7 +2252,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(unknownFieldsResp.status, 400);
       const unknownFieldsBody = parseErrorResponse(await unknownFieldsResp.json());
-      assert.equal(unknownFieldsBody.error.code, "source.authorization_details_invalid");
+      assert.equal(unknownFieldsBody.error.code, "invalid_authorization_details");
       assert.match(unknownFieldsBody.error.message, REGEXP_24);
 
       const malformedFieldsResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2273,7 +2273,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(malformedFieldsResp.status, 400);
       const malformedFieldsBody = parseErrorResponse(await malformedFieldsResp.json());
-      assert.equal(malformedFieldsBody.error.code, "invalid_request");
+      assert.equal(malformedFieldsBody.error.code, "invalid_authorization_details");
       assert.match(malformedFieldsBody.error.message, REGEXP_25);
     });
   });
@@ -3585,7 +3585,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
 
       assert.equal(initiate.status, 400);
-      assert.equal(initiate.body.error.code, "source.authorization_details_invalid");
+      assert.equal(initiate.body.error.code, "invalid_authorization_details");
       assert.match(initiate.body.error.message, REGEXP_62);
     } finally {
       await closeServer(server);
@@ -4174,7 +4174,7 @@ test("PDPP reference implementation integration", async (t) => {
 
       assert.equal(initiateResp.status, 400);
       const initiateBody = parseErrorResponse(await initiateResp.json());
-      assert.equal(initiateBody.error.code, "invalid_request");
+      assert.equal(initiateBody.error.code, "invalid_authorization_details");
       assert.match(initiateBody.error.message, REGEXP_87);
     });
   });
@@ -5509,7 +5509,7 @@ test("PDPP reference implementation integration", async (t) => {
 
       assert.equal(initiateResp.status, 400);
       const initiateBody = parseErrorResponse(await initiateResp.json());
-      assert.equal(initiateBody.error.code, "invalid_request");
+      assert.equal(initiateBody.error.code, "invalid_authorization_details");
       assert.match(initiateBody.error.message, REGEXP_106);
     });
   });
@@ -5541,7 +5541,7 @@ test("PDPP reference implementation integration", async (t) => {
 
         assert.equal(initiateResp.status, 400);
         const initiateBody = parseErrorResponse(await initiateResp.json());
-        assert.equal(initiateBody.error.code, "invalid_request");
+        assert.equal(initiateBody.error.code, "invalid_authorization_details");
         assert.match(initiateBody.error.message, REGEXP_107);
       });
     }

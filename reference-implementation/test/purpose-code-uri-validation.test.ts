@@ -100,15 +100,15 @@ test("an UNKNOWN absolute-URI purpose_code is still accepted (registry is adviso
   assert.equal(out.ok, true, `unknown absolute URIs must not be rejected: ${JSON.stringify(out)}`);
 });
 
-test("a bare non-URI purpose_code is rejected with invalid_request", async () => {
+test("a bare non-URI purpose_code is rejected with source.authorization_details_invalid", async () => {
   const out = await purposeCodeOutcome("analytics");
   assert.equal(out.ok, false, "bare token must be rejected");
-  assert.equal(out.code, "invalid_request");
+  assert.equal(out.code, "source.authorization_details_invalid");
   assert.match(out.message, TOP_LEVEL_REGEX_1);
 });
 
 test("a dotted non-URI purpose_code is rejected", async () => {
   const out = await purposeCodeOutcome("assist.summarize");
   assert.equal(out.ok, false);
-  assert.equal(out.code, "invalid_request");
+  assert.equal(out.code, "source.authorization_details_invalid");
 });
