@@ -2974,6 +2974,16 @@ function canonicalApprovalReviewJson(value: unknown): string {
   });
 }
 
+function normalizeApprovalReviewClientClaims(raw: unknown): { commitments: string[] } | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+  const commitments = Array.isArray(raw.commitments)
+    ? raw.commitments.filter((value): value is string => typeof value === "string" && value.trim() !== "")
+    : [];
+  return commitments.length > 0 ? { commitments } : null;
+}
+
 function buildApprovalReviewArtifact(input: {
   aiTrainingConsented: boolean | null;
   client: unknown;
@@ -2989,6 +2999,7 @@ function buildApprovalReviewArtifact(input: {
     access_mode: selection.access_mode,
     ai_training_consented: input.aiTrainingConsented,
     client: input.client,
+    client_claims: normalizeApprovalReviewClientClaims(selection.client_claims),
     expires_at: input.expiresAt,
     purpose_code: selection.purpose_code,
     purpose_description: selection.purpose_description ?? null,
@@ -3033,6 +3044,7 @@ function buildBatchApprovalReviewArtifact(input: {
       const snapshot = readRetainedSourceDeclarationSnapshot(request);
       return {
         access_mode: request.selection.access_mode,
+        client_claims: normalizeApprovalReviewClientClaims(request.selection.client_claims),
         index,
         purpose_code: request.selection.purpose_code,
         purpose_description: request.selection.purpose_description ?? null,
@@ -5307,7 +5319,7 @@ function buildBatchConsentCardsFromReviewArtifact(
     }
     return {
       access_mode: source.access_mode || null,
-      client_claims: null,
+      client_claims: normalizeApprovalReviewClientClaims(source.client_claims),
       index: source.index,
       manifestStreamNames: null,
       purpose_code: source.purpose_code || null,

@@ -20,6 +20,7 @@ const SOURCE_ID = "https://sources.example.test/approval-artifact/spotify";
 const BATCH_DRIFT_RE = /REJECTED SOURCE PURPOSE|MUTABLE BATCH|MUTABLE CATALOG DRIFT/;
 const BATCH_FINAL_FIELDS_RE = /name="approved_source_indexes"|name="narrow_streams_/;
 const CONFIRM_REVIEWED_DECISION_RE = /name="confirm_reviewed_decision"/;
+const CLIENT_CLAIM_DISCLAIMER_RE = /not enforced by your server/i;
 const REGEXP_SPECIAL_CHARACTERS_RE = /[.*+?^${}()|[\]\\]/g;
 const SINGLE_DRIFT_RE = /MUTABLE REQUEST|MUTABLE CATALOG DRIFT|drift\.example\.test/;
 const SINGLE_FROZEN_FIELDS_RE = /name="subject_id"|name="ai_training_consented"/;
@@ -53,6 +54,7 @@ interface ReviewStream {
 
 interface ReviewSource {
   access_mode: string;
+  client_claims?: { commitments?: string[] } | null;
   index: number;
   purpose_description: string | null;
   resolved_streams: ReviewStream[];
@@ -64,6 +66,7 @@ interface ReviewArtifact {
   access_mode: string | null;
   approved_source_indexes?: number[];
   client: { client_id: string };
+  client_claims?: { commitments?: string[] } | null;
   purpose_description?: string | null;
   resolved_streams?: ReviewStream[];
   source?: { id: string; kind: string };
@@ -174,9 +177,10 @@ async function stage(asUrl: string, details: Record<string, unknown>[]): Promise
   return body.request_uri;
 }
 
-function selection(purposeDescription: string): Record<string, unknown> {
+function selection(purposeDescription: string, claims?: { commitments: string[] }): Record<string, unknown> {
   return {
     access_mode: "continuous",
+    ...(claims ? { client_claims: claims } : {}),
     purpose_code: "https://pdpp.org/purpose/personalization",
     purpose_description: purposeDescription,
     retention: { max_duration: "P30D", on_expiry: "delete" },
@@ -198,7 +202,7 @@ async function finalizeJsonReview(
   asUrl: string,
   requestUri: string,
   body: Record<string, unknown> = {}
-): Promise<ReviewArtifact> {
+): Promise<{ artifact: ReviewArtifact; revision: string }> {
   const response = await fetch(`${asUrl}/consent/review`, {
     body: JSON.stringify({ ...body, request_uri: requestUri, subject_id: "owner_local" }),
     headers: { Accept: "application/json", "Content-Type": "application/json" },
@@ -206,7 +210,35 @@ async function finalizeJsonReview(
   });
   const text = await response.text();
   assert.equal(response.status, 200, text);
-  return (JSON.parse(text) as { approval_review: ReviewArtifact }).approval_review;
+  const parsed = JSON.parse(text) as { approval_review: ReviewArtifact; approval_review_revision: string };
+  assert.equal(typeof parsed.approval_review_revision, "string");
+  return { artifact: parsed.approval_review, revision: parsed.approval_review_revision };
+}
+
+async function approveJson(asUrl: string, requestUri: string, revision: string): Promise<Record<string, unknown>> {
+  const response = await fetch(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({ approval_review_revision: revision, request_uri: requestUri }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const text = await response.text();
+  assert.equal(response.status, 200, text);
+  return JSON.parse(text) as Record<string, unknown>;
+}
+
+function grantRights(grant: Record<string, unknown>): Record<string, unknown> {
+  return {
+    access_mode: grant.access_mode,
+    client: grant.client,
+    purpose_code: grant.purpose_code,
+    purpose_description: grant.purpose_description,
+    retention: grant.retention,
+    source: grant.source,
+    source_declaration: grant.source_declaration,
+    streams: grant.streams,
+    subject: grant.subject,
+    version: grant.version,
+  };
 }
 
 function mutateStagedRequest(deviceCode: string, mutate: (request: Record<string, unknown>) => void): void {
@@ -230,7 +262,7 @@ test("resumed single HTML renders the same validated artifact as JSON despite re
   const { asUrl, server } = await setup();
   try {
     const requestUri = await stage(asUrl, [selection("FROZEN SINGLE PURPOSE")]);
-    const artifact = await finalizeJsonReview(asUrl, requestUri);
+    const { artifact } = await finalizeJsonReview(asUrl, requestUri);
     const deviceCode = parsePendingConsentRequestUri(requestUri);
     assert.ok(deviceCode);
     const [stream] = artifact.resolved_streams ?? [];
@@ -276,8 +308,12 @@ test("resumed single HTML renders the same validated artifact as JSON despite re
 test("resumed batch HTML renders only approved frozen sources, order, and narrowing", async () => {
   const { asUrl, server } = await setup();
   try {
-    const requestUri = await stage(asUrl, [selection("REJECTED SOURCE PURPOSE"), selection("FROZEN BATCH PURPOSE")]);
-    const artifact = await finalizeJsonReview(asUrl, requestUri, {
+    const batchClaims = { commitments: ["Only use this approved source for batch recommendations"] };
+    const requestUri = await stage(asUrl, [
+      selection("REJECTED SOURCE PURPOSE"),
+      selection("FROZEN BATCH PURPOSE", batchClaims),
+    ]);
+    const { artifact } = await finalizeJsonReview(asUrl, requestUri, {
       approved_source_indexes: [1],
       source_narrowing: {
         1: {
@@ -291,6 +327,7 @@ test("resumed batch HTML renders only approved frozen sources, order, and narrow
     assert.equal(artifact.sources?.length, 1);
     const source = artifact.sources?.[0];
     assert.ok(source);
+    assert.deepEqual(source.client_claims, batchClaims);
     const [stream] = source.resolved_streams;
     assert.ok(stream);
     const deviceCode = parsePendingConsentRequestUri(requestUri);
@@ -300,6 +337,7 @@ test("resumed batch HTML renders only approved frozen sources, order, and narrow
       request.client = { client_id: "MUTABLE BATCH CLIENT", registration_mode: "pre_registered_public" };
       const entries = request.entries as Record<string, unknown>[];
       (entries[1]?.selection as Record<string, unknown>).purpose_description = "MUTABLE BATCH PURPOSE";
+      (entries[1]?.selection as Record<string, unknown>).client_claims = { commitments: ["MUTABLE BATCH CLAIM"] };
     });
 
     const resumed = await fetch(`${asUrl}/consent?request_uri=${encodeURIComponent(requestUri)}`);
@@ -319,12 +357,15 @@ test("resumed batch HTML renders only approved frozen sources, order, and narrow
       "2026-02-01T00:00:00Z",
       "Staged source index",
       "Approval order",
+      batchClaims.commitments[0],
     ]) {
       assert.match(html, new RegExp(String(fact).replace(REGEXP_SPECIAL_CHARACTERS_RE, "\\$&")));
     }
     assert.doesNotMatch(html, BATCH_DRIFT_RE);
+    assert.doesNotMatch(html, /MUTABLE BATCH CLAIM/);
     assert.doesNotMatch(html, BATCH_FINAL_FIELDS_RE);
     assert.match(html, CONFIRM_REVIEWED_DECISION_RE);
+    assert.match(html, CLIENT_CLAIM_DISCLAIMER_RE);
   } finally {
     await closeServer(server);
   }
@@ -352,6 +393,56 @@ test("resumed GET fails closed when the persisted artifact or digest is corrupt"
       headers: { Accept: "application/json" },
     });
     assert.equal(malformed.status, 400, await malformed.text());
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("client claims are frozen in final review evidence without becoming grant rights", async () => {
+  const { asUrl, server } = await setup();
+  try {
+    const firstClaims = { commitments: ["Only use this for concert recommendations"] };
+    const secondClaims = { commitments: ["Only use this for playlist cleanup"] };
+    const firstRequestUri = await stage(asUrl, [selection("FROZEN CLAIM PURPOSE", firstClaims)]);
+    const secondRequestUri = await stage(asUrl, [selection("FROZEN CLAIM PURPOSE", secondClaims)]);
+
+    const firstReview = await finalizeJsonReview(asUrl, firstRequestUri);
+    const secondReview = await finalizeJsonReview(asUrl, secondRequestUri);
+    assert.notEqual(firstReview.revision, secondReview.revision, "client_claims must affect the review digest");
+    assert.deepEqual(firstReview.artifact.client_claims, firstClaims);
+    assert.deepEqual(secondReview.artifact.client_claims, secondClaims);
+
+    const firstDeviceCode = parsePendingConsentRequestUri(firstRequestUri);
+    assert.ok(firstDeviceCode);
+    mutateStagedRequest(firstDeviceCode, (request) => {
+      const requestSelection = request.selection as Record<string, unknown>;
+      requestSelection.client_claims = { commitments: ["MUTABLE CLAIM DRIFT"] };
+    });
+    const resumed = await fetch(`${asUrl}/consent?request_uri=${encodeURIComponent(firstRequestUri)}`);
+    const html = await resumed.text();
+    assert.equal(resumed.status, 200, html);
+    assert.match(html, /Only use this for concert recommendations/);
+    assert.match(html, CLIENT_CLAIM_DISCLAIMER_RE);
+    assert.doesNotMatch(html, /MUTABLE CLAIM DRIFT/);
+
+    const staleApprove = await fetch(`${asUrl}/consent/approve`, {
+      body: JSON.stringify({ approval_review_revision: firstReview.revision, request_uri: firstRequestUri }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(staleApprove.status, 400, await staleApprove.text());
+
+    const thirdRequestUri = await stage(asUrl, [selection("FROZEN CLAIM PURPOSE", firstClaims)]);
+    const thirdReview = await finalizeJsonReview(asUrl, thirdRequestUri);
+    const firstApproved = await approveJson(asUrl, thirdRequestUri, thirdReview.revision);
+    const secondApproved = await approveJson(asUrl, secondRequestUri, secondReview.revision);
+    const firstGrant = firstApproved.grant as Record<string, unknown>;
+    const secondGrant = secondApproved.grant as Record<string, unknown>;
+    assert.ok(firstGrant);
+    assert.ok(secondGrant);
+    assert.equal(firstGrant.client_claims, undefined);
+    assert.equal(secondGrant.client_claims, undefined);
+    assert.deepEqual(grantRights(firstGrant), grantRights(secondGrant));
   } finally {
     await closeServer(server);
   }

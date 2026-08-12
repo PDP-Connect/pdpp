@@ -1188,12 +1188,32 @@ const ReviewRetentionSchema = {
   oneOf: [GrantSchema.properties.retention, { type: "null" }],
 };
 
+const ReviewClientClaimsSchema = {
+  oneOf: [
+    {
+      additionalProperties: false,
+      properties: {
+        commitments: {
+          items: NonEmptyStringSchema,
+          minItems: 1,
+          type: "array",
+          uniqueItems: true,
+        },
+      },
+      required: ["commitments"],
+      type: "object",
+    },
+    { type: "null" },
+  ],
+};
+
 const SingleApprovalReviewArtifactSchema = {
   additionalProperties: false,
   properties: {
     access_mode: { enum: ["continuous", "single_use"], type: "string" },
     ai_training_consented: { type: ["boolean", "null"] },
     client: ReviewClientSchema,
+    client_claims: ReviewClientClaimsSchema,
     expires_at: { type: ["string", "null"] },
     purpose_code: NonEmptyStringSchema,
     purpose_description: { type: ["string", "null"] },
@@ -1222,6 +1242,7 @@ const SingleApprovalReviewArtifactSchema = {
     "access_mode",
     "ai_training_consented",
     "client",
+    "client_claims",
     "expires_at",
     "purpose_code",
     "purpose_description",
@@ -1254,6 +1275,7 @@ const BatchApprovalReviewArtifactSchema = {
         additionalProperties: false,
         properties: {
           access_mode: { enum: ["continuous", "single_use"], type: "string" },
+          client_claims: ReviewClientClaimsSchema,
           index: { minimum: 0, type: "integer" },
           purpose_code: NonEmptyStringSchema,
           purpose_description: { type: ["string", "null"] },
@@ -1273,6 +1295,7 @@ const BatchApprovalReviewArtifactSchema = {
         },
         required: [
           "access_mode",
+          "client_claims",
           "index",
           "purpose_code",
           "purpose_description",

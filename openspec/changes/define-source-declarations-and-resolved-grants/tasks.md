@@ -140,3 +140,6 @@
   current views.
 - [x] Client source descriptors fail closed when the resolved grant has no
   valid public source instead of exposing a private storage connector ID.
+- [x] Immutable single and batch approval-review artifacts bind rendered
+  `client_claims`, while issued grants and Resource Server rights remain
+  unchanged by claims-only differences.

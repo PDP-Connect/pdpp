@@ -653,6 +653,7 @@ interface ApprovalReviewSourceDeclaration {
 
 interface ApprovalReviewSourceEntry {
   access_mode: string;
+  client_claims: PendingClientClaims | null;
   index: number;
   purpose_code: string;
   purpose_description: string | null;
@@ -667,6 +668,7 @@ interface SingleApprovalReviewArtifact {
   access_mode: string;
   ai_training_consented: boolean | null;
   client: ApprovalReviewClient;
+  client_claims: PendingClientClaims | null;
   expires_at: string | null;
   purpose_code: string;
   purpose_description: string | null;
@@ -1209,6 +1211,7 @@ function renderReviewedBatchConsentHtml(
   }
   const cards: PendingConsentCard[] = review.sources.map((source) => ({
     access_mode: source.access_mode,
+    client_claims: source.client_claims,
     index: source.index,
     purpose_code: source.purpose_code,
     resolvedStreams: source.resolved_streams,
@@ -1237,6 +1240,7 @@ function renderReviewedBatchConsentHtml(
             ...buildReviewedSourceFacts(source.source, source.source_declaration),
             ...buildReviewedSelectionFacts(source),
           ]),
+          buildClientClaimsBlock(source.client_claims, ui),
           renderReviewedNarrowing(review.source_narrowing[String(source.index)], ui),
           `<span class="pdpp-title">Exact reviewed streams</span>${renderReviewedStreams(source.resolved_streams, ui)}`,
         ].join("\n"),
@@ -1490,7 +1494,9 @@ function renderReviewedSingleConsentHtml(
         renderAuthorshipBlock(
           "client",
           "Reviewed purpose",
-          ui.renderKeyValueList(buildReviewedSelectionFacts(review)),
+          [ui.renderKeyValueList(buildReviewedSelectionFacts(review)), buildClientClaimsBlock(review.client_claims, ui)]
+            .filter(Boolean)
+            .join("\n"),
           ui
         ),
         renderAuthorshipBlock(

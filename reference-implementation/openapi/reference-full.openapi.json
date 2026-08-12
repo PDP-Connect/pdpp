@@ -2471,6 +2471,31 @@
                               ],
                               "type": "object"
                             },
+                            "client_claims": {
+                              "oneOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "commitments": {
+                                      "items": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "minItems": 1,
+                                      "type": "array",
+                                      "uniqueItems": true
+                                    }
+                                  },
+                                  "required": [
+                                    "commitments"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "expires_at": {
                               "type": [
                                 "string",
@@ -2665,6 +2690,7 @@
                             "access_mode",
                             "ai_training_consented",
                             "client",
+                            "client_claims",
                             "expires_at",
                             "purpose_code",
                             "purpose_description",
@@ -2847,6 +2873,31 @@
                                     ],
                                     "type": "string"
                                   },
+                                  "client_claims": {
+                                    "oneOf": [
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "commitments": {
+                                            "items": {
+                                              "minLength": 1,
+                                              "type": "string"
+                                            },
+                                            "minItems": 1,
+                                            "type": "array",
+                                            "uniqueItems": true
+                                          }
+                                        },
+                                        "required": [
+                                          "commitments"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
                                   "index": {
                                     "minimum": 0,
                                     "type": "integer"
@@ -3021,6 +3072,7 @@
                                 },
                                 "required": [
                                   "access_mode",
+                                  "client_claims",
                                   "index",
                                   "purpose_code",
                                   "purpose_description",
