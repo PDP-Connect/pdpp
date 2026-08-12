@@ -17,8 +17,8 @@
 - [x] 3.1 Preserve `{inputIndex, rawLine, parsedRecord?}` through `executeRecordsIngest` and its batch capability so every terminal outcome maps to the zero-based non-empty NDJSON line sequence without reconstructing bytes from objects.
 - [x] 3.2 Add the narrow host `insertOrReplayRejection` dependency after owner/connection admission; route `malformed_ndjson` and only the existing typed storage permanent-error allowlist through it, refuse hosted-rejection mode for device reservations, and keep unknown/systemic failures non-2xx.
 - [x] 3.3 Return `records_attempted` and the complete metadata-only rejection vector on successful hosted ingest without repeating payloads or error messages.
-- [ ] 3.4 Re-check connection writable state and the exact run/connection fence inside each quarantine transaction; add fault oracles for cancellation/revoke/delete races, before commit, after commit before response, quota exhaustion, and a later systemic sibling failure after durable prefix effects.
-- [ ] 3.5 Prove on real SQLite and PostgreSQL that accepted sibling records and rejection receipts survive safely, exact request replay is idempotent, and no response claims an uncommitted receipt.
+- [x] 3.4 Re-check connection writable state and the exact run/connection fence inside each quarantine transaction; add fault oracles for cancellation/revoke/delete races, before commit, after commit before response, quota exhaustion, and a later systemic sibling failure after durable prefix effects. (Covered by the live SQLite/PostgreSQL hosted rejection coordinator race suite for cancellation, revoke, delete, terminalization, before-commit, after-commit-before-response, and quota exhaustion paths, plus the runtime system journey oracle proving a later systemic sibling failure after durable prefix effects does not claim an uncommitted receipt.)
+- [x] 3.5 Prove on real SQLite and PostgreSQL that accepted sibling records and rejection receipts survive safely, exact request replay is idempotent, and no response claims an uncommitted receipt. (Covered by the real SQLite/PostgreSQL coordinator and runtime system journey suites: accepted sibling records and durable rejection receipts survive process restart and replay; replay returns the same receipt handle; injected rollback/systemic failure cases return retryable failure rather than committed-receipt claims.)
 
 ## 4. Gate runtime progress on complete destination evidence
 
@@ -33,7 +33,7 @@
 - [x] 5.1 Add owner-session-only, connection-first read-only list and detail routes with a maximum page size, stable opaque cursor pagination, metadata-only lists, explicit bounded payload retrieval, and non-disclosing cross-owner rejection.
 - [x] 5.2 Add fixed-field quarantine audit evidence and prove payload bytes plus parser/storage exception text stay out of list, timeline, mutation, audit, health, and log surfaces.
 - [x] 5.3 Integrate rejection cleanup into the existing SQLite and PostgreSQL connection-deletion transaction or prove active foreign-key cascade parity.
-- [ ] 5.4 Prove list/detail authorization, paging bounds, payload non-disclosure, fresh-process retrieval, and connection-deletion cleanup on both backends.
+- [x] 5.4 Prove list/detail authorization, paging bounds, payload non-disclosure, fresh-process retrieval, and connection-deletion cleanup on both backends. (Covered by the SQLite/PostgreSQL owner inspection parity suite for owner-only list/detail access, page caps and cursors, metadata-only list responses, cross-owner non-disclosure, fresh-process payload retrieval, and connection-delete cleanup.)
 - [x] 5.5 Record atomic retry, discard, payload replacement, status resolution, and device-exporter adoption as explicit follow-up scope; add no mutation route or generic unit-of-work seam in this tranche.
 
 ## 6. Verify, document, and stage rollout
