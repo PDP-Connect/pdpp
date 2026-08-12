@@ -88,18 +88,14 @@ export function scratchCandidateSafetyReason(
   stats: Awaited<ReturnType<typeof lstat>>,
   expectedUid = userInfo().uid
 ): string | undefined {
-  if (stats.isSymbolicLink()) {
-    return "symlink";
-  }
-  if (!stats.isDirectory()) {
-    return "invalid-root";
-  }
-  if (stats.uid !== expectedUid) {
-    return "wrong-owner";
-  }
-  if (modeOf(stats) !== REQUIRED_DIRECTORY_MODE) {
-    return "wrong-mode";
-  }
+  const safetyChecks: ReadonlyArray<readonly [boolean, string]> = [
+    [stats.isSymbolicLink(), "symlink"],
+    [!stats.isDirectory(), "invalid-root"],
+    [stats.uid !== expectedUid, "wrong-owner"],
+    [modeOf(stats) !== REQUIRED_DIRECTORY_MODE, "wrong-mode"],
+  ];
+  const failedCheck = safetyChecks.find(([failed]) => failed);
+  return failedCheck?.[1];
 }
 
 async function linuxBootId(): Promise<string | null> {

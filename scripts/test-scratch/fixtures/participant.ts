@@ -14,7 +14,7 @@ const worker = new URL("./worker.ts", import.meta.url).pathname;
 for (const [name, leaf] of [
   ["one", "--node-leaf"],
   ["two", "--shell-leaf"],
-]) {
+] as const) {
   spawn(process.execPath, ["--import", "tsx", worker, `--name=${name}`, leaf], {
     detached: false,
     env: process.env,

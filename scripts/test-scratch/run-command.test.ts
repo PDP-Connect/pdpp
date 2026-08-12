@@ -86,15 +86,10 @@ function exited(proc: ReturnType<typeof spawn>): Promise<ChildResult> {
   });
 }
 
-async function currentBootId(): Promise<string | undefined> {
-  try {
-    const bootId = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
-    if (bootId) {
-      return bootId;
-    }
-  } catch {
-    // A non-Linux host has no boot identity, so the running-group case remains conservative.
-  }
+function currentBootId(): Promise<string | undefined> {
+  return readFile("/proc/sys/kernel/random/boot_id", "utf8")
+    .then((value) => value.trim() || undefined)
+    .catch(() => undefined);
 }
 
 async function oldMarker(
@@ -125,7 +120,11 @@ async function eventuallyRead(path: string): Promise<string> {
   while (Date.now() < deadline) {
     try {
       // biome-ignore lint/performance/noAwaitInLoops: bounded fixture readiness polling.
-      return await readFile(path, "utf8");
+      const value = await readFile(path, "utf8");
+      if (value) {
+        return value;
+      }
+      lastError = new Error(`fixture wrote an empty readiness file: ${path}`);
     } catch (error) {
       lastError = error;
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -374,7 +373,9 @@ test("SIGKILL leaves a live orphan, then a later recovery removes its dead group
   const close = exited(proc);
   proc.kill("SIGKILL");
   assert.deepEqual(await close, { code: null, signal: "SIGKILL" });
-  assert.throws(() => process.kill(proc.pid, 0), { code: "ESRCH" });
+  const wrapperPid = proc.pid;
+  assert.ok(wrapperPid);
+  assert.throws(() => process.kill(wrapperPid, 0), { code: "ESRCH" });
   process.kill(-marker.pgid, 0);
   await writeFile(
     markerPath,
@@ -524,10 +525,12 @@ test("parallel outer owners isolate participant worker trees under one inherited
         assert.equal((await eventuallyRead(join(root, `worker-${name}-root.txt`))).trim(), root);
         assert.equal((await eventuallyRead(join(root, `grandchild-${name}-leaf-root.txt`))).trim(), root);
       }
-      const workerPaths = await Promise.all(
-        ["one", "two"].map((name) => eventuallyRead(join(root, `worker-${name}-path.txt`)))
-      );
-      assert.notEqual(workerPaths[0].trim(), workerPaths[1].trim());
+      const [firstWorkerPath, secondWorkerPath] = await Promise.all([
+        eventuallyRead(join(root, "worker-one-path.txt")),
+        eventuallyRead(join(root, "worker-two-path.txt")),
+      ]);
+      assert.notEqual(firstWorkerPath.trim(), secondWorkerPath.trim());
+      const workerPaths = [firstWorkerPath, secondWorkerPath];
       assert.ok(workerPaths.every((path) => path.trim().startsWith(`${root}/worker-`)));
       assert.equal((await readdir(root)).filter((entry) => entry === ".pdpp-test-scratch.json").length, 1);
       await access(join(root, "child.txt"));
