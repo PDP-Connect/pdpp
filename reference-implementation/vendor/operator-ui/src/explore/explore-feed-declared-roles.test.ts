@@ -61,7 +61,7 @@ function chatgptSummary(): RefConnectorSummary {
  */
 function chatgptManifest(): ConnectorManifest {
   return {
-    connector_id: "https://registry.pdpp.org/connectors/chatgpt",
+    connector_id: "https://registry.pdpp.dev/connectors/chatgpt",
     connector_key: "chatgpt",
     streams: [
       {
@@ -191,7 +191,7 @@ test("recent feed: an UNDECLARED stream still takes the honest generic card (no 
   // Same connector, but a manifest stream that declares NO x_pdpp_role. The record
   // must NOT be guessed into a message card — it stays generic (review constraint #2/#7).
   const undeclaredManifest = {
-    connector_id: "https://registry.pdpp.org/connectors/chatgpt",
+    connector_id: "https://registry.pdpp.dev/connectors/chatgpt",
     connector_key: "chatgpt",
     streams: [{ name: "messages", schema: { properties: { content: { type: "string" }, role: { type: "string" } } } }],
   } as ConnectorManifest;

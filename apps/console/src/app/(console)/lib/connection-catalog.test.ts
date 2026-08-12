@@ -36,7 +36,7 @@ import {
   sourceSetupStatus,
 } from "./source-setup-presentation.ts";
 
-const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
+const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.dev/connectors/";
 const TRAILING_SLASH_RE = /\/$/;
 const SECURE_BROWSER_SESSION_RE = /secure browser session/i;
 const SAVE_SIGN_IN_DETAILS_RE = /sign-in details/i;
@@ -141,7 +141,7 @@ test("heb is cataloged as one browser-bound account setup with optional stored c
 test("browser-bound static-secret-capable connectors get one primary choice generically", () => {
   const catalog = buildConnectorCatalog([
     {
-      connector_id: "https://registry.pdpp.org/connectors/browser-sample",
+      connector_id: "https://registry.pdpp.dev/connectors/browser-sample",
       display_name: "Browser Sample",
       runtime_requirements: { bindings: { browser: { required: true } } },
       setup: {
@@ -167,7 +167,7 @@ test("browser-bound static-secret-capable connectors get one primary choice gene
 test("non-browser static-secret connectors keep the existing single capture path", () => {
   const catalog = buildConnectorCatalog([
     {
-      connector_id: "https://registry.pdpp.org/connectors/gmail",
+      connector_id: "https://registry.pdpp.dev/connectors/gmail",
       display_name: "Gmail",
       runtime_requirements: { bindings: { network: { required: true } } },
       setup: {

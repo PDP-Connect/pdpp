@@ -1123,11 +1123,11 @@ if (POSTGRES_URL) {
         authorization_details: [
           {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/personalization",
+            purpose_code: "https://pdpp.dev/purpose/personalization",
             purpose_description: "Postgres runtime storage coverage",
             source: { id: connectorId, kind: "connector" },
             streams: [{ fields: ["id", "title", "body", "created_at"], name: stream }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_id: clientId,

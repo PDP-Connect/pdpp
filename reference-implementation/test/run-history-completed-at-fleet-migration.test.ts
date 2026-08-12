@@ -92,7 +92,7 @@ function buildSqlitePreRenamedStuckFixture(dbPath: string): void {
     "INSERT INTO run_history(connector_instance_id, connector_id, source_json, status, records_emitted, known_gaps_json, run_id, started_at, completed_at, attempt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
   ).run(
     "cin_pre_renamed_stuck",
-    "https://test.pdpp.org/connectors/pre-renamed-stuck",
+    "https://test.pdpp.dev/connectors/pre-renamed-stuck",
     "{}",
     "succeeded",
     1,
@@ -244,7 +244,7 @@ test("PostgreSQL: a pre-renamed-stuck database is repaired on the next boot, ide
            RETURNING id::text AS id`,
         [
           "cin_pg_pre_renamed_stuck",
-          "https://test.pdpp.org/connectors/pg-pre-renamed-stuck",
+          "https://test.pdpp.dev/connectors/pg-pre-renamed-stuck",
           "{}",
           "succeeded",
           1,
@@ -329,7 +329,7 @@ test("PostgreSQL: a pre-renamed-stuck database is repaired on the next boot, ide
            ) VALUES ($1, $2, '{}'::jsonb, 'running', '[]'::jsonb, $3, 1)`,
         [
           "cin_pg_post_repair_started",
-          "https://test.pdpp.org/connectors/pg-pre-renamed-stuck",
+          "https://test.pdpp.dev/connectors/pg-pre-renamed-stuck",
           "2026-04-29T04:00:00.000Z",
         ]
       );

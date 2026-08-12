@@ -14,7 +14,7 @@ import type { RunCancellationRegistration, RunRecord } from "../runtime/schedule
 import { closeDb, initDb } from "../server/db.ts";
 import { createSqliteSchedulerStore } from "../server/stores/scheduler-store.ts";
 
-const CONNECTOR_ID = "https://registry.pdpp.org/connectors/scheduler-direct-liveness";
+const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/scheduler-direct-liveness";
 const CONNECTOR_INSTANCE_ID = "cin_scheduler_direct_liveness";
 
 const MANIFEST = {

@@ -108,11 +108,11 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
         authorization_details: [
           {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/analytics",
+            purpose_code: "https://pdpp.dev/purpose/analytics",
             purpose_description: "e2e subscription test",
             source: { id: connectorId, kind: "connector" },
             streams: [{ fields: ["id", "name"], name: streamName }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_id: "longview",

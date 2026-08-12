@@ -56,11 +56,11 @@ test("buildHostedMcpAuthorizationDetailsForConnector: wildcard continuous read d
   assert.deepEqual(details, [
     {
       access_mode: "continuous",
-      purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+      purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
       purpose_description: "Allow this MCP client to read selected personal data through PDPP.",
       source: { id: "amazon", kind: "connector" },
       streams: [{ name: "*" }],
-      type: "https://pdpp.org/data-access",
+      type: "https://pdpp.dev/data-access",
     },
   ]);
 });

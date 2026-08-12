@@ -43,7 +43,7 @@ import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connecto
 const STREAM = "items";
 
 const MANIFEST = {
-  connector_id: "https://registry.pdpp.org/connectors/runtime-cancel-stub",
+  connector_id: "https://registry.pdpp.dev/connectors/runtime-cancel-stub",
   runtime_requirements: {},
   streams: [
     {

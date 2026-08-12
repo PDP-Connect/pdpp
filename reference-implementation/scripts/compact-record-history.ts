@@ -207,28 +207,28 @@ type BaseCompactionPolicy = Omit<CompactionPolicy, "changeModel" | "representati
  */
 export const COMPACTION_POLICIES: CompactionPolicy[] = [
   {
-    connectorIds: ["gmail", "https://registry.pdpp.org/connectors/gmail"],
+    connectorIds: ["gmail", "https://registry.pdpp.dev/connectors/gmail"],
     connectorSource:
       "packages/polyfill-connectors/connectors/gmail/parsers.ts:buildThreadFingerprint → src/fingerprint-cursor.ts:recordFingerprint (canonical)",
     excludeKeys: [],
     stream: "threads",
   },
   {
-    connectorIds: ["slack", "https://registry.pdpp.org/connectors/slack"],
+    connectorIds: ["slack", "https://registry.pdpp.dev/connectors/slack"],
     connectorSource:
       'packages/polyfill-connectors/connectors/slack/index.ts:FINGERPRINT_EXCLUDE.workspace (["fetched_at"]) → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
     excludeKeys: ["fetched_at"],
     stream: "workspace",
   },
   {
-    connectorIds: ["slack", "https://registry.pdpp.org/connectors/slack"],
+    connectorIds: ["slack", "https://registry.pdpp.dev/connectors/slack"],
     connectorSource:
       "packages/polyfill-connectors/connectors/slack/index.ts:FINGERPRINT_EXCLUDE.users ([]) → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)",
     excludeKeys: [],
     stream: "users",
   },
   {
-    connectorIds: ["slack", "https://registry.pdpp.org/connectors/slack"],
+    connectorIds: ["slack", "https://registry.pdpp.dev/connectors/slack"],
     connectorSource:
       "packages/polyfill-connectors/connectors/slack/index.ts:FINGERPRINT_EXCLUDE.files ([]) → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)",
     excludeKeys: [],
@@ -248,14 +248,14 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     // so a membership appearing or disappearing is always a fingerprint
     // boundary that survives — only a true no-op refresh (same membership,
     // moved run clock) collapses.
-    connectorIds: ["slack", "https://registry.pdpp.org/connectors/slack"],
+    connectorIds: ["slack", "https://registry.pdpp.dev/connectors/slack"],
     connectorSource:
       'packages/polyfill-connectors/connectors/slack/index.ts:FINGERPRINT_EXCLUDE.channel_memberships (["fetched_at"]) → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
     excludeKeys: ["fetched_at"],
     stream: "channel_memberships",
   },
   {
-    connectorIds: ["ynab", "https://registry.pdpp.org/connectors/ynab"],
+    connectorIds: ["ynab", "https://registry.pdpp.dev/connectors/ynab"],
     connectorSource:
       "packages/polyfill-connectors/connectors/ynab/index.ts:openPayeeLocationCursor → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)",
     excludeKeys: [],
@@ -272,7 +272,7 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     // run-clock field. This policy therefore mirrors the connector with an
     // empty exclude set: a "removable historical version" here equals the
     // connector's own "no-op emit."
-    connectorIds: ["gmail", "https://registry.pdpp.org/connectors/gmail"],
+    connectorIds: ["gmail", "https://registry.pdpp.dev/connectors/gmail"],
     connectorSource:
       'packages/polyfill-connectors/connectors/gmail/index.ts:emitLabelsStream → openFingerprintCursor({excludeFromFingerprint:["id"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical). Stored record_json has no `id`; script excludeKeys [] hashes the same body the connector hashes after stripping the synthetic keying id.',
     excludeKeys: [],
@@ -294,7 +294,7 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     //   - either absent → exclude only `fetched_at` (conservative fallback).
     // Canonical mode enabled: statements are immutable_semantic once
     // content fields are present; blob churn is the only field movement.
-    connectorIds: ["usaa", "https://registry.pdpp.org/connectors/usaa"],
+    connectorIds: ["usaa", "https://registry.pdpp.dev/connectors/usaa"],
     connectorSource:
       "packages/polyfill-connectors/connectors/usaa/index.ts:emitStatementRecords → openFingerprintCursor({resolveExcludeFromFingerprint:statementFingerprintExcludeKeys}) → src/statement-content-fingerprint.ts:statementFingerprintExcludeKeys (canonical)",
     excludeKeys: ["fetched_at"],
@@ -316,7 +316,7 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     // emit through a per-account fingerprint cursor with
     // excludeFromFingerprint ["fetched_at"]; this policy mirrors that
     // exclusion one-for-one.
-    connectorIds: ["chase", "https://registry.pdpp.org/connectors/chase"],
+    connectorIds: ["chase", "https://registry.pdpp.dev/connectors/chase"],
     connectorSource:
       'packages/polyfill-connectors/connectors/chase/index.ts:emitAccountsStream → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
     excludeKeys: ["fetched_at"],
@@ -337,7 +337,7 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     //   - either absent → exclude only `fetched_at` (conservative fallback).
     // Canonical mode enabled: RC4 re-encryption churn is the only movement
     // once content fields are present.
-    connectorIds: ["chase", "https://registry.pdpp.org/connectors/chase"],
+    connectorIds: ["chase", "https://registry.pdpp.dev/connectors/chase"],
     connectorSource:
       "packages/polyfill-connectors/connectors/chase/index.ts:processStatementRow+emitStatementIndexOnly → openFingerprintCursor({resolveExcludeFromFingerprint:statementFingerprintExcludeKeys}) → src/statement-content-fingerprint.ts:statementFingerprintExcludeKeys (canonical)",
     excludeKeys: ["fetched_at"],
@@ -385,7 +385,7 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     // `records.version` row as the survivor for the current same-fingerprint
     // run (the authoritative-current-wins CDC choice), which avoids any
     // `records`-table rewrite in this slice.
-    connectorIds: ["chase", "https://registry.pdpp.org/connectors/chase"],
+    connectorIds: ["chase", "https://registry.pdpp.dev/connectors/chase"],
     connectorSource:
       'packages/polyfill-connectors/connectors/chase/index.ts:emitTransactionsForAccount → openFingerprintCursor({excludeFromFingerprint:["fetched_at","source"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
     excludeKeys: ["fetched_at", "source"],
@@ -410,7 +410,7 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     // fingerprints and are never collapsed — they are retained until the owner
     // decides whether that pre-split residue is worth migrating into
     // `account_stats`; the forward gate is correct regardless.)
-    connectorIds: ["usaa", "https://registry.pdpp.org/connectors/usaa"],
+    connectorIds: ["usaa", "https://registry.pdpp.dev/connectors/usaa"],
     connectorSource:
       'packages/polyfill-connectors/connectors/usaa/index.ts:emitAccountsStream → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
     excludeKeys: ["fetched_at"],
@@ -432,7 +432,7 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     // (body byte-identical modulo `fetched_at`) collapses. The connector gates
     // emit through a per-card fingerprint cursor with excludeFromFingerprint
     // ["fetched_at"]; this policy mirrors that exclusion one-for-one.
-    connectorIds: ["usaa", "https://registry.pdpp.org/connectors/usaa"],
+    connectorIds: ["usaa", "https://registry.pdpp.dev/connectors/usaa"],
     connectorSource:
       'packages/polyfill-connectors/connectors/usaa/index.ts:runCreditCardBillingStream → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
     excludeKeys: ["fetched_at"],
@@ -451,7 +451,7 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     // "no-op emit." Historical rows from the pre-gate window differ only
     // in those two excluded fields and collapse to their fingerprint
     // boundaries.
-    connectorIds: ["ynab", "https://registry.pdpp.org/connectors/ynab"],
+    connectorIds: ["ynab", "https://registry.pdpp.dev/connectors/ynab"],
     connectorSource:
       'packages/polyfill-connectors/connectors/ynab/index.ts:BUDGET_FINGERPRINT_EXCLUDE (["last_month","last_modified_on"]) → openBudgetCursor → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
     excludeKeys: ["last_month", "last_modified_on"],
@@ -472,7 +472,7 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     // real field move (e.g. balance_after_cents) is always a fingerprint
     // boundary that survives; only a re-surfaced byte-identical transaction
     // (modulo the run clock) collapses.
-    connectorIds: ["usaa", "https://registry.pdpp.org/connectors/usaa"],
+    connectorIds: ["usaa", "https://registry.pdpp.dev/connectors/usaa"],
     connectorSource:
       'packages/polyfill-connectors/connectors/usaa/index.ts:emitCsvTransactions+processPdfStatementRow → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
     excludeKeys: ["fetched_at"],
@@ -489,7 +489,7 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     // Excluding ONLY `fetched_at` is lossless: a read → unread (or unread →
     // read) status flip is a fingerprint boundary that survives; only a
     // byte-identical re-scrape (modulo the run clock) collapses.
-    connectorIds: ["usaa", "https://registry.pdpp.org/connectors/usaa"],
+    connectorIds: ["usaa", "https://registry.pdpp.dev/connectors/usaa"],
     connectorSource:
       'packages/polyfill-connectors/connectors/usaa/index.ts:runInboxStream → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
     excludeKeys: ["fetched_at"],
@@ -508,7 +508,7 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     // boundary that survives, and a fallback-keyed row whose fields change
     // gets a new id and appends as a distinct row; only a byte-identical
     // re-render (modulo the run clock) collapses.
-    connectorIds: ["chase", "https://registry.pdpp.org/connectors/chase"],
+    connectorIds: ["chase", "https://registry.pdpp.dev/connectors/chase"],
     connectorSource:
       'packages/polyfill-connectors/connectors/chase/index.ts:emitCurrentActivityForAccount → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
     excludeKeys: ["fetched_at"],
@@ -528,7 +528,7 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     // is always a fingerprint boundary that survives; only a re-scraped
     // byte-identical order (modulo the run clock) collapses. `order_items`
     // carries no `fetched_at` and has no registered policy.
-    connectorIds: ["amazon", "https://registry.pdpp.org/connectors/amazon"],
+    connectorIds: ["amazon", "https://registry.pdpp.dev/connectors/amazon"],
     connectorSource:
       'packages/polyfill-connectors/connectors/amazon/index.ts:emitOrderAndItems → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
     excludeKeys: ["fetched_at"],
@@ -548,7 +548,7 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     // exclude set, so a "removable historical version" here equals the
     // connector's own "no-op emit." A real instructions edit moves the body
     // hash and is always retained as a fingerprint boundary.
-    connectorIds: ["chatgpt", "https://registry.pdpp.org/connectors/chatgpt"],
+    connectorIds: ["chatgpt", "https://registry.pdpp.dev/connectors/chatgpt"],
     connectorSource:
       "packages/polyfill-connectors/connectors/chatgpt/index.ts:runCustomInstructionsStream → openFingerprintCursor() (excludeFromFingerprint []) → src/fingerprint-cursor.ts:recordFingerprint (canonical). Stored record_json is the full builder body (incl. id); script excludeKeys [] hashes the same body.",
     excludeKeys: [],
@@ -565,7 +565,7 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
     // this policy mirrors that with an empty exclude set. A new share (new id)
     // or a changed title/visibility moves the body hash and is always retained
     // as a fingerprint boundary; only a byte-identical re-list collapses.
-    connectorIds: ["chatgpt", "https://registry.pdpp.org/connectors/chatgpt"],
+    connectorIds: ["chatgpt", "https://registry.pdpp.dev/connectors/chatgpt"],
     connectorSource:
       "packages/polyfill-connectors/connectors/chatgpt/index.ts:runSharedConversationsStream → openFingerprintCursor() (excludeFromFingerprint []) → src/fingerprint-cursor.ts:recordFingerprint (canonical). Stored record_json is the full builder body (incl. id); script excludeKeys [] hashes the same body.",
     excludeKeys: [],

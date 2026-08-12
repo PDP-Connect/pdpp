@@ -118,11 +118,11 @@ async function initiateGrantRequest(asUrl: string, spotifyManifest: SpotifyManif
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Consent token handoff regression",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: "concert_recommendation_app",

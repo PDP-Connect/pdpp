@@ -450,7 +450,7 @@ function buildMcpAuthorizationDiscovery({ issuer, resource }: { issuer: string; 
       resource_parameter: "required",
     },
     device_code: {
-      authorization_details_type: "https://pdpp.org/data-access",
+      authorization_details_type: "https://pdpp.dev/data-access",
       device_authorization_endpoint: `${issuer}/oauth/device_authorization`,
       flow: "device_code",
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",

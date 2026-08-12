@@ -1101,7 +1101,7 @@ test("mint accepts a pending manual_action interaction", async () => {
 });
 
 test("mint accepts current no-response browser-surface assistance backed by a leased surface", async () => {
-  const connectorId = "https://registry.pdpp.org/connectors/spotify";
+  const connectorId = "https://registry.pdpp.dev/connectors/spotify";
   const leaseManager = makeLeaseManager({ connectorId });
   await withHarness(
     {
@@ -1159,7 +1159,7 @@ test("mint accepts current no-response browser-surface assistance backed by a le
 });
 
 test("mint accepts pending browser interaction backed by a managed browser surface", async () => {
-  const connectorId = "https://registry.pdpp.org/connectors/spotify";
+  const connectorId = "https://registry.pdpp.dev/connectors/spotify";
   const leaseManager = makeLeaseManager({ connectorId });
   await withHarness(
     {
@@ -1211,7 +1211,7 @@ test("mint accepts pending browser interaction backed by a managed browser surfa
 });
 
 test("mint derives the presentation endpoint from live behavior rather than surface metadata", async () => {
-  const connectorId = "https://registry.pdpp.org/connectors/spotify";
+  const connectorId = "https://registry.pdpp.dev/connectors/spotify";
   const leaseManager = makeLeaseManager({ connectorId, withSettleEndpoint: false });
   const requests: unknown[] = [];
   await withHarness(
@@ -1251,7 +1251,7 @@ test("mint derives the presentation endpoint from live behavior rather than surf
 });
 
 test("mint fails loudly before viewer creation when the live window-settle behavior is absent", async () => {
-  const connectorId = "https://registry.pdpp.org/connectors/spotify";
+  const connectorId = "https://registry.pdpp.dev/connectors/spotify";
   const leaseManager = makeLeaseManager({ connectorId });
   let companionCreated = false;
   await withHarness(
@@ -1294,7 +1294,7 @@ test("managed lifecycle reaches interaction attach after readiness and a manual 
   // bypassing the route-level canonicalization) actually admits and runs
   // with — a raw URL-form key here would never match the canonical runtime
   // lookup and silently skip the managed browser-surface path entirely.
-  const connectorId = canonicalConnectorKey("https://registry.pdpp.org/connectors/spotify") ?? "spotify";
+  const connectorId = canonicalConnectorKey("https://registry.pdpp.dev/connectors/spotify") ?? "spotify";
   // No explicit `connectorInstanceId` is claimed below, so admission
   // materializes the real default-account instance id (a `cin_<hash>` string,
   // never equal to `connectorId`). `readBrowserSurfaceProfileKey`
@@ -1368,7 +1368,7 @@ test("managed lifecycle reaches interaction attach after readiness and a manual 
 });
 
 test("a new app paired with a stale static n.eko container fails loudly before any black-frame viewer can mount", async () => {
-  const connectorId = "https://registry.pdpp.org/connectors/spotify";
+  const connectorId = "https://registry.pdpp.dev/connectors/spotify";
   const leaseManager = makeLeaseManager({ connectorId, surfaceMode: "static" });
   let companionCreated = false;
   await withHarness(
@@ -1406,7 +1406,7 @@ test("a new app paired with a stale static n.eko container fails loudly before a
 });
 
 test("mint capability probe observes the current geometry without changing it", async () => {
-  const connectorId = "https://registry.pdpp.org/connectors/spotify";
+  const connectorId = "https://registry.pdpp.dev/connectors/spotify";
   const leaseManager = makeLeaseManager({ connectorId });
   const before = { height: 915, width: 412 };
   let currentScreen = { ...before };
@@ -1460,7 +1460,7 @@ test("mint capability probe observes the current geometry without changing it", 
 });
 
 test("mint refuses a stale no-response browser-surface assistance id", async () => {
-  const connectorId = "https://registry.pdpp.org/connectors/spotify";
+  const connectorId = "https://registry.pdpp.dev/connectors/spotify";
   const leaseManager = makeLeaseManager({ connectorId });
   await withHarness(
     {
@@ -1499,7 +1499,7 @@ test("mint refuses a stale no-response browser-surface assistance id", async () 
 });
 
 test("mint refuses current no-response browser-surface assistance without a ready surface", async () => {
-  const connectorId = "https://registry.pdpp.org/connectors/spotify";
+  const connectorId = "https://registry.pdpp.dev/connectors/spotify";
   const leaseManager = makeLeaseManager({ connectorId, surfaceHealth: "starting" });
   await withHarness(
     {

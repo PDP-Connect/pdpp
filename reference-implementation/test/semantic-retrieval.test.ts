@@ -301,7 +301,7 @@ async function approveClientGrant(asUrl: string, params: ClientGrantParams): Pro
           purpose_description: params.purpose_description,
           source: { id: params.connector_id, kind: "connector" },
           streams: params.streams,
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: params.client_id,
@@ -738,7 +738,7 @@ test("filtered semantic search rejects invalid filters and still-forbidden param
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorA,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "semantic filtered retrieval test",
       streams: [{ fields: ["id", "title", "source_created_at"], name: "posts" }],
     });
@@ -796,7 +796,7 @@ test("client-token streams[] not in grant returns grant_stream_not_allowed", asy
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorA,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "semantic test",
       streams: [{ fields: ["id", "title"], name: "posts" }], // posts only
     });
@@ -847,7 +847,7 @@ test("client grant authorizing only one of two declared semantic_fields restrict
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorA,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "semantic test subset",
       streams: [{ fields: ["id", "title"], name: "posts" }],
     });
@@ -892,7 +892,7 @@ test("stream declared in semantic_fields but with empty grant∩declared interse
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorA,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "zero-intersection test",
       streams: [{ fields: ["id"], name: "comments" }], // id not in declared semantic_fields
     });
@@ -1517,7 +1517,7 @@ test("semantic index metadata isolates instances and client search fans in acros
       access_mode: "continuous",
       client_id: "longview",
       connector_id: MANIFEST_A.connector_id,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "semantic instance isolation test",
       streams: [{ fields: ["id", "title", "source_created_at"], name: "posts" }],
     });
@@ -1936,7 +1936,7 @@ test("shipped gmail manifest contributes semantic coverage after reconcile witho
       const rsUrl = `http://localhost:${server.rsPort}`;
       const connectorId = String(shipped.connector_id);
       // The server canonicalizes the first-party registry URL
-      // (`https://registry.pdpp.org/connectors/gmail`) to its short key
+      // (`https://registry.pdpp.dev/connectors/gmail`) to its short key
       // (`gmail`) at the manifest boundary, so semantic hits are emitted
       // under the canonical key — not the raw URL. Filter by the canonical
       // key (falling back to the raw value for custom manifests) to compare

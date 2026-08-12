@@ -392,7 +392,7 @@ export function mountOwnerConnectionsList(app: AppLike, ctx: MountOwnerConnectio
         const resource = ctx.resolveResource(req);
         const rawConnectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
         // Canonicalize the owner-supplied connector_id filter so a URL-shaped
-        // value (e.g. https://registry.pdpp.org/connectors/amazon) matches the
+        // value (e.g. https://registry.pdpp.dev/connectors/amazon) matches the
         // canonical key the instances are stored under. Same boundary handling
         // as `/_ref/connections`.
         const connectorId = rawConnectorId

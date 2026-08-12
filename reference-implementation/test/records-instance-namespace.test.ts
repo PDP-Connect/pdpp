@@ -84,7 +84,7 @@ function buildSemanticSearchPlanForGrant(input: SemanticSearchPlanInput): Semant
 }
 
 const CONNECTOR_ID = "instance-records";
-const SPOTIFY_REGISTRY_CONNECTOR_ID = "https://registry.pdpp.org/connectors/spotify";
+const SPOTIFY_REGISTRY_CONNECTOR_ID = "https://registry.pdpp.dev/connectors/spotify";
 const SPOTIFY_CONNECTOR_KEY = "spotify";
 const WORK_INSTANCE_ID = "cin_test_records_work";
 const PERSONAL_INSTANCE_ID = "cin_test_records_personal";

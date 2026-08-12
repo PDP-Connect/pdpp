@@ -24,8 +24,8 @@ import { closeDb, initDb } from "../server/db.ts";
 import type { ActiveRunRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 
 const REGEXP_OWNER_MISMATCH = /run_owner_mismatch|does not belong/i;
-const CONNECTOR_ID = "https://registry.pdpp.org/connectors/cancel-run-test";
-const SIBLING_ID = "https://registry.pdpp.org/connectors/cancel-run-sibling";
+const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/cancel-run-test";
+const SIBLING_ID = "https://registry.pdpp.dev/connectors/cancel-run-sibling";
 const MANIFEST = {
   connector_id: CONNECTOR_ID,
   name: "Cancel Run Test",

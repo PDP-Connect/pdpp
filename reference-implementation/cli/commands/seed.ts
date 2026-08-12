@@ -139,7 +139,7 @@ async function seedOneConnector(
       },
       collectionMode: "full_refresh",
       // The raw manifest connector_id may be a URL-form first-party id
-      // (e.g. https://registry.pdpp.org/connectors/spotify); runConnector
+      // (e.g. https://registry.pdpp.dev/connectors/spotify); runConnector
       // canonicalizes it (canonicalConnectorKey) before admission, so admit
       // against the SAME canonical key here rather than the raw manifest
       // value — otherwise the store resolves a different connector than the

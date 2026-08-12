@@ -209,7 +209,7 @@ async function issueClientGrant(asUrl: string, subjectId: string, params: Client
           purpose_description: params.purpose_description,
           source: { id: params.connector_id, kind: "connector" },
           streams: params.streams,
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: params.client_id,
@@ -344,7 +344,7 @@ test("blob lifecycle: upload → seed record → grant with blob_ref → fetch b
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/assist_export",
+      purpose_code: "https://pdpp.dev/purpose/assist_export",
       purpose_description: "Export Gmail attachment for B4 blob test.",
       streams: [
         {
@@ -466,7 +466,7 @@ test("blob grant enforcement: blob_not_found when token lacks visibility to the 
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/assist_summarize",
+      purpose_code: "https://pdpp.dev/purpose/assist_summarize",
       purpose_description: "B4 enforcement: no blob_ref in projection.",
       streams: [
         {
@@ -561,7 +561,7 @@ test("fetch_url is relative /v1/blobs/:blob_id — must prepend RS base URL (B4)
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/assist_export",
+      purpose_code: "https://pdpp.dev/purpose/assist_export",
       purpose_description: "B4 fetch_url shape test.",
       streams: [
         { fields: ["id", "subject"], name: "messages" },

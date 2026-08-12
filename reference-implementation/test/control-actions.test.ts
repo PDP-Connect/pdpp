@@ -1662,11 +1662,11 @@ test("GET /_ref/approvals surfaces pending provider-connect consents with grant 
         authorization_details: [
           {
             access_mode: "single_use",
-            purpose_code: "https://pdpp.org/purpose/personalization",
+            purpose_code: "https://pdpp.dev/purpose/personalization",
             purpose_description: "Suggest concerts based on listening history",
             source: { id: spotifyManifest.connector_id, kind: "connector" },
             streams: [{ fields: ["id", "name"], name: "top_artists" }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_id: "concert_recommendation_app",

@@ -61,13 +61,13 @@ const ui: ConsentUiRenderer = {
 
 // ── Fixture connector set ────────────────────────────────────────────────────
 // Two registered connectors with URL-shaped ids (the first-party reference
-// connectors are `https://registry.pdpp.org/connectors/<name>`), plus one
+// connectors are `https://registry.pdpp.dev/connectors/<name>`), plus one
 // internal connector that the picker MUST skip. Bindings carry deliberately
 // adversarial display names to exercise the redundant/placeholder/URL label
 // suppression path (`ownerFacingConnectionName`).
 
-const SPOTIFY_ID = "https://registry.pdpp.org/connectors/spotify";
-const GITHUB_ID = "https://registry.pdpp.org/connectors/github";
+const SPOTIFY_ID = "https://registry.pdpp.dev/connectors/spotify";
+const GITHUB_ID = "https://registry.pdpp.dev/connectors/github";
 const INTERNAL_ID = "pdpp-internal-audit";
 
 interface FixtureManifest {
@@ -106,7 +106,7 @@ interface FixtureBinding extends ConsentPickerBinding {
 const BINDINGS: Record<string, FixtureBinding[]> = {
   [SPOTIFY_ID]: [{ _display: "Personal listening", connectorInstanceId: "cin_spotify_1" }],
   [GITHUB_ID]: [
-    { _display: "https://registry.pdpp.org/connectors/github", connectorInstanceId: "cin_github_url" },
+    { _display: "https://registry.pdpp.dev/connectors/github", connectorInstanceId: "cin_github_url" },
     { _display: "cin_github_placeholder", connectorInstanceId: "cin_github_placeholder" },
     { _display: "GitHub", connectorInstanceId: "cin_github_echo" },
   ],
@@ -229,7 +229,7 @@ test("redundant URL / placeholder connection labels never surface as owner-visib
   const textNodes = [...html.matchAll(/>([^<]+)</g)].map((m) => mustExist(m[1], "capture group must exist"));
   for (const text of textNodes) {
     assert.equal(
-      text.includes("https://registry.pdpp.org/connectors/github"),
+      text.includes("https://registry.pdpp.dev/connectors/github"),
       false,
       `a registry-URL display name must never render as visible text (saw: ${text.trim().slice(0, 60)})`
     );
@@ -378,7 +378,7 @@ test("picker copy states the source-is-its-streams model in owner-facing languag
   // inspect rendered text nodes only — the content between `>` and `<`.
   const textNodes = [...html.matchAll(/>([^<]+)</g)].map((m) => mustExist(m[1], "capture group must exist"));
   for (const text of textNodes) {
-    assert.equal(text.includes("registry.pdpp.org"), false, "copy never leaks a registry URL as visible text");
+    assert.equal(text.includes("registry.pdpp.dev"), false, "copy never leaks a registry URL as visible text");
     assert.equal(/\bcin_[a-z0-9]/i.test(text), false, "copy never leaks a cin_ id as visible text");
   }
 });

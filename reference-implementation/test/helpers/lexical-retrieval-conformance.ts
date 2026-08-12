@@ -118,7 +118,7 @@ interface SeedRecord {
   recordKey: string;
 }
 
-const CONNECTOR_A = "https://test.pdpp.org/connectors/lex-a";
+const CONNECTOR_A = "https://test.pdpp.dev/connectors/lex-a";
 const STREAM_POSTS = "posts";
 
 function buildSeedRecords(): SeedRecord[] {

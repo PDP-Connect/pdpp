@@ -64,7 +64,7 @@ function claudeCodeManifest(connectorId: string, displayName: string) {
 test("registering a legacy local-collector alias and its canonical id yields one canonical connector row", async () => {
   initDb();
   try {
-    const canonical = claudeCodeManifest("https://registry.pdpp.org/connectors/claude-code", "Claude Code (canonical)");
+    const canonical = claudeCodeManifest("https://registry.pdpp.dev/connectors/claude-code", "Claude Code (canonical)");
     const legacyAlias = claudeCodeManifest("claude_code", "Claude Code (legacy alias)");
 
     // Both manifests resolve to the same canonical short key.
@@ -82,7 +82,7 @@ test("registering a legacy local-collector alias and its canonical id yields one
     assert.deepEqual(claudeRows, ["claude-code"], "exactly one canonical claude-code row");
     assert.ok(!ids.includes("claude_code"), "legacy snake_case alias must not survive as a separate row");
     assert.ok(
-      !ids.includes("https://registry.pdpp.org/connectors/claude-code"),
+      !ids.includes("https://registry.pdpp.dev/connectors/claude-code"),
       "URL-shaped connector id must not survive as a separate row"
     );
   } finally {
@@ -97,7 +97,7 @@ test("alias registered before its canonical id still collapses to one canonical 
     // produce a duplicate when the canonical manifest is later registered.
     await registerConnector(claudeCodeManifest("claude_code", "Claude Code (legacy alias)"));
     await registerConnector(
-      claudeCodeManifest("https://registry.pdpp.org/connectors/claude-code", "Claude Code (canonical)")
+      claudeCodeManifest("https://registry.pdpp.dev/connectors/claude-code", "Claude Code (canonical)")
     );
 
     const ids = await listRegisteredConnectorIds();

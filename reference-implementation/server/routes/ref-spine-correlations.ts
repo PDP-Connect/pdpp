@@ -66,7 +66,7 @@ function parseListFilters(
   const rawConnectorId = query.connector_id;
   const trimmedConnectorId = typeof rawConnectorId === "string" && rawConnectorId.trim() ? rawConnectorId.trim() : null;
   // Canonicalize the owner-supplied connector_id filter so a URL-shaped value
-  // (e.g. https://registry.pdpp.org/connectors/spotify) matches the canonical
+  // (e.g. https://registry.pdpp.dev/connectors/spotify) matches the canonical
   // key the spine stamps `source_id` under. Accept the legacy alias at the
   // boundary, then compare canonically — mirroring the `/_ref/connections`
   // filter in `server/routes/ref-connectors.ts`. Spine `source_id` filtering

@@ -39,7 +39,7 @@ import { closeDb, initDb } from "../server/db.ts";
 const STREAM = "items";
 
 const MANIFEST = {
-  connector_id: "https://registry.pdpp.org/connectors/runtime-pgroup-stub",
+  connector_id: "https://registry.pdpp.dev/connectors/runtime-pgroup-stub",
   runtime_requirements: {},
   streams: [
     {

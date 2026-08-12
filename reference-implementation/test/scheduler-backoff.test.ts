@@ -10,7 +10,7 @@ import type { RunRecord } from "../runtime/scheduler-domain-types.ts";
 // ─── Test helpers ──────────────────────────────────────────────────────────
 
 const BASE_INTERVAL_MS = 60_000; // 1 minute
-const CONNECTOR_ID = "https://registry.pdpp.org/connectors/example";
+const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/example";
 const T0 = 1_700_000_000_000; // arbitrary fixed epoch
 
 /**

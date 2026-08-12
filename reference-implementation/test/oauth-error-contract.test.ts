@@ -137,10 +137,10 @@ test("MCP device authorization emits one CIMD transport event without changing i
       authorization_details: JSON.stringify([
         {
           access_mode: "single_use",
-          purpose_code: "https://pdpp.org/purpose/personal_assistant",
+          purpose_code: "https://pdpp.dev/purpose/personal_assistant",
           source: { id: "connector-test", kind: "connector" },
           streams: [{ name: "*" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ]),
       client_id: "https://client.example/oauth/client.json",

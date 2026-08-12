@@ -152,8 +152,8 @@ interface SchedulerDriver {
 
 type TestFn = (name: string, fn: () => Promise<void>) => void;
 
-export const CONNECTOR_A = "https://test.pdpp.org/connectors/conformance-a";
-export const CONNECTOR_B = "https://test.pdpp.org/connectors/conformance-b";
+export const CONNECTOR_A = "https://test.pdpp.dev/connectors/conformance-a";
+export const CONNECTOR_B = "https://test.pdpp.dev/connectors/conformance-b";
 
 export const STREAM_X = "stream_x";
 export const STREAM_Y = "stream_y";

@@ -48,7 +48,7 @@ import { closeDb, initDb } from "../server/db.ts";
 import type { ActiveRunRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
-const CONNECTOR_ID = "https://registry.pdpp.org/connectors/phantom-run-test";
+const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/phantom-run-test";
 const MANIFEST = {
   connector_id: CONNECTOR_ID,
   name: "Phantom Run Test",
