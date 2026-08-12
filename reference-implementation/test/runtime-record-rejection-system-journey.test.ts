@@ -261,6 +261,22 @@ function rejectionReceiptIdFromEnvelope(body: unknown): string {
   return receiptId;
 }
 
+async function readPriorRuntimeIngestCounts(response: Response): Promise<{
+  records_accepted: number;
+  records_rejected: number;
+}> {
+  assert.equal(response.ok, true, "prior runtime requires a successful ingest response");
+  const body = JSON.parse(await response.text()) as Record<string, unknown>;
+  const recordsAccepted = body.records_accepted;
+  const recordsRejected = body.records_rejected;
+  assert.equal(Number.isFinite(recordsAccepted), true, "prior runtime requires a finite accepted count");
+  assert.equal(Number.isFinite(recordsRejected), true, "prior runtime requires a finite rejected count");
+  return {
+    records_accepted: recordsAccepted as number,
+    records_rejected: recordsRejected as number,
+  };
+}
+
 function withCapturedIngestResponses({
   loseResponseForRunId,
   watchedRunIds,
@@ -577,6 +593,115 @@ test("runtime/server SQLite journey durably receipts invalid identity rejections
     assert.equal(JSON.stringify(detail).includes("storage exploded"), false);
     assert.equal(JSON.stringify(detail).includes("parser exploded"), false);
     assertOmitsPrivatePayload("captured restarted-server logger", serverBLogs.output(), forbiddenPayloadNeedles);
+  } finally {
+    if (serverB) {
+      await closeServer(serverB);
+    }
+    if (serverA) {
+      await closeServer(serverA);
+    }
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("prior-runtime count reader is loss-safe against a fresh new SQLite server", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-prior-runtime-new-server-"));
+  const dbPath = join(dir, "store.sqlite");
+  const connectorId = "prior-runtime-new-server";
+  const rejectedRecord = {
+    data: { id: "new-server-retained-data", value: "must survive legacy progress" },
+    emitted_at: "2026-08-11T12:05:00.000Z",
+    key: "legacy-runtime-wire-key",
+  };
+  const rejectedPayloadLine = JSON.stringify(rejectedRecord);
+  let serverA: ClosableServer | null = null;
+  let serverB: ClosableServer | null = null;
+
+  try {
+    serverA = await startServer({
+      asPort: 0,
+      dbPath,
+      ownerAuthPassword: OWNER_PASSWORD,
+      ownerAuthSubjectId: OWNER_SUBJECT_ID,
+      quiet: true,
+      rsPort: 0,
+    });
+    const asUrlA = `http://localhost:${serverA.asPort}`;
+    const rsUrlA = `http://localhost:${serverA.rsPort}`;
+    const ownerSessionA = await login(asUrlA);
+    await registerManifest(asUrlA, ownerSessionA, manifest(connectorId));
+    const ownerToken = await issueOwnerToken(asUrlA, ownerSessionA);
+    const { connectorInstanceId } = await admitOwnerRunConnection({
+      connectorId,
+      connectorInstanceId: null,
+      connectorInstanceStore: createRequestConnectorInstanceStore(),
+      ownerSubjectId: OWNER_SUBJECT_ID,
+    });
+
+    const ingestUrl = new URL("/v1/ingest/items", rsUrlA);
+    ingestUrl.searchParams.set("connector_id", connectorId);
+    ingestUrl.searchParams.set("connector_instance_id", connectorInstanceId);
+    const response = await fetch(ingestUrl, {
+      body: rejectedPayloadLine,
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        "Content-Type": "application/x-ndjson",
+      },
+      method: "POST",
+    });
+
+    // This is the complete pre-receipt consumer boundary: it reads only the
+    // two finite counters and ignores every additive field. Importing the old
+    // runtime would also import its child-process and checkpoint machinery,
+    // which is irrelevant to this server-first compatibility invariant.
+    const priorRuntimeCounts = await readPriorRuntimeIngestCounts(response);
+    assert.deepEqual(priorRuntimeCounts, { records_accepted: 0, records_rejected: 1 });
+    const priorRuntimeWouldClearBatch = priorRuntimeCounts.records_accepted + priorRuntimeCounts.records_rejected === 1;
+
+    const committedReceipt = getDb()
+      .prepare(
+        `SELECT payload_text, receipt_id
+           FROM record_rejections
+          WHERE connector_instance_id = ?`
+      )
+      .get<{ payload_text: string; receipt_id: string }>(connectorInstanceId);
+    assert.ok(committedReceipt, "new server commits rejection evidence before the legacy reader sees success");
+    assert.equal(committedReceipt.payload_text, rejectedPayloadLine);
+
+    await closeServer(serverA);
+    serverA = null;
+    serverB = await startServer({
+      asPort: 0,
+      dbPath,
+      ownerAuthPassword: OWNER_PASSWORD,
+      ownerAuthSubjectId: OWNER_SUBJECT_ID,
+      quiet: true,
+      rsPort: 0,
+    });
+    const asUrlB = `http://localhost:${serverB.asPort}`;
+    const ownerSessionB = await login(asUrlB);
+    const listUrl = `${asUrlB}/_ref/connections/${encodeURIComponent(connectorInstanceId)}/record-rejections`;
+    const { body: listBody, status: listStatus } = await fetchJson(listUrl, {
+      headers: { Cookie: ownerSessionB },
+    });
+    assert.equal(listStatus, 200);
+    const listItems = (listBody as { data?: { receipt_id?: unknown }[] }).data ?? [];
+    assert.deepEqual(
+      listItems.map((item) => item.receipt_id),
+      [committedReceipt.receipt_id],
+      "fresh server exposes the receipt to its owner"
+    );
+
+    const { body: detailBody, status: detailStatus } = await fetchJson(
+      `${listUrl}/${encodeURIComponent(committedReceipt.receipt_id)}`,
+      { headers: { Cookie: ownerSessionB } }
+    );
+    assert.equal(detailStatus, 200);
+    assert.equal((detailBody as { payload_text?: unknown }).payload_text, rejectedPayloadLine);
+
+    // Only after restart retrieval proves recoverability do the prior
+    // runtime's balanced counts constitute a loss-safe progress decision.
+    assert.equal(priorRuntimeWouldClearBatch, true);
   } finally {
     if (serverB) {
       await closeServer(serverB);

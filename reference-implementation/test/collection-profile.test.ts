@@ -2395,7 +2395,7 @@ test("Collection Profile conformance", async (t) => {
 
       if (req.method === "POST" && url.pathname === "/v1/ingest/items") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+        res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
         return;
       }
 
@@ -2898,7 +2898,7 @@ rl.on('line', (line) => {
 
         if (req.method === "POST" && url.pathname.startsWith("/v1/ingest/")) {
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+          res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
           return;
         }
 
@@ -10527,7 +10527,14 @@ rl.on('line', (line) => {
           itemBatchSizes.push(lines.length);
           if (itemBatchSizes.length === 1) {
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ records_accepted: lines.length, records_rejected: 0 }));
+            res.end(
+              JSON.stringify({
+                records_accepted: lines.length,
+                records_attempted: lines.length,
+                records_rejected: 0,
+                rejections: [],
+              })
+            );
             return;
           }
 
