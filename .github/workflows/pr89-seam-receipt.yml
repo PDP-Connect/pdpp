@@ -3,25 +3,89 @@ name: pr89-seam-receipt
 on:
   pull_request:
     paths:
-      - "reference-implementation/test/seam-spike/**"
-      - "reference-implementation/package.json"
       - ".github/workflows/pr89-seam-receipt.yml"
+      - "design-notes/seam-spike/**"
+      - "openspec/changes/harden-pdpp-authorization-and-0-1-migration/**"
+      - "package.json"
+      - "packages/reference-contract/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "reference-implementation/**"
+      - "scripts/test-accounting/**"
+      - "test-accounting.manifest.json"
   push:
     branches: [main]
     paths:
-      - "reference-implementation/test/seam-spike/**"
-      - "reference-implementation/package.json"
       - ".github/workflows/pr89-seam-receipt.yml"
+      - "design-notes/seam-spike/**"
+      - "openspec/changes/harden-pdpp-authorization-and-0-1-migration/**"
+      - "package.json"
+      - "packages/reference-contract/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "reference-implementation/**"
+      - "scripts/test-accounting/**"
+      - "test-accounting.manifest.json"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   pr89-seam-receipt:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: pdpp_pr89
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pdpp_pr89"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      PDPP_TEST_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/pdpp_pr89
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22.14.0"
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter pdpp-reference-implementation test:seam:pr89:receipt
+          node-version: "24"
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+      - name: Test receipt derivation and fail-closed checks
+        run: pnpm --filter pdpp-reference-implementation test:seam:pr89:receipt
+      - name: Validate PR89 OpenSpec target
+        run: pnpm exec openspec validate harden-pdpp-authorization-and-0-1-migration --strict
+      - name: Execute all seven cases and generate receipt
+        id: seam
+        continue-on-error: true
+        run: pnpm --filter pdpp-reference-implementation test:seam:pr89 -- --backend postgresql
+      - name: Validate generated receipt against executed evidence
+        id: receipt
+        if: always()
+        continue-on-error: true
+        run: pnpm --filter pdpp-reference-implementation check:seam:pr89:receipt
+      - name: Require execution and receipt validation
+        if: always()
+        env:
+          RECEIPT_OUTCOME: ${{ steps.receipt.outcome }}
+          SEAM_OUTCOME: ${{ steps.seam.outcome }}
+        run: |
+          test "$SEAM_OUTCOME" = "success"
+          test "$RECEIPT_OUTCOME" = "success"

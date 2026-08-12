@@ -63,7 +63,7 @@
 - [x] 6.2 Compute a relevant-file tree digest that excludes the receipt and
       generated artifacts. Do not use a self-referential commit or source
       revision field.
-- [ ] 6.3 Run the receipt checker in CI and fail on missing cases, stale
+- [x] 6.3 Run the receipt checker in CI and fail on missing cases, stale
       digests, duplicated rights, fallback markers, or invented passes.
 
 ## 7. Deferred questions

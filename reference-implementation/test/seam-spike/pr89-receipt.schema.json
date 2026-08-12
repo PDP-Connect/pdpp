@@ -1,5 +1,42 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "case": {
+      "additionalProperties": false,
+      "properties": {
+        "case_output_digest": { "$ref": "#/$defs/digest" },
+        "evidence_digest": { "$ref": "#/$defs/digest" },
+        "fixtures_digest": { "$ref": "#/$defs/digest" },
+        "implementation_inputs_digest": { "$ref": "#/$defs/digest" },
+        "oracle_code": {
+          "enum": [
+            "authorization_state.unsupported_legacy_shape",
+            "context_resolved",
+            "equal",
+            "gnap_map",
+            "partial_approval",
+            "races_and_refresh",
+            "response_only"
+          ]
+        },
+        "status": { "const": "pass" },
+        "terminal_events_digest": { "$ref": "#/$defs/digest" },
+        "test_file_digest": { "$ref": "#/$defs/digest" }
+      },
+      "required": [
+        "case_output_digest",
+        "evidence_digest",
+        "fixtures_digest",
+        "implementation_inputs_digest",
+        "oracle_code",
+        "status",
+        "terminal_events_digest",
+        "test_file_digest"
+      ],
+      "type": "object"
+    },
+    "digest": { "pattern": "^sha256:[a-f0-9]{64}$", "type": "string" }
+  },
   "additionalProperties": false,
   "properties": {
     "assertions": {
@@ -14,11 +51,11 @@
       },
       "required": [
         "authenticated_http_introspection",
-        "response_only_enforcement",
+        "fresh_authorization_required",
         "no_in_process_fallback",
         "postgresql_races",
         "refresh_family_revoked_on_replay",
-        "fresh_authorization_required"
+        "response_only_enforcement"
       ],
       "type": "object"
     },
@@ -34,15 +71,7 @@
         "case-6": { "$ref": "#/$defs/case" },
         "case-7": { "$ref": "#/$defs/case" }
       },
-      "required": [
-        "case-1",
-        "case-2",
-        "case-3",
-        "case-4",
-        "case-5",
-        "case-6",
-        "case-7"
-      ],
+      "required": ["case-1", "case-2", "case-3", "case-4", "case-5", "case-6", "case-7"],
       "type": "object"
     },
     "clock": { "const": "2026-08-11T12:00:00Z" },
@@ -56,14 +85,11 @@
         "authorization_context_composition": { "const": "pass" },
         "binding_separation": { "const": "pass" }
       },
-      "required": [
-        "binding_separation",
-        "approved_authorization_shape",
-        "authorization_context_composition"
-      ],
+      "required": ["approved_authorization_shape", "authorization_context_composition", "binding_separation"],
       "type": "object"
     },
-    "fixtures_digest": { "pattern": "^sha256:[a-f0-9]{64}$", "type": "string" },
+    "evidence_tree_digest": { "$ref": "#/$defs/digest" },
+    "fixtures_digest": { "$ref": "#/$defs/digest" },
     "hardening": {
       "additionalProperties": false,
       "properties": {
@@ -74,59 +100,35 @@
         "security_profile_floor": { "const": "deferred" }
       },
       "required": [
-        "refresh_rotation",
         "code_reuse_revocation",
         "dpop",
         "keyless_recovery",
+        "refresh_rotation",
         "security_profile_floor"
       ],
       "type": "object"
     },
-    "relevant_file_tree_digest": {
-      "pattern": "^sha256:[a-f0-9]{64}$",
-      "type": "string"
-    },
-    "response_envelopes_digest": {
-      "pattern": "^sha256:[a-f0-9]{64}$",
-      "type": "string"
-    },
-    "schema": { "const": "pdpp.pr89.receipt.v1" },
+    "implementation_inputs_digest": { "$ref": "#/$defs/digest" },
+    "relevant_file_tree_digest": { "$ref": "#/$defs/digest" },
+    "response_envelopes_digest": { "$ref": "#/$defs/digest" },
+    "schema": { "const": "pdpp.pr89.receipt.v2" },
     "undecided_common_schemas": { "const": true }
   },
   "required": [
-    "schema",
-    "command",
-    "clock",
-    "backend",
-    "relevant_file_tree_digest",
-    "fixtures_digest",
-    "response_envelopes_digest",
-    "cases",
     "assertions",
+    "backend",
+    "cases",
+    "clock",
+    "command",
     "decisions",
-    "undecided_common_schemas",
-    "hardening"
+    "evidence_tree_digest",
+    "fixtures_digest",
+    "hardening",
+    "implementation_inputs_digest",
+    "relevant_file_tree_digest",
+    "response_envelopes_digest",
+    "schema",
+    "undecided_common_schemas"
   ],
-  "type": "object",
-  "$defs": {
-    "case": {
-      "additionalProperties": false,
-      "properties": {
-        "oracle_code": {
-          "enum": [
-            "equal",
-            "partial_approval",
-            "context_resolved",
-            "response_only",
-            "races_and_refresh",
-            "authorization_state.unsupported_legacy_shape",
-            "gnap_map"
-          ]
-        },
-        "status": { "enum": ["pass", "fail", "not_demonstrated"] }
-      },
-      "required": ["status", "oracle_code"],
-      "type": "object"
-    }
-  }
+  "type": "object"
 }

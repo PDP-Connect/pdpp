@@ -332,30 +332,58 @@ also outside this spike and are reported separately.
 
 The strict target command writes a receipt to
 `reference-implementation/test/seam-spike/artifacts/pr89-receipt.json`.
-The receipt is excluded from the relevant-file tree digest. The digest covers
-the sorted files under `reference-implementation/test/seam-spike/`, excluding
-the receipt itself and other generated artifacts. It is a digest of relevant
-files, not a self-referential commit or source revision.
+The receipt and per-case evidence files are generated artifacts. They are
+excluded from the relevant-file tree digest. That digest covers the exact test
+files, fixtures, tested implementation inputs, receipt tools, execution
+authority, workflow, package metadata, and lockfile listed by the runner. It is
+not a self-referential commit or source revision.
+
+Each case runs in a separate `node:test` process with the structured accounting
+reporter. The runner records the exact passing terminal test events. Cases 1
+through 4 must also write a fresh case output to the absolute path supplied in
+`PDPP_PR89_CASE_OUTPUT_PATH`. The exact output contract is:
+
+```json
+{
+  "schema": "pdpp.pr89.case-output.v1",
+  "case_id": "case-3",
+  "oracle_code": "context_resolved",
+  "observations": ["authenticated_http_introspection"],
+  "response_envelopes": [{ "name": "valid", "status": 200 }]
+}
+```
+
+The runner requires the closed observation set for that case, not the single
+illustrative row above. Observations must be sorted and unique. Cases 2 through
+4 must include nonempty, stable, secret-free response projections. Outputs must
+not include access tokens, refresh tokens, authorization headers, credentials,
+dynamic local ports, or other secrets. Missing test files, fixtures, terminal
+events, or required case outputs fail before receipt generation.
 
 Required schema:
 
 ```json
 {
-  "schema": "pdpp.pr89.receipt.v1",
+  "schema": "pdpp.pr89.receipt.v2",
   "command": "pnpm --filter pdpp-reference-implementation test:seam:pr89 -- --backend postgresql",
   "clock": "2026-08-11T12:00:00Z",
   "backend": "postgresql",
   "relevant_file_tree_digest": "sha256:...",
   "fixtures_digest": "sha256:...",
+  "implementation_inputs_digest": "sha256:...",
+  "evidence_tree_digest": "sha256:...",
   "response_envelopes_digest": "sha256:...",
   "cases": {
-    "case-1": { "status": "pass", "oracle_code": "equal" },
-    "case-2": { "status": "pass", "oracle_code": "partial_approval" },
-    "case-3": { "status": "pass", "oracle_code": "context_resolved" },
-    "case-4": { "status": "pass", "oracle_code": "response_only" },
-    "case-5": { "status": "pass", "oracle_code": "races_and_refresh" },
-    "case-6": { "status": "pass", "oracle_code": "authorization_state.unsupported_legacy_shape" },
-    "case-7": { "status": "pass", "oracle_code": "gnap_map" }
+    "case-1": {
+      "status": "pass",
+      "oracle_code": "equal",
+      "case_output_digest": "sha256:...",
+      "evidence_digest": "sha256:...",
+      "fixtures_digest": "sha256:...",
+      "implementation_inputs_digest": "sha256:...",
+      "terminal_events_digest": "sha256:...",
+      "test_file_digest": "sha256:..."
+    }
   },
   "assertions": {
     "authenticated_http_introspection": true,
@@ -382,14 +410,16 @@ Required schema:
 ```
 
 The CI job `pr89-seam-receipt` runs the receipt checker with no network access.
-The checker requires canonical key ordering, exactly these seven case keys and
-status values (`pass`, `fail`, or `not_demonstrated`), the exact oracle codes,
-the PostgreSQL assertion, the three decision keys, and
-`undecided_common_schemas: true`. It rejects draft or planned statuses,
-missing digests, a receipt digest that includes itself, duplicated approved
-rights in supplementary context, any in-process fallback marker, and an
-invented pass for deferred controls. CI runs the checker and fails the job on
-any mismatch.
+The checker rebuilds the complete receipt from all seven canonical evidence
+files and current repository inputs. It requires the exact case keys, passing
+status, oracle codes, PostgreSQL assertion, three decision keys, and
+`undecided_common_schemas: true`. It recomputes every receipt, fixture,
+implementation-input, test-file, test-event, case-output, evidence-tree, and
+response-envelope digest. It rejects missing evidence, stale inputs,
+duplicated approved rights in supplementary context, in-process fallback
+markers, secret-bearing response projections, and invented passes for deferred
+controls. CI runs real PostgreSQL cases, generates the receipt, validates it,
+and fails if either execution or validation fails.
 
 ## Commands and ownership
 
