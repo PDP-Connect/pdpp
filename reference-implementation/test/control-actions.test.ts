@@ -253,6 +253,9 @@ async function withHarness(
     rsPort: 0,
     ...extraOptions,
   })) as TestServer;
+  // Control-action tests drive runs explicitly; background dispatch would race
+  // those assertions after a runnable connector is registered.
+  server.schedulerManager?.stop?.();
   const asUrl = `http://localhost:${server.asPort}`;
   const spotifyManifest = JSON.parse(
     readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
