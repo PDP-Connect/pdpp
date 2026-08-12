@@ -231,6 +231,46 @@ test("apple_contacts integration: a second run emits a tombstone for a server-si
   }
 });
 
+test("apple_contacts integration: an unchanged incremental sync does not prove an empty group inventory", async () => {
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    server.contacts.set("erin", {
+      uid: "erin",
+      href: "/addressbooks/owner/card/erin.vcf",
+      vcard: buildVCard({ uid: "erin", fn: "Erin Example", categories: ["Friends"] }),
+    });
+
+    const first = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+    const firstState = first.messages.findLast(
+      (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "contacts"
+    );
+    assert.ok(firstState);
+    assert.ok(first.messages.some((m) => m.type === "STATE" && m.stream === "contact_groups"));
+
+    const second = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage({ contacts: firstState.cursor }),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+
+    assert.equal(recordsOf(second.messages, "contact_groups").length, 0);
+    assert.equal(second.messages.some((m) => m.type === "STATE" && m.stream === "contact_groups"), false);
+    assert.equal(
+      second.messages.some((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contact_groups"),
+      false,
+      "an unchanged delta is not a full group inventory"
+    );
+  } finally {
+    await server.close();
+  }
+});
+
 test("apple_contacts integration: fails cleanly on rejected credentials", async () => {
   const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
   try {

@@ -272,7 +272,7 @@ async function resolveSyncResult(args: {
   fetchImpl: DiscoveryFetch;
   priorSyncToken: string | undefined;
   trustedOrigins: string[];
-}): Promise<Awaited<ReturnType<typeof syncCollectionReport>>> {
+}): Promise<{ result: Awaited<ReturnType<typeof syncCollectionReport>>; fullBoundary: boolean }> {
   const { bookUrl, authHeader, fetchImpl, trustedOrigins, priorSyncToken } = args;
   const first = await syncCollectionReport({
     bookUrl,
@@ -282,9 +282,12 @@ async function resolveSyncResult(args: {
     priorSyncToken: priorSyncToken ?? "",
   });
   if (first.supportsSyncCollection && first.syncToken === "" && priorSyncToken) {
-    return await syncCollectionReport({ bookUrl, authHeader, fetchImpl, trustedOrigins, priorSyncToken: "" });
+    return {
+      result: await syncCollectionReport({ bookUrl, authHeader, fetchImpl, trustedOrigins, priorSyncToken: "" }),
+      fullBoundary: true,
+    };
   }
-  return first;
+  return { result: first, fullBoundary: priorSyncToken === undefined };
 }
 
 /** Emit the address_books entity record for this book, when requested,
@@ -321,6 +324,7 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   contactsCovered: number;
   covered: boolean;
   groupsEmitted: number;
+  groupsBoundaryEstablished: boolean;
   hadUnparseableResource: boolean;
 }> {
   const {
@@ -358,7 +362,12 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     throw classifyCardDavRequestFailure(err, { retryableByDefault: true });
   });
 
-  const supportsSync = syncResult.supportsSyncCollection;
+  const { result: resolvedSyncResult, fullBoundary } = syncResult;
+  const supportsSync = resolvedSyncResult.supportsSyncCollection;
+  // An incremental sync reports only changes, so its empty resource list is
+  // not an empty inventory. Only the initial sync (no prior token) or the
+  // non-incremental fallback establishes the full contact boundary.
+  const groupsBoundaryEstablished = !supportsSync || fullBoundary;
   const bookCovered = await emitAddressBookRecordIfRequested({ book, bookCursor, requested, emitRecord, supportsSync });
 
   const fingerprintState =
@@ -391,10 +400,10 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   };
 
   if (supportsSync) {
-    for (const resource of syncResult.resources) {
+      for (const resource of resolvedSyncResult.resources) {
       await emitContactRecord(resource);
     }
-    for (const deletedHref of syncResult.deletedHrefs) {
+    for (const deletedHref of resolvedSyncResult.deletedHrefs) {
       if (requested.has("contacts")) {
         await emitRecord("contacts", contactTombstone(book.url, deletedHref));
       }
@@ -438,14 +447,16 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     // after the source enumeration and derivation complete successfully;
     // this lets a genuine zero-group result prove coverage without turning a
     // failed or unattempted scan into proof.
-    await emit({ type: "STATE", stream: "contact_groups", cursor: { fetched_at: nowIso() } });
+    if (groupsBoundaryEstablished) {
+      await emit({ type: "STATE", stream: "contact_groups", cursor: { fetched_at: nowIso() } });
+    }
   }
 
   const contactsState =
     (newState.contacts as Record<string, { sync_token?: string; fingerprints?: Record<string, string> }>) ?? {};
   contactsState[bookKey] = {
     fingerprints: entityCursor.toState(),
-    ...(supportsSync && syncResult.syncToken ? { sync_token: syncResult.syncToken } : {}),
+    ...(supportsSync && resolvedSyncResult.syncToken ? { sync_token: resolvedSyncResult.syncToken } : {}),
   };
   newState.contacts = contactsState;
   await emit({ type: "STATE", stream: "contacts", cursor: newState.contacts });
@@ -469,6 +480,7 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     hadUnparseableResource: unparseableResources > 0,
     covered: bookCovered,
     groupsEmitted,
+    groupsBoundaryEstablished,
   };
 }
 
@@ -536,6 +548,7 @@ if (isMainModule(import.meta.url)) {
       let considered = 0;
       let covered = 0;
       let groupsConsidered = 0;
+      let groupsBoundaryEstablished = true;
       let contactsConsidered = 0;
       let contactsCovered = 0;
       let anyUnparseableResource = false;
@@ -547,6 +560,7 @@ if (isMainModule(import.meta.url)) {
           contactsCovered: bookContactsCovered,
           covered: bookCovered,
           groupsEmitted,
+          groupsBoundaryEstablished: bookGroupsBoundaryEstablished,
           hadUnparseableResource,
         } = await collectAddressBook({
           book,
@@ -568,6 +582,7 @@ if (isMainModule(import.meta.url)) {
         // unconditionally emitted, so considered === covered === the exact
         // count emitted for this book (including a genuine zero-group book).
         groupsConsidered += groupsEmitted;
+        groupsBoundaryEstablished = groupsBoundaryEstablished && bookGroupsBoundaryEstablished;
         contactsConsidered += bookContactsConsidered;
         contactsCovered += bookContactsCovered;
         anyUnparseableResource = anyUnparseableResource || hadUnparseableResource;
@@ -603,7 +618,7 @@ if (isMainModule(import.meta.url)) {
         );
       }
 
-      if (requested.has("contact_groups")) {
+      if (requested.has("contact_groups") && groupsBoundaryEstablished) {
         await emit(buildFullScanCoverageMessage("contact_groups", groupsConsidered));
       }
 
