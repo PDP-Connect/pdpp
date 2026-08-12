@@ -680,6 +680,7 @@ CREATE TABLE IF NOT EXISTS tokens (
 
 CREATE TABLE IF NOT EXISTS consent_exchange_codes (
   code_hash      TEXT PRIMARY KEY,
+  proof_hash     TEXT,
   token_id       TEXT NOT NULL,
   created_at     TEXT NOT NULL,
   expires_at     TEXT NOT NULL,
@@ -5058,6 +5059,7 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   );
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "pending_consents", "last_polled_at", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "owner_device_auth", "approval_id", "TEXT"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "consent_exchange_codes", "proof_hash", "TEXT"));
   // Add the v0.1 refresh-family columns without reconstructing legacy token
   // state. The fail-closed migration below revokes families and bound bearers
   // that lack the new linkage, so they require fresh authorization.

@@ -977,11 +977,14 @@ export async function bootstrapPostgresSchema({
         ON tokens(client_id);
       CREATE TABLE IF NOT EXISTS consent_exchange_codes (
         code_hash TEXT PRIMARY KEY,
+        proof_hash TEXT,
         token_id TEXT NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE,
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         redeemed_at TEXT
       );
+      ALTER TABLE consent_exchange_codes
+        ADD COLUMN IF NOT EXISTS proof_hash TEXT;
       CREATE INDEX IF NOT EXISTS idx_pg_consent_exchange_codes_expiry
         ON consent_exchange_codes(expires_at);
 

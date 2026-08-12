@@ -739,6 +739,7 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "authConnectorsGetManifestById",
     // Auth — consent_exchange_codes
     "authConsentExchangeCodesGetForRedemption",
+    "authConsentExchangeCodesInvalidateOutstandingByToken",
     "authConsentExchangeCodesInsert",
     "authConsentExchangeCodesMarkRedeemed",
     // Auth — grants

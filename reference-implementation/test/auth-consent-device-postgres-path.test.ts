@@ -81,9 +81,24 @@ const POSTGRES_AUTH_INSTANCE_ID = "cin_pg_auth_source_snapshot_0811";
 const FORCED_POSTGRES_AFTER_TOKEN_INSERT_RE = /forced postgres after_token_insert/;
 const GRANT_BINDING_RE = /Grant is malformed|grant/i;
 const PROJECTED_DECLARATION_VERSION_RE = /^reference\.legacy-connector-projection\.v1:sha256:[0-9a-f]{64}$/;
-
 function loadSpotifyManifest() {
   return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+}
+
+async function upsertPostgresAuthFixtureInstance(): Promise<void> {
+  const now = new Date().toISOString();
+  await createPostgresConnectorInstanceStore().upsert({
+    connectorId: "spotify",
+    connectorInstanceId: POSTGRES_AUTH_INSTANCE_ID,
+    createdAt: now,
+    displayName: "Postgres auth path fixture",
+    ownerSubjectId: "owner_local",
+    sourceBinding: { fixture: POSTGRES_AUTH_INSTANCE_ID },
+    sourceBindingKey: POSTGRES_AUTH_INSTANCE_ID,
+    sourceKind: "manual",
+    status: "active",
+    updatedAt: now,
+  });
 }
 
 if (POSTGRES_URL) {
@@ -111,20 +126,14 @@ if (POSTGRES_URL) {
         registration_mode: "pre_registered_public",
       },
     ]);
-    const now = new Date().toISOString();
-    await createPostgresConnectorInstanceStore().upsert({
-      connectorId: "spotify",
-      connectorInstanceId: POSTGRES_AUTH_INSTANCE_ID,
-      createdAt: now,
-      displayName: "Postgres auth path fixture",
-      ownerSubjectId: "owner_local",
-      sourceBinding: { fixture: POSTGRES_AUTH_INSTANCE_ID },
-      sourceBindingKey: POSTGRES_AUTH_INSTANCE_ID,
-      sourceKind: "manual",
-      status: "active",
-      updatedAt: now,
-    });
+    await upsertPostgresAuthFixtureInstance();
     setupOk = true;
+  });
+
+  test.beforeEach(async () => {
+    if (setupOk) {
+      await upsertPostgresAuthFixtureInstance();
+    }
   });
 
   test.after(async () => {
@@ -490,9 +499,12 @@ if (POSTGRES_URL) {
       token: approved.token,
     });
     const attempts = await Promise.all(Array.from({ length: 8 }, () => consumeConsentExchangeCode(code)));
-    assert.ok(attempts.every((attempt) => attempt.ok));
-    assert.deepEqual(new Set(attempts.map((attempt) => attempt.token)), new Set([approved.token]));
-    assert.deepEqual(new Set(attempts.map((attempt) => attempt.grantId)), new Set([approved.grant.grant_id]));
+    const successes = attempts.filter((attempt) => attempt.ok);
+    const consumed = attempts.filter((attempt) => !attempt.ok && attempt.reason === "consumed");
+    assert.equal(successes.length, 1);
+    assert.equal(consumed.length, 7);
+    assert.equal(successes[0]?.token, approved.token);
+    assert.equal(successes[0]?.grantId, approved.grant.grant_id);
     const stored = await postgresQuery<{ count: string; redeemed_count: string }>(
       `SELECT COUNT(*)::text AS count,
               COUNT(redeemed_at)::text AS redeemed_count
@@ -501,6 +513,86 @@ if (POSTGRES_URL) {
       [approved.token]
     );
     assert.deepEqual(stored.rows[0], { count: "1", redeemed_count: "1" });
+
+    const replay = await consumeConsentExchangeCode(code);
+    assert.equal(replay.ok, false);
+    assert.equal(replay.reason, "consumed");
+  });
+
+  test("consent handoff: Postgres response-loss retry succeeds only with the same bound proof", async () => {
+    const manifest = loadSpotifyManifest();
+    const initiated = await initiateGrant({
+      authorization_details: [
+        {
+          access_mode: "continuous",
+          purpose_code: "https://pdpp.org/purpose/personalization",
+          source: { id: manifest.connector_id, kind: "connector" },
+          streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
+          type: "https://pdpp.org/data-access",
+        },
+      ],
+      client_id: CONSOLE_CLIENT_ID,
+    });
+    const deviceCode = parsePendingConsentRequestUri(initiated.request_uri);
+    assert.ok(deviceCode);
+    const pending = await getPendingConsent(deviceCode, { finalizeReview: true, subjectId: "owner_local" });
+    assert.ok(pending?.reviewRevision);
+    const approved = await approveGrant(deviceCode, "owner_local", {
+      approval_review_revision: pending.reviewRevision,
+    });
+    const proof = "postgres-bound-proof";
+    const code = await createConsentExchangeCode({
+      grant: approved.grant,
+      grantId: approved.grant.grant_id as string,
+      recoveryProof: proof,
+      token: approved.token,
+    });
+    const first = await consumeConsentExchangeCode(code, proof);
+    assert.equal(first.ok, true);
+    const retry = await consumeConsentExchangeCode(code, proof);
+    assert.deepEqual(retry, first);
+    const wrongProof = await consumeConsentExchangeCode(code, "wrong-proof");
+    assert.equal(wrongProof.ok, false);
+    assert.equal(wrongProof.reason, "consumed");
+  });
+
+  test("consent handoff: Postgres reissue invalidates older outstanding codes", async () => {
+    const manifest = loadSpotifyManifest();
+    const initiated = await initiateGrant({
+      authorization_details: [
+        {
+          access_mode: "continuous",
+          purpose_code: "https://pdpp.org/purpose/personalization",
+          source: { id: manifest.connector_id, kind: "connector" },
+          streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
+          type: "https://pdpp.org/data-access",
+        },
+      ],
+      client_id: CONSOLE_CLIENT_ID,
+    });
+    const deviceCode = parsePendingConsentRequestUri(initiated.request_uri);
+    assert.ok(deviceCode);
+    const pending = await getPendingConsent(deviceCode, { finalizeReview: true, subjectId: "owner_local" });
+    assert.ok(pending?.reviewRevision);
+    const approved = await approveGrant(deviceCode, "owner_local", {
+      approval_review_revision: pending.reviewRevision,
+    });
+    const firstCode = await createConsentExchangeCode({
+      grant: approved.grant,
+      grantId: approved.grant.grant_id as string,
+      token: approved.token,
+    });
+    const secondCode = await createConsentExchangeCode({
+      grant: approved.grant,
+      grantId: approved.grant.grant_id as string,
+      token: approved.token,
+    });
+    const first = await consumeConsentExchangeCode(firstCode);
+    assert.equal(first.ok, false);
+    assert.equal(first.reason, "expired");
+    const second = await consumeConsentExchangeCode(secondCode);
+    assert.equal(second.ok, true);
+    assert.equal(second.token, approved.token);
   });
 
   test("consent handoff: Postgres package delivery works and revocation fails closed", async () => {

@@ -199,6 +199,7 @@ export const CASE_DEFINITIONS = {
     fixturePaths: ["reference-implementation/test/seam-spike/fixtures/pr89/legacy-grant-v01.bytes"],
     implementationInputPaths: [
       "reference-implementation/server/auth.ts",
+      "reference-implementation/server/credential-response-cache.ts",
       "reference-implementation/server/db.ts",
       "reference-implementation/server/postgres-storage.ts",
       "reference-implementation/server/queries/auth/oauth-authorization-codes/consume-code.sql",
@@ -316,8 +317,10 @@ export const CASE_DEFINITIONS = {
     ],
     observations: [
       "approval_commit_handoff_resume",
+      "credential_response_no_store",
       "package_handoff_and_revocation",
       "postgresql_concurrent_redemption",
+      "single_use_bound_recovery",
       "sqlite_restart_and_response_loss",
     ],
     oracleCode: "durable_handoff",

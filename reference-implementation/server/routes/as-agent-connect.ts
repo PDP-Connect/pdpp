@@ -25,6 +25,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { exec, getOne, referenceQueries } from "../../lib/db.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
 import type { PdppErrorFn, RouteArg } from "./_route-contract.ts";
+import { applyCredentialResponseNoStoreHeaders } from "../credential-response-cache.ts";
 
 // ─── Attempt store ───────────────────────────────────────────────────────────
 
@@ -383,7 +384,7 @@ interface RouteRequest {
 
 interface RouteResponse {
   json: (body: unknown) => unknown;
-  setHeader?: (name: string, value: string) => unknown;
+  setHeader: (name: string, value: string) => unknown;
   status: (code: number) => RouteResponse;
 }
 
@@ -541,7 +542,6 @@ export function mountAsAgentConnectToken(app: AppLike, ctx: MountAsAgentConnectT
       if (!pollingCode) {
         return ctx.pdppError(res, 401, "invalid_grant", "Unknown agent-connect polling handle");
       }
-      res.setHeader?.("Cache-Control", "no-store");
       const result = await ctx.agentConnectAttemptStore.redeem(attemptId, pollingCode);
       if (result.outcome === "missing") {
         return ctx.pdppError(res, 401, "invalid_grant", "Unknown agent-connect polling handle");
@@ -558,6 +558,7 @@ export function mountAsAgentConnectToken(app: AppLike, ctx: MountAsAgentConnectT
         const error = buildAgentConnectError(result.status);
         return ctx.pdppError(res, result.status === "denied" ? 403 : 400, error.error, error.error_description);
       }
+      applyCredentialResponseNoStoreHeaders(res);
       return res.json(result.body);
     } catch (err) {
       return ctx.handleError(res, err);

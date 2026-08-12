@@ -38,6 +38,7 @@ import type { AsDeviceTokenExchangeStoreResult } from "../../operations/as-devic
 import { executeAsDeviceTokenExchange } from "../../operations/as-device-token-exchange/index.ts";
 import type { AsIntrospectInfo } from "../../operations/as-introspect/index.ts";
 import { executeAsIntrospect } from "../../operations/as-introspect/index.ts";
+import { applyCredentialResponseNoStoreHeaders } from "../credential-response-cache.ts";
 import type { PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -280,8 +281,7 @@ function buildGrantIdPayload(token: {
 }
 
 function respondWithTokenJson(res: RouteResponse, body: unknown): unknown {
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Pragma", "no-cache");
+  applyCredentialResponseNoStoreHeaders(res);
   return res.json(body);
 }
 

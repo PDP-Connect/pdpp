@@ -253,6 +253,8 @@ test("security: harden consent token handoff", async (t) => {
         method: "POST",
       });
       assert.equal(jsonResp.status, 200);
+      assert.equal(jsonResp.headers.get("cache-control"), "no-store");
+      assert.equal(jsonResp.headers.get("pragma"), "no-cache");
       const jsonBody = (await jsonResp.json()) as ApproveJsonResponse;
       assert.equal(typeof jsonBody.token, "string", "JSON branch SHALL still return the bearer");
       assert.ok(jsonBody.token.length > 0);
@@ -287,6 +289,8 @@ test("security: harden consent token handoff", async (t) => {
       });
       assert.equal(htmlResp.status, 200);
       const htmlText = await htmlResp.text();
+      assert.equal(htmlResp.headers.get("cache-control"), "no-store");
+      assert.equal(htmlResp.headers.get("pragma"), "no-cache");
       assert.ok(htmlText.includes("<html"), "HTML branch SHALL render an HTML document");
       // The bearer minted for the JSON approval is unrelated to this approval,
       // but the bearer minted for THIS approval must not appear anywhere.
@@ -307,6 +311,8 @@ test("security: harden consent token handoff", async (t) => {
         method: "POST",
       });
       assert.equal(exchangeResp.status, 200);
+      assert.equal(exchangeResp.headers.get("cache-control"), "no-store");
+      assert.equal(exchangeResp.headers.get("pragma"), "no-cache");
       const exchangeBody = (await exchangeResp.json()) as ExchangeResponse;
       assert.equal(typeof exchangeBody.token, "string");
       assert.ok(exchangeBody.token.length > 0);
@@ -337,7 +343,7 @@ test("security: harden consent token handoff", async (t) => {
     });
   });
 
-  await t.test("a repeated exchange redemption returns the same durable result", async () => {
+  await t.test("manual HTML exchange is single-use without exposing recovery proof", async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await initiateGrantRequest(asUrl, spotifyManifest);
       const review = await fetch(`${asUrl}/consent/review`, {
@@ -381,8 +387,44 @@ test("security: harden consent token handoff", async (t) => {
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
-      assert.equal(second.status, 200);
-      assert.deepEqual((await second.json()) as ExchangeResponse, firstBody);
+      assert.equal(second.status, 410);
+      assert.equal((await second.text()).includes(firstBody.token), false);
+    });
+  });
+
+  await t.test("response-loss retry with the same out-of-band proof returns the same durable result", async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const initiate = await initiateGrantRequest(asUrl, spotifyManifest);
+      const response = await approveReviewedJson(asUrl, initiate.request_uri);
+      assert.equal(response.status, 200);
+      const approved = (await response.json()) as ApproveJsonResponse;
+      const proof = "same-proof-bound-to-intended-client";
+      const code = await createConsentExchangeCode({
+        grant: approved.grant as Record<string, unknown>,
+        grantId: approved.grant_id,
+        recoveryProof: proof,
+        token: approved.token,
+      });
+      const first = await fetch(`${asUrl}/consent/exchange`, {
+        body: JSON.stringify({ code, proof }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(first.status, 200);
+      const firstBody = (await first.json()) as ExchangeResponse;
+      const retry = await fetch(`${asUrl}/consent/exchange`, {
+        body: JSON.stringify({ code, proof }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(retry.status, 200);
+      assert.deepEqual((await retry.json()) as ExchangeResponse, firstBody);
+      const wrongProof = await fetch(`${asUrl}/consent/exchange`, {
+        body: JSON.stringify({ code, proof: "wrong-proof" }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(wrongProof.status, 410);
     });
   });
 
@@ -401,13 +443,41 @@ test("security: harden consent token handoff", async (t) => {
           })
         )
       );
-      assert.ok(responses.every((response) => response.status === 200));
-      const bodies = (await Promise.all(responses.map((response) => response.json()))) as ExchangeResponse[];
-      assert.equal(new Set(bodies.map((body) => body.token)).size, 1);
+      assert.equal(responses.filter((response) => response.status === 200).length, 1);
+      assert.equal(responses.filter((response) => response.status === 410).length, 7);
+      const success = responses.find((response) => response.status === 200);
+      assert.ok(success);
+      const body = (await success.json()) as ExchangeResponse;
+      assert.ok(body.token);
       const stored = getDb()
         .prepare("SELECT COUNT(*) AS n, COUNT(redeemed_at) AS redeemed FROM consent_exchange_codes")
         .get() as { n: number; redeemed: number };
       assert.deepEqual(stored, { n: 1, redeemed: 1 });
+    });
+  });
+
+  await t.test("reissuing a handoff invalidates older outstanding exchange codes", async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const initiate = await initiateGrantRequest(asUrl, spotifyManifest);
+      const response = await approveReviewedJson(asUrl, initiate.request_uri);
+      assert.equal(response.status, 200);
+      const approved = (await response.json()) as ApproveJsonResponse;
+      const firstCode = await createConsentExchangeCode({
+        grant: approved.grant as Record<string, unknown>,
+        grantId: approved.grant_id,
+        token: approved.token,
+      });
+      const secondCode = await createConsentExchangeCode({
+        grant: approved.grant as Record<string, unknown>,
+        grantId: approved.grant_id,
+        token: approved.token,
+      });
+      const first = await consumeConsentExchangeCode(firstCode);
+      assert.equal(first.ok, false);
+      assert.equal(first.reason, "expired");
+      const second = await consumeConsentExchangeCode(secondCode);
+      assert.equal(second.ok, true);
+      assert.equal(second.token, approved.token);
     });
   });
 

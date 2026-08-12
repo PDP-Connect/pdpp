@@ -18,6 +18,7 @@
 
 export interface AsConsentExchangeInput {
   readonly code: string | null | undefined;
+  readonly proof?: string | null | undefined;
 }
 
 export type AsConsentExchangeConsumeResult =
@@ -32,7 +33,8 @@ export type AsConsentExchangeConsumeResult =
 
 export interface AsConsentExchangeDependencies {
   consumeConsentExchangeCode: (
-    code: string
+    code: string,
+    proof?: string | null | undefined
   ) => Promise<AsConsentExchangeConsumeResult> | AsConsentExchangeConsumeResult;
 }
 
@@ -67,7 +69,7 @@ export async function executeAsConsentExchange(
       status: 400,
     };
   }
-  const result = await deps.consumeConsentExchangeCode(input.code);
+  const result = await deps.consumeConsentExchangeCode(input.code, input.proof);
   if (!result.ok) {
     if (result.reason === "expired") {
       return {

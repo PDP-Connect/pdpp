@@ -228,6 +228,7 @@ interface ConsentExchangeRow extends DbRow {
   expires_at: string;
   grant_id: string | null;
   package_id: string | null;
+  proof_hash: string | null;
   redeemed_at: string | null;
   token_expires_at: string | null;
   token_id: string;
@@ -9938,15 +9939,24 @@ function consentExchangeTokenIsActive(row: ConsentExchangeRow): boolean {
   );
 }
 
+function parseConsentExchangeCodeCredential(code: string): { codeHash: string } | null {
+  if (!/^cex_[0-9a-f]{64}$/.test(code)) {
+    return null;
+  }
+  return { codeHash: base64UrlSha256(code) };
+}
+
 export async function createConsentExchangeCode({
   grantId,
   token,
   grant,
   ttlMs = CONSENT_EXCHANGE_CODE_TTL_MS,
+  recoveryProof,
 }: {
   grantId: string;
   token: string;
   grant: Record<string, unknown>;
+  recoveryProof?: string;
   ttlMs?: number;
 }): Promise<string> {
   if (!(grantId && token && isRecord(grant) && (grant.grant_id === grantId || grant.package_id === grantId))) {
@@ -9957,24 +9967,108 @@ export async function createConsentExchangeCode({
   if (!tokenInfo.active || (isPackage ? tokenInfo.grant_package_id !== grantId : tokenInfo.grant_id !== grantId)) {
     throw new Error("createConsentExchangeCode requires an active token bound to the approved result");
   }
-  const code = `cex_${randomBytes(32).toString("hex")}`;
-  const codeHash = base64UrlSha256(code);
+  const codeSecret = `cex_${randomBytes(32).toString("hex")}`;
+  const codeHash = base64UrlSha256(codeSecret);
+  const proofHash = typeof recoveryProof === "string" && recoveryProof.length > 0 ? base64UrlSha256(recoveryProof) : null;
   const createdAt = nowIso();
   const expiresAt = new Date(Date.now() + ttlMs).toISOString();
   if (isPostgresStorageBackend()) {
-    await postgresQuery(
-      `INSERT INTO consent_exchange_codes(
-         code_hash, token_id, created_at, expires_at, redeemed_at
-       ) VALUES($1, $2, $3, $4, NULL)`,
-      [codeHash, token, createdAt, expiresAt]
-    );
+    await withPostgresTransaction(async (client) => {
+      await client.query(
+        `UPDATE consent_exchange_codes
+            SET redeemed_at = $1,
+                expires_at = $1
+          WHERE token_id = $2
+            AND redeemed_at IS NULL`,
+        [createdAt, token]
+      );
+      await client.query(
+        `INSERT INTO consent_exchange_codes(
+           code_hash, proof_hash, token_id, created_at, expires_at, redeemed_at
+         ) VALUES($1, $2, $3, $4, $5, NULL)`,
+        [codeHash, proofHash, token, createdAt, expiresAt]
+      );
+    });
   } else {
-    exec(referenceQueries.authConsentExchangeCodesInsert, [codeHash, token, createdAt, expiresAt]);
+    transaction(() => {
+      exec(referenceQueries.authConsentExchangeCodesInvalidateOutstandingByToken as MutationQuery, [
+        createdAt,
+        createdAt,
+        token,
+      ]);
+      exec(referenceQueries.authConsentExchangeCodesInsert, [codeHash, proofHash, token, createdAt, expiresAt]);
+    });
   }
-  return code;
+  return codeSecret;
 }
 
-export async function consumeConsentExchangeCode(code: unknown): Promise<{
+function consentExchangeProofMatches(row: ConsentExchangeRow, proofHash: string | null): boolean {
+  if (!row.proof_hash) {
+    return true;
+  }
+  return proofHash === row.proof_hash;
+}
+
+function consentExchangeRedeemedReason(row: ConsentExchangeRow, proofHash: string | null): "consumed" | null {
+  if (!row.redeemed_at) {
+    return null;
+  }
+  return row.proof_hash && consentExchangeProofMatches(row, proofHash) ? null : "consumed";
+}
+
+async function loadPostgresConsentExchangeGrant(
+  client: PostgresTransactionClient,
+  row: ConsentExchangeRow
+): Promise<
+  | { ok: false; reason: "revoked" | "unknown" }
+  | { grant: Record<string, unknown>; grantId?: string; ok: true; packageId?: string }
+> {
+  if (row.grant_id) {
+    const grantResult = await client.query<DbRow>(
+      `SELECT grant_id, grant_json::text AS grant_json
+       FROM grants
+      WHERE grant_id = $1 AND status = 'active'
+      FOR SHARE`,
+      [row.grant_id]
+    );
+    const grantRow = grantResult.rows[0] || null;
+    if (!(grantRow && isNonEmptyString(grantRow.grant_json))) {
+      return { ok: false, reason: "revoked" };
+    }
+    const parsed: unknown = JSON.parse(grantRow.grant_json);
+    if (!isRecord(parsed) || parsed.grant_id !== row.grant_id) {
+      return { ok: false, reason: "unknown" };
+    }
+    return { grant: parsed, grantId: row.grant_id, ok: true };
+  }
+  const packageResult = await client.query<DbRow>(
+    `SELECT package_id
+     FROM grant_packages
+    WHERE package_id = $1 AND status = 'active'
+    FOR SHARE`,
+    [row.package_id]
+  );
+  if (!packageResult.rows[0]) {
+    return { ok: false, reason: "revoked" };
+  }
+  const members = await client.query<GrantPackageMemberRow>(
+    `SELECT gm.grant_id, gm.source_json::text AS source_json
+     FROM grant_package_members gm
+    WHERE gm.package_id = $1
+    ORDER BY gm.added_at, gm.grant_id`,
+    [row.package_id]
+  );
+  if (!row.package_id) {
+    return { ok: false, reason: "unknown" };
+  }
+  return {
+    grant: buildConsentPackageGrant(row.package_id, members.rows),
+    ok: true,
+    packageId: row.package_id,
+  };
+}
+
+export async function consumeConsentExchangeCode(code: unknown, recoveryProof?: unknown): Promise<{
   ok: boolean;
   reason?: string;
   grantId?: string;
@@ -9985,14 +10079,20 @@ export async function consumeConsentExchangeCode(code: unknown): Promise<{
   if (typeof code !== "string" || code.length === 0) {
     return { ok: false, reason: "unknown" };
   }
-  const codeHash = base64UrlSha256(code);
+  const parsedCredential = parseConsentExchangeCodeCredential(code);
+  if (!parsedCredential) {
+    return { ok: false, reason: "unknown" };
+  }
+  const { codeHash } = parsedCredential;
+  const proofHash =
+    typeof recoveryProof === "string" && recoveryProof.length > 0 ? base64UrlSha256(recoveryProof) : null;
   const redeemedAt = nowIso();
   const result = isPostgresStorageBackend()
     ? await withPostgresTransaction(
         // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This transaction deliberately keeps row lock, active-authority validation, envelope reconstruction, and first-redemption transition in one auditable atomic unit.
         async (client) => {
           const selected = await client.query<ConsentExchangeRow>(
-            `SELECT c.code_hash, c.token_id, c.created_at, c.expires_at,
+            `SELECT c.code_hash, c.proof_hash, c.token_id, c.created_at, c.expires_at,
                   c.redeemed_at, t.grant_id, t.package_id,
                   t.revoked AS token_revoked, t.expires_at AS token_expires_at
              FROM consent_exchange_codes c
@@ -10005,56 +10105,22 @@ export async function consumeConsentExchangeCode(code: unknown): Promise<{
           if (!row) {
             return { ok: false as const, reason: "unknown" };
           }
+          if (!consentExchangeProofMatches(row, proofHash)) {
+            return { ok: false as const, reason: row.redeemed_at ? "consumed" : "unknown" };
+          }
           if (new Date(row.expires_at).getTime() <= Date.now()) {
             return { ok: false as const, reason: "expired" };
           }
           if (!consentExchangeTokenIsActive(row)) {
             return { ok: false as const, reason: "revoked" };
           }
-          let grant: Record<string, unknown>;
-          let grantId: string | undefined;
-          let packageId: string | undefined;
-          if (row.grant_id) {
-            const grantResult = await client.query<DbRow>(
-              `SELECT grant_id, grant_json::text AS grant_json
-               FROM grants
-              WHERE grant_id = $1 AND status = 'active'
-              FOR SHARE`,
-              [row.grant_id]
-            );
-            const grantRow = grantResult.rows[0] || null;
-            if (!(grantRow && isNonEmptyString(grantRow.grant_json))) {
-              return { ok: false as const, reason: "revoked" };
-            }
-            const parsed: unknown = JSON.parse(grantRow.grant_json);
-            if (!isRecord(parsed) || parsed.grant_id !== row.grant_id) {
-              return { ok: false as const, reason: "unknown" };
-            }
-            grant = parsed;
-            grantId = row.grant_id;
-          } else {
-            const packageResult = await client.query<DbRow>(
-              `SELECT package_id
-               FROM grant_packages
-              WHERE package_id = $1 AND status = 'active'
-              FOR SHARE`,
-              [row.package_id]
-            );
-            if (!packageResult.rows[0]) {
-              return { ok: false as const, reason: "revoked" };
-            }
-            const members = await client.query<GrantPackageMemberRow>(
-              `SELECT gm.grant_id, gm.source_json::text AS source_json
-               FROM grant_package_members gm
-              WHERE gm.package_id = $1
-              ORDER BY gm.added_at, gm.grant_id`,
-              [row.package_id]
-            );
-            packageId = row.package_id || undefined;
-            if (!packageId) {
-              return { ok: false as const, reason: "unknown" };
-            }
-            grant = buildConsentPackageGrant(packageId, members.rows);
+          const redeemedReason = consentExchangeRedeemedReason(row, proofHash);
+          if (redeemedReason) {
+            return { ok: false as const, reason: redeemedReason };
+          }
+          const loaded = await loadPostgresConsentExchangeGrant(client, row);
+          if (!loaded.ok) {
+            return { ok: false as const, reason: loaded.reason };
           }
           if (!row.redeemed_at) {
             await client.query(
@@ -10063,10 +10129,10 @@ export async function consumeConsentExchangeCode(code: unknown): Promise<{
             );
           }
           return {
-            grant,
+            grant: loaded.grant,
             ok: true as const,
             token: row.token_id,
-            ...(packageId ? { packageId } : { grantId: grantId as string }),
+            ...(loaded.packageId ? { packageId: loaded.packageId } : { grantId: loaded.grantId as string }),
           };
         }
       )
@@ -10077,11 +10143,18 @@ export async function consumeConsentExchangeCode(code: unknown): Promise<{
           if (!row) {
             return { ok: false as const, reason: "unknown" };
           }
+          if (!consentExchangeProofMatches(row, proofHash)) {
+            return { ok: false as const, reason: row.redeemed_at ? "consumed" : "unknown" };
+          }
           if (new Date(row.expires_at).getTime() <= Date.now()) {
             return { ok: false as const, reason: "expired" };
           }
           if (!consentExchangeTokenIsActive(row)) {
             return { ok: false as const, reason: "revoked" };
+          }
+          const redeemedReason = consentExchangeRedeemedReason(row, proofHash);
+          if (redeemedReason) {
+            return { ok: false as const, reason: redeemedReason };
           }
           let grant: Record<string, unknown>;
           let grantId: string | undefined;

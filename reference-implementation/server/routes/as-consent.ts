@@ -32,6 +32,7 @@ import type {
 import { executeAsConsentDecision } from "../../operations/as-consent-decision/index.ts";
 import type { AsConsentExchangeConsumeResult } from "../../operations/as-consent-exchange/index.ts";
 import { executeAsConsentExchange } from "../../operations/as-consent-exchange/index.ts";
+import { applyCredentialResponseNoStoreHeaders } from "../credential-response-cache.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../owner-auth.ts";
 import type { PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import type { ConsentUiRenderer, PendingGrant } from "./as-consent-ui-helpers.ts";
@@ -120,12 +121,14 @@ export interface MountAsConsentContext {
   consentStore: ConsentStore;
   consentUi: ConsentUiRenderer;
   consumeConsentExchangeCode: (
-    code: string
+    code: string,
+    proof?: string | null | undefined
   ) => Promise<AsConsentExchangeConsumeResult> | AsConsentExchangeConsumeResult;
   createConsentExchangeCode: (opts: {
     grantId: string;
     token: string;
     grant: Record<string, unknown>;
+    recoveryProof?: string;
   }) => Promise<string> | string;
   handleError: (res: unknown, err: unknown) => void;
   issueOAuthAuthorizationCodeForDeviceCode: (
@@ -267,6 +270,7 @@ async function dispatchApproveResponse(
   await ctx.agentConnectAttemptStore.complete(approvedRequestUri, { grant, status: "approved", token });
   const wantsJson = req.is("application/json") || req.accepts(["html", "json"]) === "json";
   if (wantsJson) {
+    applyCredentialResponseNoStoreHeaders(res);
     if (isPackage) {
       res.json({ grant, package_id: packageInfo?.package_id ?? grant.grant_id, token });
       return;
@@ -275,6 +279,7 @@ async function dispatchApproveResponse(
     return;
   }
   if (isPackage) {
+    applyCredentialResponseNoStoreHeaders(res);
     res.send(await renderPackageApproveHtml(ctx, grant, packageInfo?.package_id ?? grant.grant_id, token));
     return;
   }
@@ -286,6 +291,7 @@ async function dispatchApproveResponse(
   // at POST /consent/exchange to receive the bearer in a JSON body.
   // Spec: openspec/changes/harden-consent-token-handoff/specs/
   //       reference-implementation-architecture/spec.md
+  applyCredentialResponseNoStoreHeaders(res);
   res.send(await renderApproveHtml(ctx, grant, token));
 }
 
@@ -922,8 +928,12 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
     { contract: "exchangeConsentCode" } as RouteArg<RouteHandler | MiddlewareFn>,
     async (req: RouteRequest, res: RouteResponse): Promise<void> => {
       try {
+        applyCredentialResponseNoStoreHeaders(res);
         const outcome = await executeAsConsentExchange(
-          { code: typeof req.body?.code === "string" ? req.body.code : null },
+          {
+            code: typeof req.body?.code === "string" ? req.body.code : null,
+            proof: typeof req.body?.proof === "string" ? req.body.proof : null,
+          },
           { consumeConsentExchangeCode: ctx.consumeConsentExchangeCode }
         );
         if (outcome.outcome === "success") {
