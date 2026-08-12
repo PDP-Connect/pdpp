@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import tls from "node:tls";
 // biome-ignore lint/correctness/noUnresolvedImports: Node and TypeScript resolve this declared runtime dependency.
@@ -41,6 +42,10 @@ function streamBody(value: string): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function validDeclaration(value: unknown) {
@@ -636,6 +641,73 @@ test("SQLite accepted revisions preserve parsed-content identity and reject equi
   }
 });
 
+test("SQLite accepted revision store migrates the prior table shape idempotently", async () => {
+  const database = new Database(":memory:");
+  const key = { authorityBinding: POINTER, declarationVersion: "opaque:legacy", sourceId: RESOURCE };
+  const canonicalContent = '{"display":{"name":"Legacy"},"streams":["a"]}';
+  try {
+    database.exec(`
+      CREATE TABLE accepted_source_declaration_revisions (
+        authority_binding TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        declaration_version TEXT NOT NULL,
+        canonical_content TEXT NOT NULL,
+        content_fingerprint TEXT NOT NULL,
+        PRIMARY KEY (authority_binding, source_id, declaration_version)
+      );
+    `);
+    database
+      .prepare(
+        `INSERT INTO accepted_source_declaration_revisions
+         (authority_binding, source_id, declaration_version, canonical_content, content_fingerprint)
+         VALUES (?, ?, ?, ?, ?)`
+      )
+      .run(key.authorityBinding, key.sourceId, key.declarationVersion, canonicalContent, sha256(canonicalContent));
+
+    const store = createSqliteAcceptedSourceDeclarationRevisionStore(database);
+    const expectedReference = acceptedRevisionEvidenceReference(key);
+    assert.deepEqual(
+      await store.accept({ ...key, parsedDeclaration: { display: { name: "Legacy" }, streams: ["a"] } }),
+      {
+        accepted: true,
+        acceptedRevisionReference: expectedReference,
+        existing: true,
+      }
+    );
+    assert.deepEqual(
+      await store.accept({ ...key, parsedDeclaration: { display: { name: "Changed" }, streams: ["a"] } }),
+      {
+        accepted: false,
+        reason: "equivocation",
+      }
+    );
+    const migratedReference = (
+      database.prepare("SELECT accepted_revision_reference FROM accepted_source_declaration_revisions") as {
+        get: () => { accepted_revision_reference: string } | undefined;
+      }
+    ).get();
+    assert.deepEqual(migratedReference, { accepted_revision_reference: expectedReference });
+    const migratedColumns = (
+      database.prepare("PRAGMA table_info(accepted_source_declaration_revisions)") as {
+        all: () => Array<{ name: string; notnull: number }>;
+      }
+    ).all();
+    assert.equal(migratedColumns.find((row) => row.name === "accepted_revision_reference")?.notnull, 1);
+
+    const idempotentStore = createSqliteAcceptedSourceDeclarationRevisionStore(database);
+    assert.deepEqual(
+      await idempotentStore.accept({ ...key, parsedDeclaration: { display: { name: "Legacy" }, streams: ["a"] } }),
+      {
+        accepted: true,
+        acceptedRevisionReference: expectedReference,
+        existing: true,
+      }
+    );
+  } finally {
+    database.close();
+  }
+});
+
 test("standalone trust service persists only a retrieved, source-matching declaration", async () => {
   const database = new Database(":memory:");
   try {
@@ -717,6 +789,87 @@ if (POSTGRES_URL) {
         const pool = new Pool({ connectionString: databaseUrl });
         try {
           await immutableRevisionCases(await createPostgresAcceptedSourceDeclarationRevisionStore(pool));
+        } finally {
+          await pool.end();
+        }
+      }
+    );
+  });
+
+  test("PostgreSQL accepted revision store migrates the prior table shape idempotently", async () => {
+    postgresCounter += 1;
+    await withTemporaryPostgresDatabase(
+      {
+        connectionString: POSTGRES_URL,
+        databaseName: `pdpp_source_declaration_trust_${process.pid}_${postgresCounter}`,
+      },
+      async (databaseUrl) => {
+        const pool = new Pool({ connectionString: databaseUrl });
+        const key = { authorityBinding: POINTER, declarationVersion: "opaque:legacy", sourceId: RESOURCE };
+        const canonicalContent = '{"display":{"name":"Legacy"},"streams":["a"]}';
+        try {
+          await pool.query(`
+            CREATE TABLE accepted_source_declaration_revisions (
+              authority_binding TEXT NOT NULL,
+              source_id TEXT NOT NULL,
+              declaration_version TEXT NOT NULL,
+              canonical_content TEXT NOT NULL,
+              content_fingerprint TEXT NOT NULL,
+              PRIMARY KEY (authority_binding, source_id, declaration_version)
+            );
+          `);
+          await pool.query(
+            `INSERT INTO accepted_source_declaration_revisions
+             (authority_binding, source_id, declaration_version, canonical_content, content_fingerprint)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [key.authorityBinding, key.sourceId, key.declarationVersion, canonicalContent, sha256(canonicalContent)]
+          );
+
+          const store = await createPostgresAcceptedSourceDeclarationRevisionStore(pool);
+          const expectedReference = acceptedRevisionEvidenceReference(key);
+          assert.deepEqual(
+            await store.accept({ ...key, parsedDeclaration: { display: { name: "Legacy" }, streams: ["a"] } }),
+            {
+              accepted: true,
+              acceptedRevisionReference: expectedReference,
+              existing: true,
+            }
+          );
+          assert.deepEqual(
+            await store.accept({ ...key, parsedDeclaration: { display: { name: "Changed" }, streams: ["a"] } }),
+            {
+              accepted: false,
+              reason: "equivocation",
+            }
+          );
+          assert.deepEqual(
+            (await pool.query("SELECT accepted_revision_reference FROM accepted_source_declaration_revisions")).rows,
+            [{ accepted_revision_reference: expectedReference }]
+          );
+          assert.deepEqual(
+            (
+              await pool.query(
+                `SELECT attnotnull
+                   FROM pg_attribute
+                  WHERE attrelid = 'accepted_source_declaration_revisions'::regclass
+                    AND attname = 'accepted_revision_reference'`
+              )
+            ).rows,
+            [{ attnotnull: true }]
+          );
+
+          const idempotentStore = await createPostgresAcceptedSourceDeclarationRevisionStore(pool);
+          assert.deepEqual(
+            await idempotentStore.accept({
+              ...key,
+              parsedDeclaration: { display: { name: "Legacy" }, streams: ["a"] },
+            }),
+            {
+              accepted: true,
+              acceptedRevisionReference: expectedReference,
+              existing: true,
+            }
+          );
         } finally {
           await pool.end();
         }
