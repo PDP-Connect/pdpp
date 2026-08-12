@@ -161,6 +161,40 @@ export function spotifyNextPath(next: string | null | undefined, currentPath: st
   return nextPath;
 }
 
+export interface SpotifyCycleDetectorState {
+  lambda: bigint;
+  power: bigint;
+  tortoise: string;
+}
+
+/**
+ * Brent's online cycle detector for normalized cursor paths. It consumes each
+ * observed path once and retains only fixed-size detector state.
+ */
+export function createSpotifyCycleDetector(initialPath: string): {
+  observe: (path: string) => boolean;
+  state: () => SpotifyCycleDetectorState;
+} {
+  let tortoise = initialPath;
+  let power = 1n;
+  let lambda = 0n;
+  return {
+    observe: (path) => {
+      lambda += 1n;
+      if (tortoise === path) {
+        return true;
+      }
+      if (power === lambda) {
+        tortoise = path;
+        power *= 2n;
+        lambda = 0n;
+      }
+      return false;
+    },
+    state: () => ({ lambda, power, tortoise }),
+  };
+}
+
 export function spotifyPlaylistRecord(p: SpotifyPlaylist): Record<string, unknown> {
   return {
     id: p.id,
@@ -232,7 +266,7 @@ async function paginate<T, Accumulator extends PaginationTally>(
   let accumulator = initial;
   let next: string | null = path;
   let pageIndex = 0;
-  const seenPaths = new Set<string>([path]);
+  const cycleDetector = createSpotifyCycleDetector(path);
   while (next) {
     const pageExtra = {
       stream,
@@ -257,11 +291,8 @@ async function paginate<T, Accumulator extends PaginationTally>(
       cursor_present: Boolean(json.next),
     });
     next = spotifyNextPath(json.next, next);
-    if (next !== null) {
-      if (seenPaths.has(next)) {
-        throw new Error("spotify_pagination_cycle");
-      }
-      seenPaths.add(next);
+    if (next !== null && cycleDetector.observe(next)) {
+      throw new Error("spotify_pagination_cycle");
     }
     pageIndex += 1;
   }

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
-import { spotifyCollect } from "./index.ts";
+import { createSpotifyCycleDetector, spotifyCollect } from "./index.ts";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 
@@ -120,9 +120,13 @@ test("spotify: emits the first page before fetching the next page", { concurrenc
 
 test("spotify: completes beyond the former 200-page cap with exact totals", { concurrency: false }, async () => {
   let fetchCount = 0;
+  const detector = createSpotifyCycleDetector("/me/tracks?limit=50");
   globalThis.fetch = () => {
     fetchCount += 1;
     const next = fetchCount < 201 ? `https://api.spotify.com/v1/me/tracks?offset=${fetchCount * 50}` : null;
+    if (next !== null) {
+      assert.equal(detector.observe(new URL(next).pathname + new URL(next).search), false);
+    }
     return Promise.resolve(jsonResponse({ items: [savedTrack(String(fetchCount))], next }));
   };
   const { ctx, messages } = makeContext();
@@ -133,6 +137,7 @@ test("spotify: completes beyond the former 200-page cap with exact totals", { co
   const coverage = messages.find((message) => message.type === "DETAIL_COVERAGE");
   assert.equal(coverage?.considered, 201);
   assert.equal(coverage?.covered, 201);
+  assert.deepEqual(Object.keys(detector.state()).sort(), ["lambda", "power", "tortoise"]);
 });
 
 test("spotify: fails a non-adjacent cursor cycle before refetching the repeated path", {
