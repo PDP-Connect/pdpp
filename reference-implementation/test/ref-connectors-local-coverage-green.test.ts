@@ -16,7 +16,10 @@ import {
   __setConnectorInstanceWritePhaseHookForTest,
   withConnectorInstanceWrite,
 } from "../server/connector-instance-write-coordinator.ts";
-import { reconcileDirtyConnectorSummaryEvidence } from "../server/connector-summary-read-model.ts";
+import {
+  markConnectorSummaryEvidenceDirty,
+  reconcileDirtyConnectorSummaryEvidence,
+} from "../server/connector-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { composeFleetHealthVerdict } from "../server/fleet-health.ts";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "../server/freshness.ts";
@@ -523,6 +526,10 @@ test(
       stream: "messages",
       version: 2,
     });
+    await markConnectorSummaryEvidenceDirty({
+      connectorInstanceId: CONNECTOR_INSTANCE_ID,
+      reason: "record ingest changed connection count/stream evidence",
+    });
 
     const previousWait = process.env.PDPP_INGEST_LOCK_WAIT_MS;
     process.env.PDPP_INGEST_LOCK_WAIT_MS = "10";
@@ -546,7 +553,7 @@ test(
       const report = new Map(row.collection_report.map((entry) => [entry.stream, entry]));
 
       assert.equal(row.connection_health.state, "unknown");
-      assert.deepEqual(row.connection_health.unknown_reasons, ["repair_lock_unavailable"]);
+      assert.deepEqual(row.connection_health.unknown_reasons, ["summary_evidence_dirty_backstop"]);
       for (const stream of ["sessions", "messages", "attachments", "coverage_diagnostics"]) {
         const entry = report.get(stream);
         assert.equal(entry?.considered, "unknown", `${stream} has no authoritative denominator`);

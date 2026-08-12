@@ -3860,6 +3860,8 @@ function evidenceUnreliableSources(
 function requiredCoverageEvidenceIsAuthoritative(evidence: ConnectorSummaryEvidenceRow | null): boolean {
   return (
     evidence !== null &&
+    evidence.dirty === false &&
+    evidence.state === "fresh" &&
     evidence.record_snapshot.state === "current" &&
     evidence.terminal_facts.state === "current" &&
     evidence.manifest_declaration.state === "current"

@@ -184,7 +184,7 @@ rl.on('line', (line) => {
       stream: 'items',
       count
     }) + '\\n');
-    if (count >= 4) {
+    if (count >= 10) {
       clearInterval(timer);
       setTimeout(() => {
         process.stdout.write(JSON.stringify({
@@ -194,7 +194,7 @@ rl.on('line', (line) => {
         }) + '\\n', () => process.exit(0));
       }, 40);
     }
-  }, 40);
+  }, 250);
 });
 `,
     "utf8"
@@ -1085,10 +1085,11 @@ test("scheduler progress watchdog allows long direct runs that keep reporting pr
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
+  let scheduler: ReturnType<typeof createScheduler> | null = null;
 
   try {
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_progress_watchdog_user");
-    const scheduler = createScheduler({
+    const activeScheduler = createScheduler({
       admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
@@ -1103,24 +1104,25 @@ test("scheduler progress watchdog allows long direct runs that keep reporting pr
         },
       ],
       getState: async () => null,
-      maxRunWallClockMs: 100,
+      maxRunWallClockMs: 2000,
       onInteraction: async (interaction: unknown) => cancelledInteractionResponse(interaction),
       rsUrl,
       // biome-ignore lint/suspicious/noEmptyBlockStatements: skipped test callback is intentionally empty
       setState: async () => {},
     });
+    scheduler = activeScheduler;
 
-    scheduler.start();
+    activeScheduler.start();
     // biome-ignore lint/suspicious/noShadow: fixture terminology mirrors the protocol field name
-    await waitFor(() => scheduler.getHistory().some((record) => record.status === "succeeded"), 5000);
-    scheduler.stop();
+    await waitFor(() => activeScheduler.getHistory().some((record) => record.status === "succeeded"), 5000);
+    activeScheduler.stop();
 
-    const [record] = scheduler.getHistory().filter((entry) => entry.connectorId === manifest.connector_id);
+    const [record] = activeScheduler.getHistory().filter((entry) => entry.connectorId === manifest.connector_id);
     assert.ok(record, "expected a completed run record for this connector");
     assert.equal(record.status, "succeeded");
     assert.equal(record.terminalReason, null);
     assert.equal(
-      scheduler.getHistory().some((entry) => entry.terminalReason === "run_timed_out"),
+      activeScheduler.getHistory().some((entry) => entry.terminalReason === "run_timed_out"),
       false,
       "valid connector progress must reset the scheduler watchdog"
     );
@@ -1128,13 +1130,14 @@ test("scheduler progress watchdog allows long direct runs that keep reporting pr
     assert.ok(record.runId, "expected run to have a run_id");
     const timeline = await waitForRunTerminalEvent(asUrl, record.runId);
     assert.equal(
-      timeline.data.filter((event) => event.event_type === "run.progress_reported").length >= 4,
+      timeline.data.filter((event) => event.event_type === "run.progress_reported").length >= 10,
       true,
       "runtime should persist connector progress events"
     );
     const completed = timeline.data.find((event) => event.event_type === "run.completed");
     assert.ok(completed, "expected a completed terminal event");
   } finally {
+    scheduler?.stop();
     await closeServer(server);
     rmSync(tmpDir, { force: true, recursive: true });
   }
