@@ -256,7 +256,7 @@ test("non-browser static-secret connectors keep the existing single capture path
   assert.equal(entry.disposition, "static_secret_connect");
   assert.equal(sourceSetupAction(entry)?.href, "/connect/static-secret/gmail");
   assert.equal(sourceSetupSecondaryAction(entry), null);
-  assert.equal(sourceSetupStatus(entry).label, "Add account");
+  assert.equal(sourceSetupStatus(entry).label, "Supported");
 });
 
 test("YNAB static-secret entry shows as actionable with draft-create path", async () => {
@@ -270,7 +270,7 @@ test("YNAB static-secret entry shows as actionable with draft-create path", asyn
   assert.equal(ynab.enrollmentKey, undefined);
   assert.equal(ynab.supportState, "supported");
   assert.equal(ynab.proofGate, null);
-  assert.equal(sourceSetupStatus(ynab).label, "Add account");
+  assert.equal(sourceSetupStatus(ynab).label, "Supported");
   assert.equal(sourceSetupAction(ynab)?.href, "/connect/static-secret/ynab");
   assert.equal(sourceSetupSecondaryAction(ynab), null);
   assert.equal(sourceSetupAvailability(ynab), "available_now");
@@ -653,7 +653,7 @@ test("configured Google provider readiness exposes the existing owner authorizat
   assert.equal(entry.nextStepKind, "open_provider_auth");
   assert.equal(entry.supportState, "supported");
   assert.equal(entry.disposition, "provider_auth_connect");
-  assert.equal(sourceSetupStatus(entry).label, "Authorize account");
+  assert.equal(sourceSetupStatus(entry).label, "Supported");
   assert.match(sourceSetupGuidance(entry), PROVIDER_BROWSER_GUIDANCE_RE);
   assert.deepEqual(sourceSetupAction(entry), {
     href: "/connect/provider-auth/google-maps-data-portability",

@@ -38,6 +38,10 @@ const STATUS_LINKS_FILE = `${HERE}../../connect/status/[connectionId]/connect-st
 const ONE_STATUS_AND_ACTION_COPY = /one status and one next action/;
 const COMPACT_METHOD_LINE = /function sourceMethodLine/;
 const SUPPORT_FACT_TEST_ID = /data-testid="source-support-fact"/;
+const PUBLIC_TIER_COPY = /Supported|Preview/;
+const LEGACY_TIER_COPY = />Experimental\s*\(|Continue anyway|Not available from this page|No setup path available here/;
+const UNAVAILABLE_PROP = /unavailable\?: boolean/;
+const UNAVAILABLE_TEST_ID = /source-unavailable-fact/;
 const NEXT_COPY = />Next step</;
 const GENERIC_SUPPORT_DETAIL_COPY = /Why this, and what to expect/;
 const IMPORT_OPTIONS_DISCLOSURE = /Show import options/;
@@ -114,6 +118,14 @@ test("source card keeps the support fact distinct from the recommended next acti
   assert.match(src, IMPORT_OPTIONS_DISCLOSURE);
   // The existing-vs-new source choice belongs on the import page, not in the picker.
   assert.doesNotMatch(src, EXISTING_SOURCE_REUSE);
+});
+
+test("source catalog exposes only public Supported/Preview tiers and no latent unavailable card", async () => {
+  const src = await readFile(CATALOG_FILE, "utf8");
+  assert.match(src, PUBLIC_TIER_COPY);
+  assert.doesNotMatch(src, LEGACY_TIER_COPY);
+  assert.doesNotMatch(src, UNAVAILABLE_PROP);
+  assert.doesNotMatch(src, UNAVAILABLE_TEST_ID);
 });
 
 test("source catalog exposes exact existing-account links without turning the picker into a reuse flow", async () => {

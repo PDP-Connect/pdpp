@@ -52,6 +52,8 @@ const OVERRULED_STATUS_LABEL_RE = /Not self-service yet/;
 const CONTRADICTORY_CHIP_RE = /moves into the dashboard soon/i;
 const RUNBOOK_COPY_RE = /runbook/i;
 const BROWSER_COLLECTOR_ACTION_HREF_RE = /\/connect\/browser-session\/stub-browser_collector_manual/;
+const PREVIEW_GUIDANCE_RE = /^Preview:/;
+const LIVE_VALIDATION_CAVEAT_RE = /not completed live validation/;
 
 /**
  * Forbidden owner-facing copy. Each entry is a human-readable class + the regex
@@ -136,6 +138,8 @@ function entryForDisposition(disposition: ConnectorCatalogEntry["disposition"]):
     supportState = "needs_deployment_config";
   } else if (supported) {
     supportState = "supported";
+  } else if (disposition === "static_secret_experimental") {
+    supportState = "experimental";
   } else if (proofGated) {
     supportState = "proof_gated";
   }
@@ -220,11 +224,29 @@ test("browser_collector_manual is an explicit Connect account route", () => {
   const status = sourceSetupStatus(entry);
   const action = sourceSetupAction(entry);
 
-  assert.equal(status.label, "Connect account");
+  assert.equal(status.label, "Supported");
   assert.equal(sourceSetupAvailability(entry), "available_now");
   assert.ok(action);
   assert.equal(action.label, "Connect account");
   assert.match(action.href, BROWSER_COLLECTOR_ACTION_HREF_RE);
+});
+
+test("public setup tiers are Supported or Preview, while actions retain their verbs", () => {
+  const supported = entryForDisposition("static_secret_connect");
+  const preview = entryForDisposition("static_secret_experimental");
+
+  assert.equal(sourceSetupStatus(supported).label, "Supported");
+  assert.deepEqual(sourceSetupAction(supported), {
+    href: "/connect/static-secret/stub-static_secret_connect",
+    label: "Add account",
+  });
+  assert.equal(sourceSetupStatus(preview).label, "Preview");
+  assert.match(sourceSetupGuidance(preview), PREVIEW_GUIDANCE_RE);
+  assert.match(sourceSetupGuidance(preview), LIVE_VALIDATION_CAVEAT_RE);
+  assert.deepEqual(sourceSetupAction(preview), {
+    href: "/connect/static-secret/stub-static_secret_experimental",
+    label: "Add account",
+  });
 });
 
 test("every first-account setup guidance line is free of forbidden copy", () => {

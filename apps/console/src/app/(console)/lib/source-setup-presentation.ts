@@ -142,36 +142,39 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
   }
   if (browserBoundWithStoredCredentials(entry)) {
     return {
-      label: "Connect account",
+      label: "Supported",
       tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
     };
   }
   switch (entry.disposition) {
     case "local_collector_enroll":
-      return { label: "Add now", tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg" };
+      return {
+        label: "Supported",
+        tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
+      };
     case "browser_collector_manual":
       return {
-        label: "Connect account",
+        label: "Supported",
         tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
       };
     case "static_secret_connect":
       return {
-        label: "Add account",
+        label: "Supported",
         tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
       };
     case "manual_upload_connect":
       return {
-        label: "Import file",
+        label: "Supported",
         tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
       };
     case "provider_auth_connect":
       return {
-        label: "Authorize account",
+        label: "Supported",
         tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
       };
     case "static_secret_experimental":
       return {
-        label: "Experimental",
+        label: "Preview",
         tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
       };
     case "manual_upload_pending":
@@ -271,7 +274,7 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
         .map((blocker) => blocker.label || blocker.key)
         .join(", ")}.`;
     case "static_secret_experimental":
-      return "Experimental. This setup path has not completed live validation. Continue to test it with your own data.";
+      return "Preview: this setup path has not completed live validation. Test it with non-critical data.";
     case "browser_bound_runbook":
       return "This source can collect through a logged-in browser, but this dashboard cannot start a new account from here yet.";
     case "local_collector_unproven":
@@ -318,7 +321,7 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
     case "static_secret_experimental":
       return {
         href: `/connect/static-secret/${encodeURIComponent(entry.connectorKey)}`,
-        label: "Continue anyway",
+        label: "Add account",
       };
     case "manual_upload_connect":
       return {

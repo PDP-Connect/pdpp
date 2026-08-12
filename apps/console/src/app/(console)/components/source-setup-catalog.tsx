@@ -129,7 +129,7 @@ function sourceMethodLine(entry: ConnectorCatalogEntry, existingSourceCount: num
     case "static_secret_connect":
       return "Enter the provider credential for this account.";
     case "static_secret_experimental":
-      return "Enter the provider credential for this account. Experimental: not yet live-validated.";
+      return "Enter the provider credential for this account. Preview: not yet live-validated.";
     case "provider_auth_connect":
       return "Authorize this account through the provider.";
     case "manual_upload_connect":
@@ -229,7 +229,6 @@ function ExistingSourceLinks({
   );
 }
 
-
 function SourceExternalDocs({ entry }: { entry: ConnectorCatalogEntry }) {
   if (entry.externalDocs.length === 0) {
     return null;
@@ -282,11 +281,9 @@ function SourceSetupDetails({ entry }: { entry: ConnectorCatalogEntry }) {
 function SourceSetupCard({
   entry,
   existingSources,
-  unavailable,
 }: {
   entry: ConnectorCatalogEntry;
   existingSources: readonly ExistingSourceSetupLink[];
-  unavailable?: boolean;
 }) {
   const status = sourceSetupStatus(entry);
   const action = sourceSetupAction(entry);
@@ -325,19 +322,11 @@ function SourceSetupCard({
               </Link>
             ) : null}
           </>
-        ) : (
-          <span
-            className="pdpp-caption rounded-md border border-border/70 bg-muted/20 px-2.5 py-1 text-muted-foreground"
-            data-testid="source-unavailable-fact"
-          >
-            {unavailable ? "Not available from this page" : "No setup path available here"}
-          </span>
-        )}
+        ) : null}
       </div>
     </li>
   );
 }
-
 
 function ExperimentalSetupSummary({
   entries,
@@ -351,10 +340,10 @@ function ExperimentalSetupSummary({
   }
   return (
     <details className="rounded-sm border border-border/80 bg-muted/20 p-3" data-testid="experimental-setup-summary">
-      <summary className="pdpp-caption cursor-pointer text-muted-foreground">Experimental ({entries.length})</summary>
+      <summary className="pdpp-caption cursor-pointer text-muted-foreground">Preview ({entries.length})</summary>
       <div className="mt-3 grid gap-3">
         <p className="pdpp-caption text-muted-foreground">
-          These setup paths are implemented but have not completed live validation. Opt in to test with your own data.
+          These setup paths are implemented but have not completed live validation. Test them with non-critical data.
         </p>
         <SourceSetupCardList entries={entries} existingSourcesByConnector={existingSourcesByConnector} />
       </div>
@@ -362,15 +351,12 @@ function ExperimentalSetupSummary({
   );
 }
 
-
 function SourceSetupCardList({
   entries,
   existingSourcesByConnector,
-  unavailable,
 }: {
   entries: readonly ConnectorCatalogEntry[];
   existingSourcesByConnector?: Readonly<Record<string, readonly ExistingSourceSetupLink[]>>;
-  unavailable?: boolean;
 }) {
   return (
     <ul className="grid gap-3">
@@ -379,7 +365,6 @@ function SourceSetupCardList({
           entry={entry}
           existingSources={existingSourcesByConnector?.[entry.connectorKey] ?? []}
           key={entry.connectorKey}
-          unavailable={unavailable}
         />
       ))}
     </ul>
@@ -409,10 +394,7 @@ export function SourceSetupCatalog({
   const experimental = filtered.filter((entry) => sourceSetupAvailability(entry) === "experimental_opt_in");
   const actionable = [...available, ...experimental];
   return (
-    <Section
-      description="Add sources this dashboard can set up now."
-      title="Add data"
-    >
+    <Section description="Add sources this dashboard can set up now." title="Add data">
       <form action={action} className="mb-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
         <label className="sr-only" htmlFor="source_q">
           Search data sources
