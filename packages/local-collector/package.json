@@ -32,7 +32,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json && tsx scripts/postbuild.ts",
     "prepare": "pnpm build",
     "prepack": "pnpm build",
-    "test": "tsx scripts/run-tests.ts",
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- tsx scripts/run-tests.ts",
     "pack-install-run": "node --import tsx scripts/pack-install-run.ts",
     "validate:package": "tsx scripts/validate-package.ts",
     "verify": "pnpm test && pnpm validate:package"

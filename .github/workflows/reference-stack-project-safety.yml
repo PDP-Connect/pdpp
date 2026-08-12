@@ -48,7 +48,7 @@ jobs:
         run: bash -n scripts/reference-stack.sh scripts/reference-stack.project-name.test.sh scripts/reference-stack.dirty-guard.test.sh
 
       - name: Project-name default + paired-identity guard tests
-        run: bash scripts/reference-stack.project-name.test.sh
+        run: pnpm test:scratch -- bash scripts/reference-stack.project-name.test.sh
 
       - name: Dirty-tree build guard tests (adjacent wrapper regression)
-        run: bash scripts/reference-stack.dirty-guard.test.sh
+        run: pnpm test:scratch -- bash scripts/reference-stack.dirty-guard.test.sh

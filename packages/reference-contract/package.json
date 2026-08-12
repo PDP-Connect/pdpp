@@ -20,7 +20,7 @@
     "generate:docs": "node ./src/docs/generate.ts",
     "generate:all": "node ./src/openapi/generate.ts && node ./src/docs/generate.ts",
     "check:generated": "pnpm run generate:all && node ./scripts/check-generated.ts",
-    "test": "node --test --import tsx \"test/*.test.ts\"",
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- bash -c 'node --test --import tsx \"test/*.test.ts\"'",
     "typecheck": "tsc --noEmit",
     "check": "ultracite check",
     "fix": "ultracite fix",

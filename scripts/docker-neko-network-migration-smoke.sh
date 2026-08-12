@@ -87,7 +87,8 @@ fi
 # run's own PROJECT_NAME, so two concurrent invocations (or one that failed
 # to clean up a prior run) never collide or race on each other's profile
 # state.
-PROFILE_ROOT="/tmp/pdpp-neko-profiles-${PROJECT_NAME}"
+SCRATCH_BASE="${PDPP_TEST_SCRATCH_ROOT:-${TMPDIR:-/tmp}}"
+PROFILE_ROOT="${SCRATCH_BASE%/}/pdpp-neko-profiles-${PROJECT_NAME}"
 HOST_PORT_START="${PDPP_NEKO_WEBRTC_HOST_PORT_START:-59211}"
 HOST_PORT_END="${PDPP_NEKO_WEBRTC_HOST_PORT_END:-59212}"
 LABEL_OWNER="org.pdpp.reference.neko.owner=pdpp-reference"
@@ -156,6 +157,7 @@ cleanup() {
   # outright. Test-only teardown.
   docker network rm "$DYNAMIC_NETWORK" >/dev/null 2>&1 || true
   docker network rm "$LEGACY_NETWORK" >/dev/null 2>&1 || true
+  rm -rf -- "$PROFILE_ROOT" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 

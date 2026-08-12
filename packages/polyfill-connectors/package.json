@@ -20,7 +20,7 @@
     "check:noUnnecessaryConditions-expiry": "node ./scripts/check-no-unnecessary-conditions-expiry.ts",
     "fix": "ultracite fix",
     "postinstall": "node ./scripts/install-patchright-browser.ts",
-    "test": "node --test --import tsx --test-concurrency=2 --test-timeout=120000 \"bin/**/*.test.ts\" \"connectors/**/*.test.ts\" \"src/**/*.test.ts\"",
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- bash -c 'node --test --import tsx --test-concurrency=2 --test-timeout=120000 \"bin/**/*.test.ts\" \"connectors/**/*.test.ts\" \"src/**/*.test.ts\"'",
     "typecheck": "tsc --noEmit",
     "verify": "pnpm typecheck && pnpm check && pnpm check:noAwaitInLoops-conformance && pnpm check:noUnnecessaryConditions-expiry"
   },
