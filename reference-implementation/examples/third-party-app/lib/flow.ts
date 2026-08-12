@@ -237,6 +237,9 @@ export async function reviewInline({
   if (!response.ok || body.kind !== "json") {
     const err = new RequestError(describeFailure(body.value, `approval review failed (${response.status})`));
     err.status = response.status;
+    if (response.status === 401 || response.status === 403) {
+      err.ownerAuthEnabled = true;
+    }
     throw err;
   }
   const reviewBody = jsonObject(body.value, "approval review response");
@@ -355,14 +358,16 @@ export async function denyInline({ asUrl, requestUri }: { asUrl: string; request
 
 export async function introspectToken({
   asUrl,
+  headers,
   token,
 }: {
   asUrl: string;
+  headers?: Record<string, string>;
   token: string;
 }): Promise<IntrospectionResponse> {
   const response = await fetch(`${asUrl}/introspect`, {
     body: JSON.stringify({ token }),
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(headers ?? {}) },
     method: "POST",
   });
   const body = await readJsonOrText(response);

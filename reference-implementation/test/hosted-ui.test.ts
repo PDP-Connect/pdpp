@@ -173,7 +173,7 @@ test("hosted-ui: /consent uses the shared hosted-UI layer", async () => {
     assert.match(html, /Longview/, "shows client name");
     assert.match(html, /concert-recommendation profile/, "shows purpose");
     assert.match(html, /data-surface="human"/, "frames consent as a human surface");
-    assert.match(html, /action="\/consent\/approve"/, "keeps allow action");
+    assert.match(html, /action="\/consent\/review"/, "keeps review-first allow action");
     assert.match(html, /action="\/consent\/deny"/, "keeps deny action");
   });
 });
