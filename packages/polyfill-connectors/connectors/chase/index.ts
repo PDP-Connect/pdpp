@@ -256,6 +256,7 @@ export function buildChaseDurableFailureDiagnostic(
 
 interface CurrentActivitySnapshotPage {
   content: () => Promise<string>;
+  goto?: (url: string, options: { timeout: number; waitUntil: "domcontentloaded" }) => Promise<unknown>;
   locator: (selector: string) => {
     count?: () => Promise<number>;
     first: () => {
@@ -377,9 +378,38 @@ export async function snapshotDashboardHtmlForCurrentActivity(
     });
 
   const html = await page.content().catch((): string => "");
-  const parserCount = parseCurrentActivityDom(html, referenceDateIso).length;
-  const dashboardMarkerCount = countStructuralMarker(html, CHASE_DASHBOARD_MARKER_RE);
-  const activityTableMarkerCount = countStructuralMarker(html, CHASE_CURRENT_ACTIVITY_TABLE_MARKER_RE);
+  let finalHtml = html;
+  let parserCount = parseCurrentActivityDom(finalHtml, referenceDateIso).length;
+  let dashboardMarkerCount = countStructuralMarker(finalHtml, CHASE_DASHBOARD_MARKER_RE);
+  let activityTableMarkerCount = countStructuralMarker(finalHtml, CHASE_CURRENT_ACTIVITY_TABLE_MARKER_RE);
+  let readCount = 2;
+
+  // A successful account discovery can still leave the SPA on an unexpected
+  // route after browser/session transitions. In that state the row wait is
+  // not selector evidence: it only waited on the wrong document. One bounded
+  // full dashboard navigation gives the connector a fresh, known surface to
+  // parse without teaching the RI anything about Chase's markup. A zero-row
+  // parse after this retry remains selectors_pending in the caller.
+  if (parserCount === 0 && classifyChaseCurrentActivityRoute(page.url()) !== "expected" && page.goto) {
+    await page
+      .goto("https://secure.chase.com/web/auth/dashboard#/dashboard/overview", {
+        waitUntil: "domcontentloaded",
+        timeout: NAV_TIMEOUT_MS,
+      })
+      .catch((): undefined => undefined);
+    await page
+      .locator(DASHBOARD_ACCOUNT_SELECTOR)
+      .first()
+      .waitFor({ state: "attached", timeout: DOM_WAIT_MS })
+      .catch((): undefined => undefined);
+
+    finalHtml = await page.content().catch((): string => "");
+    parserCount = parseCurrentActivityDom(finalHtml, referenceDateIso).length;
+    dashboardMarkerCount = countStructuralMarker(finalHtml, CHASE_DASHBOARD_MARKER_RE);
+    activityTableMarkerCount = countStructuralMarker(finalHtml, CHASE_CURRENT_ACTIVITY_TABLE_MARKER_RE);
+    readCount = 3;
+  }
+
   const markerCount = await page
     .locator(CHASE_CURRENT_ACTIVITY_ROW_SELECTOR)
     .count?.()
@@ -390,12 +420,12 @@ export async function snapshotDashboardHtmlForCurrentActivity(
       dashboardMarkerCount,
       managedSurface,
       parserCount,
-      readCount: 2,
+      readCount,
       route: classifyChaseCurrentActivityRoute(page.url()),
       targetCount: markerCount ?? 0,
       waitOutcome,
     }),
-    html,
+    html: finalHtml,
     rowSurfaceReady: parserCount > 0,
   };
 }

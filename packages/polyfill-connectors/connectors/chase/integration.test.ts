@@ -1142,6 +1142,58 @@ test("snapshotDashboardHtmlForCurrentActivity: rowSurfaceReady is false when the
   assert.equal(snapshot.diagnostic.verified_empty_marker_count, 0, "no source-verified empty marker is claimed");
 });
 
+test("snapshotDashboardHtmlForCurrentActivity: unexpected route gets one fresh dashboard navigation before declaring a gap", async () => {
+  let navigated = false;
+  let waitedForRows = false;
+  const page = {
+    goto(url: string, options: { state?: string; timeout: number; waitUntil: string }) {
+      assert.equal(url, "https://secure.chase.com/web/auth/dashboard#/dashboard/overview");
+      assert.equal(options.waitUntil, "domcontentloaded");
+      navigated = true;
+      return Promise.resolve();
+    },
+    locator(selector: string) {
+      return {
+        count: () => Promise.resolve(5),
+        first() {
+          return {
+            waitFor(options: { state: string; timeout: number }) {
+              if (selector === CHASE_CURRENT_ACTIVITY_ROW_SELECTOR) {
+                waitedForRows = true;
+                return Promise.reject(new Error("rows were absent on the stale document"));
+              }
+              assert.notEqual(selector, CHASE_CURRENT_ACTIVITY_ROW_SELECTOR);
+              assert.equal(options.state, "attached");
+              return Promise.resolve();
+            },
+          };
+        },
+      };
+    },
+    content() {
+      return Promise.resolve(
+        navigated
+          ? readFileSync(join(FIXTURE_DIR, "current-activity-dashboard-overview-real.html"), "utf8")
+          : readFileSync(join(FIXTURE_DIR, "current-activity-download-form-no-rows.html"), "utf8")
+      );
+    },
+    url() {
+      return navigated
+        ? "https://secure.chase.com/web/auth/dashboard#/dashboard/overview"
+        : "https://secure.chase.com/web/auth/dashboard#/dashboard/accountDetails/downloadAccountTransactions";
+    },
+  };
+
+  const snapshot = await snapshotDashboardHtmlForCurrentActivity(page, REFERENCE_DATE_ISO);
+
+  assert.equal(waitedForRows, true);
+  assert.equal(navigated, true);
+  assert.equal(snapshot.rowSurfaceReady, true);
+  assert.equal(snapshot.diagnostic.read_count, 3);
+  assert.equal(snapshot.diagnostic.route, "expected");
+  assert.match(snapshot.html, /mds-activity-table__row/);
+});
+
 test("snapshotDashboardHtmlForCurrentActivity: a known table with changed rows is parser_zero", async () => {
   const page = {
     locator(selector: string) {
