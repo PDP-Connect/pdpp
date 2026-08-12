@@ -11,7 +11,7 @@ import {
   type StreamHealthAuthorityInput,
   type StreamHealthAuthorityResult,
 } from "./authority.ts";
-import { runLiveStreamHealthAuthority } from "./live.ts";
+import { type OwnerSourcesBrowserFactory, runLiveStreamHealthAuthority } from "./live.ts";
 
 type Json = Record<string, unknown>;
 
@@ -109,6 +109,110 @@ function fullyEvidencedInput(connection: Json, connectorManifest = manifest()): 
 
 function evaluate(connection: Json, connectorManifest = manifest()): StreamHealthAuthorityResult {
   return evaluateStreamHealthAuthority(fullyEvidencedInput(connection, connectorManifest));
+}
+
+function browserFactoryFromFetch(
+  fetchImpl: FetchImpl,
+  options: { resolveHtml?: string; timeout?: boolean } = {}
+): OwnerSourcesBrowserFactory {
+  return () => {
+    let html = "";
+    return Promise.resolve({
+      newContext: () =>
+        Promise.resolve({
+          addCookies: () => Promise.resolve(),
+          newPage: () =>
+            Promise.resolve({
+              goto: async (url: string) => {
+                const fetched = await fetchImpl(url);
+                html = await fetched.text();
+                return {
+                  headers: () => ({
+                    "pdpp-reference-revision": fetched.headers.get?.("pdpp-reference-revision") ?? "",
+                  }),
+                };
+              },
+              waitForFunction: () => {
+                if (options.timeout) {
+                  return Promise.reject(new Error("Timeout 15000ms exceeded"));
+                }
+                if (options.resolveHtml !== undefined) {
+                  html = options.resolveHtml;
+                }
+                return Promise.resolve();
+              },
+              content: () => Promise.resolve(html),
+            }),
+          close: () => Promise.resolve(),
+        }),
+      close: () => Promise.resolve(),
+    });
+  };
+}
+
+test("live DOM acquisition waits for streamed Next.js content to resolve before parsing", async () => {
+  const streamed = '<div aria-busy="true"><template><a data-pdpp-source-row="c1"></a></template></div>';
+  const resolved = `<header data-pdpp-reference-revision="${REVISION}"><a data-pdpp-source-row="c1" href="/sources/c1">one</a><a data-pdpp-stream-row="true" data-connection-id="c1" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages"></a></header>`;
+  assert.equal(parseOwnerSourcesDom(streamed).resolved, false);
+  const fetchImpl: FetchImpl = (url) => {
+    const path = new URL(url).pathname;
+    if (path === "/_ref/connectors") {
+      return Promise.resolve(response({ data: [healthyConnection()], has_more: false, object: "list" }));
+    }
+    if (path === "/connectors/mail") {
+      return Promise.resolve(response(manifest()));
+    }
+    if (path === "/sources") {
+      return Promise.resolve(response(streamed));
+    }
+    throw new Error(`unexpected test URL ${url}`);
+  };
+  const result = await runLiveForTest({
+    env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
+    expectedRevision: REVISION,
+    expectedSha: "abcdef123456",
+    fetchImpl,
+    browserFactory: browserFactoryFromFetch(fetchImpl, { resolveHtml: resolved }),
+    origin: "https://example.test",
+  });
+  assert.equal(result.gates.dom, "resolved");
+  assert.equal(result.status, "pass");
+});
+
+test("live DOM acquisition fails closed when a streamed page never resolves", async () => {
+  const unresolved = '<div aria-busy="true"><template><a data-pdpp-source-row="c1"></a></template></div>';
+  const fetchImpl: FetchImpl = (url) => {
+    const path = new URL(url).pathname;
+    if (path === "/_ref/connectors") {
+      return Promise.resolve(response({ data: [], has_more: false, object: "list" }));
+    }
+    if (path === "/sources") {
+      return Promise.resolve(response(unresolved));
+    }
+    throw new Error(`unexpected test URL ${url}`);
+  };
+  const result = await runLiveForTest({
+    env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
+    fetchImpl,
+    browserFactory: browserFactoryFromFetch(fetchImpl, { timeout: true }),
+    origin: "https://example.test",
+  });
+  assert.equal(result.gates.dom, "inconclusive");
+  assert.equal(result.status, "inconclusive");
+  assert.equal(result.fetched, true);
+});
+
+function runLiveForTest(
+  input: Omit<Parameters<typeof runLiveStreamHealthAuthority>[0], "browserFactory"> & {
+    browserFactory?: OwnerSourcesBrowserFactory;
+  }
+) {
+  return runLiveStreamHealthAuthority({
+    ...input,
+    browserFactory:
+      input.browserFactory ??
+      browserFactoryFromFetch(input.fetchImpl ?? (() => Promise.reject(new Error("missing fetch")))),
+  });
 }
 
 function streamResult(result: StreamHealthAuthorityResult): StreamHealthAuthorityResult["streams"][number] {
@@ -859,7 +963,7 @@ test("live authority exhausts summary pages and catches a DOM that hides the sec
     throw new Error(`unexpected test URL ${url}`);
   };
 
-  const result = await runLiveStreamHealthAuthority({
+  const result = await runLiveForTest({
     env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
     expectedRevision: REVISION,
     expectedSha: "abcdef123456",
@@ -890,7 +994,7 @@ test("live authority does not score a connection when its production manifest is
     throw new Error(`unexpected test URL ${url}`);
   };
 
-  const result = await runLiveStreamHealthAuthority({
+  const result = await runLiveForTest({
     env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
     expectedRevision: REVISION,
     expectedSha: "abcdef123456",
@@ -916,7 +1020,7 @@ test("live authority accepts a resolved authenticated empty owner surface with a
     throw new Error(`unexpected test URL ${url}`);
   };
 
-  const result = await runLiveStreamHealthAuthority({
+  const result = await runLiveForTest({
     env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
     expectedRevision: REVISION,
     expectedSha: "abcdef123456",
@@ -951,7 +1055,7 @@ test("live authority accepts the authenticated DOM revision receipt when the HTM
     throw new Error(`unexpected test URL ${url}`);
   };
 
-  const result = await runLiveStreamHealthAuthority({
+  const result = await runLiveForTest({
     env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
     expectedRevision: REVISION,
     expectedSha: "abcdef123456",
@@ -973,7 +1077,7 @@ test("live authority fails closed on a malformed/repeating summary cursor", asyn
     throw new Error(`unexpected test URL ${url}`);
   };
 
-  const result = await runLiveStreamHealthAuthority({
+  const result = await runLiveForTest({
     env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
     fetchImpl,
     origin: "https://example.test",
@@ -1028,7 +1132,7 @@ test("DOM pagination follows more than 200 rendered pages and preserves cycle de
     }
     throw new Error(`unexpected test URL ${url}`);
   };
-  const result = await runLiveStreamHealthAuthority({
+  const result = await runLiveForTest({
     env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
     expectedRevision: REVISION,
     expectedSha: "abcdef123456",
@@ -1040,7 +1144,7 @@ test("DOM pagination follows more than 200 rendered pages and preserves cycle de
   assert.equal(result.gates.pagination, "complete");
   assert.equal(result.status, "pass");
 
-  const cycleResult = await runLiveStreamHealthAuthority({
+  const cycleResult = await runLiveForTest({
     env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
     expectedRevision: REVISION,
     expectedSha: "abcdef123456",
@@ -1068,7 +1172,7 @@ test("DOM pagination follows more than 200 rendered pages and preserves cycle de
 });
 
 test("owner-auth transport errors return a structured inconclusive result", async () => {
-  const result = await runLiveStreamHealthAuthority({
+  const result = await runLiveForTest({
     env: { PDPP_OWNER_PASSWORD: "owner-password" },
     fetchImpl: () => {
       throw new Error("socket failed");

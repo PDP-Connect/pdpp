@@ -82,6 +82,62 @@ interface OwnerAuthForStreamHealth {
   supported: boolean;
 }
 
+const OWNER_DOM_RESOLUTION_TIMEOUT_MS = 15_000;
+
+interface BrowserNavigationResponse {
+  headers?: () => Record<string, string>;
+}
+
+interface OwnerSourcesBrowserPage {
+  content: () => Promise<string>;
+  goto: (url: string, options: { waitUntil: "domcontentloaded" }) => Promise<BrowserNavigationResponse | null>;
+  waitForFunction: (predicate: () => boolean, options: { timeout: number }) => Promise<unknown>;
+}
+
+interface OwnerSourcesBrowserContext {
+  addCookies: (cookies: readonly { name: string; value: string; url: string }[]) => Promise<void>;
+  close: () => Promise<void>;
+  newPage: () => Promise<OwnerSourcesBrowserPage>;
+}
+
+interface OwnerSourcesBrowser {
+  close: () => Promise<void>;
+  newContext: () => Promise<OwnerSourcesBrowserContext>;
+}
+
+export type OwnerSourcesBrowserFactory = (args: { base: string; cookie: string }) => Promise<OwnerSourcesBrowser>;
+
+function ownerSessionCookies(cookie: string, base: string): { name: string; value: string; url: string }[] {
+  return cookie
+    .split(";")
+    .map((part) => part.trim())
+    .map((part) => {
+      const separator = part.indexOf("=");
+      return separator > 0 ? { name: part.slice(0, separator), value: part.slice(separator + 1), url: base } : null;
+    })
+    .filter((value): value is { name: string; value: string; url: string } => value !== null);
+}
+
+async function launchOwnerSourcesBrowser({
+  base,
+  cookie,
+}: {
+  base: string;
+  cookie: string;
+}): Promise<OwnerSourcesBrowser> {
+  const { chromium } = await import("patchright");
+  const browser = await chromium.launch({
+    executablePath: process.env.CHROME_PATH || "/usr/bin/google-chrome",
+    headless: true,
+  });
+  const context = await browser.newContext();
+  await context.addCookies(ownerSessionCookies(cookie, base));
+  return {
+    newContext: async () => context,
+    close: () => browser.close(),
+  };
+}
+
 /**
  * Resolve owner auth from the environment without exposing its value.
  * Cookie takes precedence over password; a bare PDPP_OWNER_TOKEN is reported
@@ -208,12 +264,12 @@ interface OwnerSourcesDomFetchResult {
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this is one bounded, fail-closed pagination state machine whose branches each preserve an evidence gate.
 async function fetchOwnerSourcesDom({
   base,
-  fetchImpl,
-  headers,
+  browserFactory = launchOwnerSourcesBrowser,
+  cookie,
 }: {
   base: string;
-  fetchImpl: FetchImpl;
-  headers: Record<string, string>;
+  browserFactory?: OwnerSourcesBrowserFactory;
+  cookie: string;
 }): Promise<OwnerSourcesDomFetchResult> {
   const connectionIds = new Set<string>();
   const streamKeys = new Set<string>();
@@ -229,71 +285,89 @@ async function fetchOwnerSourcesDom({
   let paginationComplete = true;
   let reason: string | null = null;
 
-  while (pending.length > 0) {
-    const href = pending.shift();
-    if (!href) {
-      break;
-    }
-    const pageUrl = new URL(href, `${base}/sources`);
-    if (pageUrl.origin !== new URL(base).origin) {
-      paginationComplete = false;
-      reason = "owner DOM pagination pointed outside the audited origin";
-      continue;
-    }
-    const absolute = pageUrl.toString();
-    if (seen.has(absolute)) {
-      paginationComplete = false;
-      reason = "owner DOM pagination repeated a page";
-      continue;
-    }
-    seen.add(absolute);
+  const browser = await browserFactory({ base, cookie });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    while (pending.length > 0) {
+      const href = pending.shift();
+      if (!href) {
+        break;
+      }
+      const pageUrl = new URL(href, `${base}/sources`);
+      if (pageUrl.origin !== new URL(base).origin) {
+        paginationComplete = false;
+        reason = "owner DOM pagination pointed outside the audited origin";
+        continue;
+      }
+      const absolute = pageUrl.toString();
+      if (seen.has(absolute)) {
+        paginationComplete = false;
+        reason = "owner DOM pagination repeated a page";
+        continue;
+      }
+      seen.add(absolute);
 
-    let response: Awaited<ReturnType<FetchImpl>>;
-    try {
-      // biome-ignore lint/performance/noAwaitInLoops: each next DOM page is discovered from the prior page's rendered pager link.
-      response = await fetchImpl(absolute, { headers: { accept: "text/html", ...headers } });
-    } catch (err) {
-      return {
-        evidence: ownerDomFailure({ reason: err instanceof Error ? err.message : String(err) }),
-        revisions,
-      };
+      let navigation: BrowserNavigationResponse | null;
+      try {
+        // The browser waits for the resolved semantic surface. No wall-clock sleep is used.
+        // biome-ignore lint/performance/noAwaitInLoops: each next DOM page is discovered from the prior page's rendered pager link.
+        navigation = await page.goto(absolute, { waitUntil: "domcontentloaded" });
+        await page.waitForFunction(
+          () =>
+            !document.querySelector(
+              '[aria-busy="true"], [data-testid*="loading" i], [data-testid*="suspense" i], .animate-pulse'
+            ) &&
+            Boolean(
+              document.querySelector('[data-pdpp-source-row], [data-pdpp-stream-row], [data-testid="sources-empty"]')
+            ),
+          { timeout: OWNER_DOM_RESOLUTION_TIMEOUT_MS }
+        );
+      } catch {
+        const html = await page.content();
+        const observed = parseOwnerSourcesDom(html);
+        return {
+          evidence: ownerDomFailure({
+            authenticated: observed.authenticated,
+            reason: observed.authenticated
+              ? `owner DOM did not resolve within ${OWNER_DOM_RESOLUTION_TIMEOUT_MS}ms`
+              : "owner authentication was not resolved",
+            suspense: true,
+          }),
+          revisions,
+        };
+      }
+      const html = await page.content();
+      const responseRevision = navigation?.headers?.()?.[REVISION_HEADER.toLowerCase()] ?? null;
+      if (responseRevision) {
+        revisions.push(responseRevision);
+      }
+      const pageEvidence = parseOwnerSourcesDom(html);
+      if (pageEvidence.revision !== null && pageEvidence.revision !== undefined) {
+        revisions.push(pageEvidence.revision);
+      }
+      firstEvidence ??= pageEvidence;
+      resolved = resolved && pageEvidence.resolved;
+      authenticated = authenticated && pageEvidence.authenticated !== false;
+      renderedRows = renderedRows || pageEvidence.renderedRows;
+      selectedConnectionId ??= pageEvidence.selectedConnectionId ?? null;
+      suspense = suspense || pageEvidence.suspense === true;
+      if (!pageEvidence.resolved || pageEvidence.authenticated === false || pageEvidence.suspense === true) {
+        reason = pageEvidence.reason ?? reason;
+      }
+      for (const id of pageEvidence.connectionIds) {
+        connectionIds.add(id);
+      }
+      for (const key of pageEvidence.streamKeys) {
+        streamKeys.add(`${key.connectionId}\u0000${key.stream}`);
+      }
+      for (const next of pageEvidence.nextPageHrefs) {
+        pending.push(new URL(next, absolute).toString());
+      }
     }
-    const responseRevision = responseHeader(response, REVISION_HEADER);
-    if (responseRevision !== null) {
-      revisions.push(responseRevision);
-    }
-    const html = await response.text();
-    if (response.status < 200 || response.status >= 300) {
-      return {
-        evidence: ownerDomFailure({
-          authenticated: response.status !== 401 && response.status !== 403,
-          reason: `owner /sources returned status ${response.status}`,
-        }),
-        revisions,
-      };
-    }
-    const pageEvidence = parseOwnerSourcesDom(html);
-    if (pageEvidence.revision !== null && pageEvidence.revision !== undefined) {
-      revisions.push(pageEvidence.revision);
-    }
-    firstEvidence ??= pageEvidence;
-    resolved = resolved && pageEvidence.resolved;
-    authenticated = authenticated && pageEvidence.authenticated !== false;
-    renderedRows = renderedRows || pageEvidence.renderedRows;
-    selectedConnectionId ??= pageEvidence.selectedConnectionId ?? null;
-    suspense = suspense || pageEvidence.suspense === true;
-    if (!pageEvidence.resolved || pageEvidence.authenticated === false || pageEvidence.suspense === true) {
-      reason = pageEvidence.reason ?? reason;
-    }
-    for (const id of pageEvidence.connectionIds) {
-      connectionIds.add(id);
-    }
-    for (const key of pageEvidence.streamKeys) {
-      streamKeys.add(`${key.connectionId}\u0000${key.stream}`);
-    }
-    for (const next of pageEvidence.nextPageHrefs) {
-      pending.push(new URL(next, absolute).toString());
-    }
+  } finally {
+    await context.close();
+    await browser.close();
   }
 
   const streamKeyValues = [...streamKeys].map((value) => {
@@ -385,12 +459,14 @@ async function fetchCatalogManifests({
  * authenticated `/sources` DOM pages, and reads public connector manifests.
  */
 export async function runLiveStreamHealthAuthority({
+  browserFactory = launchOwnerSourcesBrowser,
   env = process.env,
   expectedRevision = env.PDPP_EXPECTED_REFERENCE_REVISION?.trim() || null,
   expectedSha = env.PDPP_EXPECTED_SHA?.trim() || null,
   fetchImpl = fetch as unknown as FetchImpl,
   origin,
 }: {
+  browserFactory?: OwnerSourcesBrowserFactory;
   env?: NodeJS.ProcessEnv;
   expectedRevision?: string | null;
   expectedSha?: string | null;
@@ -488,8 +564,8 @@ export async function runLiveStreamHealthAuthority({
     });
     const domResult = await fetchOwnerSourcesDom({
       base,
-      fetchImpl,
-      headers: auth.header,
+      browserFactory,
+      cookie: auth.header.cookie,
     });
     const authority = evaluateStreamHealthAuthority({
       auth: { authenticated: true, mode: auth.mode, resolved: true },
