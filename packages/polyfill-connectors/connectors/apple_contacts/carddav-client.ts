@@ -315,8 +315,19 @@ export async function addressbookQueryAll(args: {
   return resources;
 }
 
+const NUMERIC_XML_ENTITY_RE = /&#(?:x([0-9a-fA-F]+)|([0-9]+));/g;
+
+function decodeNumericXmlEntity(entity: string, hexadecimal: string | undefined, decimal: string | undefined): string {
+  const codePoint = Number.parseInt(hexadecimal ?? decimal ?? "", hexadecimal === undefined ? 10 : 16);
+  if (!(Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10_ff_ff)) {
+    return entity;
+  }
+  return String.fromCodePoint(codePoint);
+}
+
 function decodeXmlEntities(text: string): string {
   return text
+    .replace(NUMERIC_XML_ENTITY_RE, decodeNumericXmlEntity)
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')

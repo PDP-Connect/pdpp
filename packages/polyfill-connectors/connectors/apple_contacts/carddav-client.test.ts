@@ -12,6 +12,7 @@ import {
 import type { DiscoveryFetchResponse } from "./discovery.ts";
 import { discoverCardDav, MAX_RESPONSE_BYTES, nativeFetchAdapter } from "./discovery.ts";
 import { buildVCard, startFakeCardDavServer } from "./test-carddav-server.ts";
+import { parseVCards } from "./vcard.ts";
 
 const USERNAME = "owner@example.com";
 const PASSWORD = "app-specific-pw";
@@ -205,6 +206,30 @@ test("addressbookQueryAll: bounded full snapshot fallback returns every contact"
   } finally {
     await server.close();
   }
+});
+
+test("addressbookQueryAll: decodes iCloud numeric line-break entities before parsing vCards", async () => {
+  const bookUrl = "https://contacts.example/addressbooks/owner/card/";
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+    <D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav">
+      <D:response>
+        <D:href>/addressbooks/owner/card/contact.vcf</D:href>
+        <D:propstat><D:prop>
+          <D:getetag>etag-1</D:getetag>
+          <C:address-data>BEGIN:VCARD&#13;&#10;VERSION:3.0&#13;&#10;UID:contact-1&#13;&#10;FN:Example Contact&#13;&#10;END:VCARD&#13;&#10;</C:address-data>
+        </D:prop></D:propstat>
+      </D:response>
+    </D:multistatus>`;
+  const resources = await addressbookQueryAll({
+    authHeader: AUTH_HEADER,
+    bookUrl,
+    fetchImpl: async () => syntheticResponse(207, {}, xml),
+    trustedOrigins: ["https://contacts.example"],
+  });
+
+  assert.equal(resources.length, 1);
+  assert.match(resources[0]?.vcardText ?? "", /BEGIN:VCARD\r\nVERSION:3\.0\r\n/);
+  assert.equal(parseVCards(resources[0]?.vcardText ?? "")[0]?.uid, "contact-1");
 });
 
 test("syncCollectionReport: an oversized multistatus response (huge embedded photo) is rejected by the byte cap, not parsed", async () => {
