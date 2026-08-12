@@ -29,12 +29,13 @@
 
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import type { EmittedMessage, RecordData } from "../../src/connector-runtime.ts";
+import type { CollectContext, EmittedMessage, RecordData, StreamScope } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   __resetHttpGovernorForTests,
   __setZeroDelayHttpGovernorForTests,
+  collect,
   collectDirectChatMessages,
   collectDirectChats,
   collectGroupMessages,
@@ -999,6 +1000,60 @@ test("collect()-level gating: clean outcome allows STATE + DETAIL_COVERAGE with 
     assert.equal(outcome.considered, 2);
     // buildFullScanCoverageMessage(stream, considered) sets covered === considered
     // for a full-scan stream with no detail-hydration phase.
+  } finally {
+    restore();
+  }
+});
+
+test("collect(): successful message walks durably emit complete proof, including verified-empty", async () => {
+  const restore = stubFetchSequence([
+    { body: { response: [group()] } },
+    { body: { response: { count: 0, messages: [] } } },
+    { body: { response: [directChat()] } },
+    { body: { response: { count: 0, direct_messages: [] } } },
+  ]);
+  try {
+    const messages: EmittedMessage[] = [];
+    await collect({
+      state: {},
+      requested: new Map<string, StreamScope>([
+        ["group_messages", { name: "group_messages" }],
+        ["direct_chat_messages", { name: "direct_chat_messages" }],
+      ]),
+      credentials: { GROUPME_ACCESS_TOKEN: TOKEN },
+      emit: (message: EmittedMessage) => {
+        messages.push(message);
+        return Promise.resolve();
+      },
+      emitRecord: async () => {
+        await Promise.resolve();
+      },
+      progress: async () => {
+        await Promise.resolve();
+      },
+      assist: async () => "",
+      capture: null,
+      completeAssistance: async () => {
+        await Promise.resolve();
+      },
+      detailGaps: [],
+      emittedAt: new Date().toISOString(),
+      requestDetailGapPage: async () => [],
+      scope: { streams: [{ name: "group_messages" }, { name: "direct_chat_messages" }] },
+      sendInteraction: async () => ({}) as never,
+    } satisfies CollectContext);
+
+    for (const stream of ["group_messages", "direct_chat_messages"]) {
+      const state = messages.find((message) => message.type === "STATE" && message.stream === stream);
+      const coverage = messages.find(
+        (message): message is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+          message.type === "DETAIL_COVERAGE" && message.stream === stream
+      );
+      assert.ok(state, `${stream} must checkpoint only after its natural end`);
+      assert.ok(coverage, `${stream} must emit durable coverage proof`);
+      assert.equal(coverage.considered, 0, `${stream} empty enumeration must be explicit`);
+      assert.equal(coverage.covered, 0, `${stream} verified-empty proof must be complete`);
+    }
   } finally {
     restore();
   }

@@ -158,3 +158,29 @@ test("many small elements across all three shapes stay unaffected by the per-ele
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("a large archive of small elements is bounded by one element, not by archive size", async () => {
+  const count = 299_000;
+  const maxSingleElementBytes = 4 * 1024 * 1024;
+  const points = Array.from({ length: count }, (_, i) => ({
+    latitudeE7: 377_749_000 + (i % 1000),
+    longitudeE7: -1_224_194_000 - (i % 1000),
+    timestampMs: String(1_717_595_122_000 + i),
+  }));
+  const { dir, path } = writeTmpFile(JSON.stringify({ locations: points }));
+  try {
+    let elementCount = 0;
+    await streamGoogleMapsExport(
+      path,
+      (event) => {
+        if (event.kind === "element") {
+          elementCount += 1;
+        }
+      },
+      { maxSingleElementBytes }
+    );
+    assert.equal(elementCount, count);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
