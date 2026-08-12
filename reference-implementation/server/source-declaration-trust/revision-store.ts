@@ -295,7 +295,7 @@ export function createSqliteAcceptedSourceDeclarationRevisionStore(
     },
     getByReference(acceptedRevisionReference) {
       const stored = readByReference.get(...([acceptedRevisionReference] as never[]));
-      return Promise.resolve(stored ? decodeStoredRevision(stored) : null);
+      return Promise.resolve().then(() => (stored ? decodeStoredRevision(stored) : null));
     },
   };
 }
