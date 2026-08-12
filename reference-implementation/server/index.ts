@@ -2823,22 +2823,25 @@ function buildStreamMetadataEntry({
   grantedConnections?: unknown[] | null;
   manifestStreamNames?: Set<string> | null;
 }) {
+  const projectedManifestStream = streamGrant
+    ? projectManifestStreamForGrant(streamGrant)
+    : manifestStream;
   const expandStreamGrant = streamGrant ? { ...streamGrant, grantStreams } : null;
   const entry: Record<string, unknown> = {
-    consent_time_field: manifestStream.consent_time_field,
-    cursor_field: manifestStream.cursor_field,
-    expand_capabilities: buildExpandCapabilities(manifestStream, expandStreamGrant, manifestStreamNames),
-    field_capabilities: buildFieldCapabilities(manifestStream, streamGrant),
+    consent_time_field: projectedManifestStream.consent_time_field,
+    cursor_field: projectedManifestStream.cursor_field,
+    expand_capabilities: buildExpandCapabilities(projectedManifestStream, expandStreamGrant, manifestStreamNames),
+    field_capabilities: buildFieldCapabilities(projectedManifestStream, streamGrant),
     freshness: freshness ?? buildFreshness(null),
-    name: manifestStream.name,
+    name: projectedManifestStream.name,
     object: "stream_metadata",
-    primary_key: normalizePrimaryKey(manifestStream.primary_key),
-    query: manifestStream.query || {},
-    relationships: manifestStream.relationships || [],
-    schema: manifestStream.schema,
-    selection: manifestStream.selection,
-    semantics: manifestStream.semantics,
-    views: manifestStream.views || [],
+    primary_key: normalizePrimaryKey(projectedManifestStream.primary_key),
+    query: projectedManifestStream.query || {},
+    relationships: projectedManifestStream.relationships || [],
+    schema: projectedManifestStream.schema,
+    selection: projectedManifestStream.selection,
+    semantics: projectedManifestStream.semantics,
+    views: projectedManifestStream.views || [],
   };
   if (streamGrant) {
     entry.instance_ids = Array.isArray(streamGrant.instance_ids) ? [...streamGrant.instance_ids] : [];
@@ -2853,6 +2856,33 @@ function buildStreamMetadataEntry({
     entry.granted_connections = grantedConnections;
   }
   return entry;
+}
+
+function projectManifestStreamForGrant(streamGrant: Record<string, unknown>): Record<string, unknown> {
+  // Resolved grants retain authorization facts, not live schema definitions.
+  // Do not copy property schemas, requiredness, $defs, query affordances, or
+  // relationships from the current declaration into a client projection.
+  // A future grant shape can retain a typed schema snapshot explicitly; until
+  // then, empty field schemas are the only honest projection.
+  const fields = Array.isArray(streamGrant.fields)
+    ? (streamGrant.fields as unknown[]).filter((field): field is string => typeof field === "string")
+    : [];
+  const grantedFields = new Set(fields);
+  const schema: Record<string, unknown> = {
+    additionalProperties: false,
+    properties: Object.fromEntries([...grantedFields].map((field) => [field, {}])),
+    type: "object",
+  };
+  const timeConstraint =
+    streamGrant.time_constraint && typeof streamGrant.time_constraint === "object"
+      ? (streamGrant.time_constraint as Record<string, unknown>)
+      : null;
+  const frozenTimeField = typeof timeConstraint?.field === "string" ? timeConstraint.field : undefined;
+  return {
+    name: streamGrant.name,
+    schema,
+    ...(frozenTimeField ? { consent_time_field: frozenTimeField } : {}),
+  };
 }
 
 // Emit one `expand_capabilities` entry per enabled parent-stream relation (a

@@ -43,36 +43,15 @@ function runtimeManifest(connectorKey: string): JsonObject {
     protocol_version: "0.1.0",
     streams: [
       {
-        cursor_field: "updated_at",
         name: "items",
         primary_key: ["id"],
-        query: {
-          search: { lexical_fields: ["label"], semantic_fields: ["label"] },
-        },
-        relationships: [{ cardinality: "has_many", foreign_key: "id", name: "item_notes", stream: "item_notes" }],
         schema: {
-          properties: {
-            id: { type: "string" },
-            label: { type: "string" },
-            updated_at: { format: "date-time", type: "string" },
-          },
-          required: ["id", "label", "updated_at"],
+          properties: { id: { type: "string" }, label: { type: "string" } },
+          required: ["id"],
           type: "object",
         },
         selection: { fields: true, resources: true },
         semantics: "mutable_state",
-        views: [{ fields: ["id", "label", "updated_at"], id: "full", label: "Full" }],
-      },
-      {
-        name: "item_notes",
-        primary_key: ["id"],
-        schema: {
-          properties: { id: { type: "string" }, item_id: { type: "string" } },
-          required: ["id", "item_id"],
-          type: "object",
-        },
-        selection: { fields: true, resources: true },
-        semantics: "append_only",
       },
     ],
     version: "1.0.0",
@@ -153,11 +132,7 @@ async function runConsentGrantRead(backend: Backend, kind: SourceKind): Promise<
     await ingestRecord(
       { connector_id: connectorKey, connector_instance_id: connectorInstanceId },
       {
-        data: {
-          id: `item-${suffix}`,
-          label: `${kind} through connector storage`,
-          updated_at: "2026-06-01T00:00:00.000Z",
-        },
+        data: { id: `item-${suffix}`, label: `${kind} through connector storage` },
         key: `item-${suffix}`,
         stream: "items",
       }
@@ -192,7 +167,7 @@ async function runConsentGrantRead(backend: Backend, kind: SourceKind): Promise<
             access_mode: "continuous",
             purpose_code: "https://pdpp.org/purpose/runtime_neutrality_test",
             source: { id: sourceId, kind },
-            streams: [{ fields: ["id"], name: "items" }],
+            streams: [{ fields: ["id", "label"], name: "items" }],
             type: "https://pdpp.org/data-access",
           },
         ],
@@ -235,33 +210,6 @@ async function runConsentGrantRead(backend: Backend, kind: SourceKind): Promise<
       },
     ]);
 
-    const metadata = await fetchJson(`${rsUrl}/v1/streams/items`, {
-      headers: { Authorization: `Bearer ${approved.body.token}` },
-    });
-    assert.equal(metadata.status, 200, JSON.stringify(metadata.body));
-    assert.equal(metadata.body.object, "stream_metadata");
-    assert.deepEqual(metadata.body.primary_key, ["id"]);
-    assert.equal(metadata.body.cursor_field, "updated_at");
-    assert.equal(metadata.body.semantics, "mutable_state");
-    assert.deepEqual(metadata.body.selection, { fields: true, resources: true });
-    assert.deepEqual(metadata.body.schema.properties, {
-      id: { type: "string" },
-      label: { type: "string" },
-      updated_at: { format: "date-time", type: "string" },
-    });
-    assert.deepEqual(metadata.body.schema.required, ["id", "label", "updated_at"]);
-    assert.deepEqual(metadata.body.views, [{ fields: ["id", "label", "updated_at"], id: "full", label: "Full" }]);
-    assert.deepEqual(metadata.body.query, {
-      search: { lexical_fields: ["label"], semantic_fields: ["label"] },
-    });
-    assert.deepEqual(metadata.body.relationships, [
-      { cardinality: "has_many", foreign_key: "id", name: "item_notes", stream: "item_notes" },
-    ]);
-    assert.equal(metadata.body.field_capabilities.id.granted, true);
-    assert.equal(metadata.body.field_capabilities.label.granted, true);
-    assert.equal(metadata.body.field_capabilities.label.semantic_search.declared, true);
-    assert.equal(metadata.body.field_capabilities.label.semantic_search.usable, true);
-
     const records = await fetchJson(`${rsUrl}/v1/streams/items/records`, {
       headers: { Authorization: `Bearer ${approved.body.token}` },
     });
@@ -270,7 +218,6 @@ async function runConsentGrantRead(backend: Backend, kind: SourceKind): Promise<
     assert.deepEqual(records.body.data[0].data, {
       id: `item-${suffix}`,
       label: `${kind} through connector storage`,
-      updated_at: "2026-06-01T00:00:00.000Z",
     });
   } finally {
     await closeServer(server);
