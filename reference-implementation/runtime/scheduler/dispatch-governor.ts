@@ -414,11 +414,6 @@ export function decideBackoffDispatch(inputs: DecideBackoffDispatchInputs): Deci
       eligible = false;
       recoveryOnly = false;
     }
-  } else if (!inputs.backoffApplied) {
-    // Eligibility alone does not prove recovery. Keep the announcement armed
-    // until a successful run records `schedule.back_off.cleared`; otherwise
-    // the pre-run governor can erase the only fact needed to emit that event.
-    announcedBackoffMutation = "keep";
   }
 
   return { announcedBackoffMutation, announcedBlockedMutation, eligible, recoveryOnly, transitions };

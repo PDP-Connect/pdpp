@@ -38,6 +38,7 @@ import { getSyncState, putSyncState } from "./records.ts";
 import { getConnectorAttentionProjection, getConnectorSummaryForRoute } from "./ref-control.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.ts";
+import { admitOwnerRunConnection } from "./stores/connector-instance-store.ts";
 import { getDefaultSchedulerStore } from "./stores/scheduler-store.ts";
 import type { StaticSecretCredentialStore } from "./stores/static-secret-run-credentials.ts";
 import {
@@ -98,9 +99,7 @@ interface TerminalEvent {
   readonly data?: unknown;
 }
 
-interface ConnectorInstanceStore {
-  get: (connectorInstanceId: string) => Promise<{ sourceBinding?: unknown } | null>;
-}
+type ConnectorInstanceStore = Parameters<typeof admitOwnerRunConnection>[0]["connectorInstanceStore"];
 
 type ConnectorInstanceCredentialStore = StaticSecretCredentialStore;
 
@@ -402,10 +401,17 @@ export function createReferenceSchedulerManager({
   const resolveScheduledConnectionScopedRunEnv = ({
     connectorId,
     connectorInstanceId,
+    ownerSubjectId: requestedOwnerSubjectId,
   }: {
     connectorId: string;
     connectorInstanceId: string;
-  }) => connectionScopedRunEnvResolver({ connectorId, connectorInstanceId, ownerSubjectId });
+    ownerSubjectId: string;
+  }) =>
+    connectionScopedRunEnvResolver({
+      connectorId,
+      connectorInstanceId,
+      ownerSubjectId: requestedOwnerSubjectId,
+    });
 
   async function buildConnectors() {
     const schedules = await Promise.resolve(schedulerStore.listSchedules());
@@ -482,6 +488,22 @@ export function createReferenceSchedulerManager({
     }
     const managedRunner = createRunManagedConnectorViaController(controller);
     scheduler = createScheduler({
+      admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+        if (typeof requestedOwnerSubjectId !== "string" || requestedOwnerSubjectId.trim().length === 0) {
+          throw new Error("scheduler ownerSubjectId is required for connection admission");
+        }
+        const namespace = await admitOwnerRunConnection({
+          connectorId,
+          connectorInstanceId,
+          connectorInstanceStore: createConnectorInstanceStore(),
+          ownerSubjectId: requestedOwnerSubjectId,
+        });
+        return {
+          connectorId: namespace.connectorId,
+          connectorInstanceId: namespace.connectorInstanceId,
+          ownerSubjectId: namespace.ownerSubjectId,
+        };
+      },
       connectors,
       referenceBaseUrl: runtimeContext.referenceBaseUrl,
       resolveStaticSecretRunEnv: resolveScheduledConnectionScopedRunEnv,

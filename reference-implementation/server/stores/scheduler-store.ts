@@ -32,7 +32,9 @@ import {
   iterateDynamicSqlAcknowledged,
   referenceQueries,
 } from "../../lib/db.ts";
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../owner-auth.ts";
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
+import { makeDefaultAccountConnectorInstanceId } from "./connector-instance-store.ts";
 
 // ─── Domain records (public, semantic) ──────────────────────────────────────
 
@@ -154,6 +156,13 @@ export interface SchedulerStore {
     runId: string
   ) => Promise<ProductRunHistoryRecord | null> | ProductRunHistoryRecord | null;
   getSchedule: (connectorInstanceId: string) => Promise<ScheduleRecord | null> | ScheduleRecord | null;
+  hasLegacySchedulerEventMarker?: (
+    connectorId: string,
+    connectorInstanceId: string,
+    prefix: string,
+    reasonClass: string,
+    sinceCompletedAt: string | null
+  ) => Promise<boolean> | boolean;
   listActiveRuns: () => Promise<readonly ActiveRunRecord[]> | readonly ActiveRunRecord[];
   listLastRunTimes: () => Promise<readonly SchedulerLastRunTimeRecord[]> | readonly SchedulerLastRunTimeRecord[];
   listLastRunTimesByConnectionIds?: (
@@ -179,13 +188,6 @@ export interface SchedulerStore {
   listRunHistory: (
     limit: number
   ) => Promise<readonly SchedulerRunHistoryRecord[]> | readonly SchedulerRunHistoryRecord[];
-  hasLegacySchedulerEventMarker?: (
-    connectorId: string,
-    connectorInstanceId: string,
-    prefix: string,
-    reasonClass: string,
-    sinceCompletedAt: string | null
-  ) => Promise<boolean> | boolean;
   listSchedules: () => Promise<readonly ScheduleRecord[]> | readonly ScheduleRecord[];
   listSchedulesByConnectionIds?: (
     connectorInstanceIds: readonly string[]
@@ -377,6 +379,39 @@ function requireRunHistoryConnectorInstanceId(record: SchedulerRunHistoryRecord)
   return record.connectorInstanceId;
 }
 
+// Legacy scheduler markers were backfilled through the same default-account
+// migration as the other scheduler rows. The marker probe must therefore use
+// the representable default instance identity, not a nullable instance column.
+function legacySchedulerDefaultInstanceId(connectorId: string): string {
+  return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+}
+
+function hasLegacyMarkerPayload(
+  rows: Iterable<{ readonly error: string | null }>,
+  prefix: string,
+  reasonClass: string
+): boolean {
+  for (const row of rows) {
+    if (typeof row.error !== "string" || !row.error.startsWith(prefix)) {
+      continue;
+    }
+    try {
+      const payload: unknown = JSON.parse(row.error.slice(prefix.length).trim());
+      if (
+        payload !== null &&
+        typeof payload === "object" &&
+        !Array.isArray(payload) &&
+        (payload as { reason_class?: unknown }).reason_class === reasonClass
+      ) {
+        return true;
+      }
+    } catch {
+      // A namespaced marker with a malformed/non-JSON suffix is not marker evidence.
+    }
+  }
+  return false;
+}
+
 export function createSqliteSchedulerStore(): SchedulerStore {
   return {
     appendRunHistory(record) {
@@ -477,6 +512,26 @@ export function createSqliteSchedulerStore(): SchedulerStore {
     getSchedule(connectorInstanceId) {
       const row = getOne<ScheduleSqliteRow>(referenceQueries.controllerGetScheduleByConnector, [connectorInstanceId]);
       return row ? rowToScheduleRecord(row) : null;
+    },
+
+    hasLegacySchedulerEventMarker(connectorId, connectorInstanceId, prefix, reasonClass, sinceCompletedAt) {
+      if (connectorInstanceId !== legacySchedulerDefaultInstanceId(connectorId)) {
+        return false;
+      }
+      return hasLegacyMarkerPayload(
+        iterateDynamicSqlAcknowledged<{ error: string | null }>(
+          // REVIEWED-DYNAMIC: legacy marker evidence is intentionally
+          // uncapped; each candidate payload is parsed until a valid marker
+          // is found, so a 500-row history window cannot hide evidence.
+          `SELECT error FROM run_history
+           WHERE connector_id = ? AND connector_instance_id = ? AND run_id IS NULL
+             AND scheduler_managed AND substr(error, 1, length(?)) = ?
+             AND (? IS NULL OR completed_at > ?)`,
+          [connectorId, connectorInstanceId, prefix, prefix, sinceCompletedAt, sinceCompletedAt]
+        ),
+        prefix,
+        reasonClass
+      );
     },
 
     listActiveRuns() {
@@ -610,24 +665,6 @@ export function createSqliteSchedulerStore(): SchedulerStore {
       return getMany<SchedulerRunHistoryRow>(referenceQueries.controllerListRunHistory, [], {
         limit,
       }).rows.map(rowToRunHistoryRecord);
-    },
-
-    hasLegacySchedulerEventMarker(connectorId, connectorInstanceId, prefix, reasonClass, sinceCompletedAt) {
-      if (connectorInstanceId !== connectorId) {
-        return false;
-      }
-      const reasonNeedle = `"reason_class":${JSON.stringify(reasonClass)}`;
-      return Boolean(
-        [...iterateDynamicSqlAcknowledged<{ one: number }>(
-          `SELECT 1 AS one FROM run_history
-           WHERE connector_id = ? AND connector_instance_id IS NULL AND run_id IS NULL
-             AND scheduler_managed AND substr(error, 1, length(?)) = ?
-             AND instr(error, ?) > 0
-             AND (? IS NULL OR completed_at > ?)
-           LIMIT 1`,
-          [connectorId, prefix, prefix, reasonNeedle, sinceCompletedAt, sinceCompletedAt]
-        )][0]
-      );
     },
 
     listSchedules() {
@@ -880,6 +917,20 @@ export function createPostgresSchedulerStore(): SchedulerStore {
       return result.rows[0] ? rowToScheduleRecord(result.rows[0] as ScheduleSqliteRow) : null;
     },
 
+    async hasLegacySchedulerEventMarker(connectorId, connectorInstanceId, prefix, reasonClass, sinceCompletedAt) {
+      if (connectorInstanceId !== legacySchedulerDefaultInstanceId(connectorId)) {
+        return false;
+      }
+      const result = await postgresQuery(
+        `SELECT error FROM run_history
+         WHERE connector_id = $1 AND connector_instance_id = $2 AND run_id IS NULL
+           AND scheduler_managed AND LEFT(error, LENGTH($3)) = $3
+           AND ($4::text IS NULL OR completed_at > $4::text)`,
+        [connectorId, connectorInstanceId, prefix, sinceCompletedAt]
+      );
+      return hasLegacyMarkerPayload(result.rows as Array<{ error: string | null }>, prefix, reasonClass);
+    },
+
     async listActiveRuns() {
       const result = await postgresQuery(
         `SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation
@@ -1066,23 +1117,6 @@ export function createPostgresSchedulerStore(): SchedulerStore {
         [boundedLimit]
       );
       return (result.rows as SchedulerRunHistoryRow[]).map(rowToRunHistoryRecord);
-    },
-
-    async hasLegacySchedulerEventMarker(connectorId, connectorInstanceId, prefix, reasonClass, sinceCompletedAt) {
-      if (connectorInstanceId !== connectorId) {
-        return false;
-      }
-      const reasonNeedle = `"reason_class":${JSON.stringify(reasonClass)}`;
-      const result = await postgresQuery(
-        `SELECT 1 FROM run_history
-         WHERE connector_id = $1 AND connector_instance_id IS NULL AND run_id IS NULL
-           AND scheduler_managed AND LEFT(error, LENGTH($2)) = $2
-           AND POSITION($3 IN error) > 0
-           AND ($4::text IS NULL OR completed_at > $4::timestamptz)
-         LIMIT 1`,
-        [connectorId, prefix, reasonNeedle, sinceCompletedAt]
-      );
-      return result.rows.length > 0;
     },
 
     async listSchedules() {

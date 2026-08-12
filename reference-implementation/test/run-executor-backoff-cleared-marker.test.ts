@@ -114,6 +114,7 @@ interface Harness {
 interface HarnessOptions {
   readonly managedResult?: NonNullable<Awaited<ReturnType<RunManagedConnectorViaController>>>;
   readonly onRunComplete?: (record: RunRecord) => void;
+  readonly schedulerStore?: NonNullable<RunExecutorDeps["schedulerStore"]>;
 }
 
 function makeHarness(runtime: RunExecutorRuntimeState, options: HarnessOptions = {}): Harness {
@@ -157,7 +158,7 @@ function makeHarness(runtime: RunExecutorRuntimeState, options: HarnessOptions =
     rsUrl: "http://localhost.invalid",
     runManagedConnectorViaController: options.managedResult ? async () => options.managedResult ?? null : null,
     runtime,
-    schedulerStore: null,
+    schedulerStore: options.schedulerStore ?? null,
     setState: async () => {
       // State persistence is out of scope for the marker oracle.
     },
@@ -235,6 +236,37 @@ test(
     // Both announce-once maps reset so a future degradation re-announces.
     assert.equal(runtime.announcedBackoffClass.has(CONNECTOR_INSTANCE_ID), false);
     assert.equal(runtime.announcedBlockedClass.has(CONNECTOR_INSTANCE_ID), false);
+  })
+);
+
+test(
+  "delayed durable success settles before the cleared marker append",
+  withTmpDir(async (tmpDir) => {
+    const runtime = freshRuntime();
+    runtime.announcedBackoffClass.set(CONNECTOR_INSTANCE_ID, "terminal:authentication_error");
+    const durableOrder: string[] = [];
+    let successCommitted = false;
+    const delayedStore: NonNullable<RunExecutorDeps["schedulerStore"]> = {
+      appendRunHistory: async (record) => {
+        const marker = record.error?.startsWith("schedule.back_off.cleared:") === true;
+        const label = marker ? "cleared" : "success";
+        durableOrder.push(`${label}:started`);
+        if (marker) {
+          assert.equal(successCommitted, true, "the cleared marker append must not begin before success commits");
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          successCommitted = true;
+        }
+        durableOrder.push(`${label}:committed`);
+      },
+      deleteActiveRun: async () => undefined,
+      upsertActiveRun: async () => true,
+    };
+    const harness = makeHarness(runtime, { schedulerStore: delayedStore });
+
+    await harness.launchRun(schedule(writeSucceedingConnector(tmpDir)), false, SCHEDULED_POLICY);
+
+    assert.deepEqual(durableOrder, ["success:started", "success:committed", "cleared:started", "cleared:committed"]);
   })
 );
 

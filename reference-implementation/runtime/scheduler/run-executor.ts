@@ -86,6 +86,7 @@ export interface RunExecutorDeps {
   onRunComplete: RunCompleteHandler;
   persistLastRunTime: (connectorId: string, connectorInstanceId: string, lastRunTimeMs: number) => void;
   recordAndNotify: (record: RunRecord) => RunRecord;
+  recordAndNotifyAwaited?: (record: RunRecord) => Promise<RunRecord>;
   referenceBaseUrl: string | null;
   registerRunCancellation: RegisterRunCancellationHandler | null | undefined;
   resolveStaticSecretRunEnv: ResolveStaticSecretRunEnv | null;
@@ -604,6 +605,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     onRunComplete,
     persistLastRunTime,
     recordAndNotify,
+    recordAndNotifyAwaited,
     referenceBaseUrl,
     registerRunCancellation,
     resolveStaticSecretRunEnv,
@@ -614,18 +616,36 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     setState,
   } = deps;
 
-  // Appends `record` to in-memory + durable history and stamps the
-  // connector's last-run time. The store append is best-effort:
-  // log-and-continue on failure.
-  function persistRunHistory(record: RunRecord, connectorId: string, connectorInstanceId: string): void {
-    runtime.history.push(record);
-    if (schedulerStore) {
-      Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
-      });
+  async function appendRunHistoryBestEffort(record: RunRecord, connectorId: string): Promise<void> {
+    if (!schedulerStore) {
+      return;
     }
+    await Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
+    });
+  }
+
+  // Appends `record` to in-memory + durable history and stamps the
+  // connector's last-run time. The store append is best-effort, but its
+  // settlement is awaited so a later transition cannot overtake this row.
+  async function persistRunHistory(record: RunRecord, connectorId: string, connectorInstanceId: string): Promise<void> {
+    runtime.history.push(record);
+    await appendRunHistoryBestEffort(record, connectorId);
     persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+  }
+
+  async function recordAndNotifyDurably(record: RunRecord): Promise<RunRecord> {
+    if (recordAndNotifyAwaited) {
+      return recordAndNotifyAwaited(record);
+    }
+    if (!schedulerStore) {
+      return recordAndNotify(record);
+    }
+    runtime.history.push(record);
+    await appendRunHistoryBestEffort(record, record.connectorId);
+    onRunComplete(record);
+    return record;
   }
 
   // Grant-lifecycle side effects of a terminal result: a succeeded
@@ -654,19 +674,19 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   // cleared in the same tick). `wasAnnouncedBackoff`/`wasAnnouncedBlocked`
   // must be captured BEFORE this call by the caller, since a success is
   // about to be recorded and this checks the PRE-success streak state.
-  function emitBackoffClearedIfStreakEnded(
+  async function emitBackoffClearedIfStreakEnded(
     record: RunRecord,
     connectorId: string,
     connectorInstanceId: string,
     wasAnnouncedBackoff: boolean,
     wasAnnouncedBlocked: boolean
-  ): void {
+  ): Promise<void> {
     if (record.status !== "succeeded" || !(wasAnnouncedBackoff || wasAnnouncedBlocked)) {
       return;
     }
     runtime.announcedBackoffClass.delete(connectorInstanceId);
     runtime.announcedBlockedClass.delete(connectorInstanceId);
-    recordAndNotify(buildBackoffClearedEvent(connectorId, record.completedAt, connectorInstanceId));
+    await recordAndNotifyDurably(buildBackoffClearedEvent(connectorId, record.completedAt, connectorInstanceId));
   }
 
   async function finalizeSuccessOrFailure(
@@ -690,7 +710,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     const wasAnnouncedBackoff = runtime.announcedBackoffClass.has(connectorInstanceId);
     const wasAnnouncedBlocked = runtime.announcedBlockedClass.has(connectorInstanceId);
 
-    persistRunHistory(record, connectorId, connectorInstanceId);
+    await persistRunHistory(record, connectorId, connectorInstanceId);
     applyGrantOutcome(result, record, grantAccessMode, connectorInstanceId);
 
     if (result.status === "succeeded" && call.persistState && result.state !== undefined) {
@@ -698,7 +718,13 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     }
 
     onRunComplete(record);
-    emitBackoffClearedIfStreakEnded(record, connectorId, connectorInstanceId, wasAnnouncedBackoff, wasAnnouncedBlocked);
+    await emitBackoffClearedIfStreakEnded(
+      record,
+      connectorId,
+      connectorInstanceId,
+      wasAnnouncedBackoff,
+      wasAnnouncedBlocked
+    );
 
     return record;
   }
@@ -923,11 +949,11 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   // store append, last-run timestamp, terminal-grant handling, completion
   // notification. Pulled out so `runWithRetries` only orchestrates the retry
   // loop and trusts this helper for the failure tail.
-  function finalizeExhaustedFailure(
+  async function finalizeExhaustedFailure(
     schedule: ConnectorSchedule,
     lastError: RunConnectorError | null,
     attempt: number
-  ): RunRecord {
+  ): Promise<RunRecord> {
     const { connectorId, connectorInstanceId = connectorId } = schedule;
     const failRecord = buildExhaustedFailureRecord({
       attempt,
@@ -935,14 +961,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       connectorInstanceId,
       lastError,
     });
-    runtime.history.push(failRecord);
-    if (schedulerStore) {
-      Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(failRecord))).catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
-      });
-    }
-    persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+    await persistRunHistory(failRecord, connectorId, connectorInstanceId);
     handleGrantFailureDisable(failRecord.terminalReason ?? failRecord.failureReason, connectorInstanceId);
     onRunComplete(failRecord);
     return failRecord;
@@ -1116,10 +1135,10 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       }
       const wasAnnouncedBackoff = runtime.announcedBackoffClass.has(connectorInstanceId);
       const wasAnnouncedBlocked = runtime.announcedBlockedClass.has(connectorInstanceId);
-      const record = recordAndNotify(
+      const record = await recordAndNotifyDurably(
         buildManagedRunTerminalRecord(connectorId, connectorInstanceId, startedAt, runNowResult, attempt)
       );
-      emitBackoffClearedIfStreakEnded(
+      await emitBackoffClearedIfStreakEnded(
         record,
         connectorId,
         connectorInstanceId,

@@ -4,10 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  matchesRecoveryInstance,
-  resolveSchedulerMarkers,
-} from "../runtime/scheduler/recovery-instance-scope.ts";
+import { matchesRecoveryInstance, resolveSchedulerMarkers } from "../runtime/scheduler/recovery-instance-scope.ts";
 
 test("legacy null-instance gaps belong to the default instance only", () => {
   assert.equal(matchesRecoveryInstance(null, "connector-a", "connector-a"), true);
@@ -20,7 +17,7 @@ test("legacy null-instance gaps belong to the default instance only", () => {
 test("legacy marker evidence is durable beyond the in-memory history window", async () => {
   const calls: Array<{ sinceCompletedAt: string | null; connectorInstanceId: string }> = [];
   const evidence = await resolveSchedulerMarkers(
-    async (_connectorId, connectorInstanceId, _prefix, _reasonClass, sinceCompletedAt) => {
+    (_connectorId, connectorInstanceId, _prefix, _reasonClass, sinceCompletedAt) => {
       calls.push({ connectorInstanceId, sinceCompletedAt });
       return true;
     },

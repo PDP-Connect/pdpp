@@ -426,6 +426,18 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     return record;
   }
 
+  async function recordAndNotifyAwaited(record: RunRecord): Promise<RunRecord> {
+    runtime.history.push(record);
+    if (schedulerStore) {
+      await Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[scheduler] failed to persist run history for ${record.connectorId}: ${message}`);
+      });
+    }
+    onRunComplete(record);
+    return record;
+  }
+
   async function hydratePersistence(): Promise<void> {
     if (!schedulerStore || hydrationStarted) {
       return;
@@ -484,6 +496,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     onRunComplete,
     persistLastRunTime,
     recordAndNotify,
+    recordAndNotifyAwaited,
     referenceBaseUrl,
     registerRunCancellation,
     resolveStaticSecretRunEnv,

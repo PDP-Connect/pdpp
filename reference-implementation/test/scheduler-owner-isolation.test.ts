@@ -34,7 +34,13 @@ import {
   admitOwnerRunConnection,
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
+  makeDefaultAccountConnectorInstanceId,
 } from "../server/stores/connector-instance-store.ts";
+import {
+  createPostgresSchedulerStore,
+  createSqliteSchedulerStore,
+  type SchedulerStore,
+} from "../server/stores/scheduler-store.ts";
 import { resolveStaticSecretRunEnv } from "../server/stores/static-secret-run-credentials.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
@@ -52,6 +58,10 @@ const WRONG_CREDENTIAL_KEY = "scheduler-owner-isolation-wrong-key";
 const BLANK_OWNER_FAILURE_RE = /ownerSubjectId is required and must be nonblank/u;
 const OWNER_MISMATCH_FAILURE_RE = /does not belong to owner/u;
 const DECRYPT_FAILURE_RE = /credential_decrypt_failed/u;
+const MARKER_DEFAULT_INSTANCE = makeDefaultAccountConnectorInstanceId("owner_local", CONNECTOR_ID);
+const MARKER_PREFIX = "schedule.back_off.started:";
+const MARKER_REASON = "terminal:authentication_error";
+const MARKER_COMPLETED_AT = "2026-08-11T12:00:10.000Z";
 const BACKGROUND_SAFE_MANIFEST = {
   capabilities: { refresh_policy: { background_safe: true, recommended_mode: "automatic" } },
   streams: [{ name: "items" }],
@@ -354,6 +364,94 @@ async function runBackendOwnerIsolationScenarios({
   await assertWrongOwnerFailsBeforeDecryptAndSpawn(wrongKeyCredentialStore, connectorInstanceStore);
 }
 
+function legacyMarkerRecord({
+  completedAt,
+  error,
+  runId = null,
+}: {
+  completedAt: string;
+  error: string;
+  runId?: string | null;
+}): Parameters<SchedulerStore["appendRunHistory"]>[0] {
+  return {
+    attempt: 0,
+    checkpointSummary: null,
+    completedAt,
+    connectorId: CONNECTOR_ID,
+    connectorInstanceId: MARKER_DEFAULT_INSTANCE,
+    error,
+    knownGaps: [],
+    recordsEmitted: 0,
+    runId,
+    source: { id: CONNECTOR_ID, kind: "connector" },
+    startedAt: completedAt,
+    status: "skipped",
+  };
+}
+
+async function assertLegacyMarkerProbe(store: SchedulerStore): Promise<void> {
+  if (!store.hasLegacySchedulerEventMarker) {
+    throw new Error("SchedulerStore marker probe is required for this regression suite");
+  }
+  const probe = store.hasLegacySchedulerEventMarker;
+  const validPayload = JSON.stringify({
+    consecutive_failures: 3,
+    next_attempt_at: "2026-08-11T12:05:00.000Z",
+    reason_class: MARKER_REASON,
+  });
+  for (let index = 0; index < 501; index += 1) {
+    // biome-ignore lint/performance/noAwaitInLoops: the ordered 501-row prefix proves the uncapped durable scan.
+    await store.appendRunHistory(
+      legacyMarkerRecord({
+        completedAt: `2026-08-11T12:00:${String(index % 60).padStart(2, "0")}.000Z`,
+        error: `${MARKER_PREFIX} malformed-${index}`,
+      })
+    );
+  }
+  await store.appendRunHistory(
+    legacyMarkerRecord({ completedAt: MARKER_COMPLETED_AT, error: `${MARKER_PREFIX} ${validPayload}` })
+  );
+  await store.appendRunHistory(
+    legacyMarkerRecord({
+      completedAt: "2026-08-11T12:00:11.000Z",
+      error: `${MARKER_PREFIX} not-json "reason_class":"payload-only"`,
+    })
+  );
+  await store.appendRunHistory(
+    legacyMarkerRecord({
+      completedAt: "2026-08-11T12:00:12.000Z",
+      error: `${MARKER_PREFIX} ${JSON.stringify({ reason_class: "run-id-filter" })}`,
+      runId: "run_marker_non_null",
+    })
+  );
+
+  assert.equal(
+    await probe(CONNECTOR_ID, MARKER_DEFAULT_INSTANCE, MARKER_PREFIX, MARKER_REASON, "2026-08-11T12:00:09.000Z"),
+    true,
+    "backfilled default-instance marker payload must be recognized"
+  );
+  assert.equal(
+    await probe(CONNECTOR_ID, MARKER_DEFAULT_INSTANCE, MARKER_PREFIX, "payload-only", null),
+    false,
+    "prefix text containing reason_class is not a JSON marker payload"
+  );
+  assert.equal(
+    await probe(CONNECTOR_ID, MARKER_DEFAULT_INSTANCE, MARKER_PREFIX, "run-id-filter", null),
+    false,
+    "a marker with a non-null run id is not legacy evidence"
+  );
+  assert.equal(
+    await probe(CONNECTOR_ID, `${MARKER_DEFAULT_INSTANCE}-other`, MARKER_PREFIX, MARKER_REASON, null),
+    false,
+    "non-default instance requests must not read the default marker"
+  );
+  assert.equal(
+    await probe(CONNECTOR_ID, MARKER_DEFAULT_INSTANCE, MARKER_PREFIX, MARKER_REASON, MARKER_COMPLETED_AT),
+    false,
+    "completed_at comparison is strict committed-text ordering"
+  );
+}
+
 test("scheduler owner identity isolates distinct encrypted secrets on SQLite", async () => {
   initDb(":memory:");
   try {
@@ -366,6 +464,16 @@ test("scheduler owner identity isolates distinct encrypted secrets on SQLite", a
         env: credentialEnv(WRONG_CREDENTIAL_KEY),
       }),
     });
+  } finally {
+    closeDb();
+  }
+});
+
+test("scheduler legacy marker probes use the representable default row on SQLite", async () => {
+  initDb(":memory:");
+  try {
+    seedSqliteConnection({ connectorInstanceId: MARKER_DEFAULT_INSTANCE, ownerSubjectId: "owner_local" });
+    await assertLegacyMarkerProbe(createSqliteSchedulerStore());
   } finally {
     closeDb();
   }
@@ -407,6 +515,28 @@ test("scheduler owner identity isolates distinct encrypted secrets on disposable
             env: credentialEnv(WRONG_CREDENTIAL_KEY),
           }),
         });
+      } finally {
+        await closePostgresStorage();
+      }
+    }
+  );
+});
+
+test("scheduler legacy marker probes use the representable default row on disposable Postgres", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  assert.ok(POSTGRES_URL);
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: POSTGRES_URL,
+      databaseName: postgresDatabaseName(),
+    },
+    async (databaseUrl) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl });
+      try {
+        await seedPostgresConnection({ connectorInstanceId: MARKER_DEFAULT_INSTANCE, ownerSubjectId: "owner_local" });
+        await assertLegacyMarkerProbe(createPostgresSchedulerStore());
       } finally {
         await closePostgresStorage();
       }
