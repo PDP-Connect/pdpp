@@ -18,6 +18,7 @@ import {
   parseGrantedAuthorizationDetail,
   parseResolvedGrantApprovedAuthorization,
 } from "../../server/source-approved-authorization.ts";
+import { resolveSourceIntrospectionContext } from "../../server/source-introspection-context.ts";
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
@@ -26,8 +27,11 @@ import { TEST_RS_INTROSPECTION_CREDENTIALS } from "../helpers/introspection-test
 import { writePr89CaseOutput } from "./pr89-case-output.ts";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
-const CONNECTOR_KEY = "pr89-spotify-source";
+const CONNECTOR_KEY = "pr89-spotify-source-case2";
+const INSTANCE_A = "pr89-case2-account-a";
+const INSTANCE_B = "pr89-case2-account-b";
 const REDIRECT_URI = "https://client.example/pr89-callback";
+const SOURCE_ID = "https://sources.example/records/spotify/case-2";
 
 interface CloseableServer {
   close: (callback: () => void) => unknown;
@@ -87,7 +91,7 @@ async function seedInstances(manifest: Record<string, unknown>): Promise<void> {
   const store = POSTGRES_URL ? createPostgresConnectorInstanceStore() : createSqliteConnectorInstanceStore();
   const now = new Date().toISOString();
   await Promise.all(
-    ["account-a", "account-b"].map((instanceId) =>
+    [INSTANCE_A, INSTANCE_B].map((instanceId) =>
       store.upsert({
         connectorId,
         connectorInstanceId: instanceId,
@@ -159,6 +163,14 @@ test("Case 2 returns the narrowed Source authorization through the real OAuth co
     });
     const asUrl = `http://127.0.0.1:${server.asPort}`;
     const declaration = fixture("source.json");
+    (declaration.source as Record<string, unknown>).id = SOURCE_ID;
+    const requestDetail = fixture("rar-request.json");
+    requestDetail.source = structuredClone(declaration.source);
+    const requestStreams = requestDetail.streams as Record<string, unknown>[];
+    requestStreams[0] = { ...requestStreams[0], instance_ids: [INSTANCE_A] };
+    requestStreams[1] = { ...requestStreams[1], instance_ids: [INSTANCE_B] };
+    const invalidDetail = fixture("rar-request-invalid.json");
+    invalidDetail.source = structuredClone(declaration.source);
     const manifest = connectorManifest(declaration);
     const registered = await fetch(`${asUrl}/connectors`, {
       body: JSON.stringify(manifest),
@@ -170,14 +182,14 @@ test("Case 2 returns the narrowed Source authorization through the real OAuth co
     const clientId = await registerClient(asUrl);
     const verifier = randomBytes(32).toString("base64url");
 
-    const invalidResponse = await fetch(authorizeUrl(asUrl, clientId, verifier, fixture("rar-request-invalid.json")), {
+    const invalidResponse = await fetch(authorizeUrl(asUrl, clientId, verifier, invalidDetail), {
       redirect: "manual",
     });
     const invalidBody = (await invalidResponse.json()) as { error: string };
     assert.equal(invalidResponse.status, 400, JSON.stringify(invalidBody));
     assert.equal(invalidBody.error, "invalid_authorization_details");
 
-    const authorize = await fetch(authorizeUrl(asUrl, clientId, verifier, fixture("rar-request.json")), {
+    const authorize = await fetch(authorizeUrl(asUrl, clientId, verifier, requestDetail), {
       redirect: "manual",
     });
     assert.equal(authorize.status, 302);
@@ -231,7 +243,8 @@ test("Case 2 returns the narrowed Source authorization through the real OAuth co
 
     const { body: introspected, response: introspectionResponse } = await fetchJson<{
       active: boolean;
-      grant: unknown;
+      authorization_details: unknown[];
+      pdpp: unknown;
     }>(`${asUrl}/introspect`, {
       body: new URLSearchParams({ token: tokenBody.access_token }).toString(),
       headers: {
@@ -242,8 +255,9 @@ test("Case 2 returns the narrowed Source authorization through the real OAuth co
     });
     assert.equal(introspectionResponse.status, 200);
     assert.equal(introspected.active, true);
+    const introspectionContext = resolveSourceIntrospectionContext(introspected);
     assert.deepEqual(
-      parseResolvedGrantApprovedAuthorization(introspected.grant, declaration),
+      parseResolvedGrantApprovedAuthorization(introspectionContext.grant, declaration),
       parsedDetail.authorization
     );
 

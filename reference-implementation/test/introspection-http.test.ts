@@ -19,19 +19,29 @@ function validResponse(): Record<string, unknown> {
   return {
     active: true,
     aud: AUDIENCE,
+    authorization_details: [
+      {
+        access_mode: "continuous",
+        purpose_code: "https://pdpp.org/purpose/personal-ai",
+        source: { id: "https://sources.example/spotify", kind: "connector" },
+        streams: [{ fields: ["id"], instance_ids: ["account-a"], name: "top_artists" }],
+        type: "https://pdpp.org/data-access",
+      },
+    ],
     client_id: "pr89-seam-client",
     exp: CLOCK_MS / 1000 + 300,
-    grant: {
-      access_mode: "continuous",
-      client: { client_id: "pr89-seam-client" },
-      grant_id: "grt_pr89",
-      source: { id: "spotify", kind: "connector" },
-      streams: [{ fields: ["id"], name: "top_artists" }],
-      subject: { id: "owner_local" },
-    },
     grant_id: "grt_pr89",
     grant_storage_binding: { connector_id: "spotify" },
     iss: ISSUER,
+    pdpp: {
+      client_id: "pr89-seam-client",
+      context_kind: "oauth_rar_0_1",
+      grant_id: "grt_pr89",
+      issued_at: "2026-08-11T11:55:00Z",
+      source: { id: "https://sources.example/spotify", kind: "connector" },
+      source_declaration: { version: "spotify-v1" },
+      subject_id: "owner_local",
+    },
     pdpp_token_kind: "client",
     subject_id: "owner_local",
   };
@@ -81,7 +91,7 @@ test("remote introspection makes one authenticated HTTP request and resolves the
   );
   const result = await introspect("tok_pr89");
 
-  assert.equal(result.active, true);
+  assert.equal(result.active, true, JSON.stringify(result));
   assert.equal(requests.length, 1);
   assert.equal(String(requests[0]?.input), `${ISSUER}/introspect`);
   assert.equal(requests[0]?.init?.method, "POST");
@@ -144,13 +154,16 @@ test("remote introspection maps invalid authenticated responses to stable contex
     {
       expected: "context.identity_mismatch",
       mutate: (response) => {
-        response.client_id = "wrong-client";
+        (response.pdpp as Record<string, unknown>).client_id = "wrong-client";
       },
     },
     {
       expected: "context.source_mismatch",
       mutate: (response) => {
-        response.grant_storage_binding = { connector_id: "wrong-source" };
+        (response.pdpp as Record<string, unknown>).source = {
+          id: "https://sources.example/wrong",
+          kind: "connector",
+        };
       },
     },
     {
@@ -162,7 +175,13 @@ test("remote introspection maps invalid authenticated responses to stable contex
     {
       expected: "context.rights_missing",
       mutate: (response) => {
-        response.grant = undefined;
+        response.authorization_details = undefined;
+      },
+    },
+    {
+      expected: "context.rights_duplicated",
+      mutate: (response) => {
+        (response.pdpp as Record<string, unknown>).streams = [];
       },
     },
   ];

@@ -318,19 +318,25 @@ function requireGrantedPolicy(value: JsonObject): void {
   }
 }
 
-export function parseGrantedAuthorizationDetail(
-  value: unknown,
-  retainedDeclarationInput: unknown
-): { authorization: ApprovedAuthorization; detail: GrantedAuthorizationDetail } {
+/** Validate the closed RFC 9396 carrier fields without re-resolving Source metadata. */
+export function requireGrantedAuthorizationDetailEnvelope(value: unknown): JsonObject {
   if (!isObject(value)) {
     sourceFail("Granted authorization detail must be an object");
   }
   rejectUnknownKeys(value, RAR_DETAIL_KEYS, "Granted authorization detail");
   requireGrantedPolicy(value);
+  return value;
+}
+
+export function parseGrantedAuthorizationDetail(
+  value: unknown,
+  retainedDeclarationInput: unknown
+): { authorization: ApprovedAuthorization; detail: GrantedAuthorizationDetail } {
+  const detail = requireGrantedAuthorizationDetailEnvelope(value);
   const declaration = retainedDeclaration(retainedDeclarationInput);
-  const authorization = requireAuthorizationRights(value, declaration);
-  requireSourceMetadataMatch(value, declaration);
-  return { authorization, detail: structuredClone(value) as unknown as GrantedAuthorizationDetail };
+  const authorization = requireAuthorizationRights(detail, declaration);
+  requireSourceMetadataMatch(detail, declaration);
+  return { authorization, detail: structuredClone(detail) as unknown as GrantedAuthorizationDetail };
 }
 
 export function buildGrantedAuthorizationDetail(value: unknown): GrantedAuthorizationDetail {

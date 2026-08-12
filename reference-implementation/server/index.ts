@@ -114,6 +114,11 @@ import { autoEnrollEligibleSchedules } from "./auto-enroll-eligible-schedules.ts
 import type { CimdFetchDependencies } from "./cimd.ts";
 import { acquireDefaultDeliveryWorker, getDefaultDeliveryWorker } from "./client-event-delivery-worker.ts";
 import {
+  enforceSourceReadRequest,
+  projectSourceIntrospectionWireContext,
+  SourceIntrospectionContextError,
+} from "./source-introspection-context.ts";
+import {
   buildCollectorProtocolMismatchBody,
   isAcceptedCollectorProtocolVersion,
   readCollectorProtocolHeader,
@@ -771,6 +776,42 @@ function requestSelectsSource(body: unknown, sourceId: string): boolean {
         "source" in detail &&
         (detail as { source?: { id?: unknown } }).source?.id === sourceId
     )
+  );
+}
+
+function readIntrospectionCredentialsFromEnv(): IntrospectionCallerCredentials | null {
+  const clientId = process.env.PDPP_RS_INTROSPECTION_CLIENT_ID?.trim();
+  const clientSecret = process.env.PDPP_RS_INTROSPECTION_CLIENT_SECRET?.trim();
+  if (!(clientId || clientSecret)) {
+    return null;
+  }
+  if (!(clientId && clientSecret)) {
+    throw new Error("PDPP RS introspection requires both client id and client secret");
+  }
+  return { clientId, clientSecret };
+}
+
+function generateLocalIntrospectionCredentials(): IntrospectionCallerCredentials {
+  return {
+    clientId: `rs-${randomBytes(12).toString("base64url")}`,
+    clientSecret: randomBytes(32).toString("base64url"),
+  };
+}
+
+function resolveIntrospectionCredentials(opts: ServerOpts): IntrospectionCallerCredentials {
+  const asCredentials = opts.introspectionCallerCredentials;
+  const rsCredentials = opts.rsIntrospectionCredentials;
+  if (asCredentials && rsCredentials) {
+    if (
+      asCredentials.clientId !== rsCredentials.clientId ||
+      asCredentials.clientSecret !== rsCredentials.clientSecret
+    ) {
+      throw new Error("AS and RS introspection credentials must match when both are configured");
+    }
+    return asCredentials;
+  }
+  return (
+    asCredentials ?? rsCredentials ?? readIntrospectionCredentialsFromEnv() ?? generateLocalIntrospectionCredentials()
   );
 }
 
@@ -1745,6 +1786,24 @@ async function requireTokenWithIntrospection(
   }
   const token = auth.slice(7);
   const info = await introspectToken(token);
+  if (info.active && info.pdpp_token_kind === "client" && req.params?.stream) {
+    const requestedConnection = resolveRequestConnectionId(req.query ?? {}).connectionId;
+    const requestedFields = normalizeFieldListParam(req.query?.fields);
+    try {
+      enforceSourceReadRequest(info, {
+        ...(requestedConnection ? { instance_id: requestedConnection } : {}),
+        ...(requestedFields ? { fields: requestedFields } : {}),
+        stream: req.params.stream,
+      });
+    } catch (error: unknown) {
+      if (error instanceof SourceIntrospectionContextError) {
+        info.active = false;
+        info.inactive_reason = error.code;
+      } else {
+        throw error;
+      }
+    }
+  }
   if (!info.active) {
     if (info.trace_id) {
       setReferenceTraceId(res, info.trace_id);
@@ -4317,7 +4376,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
   mountAsIntrospect(app, {
     authenticateCaller: (authorization) =>
       authenticateIntrospectionCaller(authorization, introspectionCallerCredentials),
-    introspect,
+    introspect: async (token) => projectSourceIntrospectionWireContext(await introspect(token)),
     pdppError,
     resolveAudience: opts.resolveIntrospectionAudience ?? (() => opts.rsPublicUrl ?? null),
     resolveIssuer: opts.resolveIntrospectionIssuer ?? (() => opts.asIssuer ?? opts.asPublicUrl ?? null),

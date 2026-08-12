@@ -1,26 +1,28 @@
 ## 1. Context and Source contract
 
-- [ ] 1.1 Implement the Source-defined `ApprovedAuthorization` parser with
+- [x] 1.1 Implement the Source-defined `ApprovedAuthorization` parser with
       `source_id`, `access_mode`, stream names, unique nonempty `instance_ids`,
       unique nonempty `fields`, optional frozen-field bounds, and optional
       canonical resources.
-- [ ] 1.2 Keep `source.kind` outside authorization equality and reject every
+- [x] 1.2 Keep `source.kind` outside authorization equality and reject every
       metadata mismatch before projection, plus every stable invalid-input
       code listed in the execution document.
-- [ ] 1.3 Add instance and temporal-field rows to Cases 1, 3, and 4.
+- [x] 1.3 Add instance and temporal-field rows to Cases 1, 3, and 4.
 
 ## 2. OAuth/RAR and introspection
 
-- [ ] 2.1 Run the real authorization-code and PKCE path with partial approval
+- [x] 2.1 Run the real authorization-code and PKCE path with partial approval
       and assert the granted `authorization_details`, including approved
       purpose, retention, and selection provenance.
       Assert that Source-neutral `source.authorization_details_invalid` maps
       to RFC 9396 `invalid_authorization_details` at the OAuth boundary.
-- [ ] 2.2 Use authenticated RFC 7662 HTTP introspection with fixed local
-      confidential-RS credentials. Keep long-term registration out of PR89.
-- [ ] 2.3 Test expiration, issuer, audience, identity, source, context-kind,
+- [x] 2.2 Use authenticated RFC 7662 HTTP introspection with operator-provided
+      or per-process generated confidential-RS credentials. Keep fixed
+      credentials in test helpers only, and keep long-term registration out of
+      PR89.
+- [x] 2.3 Test expiration, issuer, audience, identity, source, context-kind,
       approved-rights, instance, and field mismatches before route handling.
-- [ ] 2.4 Assert response-only RS enforcement with no in-process fallback or
+- [x] 2.4 Assert response-only RS enforcement with no in-process fallback or
       second AS lookup. Keep DPoP text conditional to the RFC 9449 AS versus RS
       duty split without adding nonce or `jti` policy.
 

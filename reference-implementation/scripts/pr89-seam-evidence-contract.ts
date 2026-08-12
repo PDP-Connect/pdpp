@@ -70,6 +70,7 @@ export const CASE_DEFINITIONS = {
       "reference-implementation/test/seam-spike/fixtures/pr89/source.json",
     ],
     implementationInputPaths: [
+      "reference-implementation/server/source-approved-authorization.ts",
       "packages/reference-contract/src/public/source.ts",
       "reference-implementation/server/core-source-authorization.ts",
       "reference-implementation/server/source-declaration.ts",
@@ -99,6 +100,8 @@ export const CASE_DEFINITIONS = {
     implementationInputPaths: [
       "packages/reference-contract/src/public/source.ts",
       "reference-implementation/server/auth.ts",
+      "reference-implementation/server/source-approved-authorization.ts",
+      "reference-implementation/server/core-source-authorization.ts",
       "reference-implementation/server/routes/as-authorize.ts",
       "reference-implementation/server/routes/as-oauth.ts",
       "reference-implementation/server/source-declaration.ts",
@@ -137,6 +140,8 @@ export const CASE_DEFINITIONS = {
       "reference-implementation/test/seam-spike/fixtures/pr89/introspection/valid.json",
     ],
     implementationInputPaths: [
+      "reference-implementation/server/source-approved-authorization.ts",
+      "reference-implementation/server/core-source-authorization.ts",
       "reference-implementation/operations/as-introspect/index.ts",
       "reference-implementation/server/auth-middleware.ts",
       "reference-implementation/server/auth.ts",
@@ -160,6 +165,8 @@ export const CASE_DEFINITIONS = {
       "reference-implementation/test/seam-spike/fixtures/pr89/source.json",
     ],
     implementationInputPaths: [
+      "reference-implementation/server/source-approved-authorization.ts",
+      "reference-implementation/server/core-source-authorization.ts",
       "reference-implementation/server/auth-middleware.ts",
       "reference-implementation/server/record-filters.ts",
       "reference-implementation/server/routes/rs-read.ts",

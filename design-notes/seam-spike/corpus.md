@@ -93,6 +93,7 @@ reference-implementation/test/seam-spike/fixtures/pr89/grant-v01.json
 reference-implementation/test/seam-spike/fixtures/pr89/rar-request.json
 reference-implementation/test/seam-spike/fixtures/pr89/rar-request-invalid.json
 reference-implementation/test/seam-spike/fixtures/pr89/rar-approved.json
+reference-implementation/test/seam-spike/fixtures/pr89/records.json
 reference-implementation/test/seam-spike/fixtures/pr89/introspection/valid.json
 reference-implementation/test/seam-spike/fixtures/pr89/introspection/mutations/wrong-credentials.json
 reference-implementation/test/seam-spike/fixtures/pr89/introspection/mutations/wrong-issuer.json
@@ -114,11 +115,11 @@ reference-implementation/test/seam-spike/fixtures/pr89/gnap/partial.json
 reference-implementation/test/seam-spike/fixtures/pr89/gnap/unknown-mandatory.json
 ```
 
-The fixed clock is `2026-08-11T12:00:00Z`. The AS and RS run on separate
-ephemeral local ports. The OAuth client is fixed at `pr89-seam-client`; the RS
-introspection client is the fixed local confidential client `pr89-rs` with the
-fixture secret `pr89-rs-secret`. The spike uses authenticated RFC 7662 HTTP
-introspection with those local confidential-RS credentials. Long-term
+The fixed fixture clock is `2026-08-11T12:00:00Z`. The AS and RS run on
+separate ephemeral local ports. The OAuth client registers locally for each
+run. The RS introspection client uses the fixed test-only client
+`pr89-rs-test` with fixture secret `pr89-rs-test-secret`. The spike uses
+authenticated RFC 7662 HTTP introspection with those test credentials. Long-term
 registration and discovery belong to the discovery and trust change. PR89
 does not specify an alternative client registration mechanism.
 
@@ -172,8 +173,6 @@ context.rights_missing
 context.rights_duplicated
 context.stream_not_allowed
 context.field_not_granted
-context.time_constraint_exceeded
-context.resource_not_allowed
 oauth.invalid_grant
 oauth.invalid_authorization_details
 oauth.single_use_race
@@ -245,8 +244,9 @@ the response.
 
 ### Case 4: Response-only RS enforcement
 
-Fixtures: `introspection/valid.json` as the captured Case 3 response and
-`source.json` as the local records. After capture, disable the AS endpoint and
+Fixtures: `introspection/valid.json` as the captured Case 3 response,
+`source.json` as the retained declaration, and `records.json` as the local
+record matrix. After capture, disable the AS endpoint and
 use only the decoded context. Test an allowed stream, allowed instance,
 allowed field, in-range record, allowed resource, ungranted stream, wrong
 instance, ungranted field, out-of-range record, and a record outside the
@@ -255,11 +255,10 @@ resource allowlist.
 Oracle: allowed requests succeed. Wrong instances return
 `context.instance_mismatch`, ungranted streams return
 `context.stream_not_allowed`, ungranted fields return
-`context.field_not_granted`, out-of-range records return
-`context.time_constraint_exceeded`, and non-allowlisted resources return
-`context.resource_not_allowed`. The captured response is the only
-authorization input. Instance and temporal field rows are asserted in the
-response-derived context.
+`context.field_not_granted`, and out-of-range or non-allowlisted records are
+omitted without revealing whether an unauthorized record exists. The captured
+response is the only authorization input. Instance and temporal field rows are
+asserted in the response-derived context.
 
 ### Case 5: Exactly-once authorization-code and single-use races
 

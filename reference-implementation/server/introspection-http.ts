@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash, timingSafeEqual } from "node:crypto";
+import { resolveSourceIntrospectionContext, SourceIntrospectionContextError } from "./source-introspection-context.ts";
 
 const BASIC_AUTHORIZATION_PATTERN = /^Basic\s+([^\s]+)$/i;
 
@@ -102,40 +103,17 @@ function requireClientIdentity(info: Record<string, unknown>): RemoteIntrospecti
   );
 }
 
-function clientGrant(info: Record<string, unknown>): Record<string, unknown> | null {
-  return isRecord(info.grant) ? info.grant : null;
-}
-
-function clientGrantIdentityMatches(grant: Record<string, unknown> | null, info: Record<string, unknown>): boolean {
-  const client = isRecord(grant?.client) ? grant.client.client_id : null;
-  const subject = isRecord(grant?.subject) ? grant.subject.id : null;
-  return client === info.client_id && subject === info.subject_id;
-}
-
-function clientGrantSource(grant: Record<string, unknown> | null): Record<string, unknown> | null {
-  return isRecord(grant?.source) ? grant.source : null;
-}
-
-function clientGrantSourceMatchesStorageBinding(
-  source: Record<string, unknown> | null,
-  info: Record<string, unknown>
-): boolean {
-  const storageBinding = isRecord(info.grant_storage_binding) ? info.grant_storage_binding : null;
-  return source?.kind !== "connector" || storageBinding?.connector_id === source?.id;
-}
-
 function validateClientAuthorizationContext(info: Record<string, unknown>): RemoteIntrospectionInfo | null {
-  const grant = clientGrant(info);
-  const source = clientGrantSource(grant);
-  return firstInactive([
-    requireClientIdentity(info),
-    inactiveWhen(grant !== null, "context.rights_missing"),
-    inactiveWhen(clientGrantIdentityMatches(grant, info), "context.identity_mismatch"),
-    inactiveWhen(grant?.grant_id === info.grant_id, "context.grant_mismatch"),
-    inactiveWhen(isNonEmptyString(source?.id), "context.source_mismatch"),
-    inactiveWhen(Array.isArray(grant?.streams) && grant.streams.length > 0, "context.rights_missing"),
-    inactiveWhen(clientGrantSourceMatchesStorageBinding(source, info), "context.source_mismatch"),
-  ]);
+  const identityFailure = requireClientIdentity(info);
+  if (identityFailure) {
+    return identityFailure;
+  }
+  try {
+    Object.assign(info, resolveSourceIntrospectionContext(info));
+    return null;
+  } catch (error: unknown) {
+    return inactive(error instanceof SourceIntrospectionContextError ? error.code : "context.rights_missing");
+  }
 }
 
 function requirePackageIdentity(info: Record<string, unknown>): RemoteIntrospectionInfo | null {
