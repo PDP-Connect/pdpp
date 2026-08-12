@@ -973,7 +973,7 @@ export async function executeSearchSemantic(
         if (planEntries.length === 0) {
           skippedSources.push({
             connection_id: cb.connectorInstanceId,
-            source: connectorId ?? "",
+            source: bindingConnectorId ?? "",
           });
           continue;
         }
