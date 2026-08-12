@@ -107,6 +107,13 @@ test("connector manifests' own reason_display_messages read cleanly per connecto
   );
 });
 
+test("Google Maps oversized-record copy recommends re-exporting, not changing an operator limit", () => {
+  const message = connectorReasonDisplayMessages()["google-maps"]?.record_too_large;
+  assert.equal(typeof message, "string");
+  assert.match(message ?? "", /re-export/i);
+  assert.doesNotMatch(message ?? "", /operator|import limit|upload limit/i);
+});
+
 test("no connector manifest declares an RI-reserved generic reason code in its own reason_display_messages", () => {
   const byConnector = connectorReasonDisplayMessages();
   const collisions: string[] = [];

@@ -249,7 +249,7 @@
   ],
   "reason_display_messages": {
     "invalid_json": "We couldn't read one of your Google Maps Timeline export files",
-    "record_too_large": "A Google Maps Timeline record is too large to process; ask your PDPP operator to raise the import limit",
+    "record_too_large": "This Google Maps Timeline record is too large; re-export your Timeline and try again",
     "timeline_points_not_found": "We couldn't find any location points to import",
     "timeline_segments_not_found": "We couldn't find any timeline segments to import",
     "unsupported_shape": "Your Google Maps Timeline export has an unsupported structure; re-export it as a supported JSON file"
