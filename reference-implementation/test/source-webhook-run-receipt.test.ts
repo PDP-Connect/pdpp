@@ -46,6 +46,7 @@ function sourceEvent(prefix: string, overrides: Partial<SourceWebhookRunEvent> =
     action: "schedule_run",
     bodyHash: `${prefix}_body_hash`,
     eventId: `${prefix}_event`,
+    receivedAt: "2026-08-11T00:00:00.000Z",
     sourceId: `${prefix}_source`,
     ...overrides,
   };
@@ -268,11 +269,13 @@ test("Postgres source-webhook controller receipt canonicalizes an alias across r
   t.after(async () => {
     __resetControllerInteractionStateForTests();
     await postgresQuery("DELETE FROM source_webhook_run_receipts WHERE source_id LIKE $1", [`${sourceIdPrefix}%`]);
+    await postgresQuery("DELETE FROM source_webhook_events WHERE source_id LIKE $1", [`${sourceIdPrefix}%`]);
     await postgresQuery("DELETE FROM controller_active_runs WHERE connector_instance_id = $1", [CONNECTOR_INSTANCE_ID]);
     await closePostgresStorage();
   });
 
   await postgresQuery("DELETE FROM source_webhook_run_receipts WHERE source_id LIKE $1", [`${sourceIdPrefix}%`]);
+  await postgresQuery("DELETE FROM source_webhook_events WHERE source_id LIKE $1", [`${sourceIdPrefix}%`]);
   await postgresQuery("DELETE FROM controller_active_runs WHERE connector_instance_id = $1", [CONNECTOR_INSTANCE_ID]);
   await assertSourceWebhookReceiptOracle({
     countActiveRuns: async () => {

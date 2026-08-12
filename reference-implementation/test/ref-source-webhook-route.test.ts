@@ -304,6 +304,62 @@ async function postWebhook(
   return { body: raw as JsonObject, status: resp.status };
 }
 
+async function setWebhookBackgroundSafety(input: {
+  backgroundSafe: boolean;
+  connectorId: string;
+  storage: "postgres" | "sqlite";
+}): Promise<void> {
+  const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  manifest.capabilities = {
+    ...(manifest.capabilities ?? {}),
+    refresh_policy: {
+      ...(manifest.capabilities?.refresh_policy ?? {}),
+      background_safe: input.backgroundSafe,
+      rationale: "Exercise source-webhook policy-transition idempotency.",
+      recommended_mode: "automatic",
+    },
+  };
+  if (input.storage === "postgres") {
+    await postgresQuery("UPDATE connectors SET manifest = $1::jsonb WHERE connector_id = $2", [
+      JSON.stringify(manifest),
+      input.connectorId,
+    ]);
+    return;
+  }
+  getDb()
+    .prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?")
+    .run(JSON.stringify(manifest), input.connectorId);
+}
+
+async function assertBlockedScheduleStaysGenericDuplicate(input: {
+  connectorInstanceId: string;
+  countActiveRuns: () => Promise<number>;
+  countReceipts: () => Promise<number>;
+  countGenericClaims: () => Promise<number>;
+  rsUrl: string;
+  secret: string;
+  setBackgroundSafety: (backgroundSafe: boolean) => Promise<void>;
+  sourceId: string;
+}): Promise<void> {
+  const body = '{"action":"schedule_run"}';
+  const eventId = "evt_schedule_blocked_then_allowed";
+  await input.setBackgroundSafety(false);
+  const blocked = await postWebhook(input.rsUrl, input.sourceId, input.secret, eventId, body);
+  assert.equal(blocked.status, 200, JSON.stringify(blocked.body));
+  assert.equal(blocked.body.duplicate, false);
+  assert.equal(objectField(blocked.body, "automation_policy").allowed_to_start, false);
+  assert.equal(await input.countGenericClaims(), 1);
+  assert.equal(await input.countReceipts(), 0);
+
+  await input.setBackgroundSafety(true);
+  const retry = await postWebhook(input.rsUrl, input.sourceId, input.secret, eventId, body);
+  assert.equal(retry.status, 202);
+  assert.equal(retry.body.duplicate, true);
+  assert.equal(await input.countGenericClaims(), 1);
+  assert.equal(await input.countReceipts(), 0, "a generic-claimed event must not enter receipt admission later");
+  assert.equal(await input.countActiveRuns(), 0, "a generic-claimed event must not start a later run");
+}
+
 test("source webhook route rejects missing signature before mutation", async () => {
   await withHarness(async ({ rsUrl }) => {
     const resp = await fetch(`${rsUrl}/_ref/source-webhooks/spotify`, {
@@ -435,6 +491,47 @@ test("source webhook route accepts schedule_run as a webhook-classified run requ
   });
 });
 
+test("source webhook route keeps a blocked signed schedule event generic after policy becomes allowed", async () => {
+  await withHarness(async ({ connectorInstanceId, rsUrl, secret, sourceId }) => {
+    await assertBlockedScheduleStaysGenericDuplicate({
+      connectorInstanceId,
+      countActiveRuns: async () =>
+        Number(
+          (
+            getDb()
+              .prepare("SELECT COUNT(*) AS count FROM controller_active_runs WHERE connector_instance_id = ?")
+              .get(connectorInstanceId) as { count: number }
+          ).count
+        ),
+      countGenericClaims: async () =>
+        Number(
+          (
+            getDb()
+              .prepare("SELECT COUNT(*) AS count FROM source_webhook_events WHERE source_id = ? AND event_id = ?")
+              .get(sourceId, "evt_schedule_blocked_then_allowed") as { count: number }
+          ).count
+        ),
+      countReceipts: async () =>
+        Number(
+          (
+            getDb()
+              .prepare("SELECT COUNT(*) AS count FROM source_webhook_run_receipts WHERE source_id = ? AND event_id = ?")
+              .get(sourceId, "evt_schedule_blocked_then_allowed") as { count: number }
+          ).count
+        ),
+      rsUrl,
+      secret,
+      setBackgroundSafety: async (backgroundSafe) =>
+        await setWebhookBackgroundSafety({
+          backgroundSafe,
+          connectorId: canonicalConnectorKey(sourceId) ?? sourceId,
+          storage: "sqlite",
+        }),
+      sourceId,
+    });
+  });
+});
+
 test("source webhook route replays schedule receipt on live PostgreSQL", {
   skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset or not a dedicated test URL",
 }, async () => {
@@ -484,6 +581,46 @@ test("source webhook route replays schedule receipt on live PostgreSQL", {
       [connectorInstanceId]
     );
     assert.equal(active.rows[0]?.count, "0");
+  });
+});
+
+test("source webhook route keeps a blocked signed schedule event generic on live PostgreSQL", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset or not a dedicated test URL",
+}, async () => {
+  await withPostgresHarness(async ({ connectorInstanceId, rsUrl, secret, sourceId }) => {
+    await assertBlockedScheduleStaysGenericDuplicate({
+      connectorInstanceId,
+      countActiveRuns: async () => {
+        const result = await postgresQuery<{ count: string }>(
+          "SELECT COUNT(*)::text AS count FROM controller_active_runs WHERE connector_instance_id = $1",
+          [connectorInstanceId]
+        );
+        return Number(result.rows[0]?.count ?? 0);
+      },
+      countGenericClaims: async () => {
+        const result = await postgresQuery<{ count: string }>(
+          "SELECT COUNT(*)::text AS count FROM source_webhook_events WHERE source_id = $1 AND event_id = $2",
+          [sourceId, "evt_schedule_blocked_then_allowed"]
+        );
+        return Number(result.rows[0]?.count ?? 0);
+      },
+      countReceipts: async () => {
+        const result = await postgresQuery<{ count: string }>(
+          "SELECT COUNT(*)::text AS count FROM source_webhook_run_receipts WHERE source_id = $1 AND event_id = $2",
+          [sourceId, "evt_schedule_blocked_then_allowed"]
+        );
+        return Number(result.rows[0]?.count ?? 0);
+      },
+      rsUrl,
+      secret,
+      setBackgroundSafety: async (backgroundSafe) =>
+        await setWebhookBackgroundSafety({
+          backgroundSafe,
+          connectorId: canonicalConnectorKey(sourceId) ?? sourceId,
+          storage: "postgres",
+        }),
+      sourceId,
+    });
   });
 });
 

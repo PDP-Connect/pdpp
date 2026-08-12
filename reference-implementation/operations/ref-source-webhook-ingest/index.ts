@@ -220,11 +220,9 @@ export async function executeSourceWebhook(
   const receivedAt = new Date(deps.nowMs()).toISOString();
   const claimEvent = async (): Promise<boolean> => await deps.claimEvent({ bodyHash, eventId, receivedAt, sourceId });
 
-  // A controller-backed schedule_run has its own durable source-event receipt.
-  // Let that receipt own replay identity: claiming source_webhook_events first
-  // would turn a response-loss retry into a generic duplicate and discard the
-  // original run handle. Ingest and scheduler-fallback paths retain the
-  // existing claim-before-action boundary.
+  // A controller-backed schedule_run reserves the generic event key together
+  // with its receipt in one store transaction. Claiming it here would discard
+  // the receipt's replay handle; non-controller paths retain claim-before-action.
   if ((payload.action !== "schedule_run" || !deps.requestRun) && !(await claimEvent())) {
     return { accepted: true, duplicate: true, event_id: eventId, source_id: sourceId };
   }

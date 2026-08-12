@@ -57,6 +57,7 @@ import {
   type SchedulerLastRunTimeRecord,
   type SchedulerRunHistoryRecord,
   type SchedulerStore,
+  type SourceWebhookRunAdmission,
   type SourceWebhookRunReceipt,
 } from "../server/stores/scheduler-store.ts";
 import {
@@ -247,6 +248,7 @@ export interface SourceWebhookRunEvent {
   readonly action: "schedule_run";
   readonly bodyHash: string;
   readonly eventId: string;
+  readonly receivedAt: string;
   readonly sourceId: string;
 }
 
@@ -390,7 +392,8 @@ function validatedSourceWebhookRunEvent(options: RunNowOptions): SourceWebhookRu
     event.action !== "schedule_run" ||
     !isNonEmptyString(event.sourceId) ||
     !isNonEmptyString(event.eventId) ||
-    !isNonEmptyString(event.bodyHash)
+    !isNonEmptyString(event.bodyHash) ||
+    !isNonEmptyString(event.receivedAt)
   ) {
     throw new ControllerError(
       "sourceWebhookEvent must contain a non-empty authenticated event identity",
@@ -947,6 +950,31 @@ export class ControllerError extends Error {
     this.runId = extra.runId;
     this.name = "ControllerError";
   }
+}
+
+function sourceWebhookAdmissionReplayOrThrow(
+  outcome: SourceWebhookRunAdmission,
+  runId: string
+): SourceWebhookRunReceipt | null {
+  if (outcome.kind === "admitted") {
+    return null;
+  }
+  if (outcome.kind === "replay") {
+    return outcome.receipt;
+  }
+  if (outcome.kind === "conflict") {
+    throw new ControllerError(
+      "Source webhook event is already bound to a different dispatch identity.",
+      "source_webhook_event_conflict"
+    );
+  }
+  if (outcome.kind === "generic_claim_exists") {
+    throw new ControllerError(
+      "Source webhook event was already handled without a durable run receipt.",
+      "source_webhook_event_duplicate"
+    );
+  }
+  throw new ControllerError(`Connector already has an active run: ${runId}`, "run_already_active", { runId });
 }
 
 // ─── Module-scoped state ────────────────────────────────────────────────────
@@ -3145,23 +3173,14 @@ export function createController(opts: ControllerOptions = {}): Controller {
             body_hash: input.sourceWebhookEvent.bodyHash,
             event_id: input.sourceWebhookEvent.eventId,
             owner_subject_id: webhookOwnerSubjectId,
+            received_at: input.sourceWebhookEvent.receivedAt,
             source_id: input.sourceWebhookEvent.sourceId,
           },
         })
       );
-      if (outcome.kind === "replay") {
-        return { kind: "replay", receipt: outcome.receipt };
-      }
-      if (outcome.kind === "conflict") {
-        throw new ControllerError(
-          "Source webhook event is already bound to a different dispatch identity.",
-          "source_webhook_event_conflict"
-        );
-      }
-      if (outcome.kind === "active_run_exists") {
-        throw new ControllerError(`Connector already has an active run: ${input.runId}`, "run_already_active", {
-          runId: input.runId,
-        });
+      const replayReceipt = sourceWebhookAdmissionReplayOrThrow(outcome, input.runId);
+      if (replayReceipt) {
+        return { kind: "replay", receipt: replayReceipt };
       }
       inserted = true;
     } else {

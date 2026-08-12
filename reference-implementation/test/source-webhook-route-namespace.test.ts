@@ -9,6 +9,7 @@ import { SourceWebhookError } from "../operations/ref-source-webhook-ingest/inde
 import { type MountRefSourceWebhooksContext, mountRefSourceWebhooks } from "../server/routes/source-webhooks.ts";
 
 const SECRET = "webhook-secret";
+const ISO_TIMESTAMP_PREFIX = /^\d{4}-\d{2}-\d{2}T/;
 
 type Handler = Parameters<Parameters<typeof mountRefSourceWebhooks>[0]["post"]>[2];
 
@@ -142,6 +143,7 @@ test("source webhook route passes the configured owner connection to runNow", as
         connectorInstanceId?: string;
         eventId?: string;
         ownerSubjectId?: string;
+        receivedAt?: string;
         sourceId?: string;
         triggerKind?: string;
       }
@@ -156,6 +158,7 @@ test("source webhook route passes the configured owner connection to runNow", as
             connectorInstanceId: options.connectorInstanceId,
             eventId: options.sourceWebhookEvent?.eventId,
             ownerSubjectId: options.ownerSubjectId,
+            receivedAt: options.sourceWebhookEvent?.receivedAt,
             sourceId: options.sourceWebhookEvent?.sourceId,
             triggerKind: options.triggerKind,
           };
@@ -169,7 +172,10 @@ test("source webhook route passes the configured owner connection to runNow", as
   const out = await post(handler, "source-second", "evt-run-second", body);
 
   assert.equal(out.statusCode, 200);
-  assert.deepEqual(captured, {
+  assert.ok(captured);
+  const { receivedAt, ...forwarded } = captured;
+  assert.match(receivedAt ?? "", ISO_TIMESTAMP_PREFIX);
+  assert.deepEqual(forwarded, {
     bodyHash: createHmac("sha256", SECRET).update(body).digest("hex"),
     connectorId: "gmail",
     connectorInstanceId: "cin_gmail_owner_custom_second",
