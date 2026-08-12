@@ -41,4 +41,4 @@
 - [x] 6.1 Run focused tests, typecheck, formatter/linter, deterministic mass and diff checks, and strict OpenSpec validation; record unrelated failures separately.
 - [x] 6.2 Run a fresh-process hosted journey on SQLite and PostgreSQL when configured: reject, commit cursor only with a complete receipt, restart the server, and retrieve the exact pending payload through the owning connection.
 - [x] 6.3 Document the additive reference-hosted response, read-only owner inspection routes, non-empty-line indexing, quota configuration, privacy/retention behavior, server-first deployment, and server-rollback run-disable requirement.
-- [ ] 6.4 Have a different agent review the implementation and evidence against the confirmed reproduction, backend parity, transaction boundaries, payload privacy, and heterogeneous-host constraints before landing.
+- [x] 6.4 Have a different agent review the implementation and evidence against the confirmed reproduction, backend parity, transaction boundaries, payload privacy, and heterogeneous-host constraints before landing.
