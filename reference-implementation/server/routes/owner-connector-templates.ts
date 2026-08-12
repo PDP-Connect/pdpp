@@ -12,7 +12,11 @@
 // server-owned planner and proof/listing contract mark that REST action
 // supported. Interactive browser setup remains owner-mediated in Console.
 
-import { buildConnectionSetupPlan, isSupportedBrowserCollectorConnector } from "../connection-setup-plan.ts";
+import {
+  buildConnectionSetupPlan,
+  isSupportedBrowserCollectorConnector,
+  staticSecretCredentialCaptureFromManifest,
+} from "../connection-setup-plan.ts";
 import type { OwnerAgentControlAction } from "../metadata.ts";
 import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
 
@@ -202,8 +206,17 @@ function isOwnerActionablePlan(plan: ReturnType<typeof buildConnectionSetupPlan>
   return isSupportedOwnerActionPlan(plan) || isOwnerSessionBrowserActionPlan(plan);
 }
 
-function isUatExposablePlan(plan: ReturnType<typeof buildConnectionSetupPlan>): boolean {
-  return [isOwnerActionablePlan(plan), plan.catalogDisposition === "static_secret_experimental"].includes(true);
+function isUatExposablePlan(
+  plan: ReturnType<typeof buildConnectionSetupPlan>,
+  manifest: ConnectorManifestLike
+): boolean {
+  return [
+    isOwnerActionablePlan(plan),
+    plan.catalogDisposition === "static_secret_experimental",
+    plan.catalogDisposition === "static_secret_connect" &&
+      plan.setupModality === "static_secret" &&
+      staticSecretCredentialCaptureFromManifest(manifest) !== null,
+  ].includes(true);
 }
 
 function buildTemplateSupportedActions(args: {
@@ -299,7 +312,7 @@ function projectTemplate(
   const listing = manifest.capabilities?.public_listing;
   const isUnproven = listing?.listed === false && typeof listing?.status === "string" && listing.status === "unproven";
   const uatExposeUnlistedConnectors =
-    ctx.uatExposeUnlistedConnectors === true && isUnproven && isUatExposablePlan(plan);
+    ctx.uatExposeUnlistedConnectors === true && isUnproven && isUatExposablePlan(plan, manifest);
   return {
     connection_count: connections.length,
     connections,

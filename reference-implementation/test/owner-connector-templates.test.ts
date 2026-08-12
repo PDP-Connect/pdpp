@@ -647,6 +647,43 @@ test("without PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT flag set, unproven connectors 
   });
 });
 
+test("Venmo stays hidden by default and is exposed through its manifest setup in UAT", async () => {
+  const previous = process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+  try {
+    delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+    await withServer(async ({ asUrl, rsUrl }) => {
+      await registerConnector(asUrl, loadManifest("venmo"));
+      const ownerToken = await issueOwnerToken(asUrl);
+      const hidden = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(hidden.status, 200);
+      assert.equal(byConnector(hidden.body, "venmo").uat_expose_unlisted_connectors, false);
+    });
+
+    process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = "1";
+    await withServer(async ({ asUrl, rsUrl }) => {
+      await registerConnector(asUrl, loadManifest("venmo"));
+      const ownerToken = await issueOwnerToken(asUrl);
+      const exposed = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(exposed.status, 200);
+      const venmo = byConnector(exposed.body, "venmo");
+      const listing = asRecord(venmo.public_listing);
+      const setup = asRecord(venmo.setup_plan);
+      assert.equal(listing.listed, false);
+      assert.equal(listing.status, "unproven");
+      assert.equal(venmo.uat_expose_unlisted_connectors, true);
+      assert.equal(setup.setup_modality, "static_secret");
+      assert.equal(setup.next_step_kind, "capture_static_secret");
+    });
+  } finally {
+    if (previous === undefined) delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+    else process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = previous;
+  }
+});
+
 test("unproven with recognized modality but non-actionable plan is not UAT-exposed", async () => {
   const declaredSettings = {
     PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
