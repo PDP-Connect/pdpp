@@ -192,12 +192,9 @@ const REGEXP_148 = /Record not found/;
 const REGEXP_149 = /Record not found/;
 const REGEXP_150 = /Record not found/;
 const REGEXP_151 = /Record not found/;
-const REGEXP_152 = /Filter on field 'popularity' not in grant/;
-const REGEXP_153 = /Filter on field 'popularity' not in grant/;
 const REGEXP_154 = /Client record reads must use explicit fields/;
 const REGEXP_155 = /Client record reads must use explicit fields/;
-const REGEXP_156 = /Filter on field 'popularity' not in grant/;
-const REGEXP_157 = /Filter on field 'popularity' not in grant/;
+const CLIENT_FILTER_ERROR = /filter\[\.\.\.\] is not supported for client-token reads/;
 const REGEXP_158 = /view and fields are mutually exclusive/;
 const REGEXP_159 = /view and fields are mutually exclusive/;
 const REGEXP_160 = /Stream 'not_a_stream' not found/;
@@ -7490,7 +7487,7 @@ test("PDPP reference implementation integration", async (t) => {
         const rejectedResp = await fetch(`${rsUrl}/v1/streams/recently_played`, {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
-        assert.equal(rejectedResp.status, 403);
+        assert.equal(rejectedResp.status, 400);
         const rejectedRequestId = rejectedResp.headers.get("Request-Id");
         const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
         assert.ok(rejectedRequestId?.startsWith("req_"));
@@ -8005,7 +8002,7 @@ test("PDPP reference implementation integration", async (t) => {
   );
 
   await t.test(
-    "field-limited client grants reject filter fields outside the grant and preserve the rejection in the timeline",
+    "client grants reject exact filters before current metadata and preserve the rejection in the timeline",
     async () => {
       await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
         const ownerToken = await issueOwnerToken(asUrl, "u1");
@@ -8028,14 +8025,23 @@ test("PDPP reference implementation integration", async (t) => {
         const rejectedResp = await fetch(`${rsUrl}/v1/streams/top_artists/records?filter[popularity]=96`, {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
-        assert.equal(rejectedResp.status, 403);
+        assert.equal(rejectedResp.status, 400);
         const rejectedRequestId = rejectedResp.headers.get("Request-Id");
         const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
         assert.ok(rejectedRequestId?.startsWith("req_"));
         assert.ok(rejectedTraceId?.startsWith("trc_"));
         const rejectedBody = parseErrorResponse(await rejectedResp.json());
-        assert.equal(rejectedBody.error.code, "field_not_granted");
-        assert.match(rejectedBody.error.message, REGEXP_152);
+        assert.equal(rejectedBody.error.code, "invalid_request");
+        assert.match(rejectedBody.error.message, CLIENT_FILTER_ERROR);
+
+        const rangeRejected = await fetch(
+          `${rsUrl}/v1/streams/top_artists/records?filter[source_updated_at][gte]=2026-01-01T00:00:00Z`,
+          { headers: { Authorization: `Bearer ${approved.token}` } }
+        );
+        assert.equal(rangeRejected.status, 400);
+        const rangeBody = parseErrorResponse(await rangeRejected.json());
+        assert.equal(rangeBody.error.code, "invalid_request");
+        assert.match(rangeBody.error.message, CLIENT_FILTER_ERROR);
 
         const { body: timeline } = await fetchGrantTimeline(asUrl, approved.grant.grant_id);
         const queryReceivedEvent = timeline.data.find(
@@ -8063,8 +8069,8 @@ test("PDPP reference implementation integration", async (t) => {
         assert.equal(rejectedEvent.data.query_shape, "record_list");
         assert.equal(rejectedEvent.data.source?.kind, "connector");
         assert.equal(rejectedEvent.data.source?.id, SPOTIFY_SOURCE_ID);
-        assert.equal(rejectedEvent.data.error?.code, "field_not_granted");
-        assert.match(rejectedEvent.data.error?.message || "", REGEXP_153);
+        assert.equal(rejectedEvent.data.error?.code, "invalid_request");
+        assert.match(rejectedEvent.data.error?.message || "", CLIENT_FILTER_ERROR);
 
         const servedEvent = timeline.data.find(
           (event) => event.event_type === "disclosure.served" && event.object_id === rejectedRequestId
@@ -8288,14 +8294,14 @@ test("PDPP reference implementation integration", async (t) => {
           `${rsUrl}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(Buffer.from(JSON.stringify({ kind: "changes_since", version: 0 })).toString("base64"))}&filter[popularity]=96`,
           { headers: { Authorization: `Bearer ${approved.token}` } }
         );
-        assert.equal(rejectedResp.status, 403);
+        assert.equal(rejectedResp.status, 400);
         const rejectedRequestId = rejectedResp.headers.get("Request-Id");
         const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
         assert.ok(rejectedRequestId?.startsWith("req_"));
         assert.ok(rejectedTraceId?.startsWith("trc_"));
         const rejectedBody = parseErrorResponse(await rejectedResp.json());
-        assert.equal(rejectedBody.error.code, "field_not_granted");
-        assert.match(rejectedBody.error.message, REGEXP_156);
+        assert.equal(rejectedBody.error.code, "invalid_request");
+        assert.match(rejectedBody.error.message, CLIENT_FILTER_ERROR);
 
         const { body: timeline } = await fetchGrantTimeline(asUrl, approved.grant.grant_id);
         const queryReceivedEvent = timeline.data.find(
@@ -8325,8 +8331,8 @@ test("PDPP reference implementation integration", async (t) => {
         assert.equal(rejectedEvent.data.has_changes_since, true);
         assert.equal(rejectedEvent.data.source?.kind, "connector");
         assert.equal(rejectedEvent.data.source?.id, SPOTIFY_SOURCE_ID);
-        assert.equal(rejectedEvent.data.error?.code, "field_not_granted");
-        assert.match(rejectedEvent.data.error?.message || "", REGEXP_157);
+        assert.equal(rejectedEvent.data.error?.code, "invalid_request");
+        assert.match(rejectedEvent.data.error?.message || "", CLIENT_FILTER_ERROR);
 
         const servedEvent = timeline.data.find(
           (event) => event.event_type === "disclosure.served" && event.object_id === rejectedRequestId

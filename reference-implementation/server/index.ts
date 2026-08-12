@@ -2770,25 +2770,29 @@ function buildFieldCapabilities(
           ...(declaredType ? { type: declaredType } : {}),
           ...(declaredRole ? { role: declaredRole } : {}),
           aggregation: buildFieldAggregationCapabilities(aggregations, field, granted),
-          exact_filter: buildFieldCapabilityFlag({
-            declared: isExactFilterableSchema(schemaObj),
-            granted,
-          }),
           granted,
           lexical_search: buildFieldCapabilityFlag({
             declared: lexicalFields.has(field),
             granted,
-          }),
-          range_filter: buildFieldCapabilityFlag({
-            declared: Boolean(rangeOperators),
-            granted,
-            operators: rangeOperators || undefined,
           }),
           schema: fieldSchema,
           semantic_search: buildFieldCapabilityFlag({
             declared: semanticFields.has(field),
             granted,
           }),
+          ...(streamGrant === null
+            ? {
+                exact_filter: buildFieldCapabilityFlag({
+                  declared: isExactFilterableSchema(schemaObj),
+                  granted,
+                }),
+                range_filter: buildFieldCapabilityFlag({
+                  declared: Boolean(rangeOperators),
+                  granted,
+                  operators: rangeOperators || undefined,
+                }),
+              }
+            : {}),
         },
       ];
     })

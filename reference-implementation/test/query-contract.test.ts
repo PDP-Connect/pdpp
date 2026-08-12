@@ -737,7 +737,7 @@ test("schema discovery scopes a client token to its grant source and streams", a
     assert.equal(topArtists.field_capabilities.id.granted, true);
     assert.equal(topArtists.field_capabilities.name.granted, true);
     assert.equal(topArtists.field_capabilities.source_updated_at.granted, true);
-    assert.equal(topArtists.field_capabilities.source_updated_at.range_filter.usable, false);
+    assert.equal(topArtists.field_capabilities.source_updated_at.range_filter, undefined);
     assert.equal(topArtists.field_capabilities.popularity, undefined);
 
     const serialized = JSON.stringify(body);
@@ -871,9 +871,9 @@ test("stream metadata projects only frozen grant fields for client tokens", asyn
     assert.ok(body.schema?.properties?.source_updated_at, "granted field names remain visible");
     assert.deepEqual(body.query, {});
     assert.equal(body.field_capabilities.name.granted, true);
-    assert.equal(body.field_capabilities.name.exact_filter.usable, false);
+    assert.equal(body.field_capabilities.name.exact_filter, undefined);
     assert.equal(body.field_capabilities.source_updated_at.granted, true);
-    assert.equal(body.field_capabilities.source_updated_at.range_filter.usable, false);
+    assert.equal(body.field_capabilities.source_updated_at.range_filter, undefined);
     assert.equal(body.field_capabilities.popularity, undefined);
 
     const gmailManifest = readGmailManifest();
@@ -1053,7 +1053,7 @@ test("stream aggregate enforces grants and declared aggregate fields", async () 
   });
 });
 
-test("stream aggregate honors grant resources, time ranges, and request filters together", async () => {
+test("stream aggregate enforces grant resources and time while rejecting client filters", async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl, "aggregation_scope_owner");
     const connectorId = spotifyManifest.connector_id;
@@ -1088,7 +1088,13 @@ test("stream aggregate honors grant resources, time ranges, and request filters 
     const url =
       `${rsUrl}/v1/streams/top_artists/aggregate` +
       "?metric=sum&field=popularity&filter[source_updated_at][lte]=2026-02-15T00:00:00Z";
-    const { status, body } = await fetchJson(url, {
+    const rejected = await fetchJson(url, {
+      headers: { Authorization: `Bearer ${approved.token}` },
+    });
+    assert.equal(rejected.status, 400);
+    assert.equal(rejected.body.error.code, "invalid_request");
+
+    const { status, body } = await fetchJson(`${rsUrl}/v1/streams/top_artists/aggregate?metric=sum&field=popularity`, {
       headers: { Authorization: `Bearer ${approved.token}` },
     });
     assert.equal(status, 200);

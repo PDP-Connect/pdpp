@@ -77,6 +77,7 @@ import {
   type StreamsListDependencies,
   type StreamsListInput,
 } from "../../operations/rs-streams-list/index.ts";
+import { rejectClientTokenFilters } from "../record-filters.ts";
 import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -1669,6 +1670,10 @@ export function mountRsStreamAggregate(app: AppLike, ctx: MountRsReadContext): v
           traceId,
         };
 
+        if (tokenInfo.pdpp_token_kind === "client") {
+          rejectClientTokenFilters(requestParams);
+        }
+
         const scope = await resolveReadScope(ctx, req, tokenInfo, queryContext);
         const { storageBinding, manifest } = scope;
         // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
@@ -1813,6 +1818,10 @@ export function mountRsRecordsList(app: AppLike, ctx: MountRsReadContext): void 
           tokenInfo,
           traceId,
         };
+
+        if (tokenInfo.pdpp_token_kind === "client") {
+          rejectClientTokenFilters(requestParams);
+        }
 
         // Self-export: owner can query without a client grant. `resolveReadScope`
         // sets `queryContext.sourceDescriptor` and returns the resolved trio.
@@ -2264,6 +2273,9 @@ async function runSearchRouteHandler(
       tokenInfo,
       traceId,
     };
+    if (tokenInfo.pdpp_token_kind === "client") {
+      rejectClientTokenFilters(req.query);
+    }
     await ctx.emitQueryReceived(queryContext, req);
 
     const { envelope, disclosureData } = await opts.runSearch({

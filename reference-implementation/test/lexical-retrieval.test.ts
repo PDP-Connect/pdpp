@@ -973,9 +973,9 @@ test("filtered lexical search rejects invalid filter shapes and still-forbidden 
       `${rsUrl}/v1/search?q=invoice&streams=posts&filter[selftext]=secret`,
       { headers: { Authorization: `Bearer ${approved.token}` } }
     );
-    assert.equal(unauthorized.status, 403);
+    assert.equal(unauthorized.status, 400);
     assert.ok(unauthorized.body, "unauthorized response body");
-    assert.equal(unauthorized.body.error.code, "field_not_granted");
+    assert.equal(unauthorized.body.error.code, "invalid_request");
   });
 });
 

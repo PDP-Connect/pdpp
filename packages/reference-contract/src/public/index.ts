@@ -328,7 +328,7 @@ const ListRecordsQuerySchema = {
     fields: { type: "string" },
     filter: {
       description:
-        "Per-field filter map. Exact: `filter[field]=value`. Range: `filter[field][op]=value` where `op` is one of the declared `field_capabilities.range_filter.operators` from `GET /v1/schema`.",
+        "Owner-token current-capability filter map only. Client-token v0.1 reads reject exact `filter[field]=value` and range `filter[field][op]=value` before consulting current source metadata.",
       type: "object",
     },
     limit: { maximum: 100, minimum: 1, type: "integer" },
@@ -1646,8 +1646,6 @@ const StreamMetadataResponseSchema = {
             required: [
               "schema",
               "granted",
-              "exact_filter",
-              "range_filter",
               "lexical_search",
               "semantic_search",
               "aggregation",
@@ -2334,7 +2332,7 @@ export const publicManifests = [
       ...ProtectedReadErrors,
     },
     summary:
-      "List streams available under the current grant or owner scope. Returns stream-level totals only; for per-field filter capabilities (exact, range operators, aggregation) call `GET /v1/schema` first and consult `field_capabilities` per stream before issuing `filter[...]` queries on `/v1/streams/{stream}/records`. Multi-connection deployments emit one entry per (stream, connection_id); each entry carries `connection_id` and a `display_name` so callers can attribute and disambiguate.",
+      "List streams available under the current grant or owner scope. Returns stream-level totals only. Owner-token current-capability callers can consult `GET /v1/schema` for per-field filter capabilities; client-token v0.1 reads reject `filter[...]`. Multi-connection deployments emit one entry per (stream, connection_id); each entry carries `connection_id` and a `display_name` so callers can attribute and disambiguate.",
     surface: "public",
     tags: ["records"],
   },
@@ -2361,7 +2359,7 @@ export const publicManifests = [
       ...ProtectedReadErrors,
     },
     summary:
-      "Return stream metadata including declared query capabilities and advisory freshness. For per-field filter capabilities on this stream (exact, range operators, aggregation), prefer `GET /v1/schema` first and read `field_capabilities` rather than guessing `filter[...]` shapes against the records endpoint. Pass `connection_id` (or the deprecated `connector_instance_id` alias) to restrict to a single connection; omitted, the response aggregates across the connections the grant authorizes.",
+      "Return stream metadata including declared query capabilities and advisory freshness. Owner-token current-capability callers can consult `GET /v1/schema` for per-field filter capabilities; client-token v0.1 metadata does not advertise typed filter capabilities and client reads reject `filter[...]`. Pass `connection_id` (or the deprecated `connector_instance_id` alias) to restrict to a single connection; omitted, the response aggregates across the connections the grant authorizes.",
     surface: "public",
     tags: ["records"],
   },
@@ -2379,7 +2377,7 @@ export const publicManifests = [
       ...ListRecordErrors,
     },
     summary:
-      "List records in a stream under grant enforcement. Supports logical-cursor pagination, exact and declared range filters, declared one-hop expansion, and changes_since. Per-field filter operators, sortable fields, expandable relations, projection, search modes, and count support are advertised by `GET /v1/schema` (`field_capabilities`, `expand_capabilities`); consult it before issuing `filter[...]`, `expand[]`, or `fields=` shapes to avoid 400 errors. Pass `connection_id` to restrict to one connection; the deprecated `connector_instance_id` alias is accepted for compatibility but new clients SHOULD use `connection_id`.",
+      "List records in a stream under grant enforcement. Supports logical-cursor pagination, declared one-hop expansion, and changes_since. Client-token v0.1 reads reject exact and range `filter[...]` parameters before consulting current source metadata; owner-token current-capability reads MAY use declared filters. Per-field query capabilities are advertised by `GET /v1/schema`; consult it before issuing supported query shapes. Pass `connection_id` to restrict to one connection; the deprecated `connector_instance_id` alias is accepted for compatibility but new clients SHOULD use `connection_id`.",
     surface: "public",
     tags: ["records"],
   },
@@ -2397,7 +2395,7 @@ export const publicManifests = [
       ...ProtectedReadErrors,
     },
     summary:
-      "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, exact count_distinct, scalar grouped counts (`group_by`), calendar time-bucket counts (`group_by_time`+`granularity`, optional `time_zone` defaulting to UTC), and existing exact/range filters over declared fields. Exactly one grouping dimension per call: `group_by` XOR `group_by_time`. Grouped responses include `other_count` (sum of counts for groups/buckets beyond `limit`) so callers can detect truncation without a second round trip.",
+      "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, exact count_distinct, scalar grouped counts (`group_by`), calendar time-bucket counts (`group_by_time`+`granularity`, optional `time_zone` defaulting to UTC), and owner-token current-capability exact/range filters over declared fields. Client-token v0.1 reads reject `filter[...]`. Exactly one grouping dimension per call: `group_by` XOR `group_by_time`. Grouped responses include `other_count` (sum of counts for groups/buckets beyond `limit`) so callers can detect truncation without a second round trip.",
     surface: "public",
     tags: ["records"],
   },
@@ -2528,7 +2526,7 @@ export const publicManifests = [
       410: { description: "Cursor expired or refers to an unknown snapshot", schema: ErrorObjectSchema },
     },
     summary:
-      "Optional lexical retrieval extension: search records across authorized streams by text. Search modes, per-mode cursor support, and field-level `lexical_search`/`semantic_search` capabilities are advertised by `GET /v1/schema`; `filter[...]` operators applied to a single named stream must come from that stream's `field_capabilities`. Hits carry `connection_id` for attribution; the deprecated `connector_instance_id` alias is emitted alongside for compatibility but new clients SHOULD read `connection_id`.",
+      "Optional lexical retrieval extension: search records across authorized streams by text. Search modes, per-mode cursor support, and field-level `lexical_search`/`semantic_search` capabilities are advertised by `GET /v1/schema`. Client-token v0.1 reads reject `filter[...]`; owner-token current-capability reads MAY use declared filters. Hits carry `connection_id` for attribution; the deprecated `connector_instance_id` alias is emitted alongside for compatibility but new clients SHOULD read `connection_id`.",
     surface: "public",
     tags: ["records", "lexical-retrieval"],
   },

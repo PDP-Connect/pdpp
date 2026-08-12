@@ -76,6 +76,24 @@ export function invalidQueryError(message: string, code = "invalid_request"): Er
   return new QueryError(message, code);
 }
 
+/**
+ * v0.1 client grants do not expose request-time predicate filters. Keep this
+ * guard independent from manifest parsing so a client request is rejected
+ * before the RS consults current declaration metadata. Owner reads retain the
+ * current-capability filter compiler below.
+ */
+export function rejectClientTokenFilters(requestParams: unknown): void {
+  if (!requestParams || typeof requestParams !== "object" || Array.isArray(requestParams)) {
+    return;
+  }
+  if (!Object.hasOwn(requestParams, "filter")) {
+    return;
+  }
+  const error = invalidQueryError("filter[...] is not supported for client-token reads in PDPP v0.1");
+  Object.assign(error, { param: "filter" });
+  throw error;
+}
+
 export function getFieldSchema(manifestStream: ManifestStream | null | undefined, field: string): Schema | null {
   return manifestStream?.schema?.properties?.[field] || null;
 }

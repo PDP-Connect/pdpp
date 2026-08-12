@@ -868,8 +868,8 @@ test("filtered semantic search rejects invalid filters and still-forbidden param
       `${rsUrl}/v1/search/semantic?q=semantic&streams=posts&filter[selftext]=secret`,
       { headers: { Authorization: `Bearer ${String(approved.token)}` } }
     );
-    assert.equal(unauthorized.status, 403);
-    assert.equal(errorCode(unauthorized.body), "field_not_granted");
+    assert.equal(unauthorized.status, 400);
+    assert.equal(errorCode(unauthorized.body), "invalid_request");
   });
 });
 
