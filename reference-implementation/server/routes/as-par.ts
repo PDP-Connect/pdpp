@@ -92,14 +92,15 @@ export function mountAsPar(app: AppLike, ctx: MountAsParContext): void {
   app.post("/oauth/par", { contract: "createPushedAuthorizationRequest" } as RouteArg<RouteHandler>, handler);
 }
 
-function mapParProtocolError(err: unknown): unknown {
+export function mapParProtocolError(err: unknown): unknown {
   if (!err || typeof err !== "object") {
     return err;
   }
-  const coded = err as { code?: unknown };
-  if (coded.code !== SOURCE_AUTHORIZATION_DETAILS_INVALID) {
+  const source = err as { code?: unknown; message?: unknown } & Record<string, unknown>;
+  if (source.code !== SOURCE_AUTHORIZATION_DETAILS_INVALID) {
     return err;
   }
-  coded.code = OAUTH_INVALID_AUTHORIZATION_DETAILS;
-  return err;
+  const mapped = new Error(typeof source.message === "string" ? source.message : String(err), { cause: err });
+  Object.assign(mapped, source, { code: OAUTH_INVALID_AUTHORIZATION_DETAILS });
+  return mapped;
 }
