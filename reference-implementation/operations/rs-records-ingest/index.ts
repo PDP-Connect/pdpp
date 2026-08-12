@@ -46,6 +46,8 @@ export interface RecordsIngestInput {
    * explicitly true.
    */
   readonly hostedRejectionReceipts?: boolean;
+  /** Optional per-line byte ceiling supplied by hosts with a bounded body contract. */
+  readonly maxLineBytes?: number | null;
   /** Optional hosted run id, threaded to durable rejection persistence when supplied. */
   readonly runId?: string | null;
   /** Stream name from the request path. */
@@ -176,6 +178,16 @@ export class RecordsIngestNotFoundError extends Error {
   }
 }
 
+export class RecordsIngestResourceLimitError extends Error {
+  readonly code: "resource_limit";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "RecordsIngestResourceLimitError";
+    this.code = "resource_limit";
+  }
+}
+
 /**
  * At least one record in this batch failed with a systemic/retryable
  * classification (see `IngestLineFailure`) — a storage or coordination
@@ -237,7 +249,10 @@ function hasNonWhitespaceByte(line: Buffer): boolean {
   return false;
 }
 
-export function parseLines(body: Buffer | string | null | undefined): Buffer[] {
+export function parseLines(
+  body: Buffer | string | null | undefined,
+  options: { maxLineBytes?: number | null } = {}
+): Buffer[] {
   let bytes: Buffer | null = null;
   if (Buffer.isBuffer(body)) {
     bytes = body;
@@ -248,12 +263,19 @@ export function parseLines(body: Buffer | string | null | undefined): Buffer[] {
     return [];
   }
   const lines: Buffer[] = [];
+  const maxLineBytes =
+    typeof options.maxLineBytes === "number" && Number.isFinite(options.maxLineBytes) && options.maxLineBytes >= 0
+      ? Math.floor(options.maxLineBytes)
+      : null;
   let start = 0;
   for (let offset = 0; offset <= bytes.length; offset += 1) {
     if (offset === bytes.length || bytes[offset] === 0x0a) {
       const line = bytes.subarray(start, offset);
       if (hasNonWhitespaceByte(line)) {
-        lines.push(Buffer.from(line));
+        if (maxLineBytes !== null && line.length > maxLineBytes) {
+          throw new RecordsIngestResourceLimitError(`NDJSON line exceeds ${maxLineBytes} bytes`);
+        }
+        lines.push(line);
       }
       start = offset + 1;
     }
@@ -542,7 +564,8 @@ export async function executeRecordsIngest(
   input: RecordsIngestInput,
   dependencies: RecordsIngestDependencies
 ): Promise<RecordsIngestOutput> {
-  const lines = parseLines(input.body);
+  const lineOptions = input.maxLineBytes === undefined ? {} : { maxLineBytes: input.maxLineBytes };
+  const lines = parseLines(input.body, lineOptions);
   const submittedRecordCount = lines.length;
 
   const connectorId = typeof input.connectorId === "string" ? input.connectorId : null;

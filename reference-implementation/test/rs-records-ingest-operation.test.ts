@@ -39,6 +39,7 @@ import {
   parseLines,
   RecordsIngestInvalidRequestError,
   RecordsIngestNotFoundError,
+  RecordsIngestResourceLimitError,
   RecordsIngestSystemicFailureError,
 } from "../operations/rs-records-ingest/index.ts";
 
@@ -47,6 +48,7 @@ const DERIVED_INDEX_ERROR_RE = /derived index failed/;
 const MALFORMED_REJECTION_RECEIPT_RE = /malformed rejection receipt/;
 const REJECTION_RECEIPT_CODE_MISMATCH_RE = /rejection receipt code does not match classified line error/;
 const SYSTEMIC_SUMMARY_RE = /systemic\/retryable record failure/;
+const LINE_LIMIT_EXCEEDED_RE = /exceeds 4 bytes/;
 
 function defaultDeps(overrides: Partial<RecordsIngestDependencies> = {}): RecordsIngestDependencies {
   return {
@@ -84,7 +86,40 @@ test("parseLines splits NDJSON, filters empty lines, returns empty for null/unde
   assert.deepEqual(parseLines(undefined), []);
   assert.deepEqual(parseLines(""), []);
   assert.deepEqual(parseLines("\n\n"), []);
-  assert.deepEqual(parseLines("a\n\nb\n   \n").map((line) => line.toString("utf8")), ["a", "b"]);
+  assert.deepEqual(
+    parseLines("a\n\nb\n   \n").map((line) => line.toString("utf8")),
+    ["a", "b"]
+  );
+});
+
+test("parseLines returns bounded views without copying submitted line bytes", () => {
+  const body = Buffer.from('{"id":"r1"}\n{"id":"r2"}');
+  const lines = parseLines(body);
+
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0]?.buffer, body.buffer, "line should share the submitted request backing buffer");
+  assert.equal(lines[0]?.byteOffset, body.byteOffset, "first line should be a view over the original body");
+  assert.equal(lines[1]?.buffer, body.buffer, "later lines should also share the submitted request backing buffer");
+});
+
+test("parseLines enforces the configured line byte ceiling below, at, and above the boundary", () => {
+  assert.deepEqual(
+    parseLines(Buffer.from("abcd"), { maxLineBytes: 4 }).map((line) => line.toString()),
+    ["abcd"]
+  );
+  assert.deepEqual(
+    parseLines(Buffer.from("abc"), { maxLineBytes: 4 }).map((line) => line.toString()),
+    ["abc"]
+  );
+  assert.throws(
+    () => parseLines(Buffer.from("abcde"), { maxLineBytes: 4 }),
+    (err) => {
+      assert.ok(err instanceof RecordsIngestResourceLimitError);
+      assert.equal(err.code, "resource_limit");
+      assert.match(err.message, LINE_LIMIT_EXCEEDED_RE);
+      return true;
+    }
+  );
 });
 
 test("rs.records.ingest reports submittedRecordCount derived from non-empty lines", async () => {
@@ -507,9 +542,69 @@ test("rs.records.ingest quarantines invalid UTF-8 using the exact submitted byte
     })
   );
 
-  assert.deepEqual(out.envelope.rejections, [{ code: "invalid_utf8", input_index: 0, receipt_id: "rr_0_invalid_utf8" }]);
+  assert.deepEqual(out.envelope.rejections, [
+    { code: "invalid_utf8", input_index: 0, receipt_id: "rr_0_invalid_utf8" },
+  ]);
   assert.equal(persisted.length, 1);
   assert.deepEqual(persisted[0]?.rawLine, invalidBytes);
+});
+
+test("rs.records.ingest rejects an over-limit line before decode, parse, or storage", async () => {
+  let touchedStorage = false;
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({
+          body: Buffer.from('{"id":"too-long"}'),
+          maxLineBytes: 4,
+        }),
+        defaultDeps({
+          ingestRecord: () => {
+            touchedStorage = true;
+          },
+        })
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsIngestResourceLimitError);
+      assert.equal(err.code, "resource_limit");
+      return true;
+    }
+  );
+  assert.equal(touchedStorage, false);
+});
+
+test("rs.records.ingest applies the line byte ceiling to UTF-8 bytes, not characters", async () => {
+  const twoByteJson = Buffer.from('{"id":"é"}', "utf8");
+  const atBoundary = await executeRecordsIngest(
+    defaultInput({ body: twoByteJson, maxLineBytes: twoByteJson.length }),
+    defaultDeps()
+  );
+  assert.equal(atBoundary.envelope.records_accepted, 1);
+
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(defaultInput({ body: twoByteJson, maxLineBytes: twoByteJson.length - 1 }), defaultDeps()),
+    RecordsIngestResourceLimitError
+  );
+});
+
+test("rs.records.ingest treats NUL-containing JSON text as malformed NDJSON with exact hosted receipt bytes", async () => {
+  const persisted: InsertOrReplayRejectionInput[] = [];
+  const nulBytes = Buffer.from([0x7b, 0x22, 0x69, 0x64, 0x22, 0x3a, 0x00, 0x7d]);
+  const out = await executeRecordsIngest(
+    defaultInput({ body: nulBytes, connectorInstanceId: "cin_gmail_work", hostedRejectionReceipts: true }),
+    defaultDeps({
+      insertOrReplayRejection: (input) => {
+        persisted.push(input);
+        return receiptFor(input);
+      },
+    })
+  );
+
+  assert.deepEqual(out.envelope.rejections, [
+    { code: "malformed_ndjson", input_index: 0, receipt_id: "rr_0_malformed_ndjson" },
+  ]);
+  assert.deepEqual(persisted[0]?.rawLine, nulBytes);
 });
 
 test("rs.records.ingest hosted mode emits additive shape for accepted-only batches", async () => {

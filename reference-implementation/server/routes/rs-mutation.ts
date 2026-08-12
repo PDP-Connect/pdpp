@@ -81,10 +81,12 @@ import {
   RecordsIngestInvalidRequestError,
   RecordsIngestNotFoundError,
   type RecordsIngestOutput,
+  RecordsIngestResourceLimitError,
   RecordsIngestSystemicFailureError,
   type RejectionReceipt,
 } from "../../operations/rs-records-ingest/index.ts";
 import { canonicalConnectorKey } from "../connector-key.ts";
+import { HOSTED_INGEST_MAX_LINE_BYTES } from "../hosted-ingest-limits.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -1147,7 +1149,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
     // Index.js imported `parseLines as parseIngestLines` from the operation
     // module and called it here. We replicate that call with the same body arg.
     const rawBody = requestBodyBytes(req.body);
-    const lineCount = parseIngestLines(rawBody).length;
+    const lineCount = parseIngestLines(rawBody, { maxLineBytes: HOSTED_INGEST_MAX_LINE_BYTES }).length;
     const mutationContext = ctx.buildMutationContext(req, res, {
       connectorId,
       connectorInstanceId,
@@ -1278,6 +1280,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
             connectorId,
             connectorInstanceId,
             hostedRejectionReceipts: true,
+            maxLineBytes: HOSTED_INGEST_MAX_LINE_BYTES,
             runId,
             // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
             streamName: req.params.stream ?? "",
@@ -1288,6 +1291,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
         if (
           opErr instanceof RecordsIngestInvalidRequestError ||
           opErr instanceof RecordsIngestNotFoundError ||
+          opErr instanceof RecordsIngestResourceLimitError ||
           opErr instanceof RecordsIngestSystemicFailureError
         ) {
           const mapped = new Error((opErr as Error).message) as Error & {
