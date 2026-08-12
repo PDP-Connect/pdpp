@@ -34,7 +34,6 @@ import {
 } from "../server/connection-identity.ts";
 import { closeDb, initDb } from "../server/db.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
-import { resolveClientStreamListBindingsOrEmpty } from "../server/routes/rs-read.ts";
 import {
   aggregateRecordsAcrossBindings as aggregateRecordsAcrossBindingsUntyped,
   getRecordAcrossBindings,
@@ -44,6 +43,7 @@ import {
   resolveReadRequestBindings,
   validateConnectionAlias,
 } from "../server/records.ts";
+import { resolveClientStreamListBindingsOrEmpty } from "../server/routes/rs-read.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 interface RecordListWarning {

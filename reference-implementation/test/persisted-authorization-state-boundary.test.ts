@@ -14,10 +14,7 @@ import { introspectionHeaders } from "./helpers/introspection.ts";
 import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const V01_LEGACY_BYTES = readFileSync(
-  join(TEST_DIR, "seam-spike/fixtures/pr89/legacy-grant-v01.bytes"),
-  "utf8"
-).trim();
+const V01_LEGACY_BYTES = readFileSync(join(TEST_DIR, "seam-spike/fixtures/pr89/legacy-grant-v01.bytes"), "utf8").trim();
 
 type TestServer = Awaited<ReturnType<typeof startServer>> & {
   asServer: { close: (callback: () => void) => void; closeAllConnections: () => void };
