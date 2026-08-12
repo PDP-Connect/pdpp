@@ -100,7 +100,7 @@ test("executeAsAuthorizationServerMetadata: pins the fixed OAuth capability voca
   assert.ok(out.grantTypesSupported.includes("refresh_token"));
   assert.ok(out.grantTypesSupported.includes("authorization_code"));
   assert.ok(out.grantTypesSupported.includes("urn:ietf:params:oauth:grant-type:device_code"));
-  assert.deepEqual(out.authorizationDetailsTypesSupported, ["https://pdpp.org/data-access"]);
+  assert.deepEqual(out.authorizationDetailsTypesSupported, ["https://pdpp.dev/data-access"]);
 });
 
 test("executeAsAuthorizationServerMetadata: passes through pre-registered public clients", () => {

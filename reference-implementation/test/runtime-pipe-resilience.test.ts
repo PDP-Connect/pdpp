@@ -273,7 +273,7 @@ test("runConnector: connector that exits before reading START does not crash the
   chmodSync(stubPath, 0o755);
 
   const manifest = {
-    connector_id: "https://registry.pdpp.org/connectors/test-pipe-resilience-stub",
+    connector_id: "https://registry.pdpp.dev/connectors/test-pipe-resilience-stub",
     runtime_requirements: {},
     streams: [
       {
@@ -453,7 +453,7 @@ main().catch(err => {
 
   // ── Manifest ────────────────────────────────────────────────────────────
   const manifest = {
-    connector_id: "https://registry.pdpp.org/connectors/test-flush-handshake-stub",
+    connector_id: "https://registry.pdpp.dev/connectors/test-flush-handshake-stub",
     runtime_requirements: {},
     streams: [
       {

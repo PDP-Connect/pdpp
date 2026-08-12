@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 const LOCAL_DEVICE_PREFIX = "local-device:";
-const REGISTRY_CONNECTOR_HOST = "registry.pdpp.org";
+const REGISTRY_CONNECTOR_HOST = "registry.pdpp.dev";
 const REGISTRY_CONNECTOR_PATH_PREFIX = "/connectors/";
 
 const CONNECTOR_KEY_ALIASES = new Map<string, string>([

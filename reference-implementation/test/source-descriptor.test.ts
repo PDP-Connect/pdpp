@@ -94,7 +94,7 @@ test("buildOwnerQuerySourceDescriptor prefers the native manifest provider over 
 });
 
 test("buildOwnerQuerySourceDescriptor canonicalizes a URL-shaped connector_id", () => {
-  const req = { query: { connector_id: "https://registry.pdpp.org/connectors/gmail" } };
+  const req = { query: { connector_id: "https://registry.pdpp.dev/connectors/gmail" } };
   const out = buildOwnerQuerySourceDescriptor(req, {});
   assert.ok(out, "expected a source descriptor");
   assert.equal(out.kind, "connector");

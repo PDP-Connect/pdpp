@@ -592,7 +592,7 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
           ? req.query.connector_id.trim()
           : null;
       // Normalize at the boundary: a URL-shaped first-party connector id
-      // (e.g. `https://registry.pdpp.org/connectors/gmail`) must resolve to
+      // (e.g. `https://registry.pdpp.dev/connectors/gmail`) must resolve to
       // its canonical short key (`gmail`) so the pending consent and issued
       // grant store a canonical connector_id, not a registry URL. Unknown or
       // custom ids are preserved as-is so third-party connectors still work.

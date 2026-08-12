@@ -40,7 +40,7 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | Standard | Relationship |
 |----------|-------------|
 | [OAuth 2.0](https://www.rfc-editor.org/rfc/rfc6749) (RFC 6749) | PDPP is a profile of OAuth 2.0, carrying selection requests in RFC 9396 authorization_details. The grant is issued as the result of an OAuth authorization flow. |
-| [RFC 9396](https://www.rfc-editor.org/rfc/rfc9396) (RAR) | PDPP uses the `authorization_details` envelope for selection requests. The `type` URI is `https://pdpp.org/data-access`. |
+| [RFC 9396](https://www.rfc-editor.org/rfc/rfc9396) (RAR) | PDPP uses the `authorization_details` envelope for selection requests. The `type` URI is `https://pdpp.dev/data-access`. |
 | [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) (Bearer Token) | PDPP transports both owner tokens and client tokens as RFC 6750 Bearer Tokens on the wire. The resource server distinguishes token kind via `pdpp_token_kind` in the introspection response, not by token syntax. |
 | [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662) (Token Introspection) | PDPP relies on RFC 7662-style token introspection where the authorization server and resource server are separated, so the resource server can resolve grant-bound tokens. Co-located deployments may use a local equivalent. |
 | [OAuth 2.0 Dynamic Client Registration](https://www.rfc-editor.org/rfc/rfc7591) (RFC 7591) | PDPP reuses the RFC 7591 client metadata vocabulary (`client_name`, `logo_uri`, `policy_uri`, and similar fields) for the consent display. A dynamic client registration endpoint is a deployment choice and is required only where deployments need it; Core functions without it. |
@@ -94,7 +94,7 @@ In many deployments, a single **personal server** fills all three roles. The spe
 | Term | Definition |
 |------|-----------|
 | **Grant** | An immutable consent artifact specifying what data a client may access, under what constraints. |
-| **Stream** | A named collection of records with a schema, primary key, and optional cursor field. Stream names are connector-local (e.g., `messages`). The fully qualified identifier is an ordered pair `(connector_id, stream_name)`, used in cross-connector references and storage. Example: `("https://registry.pdpp.org/connectors/spotify", "top_artists")`. |
+| **Stream** | A named collection of records with a schema, primary key, and optional cursor field. Stream names are connector-local (e.g., `messages`). The fully qualified identifier is an ordered pair `(connector_id, stream_name)`, used in cross-connector references and storage. Example: `("https://registry.pdpp.dev/connectors/spotify", "top_artists")`. |
 | **Record** | A single data object within a stream. |
 | **Connector** | A program that collects data from a data source, used when data is collected rather than served natively. One of possibly several producers of a source's streams. Defined in the Collection Profile. |
 | **Manifest** | A data source's declaration of the streams, schemas, and selection capabilities it exposes, including the consent surface. |
@@ -344,7 +344,7 @@ When a record references a record in a different stream on the same resource ser
   "data": {
     "tag_id": "tag_sunset",
     "target": {
-      "connector_id": "https://registry.pdpp.org/connectors/instagram",
+      "connector_id": "https://registry.pdpp.dev/connectors/instagram",
       "stream": "media",
       "record_id": "media_123"
     }
@@ -365,7 +365,7 @@ Each connector publishes a manifest declaring its consent surface: what streams 
 ```json
 {
   "protocol_version": "0.1.0",
-  "connector_id": "https://registry.pdpp.org/connectors/spotify",
+  "connector_id": "https://registry.pdpp.dev/connectors/spotify",
   "version": "2.0.0",
   "display_name": "Spotify",
   "profiles": [
@@ -540,7 +540,7 @@ Connector authors MAY suggest views in their manifest. These suggestions are adv
 
 **View evolution:** Grants are bound to the resolved field set at issuance time: `fields` in the `StreamGrant` is authoritative, not the view name. View evolution (adding new fields to a view) never silently widens existing grants. Re-consent is required before a client can access new fields, even if those fields are subsequently added to a named view the client already has a grant for.
 
-**Authority and registry:** Views defined under `pdpp.org` URI namespaces are controlled by PDPP maintainers via a public change process. Implementations MUST treat unrecognized view URIs as opaque identifiers.
+**Authority and registry:** Views defined under `pdpp.dev` URI namespaces are controlled by PDPP maintainers via a public change process. Implementations MUST treat unrecognized view URIs as opaque identifiers.
 
 **Note:** Canonical view naming conventions (standard view names with consistent semantics across connectors) are intentionally deferred. The protocol reserves this space; naming conventions will be informed by implementation experience.
 
@@ -578,9 +578,9 @@ A client requests specific personal data by including `authorization_details` in
   },
   "authorization_details": [
     {
-      "type": "https://pdpp.org/data-access",
-      "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
-      "purpose_code": "https://pdpp.org/purpose/personalization",
+      "type": "https://pdpp.dev/data-access",
+      "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
+      "purpose_code": "https://pdpp.dev/purpose/personalization",
       "purpose_description": "Recommend concerts based on your listening history",
       "access_mode": "single_use",
       "streams": [
@@ -654,7 +654,7 @@ The optional `client_claims` object within each `authorization_details` entry ca
 PDPP uses three primary semantic classes across selection requests and grants:
 
 - **Protocol-enforced constraints:** Values the AS and/or RS actually validate or enforce, such as stream selection, field projection, `time_range`, `resources`, and `access_mode`.
-- **Structured policy declarations:** Machine-readable statements that matter for consent, local policy, and implementation-defined audit or transparency mechanisms, but are not generally self-enforcing at the protocol layer. In v0.1 this includes `purpose_code`, `purpose_description`, and `retention`, with one explicit exception: `https://pdpp.org/purpose/ai_training` adds a protocol-level consent requirement.
+- **Structured policy declarations:** Machine-readable statements that matter for consent, local policy, and implementation-defined audit or transparency mechanisms, but are not generally self-enforcing at the protocol layer. In v0.1 this includes `purpose_code`, `purpose_description`, and `retention`, with one explicit exception: `https://pdpp.dev/purpose/ai_training` adds a protocol-level consent requirement.
 - **Attributed client claims:** Client-authored statements that may matter to the user but are not protocol facts. In v0.1 this is `client_claims`.
 
 `client_display` is a separate category: requester identity metadata used to identify who is asking, not a grant constraint. Inline values may be client-asserted, but the AS renders them under its own resolution and trust policy.
@@ -666,7 +666,7 @@ PDPP does not standardize consent screen layout, visual design, or copywriting. 
 | Parameter | Type | Required | Status | Description |
 |-----------|------|----------|--------|-------------|
 | `source` | object | yes | Protocol-enforced | Source binding: `{ kind, id }`. `kind` is `"connector"` or `"provider_native"` and discriminates whether the data source is served through a polyfill connector or natively by the provider; `id` is the kind-keyed source identifier. For `kind: "connector"`, `id` is the connector identifier as defined by the deployment's connector registry. Exactly one source per authorization detail; `kind` and `id` are both required and no other members are permitted. |
-| `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (absolute URI). See Appendix A for the initial registry. The AS MUST accept any syntactically valid absolute-URI purpose code. For unrecognized codes, the AS MUST display `purpose_description` if present, or the raw URI if not, and MUST NOT reject the request solely because the purpose code is unrecognized. Consent properties associated with purpose codes in the registry are advisory, not protocol-enforced, with the exception of `https://pdpp.org/purpose/ai_training` (see below). |
+| `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (absolute URI). See Appendix A for the initial registry. The AS MUST accept any syntactically valid absolute-URI purpose code. For unrecognized codes, the AS MUST display `purpose_description` if present, or the raw URI if not, and MUST NOT reject the request solely because the purpose code is unrecognized. Consent properties associated with purpose codes in the registry are advisory, not protocol-enforced, with the exception of `https://pdpp.dev/purpose/ai_training` (see below). |
 | `purpose_description` | string | no | Structured policy declaration | Human-readable purpose, displayed to the user during consent. Clients SHOULD provide this field. When present, the AS MUST display it. For standard purpose codes, the AS MAY display a human-readable label from the registry when `purpose_description` is absent. |
 | `access_mode` | enum | yes | Protocol-enforced | `single_use` or `continuous`. See Section 7. |
 | `retention` | object | no | Structured policy declaration | Requested retention constraints: `{ max_duration, on_expiry }`. |
@@ -685,7 +685,7 @@ An authorization server that receives a `source.kind` value it does not recogniz
 
 #### AI training consent {#ai-training-consent}
 
-The AS MUST obtain explicit affirmative user consent before issuing any grant with `purpose_code` value `https://pdpp.org/purpose/ai_training`. This is the sole purpose code with a mandatory consent requirement at the protocol level.
+The AS MUST obtain explicit affirmative user consent before issuing any grant with `purpose_code` value `https://pdpp.dev/purpose/ai_training`. This is the sole purpose code with a mandatory consent requirement at the protocol level.
 
 ### Stream selection parameters
 
@@ -715,8 +715,8 @@ Connectors may define profiles (presets) in their manifest. A client can referen
 
 ```json
 {
-  "type": "https://pdpp.org/data-access",
-  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/instagram" },
+  "type": "https://pdpp.dev/data-access",
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/instagram" },
   "profile": "social_summary"
 }
 ```
@@ -742,9 +742,9 @@ The authorization server issues an access token bound to the grant. The client u
   "issued_at": "2026-04-06T15:00:00Z",
   "subject": { "id": "user_abc123" },
   "client": { "client_id": "music_recommendations" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
   "manifest_version": "2.0.0",
-  "purpose_code": "https://pdpp.org/purpose/personalization",
+  "purpose_code": "https://pdpp.dev/purpose/personalization",
   "purpose_description": "Recommend concerts based on your listening history",
   "access_mode": "single_use",
   "streams": [
@@ -875,9 +875,9 @@ Retention is a structured policy declaration and policy commitment by the data r
   "issued_at": "2026-04-06T15:00:00Z",
   "subject": { "id": "user_abc" },
   "client": { "client_id": "concert_app" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
   "manifest_version": "2.0.0",
-  "purpose_code": "https://pdpp.org/purpose/personalization",
+  "purpose_code": "https://pdpp.dev/purpose/personalization",
   "access_mode": "single_use",
   "streams": [
     {
@@ -897,9 +897,9 @@ Retention is a structured policy declaration and policy commitment by the data r
   "issued_at": "2026-04-06T15:00:00Z",
   "subject": { "id": "user_abc" },
   "client": { "client_id": "personal_agent" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/openai" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/openai" },
   "manifest_version": "2.0.0",
-  "purpose_code": "https://pdpp.org/purpose/agent_context",
+  "purpose_code": "https://pdpp.dev/purpose/agent_context",
   "access_mode": "continuous",
   "streams": [
     { "name": "conversations" },
@@ -917,9 +917,9 @@ Retention is a structured policy declaration and policy commitment by the data r
   "issued_at": "2026-04-06T15:00:00Z",
   "subject": { "id": "user_abc" },
   "client": { "client_id": "sleep_analysis" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/oura" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/oura" },
   "manifest_version": "1.0.0",
-  "purpose_code": "https://pdpp.org/purpose/analytics",
+  "purpose_code": "https://pdpp.dev/purpose/analytics",
   "access_mode": "single_use",
   "streams": [
     {
@@ -1256,7 +1256,7 @@ Optional query parameter:
 ```json
 {
   "object": "stream_state",
-  "connector_id": "https://registry.pdpp.org/connectors/spotify",
+  "connector_id": "https://registry.pdpp.dev/connectors/spotify",
   "grant_id": "grt_8f72a1b3",
   "state": {
     "top_artists": { "last_updated": "2026-04-01T00:00:00Z" }
@@ -1350,7 +1350,7 @@ Conformance is role- and behavior-based. A conformant implementation is not requ
 
 A conformant authorization server:
 
-1. Accepts selection requests using the RFC 9396 `authorization_details` envelope with `type: "https://pdpp.org/data-access"`.
+1. Accepts selection requests using the RFC 9396 `authorization_details` envelope with `type: "https://pdpp.dev/data-access"`.
 2. Validates selection requests against the connector manifest: rejects unknown streams, unsupported selection parameters (e.g., `time_range` on a stream without `consent_time_field`), and unrecognized profiles.
 3. Issues grants that conform to the grant schema defined in Section 7 (normative field tables). All grant fields are derived from the selection request, client registration, or AS policy.
 4. Expands wildcards (`"name": "*"`) and profiles into explicit stream lists before issuing the grant.
@@ -1363,7 +1363,7 @@ A conformant authorization server:
 11. Validates stream/field/view/resource-id shape at grant issuance.
 12. MUST NOT define a view including fields absent from the connector manifest schema.
 13. Resolves view names to field lists at issuance time; stores resolved `fields` in the `StreamGrant`.
-14. Obtains explicit affirmative user consent before issuing grants with `purpose_code: "https://pdpp.org/purpose/ai_training"`.
+14. Obtains explicit affirmative user consent before issuing grants with `purpose_code: "https://pdpp.dev/purpose/ai_training"`.
 15. Returns 400 `unsupported_version` if `PDPP-Version` header specifies an unsupported version.
 
 ### Resource Server conformance
@@ -1705,18 +1705,18 @@ interface TombstoneRecord {
 
 ## Appendix A: Purpose Code Registry
 
-**Registry governance:** Purpose code registries under `pdpp.org` are controlled by PDPP maintainers via a public change process. Implementations MUST treat unrecognized purpose URIs as opaque identifiers and MUST NOT reject requests solely because a purpose code is unrecognized.
+**Registry governance:** Purpose code registries under `pdpp.dev` are controlled by PDPP maintainers via a public change process. Implementations MUST treat unrecognized purpose URIs as opaque identifiers and MUST NOT reject requests solely because a purpose code is unrecognized.
 
 Purpose codes are URIs. The following codes are defined by PDPP. Implementers may define additional codes using their own URI namespaces.
 
 | Code | Description |
 |------|-------------|
-| `https://pdpp.org/purpose/personalization` | Tailoring the application experience to the user. |
-| `https://pdpp.org/purpose/analytics` | Analyzing user data to produce insights for the user. |
-| `https://pdpp.org/purpose/export` | Exporting data for the user's own use. |
-| `https://pdpp.org/purpose/agent_context` | Providing context to a personal AI agent. |
-| `https://pdpp.org/purpose/ai_training` | Using data to train AI models. The AS MUST obtain explicit affirmative user consent before issuing any grant with this purpose code. This is a protocol-level requirement, not merely advisory. |
-| `https://pdpp.org/purpose/research` | Academic or market research. |
+| `https://pdpp.dev/purpose/personalization` | Tailoring the application experience to the user. |
+| `https://pdpp.dev/purpose/analytics` | Analyzing user data to produce insights for the user. |
+| `https://pdpp.dev/purpose/export` | Exporting data for the user's own use. |
+| `https://pdpp.dev/purpose/agent_context` | Providing context to a personal AI agent. |
+| `https://pdpp.dev/purpose/ai_training` | Using data to train AI models. The AS MUST obtain explicit affirmative user consent before issuing any grant with this purpose code. This is a protocol-level requirement, not merely advisory. |
+| `https://pdpp.dev/purpose/research` | Academic or market research. |
 
 ---
 

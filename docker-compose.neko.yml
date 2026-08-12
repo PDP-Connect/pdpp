@@ -19,10 +19,10 @@ services:
       # Static managed n.eko mode exposes exactly one browser surface. The
       # controller owns leasing, queueing, and child-process CDP env injection;
       # connectors should not discover the static CDP endpoint directly.
-      PDPP_NEKO_MANAGED_CONNECTORS: ${PDPP_NEKO_MANAGED_CONNECTORS:-https://registry.pdpp.org/connectors/chatgpt}
+      PDPP_NEKO_MANAGED_CONNECTORS: ${PDPP_NEKO_MANAGED_CONNECTORS:-https://registry.pdpp.dev/connectors/chatgpt}
       PDPP_NEKO_SURFACE_MODE: ${PDPP_NEKO_SURFACE_MODE:-static}
       PDPP_NEKO_SURFACE_CAP: ${PDPP_NEKO_SURFACE_CAP:-1}
-      PDPP_NEKO_STATIC_PROFILE_KEY: ${PDPP_NEKO_STATIC_PROFILE_KEY-https://registry.pdpp.org/connectors/chatgpt}
+      PDPP_NEKO_STATIC_PROFILE_KEY: ${PDPP_NEKO_STATIC_PROFILE_KEY-https://registry.pdpp.dev/connectors/chatgpt}
       PDPP_NEKO_BROWSER_OWNER_MODE: ${PDPP_NEKO_BROWSER_OWNER_MODE:-neko-owned}
       # Dynamic mode is opt-in only. Operators must set
       # PDPP_NEKO_SURFACE_MODE=dynamic and clear the static-only URL/profile
@@ -192,7 +192,7 @@ services:
     networks:
       default:
         aliases:
-          - registry.pdpp.org
+          - registry.pdpp.dev
 
   web:
     depends_on:
@@ -220,7 +220,7 @@ configs:
     content: |
       server {
         listen 80;
-        server_name registry.pdpp.org;
+        server_name registry.pdpp.dev;
         root /usr/share/nginx/html;
         location /connectors/ {
           types { }

@@ -52,7 +52,7 @@ Environment:
 
 Visit <http://localhost:7674> and follow the five sections top to bottom.
 The shipped defaults target connector
-`https://registry.pdpp.org/connectors/spotify` and stream `top_artists`, so
+`https://registry.pdpp.dev/connectors/spotify` and stream `top_artists`, so
 the form can be submitted as-is once that manifest is registered.
 
 ## Approval modes

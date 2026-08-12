@@ -88,7 +88,7 @@ test("buildParRequest lifts flat data-access inputs into authorization_details",
     buildParRequest({
       access_mode: "single_use",
       client_id: "concert_recommendation_app",
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Suggest concerts based on listening history",
       scenario_id: "scenario_contract_builders",
       source: { id: "spotify", kind: "connector" },
@@ -98,11 +98,11 @@ test("buildParRequest lifts flat data-access inputs into authorization_details",
       authorization_details: [
         {
           access_mode: "single_use",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Suggest concerts based on listening history",
           source: { id: "spotify", kind: "connector" },
           streams: [{ fields: ["id", "name"], name: "top_artists" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: "concert_recommendation_app",
@@ -114,7 +114,7 @@ test("buildParRequest lifts flat data-access inputs into authorization_details",
 test("buildParRequest rejects legacy source scalar inputs", () => {
   const legacyInput: Record<string, unknown> = {
     connector_id: "spotify",
-    purpose_code: "https://pdpp.org/purpose/personalization",
+    purpose_code: "https://pdpp.dev/purpose/personalization",
   };
   assert.throws(() => buildParRequest(legacyInput), LEGACY_SOURCE_RE);
 });

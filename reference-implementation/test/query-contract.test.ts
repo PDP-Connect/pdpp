@@ -167,7 +167,7 @@ async function startGrantRequest(asUrl: string, params: JsonObject) {
           purpose_description: params.purpose_description,
           source: params.source || { id: params.connector_id, kind: "connector" },
           streams: params.streams,
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: params.client_id,
@@ -585,7 +585,7 @@ test("connector discovery scopes client tokens to the granted source and streams
     const approved = await approveGrant(asUrl, "schema_discovery_owner", {
       access_mode: "continuous",
       client_id: "longview",
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "schema discovery test",
       source: { id: spotifyManifest.connector_id, kind: "connector" },
       streams: [{ fields: ["id", "name", "source_updated_at"], name: "top_artists" }],
@@ -673,7 +673,7 @@ test("schema discovery scopes a client token to its grant source and streams", a
     const approved = await approveGrant(asUrl, "schema_client_owner", {
       access_mode: "continuous",
       client_id: "longview",
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "schema discovery client scope",
       source: { id: spotifyManifest.connector_id, kind: "connector" },
       streams: [{ fields: ["id", "name", "source_updated_at"], name: "top_artists" }],
@@ -825,7 +825,7 @@ test("stream metadata marks grant-limited field capabilities unusable for client
     const approved = await approveGrant(asUrl, "capability_limited_spotify_owner", {
       access_mode: "continuous",
       client_id: "longview",
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "schema discovery test",
       source: { id: spotifyManifest.connector_id, kind: "connector" },
       streams: [{ fields: ["id", "name", "source_updated_at"], name: "top_artists" }],
@@ -872,7 +872,7 @@ test("stream metadata marks grant-limited field capabilities unusable for client
       access_mode: "continuous",
       client_id: "longview",
       connector_id: gmailManifest.connector_id,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "Plan message queries using a narrowed field set",
       streams: [{ fields: ["id", "thread_id", "received_at", "subject"], name: "messages" }],
     });
@@ -1038,7 +1038,7 @@ test("stream aggregate enforces grants and declared aggregate fields", async () 
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "aggregation grant safety test",
       streams: [{ fields: ["id", "name", "source_updated_at"], name: "top_artists" }],
     });
@@ -1080,7 +1080,7 @@ test("stream aggregate honors grant resources, time ranges, and request filters 
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "aggregation resource and time-range safety test",
       streams: [
         {
@@ -1396,7 +1396,7 @@ test("fields projection on a manifest-unknown field is rejected under a restrict
     const approved = await approveGrant(asUrl, "restricted_fields_owner", {
       access_mode: "continuous",
       client_id: "longview",
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "projection conformance under a narrowed field grant",
       source: { id: connectorId, kind: "connector" },
       streams: [{ fields: ["id", "name", "source_updated_at"], name: "top_artists" }],
@@ -1783,7 +1783,7 @@ test("expand hydrates declared has_many relations and respects child grant proje
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read saved tracks with recent listening context",
       streams: [
         { fields: ["id", "name", "saved_at"], name: "saved_tracks" },
@@ -1842,7 +1842,7 @@ test("single-record fetch honors declared expand and expand_limit", async () => 
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read one saved track with recent listening context",
       streams: [
         { fields: ["id", "name", "saved_at"], name: "saved_tracks" },
@@ -1889,7 +1889,7 @@ test("expand fails with insufficient_scope when the related stream is outside th
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read saved tracks only",
       streams: [{ fields: ["id", "name", "saved_at"], name: "saved_tracks" }],
     });
@@ -1924,7 +1924,7 @@ test("gmail messages expand message_bodies on list and detail reads with child p
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read Gmail messages with body context",
       streams: [
         { fields: ["id", "thread_id", "subject", "received_at"], name: "messages" },
@@ -1977,7 +1977,7 @@ test("gmail messages expand attachment metadata with limits and missing-child pa
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read Gmail messages with attachment metadata",
       streams: [
         { fields: ["id", "thread_id", "subject", "received_at", "has_attachments"], name: "messages" },
@@ -2090,7 +2090,7 @@ test("gmail messages expand hydrated attachments with grant-visible blob_ref fet
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read Gmail messages with attachment blobs",
       streams: [
         { fields: ["id", "thread_id", "subject", "received_at", "has_attachments"], name: "messages" },
@@ -2145,7 +2145,7 @@ test("gmail message expansion rejects missing child grant and reverse thread rel
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read Gmail messages only",
       streams: [{ fields: ["id", "thread_id", "subject", "received_at"], name: "messages" }],
     });
@@ -2526,7 +2526,7 @@ test("github user expands user_stats filtered by user_id under a both-granted to
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read GitHub profile with daily stats",
       streams: [
         { fields: ["id", "login", "name", "updated_at"], name: "user" },
@@ -2571,7 +2571,7 @@ test("github user_stats expand_limit caps the child fan-out and reports has_more
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read GitHub profile with capped daily stats",
       streams: [
         { fields: ["id", "login"], name: "user" },
@@ -2603,7 +2603,7 @@ test("github user expansion rejects requests missing the user_stats grant", asyn
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read GitHub profile only",
       streams: [{ fields: ["id", "login"], name: "user" }],
     });
@@ -2622,7 +2622,7 @@ test("github user expansion rejects requests missing the user_stats grant", asyn
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read GitHub profile + stats",
       streams: [
         { fields: ["id", "login"], name: "user" },
@@ -2653,7 +2653,7 @@ test("github repositories → issues expansion is not declared in this change", 
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read GitHub repositories only",
       streams: [{ fields: ["id", "full_name"], name: "repositories" }],
     });
@@ -2681,7 +2681,7 @@ test("github user stream metadata surfaces the user_stats expand capability with
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read GitHub profile + stats",
       streams: [
         { fields: ["id", "login"], name: "user" },
@@ -2706,7 +2706,7 @@ test("github user stream metadata surfaces the user_stats expand capability with
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read GitHub profile only",
       streams: [{ fields: ["id", "login"], name: "user" }],
     });
@@ -2746,7 +2746,7 @@ test("slack messages expand message_attachments and reactions on list and detail
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read Slack messages with link previews and reactions",
       streams: [
         { fields: ["id", "channel_id", "sent_at", "text"], name: "messages" },
@@ -2816,7 +2816,7 @@ test("slack messages expand_limit caps message_attachments and reactions indepen
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read Slack messages with capped child fan-out",
       streams: [
         { fields: ["id", "channel_id", "sent_at"], name: "messages" },
@@ -2858,7 +2858,7 @@ test("slack message expansion rejects requests missing the child grant", async (
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read Slack messages only",
       streams: [{ fields: ["id", "channel_id", "sent_at"], name: "messages" }],
     });
@@ -2959,7 +2959,7 @@ test("blob upload requires owner authority and validates binding inputs", async 
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read saved tracks only",
       streams: [{ fields: ["id", "name", "saved_at"], name: "saved_tracks" }],
     });
@@ -3068,7 +3068,7 @@ test("blob upload is content-addressed, idempotent, and fetch-safe through visib
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read saved tracks with uploaded blob access",
       streams: [{ fields: ["id", "name", "saved_at", "blob_ref"], name: "saved_tracks" }],
     });
@@ -3137,7 +3137,7 @@ test("blob fetch injects fetch_url and requires blob_ref visibility under the gr
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read saved tracks with blob access",
       streams: [{ fields: ["id", "name", "saved_at", "blob_ref"], name: "saved_tracks" }],
     });
@@ -3161,7 +3161,7 @@ test("blob fetch injects fetch_url and requires blob_ref visibility under the gr
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read saved tracks without blob access",
       streams: [{ fields: ["id", "name", "saved_at"], name: "saved_tracks" }],
     });

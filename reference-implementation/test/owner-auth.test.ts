@@ -123,11 +123,11 @@ async function startPendingConsent(asUrl: string, overrides: Record<string, unkn
       authorization_details: [
         {
           access_mode: "single_use",
-          purpose_code: "https://pdpp.org/purpose/test",
+          purpose_code: "https://pdpp.dev/purpose/test",
           purpose_description: "test",
           source: { id: SPOTIFY_MANIFEST.connector_id, kind: "connector" },
           streams: [{ name: "top_artists" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_display: { name: "Longview" },

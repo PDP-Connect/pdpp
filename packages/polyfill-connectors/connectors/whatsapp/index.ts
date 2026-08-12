@@ -289,7 +289,7 @@ async function emitAttachmentRecords(
     try {
       blobRef = await uploadBlob({
         bytes: attachment.bytes,
-        connectorId: "https://registry.pdpp.org/connectors/whatsapp",
+        connectorId: "https://registry.pdpp.dev/connectors/whatsapp",
         mimeType: contentType,
         recordKey: id,
         stream: "attachments",

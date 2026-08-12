@@ -177,7 +177,7 @@ test("buildHostedMcpAuthorizationDetailsForConnector: wildcard-stream continuous
   const rawEntry = details[0];
   assert.ok(isHostedMcpAuthorizationDetailsEntry(rawEntry), "entry has the expected shape");
   const entry = rawEntry;
-  assert.equal(entry.type, "https://pdpp.org/data-access");
+  assert.equal(entry.type, "https://pdpp.dev/data-access");
   assert.deepEqual(entry.source, { id: "gmail", kind: "connector" });
   assert.equal(entry.access_mode, "continuous");
   assert.deepEqual(entry.streams, [{ name: "*" }], "wildcard stream selection");

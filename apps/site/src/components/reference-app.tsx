@@ -83,7 +83,7 @@ const GRANT_SPECIMEN = LONGVIEW_GRANT_SPECIMEN;
 const MULTI_CONNECTORS: ConnectorCardProps[] = [
   CONNECTOR_SPECIMEN,
   {
-    connectorId: "https://registry.pdpp.org/connectors/spotify",
+    connectorId: "https://registry.pdpp.dev/connectors/spotify",
     displayName: "Spotify",
     streams: [
       {
@@ -108,7 +108,7 @@ const MULTI_CONNECTORS: ConnectorCardProps[] = [
     version: "2.0.0",
   },
   {
-    connectorId: "https://registry.pdpp.org/connectors/oura",
+    connectorId: "https://registry.pdpp.dev/connectors/oura",
     displayName: "Oura Ring",
     streams: [
       {
@@ -1429,7 +1429,7 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
                 style={{ backgroundColor: "var(--muted)", color: "var(--muted-foreground)" }}
               >
                 {`{
-  "connector_id": "https://registry.pdpp.org/profiles/compensation-v1",
+  "connector_id": "https://registry.pdpp.dev/profiles/compensation-v1",
   "version": "1.0.0",
   "display_name": "Compensation profile",
   "streams": [{
@@ -1621,10 +1621,10 @@ Content-Type: application/json
   "client_id": "${LONGVIEW_CLIENT_ID}",
   "client_display": { "name": "${LONGVIEW_CLIENT_NAME}", ... },
   "authorization_details": [{
-    "type": "https://pdpp.org/data-access",
+    "type": "https://pdpp.dev/data-access",
     "source": {
       "kind": "connector",
-      "id": "https://registry.pdpp.org/profiles/compensation-v1"
+      "id": "https://registry.pdpp.dev/profiles/compensation-v1"
     },
     "purpose_code": "${LONGVIEW_PURPOSE_CODE}",
     "streams": [
@@ -1818,7 +1818,7 @@ Content-Type: application/json
     "tos_uri": "${LONGVIEW_TOS_URI}"
   },
   "authorization_details": [{
-    "type": "https://pdpp.org/data-access",
+    "type": "https://pdpp.dev/data-access",
     "purpose_code": "${LONGVIEW_PURPOSE_CODE}",
     "purpose_description": "${LONGVIEW_PURPOSE_DESCRIPTION}",
     "access_mode": "continuous",

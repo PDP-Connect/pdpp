@@ -337,7 +337,7 @@ test("processMessage: hydrates requested attachments with blob_ref, hash, MIME t
   const expectedSha = createHash("sha256").update(bytes).digest("hex");
   const uploadCalls: Array<{ recordKey: string; sha256: string }> = [];
   const hydrateAttachment = makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
     fetchAttachment: () =>
       Promise.resolve({
         content: Readable.from([bytes.subarray(0, 4), bytes.subarray(4)]),
@@ -389,7 +389,7 @@ test("processMessage: hydrates requested attachments with blob_ref, hash, MIME t
 test("processMessage: emits DETAIL_GAP_RECOVERED only after the matching attachment record lands", async () => {
   const bytes = Buffer.from("recoverable attachment");
   const hydrateAttachment = makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
     fetchAttachment: () =>
       Promise.resolve({
         content: Readable.from([bytes]),
@@ -474,7 +474,7 @@ test("processMessage: a served gap whose attachment fails hydration AGAIN is nev
   // undetectable data loss on exactly the population this fix targets (a
   // served gap that fails again). This pins the guard against that.
   const hydrateAttachment = makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
     fetchAttachment: () => Promise.reject(new Error("download failed again")),
     uploadBlob: () => Promise.reject(new Error("should not upload when download fails")),
   });
@@ -533,7 +533,7 @@ test("processMessage: a served gap whose attachment fails hydration AGAIN is nev
 
 test("processMessage: emits bounded failed attachment metadata without fake blob ids", async () => {
   const hydrateAttachment = makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
     fetchAttachment: () => Promise.reject(new Error(`download failed ${"x".repeat(400)}`)),
     uploadBlob: () => Promise.reject(new Error("should not upload when download fails")),
   });
@@ -561,7 +561,7 @@ test("processMessage: rerun hydration preserves attachment identity and idempote
   const expectedSha = createHash("sha256").update(bytes).digest("hex");
   let uploadCount = 0;
   const hydrateAttachment = makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
     fetchAttachment: () =>
       Promise.resolve({
         content: Readable.from([bytes]),
@@ -612,7 +612,7 @@ test("processMessage: repeated backfill preserves record id, content hash, blob 
   const bindings = new Set<string>();
   const storedPayloads = new Map<string, Buffer>();
   const hydrateAttachment = makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
     fetchAttachment: () =>
       Promise.resolve({
         content: Readable.from([bytes]),
@@ -668,7 +668,7 @@ test("processMessage: repeated backfill preserves record id, content hash, blob 
   assert.equal(storedPayloads.size, 1, "content-addressed store keeps one payload for repeated bytes");
   assert.deepEqual(
     bindings,
-    new Set([`blob_sha256_${expectedSha}|https://registry.pdpp.org/connectors/gmail|attachments|gmmsgid-1111:2`])
+    new Set([`blob_sha256_${expectedSha}|https://registry.pdpp.dev/connectors/gmail|attachments|gmmsgid-1111:2`])
   );
 });
 
@@ -698,7 +698,7 @@ test("processMessage: refuses hydration when source-reported size exceeds the bo
   );
   const uploadBlob = mock.fn(() => Promise.reject(new Error("upload should be skipped when size_bytes > maxBytes")));
   const hydrateAttachment = makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
     fetchAttachment,
     maxBytes: 1024,
     uploadBlob,
@@ -751,7 +751,7 @@ test("processMessage: refuses hydration when streamed bytes overshoot the cap (u
     })();
   });
   const hydrateAttachment = makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
     fetchAttachment: () =>
       Promise.resolve({
         // Source under-reports the size: declared 100 bytes but actually 2048.
@@ -1903,7 +1903,7 @@ test("recoverServedAttachmentGaps: an unclassified plain blob failure remains re
   const emitHarness = makeRecordingEmit();
   let failedAttachment: AttachmentRecord | undefined;
   const hydrateAttachment = makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
     fetchAttachment: () =>
       Promise.resolve({
         content: Readable.from([Buffer.from("attachment")]),
@@ -1996,7 +1996,7 @@ test("recoverServedAttachmentGaps: boundary-derived stages account for every fai
     uid: 6010,
   });
   const hydrateAttachment = makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
     fetchAttachment: (_msg, attachment) => {
       if (attachment.part_index === "1") {
         throw new Error("private IMAP download failure");
@@ -2317,7 +2317,7 @@ test("trimAttachmentBackfillPageToByteBudget: caller must sort ascending by UID 
 test("processMessage: attachment bytes are not inlined into message_bodies", async () => {
   const attachmentBytes = Buffer.from("secret attachment payload");
   const hydrateAttachment = makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
     fetchAttachment: () =>
       Promise.resolve({
         content: Readable.from([attachmentBytes]),
@@ -2526,7 +2526,7 @@ test("backfill mode: historical UID below priorUidnext hydrates attachment bytes
   const historicalPayload = Buffer.from("ancient invoice bytes");
   const expectedSha = createHash("sha256").update(historicalPayload).digest("hex");
   const hydrateAttachment = makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
     fetchAttachment: () =>
       Promise.resolve({
         content: Readable.from([historicalPayload]),
@@ -2604,7 +2604,7 @@ test("backfill mode: rerunning the same historical UID is idempotent and the sum
   const payload = Buffer.from("ancient invoice bytes");
   const expectedSha = createHash("sha256").update(payload).digest("hex");
   const hydrateAttachment = makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
     fetchAttachment: () =>
       Promise.resolve({
         content: Readable.from([payload]),
@@ -2644,7 +2644,7 @@ test("backfill mode: rerunning the same historical UID is idempotent and the sum
 
 test("backfill mode: a failed historical attachment fetch is counted as a remaining historical gap, not silently dropped", async () => {
   const hydrateAttachment = makeAttachmentHydrator({
-    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    connectorId: "https://registry.pdpp.dev/connectors/gmail",
     fetchAttachment: () => Promise.reject(new Error("imap fetch transient failure")),
     uploadBlob: () => Promise.reject(new Error("should not be called when fetch fails")),
   });

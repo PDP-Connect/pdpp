@@ -188,7 +188,7 @@ test("provider-auth source reports deployment prerequisite, not static-secret se
 
 test("a connection's raw registry-prefixed connector_id resolves to the canonical key", () => {
   const map = buildSourceAddSupport([staticSecretManifest("ynab")]);
-  const support = resolveSourceAddSupport(map, "https://registry.pdpp.org/connectors/ynab");
+  const support = resolveSourceAddSupport(map, "https://registry.pdpp.dev/connectors/ynab");
   assert.ok(support, "registry-URL connector_id must resolve via canonicalConnectorKey");
   assert.equal(support.support, "self_service");
 });

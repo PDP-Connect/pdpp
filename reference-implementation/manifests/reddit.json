@@ -1,8 +1,8 @@
 {
   "protocol_version": "0.1.0",
-  "connector_id": "https://registry.pdpp.org/connectors/reddit",
+  "connector_id": "https://registry.pdpp.dev/connectors/reddit",
   "connector_key": "reddit",
-  "manifest_uri": "https://registry.pdpp.org/connectors/reddit",
+  "manifest_uri": "https://registry.pdpp.dev/connectors/reddit",
   "version": "1.0.0",
   "display_name": "Reddit",
   "runtime_requirements": {

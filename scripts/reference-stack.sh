@@ -331,15 +331,15 @@ verify_reference_env() {
   rs_public_url="$(printf '%s\n' "$env_output" | sed -n 's/^rs_public_url=//p')"
 
   [[ -n "$managed" ]] || fail "reference is missing PDPP_NEKO_MANAGED_CONNECTORS; did you omit docker-compose.neko.yml?"
-  [[ "$managed" == *"https://registry.pdpp.org/connectors/chatgpt"* ]] \
+  [[ "$managed" == *"https://registry.pdpp.dev/connectors/chatgpt"* ]] \
     || fail "managed connector list does not include ChatGPT"
-  [[ "$managed" == *"https://registry.pdpp.org/connectors/chase"* ]] \
+  [[ "$managed" == *"https://registry.pdpp.dev/connectors/chase"* ]] \
     || fail "managed connector list does not include Chase"
-  [[ "$managed" == *"https://registry.pdpp.org/connectors/usaa"* ]] \
+  [[ "$managed" == *"https://registry.pdpp.dev/connectors/usaa"* ]] \
     || fail "managed connector list does not include USAA"
-  [[ "$managed" == *"https://registry.pdpp.org/connectors/amazon"* ]] \
+  [[ "$managed" == *"https://registry.pdpp.dev/connectors/amazon"* ]] \
     || fail "managed connector list does not include Amazon"
-  [[ "$managed" == *"https://registry.pdpp.org/connectors/reddit"* ]] \
+  [[ "$managed" == *"https://registry.pdpp.dev/connectors/reddit"* ]] \
     || fail "managed connector list does not include Reddit"
   [[ "$mode" == "dynamic" ]] || fail "expected PDPP_NEKO_SURFACE_MODE=dynamic, got '${mode:-<empty>}'"
   [[ "$cap" =~ ^[1-9][0-9]*$ ]] || fail "PDPP_NEKO_SURFACE_CAP must be a positive integer, got '${cap:-<empty>}'"

@@ -354,7 +354,7 @@ interface ApprovedGrant {
 // connector id at the boundary, so error messages and trace source
 // descriptors carry this canonical key. Raw-SQL fixtures that target those
 // rows by connector_id must also use the canonical key.
-const SPOTIFY_CONNECTOR_KEY_RAW = canonicalConnectorKey("https://registry.pdpp.org/connectors/spotify");
+const SPOTIFY_CONNECTOR_KEY_RAW = canonicalConnectorKey("https://registry.pdpp.dev/connectors/spotify");
 assert.ok(SPOTIFY_CONNECTOR_KEY_RAW, "expected a canonical key for the well-formed spotify registry URL");
 const SPOTIFY_CONNECTOR_KEY = SPOTIFY_CONNECTOR_KEY_RAW;
 
@@ -477,7 +477,7 @@ function startGrantRequest(asUrl: string, params: GrantRequestParams) {
               ? { id: params.provider_id, kind: "provider_native" }
               : { id: params.connector_id, kind: "connector" }),
           streams: params.streams,
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_display: params.client_display,
@@ -726,7 +726,7 @@ function issueNorthstarClientGrant(asUrl: string, nativeManifest: TestManifest, 
   return approveGrant(asUrl, subjectId, {
     access_mode: "continuous",
     client_id: "longview",
-    purpose_code: "https://pdpp.org/purpose/financial_planning",
+    purpose_code: "https://pdpp.dev/purpose/financial_planning",
     purpose_description: "Support compensation planning and verification",
     source: { id: nativeManifest.provider_id, kind: "provider_native" },
     streams: [{ name: "pay_statements" }],
@@ -802,7 +802,7 @@ async function withMalformedPolyfillClientGrant(fn: (ctx: MalformedPolyfillClien
     const approved = await approveGrant(asUrl, "cli_owner", {
       access_mode: "continuous",
       client_id: "concert_recommendation_app",
-      purpose_code: "https://pdpp.org/purpose/concert_recommendation",
+      purpose_code: "https://pdpp.dev/purpose/concert_recommendation",
       purpose_description: "Recommend concerts and nearby live events",
       source: { id: spotifyManifest.connector_id, kind: "connector" },
       streams: [{ name: "top_artists" }],
@@ -2023,7 +2023,7 @@ test("PDPP CLI smoke", async (t) => {
       manifestPath,
       JSON.stringify(
         {
-          connector_id: "https://registry.pdpp.org/connectors/spotify",
+          connector_id: "https://registry.pdpp.dev/connectors/spotify",
           display_name: "Spotify",
           storage_binding: {
             connector_id: "spotify_native_storage",
@@ -2069,9 +2069,9 @@ test("PDPP CLI smoke", async (t) => {
           request_version: "reference.v1",
           selection: {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/financial_planning",
+            purpose_code: "https://pdpp.dev/purpose/financial_planning",
             streams: [{ name: "pay_statements" }, { name: "equity_grants" }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
           source_binding: { id: "northstar_hr", kind: "provider_native" },
           storage_binding: {
@@ -2087,7 +2087,7 @@ test("PDPP CLI smoke", async (t) => {
     assert.ok(result.json, "expected CLI --format json output to parse");
 
     assert.equal(result.json.client_display, "Longview");
-    assert.equal(result.json.purpose_code, "https://pdpp.org/purpose/financial_planning");
+    assert.equal(result.json.purpose_code, "https://pdpp.dev/purpose/financial_planning");
     assert.equal(result.json.access_mode, "continuous");
     assert.equal(result.json.source_kind, "provider_native");
     assert.equal(result.json.source_id, "northstar_hr");
@@ -2110,9 +2110,9 @@ test("PDPP CLI smoke", async (t) => {
           request_version: "reference.v1",
           selection: {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/financial_planning",
+            purpose_code: "https://pdpp.dev/purpose/financial_planning",
             streams: [{ name: "pay_statements" }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
           source_binding: {
             connector_id: "northstar_hr_native",
@@ -2147,9 +2147,9 @@ test("PDPP CLI smoke", async (t) => {
           request_version: "reference.v1",
           selection: {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/financial_planning",
+            purpose_code: "https://pdpp.dev/purpose/financial_planning",
             streams: [{ name: "pay_statements" }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
           source_binding: { id: "northstar_hr_native", kind: "connector" },
           storage_binding: {
@@ -2183,9 +2183,9 @@ test("PDPP CLI smoke", async (t) => {
           request_version: "reference.v1",
           selection: {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/financial_planning",
+            purpose_code: "https://pdpp.dev/purpose/financial_planning",
             streams: [{ name: "pay_statements" }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
           source_binding: { id: "northstar_hr_native", kind: "connector" },
           storage_binding: {
@@ -2217,7 +2217,7 @@ test("PDPP CLI smoke", async (t) => {
           },
           expires_at: null,
           grant_id: "grt_test",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           source: { id: "northstar_hr", kind: "provider_native" },
           streams: [{ name: "pay_statements" }, { name: "equity_grants" }],
           subject: { id: "employee_1" },
@@ -2235,7 +2235,7 @@ test("PDPP CLI smoke", async (t) => {
     assert.equal(result.json.client_display, "Longview");
     assert.equal(result.json.subject_id, "employee_1");
     assert.equal(result.json.access_mode, "continuous");
-    assert.equal(result.json.purpose_code, "https://pdpp.org/purpose/financial_planning");
+    assert.equal(result.json.purpose_code, "https://pdpp.dev/purpose/financial_planning");
     assert.equal(result.json.source_kind, "provider_native");
     assert.equal(result.json.source_id, "northstar_hr");
     assert.equal(result.json.streams, "pay_statements, equity_grants");
@@ -2256,7 +2256,7 @@ test("PDPP CLI smoke", async (t) => {
           },
           expires_at: null,
           grant_id: "grt_test",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           source: {
             connector_id: "northstar_hr_native",
           },
@@ -2292,7 +2292,7 @@ test("PDPP CLI smoke", async (t) => {
             connector_id: "northstar_hr_native",
             debug_context: "should_not_be_accepted",
           },
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           source: { id: "northstar_hr_native", kind: "connector" },
           streams: [{ name: "pay_statements" }],
           subject: { id: "employee_1" },
@@ -2327,7 +2327,7 @@ test("PDPP CLI smoke", async (t) => {
             grant_storage_binding: {
               connector_id: "other_storage_connector",
             },
-            purpose_code: "https://pdpp.org/purpose/financial_planning",
+            purpose_code: "https://pdpp.dev/purpose/financial_planning",
             source: { id: "northstar_hr_native", kind: "connector" },
             streams: [{ name: "pay_statements" }],
             subject: { id: "employee_1" },
@@ -2384,11 +2384,11 @@ test("PDPP CLI smoke", async (t) => {
             authorization_details: [
               {
                 access_mode: "single_use",
-                purpose_code: "https://pdpp.org/purpose/compensation_planning",
+                purpose_code: "https://pdpp.dev/purpose/compensation_planning",
                 purpose_description: "Compare pay, equity, and benefits data",
                 source: { id: spotifyManifest.connector_id, kind: "connector" },
                 streams: [{ fields: ["id", "name"], name: "saved_tracks" }],
-                type: "https://pdpp.org/data-access",
+                type: "https://pdpp.dev/data-access",
               },
             ],
             client_id: registration.json.client_id,
@@ -2456,11 +2456,11 @@ test("PDPP CLI smoke", async (t) => {
               authorization_details: [
                 {
                   access_mode: "single_use",
-                  purpose_code: "https://pdpp.org/purpose/compensation_planning",
+                  purpose_code: "https://pdpp.dev/purpose/compensation_planning",
                   purpose_description: "Compare pay, equity, and benefits data",
                   source: { id: spotifyManifest.connector_id, kind: "connector" },
                   streams: [{ fields: ["id", "name"], name: "saved_tracks" }],
-                  type: "https://pdpp.org/data-access",
+                  type: "https://pdpp.dev/data-access",
                 },
               ],
               client_id: registration.json.client_id,
@@ -2527,11 +2527,11 @@ test("PDPP CLI smoke", async (t) => {
           authorization_details: [
             {
               access_mode: "single_use",
-              purpose_code: "https://pdpp.org/purpose/compensation_planning",
+              purpose_code: "https://pdpp.dev/purpose/compensation_planning",
               purpose_description: "Compare pay, equity, and benefits data",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ fields: ["id", "name"], name: "saved_tracks" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: registration.json.client_id,
@@ -2597,7 +2597,7 @@ test("PDPP CLI smoke", async (t) => {
       const initiate = await startGrantRequest(asUrl, {
         access_mode: "single_use",
         client_id: registration.json.client_id,
-        purpose_code: "https://pdpp.org/purpose/compensation_planning",
+        purpose_code: "https://pdpp.dev/purpose/compensation_planning",
         purpose_description: "Compare pay, equity, and benefits data",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ fields: ["id", "name"], name: "saved_tracks" }],
@@ -2644,7 +2644,7 @@ test("PDPP CLI smoke", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "single_use",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/compensation_planning",
+          purpose_code: "https://pdpp.dev/purpose/compensation_planning",
           purpose_description: "Compare pay, equity, and benefits data",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ fields: ["id", "name"], name: "saved_tracks" }],
@@ -2707,7 +2707,7 @@ test("PDPP CLI smoke", async (t) => {
       const initiate = await startGrantRequest(asUrl, {
         access_mode: "single_use",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/financial_planning",
+        purpose_code: "https://pdpp.dev/purpose/financial_planning",
         purpose_description: "Support compensation planning and verification",
         source: { id: nativeManifest.provider_id, kind: "provider_native" },
         streams: [{ name: "pay_statements" }],
@@ -2768,7 +2768,7 @@ test("PDPP CLI smoke", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "single_use",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Compare pay, equity, and benefits data",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ fields: ["id", "name"], name: "saved_tracks" }],
@@ -2822,7 +2822,7 @@ test("PDPP CLI smoke", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "single_use",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Compare pay, equity, and benefits data",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ fields: ["id", "name"], name: "saved_tracks" }],
@@ -2862,7 +2862,7 @@ test("PDPP CLI smoke", async (t) => {
       const initiate = await startGrantRequest(asUrl, {
         access_mode: "continuous",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/financial_planning",
+        purpose_code: "https://pdpp.dev/purpose/financial_planning",
         purpose_description: "Support compensation planning and verification",
         source: { id: nativeManifest.provider_id, kind: "provider_native" },
         streams: [{ name: "pay_statements" }],
@@ -2909,7 +2909,7 @@ test("PDPP CLI smoke", async (t) => {
       const initiate = await startGrantRequest(asUrl, {
         access_mode: "single_use",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/compensation_planning",
+        purpose_code: "https://pdpp.dev/purpose/compensation_planning",
         purpose_description: "Compare pay, equity, and benefits data",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ fields: ["id", "name"], name: "saved_tracks" }],
@@ -2955,7 +2955,7 @@ test("PDPP CLI smoke", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "single_use",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
           source: { id: nativeManifest.provider_id, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],
@@ -3008,11 +3008,11 @@ test("PDPP CLI smoke", async (t) => {
             authorization_details: [
               {
                 access_mode: "single_use",
-                purpose_code: "https://pdpp.org/purpose/compensation_planning",
+                purpose_code: "https://pdpp.dev/purpose/compensation_planning",
                 purpose_description: "Compare pay, equity, and benefits data",
                 source: { id: spotifyManifest.connector_id, kind: "connector" },
                 streams: [{ fields: ["id", "name"], name: "saved_tracks" }],
-                type: "https://pdpp.org/data-access",
+                type: "https://pdpp.dev/data-access",
               },
             ],
             client_display: { name: "Longview", verified: true },
@@ -3068,11 +3068,11 @@ test("PDPP CLI smoke", async (t) => {
             authorization_details: [
               {
                 access_mode: "single_use",
-                purpose_code: "https://pdpp.org/purpose/compensation_planning",
+                purpose_code: "https://pdpp.dev/purpose/compensation_planning",
                 purpose_description: "Compare pay, equity, and benefits data",
                 source: { id: spotifyManifest.connector_id, kind: "connector" },
                 streams: [{ fields: ["id", "name"], name: "saved_tracks" }],
-                type: "https://pdpp.org/data-access",
+                type: "https://pdpp.dev/data-access",
               },
             ],
             client_display: { name: "Longview", verified: true },
@@ -3115,11 +3115,11 @@ test("PDPP CLI smoke", async (t) => {
             authorization_details: [
               {
                 access_mode: "single_use",
-                purpose_code: "https://pdpp.org/purpose/financial_planning",
+                purpose_code: "https://pdpp.dev/purpose/financial_planning",
                 purpose_description: "Compare pay, equity, and benefits data",
                 source: { id: nativeManifest.provider_id, kind: "provider_native" },
                 streams: [{ name: "pay_statements", view: "summary" }],
-                type: "https://pdpp.org/data-access",
+                type: "https://pdpp.dev/data-access",
               },
             ],
             client_display: { name: "Longview", verified: true },
@@ -3156,11 +3156,11 @@ test("PDPP CLI smoke", async (t) => {
             authorization_details: [
               {
                 access_mode: "single_use",
-                purpose_code: "https://pdpp.org/purpose/compensation_planning",
+                purpose_code: "https://pdpp.dev/purpose/compensation_planning",
                 purpose_description: "Compare pay, equity, and benefits data",
                 source: { id: spotifyManifest.connector_id, kind: "connector" },
                 streams: [{ fields: ["id", "name"], name: "saved_tracks" }],
-                type: "https://pdpp.org/data-access",
+                type: "https://pdpp.dev/data-access",
               },
             ],
             client_id: "cli_longview",
@@ -3190,11 +3190,11 @@ test("PDPP CLI smoke", async (t) => {
             authorization_details: [
               {
                 access_mode: "single_use",
-                purpose_code: "https://pdpp.org/purpose/compensation_planning",
+                purpose_code: "https://pdpp.dev/purpose/compensation_planning",
                 purpose_description: "Compare pay, equity, and benefits data",
                 source: { id: spotifyManifest.connector_id, kind: "connector" },
                 streams: [{ fields: ["id", "name"], name: "saved_tracks", view: "basic" }],
-                type: "https://pdpp.org/data-access",
+                type: "https://pdpp.dev/data-access",
               },
             ],
             client_id: "cli_longview",
@@ -3252,7 +3252,7 @@ test("PDPP CLI smoke", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -3390,11 +3390,11 @@ test("PDPP CLI smoke", async (t) => {
             authorization_details: [
               {
                 access_mode: "single_use",
-                purpose_code: "https://pdpp.org/purpose/financial_planning",
+                purpose_code: "https://pdpp.dev/purpose/financial_planning",
                 purpose_description: "Compare pay, equity, and benefits data",
                 source: { id: "northstar_hr", kind: "provider_native" },
                 streams: [{ fields: ["gross_pay", "net_pay"], name: "pay_statements" }],
-                type: "https://pdpp.org/data-access",
+                type: "https://pdpp.dev/data-access",
               },
             ],
             client_display: { name: "Longview", verified: true },
@@ -3423,11 +3423,11 @@ test("PDPP CLI smoke", async (t) => {
             authorization_details: [
               {
                 access_mode: "single_use",
-                purpose_code: "https://pdpp.org/purpose/financial_planning",
+                purpose_code: "https://pdpp.dev/purpose/financial_planning",
                 purpose_description: "Compare pay, equity, and benefits data",
                 source: { id: "wrong_provider", kind: "provider_native" },
                 streams: [{ fields: ["gross_pay", "net_pay"], name: "pay_statements" }],
-                type: "https://pdpp.org/data-access",
+                type: "https://pdpp.dev/data-access",
               },
             ],
             client_display: { name: "Longview", verified: true },
@@ -3459,14 +3459,14 @@ test("PDPP CLI smoke", async (t) => {
                 {
                   access_mode: "single_use",
                   connector_id: "spotify",
-                  purpose_code: "https://pdpp.org/purpose/financial_planning",
+                  purpose_code: "https://pdpp.dev/purpose/financial_planning",
                   purpose_description: "Compare pay, equity, and benefits data",
                   source: {
                     id: "northstar_hr",
                     kind: "provider_native",
                   },
                   streams: [{ fields: ["gross_pay", "net_pay"], name: "pay_statements" }],
-                  type: "https://pdpp.org/data-access",
+                  type: "https://pdpp.dev/data-access",
                 },
               ],
               client_display: { name: "Longview", verified: true },
@@ -3631,7 +3631,7 @@ test("PDPP CLI smoke", async (t) => {
         access_mode: "single_use",
         client_display: { name: "Concert Recommendation App" },
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Recommend concerts based on listening history",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -3664,7 +3664,7 @@ test("PDPP CLI smoke", async (t) => {
         access_mode: "continuous",
         client_display: { name: "Concert Recommendation App" },
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Maintain grant-scoped state through the CLI timeline reader",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists" }],
@@ -3916,7 +3916,7 @@ test("PDPP CLI smoke", async (t) => {
         const approved = await approveGrant(asUrl, "employee_1", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
           source: { id: nativeManifest.provider_id, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],
@@ -4229,7 +4229,7 @@ test("PDPP CLI smoke", async (t) => {
         access_mode: "continuous",
         client_display: { name: "Concert Recommendation App" },
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Maintain a concert-recommendation profile over time using the basic top-artist subset",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [
@@ -4308,7 +4308,7 @@ test("PDPP CLI smoke", async (t) => {
         access_mode: "single_use",
         client_display: { name: "Concert Recommendation App" },
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Recommend concerts using a chosen artist subset",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [
@@ -4396,7 +4396,7 @@ test("PDPP CLI smoke", async (t) => {
           access_mode: "single_use",
           client_display: { name: "Concert Recommendation App" },
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Recommend concerts using top artists only",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -4510,7 +4510,7 @@ test("PDPP CLI smoke", async (t) => {
         access_mode: "single_use",
         client_display: { name: "Concert Recommendation App" },
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Recommend concerts from recent listening only",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [
@@ -6966,7 +6966,7 @@ rl.on('line', (line) => {
 
   await t.test("run timeline keeps partial checkpoint commit artifacts inspectable", async () => {
     const manifest = {
-      connector_id: "https://registry.pdpp.org/connectors/cli-run-partial-checkpoint-test",
+      connector_id: "https://registry.pdpp.dev/connectors/cli-run-partial-checkpoint-test",
       streams: [
         {
           name: "items",
@@ -7166,7 +7166,7 @@ rl.on('line', (line) => {
         access_mode: "single_use",
         client_display: { name: "Concert Recommendation App" },
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Recommend concerts based on listening history",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -7281,7 +7281,7 @@ rl.on('line', (line) => {
         WHERE connector_id = ?
       `)
         .run(
-          '{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
+          '{"connector_id":"https://registry.pdpp.dev/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
           SPOTIFY_CONNECTOR_KEY
         );
 
@@ -7386,7 +7386,7 @@ rl.on('line', (line) => {
         WHERE connector_id = ?
       `)
         .run(
-          '{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
+          '{"connector_id":"https://registry.pdpp.dev/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
           SPOTIFY_CONNECTOR_KEY
         );
 
@@ -7457,7 +7457,7 @@ rl.on('line', (line) => {
       const approved = await approveGrant(asUrl, "cli_owner", {
         access_mode: "continuous",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Maintain a concert-recommendation profile over time",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -7488,7 +7488,7 @@ rl.on('line', (line) => {
       const approved = await approveGrant(asUrl, "cli_owner", {
         access_mode: "continuous",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Maintain a concert-recommendation profile over time",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -7515,7 +7515,7 @@ rl.on('line', (line) => {
       const approved = await approveGrant(asUrl, "cli_owner", {
         access_mode: "single_use",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Recommend concerts using the basic top-artist subset",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [
@@ -7587,7 +7587,7 @@ rl.on('line', (line) => {
       const approved = await approveGrant(asUrl, "cli_owner", {
         access_mode: "single_use",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Recommend concerts using only the latest permitted artist",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [
@@ -7652,7 +7652,7 @@ rl.on('line', (line) => {
       const approved = await approveGrant(asUrl, "cli_owner", {
         access_mode: "continuous",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Maintain a concert-recommendation profile over time",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -7691,7 +7691,7 @@ rl.on('line', (line) => {
         const approved = await approveGrant(asUrl, "cli_owner", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
           source: { id: nativeManifest.provider_id, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],
@@ -7738,7 +7738,7 @@ rl.on('line', (line) => {
         const approved = await approveGrant(asUrl, "cli_owner", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
           source: { id: nativeManifest.provider_id, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],
@@ -7773,7 +7773,7 @@ rl.on('line', (line) => {
         const approved = await approveGrant(asUrl, "cli_owner", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
           source: { id: nativeManifest.provider_id, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],
@@ -8301,7 +8301,7 @@ rl.on('line', (line) => {
         WHERE connector_id = ?
       `)
         .run(
-          '{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
+          '{"connector_id":"https://registry.pdpp.dev/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
           SPOTIFY_CONNECTOR_KEY
         );
 
@@ -8370,7 +8370,7 @@ rl.on('line', (line) => {
         WHERE connector_id = ?
       `)
         .run(
-          '{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
+          '{"connector_id":"https://registry.pdpp.dev/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
           SPOTIFY_CONNECTOR_KEY
         );
 
@@ -8453,7 +8453,7 @@ rl.on('line', (line) => {
         WHERE connector_id = ?
       `)
         .run(
-          '{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
+          '{"connector_id":"https://registry.pdpp.dev/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
           SPOTIFY_CONNECTOR_KEY
         );
 

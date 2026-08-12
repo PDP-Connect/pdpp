@@ -196,6 +196,6 @@ test("parseArgs: --no-seed sets noSeed; absent leaves it falsy", () => {
 });
 
 test("seed constants are wired to the spotify fixture connector", () => {
-  assert.equal(SEED_CONNECTOR_ID, "https://registry.pdpp.org/connectors/spotify");
+  assert.equal(SEED_CONNECTOR_ID, "https://registry.pdpp.dev/connectors/spotify");
   assert.equal(SEED_STREAM, "top_artists");
 });

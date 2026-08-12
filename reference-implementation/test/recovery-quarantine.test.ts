@@ -345,7 +345,7 @@ test(
   withTempDb(async () => {
     const { getDb } = await import("../server/db.ts");
     const { ingestRecord } = await import("../server/records.ts");
-    const connectorId = "https://test.pdpp.org/connectors/amazon";
+    const connectorId = "https://test.pdpp.dev/connectors/amazon";
     const stream = "order_items";
     const record = {
       data: { id: "order_dup", total: "10.00" },

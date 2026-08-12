@@ -690,7 +690,7 @@ test("durable active-run row blocks managed manual and recovery admission before
 
 test("canonical-url configured managed connector leases short-id run", async (t) => {
   const manager = createManager({
-    managedConnectors: new Set(["https://registry.pdpp.org/connectors/chatgpt", "chatgpt"]),
+    managedConnectors: new Set(["https://registry.pdpp.dev/connectors/chatgpt", "chatgpt"]),
     staticProfileKey: "chatgpt",
   });
   const { calls, controller, manager: leases } = setup(t, { manager });

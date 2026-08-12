@@ -121,7 +121,7 @@ async function initiate(
     authorization_details: [
       {
         access_mode: "continuous",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: CLIENT_PURPOSE,
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [
@@ -134,7 +134,7 @@ async function initiate(
             view: "basic",
           },
         ],
-        type: "https://pdpp.org/data-access",
+        type: "https://pdpp.dev/data-access",
         ...overrides,
       },
     ],

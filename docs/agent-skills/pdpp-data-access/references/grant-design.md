@@ -14,8 +14,8 @@ single-entry requests still use the default path. One entry has:
 
 | Field | Meaning | Common values |
 | --- | --- | --- |
-| `type` | Grant family | `"https://pdpp.org/data-access"` for read access |
-| `source` | Which source | `{ "kind": "connector", "id": "https://registry.pdpp.org/connectors/github" }` or `{ "kind": "provider_native", "id": "northstar_hr" }` |
+| `type` | Grant family | `"https://pdpp.dev/data-access"` for read access |
+| `source` | Which source | `{ "kind": "connector", "id": "https://registry.pdpp.dev/connectors/github" }` or `{ "kind": "provider_native", "id": "northstar_hr" }` |
 | `purpose_code` | Coarse intent | `assist.summarize`, `assist.review`, `assist.search`, `assist.draft`, `assist.export` |
 | `purpose_description` | Owner-readable why | One sentence, plain English, scoped to the task |
 | `access_mode` | Access pattern | `single_use`, `continuous` |
@@ -75,8 +75,8 @@ PAR=$(curl -sX POST $AS_URL/oauth/par \
   -d '{
     "client_id": "my_client",
     "authorization_details": [{
-      "type": "https://pdpp.org/data-access",
-      "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
+      "type": "https://pdpp.dev/data-access",
+      "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
       "purpose_code": "assist.summarize",
       "purpose_description": "One-time playlist digest.",
       "access_mode": "single_use",
@@ -142,10 +142,10 @@ GitHub issues + PRs:
 ```json
 {
   "authorization_details": [{
-    "type": "https://pdpp.org/data-access",
+    "type": "https://pdpp.dev/data-access",
     "source": {
       "kind": "connector",
-      "id": "https://registry.pdpp.org/connectors/github"
+      "id": "https://registry.pdpp.dev/connectors/github"
     },
     "purpose_code": "assist.summarize",
     "purpose_description": "Summarize my last 7 days of GitHub issues and pull requests on acme/api.",
@@ -163,8 +163,8 @@ GitHub issues + PRs:
 Two grants, two requests, two approvals. The owner sees each one explicitly.
 
 ```text
-Grant A: source={kind: connector, id: https://registry.pdpp.org/connectors/gmail}, streams=[messages], time_range=last 24h
-Grant B: source={kind: connector, id: https://registry.pdpp.org/connectors/ical}, streams=[events], time_range=next 24h
+Grant A: source={kind: connector, id: https://registry.pdpp.dev/connectors/gmail}, streams=[messages], time_range=last 24h
+Grant B: source={kind: connector, id: https://registry.pdpp.dev/connectors/ical}, streams=[events], time_range=next 24h
 ```
 
 Don't try to bundle these into one `authorization_details[]` array entry — the reference treats one entry as one source binding. (If you genuinely need several sources set up in one owner sitting, see the reference-experimental batch path below; it still issues one independent grant per source.)
@@ -189,8 +189,8 @@ request and never widens an entry beyond what you staged.
 {
   "client_id": "your_client",
   "authorization_details": [
-    { "type": "https://pdpp.org/data-access", "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/github" }, "purpose_code": "assist.summarize", "access_mode": "single_use", "streams": [{ "name": "issues" }] },
-    { "type": "https://pdpp.org/data-access", "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/gmail" }, "purpose_code": "assist.summarize", "access_mode": "single_use", "streams": [{ "name": "messages" }] }
+    { "type": "https://pdpp.dev/data-access", "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/github" }, "purpose_code": "assist.summarize", "access_mode": "single_use", "streams": [{ "name": "issues" }] },
+    { "type": "https://pdpp.dev/data-access", "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/gmail" }, "purpose_code": "assist.summarize", "access_mode": "single_use", "streams": [{ "name": "messages" }] }
   ]
 }
 ```
@@ -213,7 +213,7 @@ and set a top-level `parent_package_id` to the prior package:
   "client_id": "your_client",
   "parent_package_id": "gpkg_...",
   "authorization_details": [
-    { "type": "https://pdpp.org/data-access", "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/ical" }, "purpose_code": "assist.summarize", "access_mode": "single_use", "streams": [{ "name": "events" }] }
+    { "type": "https://pdpp.dev/data-access", "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/ical" }, "purpose_code": "assist.summarize", "access_mode": "single_use", "streams": [{ "name": "events" }] }
   ]
 }
 ```
@@ -262,7 +262,7 @@ A healthy active client token returns:
   "grant": {
     "version": "0.1.0",
     "grant_id": "grt_3ce1d18c8b6f4f9b",
-    "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
+    "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
     "purpose_code": "assist.summarize",
     "access_mode": "single_use",
     "streams": [{ "name": "top_artists", "fields": ["id", "name", "popularity"] }]

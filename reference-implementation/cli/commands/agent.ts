@@ -347,7 +347,7 @@ async function runRequest(flags: CliFlags, cacheRoot: CacheRoot): Promise<void> 
         purpose_description: purposeText,
         source,
         streams: streamNames.map((name) => ({ name })),
-        type: "https://pdpp.org/data-access",
+        type: "https://pdpp.dev/data-access",
       },
     ],
     client_display: {

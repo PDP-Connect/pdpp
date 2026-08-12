@@ -48,7 +48,7 @@ import { closeDb, getDb, initDb } from "../server/db.ts";
 import { deleteRecord, ingestRecord } from "../server/records.ts";
 import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
-const CONNECTOR_ID = "https://test.pdpp.org/connectors/version-allocation";
+const CONNECTOR_ID = "https://test.pdpp.dev/connectors/version-allocation";
 const CONNECTOR_INSTANCE_ID = "cin_test_version_allocation";
 const DEFAULT_ACCOUNT_CONNECTOR_INSTANCE_ID = makeDefaultAccountConnectorInstanceId("owner_local", CONNECTOR_ID);
 const STREAM = "items";

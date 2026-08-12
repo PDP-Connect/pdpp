@@ -119,7 +119,7 @@ test("policiesForConnector returns every registered policy for a connector_id", 
 });
 
 test("policiesForConnector matches registry-URL connector ids too", () => {
-  const byUrl = policiesForConnector("cin_gmail", "https://registry.pdpp.org/connectors/gmail");
+  const byUrl = policiesForConnector("cin_gmail", "https://registry.pdpp.dev/connectors/gmail");
   // biome-ignore lint/suspicious/useArraySortCompare: localized test assertion preserves its explicit contract.
   const streams = byUrl.map((s) => s.stream).sort();
   // gmail registry policies: threads, labels.

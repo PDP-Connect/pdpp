@@ -15,7 +15,7 @@ test("a registry URL display name is a fallback", () => {
   assert.equal(
     isFallbackConnectionLabel({
       connectorId: "gmail",
-      displayName: "https://registry.pdpp.org/connectors/gmail",
+      displayName: "https://registry.pdpp.dev/connectors/gmail",
     }),
     true
   );

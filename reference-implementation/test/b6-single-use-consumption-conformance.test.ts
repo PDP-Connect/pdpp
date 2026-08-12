@@ -147,7 +147,7 @@ async function issueClientGrant(asUrl: string, subjectId: string, params: Client
           purpose_description: params.purpose_description,
           source: { id: params.connector_id, kind: "connector" },
           streams: params.streams,
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: params.client_id,
@@ -249,7 +249,7 @@ test("single_use: grant returns access_mode single_use and a bounded expiry (B6)
       access_mode: "single_use",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/assist_summarize",
+      purpose_code: "https://pdpp.dev/purpose/assist_summarize",
       purpose_description: "B6 single-use proof",
       streams: [{ fields: ["id", "name", "popularity"], name: "top_artists" }],
     });
@@ -276,7 +276,7 @@ test("single_use: the issued token stays valid for RS queries after consumption 
       access_mode: "single_use",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/assist_summarize",
+      purpose_code: "https://pdpp.dev/purpose/assist_summarize",
       purpose_description: "B6 single-use query proof",
       streams: [{ fields: ["id", "name", "popularity"], name: "top_artists" }],
     });
@@ -305,7 +305,7 @@ test("single_use: second token issuance is rejected with grant_consumed (B6)", a
       access_mode: "single_use",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/assist_summarize",
+      purpose_code: "https://pdpp.dev/purpose/assist_summarize",
       purpose_description: "B6 single-use re-issuance proof",
       streams: [{ fields: ["id", "name", "popularity"], name: "top_artists" }],
     });
@@ -369,7 +369,7 @@ test("single_use control: a continuous grant re-issues freely (not consumed) (B6
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/assist_summarize",
+      purpose_code: "https://pdpp.dev/purpose/assist_summarize",
       purpose_description: "B6 continuous control",
       streams: [{ fields: ["id", "name", "popularity"], name: "top_artists" }],
     });

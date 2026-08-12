@@ -34,9 +34,9 @@ This is the logical content carried in the OAuth authorization request. `client_
   },
   "authorization_details": [
     {
-      "type": "https://pdpp.org/data-access",
-      "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
-      "purpose_code": "https://pdpp.org/purpose/personalization",
+      "type": "https://pdpp.dev/data-access",
+      "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
+      "purpose_code": "https://pdpp.dev/purpose/personalization",
       "purpose_description": "Recommend concerts based on your listening history",
       "access_mode": "single_use",
       "retention": {
@@ -104,9 +104,9 @@ The AS validates the request against the connector manifest and issues an immuta
   "issued_at": "2026-04-11T15:00:00Z",
   "subject": { "id": "user_abc" },
   "client": { "client_id": "concerts_app" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
   "manifest_version": "2.0.0",
-  "purpose_code": "https://pdpp.org/purpose/personalization",
+  "purpose_code": "https://pdpp.dev/purpose/personalization",
   "purpose_description": "Recommend concerts based on your listening history",
   "access_mode": "single_use",
   "streams": [
@@ -191,9 +191,9 @@ A personal AI agent wants ongoing access to the user's ChatGPT data.
   },
   "authorization_details": [
     {
-      "type": "https://pdpp.org/data-access",
-      "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/chatgpt" },
-      "purpose_code": "https://pdpp.org/purpose/agent_context",
+      "type": "https://pdpp.dev/data-access",
+      "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/chatgpt" },
+      "purpose_code": "https://pdpp.dev/purpose/agent_context",
       "purpose_description": "Provide context to your personal AI agent",
       "access_mode": "continuous",
       "streams": [
@@ -213,9 +213,9 @@ A personal AI agent wants ongoing access to the user's ChatGPT data.
   "issued_at": "2026-04-11T15:10:00Z",
   "subject": { "id": "user_abc" },
   "client": { "client_id": "my_agent" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/chatgpt" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/chatgpt" },
   "manifest_version": "2.0.0",
-  "purpose_code": "https://pdpp.org/purpose/agent_context",
+  "purpose_code": "https://pdpp.dev/purpose/agent_context",
   "purpose_description": "Provide context to your personal AI agent",
   "access_mode": "continuous",
   "streams": [
@@ -234,14 +234,14 @@ The wildcard is expanded at consent time and frozen in the grant. Future stream 
 The Collection Profile runtime uses a `grant_id`-scoped state namespace for a `continuous` run.
 
 ```http
-GET /v1/state/https%3A%2F%2Fregistry.pdpp.org%2Fconnectors%2Fchatgpt?grant_id=grt_agent_001
+GET /v1/state/https%3A%2F%2Fregistry.pdpp.dev%2Fconnectors%2Fchatgpt?grant_id=grt_agent_001
 Authorization: Bearer pdpp_owner_tok_001
 ```
 
 ```json
 {
   "object": "stream_state",
-  "connector_id": "https://registry.pdpp.org/connectors/chatgpt",
+  "connector_id": "https://registry.pdpp.dev/connectors/chatgpt",
   "grant_id": "grt_agent_001",
   "state": {
     "conversations": { "updated_at": "2026-04-10T20:00:00Z" },
@@ -334,7 +334,7 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
 ### Step 6: Runtime persists updated grant-scoped state
 
 ```http
-PUT /v1/state/https%3A%2F%2Fregistry.pdpp.org%2Fconnectors%2Fchatgpt?grant_id=grt_agent_001
+PUT /v1/state/https%3A%2F%2Fregistry.pdpp.dev%2Fconnectors%2Fchatgpt?grant_id=grt_agent_001
 Authorization: Bearer pdpp_owner_tok_001
 Content-Type: application/json
 ```
@@ -405,9 +405,9 @@ A sleep analysis app receives a one-time grant with a retention declaration.
   "issued_at": "2026-04-11T15:20:00Z",
   "subject": { "id": "user_abc" },
   "client": { "client_id": "sleep_app" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/oura" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/oura" },
   "manifest_version": "1.0.0",
-  "purpose_code": "https://pdpp.org/purpose/analytics",
+  "purpose_code": "https://pdpp.dev/purpose/analytics",
   "purpose_description": "Analyze your sleep patterns",
   "access_mode": "single_use",
   "streams": [

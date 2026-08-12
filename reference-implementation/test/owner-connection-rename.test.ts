@@ -140,11 +140,11 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
         authorization_details: [
           {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/analytics",
+            purpose_code: "https://pdpp.dev/purpose/analytics",
             purpose_description: "owner-connection rename boundary test",
             source: { id: connectorId, kind: "connector" },
             streams: [{ fields: ["id"], name: streamName }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_id: "longview",
@@ -372,7 +372,7 @@ test("owner-agent rename to a still-fallback value stays label_status fallback; 
     assert.ok(connectorKey, "expected a canonical connector key");
     // Seed with the registry-URL fallback display name, matching the live
     // Amazon connection's pre-label state.
-    const registryUrlFallback = `https://registry.pdpp.org/connectors/${connectorKey}`;
+    const registryUrlFallback = `https://registry.pdpp.dev/connectors/${connectorKey}`;
     await seedInstance({
       connectorId: connectorKey,
       connectorInstanceId: "cin_amazon_personal",

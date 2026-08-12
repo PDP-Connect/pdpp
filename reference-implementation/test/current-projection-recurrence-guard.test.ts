@@ -142,7 +142,7 @@ function requireRow<T>(row: unknown): T {
   return row as T;
 }
 
-const CONNECTOR_ID = "https://test.pdpp.org/connectors/projection-guard";
+const CONNECTOR_ID = "https://test.pdpp.dev/connectors/projection-guard";
 const STREAM = "transactions";
 const EMITTED = "2026-04-28T12:00:00.000Z";
 

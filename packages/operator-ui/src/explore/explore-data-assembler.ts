@@ -2512,7 +2512,7 @@ function indexManifestStream(
 
 // The canonical short connector key the way STORED RECORDS carry it (e.g. "usaa").
 // Bundled manifests set `connector_id` to the registry URI
-// (https://registry.pdpp.org/connectors/usaa) and `connector_key` to the plain
+// (https://registry.pdpp.dev/connectors/usaa) and `connector_key` to the plain
 // key. Per-connector metadata is looked up against `record.connector_id` (the
 // plain key), so it MUST be indexed by the plain key — keying by the URI silently
 // missed EVERY lookup and collapsed all timeline display timestamps to emitted_at.

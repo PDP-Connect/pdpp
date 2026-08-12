@@ -244,7 +244,7 @@ function queryCookbook(): string {
     "## Provider-connect flow (reference)",
     "",
     "1. Register a client: `POST /oauth/register` (DCR initial access token required).",
-    "2. Start a grant request: `POST /oauth/par` with `authorization_details[0].type = https://pdpp.org/data-access`.",
+    "2. Start a grant request: `POST /oauth/par` with `authorization_details[0].type = https://pdpp.dev/data-access`.",
     "3. Approve via the hosted consent page or `POST /consent/approve` with `request_uri` + subject id.",
     "4. In the current thin reference flow, `POST /consent/approve` returns `{ grant_id, token, grant }` directly; there is no follow-on `/oauth/token` exchange for third-party client connect yet.",
     "",

@@ -39,7 +39,7 @@ import { __setDeleteFaultHookForTest, deleteRecord, ingestRecord } from "../serv
 
 const REGEXP_1 = /injected fault/;
 
-const CONNECTOR_ID = "https://test.pdpp.org/connectors/delete-atomicity";
+const CONNECTOR_ID = "https://test.pdpp.dev/connectors/delete-atomicity";
 const STREAM = "items";
 
 function setup() {

@@ -64,7 +64,7 @@ import type { RunRecord } from "../runtime/scheduler-domain-types.ts";
 import { closeDb, initDb } from "../server/db.ts";
 import { createSqliteSchedulerStore } from "../server/stores/scheduler-store.ts";
 
-const CONNECTOR_ID = "https://registry.pdpp.org/connectors/scheduler-durable-boundary";
+const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/scheduler-durable-boundary";
 const CONNECTOR_INSTANCE_ID = "cin_scheduler_durable_boundary";
 
 const MANIFEST = {

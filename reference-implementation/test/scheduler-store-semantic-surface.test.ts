@@ -45,7 +45,7 @@ import {
 } from "../server/stores/scheduler-store.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 
-const SEMANTIC_CONNECTOR = "https://test.pdpp.org/connectors/semantic-surface";
+const SEMANTIC_CONNECTOR = "https://test.pdpp.dev/connectors/semantic-surface";
 const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
 
 const SEMANTIC_MANIFEST = {

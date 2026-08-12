@@ -298,7 +298,7 @@ const READY_DEPLOYMENT_READINESS: ConnectorSetupDeploymentReadiness = Object.fre
   state: "ready",
 });
 
-const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
+const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.dev/connectors/";
 const SECRET_DEPLOYMENT_KEY_RE = /SECRET|TOKEN|PASSWORD|KEY/i;
 const TRAILING_SLASH_RE = /\/$/;
 
