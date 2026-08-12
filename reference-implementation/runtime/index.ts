@@ -24,7 +24,7 @@ import {
 import type { AttentionWriterOptions } from "./attention-writer.ts";
 import { createAttentionWriter } from "./attention-writer.ts";
 import { classifyRuntimeFailure } from "./classify-runtime-failure.ts";
-import { composeConnectorChildEnvironment } from "./connector-child-environment.ts";
+import { type ConnectorEnvironmentBinding, composeConnectorChildEnvironment } from "./connector-child-environment.ts";
 import {
   boundConnectorErrorMessage,
   boundConsideredCount,
@@ -394,6 +394,8 @@ export interface RuntimeRunConnectorOptions {
     connectorInstanceId: string | null;
     ownerSubjectId: string | null;
   }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>;
+  /** Operator-owned logical connector-input bindings. */
+  approvedEnvironmentBindings?: readonly ConnectorEnvironmentBinding[];
   automationMode?: RuntimeRunAutomationMode | null;
   /**
    * Explicit browser-surface child env override for tests and integration
@@ -1881,6 +1883,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       : (msg: unknown) => safeStderrWrite(`[runtime] ${JSON.stringify(msg)}\n`);
   const {
     admitRunConnection,
+    approvedEnvironmentBindings,
     connectorPath,
     connectorId: rawConnectorId,
     connectorInstanceId = null,
@@ -2028,6 +2031,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   const proc = spawn(process.execPath, args, {
     detached: true,
     env: composeConnectorChildEnvironment({
+      ...(approvedEnvironmentBindings ? { approvedBindings: approvedEnvironmentBindings } : {}),
       connectionEnv: staticSecretLaunchEnv,
       explicitRunEnv: {
         PDPP_CONNECTOR_ID: connectorId,

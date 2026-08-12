@@ -25,6 +25,7 @@
 
 import { createTraceContext, type SpineTraceContext } from "../../lib/spine.ts";
 import type { SchedulerRunHistoryRecord } from "../../server/stores/scheduler-store.ts";
+import type { ConnectorEnvironmentBinding } from "../connector-child-environment.ts";
 import { runConnector } from "../index.ts";
 import {
   type AutomationRefreshPolicy,
@@ -77,6 +78,7 @@ export interface RunExecutorDeps {
         ownerSubjectId: string | null;
       }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>)
     | null;
+  approvedEnvironmentBindings?: readonly ConnectorEnvironmentBinding[];
   getState: GetStateHandler;
   handleGrantFailureDisable: (reason: string | null | undefined, connectorInstanceId: string) => void;
   isManagedConnector: IsManagedConnectorHandler;
@@ -243,6 +245,7 @@ function toStoredRunRecord(record: RunRecord): SchedulerRunHistoryRecord {
 
 interface RunConnectorCall {
   admitRunConnection?: Exclude<RunExecutorDeps["admitRunConnection"], null>;
+  approvedEnvironmentBindings?: readonly ConnectorEnvironmentBinding[];
   automationMode?: RunAutomationMode;
   cancelSignal?: AbortSignal | null;
   collectionMode: "full_refresh" | "incremental";
@@ -557,6 +560,7 @@ function controllerRunNowDeferReason(err: unknown): string | null {
 export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   const {
     admitRunConnection,
+    approvedEnvironmentBindings,
     getState,
     handleGrantFailureDisable,
     isManagedConnector,
@@ -1186,6 +1190,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
 
     return await runWithRetries(schedule, {
       ...(admitRunConnection ? { admitRunConnection } : {}),
+      ...(approvedEnvironmentBindings ? { approvedEnvironmentBindings } : {}),
       automationMode: automationPolicy.automation_mode,
       collectionMode,
       connectorId,

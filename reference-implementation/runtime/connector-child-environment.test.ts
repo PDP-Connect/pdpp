@@ -4,312 +4,533 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { composeConnectorChildEnvironment } from "./connector-child-environment.ts";
+import {
+  type ConnectorConnectionEnvironment,
+  type ConnectorEnvironmentBinding,
+  type ConnectorEnvironmentBindingSource,
+  composeConnectorChildEnvironment,
+  parseConnectorEnvironmentPolicy,
+} from "./connector-child-environment.ts";
 
-function manifest(name: string): unknown {
+const AMBIGUOUS_WINDOWS_ENV = /ambiguous Windows environment aliases/;
+const DUPLICATE_TARGET_KEY = /duplicate target key/;
+const INVALID_LITERAL_VALUE = /source\.value must be a string/;
+const INVALID_SOURCE_KIND = /source\.kind must be process_env, connection_env, or literal/;
+const RESERVED_TARGET_KEY = /target_key is reserved/;
+const CONNECTION_IDENTITY_MISMATCH = /connector identity does not match/;
+const DUPLICATE_CONNECTION_KEY = /connectionEnv\.allowedKeys has duplicate key/;
+const DUPLICATE_CONNECTION_VALUE_ALIAS = /connectionEnv has duplicate key alias/;
+const UNSUPPORTED_CONNECTION_KEY = /connectionEnv has unsupported key/;
+const UNAUTHORIZED_CONNECTION_PROXY = /connectionEnv proxy key .* requires connector-scoped operator authority/;
+
+function compose(
+  manifest: unknown,
+  sourceEnv: NodeJS.ProcessEnv,
+  options: {
+    approvedBindings?: readonly ConnectorEnvironmentBinding[];
+    approvedProxyConnectorIds?: readonly string[];
+    connectionAllowedKeys?: readonly string[];
+    connectionConnectorId?: string;
+    connectionEnv?: Record<string, string>;
+    connectorId?: string;
+    explicitRunEnv?: Record<string, string>;
+    platform?: NodeJS.Platform;
+  } = {}
+): Record<string, string> {
+  return composeConnectorChildEnvironment({
+    ...(options.approvedBindings ? { approvedBindings: options.approvedBindings } : {}),
+    ...(options.approvedProxyConnectorIds ? { approvedProxyConnectorIds: options.approvedProxyConnectorIds } : {}),
+    ...(options.connectionEnv
+      ? {
+          connectionEnv: {
+            allowedKeys: options.connectionAllowedKeys ?? Object.keys(options.connectionEnv),
+            connectorId: options.connectionConnectorId ?? options.connectorId ?? "test-connector",
+            kind: "connection",
+            values: options.connectionEnv,
+          } satisfies ConnectorConnectionEnvironment,
+        }
+      : {}),
+    connectorId: options.connectorId ?? "test-connector",
+    explicitRunEnv: options.explicitRunEnv ?? {},
+    manifest,
+    platform: options.platform ?? "linux",
+    sourceEnv,
+  });
+}
+
+function shippedManifest(name: string): unknown {
   return JSON.parse(
     readFileSync(new URL(`../../packages/polyfill-connectors/manifests/${name}.json`, import.meta.url), "utf8")
   );
 }
 
-function compose(manifestValue: unknown, sourceEnv: NodeJS.ProcessEnv, connectionEnv: Record<string, string> = {}) {
-  return composeConnectorChildEnvironment({
-    connectionEnv,
-    explicitRunEnv: {},
-    manifest: manifestValue,
-    platform: "linux",
-    sourceEnv,
-  });
+function processBinding(
+  logicalKey: string,
+  targetKey: string,
+  sourceKey: string,
+  connectorId = "test-connector"
+): ConnectorEnvironmentBinding {
+  return { connectorId, logicalKey, source: { key: sourceKey, kind: "process_env" }, targetKey };
 }
 
-function assertConnectorLocalFallback(
-  manifestName: string,
-  sourceEnv: NodeJS.ProcessEnv,
-  expected: Record<string, string>
-): void {
-  const env = compose(manifest(manifestName), sourceEnv);
-  for (const [key, value] of Object.entries(expected)) {
-    assert.equal(env[key], value, `${manifestName} should receive ${key}`);
-  }
-  const siblingKeys = Object.keys(sourceEnv).filter((key) => !(key in expected));
-  for (const key of siblingKeys) {
-    assert.equal(env[key], undefined, `${manifestName} must not receive another connector's ${key}`);
-  }
-}
+test("operator policy parsing fails closed on malformed sources and collisions", () => {
+  assert.throws(
+    () =>
+      parseConnectorEnvironmentPolicy(
+        {
+          bindings: [
+            { connector_id: "test-connector", logical_key: "need", source: { kind: "ambient" }, target_key: "TARGET" },
+          ],
+        },
+        "test policy"
+      ),
+    INVALID_SOURCE_KIND
+  );
+  assert.throws(
+    () =>
+      parseConnectorEnvironmentPolicy(
+        {
+          bindings: [
+            {
+              connector_id: "test-connector",
+              logical_key: "need",
+              source: { kind: "literal", value: 42 },
+              target_key: "TARGET",
+            },
+          ],
+        },
+        "test policy"
+      ),
+    INVALID_LITERAL_VALUE
+  );
+  assert.throws(
+    () =>
+      parseConnectorEnvironmentPolicy(
+        {
+          bindings: [
+            {
+              connector_id: "test-connector",
+              logical_key: "one",
+              source: { kind: "literal", value: "1" },
+              target_key: "TARGET",
+            },
+            {
+              connector_id: "test-connector",
+              logical_key: "two",
+              source: { kind: "literal", value: "2" },
+              target_key: "target",
+            },
+          ],
+        },
+        "test policy"
+      ),
+    DUPLICATE_TARGET_KEY
+  );
+});
 
-test("current manifest fallback follows supported declaration fields only", () => {
+test("manifest-selected ambient secrets do not cross the child boundary", () => {
+  const secretValues = ["aws-secret", "openai-secret", "private-config"];
   const env = compose(
     {
       capabilities: {
         auth: {
-          connection_config: [{ env_var: "CONNECTION_ENV" }, { env_var: "" }, { ignored: "UNKNOWN" }],
-          deployment_config: [
-            "AUTH_BARE",
-            { key: "AUTH_LEGACY" },
-            { logical_key: "AUTH_LOGICAL" },
-            { env_alias: "AUTH_ALIAS", logical_key: "AUTH_OTHER_LOGICAL" },
-            { env_alias: "ORPHAN_ALIAS" },
-            { key: "MALFORMED_LEGACY", logical_key: "" },
-          ],
-          required: ["LEGACY_MUST_NOT_APPEAR"],
+          deployment_config: [{ env_alias: "OPENAI_API_KEY", logical_key: "oauth.client_secret" }],
+          required: ["AWS_SECRET_ACCESS_KEY"],
         },
       },
       runtime_requirements: {
-        external_tools: [{ detect: { executable_env_override: "TOOL_ENV" } }, { detect: { unknown: "NOPE" } }],
-        local_paths: {
-          home_env_override: "HOME_OVERRIDE",
-          paths: [{ env_override: "PATH_OVERRIDE" }, { ignored: "NOPE" }],
-        },
-      },
-      setup: {
-        credential_capture: { fields: [{ env: ["CAPTURE_ENV", { env_alias: "NO_OBJECTS" }, "", 3] }] },
-        deployment_config: [
-          "SETUP_BARE",
-          { key: "SETUP_LEGACY" },
-          { logical_key: "SETUP_LOGICAL" },
-          { env_alias: "SETUP_ALIAS", logical_key: "SETUP_OTHER_LOGICAL" },
-          { env_alias: "ORPHAN_SETUP_ALIAS" },
-        ],
-        manual_or_upload: { import_dir_env_var: "IMPORT_DIR" },
+        environment_variables: [{ logical_key: "connector.runtime_config" }],
       },
     },
     {
-      AUTH_ALIAS: "auth-alias",
-      AUTH_BARE: "auth-bare",
-      AUTH_LEGACY: "auth-legacy",
-      AUTH_LOGICAL: "auth-logical",
-      CAPTURE_ENV: "capture",
-      CONNECTION_ENV: "connection",
-      HOME_OVERRIDE: "home",
-      IMPORT_DIR: "import",
-      LEGACY_MUST_NOT_APPEAR: "legacy",
-      MALFORMED_LEGACY: "must-not-cross",
-      NO_OBJECTS: "object",
-      ORPHAN_ALIAS: "orphan",
-      ORPHAN_SETUP_ALIAS: "orphan-setup",
-      PATH_OVERRIDE: "path",
-      SETUP_ALIAS: "setup-alias",
-      SETUP_BARE: "setup-bare",
-      SETUP_LEGACY: "setup-legacy",
-      SETUP_LOGICAL: "setup-logical",
-      TOOL_ENV: "tool",
+      AWS_SECRET_ACCESS_KEY: "aws-secret",
+      CONNECTOR_RUNTIME_CONFIG: "private-config",
+      OPENAI_API_KEY: "openai-secret",
+    }
+  );
+
+  assert.deepEqual(env, {});
+  assert.equal(
+    secretValues.some((value) => JSON.stringify(env).includes(value)),
+    false
+  );
+});
+
+test("an operator binding can authorize a logical need without giving the manifest source authority", () => {
+  const env = compose(
+    {
+      runtime_requirements: {
+        environment_variables: [{ logical_key: "connector.import_dir" }],
+      },
+    },
+    {
+      AWS_SECRET_ACCESS_KEY: "must-not-cross",
+      INSTALLATION_IMPORT_DIR: "/imports/owner",
+    },
+    {
+      approvedBindings: [processBinding("connector.import_dir", "IMPORT_DIR", "INSTALLATION_IMPORT_DIR")],
+    }
+  );
+
+  assert.deepEqual(env, { IMPORT_DIR: "/imports/owner" });
+});
+
+test("connection and literal bindings are explicit sources and reserved targets fail closed", () => {
+  assert.throws(
+    () =>
+      compose(
+        {
+          runtime_requirements: {
+            environment_variables: [
+              { logical_key: "connection.token" },
+              { logical_key: "installation.mode" },
+              { logical_key: "attempt.owner_token" },
+            ],
+          },
+        },
+        { AMBIENT_TOKEN: "ambient" },
+        {
+          approvedBindings: [
+            {
+              connectorId: "test-connector",
+              logicalKey: "connection.token",
+              source: { key: "CONNECTION_TOKEN", kind: "connection_env" },
+              targetKey: "CONNECTOR_TOKEN",
+            },
+            {
+              connectorId: "test-connector",
+              logicalKey: "installation.mode",
+              source: { kind: "literal", value: "safe" },
+              targetKey: "CONNECTOR_MODE",
+            },
+            {
+              connectorId: "test-connector",
+              logicalKey: "attempt.owner_token",
+              source: { kind: "literal", value: "attack" },
+              targetKey: "PDPP_OWNER_TOKEN",
+            },
+          ],
+          connectionEnv: { CONNECTION_TOKEN: "connection-value" },
+        }
+      ),
+    RESERVED_TARGET_KEY
+  );
+
+  const env = compose(
+    {
+      runtime_requirements: {
+        environment_variables: [{ logical_key: "connection.token" }, { logical_key: "installation.mode" }],
+      },
+    },
+    { AMBIENT_TOKEN: "ambient" },
+    {
+      approvedBindings: [
+        {
+          connectorId: "test-connector",
+          logicalKey: "connection.token",
+          source: { key: "CONNECTION_TOKEN", kind: "connection_env" },
+          targetKey: "CONNECTOR_TOKEN",
+        },
+        {
+          connectorId: "test-connector",
+          logicalKey: "installation.mode",
+          source: { kind: "literal", value: "safe" },
+          targetKey: "CONNECTOR_MODE",
+        },
+      ],
+      connectionEnv: { CONNECTION_TOKEN: "connection-value" },
     }
   );
 
   assert.deepEqual(env, {
-    AUTH_ALIAS: "auth-alias",
-    AUTH_BARE: "auth-bare",
-    AUTH_LEGACY: "auth-legacy",
-    AUTH_LOGICAL: "auth-logical",
-    CAPTURE_ENV: "capture",
-    CONNECTION_ENV: "connection",
-    HOME_OVERRIDE: "home",
-    IMPORT_DIR: "import",
-    PATH_OVERRIDE: "path",
-    SETUP_ALIAS: "setup-alias",
-    SETUP_BARE: "setup-bare",
-    SETUP_LEGACY: "setup-legacy",
-    SETUP_LOGICAL: "setup-logical",
-    TOOL_ENV: "tool",
+    CONNECTION_TOKEN: "connection-value",
+    CONNECTOR_MODE: "safe",
+    CONNECTOR_TOKEN: "connection-value",
   });
 });
 
-test("legacy auth.required supplies actual Strava credentials", () => {
-  assert.deepEqual(compose(manifest("strava"), { STRAVA_ACCESS_TOKEN: "strava-token" }), {
-    STRAVA_ACCESS_TOKEN: "strava-token",
-  });
-});
-
-test("Google Calendar deployment and connection declarations reach its child", () => {
-  assert.deepEqual(
-    compose(manifest("google_calendar"), {
-      GOOGLE_CALENDAR_REFRESH_TOKEN: "refresh-token",
-      GOOGLE_OAUTH_CLIENT_ID: "client-id",
-      GOOGLE_OAUTH_CLIENT_SECRET: "client-secret",
-      OTHER_CONNECTOR_TOKEN: "must-not-cross",
-    }),
-    {
-      GOOGLE_CALENDAR_REFRESH_TOKEN: "refresh-token",
-      GOOGLE_OAUTH_CLIENT_ID: "client-id",
-      GOOGLE_OAUTH_CLIENT_SECRET: "client-secret",
-    }
-  );
-});
-
-test("legacy shipped inputs remain connector-local until their manifests declare them", () => {
-  const sourceEnv = {
-    APPLE_CARDDAV_ORIGIN: "https://carddav.example",
-    APPLE_HEALTH_EXPORT_DIR: "/imports/apple-health",
-    APPLE_PHOTOS_EXPORT_DIR: "/imports/apple-photos",
-    CHASE_2FA_METHOD: "email",
-    CLAUDE_CODE_PROJECT_EXCLUDE: "private",
-    CLAUDE_CODE_PROJECT_INCLUDE: "work",
-    CODEX_PROMPTS_DIR: "/codex/prompts",
-    CODEX_RULES_DIR: "/codex/rules",
-    CODEX_SKILLS_DIR: "/codex/skills",
-    GOOGLE_TAKEOUT_DIR: "/imports/google-takeout",
-    ICAL_IMPORT_DIR: "/imports/ical",
-    ICAL_SUBSCRIPTION_URL: "https://calendar.example/feed.ics",
-    IMESSAGE_ATTACHMENTS_ROOT: "/messages/attachments",
-    IMESSAGE_DB_PATH: "/messages/chat.db",
-    SLACK_CHANNEL_ALLOWLIST: "C123,C456",
-    SLACK_CHANNEL_TYPES: "public_channel,private_channel",
-    SLACK_LOOKBACK_DAYS: "90",
-    SLACK_MEMBER_ONLY: "true",
-    SLACK_RECLAIM_UPLOADS: "1",
-    SLACK_SKIP_FILES: "false",
-    TWITTER_ARCHIVE_DIR: "/imports/twitter",
-  };
-  const cases: [string, Record<string, string>][] = [
-    ["apple_health", { APPLE_HEALTH_EXPORT_DIR: sourceEnv.APPLE_HEALTH_EXPORT_DIR }],
-    ["apple_contacts", { APPLE_CARDDAV_ORIGIN: sourceEnv.APPLE_CARDDAV_ORIGIN }],
-    ["apple_photos", { APPLE_PHOTOS_EXPORT_DIR: sourceEnv.APPLE_PHOTOS_EXPORT_DIR }],
-    ["chase", { CHASE_2FA_METHOD: sourceEnv.CHASE_2FA_METHOD }],
-    [
-      "claude_code",
-      {
-        CLAUDE_CODE_PROJECT_EXCLUDE: sourceEnv.CLAUDE_CODE_PROJECT_EXCLUDE,
-        CLAUDE_CODE_PROJECT_INCLUDE: sourceEnv.CLAUDE_CODE_PROJECT_INCLUDE,
-      },
-    ],
-    [
-      "codex",
-      {
-        CODEX_PROMPTS_DIR: sourceEnv.CODEX_PROMPTS_DIR,
-        CODEX_RULES_DIR: sourceEnv.CODEX_RULES_DIR,
-        CODEX_SKILLS_DIR: sourceEnv.CODEX_SKILLS_DIR,
-      },
-    ],
-    ["google_takeout", { GOOGLE_TAKEOUT_DIR: sourceEnv.GOOGLE_TAKEOUT_DIR }],
-    [
-      "ical",
-      {
-        ICAL_IMPORT_DIR: sourceEnv.ICAL_IMPORT_DIR,
-        ICAL_SUBSCRIPTION_URL: sourceEnv.ICAL_SUBSCRIPTION_URL,
-      },
-    ],
-    [
-      "imessage",
-      {
-        IMESSAGE_ATTACHMENTS_ROOT: sourceEnv.IMESSAGE_ATTACHMENTS_ROOT,
-        IMESSAGE_DB_PATH: sourceEnv.IMESSAGE_DB_PATH,
-      },
-    ],
-    [
-      "slack",
-      {
-        SLACK_CHANNEL_ALLOWLIST: sourceEnv.SLACK_CHANNEL_ALLOWLIST,
-        SLACK_CHANNEL_TYPES: sourceEnv.SLACK_CHANNEL_TYPES,
-        SLACK_LOOKBACK_DAYS: sourceEnv.SLACK_LOOKBACK_DAYS,
-        SLACK_MEMBER_ONLY: sourceEnv.SLACK_MEMBER_ONLY,
-        SLACK_RECLAIM_UPLOADS: sourceEnv.SLACK_RECLAIM_UPLOADS,
-        SLACK_SKIP_FILES: sourceEnv.SLACK_SKIP_FILES,
-      },
-    ],
-    ["strava", {}],
-    ["twitter_archive", { TWITTER_ARCHIVE_DIR: sourceEnv.TWITTER_ARCHIVE_DIR }],
-  ];
-
-  for (const [manifestName, expected] of cases) {
-    assertConnectorLocalFallback(manifestName, sourceEnv, expected);
-  }
-});
-
-test("connection fragments cannot override reserved controls and take precedence over fallback", () => {
+test("Windows bindings resolve source names case-insensitively and collapse target aliases", () => {
   const env = compose(
-    { capabilities: { auth: { required: ["CURRENT_CONNECTOR_TOKEN"] } } },
-    { CURRENT_CONNECTOR_TOKEN: "ambient", PATH: "/safe-path", PDPP_OWNER_TOKEN: "ambient-owner" },
     {
-      CURRENT_CONNECTOR_TOKEN: "connection",
-      Path: "attack",
-      pdpp_owner_token: "attack",
-      pdpp_rs_url: "attack",
+      runtime_requirements: {
+        environment_variables: [{ logical_key: "connector.name" }],
+      },
+    },
+    { cOnNeCtOr_SeCrEt: "from-process", Path: "C:\\Windows" },
+    {
+      approvedBindings: [processBinding("connector.name", "Connector_Secret", "CONNECTOR_SECRET")],
+      connectionEnv: { connector_secret: "from-connection" },
+      explicitRunEnv: { cOnNeCtOr_SeCrEt: "from-run" },
+      platform: "win32",
     }
   );
-  assert.equal(env.CURRENT_CONNECTOR_TOKEN, "connection");
-  assert.equal(env.PDPP_OWNER_TOKEN, undefined);
-  assert.equal(env.PDPP_RS_URL, undefined);
-  assert.equal(env.PATH, "/safe-path");
+
+  assert.equal(Object.keys(env).filter((key) => key.toUpperCase() === "CONNECTOR_SECRET").length, 1);
+  assert.equal(env.cOnNeCtOr_SeCrEt, "from-run");
+  assert.equal(Object.keys(env).filter((key) => key.toUpperCase() === "PATH").length, 1);
+  assert.equal(env.Path, "C:\\Windows");
 });
 
-test("Windows has one case-insensitive logical key; POSIX keeps proxy aliases", () => {
-  const windows = composeConnectorChildEnvironment({
-    connectionEnv: { NAME: "first", name: "second" },
-    explicitRunEnv: { nAmE: "run" },
-    manifest: { capabilities: { auth: { required: ["NAME"] } } },
-    platform: "win32",
-    sourceEnv: { HTTP_PROXY: "upper", Path: "C:\\Windows" },
-  });
-  assert.equal(Object.keys(windows).filter((key) => key.toUpperCase() === "NAME").length, 1);
-  assert.equal(windows.nAmE, "run");
-  assert.equal(Object.keys(windows).filter((key) => key.toUpperCase() === "PATH").length, 1);
-  assert.equal(windows.Path, "C:\\Windows");
-
-  const windowsFallback = composeConnectorChildEnvironment({
-    explicitRunEnv: {},
-    manifest: { capabilities: { auth: { required: ["CURRENT_CONNECTOR_TOKEN"] } } },
-    platform: "win32",
-    sourceEnv: { current_connector_token: "ambient" },
-  });
-  assert.equal(windowsFallback.CURRENT_CONNECTOR_TOKEN, "ambient");
-
-  const windowsLegacyFallback = composeConnectorChildEnvironment({
-    explicitRunEnv: {},
-    manifest: manifest("slack"),
-    platform: "win32",
-    sourceEnv: {
-      Slack_Reclaim_Uploads: "1",
-      slack_channel_allowlist: "C123",
-    },
-  });
-  assert.deepEqual(windowsLegacyFallback, {
-    SLACK_CHANNEL_ALLOWLIST: "C123",
-    SLACK_RECLAIM_UPLOADS: "1",
-  });
-
-  const windowsSibling = composeConnectorChildEnvironment({
-    explicitRunEnv: {},
-    manifest: manifest("strava"),
-    platform: "win32",
-    sourceEnv: {
-      google_takeout_dir: "C:\\imports\\takeout",
-      iMessage_Db_Path: "C:\\Messages\\chat.db",
-      Slack_Reclaim_Uploads: "1",
-    },
-  });
-  assert.equal(windowsSibling.GOOGLE_TAKEOUT_DIR, undefined);
-  assert.equal(windowsSibling.IMESSAGE_DB_PATH, undefined);
-  assert.equal(windowsSibling.SLACK_RECLAIM_UPLOADS, undefined);
-
-  const posix = compose({}, { HTTP_PROXY: "upper", http_proxy: "lower" });
-  assert.equal(posix.HTTP_PROXY, "upper");
-  assert.equal(posix.http_proxy, "lower");
-
-  const posixLayers = compose(
-    { capabilities: { auth: { required: ["NAME"] } } },
-    { NAME: "ambient" },
-    { NAME: "connection-exact", name: "connection-distinct" }
+test("Windows ambient aliases with conflicting casing fail closed", () => {
+  assert.throws(
+    () => compose({}, { PATH: "C:\\Other", Path: "C:\\Windows" }, { platform: "win32" }),
+    AMBIGUOUS_WINDOWS_ENV
   );
-  assert.equal(posixLayers.NAME, "connection-exact");
-  assert.equal(posixLayers.name, "connection-distinct");
 });
 
-test("reviewed production tuning crosses while discontinued probes do not", () => {
+test("proxy aliases require connector-scoped operator authority", () => {
   const env = compose(
     {},
     {
+      HTTP_PROXY: "upper",
+      http_proxy: "lower",
       PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS: "30000",
       PDPP_CHATGPT_DETAIL_INITIAL_CONCURRENCY_PROBE: "10",
-      PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE: "20",
-      PDPP_CHATGPT_DETAIL_PAUSE_MAX_MS_PROBE: "300",
-      PDPP_CHATGPT_DETAIL_PAUSE_MIN_MS_PROBE: "100",
       PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS: "10000",
     }
   );
-  assert.equal(env.PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS, "10000");
+
+  assert.equal(env.HTTP_PROXY, undefined);
+  assert.equal(env.http_proxy, undefined);
+  const authorized = compose(
+    {},
+    { HTTP_PROXY: "upper", http_proxy: "lower" },
+    { approvedProxyConnectorIds: ["networked"], connectorId: "networked" }
+  );
+  assert.equal(authorized.HTTP_PROXY, "upper");
+  assert.equal(authorized.http_proxy, "lower");
   assert.equal(env.PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS, "30000");
+  assert.equal(env.PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS, "10000");
   assert.equal(env.PDPP_CHATGPT_DETAIL_INITIAL_CONCURRENCY_PROBE, undefined);
-  assert.equal(env.PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE, undefined);
-  assert.equal(env.PDPP_CHATGPT_DETAIL_PAUSE_MAX_MS_PROBE, undefined);
-  assert.equal(env.PDPP_CHATGPT_DETAIL_PAUSE_MIN_MS_PROBE, undefined);
+});
+
+test("connection fragments are reduced to connector-owned keys", () => {
+  assert.throws(
+    () =>
+      compose(
+        { capabilities: { auth: { required: ["AWS_SECRET_ACCESS_KEY"] } } },
+        { AWS_SECRET_ACCESS_KEY: "ambient" },
+        {
+          connectionAllowedKeys: ["SAFE_CONNECTION_TOKEN"],
+          connectionEnv: {
+            AWS_SECRET_ACCESS_KEY: "connection-aws",
+            OPENAI_API_KEY: "connection-openai",
+            SIBLING_SECRET: "connection-sibling",
+          },
+        }
+      ),
+    UNSUPPORTED_CONNECTION_KEY
+  );
+
+  assert.throws(
+    () =>
+      compose(
+        {},
+        {},
+        {
+          connectionAllowedKeys: ["TOKEN", "token"],
+          connectionEnv: { TOKEN: "value" },
+        }
+      ),
+    DUPLICATE_CONNECTION_KEY
+  );
+
+  assert.throws(
+    () =>
+      compose(
+        {},
+        {},
+        {
+          connectionAllowedKeys: ["TOKEN"],
+          connectionEnv: { TOKEN: "one", token: "two" },
+        }
+      ),
+    DUPLICATE_CONNECTION_VALUE_ALIAS
+  );
+
+  assert.throws(
+    () =>
+      compose(
+        {},
+        {},
+        {
+          connectionAllowedKeys: ["HTTP_PROXY"],
+          connectionEnv: { HTTP_PROXY: "http://connection@proxy" },
+        }
+      ),
+    UNAUTHORIZED_CONNECTION_PROXY
+  );
+
+  const shipped = compose(
+    shippedManifest("notion"),
+    {},
+    {
+      connectionAllowedKeys: ["NOTION_API_TOKEN"],
+      connectionEnv: { NOTION_API_TOKEN: "notion-token" },
+      connectorId: "notion",
+    }
+  );
+  assert.deepEqual(shipped, { NOTION_API_TOKEN: "notion-token" });
+
+  assert.throws(
+    () =>
+      compose(
+        {},
+        {},
+        {
+          connectionAllowedKeys: ["NOTION_API_TOKEN"],
+          connectionConnectorId: "notion",
+          connectionEnv: { NOTION_API_TOKEN: "replayed" },
+          connectorId: "sibling",
+        }
+      ),
+    CONNECTION_IDENTITY_MISMATCH
+  );
+});
+
+test("every proxy binding source requires connector-scoped authority", () => {
+  const manifest = { runtime_requirements: { environment_variables: [{ logical_key: "proxy.need" }] } };
+  const cases: readonly [ConnectorEnvironmentBindingSource, NodeJS.ProcessEnv, Record<string, string>][] = [
+    [{ key: "HTTP_PROXY", kind: "process_env" }, { HTTP_PROXY: "http://process@proxy" }, {}],
+    [{ key: "HTTP_PROXY", kind: "connection_env" }, {}, { HTTP_PROXY: "http://connection@proxy" }],
+    [{ kind: "literal", value: "http://literal@proxy" }, {}, {}],
+  ];
+  for (const [source, sourceEnv, connectionEnv] of cases) {
+    const binding = { connectorId: "evil", logicalKey: "proxy.need", source, targetKey: "HTTP_PROXY" };
+    if (source.kind === "connection_env") {
+      assert.throws(
+        () =>
+          compose(manifest, sourceEnv, {
+            approvedBindings: [binding],
+            connectionEnv,
+            connectorId: "evil",
+          }),
+        UNAUTHORIZED_CONNECTION_PROXY
+      );
+    } else {
+      const unauthorized = compose(manifest, sourceEnv, {
+        approvedBindings: [binding],
+        connectionEnv,
+        connectorId: "evil",
+      });
+      assert.equal(unauthorized.HTTP_PROXY, undefined);
+    }
+
+    const authorized = compose(manifest, sourceEnv, {
+      approvedBindings: [binding],
+      approvedProxyConnectorIds: ["evil"],
+      connectionEnv,
+      connectorId: "evil",
+    });
+    assert.equal(
+      authorized.HTTP_PROXY,
+      source.kind === "literal" ? source.value : (Object.values(sourceEnv)[0] ?? Object.values(connectionEnv)[0])
+    );
+  }
+});
+
+test("shipped manifests keep logical declarations compatible while rejecting auth env aliases", () => {
+  const google = compose(
+    shippedManifest("google_calendar"),
+    {
+      AWS_SECRET_ACCESS_KEY: "must-not-cross",
+      GOOGLE_OAUTH_CLIENT_ID: "client-id",
+      GOOGLE_OAUTH_CLIENT_SECRET: "client-secret",
+    },
+    {
+      approvedBindings: [
+        processBinding("GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_ID", "google-calendar"),
+        processBinding(
+          "GOOGLE_OAUTH_CLIENT_SECRET",
+          "GOOGLE_OAUTH_CLIENT_SECRET",
+          "GOOGLE_OAUTH_CLIENT_SECRET",
+          "google-calendar"
+        ),
+      ],
+      connectorId: "google-calendar",
+    }
+  );
+  assert.equal(google.GOOGLE_OAUTH_CLIENT_ID, "client-id");
+  assert.equal(google.GOOGLE_OAUTH_CLIENT_SECRET, "client-secret");
+  assert.equal(google.AWS_SECRET_ACCESS_KEY, undefined);
+
+  const notion = compose(shippedManifest("notion"), { NOTION_API_TOKEN: "ambient-token" });
+  assert.equal(notion.NOTION_API_TOKEN, undefined);
+
+  const notionWithBinding = compose(
+    shippedManifest("notion"),
+    { NOTION_API_TOKEN: "operator-token" },
+    {
+      approvedBindings: [processBinding("NOTION_API_TOKEN", "NOTION_API_TOKEN", "NOTION_API_TOKEN", "notion")],
+      connectorId: "notion",
+    }
+  );
+  assert.equal(notionWithBinding.NOTION_API_TOKEN, "operator-token");
+
+  const slack = compose(
+    shippedManifest("slack"),
+    { SIBLING_SECRET: "must-not-cross", SLACK_TOKEN: "operator-token" },
+    {
+      approvedBindings: [processBinding("SLACK_TOKEN", "SLACK_TOKEN", "SLACK_TOKEN", "slack")],
+      connectorId: "slack",
+    }
+  );
+  assert.equal(slack.SLACK_TOKEN, "operator-token");
+  assert.equal(slack.SIBLING_SECRET, undefined);
+
+  const whatsapp = compose(
+    shippedManifest("whatsapp"),
+    { WHATSAPP_EXPORT_DIR: "/imports/whatsapp" },
+    {
+      approvedBindings: [
+        processBinding("WHATSAPP_EXPORT_DIR", "WHATSAPP_EXPORT_DIR", "WHATSAPP_EXPORT_DIR", "whatsapp"),
+      ],
+      connectorId: "whatsapp",
+    }
+  );
+  assert.equal(whatsapp.WHATSAPP_EXPORT_DIR, "/imports/whatsapp");
+
+  const googleConnection = compose(
+    shippedManifest("google_calendar"),
+    {},
+    {
+      connectionEnv: { GOOGLE_CALENDAR_REFRESH_TOKEN: "connection-refresh-token" },
+    }
+  );
+  assert.equal(googleConnection.GOOGLE_CALENDAR_REFRESH_TOKEN, "connection-refresh-token");
+});
+
+test("a sibling shipped manifest cannot consume another connector's approved logical binding", () => {
+  const notionBinding = processBinding("NOTION_API_TOKEN", "NOTION_API_TOKEN", "NOTION_API_TOKEN", "notion");
+  const sibling = compose(
+    shippedManifest("strava"),
+    { NOTION_API_TOKEN: "notion-secret", STRAVA_ACCESS_TOKEN: "strava-secret" },
+    { approvedBindings: [notionBinding], connectorId: "strava" }
+  );
+  assert.equal(sibling.NOTION_API_TOKEN, undefined);
+  assert.equal(sibling.STRAVA_ACCESS_TOKEN, undefined);
+
+  const owner = compose(
+    shippedManifest("notion"),
+    { NOTION_API_TOKEN: "notion-secret" },
+    { approvedBindings: [notionBinding], connectorId: "notion" }
+  );
+  assert.equal(owner.NOTION_API_TOKEN, "notion-secret");
+});
+
+test("legacy string declarations and credential aliases cannot opt into ambient lookup", () => {
+  const env = compose(
+    {
+      capabilities: { auth: { required: ["STRAVA_ACCESS_TOKEN"] } },
+      runtime_requirements: { environment_variables: ["GOOGLE_TAKEOUT_DIR"] },
+      setup: { credential_capture: { fields: [{ env: ["PASSWORD"] }] } },
+    },
+    {
+      GOOGLE_TAKEOUT_DIR: "/imports/takeout",
+      PASSWORD: "secret",
+      STRAVA_ACCESS_TOKEN: "token",
+    }
+  );
+
+  assert.deepEqual(env, {});
 });

@@ -69,6 +69,7 @@ import {
   type BrowserSurfaceReadinessProbe,
   createBrowserSurfaceManager,
 } from "./browser-surface/index.ts";
+import type { ConnectorEnvironmentBinding } from "./connector-child-environment.ts";
 import { runConnector } from "./index.ts";
 import {
   classifyRecoveryGap,
@@ -417,6 +418,8 @@ export interface ControllerOptions {
     ownerSubjectId: string;
     runAdmission: "collection" | "browser_enrollment";
   }) => Promise<{ connectorId: string; connectorInstanceId: string }>;
+  /** Operator-owned logical connector-input bindings for manual runs. */
+  approvedEnvironmentBindings?: readonly ConnectorEnvironmentBinding[];
   asPublicUrl?: string;
   /** Awaited before a managed surface lease becomes reusable after run cleanup. */
   beforeBrowserSurfaceLeaseRelease?: (args: { readonly runId: string }) => Promise<void> | void;
@@ -3678,6 +3681,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
             };
           },
           connectorId: admittedConnectorId,
+          ...(opts.approvedEnvironmentBindings
+            ? { approvedEnvironmentBindings: opts.approvedEnvironmentBindings }
+            : {}),
           connectorInstanceId,
           connectorPath,
           manifest,
