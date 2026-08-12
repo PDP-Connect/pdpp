@@ -163,6 +163,7 @@ type SourceUnavailableRecoveryFixture =
 function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFixture): {
   actionClicks: number;
   filledSelectors: string[];
+  filledValues: Array<{ selector: string; value: string }>;
   otpResponseAuthenticated: boolean;
   page: Page;
   roleQueries: Array<{ name: unknown; role: string }>;
@@ -175,6 +176,7 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
   let passwordFieldReady = false;
   let currentUrl = LOGIN_URL;
   const filledSelectors: string[] = [];
+  const filledValues: Array<{ selector: string; value: string }> = [];
   const roleQueries: Array<{ name: unknown; role: string }> = [];
   const actionCount = fixture === "ambiguous" ? 2 : 1;
   const memberIdLocator: Pick<Locator, "press"> = {
@@ -238,8 +240,9 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
   }) as Page["click"];
   fake.evaluate = ((): Promise<Array<{ name: string; placeholder: string; type: string }>> =>
     Promise.resolve([{ name: "memberId", placeholder: "", type: "text" }])) as Page["evaluate"];
-  fake.fill = ((selector: string): Promise<void> => {
+  fake.fill = ((selector: string, value: string): Promise<void> => {
     filledSelectors.push(selector);
+    filledValues.push({ selector, value });
     if (fixture === "resume_error" && actionClicked && selector === 'input[name="memberId"]') {
       return Promise.reject(new Error("resumed member-id fill failed"));
     }
@@ -288,6 +291,7 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
       return actionClicks;
     },
     filledSelectors,
+    filledValues,
     get otpResponseAuthenticated(): boolean {
       return otpResponseAuthenticated;
     },
@@ -295,6 +299,46 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
     roleQueries,
   };
 }
+
+test("ensureUsaaSession uses the resolved USAA_USERNAME, never connector identity or ambient env", async () => {
+  const priorUsername = process.env.USAA_USERNAME;
+  const priorPassword = process.env.USAA_PASSWORD;
+  process.env.USAA_USERNAME = "usaa";
+  process.env.USAA_PASSWORD = "ambient-password";
+  try {
+    const fixturePage = makeSourceUnavailableRecoveryPage("selected");
+    const context = makeContext([[], [makeCookie("UsaaMbWebMemberLoggedIn", "true")]]);
+    const interactions = makeInteractionHarness("success", { code: "123456" });
+
+    const ok = await ensureUsaaSession({
+      context,
+      credentials: { USAA_PASSWORD: "saved-password", USAA_USERNAME: "saved-online-id" },
+      page: fixturePage.page,
+      sendInteraction: interactions.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(
+      fixturePage.filledValues.find(({ selector }) => selector === 'input[name="memberId"]')?.value,
+      "saved-online-id"
+    );
+    assert.notEqual(
+      fixturePage.filledValues.find(({ selector }) => selector === 'input[name="memberId"]')?.value,
+      "usaa"
+    );
+  } finally {
+    if (priorUsername === undefined) {
+      delete process.env.USAA_USERNAME;
+    } else {
+      process.env.USAA_USERNAME = priorUsername;
+    }
+    if (priorPassword === undefined) {
+      delete process.env.USAA_PASSWORD;
+    } else {
+      process.env.USAA_PASSWORD = priorPassword;
+    }
+  }
+});
 
 function makePostPasswordSourceUnavailablePage(bodyText: string): Page {
   const nextButtonLocator: Pick<Locator, "waitFor"> = {

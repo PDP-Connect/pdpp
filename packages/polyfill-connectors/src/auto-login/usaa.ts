@@ -57,6 +57,7 @@ const STACK_TRACE_LOCATION_SUFFIX_RE = /\s+at\s+https?:\/\/\S+$/i;
 interface EnsureUsaaSessionArgs {
   capture?: CaptureSession | null;
   context: BrowserContext;
+  credentials?: Readonly<Record<string, string>>;
   onCredentialSubmit?: () => void;
   page: Page;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
@@ -408,6 +409,7 @@ async function handlePasswordFieldStall(
 export async function ensureUsaaSession({
   capture,
   context,
+  credentials,
   onCredentialSubmit,
   page,
   sendInteraction,
@@ -418,8 +420,12 @@ export async function ensureUsaaSession({
   }
 
   // Session is dead or suspect — drive login.
-  const username = process.env.USAA_USERNAME;
-  const password = process.env.USAA_PASSWORD;
+  // Runtime callers always pass the setup-resolved bundle. Keep the omitted
+  // argument compatible for direct callers and older connector tests; an
+  // explicit (including empty) bundle never consults ambient process.env.
+  const resolvedCredentials = credentials ?? process.env;
+  const username = resolvedCredentials.USAA_USERNAME;
+  const password = resolvedCredentials.USAA_PASSWORD;
   if (!(username && password)) {
     await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
     if (

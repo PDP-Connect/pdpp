@@ -3130,16 +3130,19 @@ if (isMainModule(import.meta.url)) {
     name: "usaa",
     retryablePattern: USAA_RETRYABLE_PATTERN,
     validateRecord,
+    auth: { kind: "env", required: ["USAA_USERNAME", "USAA_PASSWORD"] },
     browser: { profileName: "usaa" },
     async ensureSession({
       capture,
       context,
+      credentials,
       onCredentialSubmit,
       page,
       sendInteraction,
     }: {
       capture?: EmitDeps["capture"];
       context: BrowserContext;
+      credentials: Readonly<Record<string, string>>;
       onCredentialSubmit: () => void;
       page: Page;
       sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
@@ -3147,6 +3150,7 @@ if (isMainModule(import.meta.url)) {
       await ensureUsaaSession({
         capture: capture ?? null,
         context,
+        credentials,
         onCredentialSubmit,
         page,
         sendInteraction,
