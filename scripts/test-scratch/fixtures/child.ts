@@ -15,11 +15,16 @@ if (process.argv.includes("--print-root")) {
   process.stdout.write(`${root}\n`);
 }
 if (process.argv.includes("--grandchild")) {
-  spawn(process.execPath, ["--import", "tsx", new URL("./grandchild.ts", import.meta.url).pathname], {
-    detached: false,
-    env: process.env,
-    stdio: "ignore",
-  });
+  const grandchildArgs = process.argv.includes("--grandchild-ignore-term") ? ["--ignore-term"] : [];
+  spawn(
+    process.execPath,
+    ["--import", "tsx", new URL("./grandchild.ts", import.meta.url).pathname, ...grandchildArgs],
+    {
+      detached: false,
+      env: process.env,
+      stdio: "ignore",
+    }
+  );
 }
 const signal = process.argv.find((arg) => arg.startsWith("--self-signal="));
 if (signal) {

@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,6 +18,21 @@ function temporaryParent(): Promise<string> {
 
 function command(args: string[]): string[] {
   return ["--", process.execPath, "--import", "tsx", child, ...args];
+}
+
+async function eventuallyRead(path: string): Promise<string> {
+  const deadline = Date.now() + 5000;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: bounded fixture readiness polling.
+      return await readFile(path, "utf8");
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  throw lastError;
 }
 
 test("owner contains tmpdir writes, preserves numeric exits, and removes only its root", async () => {
@@ -101,6 +116,37 @@ test("recovery retains fresh and malformed roots", async () => {
   await rm(parent, { force: true, recursive: true });
 });
 
+test("recovery removes only a verified old dead allocation and retains a live owner", async () => {
+  const parent = await temporaryParent();
+  const stale = await allocateScratchOwnership({ parent });
+  const staleStats = await stat(stale.allocation.root);
+  await writeFile(
+    stale.allocation.markerPath,
+    `${JSON.stringify({
+      created_at: new Date(Date.now() - 120_000).toISOString(),
+      dev: staleStats.dev,
+      ino: staleStats.ino,
+      nonce: stale.allocation.nonce,
+      owner_pid: 999_999_999,
+      parent: stale.allocation.canonicalParent,
+      root: stale.allocation.root,
+      schema: "pdpp.test-scratch/v1",
+      state: "allocated",
+    })}\n`
+  );
+  const live = await allocateScratchOwnership({ parent });
+  const recovered = await recoverStaleScratch({ parent });
+  assert.deepEqual(
+    recovered.sort((left, right) => left.path.localeCompare(right.path)),
+    [
+      { path: stale.allocation.root, reason: "dead-verified", removed: true },
+      { path: live.allocation.root, reason: "fresh", removed: false },
+    ].sort((left, right) => left.path.localeCompare(right.path))
+  );
+  await cleanupScratchOwnership(live);
+  await rm(parent, { force: true, recursive: true });
+});
+
 test("CLI child signal remains a signal to its parent", async () => {
   const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
     const proc = spawn(
@@ -144,5 +190,43 @@ test("SIGTERM reaches the owned group and cleanup completes before wrapper termi
     wrapper.kill("SIGTERM");
   });
   assert.deepEqual(result, { code: null, signal: "SIGTERM" });
+  await assert.rejects(access(root));
+});
+
+test("SIGTERM escalates a TERM-ignoring group descendant before cleanup", async () => {
+  let output = "";
+  const wrapper = spawn(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      new URL("./run-command.ts", import.meta.url).pathname,
+      ...command(["--print-root", "--grandchild", "--grandchild-ignore-term", "--wait"]),
+    ],
+    { stdio: ["ignore", "pipe", "ignore"] }
+  );
+  wrapper.stdout?.on("data", (chunk: Buffer) => {
+    output += chunk.toString();
+  });
+  const root = await new Promise<string>((resolve, reject) => {
+    const deadline = setTimeout(() => reject(new Error("child did not report its scratch root")), 5000);
+    const observe = () => {
+      const value = output.trim();
+      if (value) {
+        clearTimeout(deadline);
+        resolve(value);
+      }
+    };
+    wrapper.stdout?.on("data", observe);
+    wrapper.once("error", reject);
+  });
+  const grandchildPid = Number.parseInt(await eventuallyRead(join(root, "grandchild.txt")), 10);
+  const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    wrapper.once("error", reject);
+    wrapper.once("close", (code, signal) => resolve({ code, signal }));
+    wrapper.kill("SIGTERM");
+  });
+  assert.deepEqual(result, { code: null, signal: "SIGTERM" });
+  assert.throws(() => process.kill(grandchildPid, 0), { code: "ESRCH" });
   await assert.rejects(access(root));
 });
