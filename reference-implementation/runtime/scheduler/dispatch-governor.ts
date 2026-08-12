@@ -26,6 +26,7 @@ import type {
   GetLastSuccessfulRunAtHandler,
   GetNonPressureRecoverableCountHandler,
   GetSourcePressureGapsHandler,
+  HasLegacySchedulerEventMarkerHandler,
   HumanRequiredStateEscalationHandler,
   RunRecord,
   RunSource,
@@ -36,6 +37,7 @@ import {
   type PendingPressureGap,
   type SourcePressureCooldownDecision,
 } from "../scheduler-source-pressure-cooldown.ts";
+import { resolveSchedulerMarkers } from "./recovery-instance-scope.ts";
 
 // ─── Dep types ───────────────────────────────────────────────────────────────
 
@@ -56,6 +58,7 @@ export interface DispatchGovernorDeps {
   getLastSuccessfulRunAt: GetLastSuccessfulRunAtHandler;
   getNonPressureRecoverableCount: GetNonPressureRecoverableCountHandler;
   getSourcePressureGaps: GetSourcePressureGapsHandler;
+  hasLegacySchedulerEventMarker?: HasLegacySchedulerEventMarkerHandler;
   onHumanRequiredStateEscalation: HumanRequiredStateEscalationHandler;
   runtime: DispatchGovernorRuntimeState;
 }
@@ -449,6 +452,7 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
   const {
     getForwardEvidenceDebt,
     getLastSuccessfulRunAt,
+    hasLegacySchedulerEventMarker = async () => false,
     getNonPressureRecoverableCount,
     getSourcePressureGaps,
     onHumanRequiredStateEscalation,
@@ -767,20 +771,23 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     // Decide (pure) then apply (effectful). The pure core reads the current
     // dedup state as inputs and returns the dispatch flags, the dedup-map
     // mutations, and the one-shot transitions to fire — all as data.
+    const markerEvidence = await resolveSchedulerMarkers(
+      hasLegacySchedulerEventMarker,
+      connectorId,
+      key,
+      history,
+      decision.reasonClass ?? "",
+      currentStreakHasSchedulerEvent(history, BACKOFF_STARTED_PREFIX, decision.reasonClass ?? ""),
+      currentStreakHasSchedulerEvent(history, GAVE_UP_PREFIX, decision.reasonClass ?? "")
+    );
     const backoffDecision = decideBackoffDispatch({
       announcedBackoff: runtime.announcedBackoffClass.get(key),
       announcedBlocked: runtime.announcedBlockedClass.get(key),
       backoffApplied: decision.backoffApplied,
       blocked: decision.recommendedHealthState === "blocked",
       eligible,
-      persistedBackoffStarted:
-        decision.reasonClass !== null &&
-        decision.reasonClass !== undefined &&
-        currentStreakHasSchedulerEvent(history, BACKOFF_STARTED_PREFIX, decision.reasonClass),
-      persistedGaveUp:
-        decision.reasonClass !== null &&
-        decision.reasonClass !== undefined &&
-        currentStreakHasSchedulerEvent(history, GAVE_UP_PREFIX, decision.reasonClass),
+      persistedBackoffStarted: markerEvidence.backoffStarted,
+      persistedGaveUp: markerEvidence.gaveUp,
       reasonClass: decision.reasonClass,
       recoveryOnly,
     });

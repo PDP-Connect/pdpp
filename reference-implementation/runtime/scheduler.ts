@@ -44,6 +44,7 @@ import { isTerminalGrantFailure, type TerminalReason } from "./scheduler-retry-c
 import type {
   ConnectorError,
   ConnectorSchedule,
+  HasLegacySchedulerEventMarkerHandler,
   RunRecord,
   RunSource,
   SchedulerManifest,
@@ -59,6 +60,7 @@ export type {
   GetSourcePressureGapsHandler,
   GetStateHandler,
   GrantAccessMode,
+  HasLegacySchedulerEventMarkerHandler,
   HasUnresolvedAttentionHandler,
   HumanRequiredStateEscalationHandler,
   InteractionHandler,
@@ -572,6 +574,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     getLastSuccessfulRunAt,
     getNonPressureRecoverableCount,
     getSourcePressureGaps,
+    hasLegacySchedulerEventMarker: async (...args: Parameters<HasLegacySchedulerEventMarkerHandler>) =>
+      (await schedulerStore?.hasLegacySchedulerEventMarker?.(...args)) ?? false,
     onHumanRequiredStateEscalation,
     runtime,
   });

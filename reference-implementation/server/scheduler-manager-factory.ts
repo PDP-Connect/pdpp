@@ -16,6 +16,7 @@ import { getRunTerminalEvent } from "../lib/spine.ts";
 import { isHealthRelevant as isAttentionHealthRelevant } from "../runtime/attention.ts";
 import { getScheduleIneligibilityReason, resolveDefaultConnectorPath } from "../runtime/controller.ts";
 import { hasForwardEvidenceDebt } from "../runtime/recovery-decision.ts";
+import { matchesRecoveryInstance } from "../runtime/scheduler/recovery-instance-scope.ts";
 import type {
   ConnectorError,
   ConnectorSchedule,
@@ -75,6 +76,7 @@ interface Controller {
       ownerSubjectId: string;
       ownerToken: string;
       priorityClass: "background";
+      recoveryOnly?: boolean;
       triggerKind: "scheduled";
       rsUrl?: string;
       referenceBaseUrl?: string | null;
@@ -177,13 +179,13 @@ function lastPressureAt(row: GapRow): string | null {
   return null;
 }
 
-function mapPressureGaps(rows: readonly GapRow[], instanceKey: string): PressureGap[] {
+function mapPressureGaps(rows: readonly GapRow[], instanceKey: string, defaultInstanceId: string): PressureGap[] {
   const gaps: PressureGap[] = [];
   for (const row of rows) {
     if (typeof row.reason !== "string" || !SOURCE_PRESSURE_GAP_REASONS.has(row.reason)) {
       continue;
     }
-    if ((row.connector_instance_id || instanceKey) !== instanceKey) {
+    if (!matchesRecoveryInstance(row.connector_instance_id, instanceKey, defaultInstanceId)) {
       continue;
     }
     gaps.push({
@@ -196,13 +198,13 @@ function mapPressureGaps(rows: readonly GapRow[], instanceKey: string): Pressure
   return gaps;
 }
 
-function countNonPressureGaps(rows: readonly GapRow[], instanceKey: string): number {
+function countNonPressureGaps(rows: readonly GapRow[], instanceKey: string, defaultInstanceId: string): number {
   let count = 0;
   for (const row of rows) {
     if (typeof row.reason === "string" && SOURCE_PRESSURE_GAP_REASONS.has(row.reason)) {
       continue;
     }
-    if ((row.connector_instance_id || instanceKey) !== instanceKey) {
+    if (!matchesRecoveryInstance(row.connector_instance_id, instanceKey, defaultInstanceId)) {
       continue;
     }
     count += 1;
@@ -342,6 +344,7 @@ export function createRunManagedConnectorViaController(
       ownerSubjectId: opts.ownerSubjectId,
       ownerToken: opts.ownerToken,
       priorityClass: opts.priorityClass,
+      recoveryOnly: opts.recoveryOnly === true,
       triggerKind: opts.triggerKind,
       ...(opts.rsUrl === undefined ? {} : { rsUrl: opts.rsUrl }),
       ...(opts.referenceBaseUrl === undefined ? {} : { referenceBaseUrl: opts.referenceBaseUrl }),
@@ -574,8 +577,8 @@ export function createReferenceSchedulerManager({
         try {
           const store = getDefaultConnectorDetailGapStore() as unknown as GapStore;
           const rows = await store.listPendingGapsForConnector(connectorId, { limit: 200 });
-          const instanceKey = connectorInstanceId || connectorId;
-          return countNonPressureGaps(rows, instanceKey);
+          const instanceKey = connectorInstanceId ?? connectorId;
+          return countNonPressureGaps(rows, instanceKey, connectorId);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           logger.error({ err: message }, `[scheduler] non-pressure recovery probe failed for ${connectorId}`);
@@ -596,8 +599,8 @@ export function createReferenceSchedulerManager({
         // fail-open stance as the attention probe above.
         const store = getDefaultConnectorDetailGapStore() as unknown as GapStore;
         const rows = await store.listPendingGapsForConnector(connectorId, { limit: 200 });
-        const instanceKey = connectorInstanceId || connectorId;
-        return mapPressureGaps(rows, instanceKey);
+        const instanceKey = connectorInstanceId ?? connectorId;
+        return mapPressureGaps(rows, instanceKey, connectorId);
       },
       getState: async (connectorId, connectorInstanceId) => {
         // Read scheduler state from the connection-instance namespace by

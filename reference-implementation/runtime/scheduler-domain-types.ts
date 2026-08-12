@@ -243,6 +243,14 @@ export type GetLastSuccessfulRunAtHandler = (
   connectorInstanceId?: string
 ) => Promise<number | null> | number | null;
 
+export type HasLegacySchedulerEventMarkerHandler = (
+  connectorId: string,
+  connectorInstanceId: string,
+  prefix: string,
+  reasonClass: string,
+  sinceCompletedAt: string | null
+) => Promise<boolean> | boolean;
+
 /**
  * Returns true when the connector is a managed (browser-surface-leased)
  * connector. The scheduler uses this to DEFER a scheduled tick when the
@@ -427,6 +435,7 @@ export interface SchedulerOptions {
     | "deleteActiveRun"
     | "listLastRunTimes"
     | "listRunHistory"
+    | "hasLegacySchedulerEventMarker"
     | "upsertActiveRun"
     | "upsertLastRunTime"
   >;

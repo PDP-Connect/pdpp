@@ -73,6 +73,7 @@ import { NekoSurfaceAllocatorClient } from "../runtime/neko-surface-allocator.ts
 import { isClosedPipeWriteError } from "../runtime/pipe-errors.ts";
 import { hasForwardEvidenceDebt } from "../runtime/recovery-decision.ts";
 import { projectRunAutomationPolicy } from "../runtime/run-automation-policy.ts";
+import { matchesRecoveryInstance } from "../runtime/scheduler/recovery-instance-scope.ts";
 import { createScheduler } from "../runtime/scheduler.ts";
 import { SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
 import {
@@ -8337,7 +8338,7 @@ function createReferenceSchedulerManager({
               continue;
             }
             // Scope to this connection's instance (same guard as the pressure probe).
-            if ((row.connector_instance_id || connectorId) !== instanceKey) {
+            if (!matchesRecoveryInstance(row.connector_instance_id, instanceKey, connectorId)) {
               continue;
             }
             count += 1;
@@ -8378,7 +8379,7 @@ function createReferenceSchedulerManager({
           }
           // `listPendingGapsForConnector` spans every instance of the connector
           // type; keep only this connection's gaps so cooldown stays per-source.
-          if ((row.connector_instance_id || connectorId) !== instanceKey) {
+          if (!matchesRecoveryInstance(row.connector_instance_id, instanceKey, connectorId)) {
             continue;
           }
           gaps.push({

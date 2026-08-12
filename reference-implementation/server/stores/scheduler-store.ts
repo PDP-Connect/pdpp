@@ -179,6 +179,13 @@ export interface SchedulerStore {
   listRunHistory: (
     limit: number
   ) => Promise<readonly SchedulerRunHistoryRecord[]> | readonly SchedulerRunHistoryRecord[];
+  hasLegacySchedulerEventMarker?: (
+    connectorId: string,
+    connectorInstanceId: string,
+    prefix: string,
+    reasonClass: string,
+    sinceCompletedAt: string | null
+  ) => Promise<boolean> | boolean;
   listSchedules: () => Promise<readonly ScheduleRecord[]> | readonly ScheduleRecord[];
   listSchedulesByConnectionIds?: (
     connectorInstanceIds: readonly string[]
@@ -603,6 +610,24 @@ export function createSqliteSchedulerStore(): SchedulerStore {
       return getMany<SchedulerRunHistoryRow>(referenceQueries.controllerListRunHistory, [], {
         limit,
       }).rows.map(rowToRunHistoryRecord);
+    },
+
+    hasLegacySchedulerEventMarker(connectorId, connectorInstanceId, prefix, reasonClass, sinceCompletedAt) {
+      if (connectorInstanceId !== connectorId) {
+        return false;
+      }
+      const reasonNeedle = `"reason_class":${JSON.stringify(reasonClass)}`;
+      return Boolean(
+        [...iterateDynamicSqlAcknowledged<{ one: number }>(
+          `SELECT 1 AS one FROM run_history
+           WHERE connector_id = ? AND connector_instance_id IS NULL AND run_id IS NULL
+             AND scheduler_managed AND substr(error, 1, length(?)) = ?
+             AND instr(error, ?) > 0
+             AND (? IS NULL OR completed_at > ?)
+           LIMIT 1`,
+          [connectorId, prefix, prefix, reasonNeedle, sinceCompletedAt, sinceCompletedAt]
+        )][0]
+      );
     },
 
     listSchedules() {
@@ -1041,6 +1066,23 @@ export function createPostgresSchedulerStore(): SchedulerStore {
         [boundedLimit]
       );
       return (result.rows as SchedulerRunHistoryRow[]).map(rowToRunHistoryRecord);
+    },
+
+    async hasLegacySchedulerEventMarker(connectorId, connectorInstanceId, prefix, reasonClass, sinceCompletedAt) {
+      if (connectorInstanceId !== connectorId) {
+        return false;
+      }
+      const reasonNeedle = `"reason_class":${JSON.stringify(reasonClass)}`;
+      const result = await postgresQuery(
+        `SELECT 1 FROM run_history
+         WHERE connector_id = $1 AND connector_instance_id IS NULL AND run_id IS NULL
+           AND scheduler_managed AND LEFT(error, LENGTH($2)) = $2
+           AND POSITION($3 IN error) > 0
+           AND ($4::text IS NULL OR completed_at > $4::timestamptz)
+         LIMIT 1`,
+        [connectorId, prefix, reasonNeedle, sinceCompletedAt]
+      );
+      return result.rows.length > 0;
     },
 
     async listSchedules() {
