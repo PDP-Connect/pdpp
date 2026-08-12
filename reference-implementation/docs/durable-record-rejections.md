@@ -48,6 +48,14 @@ The default pending-payload quota is 10 MiB per owner. Set `PDPP_RECORD_REJECTIO
 
 One retained line cannot exceed the hosted request ceiling. The current ceiling is 200 MiB. The server measures UTF-8 bytes before it starts the quota transaction.
 
+The 200 MiB value is a request/line ceiling, not a supported container memory floor. The current Fastify/Node hosted path buffers the request body before operation-level LF slicing and stores durable rejection payload bytes in the same process. The split-cgroup hard-memory oracle runs the server in a constrained Docker container and the load generator in the host process:
+
+```bash
+pnpm --dir reference-implementation run test:hosted-ingest-memory-cgroup -- --memory 512m --line-bytes 10485760 --expect success
+```
+
+Measured on Docker `node:22-bookworm-slim` with server memory and swap both capped, a read-only repo mount, and a tmpfs server workspace: 200 MiB OOMs before readiness for a 1 KiB journey; 290 MiB has produced both OOM-before-readiness and successful 1 KiB outcomes and is not a stable bound; 384 MiB completes a 1 KiB invalid-UTF-8 rejection; 512 MiB completes 10 MiB and 50 MiB invalid-UTF-8 rejections but OOMs during a 100 MiB request; 1 GiB returns exact 413 with `FST_ERR_CTP_BODY_TOO_LARGE` for a body above the 200 MiB request ceiling. Each successful run also verifies protected-resource metadata after the request. These are representative oracle facts, not a portable deployment guarantee. A deployment that wants near-ceiling single-line rejects must provision materially above the body limit, lower the body limit, or replace this path with streaming line handling.
+
 Pending entries do not expire automatically. Exact replay returns the existing receipt and does not consume quota twice. Deleting a connection deletes its rejection rows and releases their quota in the same source-of-truth transaction.
 
 The list route never returns payload bytes. Runtime results, run accounting, and terminal evidence contain counts and receipt metadata only. Treat the detail route as personal-data access and protect owner sessions accordingly.
