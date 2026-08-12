@@ -59,17 +59,17 @@ Questions we will explore:
   platforms, open protocols, and personal data stores. This paper provides
   context, not normative guidance.
 
-## Session 2: Records, manifests, requests, and grants
+## Session 2: Records, manifests, and requests
 
-This session covers four steps: describing records, declaring the data a
-source can offer, requesting a subset, and recording the approved access in a
-grant. It covers Core Sections 4–7. Section 8, the resource server interface,
-follows in a later session.
+This session covers three steps: describing records, declaring the data a
+source can offer, and requesting a subset. It covers Core Sections 4–6.
+Section 7, the grant, and Section 8, the resource server interface, follow in
+a later session.
 
-### Required (about 30 minutes)
+### Required (about 23 minutes)
 
-1. [PDPP Core, Sections 4–7](https://pdpp.dev/docs/spec-core#record-model).
-   Focus on how the four sections fit together:
+1. [PDPP Core, Sections 4–6](https://pdpp.dev/docs/spec-core#record-model).
+   Focus on how the three sections fit together:
 
    - In Section 4: streams, `append_only` and `mutable_state` semantics,
      incremental sync, and the RECORD envelope.
@@ -79,9 +79,6 @@ follows in a later session.
    - In Section 6: source kinds, stream and profile selection, and the
      difference between protocol-enforced constraints, structured policy
      declarations, and attributed client claims.
-   - In Section 7: the immutable grant, its resolved enforcement fields,
-     grant lifetime, data time range, access mode, version layering, and
-     revocation.
 
    Skim the JSON examples and schemas. Use the field tables when a term is
    unclear. You do not need to memorize every member.
@@ -90,8 +87,8 @@ follows in a later session.
 
 - UK Open Banking,
   [Account Access Consent elements](https://openbankinguk.github.io/read-write-api-site3/v4.0.1/profiles/account-and-transaction-api-profile.html#consent-elements):
-  permissions, consent expiration, and the transaction date range. Compare
-  these with PDPP's grant lifetime and data time range.
+  permissions and the transaction date range. Compare these with PDPP's
+  selection-request streams and time range.
 
 Questions for discussion:
 
@@ -99,5 +96,7 @@ Questions for discussion:
   consent metadata come from?
 - Which selection-request fields can the protocol enforce, and how should
   consent distinguish policy declarations from client claims?
-- Should an existing grant keep its resolved fields when its manifest or a
-  view definition changes?
+- When a source's manifest changes — a view gains new fields, or a view
+  definition itself changes — should a client that already selected that
+  view see the update automatically, or does every such change require a new
+  selection?
