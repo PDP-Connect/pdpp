@@ -179,12 +179,12 @@ test("candidateParentStreamsForChild uses the manifest only to prune parent meta
 test("manifest lookup tolerates URL-form connector_id and short connector_key", () => {
   const manifests = [
     {
-      connector_id: "https://registry.pdpp.org/connectors/chase",
+      connector_id: "https://registry.pdpp.dev/connectors/chase",
       connector_key: "chase",
       streams: [{ name: "transactions" }],
     },
     {
-      connector_id: "https://registry.pdpp.org/connectors/github",
+      connector_id: "https://registry.pdpp.dev/connectors/github",
       connector_key: "github",
       streams: [{ name: "user" }],
     },
@@ -193,12 +193,12 @@ test("manifest lookup tolerates URL-form connector_id and short connector_key", 
   assert.ok(chaseManifest);
 
   assert.equal(manifestMatchesConnectorId(chaseManifest, "chase"), true);
-  assert.equal(manifestMatchesConnectorId(chaseManifest, "https://registry.pdpp.org/connectors/chase"), true);
+  assert.equal(manifestMatchesConnectorId(chaseManifest, "https://registry.pdpp.dev/connectors/chase"), true);
   assert.equal(manifestMatchesConnectorId(chaseManifest, "github"), false);
   assert.equal(manifestMatchesConnectorId(chaseManifest, ""), false);
   assert.equal(findManifestForConnectorId(manifests, "chase")?.connector_key, "chase");
   assert.equal(
-    findManifestForConnectorId(manifests, "https://registry.pdpp.org/connectors/github")?.connector_key,
+    findManifestForConnectorId(manifests, "https://registry.pdpp.dev/connectors/github")?.connector_key,
     "github"
   );
   assert.equal(findManifestForConnectorId(manifests, "slack"), undefined);
@@ -207,7 +207,7 @@ test("manifest lookup tolerates URL-form connector_id and short connector_key", 
 test("short connection connector key resolves child-declared relationship manifest stream", () => {
   const manifests = [
     {
-      connector_id: "https://registry.pdpp.org/connectors/chase",
+      connector_id: "https://registry.pdpp.dev/connectors/chase",
       connector_key: "chase",
       streams: [CHASE_TRANSACTIONS_MANIFEST_STREAM],
     },
@@ -557,13 +557,13 @@ test("reverse link percent-encodes connection, child stream, filter field, and p
 test("reverse links resolve via findManifestForConnectorId for URL-form and short connector keys", () => {
   const manifests = [
     {
-      connector_id: "https://registry.pdpp.org/connectors/chase",
+      connector_id: "https://registry.pdpp.dev/connectors/chase",
       connector_key: "chase",
       streams: CHASE_STREAMS,
     },
   ];
 
-  for (const id of ["chase", "https://registry.pdpp.org/connectors/chase"]) {
+  for (const id of ["chase", "https://registry.pdpp.dev/connectors/chase"]) {
     const manifest = findManifestForConnectorId(manifests, id);
     assert.ok(manifest, `manifest should resolve for ${id}`);
     const links = reverseChildListLinksFromManifest(manifest.streams, {

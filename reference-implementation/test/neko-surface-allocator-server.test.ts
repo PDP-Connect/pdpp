@@ -164,7 +164,7 @@ test("creates and starts an owned n.eko container with sanitized profile storage
   const surface = await service.ensureSurface({
     accountKey: "account_1",
     connectorId: "chatgpt",
-    profileKey: "https://registry.pdpp.org/connectors/chatgpt?owner=the owner@example.com",
+    profileKey: "https://registry.pdpp.dev/connectors/chatgpt?owner=the owner@example.com",
     surfaceId: "surface:https://chatgpt.example/profile 1",
   });
 
@@ -191,7 +191,7 @@ test("creates and starts an owned n.eko container with sanitized profile storage
   assert.equal(create.init.body.Labels[`${LABEL}.surface_id`], "surface:https://chatgpt.example/profile 1");
   assert.equal(
     create.init.body.Labels[`${LABEL}.profile_key`],
-    "https://registry.pdpp.org/connectors/chatgpt?owner=the owner@example.com"
+    "https://registry.pdpp.dev/connectors/chatgpt?owner=the owner@example.com"
   );
   assert.ok(create.init.query, "create call must carry a query");
   const queryName = create.init.query.name;

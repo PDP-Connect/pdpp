@@ -77,7 +77,7 @@ function fakeBackend(overrides = {}) {
 
 function manifestWithSemantic() {
   return {
-    connector_id: "https://test.pdpp.org/connectors/a",
+    connector_id: "https://test.pdpp.dev/connectors/a",
     display_name: "A",
     streams: [
       {
@@ -94,7 +94,7 @@ function manifestWithSemantic() {
 
 function manifestWithoutSemantic() {
   return {
-    connector_id: "https://test.pdpp.org/connectors/b",
+    connector_id: "https://test.pdpp.dev/connectors/b",
     display_name: "B",
     streams: [{ name: "saved" }],
   };
@@ -342,7 +342,7 @@ test("lexical backfill progress is surfaced as a distinct warning", () => {
     indexState: "built",
     lexicalBackfillProgress: {
       active_jobs: 1,
-      connector_id: "https://test.pdpp.org/connectors/a",
+      connector_id: "https://test.pdpp.dev/connectors/a",
       id: "lexical_backfill_1",
       indexed_rows: 750,
       manifest_streams_checked: 1,
@@ -474,7 +474,7 @@ test('building index warning fires when indexState is "building"', () => {
 test("building index diagnostics include optional backfill progress", () => {
   const progress: SemanticBackfillProgress = {
     active_jobs: 1,
-    connector_id: "https://test.pdpp.org/connectors/a",
+    connector_id: "https://test.pdpp.dev/connectors/a",
     id: "semantic_backfill_1",
     indexed_vectors: 700,
     manifest_streams_checked: 1,
@@ -759,10 +759,10 @@ test("diagnostics report lists manifest provenance for operator inspection", () 
     ],
   });
   assert.equal(report.manifests.length, 2);
-  const a = report.manifests.find((m) => m.connector_id === "https://test.pdpp.org/connectors/a");
+  const a = report.manifests.find((m) => m.connector_id === "https://test.pdpp.dev/connectors/a");
   assert.ok(a);
   assert.equal(a.semantic_stream_count, 2);
-  const b = report.manifests.find((m) => m.connector_id === "https://test.pdpp.org/connectors/b");
+  const b = report.manifests.find((m) => m.connector_id === "https://test.pdpp.dev/connectors/b");
   assert.ok(b);
   assert.equal(b.semantic_stream_count, 0);
 });

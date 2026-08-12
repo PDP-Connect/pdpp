@@ -115,7 +115,7 @@ if (POSTGRES_URL) {
     // key `spotify`, so a query by its registry-URL connector_id misses the
     // exact lookup, canonicalizes to `spotify` (which differs from the URL),
     // and resolves through the canonical-fallback Postgres SELECT.
-    const registryUrlId = "https://registry.pdpp.org/connectors/spotify";
+    const registryUrlId = "https://registry.pdpp.dev/connectors/spotify";
     assert.notEqual(registryUrlId, connectorId, "registry-URL id differs from the stored canonical id");
     const viaFallback = await getConnectorManifest(registryUrlId);
     assert.ok(viaFallback, "canonical-key fallback resolves the registry-URL connector id");

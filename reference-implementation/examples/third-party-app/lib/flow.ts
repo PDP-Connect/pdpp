@@ -176,7 +176,7 @@ export function buildParRequest({
     authorization_details: [
       {
         source: { id: sourceId, kind: sourceKind },
-        type: "https://pdpp.org/data-access",
+        type: "https://pdpp.dev/data-access",
         ...(purposeCode ? { purpose_code: purposeCode } : {}),
         ...(purposeDescription ? { purpose_description: purposeDescription } : {}),
         ...(accessMode ? { access_mode: accessMode } : {}),

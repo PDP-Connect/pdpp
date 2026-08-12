@@ -4220,7 +4220,7 @@ test("scheduler default readiness checker treats PDPP_NEKO_MANAGED_CONNECTORS as
     delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
     delete process.env.PDPP_NEKO_CDP_HTTP_URL;
     // Simulate reference Docker stack dynamic neko mode.
-    process.env.PDPP_NEKO_MANAGED_CONNECTORS = "https://registry.pdpp.org/connectors/chatgpt";
+    process.env.PDPP_NEKO_MANAGED_CONNECTORS = "https://registry.pdpp.dev/connectors/chatgpt";
 
     const registerResp = await fetchJson(`${asUrl}/connectors`, {
       body: JSON.stringify(manifest),

@@ -9,8 +9,8 @@ import test from "node:test";
 
 import { startServer } from "../server/index.ts";
 
-const MANAGED_A = "https://registry.pdpp.org/connectors/neko-cap-smoke-a";
-const MANAGED_B = "https://registry.pdpp.org/connectors/neko-cap-smoke-b";
+const MANAGED_A = "https://registry.pdpp.dev/connectors/neko-cap-smoke-a";
+const MANAGED_B = "https://registry.pdpp.dev/connectors/neko-cap-smoke-b";
 const PROFILE_KEY = "neko-cap-smoke-profile";
 const LIVE_CAP_ENABLED = process.env.PDPP_TEST_LIVE_NEKO_CAP === "1";
 const DEFAULT_NEKO_BASE_URL = "http://neko:8080/neko";

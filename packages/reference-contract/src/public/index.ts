@@ -331,7 +331,7 @@ const AuthorizationDetailBaseSchema = {
     retention: RetentionSchema,
     source: SourceObjectSchema,
     streams: { items: StreamSelectionSchema, minItems: 1, type: "array" },
-    type: { const: "https://pdpp.org/data-access" },
+    type: { const: "https://pdpp.dev/data-access" },
   },
   required: ["type", "source", "purpose_code", "access_mode", "streams"],
   type: "object",
@@ -400,7 +400,7 @@ const AuthorizationServerMetadataSchema = {
     introspection_endpoint: UriSchema,
     issuer: UriSchema,
     pdpp_authorization_details_types_supported: {
-      items: { const: "https://pdpp.org/data-access" },
+      items: { const: "https://pdpp.dev/data-access" },
       minItems: 1,
       type: "array",
     },

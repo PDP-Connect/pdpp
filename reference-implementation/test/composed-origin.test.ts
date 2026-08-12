@@ -76,7 +76,7 @@ const CONSOLE_BUILD_ID_PATH = join(CONSOLE_DIR, ".next/BUILD_ID");
 const CONSOLE_PRERENDER_MANIFEST_PATH = join(CONSOLE_DIR, ".next/prerender-manifest.json");
 const CONSOLE_STANDALONE_SERVER_PATH = join(CONSOLE_DIR, ".next/standalone/apps/console/server.js");
 const OWNER_PASSWORD = "pdpp-owner-dev-password";
-const SPOTIFY_CONNECTOR_ID = "https://registry.pdpp.org/connectors/spotify";
+const SPOTIFY_CONNECTOR_ID = "https://registry.pdpp.dev/connectors/spotify";
 const spotifyConnectorKeyLookup = canonicalConnectorKey(SPOTIFY_CONNECTOR_ID);
 assert.ok(spotifyConnectorKeyLookup, `expected a canonical connector key for ${SPOTIFY_CONNECTOR_ID}`);
 const SPOTIFY_CONNECTOR_KEY = spotifyConnectorKeyLookup;
@@ -89,7 +89,7 @@ const COMPOSED_EXPLORE_RECORD_ID = "artist_owner/top#1";
 const HREF_ATTRIBUTE_PATTERN = /href="([^"]+)"/g;
 const WORK_RECORD_NAME_RE = /Nils Frahm \(work\)/;
 const PERSONAL_RECORD_NAME_RE = /Nils Frahm \(personal\)/;
-const CLAUDE_CODE_CONNECTOR_ID = "https://registry.pdpp.org/connectors/claude-code";
+const CLAUDE_CODE_CONNECTOR_ID = "https://registry.pdpp.dev/connectors/claude-code";
 
 let consoleBuildPromise: Promise<void> | null = null;
 
@@ -860,12 +860,12 @@ test("composed browser origin carries metadata, owner session, console, device f
         authorization_details: [
           {
             access_mode: "single_use",
-            purpose_code: "https://pdpp.org/purpose/recommendation",
+            purpose_code: "https://pdpp.dev/purpose/recommendation",
             purpose_description: "Review top artists",
             retention: "P30D",
             source: { id: SPOTIFY_CONNECTOR_ID, kind: "connector" },
             streams: [{ name: "top_artists" }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_display: { name: "Longview" },

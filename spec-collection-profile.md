@@ -32,7 +32,7 @@ The core manifest (Section 5 of the core spec) defines the consent surface. The 
 ```json
 {
   "protocol_version": "0.1.0",
-  "connector_id": "https://registry.pdpp.org/connectors/spotify",
+  "connector_id": "https://registry.pdpp.dev/connectors/spotify",
   "version": "2.0.0",
   "display_name": "Spotify",
   "runtime_requirements": {

@@ -40,7 +40,7 @@ import test from "node:test";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { __setIngestFaultHookForTest, ingestRecord } from "../server/records.ts";
 
-const CONNECTOR_ID = "https://test.pdpp.org/connectors/atomicity";
+const CONNECTOR_ID = "https://test.pdpp.dev/connectors/atomicity";
 const STREAM = "items";
 
 function setup() {

@@ -162,7 +162,7 @@ interface TraceTimelineBody {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
 const TEST_DCR_INITIAL_ACCESS_TOKEN = "pdpp-reference-test-initial-access-token";
-const SPOTIFY_CONNECTOR_KEY = canonicalConnectorKey("https://registry.pdpp.org/connectors/spotify");
+const SPOTIFY_CONNECTOR_KEY = canonicalConnectorKey("https://registry.pdpp.dev/connectors/spotify");
 
 /**
  * `server/index.js`, `server/db.js`, `server/records.js`, `runtime/index.ts`
@@ -733,11 +733,11 @@ test("event spine", async (t) => {
           authorization_details: [
             {
               access_mode: "single_use",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               purpose_description: "Recommend concerts based on recent listening history",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "top_artists", view: "basic" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "concert_recommendation_app",
@@ -851,11 +851,11 @@ test("event spine", async (t) => {
           authorization_details: [
             {
               access_mode: "single_use",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               purpose_description: "Recommend concerts based on recent listening history",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "top_artists", view: "basic" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "concert_recommendation_app",
@@ -1081,11 +1081,11 @@ test("event spine", async (t) => {
           authorization_details: [
             {
               access_mode: "single_use",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               purpose_description: "Recommend concerts based on recent listening history",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "top_artists", view: "basic" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "concert_recommendation_app",
@@ -1152,11 +1152,11 @@ test("event spine", async (t) => {
           authorization_details: [
             {
               access_mode: "single_use",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               purpose_description: "Recommend concerts based on recent listening history",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ fields: ["id", "name"], name: "saved_tracks" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "concert_recommendation_app",
@@ -1222,11 +1222,11 @@ test("event spine", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/financial_planning",
+              purpose_code: "https://pdpp.dev/purpose/financial_planning",
               purpose_description: "Support compensation planning and verification",
               source: { id: nativeManifest.provider_id, kind: "provider_native" },
               streams: [{ name: "pay_statements" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -1339,11 +1339,11 @@ test("event spine", async (t) => {
             authorization_details: [
               {
                 access_mode: "continuous",
-                purpose_code: "https://pdpp.org/purpose/financial_planning",
+                purpose_code: "https://pdpp.dev/purpose/financial_planning",
                 purpose_description: "Trace auth-gate failures for native client reads",
                 source: { id: nativeManifest.provider_id, kind: "provider_native" },
                 streams: [{ name: "pay_statements" }],
-                type: "https://pdpp.org/data-access",
+                type: "https://pdpp.dev/data-access",
               },
             ],
             client_id: "longview",
@@ -1645,11 +1645,11 @@ test("event spine", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               purpose_description: "Maintain grant-scoped state for trace inspection",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "top_artists" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "concert_recommendation_app",
@@ -2023,7 +2023,7 @@ rl.on('line', (line) => {
     const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const asUrl = `http://localhost:${server.asPort}`;
     const manifest = {
-      connector_id: "https://registry.pdpp.org/connectors/event-spine-partial-checkpoint-failure-test",
+      connector_id: "https://registry.pdpp.dev/connectors/event-spine-partial-checkpoint-failure-test",
       streams: [
         {
           name: "items",

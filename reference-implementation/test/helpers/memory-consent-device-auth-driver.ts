@@ -535,7 +535,7 @@ export function createMemoryConsentDeviceAuthDriver() {
         expires_at: expiresAt,
         grant_id: null,
         kind: "pending_consent",
-        purpose_code: input.purpose_code || "https://pdpp.org/purpose/personalization",
+        purpose_code: input.purpose_code || "https://pdpp.dev/purpose/personalization",
         purpose_description: input.purpose_description || "memory consent-device-auth conformance",
         request_uri: requestUri,
         status: "pending",

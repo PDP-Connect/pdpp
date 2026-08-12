@@ -11,7 +11,7 @@
  *
  * Contracts pinned:
  *   - canonicalConnectorKey: trims, and strips the
- *     `https://registry.pdpp.org/connectors/<key>/` first-party registry prefix
+ *     `https://registry.pdpp.dev/connectors/<key>/` first-party registry prefix
  *     (and a trailing slash) down to the bare key.
  *   - connectorKeyFromManifest: connector_key → connector_id → explicit fallback
  *     → null; canonicalized; blanks skipped.
@@ -48,9 +48,9 @@ import {
 test("canonicalConnectorKey: trims and strips the first-party registry prefix + trailing slash", () => {
   assert.equal(canonicalConnectorKey("gmail"), "gmail", "bare key unchanged");
   assert.equal(canonicalConnectorKey("  gmail  "), "gmail", "trims surrounding whitespace");
-  assert.equal(canonicalConnectorKey("https://registry.pdpp.org/connectors/gmail"), "gmail", "strips registry prefix");
+  assert.equal(canonicalConnectorKey("https://registry.pdpp.dev/connectors/gmail"), "gmail", "strips registry prefix");
   assert.equal(
-    canonicalConnectorKey("  https://registry.pdpp.org/connectors/github/  "),
+    canonicalConnectorKey("  https://registry.pdpp.dev/connectors/github/  "),
     "github",
     "strips prefix + trailing slash after trimming"
   );
@@ -66,7 +66,7 @@ test("canonicalConnectorKey: trims and strips the first-party registry prefix + 
 test("connectorKeyFromManifest: prefers connector_key, canonicalized", () => {
   assert.equal(connectorKeyFromManifest({ connector_id: "other", connector_key: "  gmail  " }), "gmail");
   assert.equal(
-    connectorKeyFromManifest({ connector_key: "https://registry.pdpp.org/connectors/slack" }),
+    connectorKeyFromManifest({ connector_key: "https://registry.pdpp.dev/connectors/slack" }),
     "slack",
     "connector_key is canonicalized"
   );
@@ -84,7 +84,7 @@ test("connectorKeyFromManifest: falls back connector_id -> explicit fallback -> 
 test("enrollmentKeyForCanonicalKey: maps claude-code to claude_code, else identity", () => {
   assert.equal(enrollmentKeyForCanonicalKey("claude-code"), "claude_code", "the one special case");
   assert.equal(
-    enrollmentKeyForCanonicalKey("https://registry.pdpp.org/connectors/claude-code"),
+    enrollmentKeyForCanonicalKey("https://registry.pdpp.dev/connectors/claude-code"),
     "claude_code",
     "canonicalizes first, then maps"
   );
@@ -106,7 +106,7 @@ test("displayNameForConnector: display_name -> name -> the key", () => {
 test("isProviderAuthLifecycleProven: allowlist membership over the canonical key", () => {
   assert.equal(isProviderAuthLifecycleProven("test_provider"), true, "allowlisted");
   assert.equal(
-    isProviderAuthLifecycleProven("https://registry.pdpp.org/connectors/test_provider"),
+    isProviderAuthLifecycleProven("https://registry.pdpp.dev/connectors/test_provider"),
     true,
     "registry-url id still matches via canonicalization"
   );
@@ -141,7 +141,7 @@ test("isSupportedLocalCollectorConnector: membership over the ENROLLMENT key", (
 test("isSupportedBrowserCollectorConnector: production-ready browser runtimes; canonical-key based", () => {
   assert.equal(isSupportedBrowserCollectorConnector("amazon"), true);
   assert.equal(
-    isSupportedBrowserCollectorConnector("https://registry.pdpp.org/connectors/amazon"),
+    isSupportedBrowserCollectorConnector("https://registry.pdpp.dev/connectors/amazon"),
     true,
     "registry-url id matches"
   );
@@ -163,7 +163,7 @@ test("isBrowserBoundConnector: recognizes the browser-bound allowlist, rejects o
   assert.equal(isBrowserBoundConnector("codex"), false, "codex (local) is not browser-bound");
   assert.equal(isBrowserBoundConnector(null), false, "null => false");
   assert.equal(
-    isBrowserBoundConnector("https://registry.pdpp.org/connectors/chatgpt"),
+    isBrowserBoundConnector("https://registry.pdpp.dev/connectors/chatgpt"),
     true,
     "registry-url id matches via canonicalization"
   );

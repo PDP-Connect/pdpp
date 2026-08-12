@@ -969,7 +969,7 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
     const selection = request.selection as Record<string, unknown>;
     const client = (request.client as Record<string, unknown> | undefined) ?? {};
 
-    if (selection.purpose_code === "https://pdpp.org/purpose/ai_training") {
+    if (selection.purpose_code === "https://pdpp.dev/purpose/ai_training") {
       throw Object.assign(new Error("Hosted MCP package consent does not cover ai_training"), {
         code: "invalid_request",
         param: "purpose_code",

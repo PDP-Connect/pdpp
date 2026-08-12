@@ -3829,7 +3829,7 @@ const CONSENT_SPECIMENS: { label: string; axes: string; data: ConsentCardProps }
             { connectionId: "cin_gmail_personal", displayName: "Personal Gmail" },
             // No owner label yet — mapper derives `Gmail · account 2`, never
             // the registry URL it carries in storage.
-            { connectionId: "cin_gmail_work", displayName: "https://registry.pdpp.org/connectors/gmail" },
+            { connectionId: "cin_gmail_work", displayName: "https://registry.pdpp.dev/connectors/gmail" },
           ]),
           detail: "Subject, sender, and snippet across the granted accounts. No attachments.",
           key: "messages",
@@ -4045,7 +4045,7 @@ const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardPro
   {
     axes: "multiple streams, mixed semantics, fields+time_range, views, no profiles",
     data: {
-      connectorId: "https://registry.pdpp.org/connectors/instagram",
+      connectorId: "https://registry.pdpp.dev/connectors/instagram",
       displayName: "Instagram",
       streams: [
         {
@@ -4083,7 +4083,7 @@ const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardPro
   {
     axes: "profiles present, resources supported, many views",
     data: {
-      connectorId: "https://registry.pdpp.org/connectors/spotify",
+      connectorId: "https://registry.pdpp.dev/connectors/spotify",
       displayName: "Spotify",
       profiles: [
         { id: "listening_history", label: "Listening history", streamCount: 2 },
@@ -4134,7 +4134,7 @@ const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardPro
   {
     axes: "single stream, no views, no profiles, no resources, append_only only",
     data: {
-      connectorId: "https://registry.pdpp.org/connectors/oura",
+      connectorId: "https://registry.pdpp.dev/connectors/oura",
       displayName: "Oura Ring",
       streams: [
         {
@@ -4154,7 +4154,7 @@ const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardPro
   {
     axes: "no display.label (falls back to stream name), mixed capabilities",
     data: {
-      connectorId: "https://registry.pdpp.org/connectors/gmail",
+      connectorId: "https://registry.pdpp.dev/connectors/gmail",
       displayName: "Gmail",
       streams: [
         {

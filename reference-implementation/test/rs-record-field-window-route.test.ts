@@ -204,7 +204,7 @@ async function startGrantRequest(asUrl: string, params: GrantRequestParams) {
           purpose_description: params.purpose_description,
           source: params.source || { id: params.connector_id, kind: "connector" },
           streams: params.streams,
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: params.client_id,
@@ -416,7 +416,7 @@ test("field-window route enforces client grant field projections", async () => {
     const approved = await approveGrant(asUrl, "field_window_grant_owner", {
       access_mode: "continuous",
       client_id: "longview",
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "field window grant test",
       source: { id: CONNECTOR_ID, kind: "connector" },
       streams: [{ fields: ["id", "created_at", "body"], name: STREAM }],

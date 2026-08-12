@@ -146,7 +146,7 @@ export async function resolveOwnerReadScope(req: RequestWithQuery, opts: SourceD
   // construction boundary, so the owner read storage binding carries the same
   // canonical key the ingest path writes under (resolveOwnerConnectorNamespace
   // canonicalizes at line ~1332). Without this, a URL-shaped connector_id like
-  // 'https://registry.pdpp.org/connectors/gmail' reaches connection admission
+  // 'https://registry.pdpp.dev/connectors/gmail' reaches connection admission
   // verbatim, listActiveByConnector finds zero rows (they are keyed 'gmail'),
   // and the read fails connection_not_found. The owner-facing source descriptor
   // still reflects the canonical key. See canonicalize-connector-keys Decision 1.

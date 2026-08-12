@@ -18,7 +18,7 @@ function manifest(
   extra: Partial<ConnectorManifestLike> = {}
 ): ConnectorManifestLike {
   return {
-    connector_id: `https://registry.pdpp.org/connectors/${connectorId}`,
+    connector_id: `https://registry.pdpp.dev/connectors/${connectorId}`,
     display_name: connectorId,
     runtime_requirements: { bindings },
     ...extra,
@@ -68,7 +68,7 @@ test("setup planner supports proven local collectors without creating active con
 
 test("setup planner supports URL-shaped local collector identifiers", () => {
   const plan = buildConnectionSetupPlan({
-    connectorKey: "https://registry.pdpp.org/connectors/claude-code",
+    connectorKey: "https://registry.pdpp.dev/connectors/claude-code",
     manifest: manifest("claude-code", { filesystem: { required: true } }),
   });
   assert.equal(plan.connectorKey, "claude-code");

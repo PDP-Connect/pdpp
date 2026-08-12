@@ -113,10 +113,10 @@ function detail(
 ) {
   return {
     access_mode: "single_use",
-    purpose_code: "https://pdpp.org/purpose/personalization",
+    purpose_code: "https://pdpp.dev/purpose/personalization",
     source,
     streams,
-    type: "https://pdpp.org/data-access",
+    type: "https://pdpp.dev/data-access",
     ...overrides,
   };
 }

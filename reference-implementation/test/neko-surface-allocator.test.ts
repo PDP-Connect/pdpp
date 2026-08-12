@@ -22,7 +22,7 @@ const SURFACE = Object.freeze({
   created_at: "2026-05-12T12:00:00.000Z",
   health: "ready",
   last_used_at: "2026-05-12T12:01:00.000Z",
-  profile_key: "https://registry.pdpp.org/connectors/chatgpt",
+  profile_key: "https://registry.pdpp.dev/connectors/chatgpt",
   stream_base_url: "http://reference.test/_ref/browser-surfaces/surface_1/stream",
   surface_id: "surface_1",
 });
@@ -34,7 +34,7 @@ test("ensures a surface through the allocator HTTP API", async () => {
   const surface = await allocator.ensureSurface({
     accountKey: "account_1",
     connectorId: "chatgpt",
-    profileKey: "https://registry.pdpp.org/connectors/chatgpt",
+    profileKey: "https://registry.pdpp.dev/connectors/chatgpt",
     surfaceId: "surface_1",
   });
 
@@ -48,7 +48,7 @@ test("ensures a surface through the allocator HTTP API", async () => {
   assert.deepEqual(JSON.parse(call.init.body as string), {
     account_key: "account_1",
     connector_id: "chatgpt",
-    profile_key: "https://registry.pdpp.org/connectors/chatgpt",
+    profile_key: "https://registry.pdpp.dev/connectors/chatgpt",
     surface_id: "surface_1",
   });
 });

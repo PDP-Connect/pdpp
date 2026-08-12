@@ -1167,7 +1167,7 @@ function requireStagedRequestEnvelope(input: unknown): GrantRequestEnvelope {
 }
 
 // A purpose_code must be a syntactically valid absolute URI (spec-core.md:428):
-// a scheme plus scheme-specific part, e.g. https://pdpp.org/purpose/analytics.
+// a scheme plus scheme-specific part, e.g. https://pdpp.dev/purpose/analytics.
 // Bare tokens like "analytics" or "assist.summarize" are not absolute URIs and
 // are rejected for syntax; this is independent of whether the code is in any
 // registry (unknown absolute URIs MUST still be accepted).
@@ -1192,7 +1192,7 @@ function requireAuthorizationDetailInput(detail: unknown, index: number): Author
   if (!isRecord(detail)) {
     throw bindingError("invalid_request", "Unsupported authorization_details type");
   }
-  if (detail.type !== "https://pdpp.org/data-access") {
+  if (detail.type !== "https://pdpp.dev/data-access") {
     invalidGrantInitiationRequest("Unsupported authorization_details type");
   }
   if ("connector_id" in detail || "provider_id" in detail) {
@@ -1303,7 +1303,7 @@ function normalizeAuthorizationDetail(
       purpose_description: isNonEmptyString(detail.purpose_description) ? detail.purpose_description : undefined,
       retention: detail.retention || undefined,
       streams: detail.streams.map(normalizeStreamSelection),
-      type: "https://pdpp.org/data-access",
+      type: "https://pdpp.dev/data-access",
     },
     source_binding: sourceBinding,
     storage_binding: storageBinding,
@@ -1539,8 +1539,8 @@ function requireStructuredPendingRequestShape(request: unknown): asserts request
       `Unsupported pending selection fields: ${unsupportedSelectionFields.join(", ")}`
     );
   }
-  if (request.selection.type !== "https://pdpp.org/data-access") {
-    throw bindingError("invalid_request", "selection.type must be https://pdpp.org/data-access");
+  if (request.selection.type !== "https://pdpp.dev/data-access") {
+    throw bindingError("invalid_request", "selection.type must be https://pdpp.dev/data-access");
   }
   if (!Array.isArray(request.selection.streams) || request.selection.streams.length === 0) {
     throw bindingError("invalid_request", "selection.streams must be a non-empty array");
@@ -4659,7 +4659,7 @@ async function rejectStagedBatchApproval(
 
 function requireBatchEntryPolicy(approvedEntries: BatchEntry[]): void {
   for (const entry of approvedEntries) {
-    if (entry.selection.purpose_code === "https://pdpp.org/purpose/ai_training") {
+    if (entry.selection.purpose_code === "https://pdpp.dev/purpose/ai_training") {
       const err: AuthError = new Error(
         "Staged batch consent does not cover ai_training; request it as a single-entry grant"
       );
@@ -5066,7 +5066,7 @@ export async function approveGrant(
   // surface it as a typed PDPP error envelope (status 400, code `invalid_request`)
   // so callers do not see it as a generic 500.
   const { ai_training_consented } = opts;
-  if (selection.purpose_code === "https://pdpp.org/purpose/ai_training" && !ai_training_consented) {
+  if (selection.purpose_code === "https://pdpp.dev/purpose/ai_training" && !ai_training_consented) {
     const err: AuthError = new Error("Explicit affirmative consent required for ai_training purpose");
     err.code = "invalid_request";
     err.param = "ai_training_consented";
@@ -6062,7 +6062,7 @@ async function persistChildGrantForPackage({
   const { client, selection } = request;
 
   // Hosted MCP packages never carry ai_training; reject if a client tries.
-  if (selection.purpose_code === "https://pdpp.org/purpose/ai_training") {
+  if (selection.purpose_code === "https://pdpp.dev/purpose/ai_training") {
     const err: AuthError = new Error("Hosted MCP package consent does not cover ai_training");
     err.code = "invalid_request";
     err.param = "purpose_code";

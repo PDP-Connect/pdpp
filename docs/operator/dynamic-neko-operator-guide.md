@@ -79,13 +79,13 @@ PDPP_NEKO_WEBRTC_HOST_PORT_START=59001
 PDPP_NEKO_WEBRTC_HOST_PORT_END=59010
 
 # ChatGPT first. Add Chase/USAA only after the dynamic smoke passes.
-PDPP_NEKO_MANAGED_CONNECTORS=https://registry.pdpp.org/connectors/chatgpt
+PDPP_NEKO_MANAGED_CONNECTORS=https://registry.pdpp.dev/connectors/chatgpt
 ```
 
 After ChatGPT passes, expand the managed connector list in one edit:
 
 ```dotenv
-PDPP_NEKO_MANAGED_CONNECTORS=https://registry.pdpp.org/connectors/chatgpt,https://registry.pdpp.org/connectors/chase,https://registry.pdpp.org/connectors/usaa
+PDPP_NEKO_MANAGED_CONNECTORS=https://registry.pdpp.dev/connectors/chatgpt,https://registry.pdpp.dev/connectors/chase,https://registry.pdpp.dev/connectors/usaa
 ```
 
 Only then raise `PDPP_NEKO_SURFACE_CAP` above `1`, and only to a value covered

@@ -1985,7 +1985,7 @@ async function resolveOwnerConnectorNamespace(
   const ownerSubjectId = options.ownerSubjectId || getOwnerTokenSubjectId(req);
   // Connectors are stored under canonical short keys (registerConnector calls
   // normalizeConnectorManifestForStorage which maps URL-form connector ids like
-  // 'https://registry.pdpp.org/connectors/spotify' to 'spotify'). Callers may
+  // 'https://registry.pdpp.dev/connectors/spotify' to 'spotify'). Callers may
   // supply either form, so normalise here before the instance-store lookup to
   // prevent FK mismatches on ensureDefaultAccountConnection.
   const canonicalId = (connectorId && canonicalConnectorKey(connectorId)) ?? connectorId;
@@ -2092,7 +2092,7 @@ async function resolveOwnerReadScope(req: ReqLike, opts: ServerOpts = {}) {
   // construction boundary, so the owner read storage binding carries the same
   // canonical key the ingest path writes under (resolveOwnerConnectorNamespace
   // canonicalizes at line ~1332). Without this, a URL-shaped connector_id like
-  // 'https://registry.pdpp.org/connectors/gmail' reaches connection admission
+  // 'https://registry.pdpp.dev/connectors/gmail' reaches connection admission
   // verbatim, listActiveByConnector finds zero rows (they are keyed 'gmail'),
   // and the read fails connection_not_found. The owner-facing source descriptor
   // still reflects the canonical key. See canonicalize-connector-keys Decision 1.
@@ -3863,11 +3863,11 @@ export function buildAsApp(opts: ServerOpts = {}) {
           authorization_details: [
             {
               access_mode: "single_use",
-              purpose_code: "https://pdpp.org/purpose/personal_assistant",
+              purpose_code: "https://pdpp.dev/purpose/personal_assistant",
               purpose_description: "Delegate scoped personal data access to a local PDPP CLI client.",
               source: { id: nativeManifest.provider_id as string, kind: "provider_native" },
               streams: [{ name: "*" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_display: { name: clientName },

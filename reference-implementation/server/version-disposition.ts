@@ -67,7 +67,7 @@ interface StreamListEntry {
  * `reference-implementation/test/compact-record-history.test.js` pins that.
  *
  * Connector id is matched against both the short id (`github`) and the
- * registry-URL form (`https://registry.pdpp.org/connectors/github`).
+ * registry-URL form (`https://registry.pdpp.dev/connectors/github`).
  */
 export const POINT_IN_TIME_REAL_FIELD_STREAMS = Object.freeze([
   Object.freeze({ connector: "github", realField: "follower / repo / gist counts", stream: "user" }),

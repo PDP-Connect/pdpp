@@ -49,7 +49,7 @@ Legend:
 
 | # | Concept | Description | Flow | Audience |
 |---|---------|-------------|------|----------|
-| 18 | RFC 9396 envelope | Selection requests use authorization_details with type https://pdpp.org/data-access | Branch | Std, Eng |
+| 18 | RFC 9396 envelope | Selection requests use authorization_details with type https://pdpp.dev/data-access | Branch | Std, Eng |
 | 19 | Client display metadata | Self-asserted client_display inline in request; AS verifies and renders safely | Spine | CEO, Prod |
 | 20 | Client claims unverifiable | client_claims.commitments are client-authored; AS renders with attribution | Spine | All |
 | 21 | Stream necessity | required vs optional; optional streams presented as user choices | Spine | CEO, Prod |

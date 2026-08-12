@@ -20,7 +20,7 @@ import {
   ingestRecord,
 } from "../../server/records.ts";
 
-const DEFAULT_CONNECTOR_ID = "https://test.pdpp.org/connectors/conformance";
+const DEFAULT_CONNECTOR_ID = "https://test.pdpp.dev/connectors/conformance";
 const DEFAULT_STREAM = "items";
 
 export function createSqliteRecordMutationDriver({

@@ -74,7 +74,7 @@ test("isPlaceholderConnectionLabel rejects absent, placeholder, URL, and bare-ty
   assert.equal(isPlaceholderConnectionLabel("gmail", "legacy"), true);
   assert.equal(isPlaceholderConnectionLabel("gmail", "default_account"), true);
   assert.equal(isPlaceholderConnectionLabel("gmail", "legacy (pre-header)"), true);
-  assert.equal(isPlaceholderConnectionLabel("gmail", "https://registry.pdpp.org/connectors/gmail"), true);
+  assert.equal(isPlaceholderConnectionLabel("gmail", "https://registry.pdpp.dev/connectors/gmail"), true);
   assert.equal(isPlaceholderConnectionLabel("claude_code", "local-device:laptop:claude_code"), true);
   // Bare connector type, any casing, carries no per-connection meaning.
   assert.equal(isPlaceholderConnectionLabel("gmail", "gmail"), true);
@@ -128,7 +128,7 @@ test("deriveConnectionDisplayName omits the disambiguator for a lone connection"
 test("buildConsentCardConnections derives a label per connection and carries the stable id", () => {
   const connections = buildConsentCardConnections("gmail", [
     { connectionId: "cin_personal", displayName: "Personal Gmail" },
-    { connectionId: "cin_work", displayName: "https://registry.pdpp.org/connectors/gmail" },
+    { connectionId: "cin_work", displayName: "https://registry.pdpp.dev/connectors/gmail" },
   ]);
 
   assert.deepEqual(connections, [
@@ -144,7 +144,7 @@ test("buildConsentCardConnections never renders a placeholder, URL, or connectio
     { connectionId: "cin_aaa", displayName: "legacy" },
     { connectionId: "cin_bbb", displayName: "default_account" },
     { connectionId: "cin_ccc", displayName: "legacy (pre-header)" },
-    { connectionId: "cin_ddd", displayName: "https://registry.pdpp.org/connectors/gmail" },
+    { connectionId: "cin_ddd", displayName: "https://registry.pdpp.dev/connectors/gmail" },
     { connectionId: "cin_eee", displayName: "local-device:laptop:gmail" },
     { connectionId: "cin_fff", displayName: null },
     { connectionId: "cin_ggg", displayName: "gmail" },

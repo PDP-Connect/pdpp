@@ -441,7 +441,7 @@ async function approveGrant(asUrl: string, subjectId: string, params: ApproveGra
           purpose_description: params.purpose_description,
           source: { id: params.connector_id, kind: "connector" },
           streams: params.streams,
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: params.client_id,
@@ -497,7 +497,7 @@ test("GET /v1/blobs/:blob_id (client mode) 404s when grant pins stream to a conn
       access_mode: "continuous",
       client_id: "longview",
       connector_id: CONNECTOR_ID,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "blob route grant-scope narrowing test",
       streams: [{ connection_id: INSTANCE_A, fields: ["id", "received_at"], name: STREAM_A }],
     });

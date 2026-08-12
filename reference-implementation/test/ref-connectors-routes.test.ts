@@ -555,7 +555,7 @@ test("DELETE /_ref/connections/:id returns connector_instance_not_found for an u
 // via `ctx.canonicalConnectorKey` at the response boundary so downstream
 // consumers (dashboard, MCP tools, clients) never see URL-shaped IDs.
 
-const SPOTIFY_URL_ID = "https://registry.pdpp.org/connectors/spotify";
+const SPOTIFY_URL_ID = "https://registry.pdpp.dev/connectors/spotify";
 const PRE_MIGRATION_INSTANCE_ID = "cin_spotify_pre_migration";
 
 function seedSpotifyInstanceWithUrlId(): void {

@@ -50,7 +50,7 @@ function fakeAdmitRunConnection(): (input: {
 const TEST_DCR_INITIAL_ACCESS_TOKEN = "pdpp-reference-test-initial-access-token";
 
 const STUB_MANIFEST = {
-  connector_id: "https://registry.pdpp.org/connectors/test-failure-diagnostics-cp",
+  connector_id: "https://registry.pdpp.dev/connectors/test-failure-diagnostics-cp",
   runtime_requirements: {},
   streams: [
     {

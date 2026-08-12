@@ -5,7 +5,7 @@
  * Canonical connector-key helpers — migration groundwork.
  *
  * The reference implementation currently uses URL-shaped first-party
- * connector ids (`https://registry.pdpp.org/connectors/<slug>`) as the
+ * connector ids (`https://registry.pdpp.dev/connectors/<slug>`) as the
  * operational connector type key, plus a small set of legacy local-collector
  * aliases (`claude_code`, `codex`) that map to those URLs. That overload is
  * the root cause of the `Unknown connector: https` parser bug (URL `:`
@@ -37,7 +37,7 @@
  * unit-test and safe to import from any layer.
  */
 
-const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
+const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.dev/connectors/";
 
 // Canonical connector keys for every first-party manifest currently shipped
 // by the reference implementation and the polyfill-connectors package.
@@ -133,7 +133,7 @@ function trimOrNull(value: unknown): string | null {
 
 /**
  * Return the canonical short connector key for a URL-shaped first-party
- * connector id (`https://registry.pdpp.org/connectors/<slug>`), or `null`
+ * connector id (`https://registry.pdpp.dev/connectors/<slug>`), or `null`
  * if `value` is not in the first-party allowlist.
  *
  * Trailing slashes are tolerated to match common copy/paste behavior, but
@@ -167,7 +167,7 @@ export function connectorKeyFromRegistryUrl(value: unknown): string | null {
  * reads, or `null` if the value is not in a known shape.
  *
  * Accepted shapes (today's union):
- *   - URL-shaped first-party id: `https://registry.pdpp.org/connectors/<slug>`
+ *   - URL-shaped first-party id: `https://registry.pdpp.dev/connectors/<slug>`
  *   - Native bare slug from `reference-implementation/manifests/*.json`
  *     (e.g. `northstar_hr_native`)
  *   - Bare first-party canonical key (e.g. `gmail`, `claude-code`)

@@ -208,11 +208,11 @@ if (POSTGRES_URL) {
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "consent-device-auth postgres-path proof",
           source: { id: manifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CONSOLE_CLIENT_ID,

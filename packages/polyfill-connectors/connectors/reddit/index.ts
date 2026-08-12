@@ -74,7 +74,7 @@ import {
 import { validateRecord } from "./schemas.ts";
 import type { RedditChild, RedditFetchResult, RedditListing } from "./types.ts";
 
-const USER_AGENT = "pdpp-reddit-connector/0.2 (polyfill; +https://pdpp.org)";
+const USER_AGENT = "pdpp-reddit-connector/0.2 (polyfill; +https://pdpp.dev)";
 const PAGE_DELAY_MS = 500;
 
 interface ProgressExtra {

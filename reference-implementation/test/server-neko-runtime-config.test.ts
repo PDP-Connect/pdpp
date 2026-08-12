@@ -276,7 +276,7 @@ test("n.eko runtime config treats canonical connector URLs as matching short con
     createBrowserSurfaceAllocator: () => ({ ensureSurface: async () => undefined }),
     env: {
       PDPP_NEKO_ALLOCATOR_URL: "http://allocator.test/api",
-      PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.org/connectors/chatgpt",
+      PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.dev/connectors/chatgpt",
       PDPP_NEKO_PROFILE_STORAGE_POLICY: "persistent",
       PDPP_NEKO_PROFILE_STORAGE_ROOT: "/var/lib/pdpp/neko-profiles",
       PDPP_NEKO_SURFACE_CAP: "2",
@@ -288,7 +288,7 @@ test("n.eko runtime config treats canonical connector URLs as matching short con
   assert.ok(options.browserSurfaceLeaseManager);
   assert.equal(options.browserSurfaceLeaseManager.isManagedConnector("chatgpt"), true);
   assert.equal(
-    options.browserSurfaceLeaseManager.isManagedConnector("https://registry.pdpp.org/connectors/chatgpt"),
+    options.browserSurfaceLeaseManager.isManagedConnector("https://registry.pdpp.dev/connectors/chatgpt"),
     true
   );
 });
@@ -318,7 +318,7 @@ test("fair-slot invariant: a retained connector (ChatGPT) with cap=1 fails confi
       createBrowserSurfaceAllocator: () => ({ ensureSurface: async () => undefined }),
       env: {
         PDPP_NEKO_ALLOCATOR_URL: "http://allocator.test/api",
-        PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.org/connectors/chatgpt",
+        PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.dev/connectors/chatgpt",
         PDPP_NEKO_PROFILE_STORAGE_POLICY: "persistent",
         PDPP_NEKO_PROFILE_STORAGE_ROOT: "/var/lib/pdpp/neko-profiles",
         PDPP_NEKO_SURFACE_CAP: "1",
@@ -337,7 +337,7 @@ test("fair-slot invariant: cap=3 with ChatGPT + four other connectors passes (on
     env: {
       PDPP_NEKO_ALLOCATOR_URL: "http://allocator.test/api",
       PDPP_NEKO_MANAGED_CONNECTORS:
-        "https://registry.pdpp.org/connectors/chatgpt,https://registry.pdpp.org/connectors/chase,https://registry.pdpp.org/connectors/usaa,https://registry.pdpp.org/connectors/amazon,https://registry.pdpp.org/connectors/reddit",
+        "https://registry.pdpp.dev/connectors/chatgpt,https://registry.pdpp.dev/connectors/chase,https://registry.pdpp.dev/connectors/usaa,https://registry.pdpp.dev/connectors/amazon,https://registry.pdpp.dev/connectors/reddit",
       PDPP_NEKO_PROFILE_STORAGE_POLICY: "persistent",
       PDPP_NEKO_PROFILE_STORAGE_ROOT: "/var/lib/pdpp/neko-profiles",
       PDPP_NEKO_SURFACE_CAP: "3",
@@ -357,7 +357,7 @@ test("boot re-derives retained on a rehydrated NONTERMINAL LEASE that has no sur
   // flag and become evictable by routine idle-TTL / capacity-pressure reap —
   // reproducing the exact steady-state auth-loss bug this whole change fixes.
   const persistedLease = {
-    connector_id: "https://registry.pdpp.org/connectors/chatgpt",
+    connector_id: "https://registry.pdpp.dev/connectors/chatgpt",
     expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
     fencing_token: 1,
     lease_id: "lease_queued_chatgpt",
@@ -388,7 +388,7 @@ test("boot re-derives retained on a rehydrated NONTERMINAL LEASE that has no sur
     createBrowserSurfaceAllocator: () => ({ ensureSurface: async () => undefined }),
     env: {
       PDPP_NEKO_ALLOCATOR_URL: "http://allocator.test/api",
-      PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.org/connectors/chatgpt",
+      PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.dev/connectors/chatgpt",
       PDPP_NEKO_PROFILE_STORAGE_POLICY: "persistent",
       PDPP_NEKO_PROFILE_STORAGE_ROOT: "/var/lib/pdpp/neko-profiles",
       PDPP_NEKO_SURFACE_CAP: "3",

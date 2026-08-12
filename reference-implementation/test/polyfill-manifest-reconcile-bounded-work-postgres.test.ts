@@ -13,7 +13,7 @@
  * record of every stream for every connector instance (256 rows/page) under
  * the per-instance writer fence — O(records), not O(connectors). Root cause:
  * `manifestsEqual` compared the raw shipped manifest file (long-form
- * `connector_id`, e.g. `https://registry.pdpp.org/connectors/amazon`)
+ * `connector_id`, e.g. `https://registry.pdpp.dev/connectors/amazon`)
  * against the PERSISTED row, which `registerConnector` always rewrites to
  * the short canonical key (`amazon`) before storing. Those two shapes can
  * never be byte-equal, so every first-party manifest reconciled as
@@ -66,10 +66,10 @@ if (POSTGRES_URL) {
 
   function shippedAmazonManifest() {
     return {
-      connector_id: `https://registry.pdpp.org/connectors/${CONNECTOR_ID}`,
+      connector_id: `https://registry.pdpp.dev/connectors/${CONNECTOR_ID}`,
       connector_key: CONNECTOR_ID,
       display_name: "Amazon",
-      manifest_uri: `https://registry.pdpp.org/connectors/${CONNECTOR_ID}`,
+      manifest_uri: `https://registry.pdpp.dev/connectors/${CONNECTOR_ID}`,
       protocol_version: "0.1.0",
       runtime_requirements: { bindings: { network: { required: true } } },
       streams: [

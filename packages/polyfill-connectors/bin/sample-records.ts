@@ -29,7 +29,7 @@ mkdirSync(OUT_DIR, { recursive: true });
 const db = new Database(DB_PATH, { readonly: true });
 
 for (const slug of args) {
-  const connectorId = `https://registry.pdpp.org/connectors/${slug}`;
+  const connectorId = `https://registry.pdpp.dev/connectors/${slug}`;
   const streams = db
     .prepare("SELECT DISTINCT stream FROM records WHERE deleted=0 AND connector_id = ? ORDER BY stream")
     .all(connectorId) as { stream: string }[];

@@ -220,7 +220,7 @@ const TEST_DCR_INITIAL_ACCESS_TOKEN = "pdpp-reference-test-initial-access-token"
 // connector_instances row, and records under the canonical connector key
 // (Decision 1). Raw-SQL fixtures that target those rows by connector_id must
 // use the canonical key, not the manifest URL, or they match zero rows.
-const spotifyConnectorKey = canonicalConnectorKey("https://registry.pdpp.org/connectors/spotify");
+const spotifyConnectorKey = canonicalConnectorKey("https://registry.pdpp.dev/connectors/spotify");
 if (spotifyConnectorKey === null) {
   throw new TypeError("canonical Spotify connector key must be present");
 }
@@ -1077,7 +1077,7 @@ async function startGrantRequestRaw(asUrl: string, params: GrantRequestParams) {
               ? { id: params.provider_id, kind: "provider_native" }
               : { id: params.connector_id, kind: "connector" }),
           streams: params.streams,
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_display: params.client_display,
@@ -1461,7 +1461,7 @@ test("PDPP reference implementation integration", async (t) => {
       const { body: initiate } = await startGrantRequest(asUrl, {
         access_mode: "continuous",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Maintain a concert-recommendation profile over time",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -1506,7 +1506,7 @@ test("PDPP reference implementation integration", async (t) => {
       const { body: initiate } = await startGrantRequest(asUrl, {
         access_mode: "continuous",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Maintain a concert-recommendation profile over time",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -1543,7 +1543,7 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               purpose_description: "Maintain a concert-recommendation profile over time",
               retention: {
                 max_duration: "P30D",
@@ -1551,7 +1551,7 @@ test("PDPP reference implementation integration", async (t) => {
               },
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "top_artists", view: "basic" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_display: {
@@ -1616,7 +1616,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -1700,7 +1700,7 @@ test("PDPP reference implementation integration", async (t) => {
       const { body: initiate } = await startGrantRequest(asUrl, {
         access_mode: "single_use",
         client_id: clientId,
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Read top artists through a CIMD-identified local MCP client.",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -1772,7 +1772,7 @@ test("PDPP reference implementation integration", async (t) => {
       const failed = await startGrantRequestRejection(asUrl, {
         access_mode: "single_use",
         client_id: badClientId,
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "This request must fail before consent because the CIMD document is missing.",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -1798,7 +1798,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -1859,10 +1859,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "top_artists" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
         }),
@@ -1879,17 +1879,17 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "top_artists" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "saved_tracks" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -1920,10 +1920,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "top_artists" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -1944,7 +1944,7 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: "spotify", kind: "connector" },
               streams: [{ name: "top_artists" }],
               type: "https://example.com/not-pdpp",
@@ -1965,10 +1965,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "time_bounded",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "top_artists" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -1986,10 +1986,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -2008,10 +2008,10 @@ test("PDPP reference implementation integration", async (t) => {
             {
               access_mode: "continuous",
               locations: ["https://rs.pdpp.example"],
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ expand: ["albums"], name: "top_artists" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -2031,10 +2031,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ expand: ["albums"], name: "top_artists" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -2054,10 +2054,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: "not_a_real_connector", kind: "connector" },
               streams: [{ name: "top_artists" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -2075,10 +2075,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "not_a_real_stream" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -2096,10 +2096,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "top_artists", view: "not_a_real_view" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -2117,10 +2117,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ fields: ["id"], name: "top_artists", view: "basic" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -2138,10 +2138,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ fields: ["id", "not_a_real_field"], name: "top_artists" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -2159,10 +2159,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ fields: [], name: "top_artists" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -2184,10 +2184,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "top_artists" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "unknown_client",
@@ -2218,10 +2218,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "top_artists" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: registration.body.client_id,
@@ -2254,10 +2254,10 @@ test("PDPP reference implementation integration", async (t) => {
             authorization_details: [
               {
                 access_mode: "continuous",
-                purpose_code: "https://pdpp.org/purpose/personalization",
+                purpose_code: "https://pdpp.dev/purpose/personalization",
                 source: { id: spotifyManifest.connector_id, kind: "connector" },
                 streams: [{ name: "top_artists" }],
-                type: "https://pdpp.org/data-access",
+                type: "https://pdpp.dev/data-access",
               },
             ],
             client_id: registration.body.client_id,
@@ -2301,11 +2301,11 @@ test("PDPP reference implementation integration", async (t) => {
             authorization_details: [
               {
                 access_mode: "continuous",
-                purpose_code: "https://pdpp.org/purpose/personalization",
+                purpose_code: "https://pdpp.dev/purpose/personalization",
                 purpose_description: "Maintain a concert-recommendation profile over time",
                 source: { id: spotifyManifest.connector_id, kind: "connector" },
                 streams: [{ name: "top_artists", view: "basic" }],
-                type: "https://pdpp.org/data-access",
+                type: "https://pdpp.dev/data-access",
               },
             ],
             client_id: "longview",
@@ -2380,11 +2380,11 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               purpose_description: "Maintain a concert-recommendation profile over time",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "top_artists", view: "basic" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: registration.body.client_id,
@@ -2444,11 +2444,11 @@ test("PDPP reference implementation integration", async (t) => {
             authorization_details: [
               {
                 access_mode: "continuous",
-                purpose_code: "https://pdpp.org/purpose/personalization",
+                purpose_code: "https://pdpp.dev/purpose/personalization",
                 purpose_description: "Maintain a concert-recommendation profile over time",
                 source: { id: spotifyManifest.connector_id, kind: "connector" },
                 streams: [{ name: "top_artists", view: "basic" }],
-                type: "https://pdpp.org/data-access",
+                type: "https://pdpp.dev/data-access",
               },
             ],
             client_display: {
@@ -2494,7 +2494,7 @@ test("PDPP reference implementation integration", async (t) => {
             uri: "https://forged.longview.example",
           },
           client_id: registration.body.client_id,
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -2535,7 +2535,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -2604,7 +2604,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -2696,7 +2696,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -2752,7 +2752,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -2801,7 +2801,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: registration.body.client_id,
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -2860,7 +2860,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "single_use",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ fields: ["id", "name"], name: "saved_tracks" }],
@@ -2911,7 +2911,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: registration.body.client_id,
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -3447,7 +3447,7 @@ test("PDPP reference implementation integration", async (t) => {
         access_mode: "continuous",
         client_id: "longview",
         connector_id: manifest.connector_id,
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Test unsupported time_range validation",
         streams: [{ name: "items", time_range: { since: "2026-01-01T00:00:00Z" } }],
       });
@@ -3472,7 +3472,7 @@ test("PDPP reference implementation integration", async (t) => {
 
     try {
       const manifest = {
-        connector_id: "https://registry.pdpp.org/connectors/not-actually-polyfill",
+        connector_id: "https://registry.pdpp.dev/connectors/not-actually-polyfill",
         provider_id: "https://native.example/providers/hr",
         streams: [
           {
@@ -3518,7 +3518,7 @@ test("PDPP reference implementation integration", async (t) => {
 
       try {
         const invalidPrimaryKeyManifest = {
-          connector_id: "https://registry.pdpp.org/connectors/invalid-primary-key",
+          connector_id: "https://registry.pdpp.dev/connectors/invalid-primary-key",
           streams: [
             {
               name: "items",
@@ -3547,7 +3547,7 @@ test("PDPP reference implementation integration", async (t) => {
         assert.match(invalidPrimaryKeyError.error.message, REGEXP_64);
 
         const invalidViewManifest = {
-          connector_id: "https://registry.pdpp.org/connectors/invalid-view-fields",
+          connector_id: "https://registry.pdpp.dev/connectors/invalid-view-fields",
           streams: [
             {
               name: "items",
@@ -3598,7 +3598,7 @@ test("PDPP reference implementation integration", async (t) => {
 
     try {
       const manifest = {
-        connector_id: "https://registry.pdpp.org/connectors/not-actually-polyfill",
+        connector_id: "https://registry.pdpp.dev/connectors/not-actually-polyfill",
         storage_binding: {
           connector_id: "native_storage_connector",
         },
@@ -3639,7 +3639,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/concert_recommendation",
+          purpose_code: "https://pdpp.dev/purpose/concert_recommendation",
           purpose_description: "Recommend concerts and nearby live events",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists" }],
@@ -3670,7 +3670,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/concert_recommendation",
+          purpose_code: "https://pdpp.dev/purpose/concert_recommendation",
           purpose_description: "Recommend concerts and nearby live events",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -3738,7 +3738,7 @@ test("PDPP reference implementation integration", async (t) => {
           access_mode: "continuous",
           client_id: "longview",
           connector_id: manifest.connector_id,
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Test unsupported time_range validation",
           streams: [{ name: "items" }],
         });
@@ -3770,7 +3770,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/concert_recommendation",
+          purpose_code: "https://pdpp.dev/purpose/concert_recommendation",
           purpose_description: "Recommend concerts and nearby live events",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -3801,7 +3801,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/concert_recommendation",
+          purpose_code: "https://pdpp.dev/purpose/concert_recommendation",
           purpose_description: "Recommend concerts and nearby live events",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ fields: ["id"], name: "top_artists" }],
@@ -3832,7 +3832,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/concert_recommendation",
+          purpose_code: "https://pdpp.dev/purpose/concert_recommendation",
           purpose_description: "Recommend concerts and nearby live events",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists" }],
@@ -3863,7 +3863,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/concert_recommendation",
+          purpose_code: "https://pdpp.dev/purpose/concert_recommendation",
           purpose_description: "Recommend concerts and nearby live events",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists" }],
@@ -3894,7 +3894,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/concert_recommendation",
+          purpose_code: "https://pdpp.dev/purpose/concert_recommendation",
           purpose_description: "Recommend concerts and nearby live events",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists" }],
@@ -3925,7 +3925,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
           source: { id: nativeManifest.provider_id, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],
@@ -3986,7 +3986,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "single_use",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
           source: { id: nativeManifest.provider_id, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],
@@ -4034,10 +4034,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/financial_planning",
+              purpose_code: "https://pdpp.dev/purpose/financial_planning",
               source: { id: "northstar_hr", kind: "provider_native" },
               streams: [{ name: "pay_statements" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -4058,7 +4058,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "u1", {
         access_mode: "continuous",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Maintain a concert-recommendation profile over time",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -4089,11 +4089,11 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               purpose_description: "Maintain a concert-recommendation profile over time",
               source: { id: spotifyManifest.connector_id, kind: "connector" },
               streams: [{ name: "top_artists", view: "basic" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -4186,7 +4186,7 @@ test("PDPP reference implementation integration", async (t) => {
         access_mode: "continuous",
         client_display: { name: "Longview" },
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/financial_planning",
+        purpose_code: "https://pdpp.dev/purpose/financial_planning",
         purpose_description: "Support compensation planning and verification",
         source: { id: nativeManifest.provider_id, kind: "provider_native" },
         streams: [{ name: "pay_statements" }, { name: "equity_grants", view: "summary" }],
@@ -4451,7 +4451,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "employee_1", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
           source: { id: nativeManifest.provider_id, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],
@@ -4505,7 +4505,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "employee_1", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
           source: { id: nativeManifest.provider_id, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],
@@ -4568,7 +4568,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "employee_1", {
         access_mode: "continuous",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/financial_planning",
+        purpose_code: "https://pdpp.dev/purpose/financial_planning",
         purpose_description: "Support compensation planning and verification",
         source: { id: nativeManifest.provider_id, kind: "provider_native" },
         streams: [{ name: "pay_statements" }, { name: "equity_grants", view: "summary" }],
@@ -4645,7 +4645,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "employee_1", {
         access_mode: "continuous",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/financial_planning",
+        purpose_code: "https://pdpp.dev/purpose/financial_planning",
         purpose_description: "Support compensation planning and verification",
         source: { id: nativeManifest.provider_id, kind: "provider_native" },
         streams: [{ name: "pay_statements" }, { name: "equity_grants", view: "summary" }],
@@ -4735,7 +4735,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "continuous",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/concert_recommendation",
+          purpose_code: "https://pdpp.dev/purpose/concert_recommendation",
           purpose_description: "Recommend concerts and nearby live events",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists" }],
@@ -4876,7 +4876,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "employee_1", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
           source: { id: nativeManifest.provider_id, kind: "provider_native" },
           streams: [{ name: "pay_statements" }, { name: "equity_grants", view: "summary" }],
@@ -4971,7 +4971,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "owner_local", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/concert_recommendation",
+          purpose_code: "https://pdpp.dev/purpose/concert_recommendation",
           purpose_description: "Recommend concerts and nearby live events",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists" }, { name: "recently_played" }],
@@ -5074,7 +5074,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "owner_local", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/concert_recommendation",
+          purpose_code: "https://pdpp.dev/purpose/concert_recommendation",
           purpose_description: "Recommend concerts and nearby live events",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -5163,7 +5163,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "owner_local", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/concert_recommendation",
+          purpose_code: "https://pdpp.dev/purpose/concert_recommendation",
           purpose_description: "Recommend concerts and nearby live events",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists" }],
@@ -5233,7 +5233,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "employee_1", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
           source: { id: nativeManifest.provider_id, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],
@@ -5300,7 +5300,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "employee_1", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
           source: { id: nativeManifest.provider_id, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],
@@ -5367,10 +5367,10 @@ test("PDPP reference implementation integration", async (t) => {
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/financial_planning",
+              purpose_code: "https://pdpp.dev/purpose/financial_planning",
               source: { id: "wrong_provider", kind: "provider_native" },
               streams: [{ name: "pay_statements" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: "longview",
@@ -5396,13 +5396,13 @@ test("PDPP reference implementation integration", async (t) => {
               {
                 access_mode: "continuous",
                 connector_id: "spotify",
-                purpose_code: "https://pdpp.org/purpose/financial_planning",
+                purpose_code: "https://pdpp.dev/purpose/financial_planning",
                 source: {
                   id: nativeManifest.provider_id,
                   kind: "provider_native",
                 },
                 streams: [{ name: "pay_statements" }],
-                type: "https://pdpp.org/data-access",
+                type: "https://pdpp.dev/data-access",
               },
             ],
             client_id: "longview",
@@ -5424,7 +5424,7 @@ test("PDPP reference implementation integration", async (t) => {
       const initiate = await startGrantRequest(asUrl, {
         access_mode: "continuous",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/financial_planning",
+        purpose_code: "https://pdpp.dev/purpose/financial_planning",
         purpose_description: "Support compensation planning and verification",
         source: { id: nativeManifest.provider_id, kind: "provider_native" },
         streams: [{ name: "pay_statements" }],
@@ -5478,7 +5478,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
           source: { id: nativeManifest.provider_id, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],
@@ -5534,7 +5534,7 @@ test("PDPP reference implementation integration", async (t) => {
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/concert_recommendation",
+          purpose_code: "https://pdpp.dev/purpose/concert_recommendation",
           purpose_description: "Recommend concerts and nearby live events",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists" }],
@@ -5946,7 +5946,7 @@ test("PDPP reference implementation integration", async (t) => {
         WHERE connector_id = ?
       `)
           .run(
-            '{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
+            '{"connector_id":"https://registry.pdpp.dev/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
             SPOTIFY_CONNECTOR_KEY
           );
 
@@ -6128,7 +6128,7 @@ test("PDPP reference implementation integration", async (t) => {
         WHERE connector_id = ?
       `)
           .run(
-            '{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
+            '{"connector_id":"https://registry.pdpp.dev/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
             SPOTIFY_CONNECTOR_KEY
           );
 
@@ -6190,7 +6190,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "continuous",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists" }],
@@ -6273,7 +6273,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "u1", {
         access_mode: "continuous",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Maintain a concert-recommendation profile over time",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists" }],
@@ -6355,7 +6355,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "u1", {
         access_mode: "continuous",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Maintain a concert-recommendation profile over time",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists" }],
@@ -6533,7 +6533,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "continuous",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists" }],
@@ -6542,13 +6542,13 @@ test("PDPP reference implementation integration", async (t) => {
         // Approval canonicalizes the grant storage binding to the connector key
         // (`spotify`), but the manifest connector_id — and therefore the path a
         // client constructs from it — is URL-shaped
-        // (`https://registry.pdpp.org/connectors/spotify`). Before the
+        // (`https://registry.pdpp.dev/connectors/spotify`). Before the
         // canonicalize-connector-keys fix (Decision 1), grant-scoped state
         // admission compared the raw URL-shaped path id against the canonical
         // storage binding and rejected the request with 400 "not scoped to
         // connector". This regression pins that both sides are canonicalized so
         // the URL-shaped path resolves against the canonical binding.
-        assert.equal(spotifyManifest.connector_id, "https://registry.pdpp.org/connectors/spotify");
+        assert.equal(spotifyManifest.connector_id, "https://registry.pdpp.dev/connectors/spotify");
         const urlShapedPath = `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`;
         const canonicalPath = `${rsUrl}/v1/state/${encodeURIComponent(SPOTIFY_CONNECTOR_KEY)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`;
 
@@ -6607,7 +6607,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "u1", {
         access_mode: "continuous",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Maintain a concert-recommendation profile over time",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists" }],
@@ -6658,7 +6658,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "continuous",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists" }],
@@ -6710,7 +6710,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "single_use",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Generate a one-time concert recommendation snapshot",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists" }],
@@ -7045,7 +7045,7 @@ test("PDPP reference implementation integration", async (t) => {
         WHERE connector_id = ?
       `)
           .run(
-            '{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
+            '{"connector_id":"https://registry.pdpp.dev/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
             SPOTIFY_CONNECTOR_KEY
           );
 
@@ -7137,7 +7137,7 @@ test("PDPP reference implementation integration", async (t) => {
         WHERE connector_id = ?
       `)
           .run(
-            '{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
+            '{"connector_id":"https://registry.pdpp.dev/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}',
             SPOTIFY_CONNECTOR_KEY
           );
 
@@ -7213,7 +7213,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "single_use",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Recommend concerts based on a chosen artist subset",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [
@@ -7284,7 +7284,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "single_use",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Recommend concerts from recent listening only",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [
@@ -7349,7 +7349,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "single_use",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Recommend concerts using top artists only",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -7411,7 +7411,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "single_use",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Recommend concerts using top artists only",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -7475,7 +7475,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "single_use",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Recommend concerts using top artists only",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -7535,7 +7535,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "single_use",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Recommend concerts using a chosen artist subset",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [
@@ -7603,7 +7603,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "single_use",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Recommend concerts from recent listening only",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [
@@ -7713,7 +7713,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "u1", {
         access_mode: "single_use",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Recommend concerts using only the latest permitted artist",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [
@@ -7775,7 +7775,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "u1", {
         access_mode: "single_use",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Recommend concerts using the basic top-artist subset",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [
@@ -7824,7 +7824,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "single_use",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Recommend concerts using the basic top-artist subset",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [
@@ -7887,7 +7887,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "single_use",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Recommend concerts using the basic top-artist subset",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [
@@ -7961,7 +7961,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "single_use",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Recommend concerts using the basic top-artist subset",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [
@@ -8037,7 +8037,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "continuous",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time using the basic top-artist subset",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [
@@ -8149,7 +8149,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "continuous",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time using the basic top-artist subset",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [
@@ -8223,7 +8223,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "employee_1", {
         access_mode: "continuous",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/financial_planning",
+        purpose_code: "https://pdpp.dev/purpose/financial_planning",
         purpose_description: "Support compensation planning and verification",
         source: { id: nativeManifest.provider_id, kind: "provider_native" },
         streams: [{ name: "pay_statements" }],
@@ -8274,7 +8274,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "employee_1", {
         access_mode: "continuous",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/financial_planning",
+        purpose_code: "https://pdpp.dev/purpose/financial_planning",
         purpose_description: "Support compensation planning and verification",
         source: { id: nativeManifest.provider_id, kind: "provider_native" },
         streams: [{ name: "pay_statements" }],
@@ -8338,7 +8338,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "u1", {
         access_mode: "continuous",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Maintain a concert-recommendation profile over time",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -8466,7 +8466,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "single_use",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Recommend concerts using only one permitted artist change stream",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [
@@ -8539,7 +8539,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "continuous",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Maintain a concert-recommendation profile over time",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
@@ -8626,7 +8626,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "u1", {
         access_mode: "single_use",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "One-time recommendation bootstrap",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -8665,7 +8665,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "u1", {
         access_mode: "single_use",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "One-time recommendation bootstrap",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -8715,7 +8715,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "u1", {
         access_mode: "continuous",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Ongoing concert recommendation assistant",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -8795,7 +8795,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "continuous",
           client_id: "concert_recommendation_app",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Incremental sync with cursor expiry",
           source: { id: cursorManifest.connector_id, kind: "connector" },
           streams: [{ name: "events" }],
@@ -8854,7 +8854,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "u1", {
         access_mode: "continuous",
         client_id: "concert_recommendation_app",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Revocation test",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
         streams: [{ name: "top_artists", view: "basic" }],
@@ -8888,7 +8888,7 @@ test("PDPP reference implementation integration", async (t) => {
       const approved = await approveGrant(asUrl, "employee_1", {
         access_mode: "continuous",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/financial_planning",
+        purpose_code: "https://pdpp.dev/purpose/financial_planning",
         purpose_description: "Expiry correlation test",
         source: { id: nativeManifest.provider_id, kind: "provider_native" },
         streams: [{ name: "pay_statements" }],
@@ -8965,7 +8965,7 @@ test("PDPP reference implementation integration", async (t) => {
           const approved = await approveGrant(asUrl, "employee_1", {
             access_mode: "continuous",
             client_id: "longview",
-            purpose_code: "https://pdpp.org/purpose/financial_planning",
+            purpose_code: "https://pdpp.dev/purpose/financial_planning",
             purpose_description: `Auth-gate ${scenario.inactiveReason} correlation test`,
             source: { id: nativeManifest.provider_id, kind: "provider_native" },
             streams: [{ name: "pay_statements" }],
@@ -9012,7 +9012,7 @@ test("PDPP reference implementation integration", async (t) => {
         const approved = await approveGrant(asUrl, "employee_1", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Auth-gate route-shape correlation test",
           source: { id: nativeManifest.provider_id, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],

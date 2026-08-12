@@ -202,7 +202,7 @@ async function approveGrant(asUrl: string, subjectId: string, params: ApproveGra
           purpose_description: params.purpose_description,
           source: params.source || { id: params.connector_id, kind: "connector" },
           streams: params.streams,
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: params.client_id,
@@ -386,7 +386,7 @@ test("declared type does not alter grant usability under a client token", async 
     const approved = await approveGrant(asUrl, "owner_local", {
       access_mode: "continuous",
       client_id: "longview",
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "declared-type grant-usability test",
       source: { id: CONNECTOR_ID, kind: "connector" },
       streams: [{ fields: ["id", "amount_cents", "posted_at"], name: STREAM }],

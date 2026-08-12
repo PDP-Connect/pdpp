@@ -8,7 +8,7 @@
  * contradicted the semantic-time SORT (server-side `semantic_time` column).
  *
  * Root cause: bundled manifests set `connector_id` to the registry URI
- * (https://registry.pdpp.org/connectors/usaa) and `connector_key` to the plain
+ * (https://registry.pdpp.dev/connectors/usaa) and `connector_key` to the plain
  * key ("usaa"); stored records carry the plain key. The per-connector timestamp
  * metadata was indexed by the URI, so EVERY lookup against a record's plain
  * connector_id missed → null metadata → fallback to emitted_at.
@@ -22,12 +22,12 @@ import { manifestConnectorKey } from "./explore-data-assembler.ts";
 
 test("manifestConnectorKey prefers connector_key (the plain key records carry)", () => {
   assert.equal(
-    manifestConnectorKey({ connector_id: "https://registry.pdpp.org/connectors/usaa", connector_key: "usaa" }),
+    manifestConnectorKey({ connector_id: "https://registry.pdpp.dev/connectors/usaa", connector_key: "usaa" }),
     "usaa"
   );
   assert.equal(
     manifestConnectorKey({
-      connector_id: "https://registry.pdpp.org/connectors/claude-code",
+      connector_id: "https://registry.pdpp.dev/connectors/claude-code",
       connector_key: "claude-code",
     }),
     "claude-code"
@@ -35,7 +35,7 @@ test("manifestConnectorKey prefers connector_key (the plain key records carry)",
 });
 
 test("manifestConnectorKey falls back to the last URL path segment when connector_key is absent", () => {
-  assert.equal(manifestConnectorKey({ connector_id: "https://registry.pdpp.org/connectors/usaa" }), "usaa");
+  assert.equal(manifestConnectorKey({ connector_id: "https://registry.pdpp.dev/connectors/usaa" }), "usaa");
 });
 
 test("manifestConnectorKey passes a plain key through unchanged", () => {
@@ -46,7 +46,7 @@ test("manifestConnectorKey passes a plain key through unchanged", () => {
 test("reproduce-the-bug: metadata keyed by the canonical key resolves a record's semantic date (not emitted_at)", () => {
   // A bundled manifest as shipped: URI connector_id, plain connector_key.
   const manifest = {
-    connector_id: "https://registry.pdpp.org/connectors/usaa",
+    connector_id: "https://registry.pdpp.dev/connectors/usaa",
     connector_key: "usaa",
     streams: [{ consent_time_field: "date", cursor_field: "date", name: "transactions" }],
   };

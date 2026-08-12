@@ -546,7 +546,7 @@ export function createPostgresConsentDeviceAuthDriver({ connectionString }: { co
           deviceCode,
           approvalId,
           userCode,
-          input.purpose_code || "https://pdpp.org/purpose/personalization",
+          input.purpose_code || "https://pdpp.dev/purpose/personalization",
           input.purpose_description || "postgres consent-device-auth conformance",
           input.access_mode || "continuous",
           JSON.stringify(streams),

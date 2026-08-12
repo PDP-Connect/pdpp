@@ -169,11 +169,11 @@ async function startConsentPar(asUrl: string, spotifyManifest: SpotifyManifest):
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "Device-code-exposure regression smoke",
           source: { id: spotifyManifest.connector_id, kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: "concert_recommendation_app",

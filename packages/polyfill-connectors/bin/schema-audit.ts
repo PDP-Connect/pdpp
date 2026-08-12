@@ -35,10 +35,10 @@ interface SchemasModule {
 }
 
 const CONNECTORS: Record<string, SchemasModule> = {
-  "https://registry.pdpp.org/connectors/amazon": (await import("../connectors/amazon/schemas.ts")) as SchemasModule,
-  "https://registry.pdpp.org/connectors/chase": (await import("../connectors/chase/schemas.ts")) as SchemasModule,
-  "https://registry.pdpp.org/connectors/chatgpt": (await import("../connectors/chatgpt/schemas.ts")) as SchemasModule,
-  "https://registry.pdpp.org/connectors/usaa": (await import("../connectors/usaa/schemas.ts")) as SchemasModule,
+  "https://registry.pdpp.dev/connectors/amazon": (await import("../connectors/amazon/schemas.ts")) as SchemasModule,
+  "https://registry.pdpp.dev/connectors/chase": (await import("../connectors/chase/schemas.ts")) as SchemasModule,
+  "https://registry.pdpp.dev/connectors/chatgpt": (await import("../connectors/chatgpt/schemas.ts")) as SchemasModule,
+  "https://registry.pdpp.dev/connectors/usaa": (await import("../connectors/usaa/schemas.ts")) as SchemasModule,
 };
 
 interface DbRow {
