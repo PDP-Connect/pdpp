@@ -45,6 +45,7 @@ const REGEXP_27 = /name="narrow_fields_0__/;
 const REGEXP_28 = /name="narrow_since_0__/;
 const REGEXP_29 = /Client-authored claims/;
 const CONSENT_EXCHANGE_CODE_RE = /cex_[0-9a-f]{64}/;
+const LEGACY_PROJECTION_REVISION_RE = /^reference\.legacy-connector-projection\.v1:sha256:[0-9a-f]{64}$/;
 const PACKAGE_ID_RE = /gpkg_[a-zA-Z0-9]+/;
 const SPOTIFY_BATCH_COMMITMENT = "Only use Spotify listening history for playlist suggestions.";
 const REDDIT_BATCH_COMMITMENT = "Only use Reddit posts for community summaries.";
@@ -682,7 +683,7 @@ test("batch consent gate: staged batch remains source-bounded in storage", async
     assert.ok(spotifySnapshot);
     assert.ok(redditSnapshot);
     for (const snapshot of [spotifySnapshot, redditSnapshot]) {
-      assert.match(snapshot.declaration_version, /^reference\.legacy-connector-projection\.v1:sha256:[0-9a-f]{64}$/);
+      assert.match(snapshot.declaration_version, LEGACY_PROJECTION_REVISION_RE);
       assert.equal(snapshot.snapshot_version, "reference.source-declaration-snapshot.v1");
       assert.equal(snapshot.declaration.declaration_version, snapshot.declaration_version);
     }

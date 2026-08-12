@@ -75,7 +75,16 @@
         "case-7": { "$ref": "#/$defs/case" },
         "case-8": { "$ref": "#/$defs/case" }
       },
-      "required": ["case-1", "case-2", "case-3", "case-4", "case-5", "case-6", "case-7", "case-8"],
+      "required": [
+        "case-1",
+        "case-2",
+        "case-3",
+        "case-4",
+        "case-5",
+        "case-6",
+        "case-7",
+        "case-8"
+      ],
       "type": "object"
     },
     "clock": { "const": "2026-08-11T12:00:00Z" },
@@ -89,7 +98,11 @@
         "authorization_context_composition": { "const": "pass" },
         "binding_separation": { "const": "pass" }
       },
-      "required": ["approved_authorization_shape", "authorization_context_composition", "binding_separation"],
+      "required": [
+        "approved_authorization_shape",
+        "authorization_context_composition",
+        "binding_separation"
+      ],
       "type": "object"
     },
     "evidence_tree_digest": { "$ref": "#/$defs/digest" },

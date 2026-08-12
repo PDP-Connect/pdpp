@@ -15,7 +15,7 @@ function runPortfolio(): Promise<string> {
     "test/auth-consent-device-postgres-path.test.ts",
   ];
   const childEnv = { ...process.env };
-  delete childEnv.NODE_TEST_CONTEXT;
+  childEnv.NODE_TEST_CONTEXT = undefined;
   return new Promise((resolveOutput, reject) => {
     const child = spawn(process.execPath, ["--import", "tsx", "--test", ...files], {
       cwd: REFERENCE_ROOT,

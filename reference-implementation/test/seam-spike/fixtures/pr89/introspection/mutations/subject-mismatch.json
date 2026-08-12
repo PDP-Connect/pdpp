@@ -1,1 +1,6 @@
-{"kind":"response","path":"pdpp.subject_id","value":"wrong-subject","expected":"context.identity_mismatch"}
+{
+  "kind": "response",
+  "path": "pdpp.subject_id",
+  "value": "wrong-subject",
+  "expected": "context.identity_mismatch"
+}

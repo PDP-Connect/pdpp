@@ -114,11 +114,6 @@ import { autoEnrollEligibleSchedules } from "./auto-enroll-eligible-schedules.ts
 import type { CimdFetchDependencies } from "./cimd.ts";
 import { acquireDefaultDeliveryWorker, getDefaultDeliveryWorker } from "./client-event-delivery-worker.ts";
 import {
-  enforceSourceReadRequest,
-  projectSourceIntrospectionWireContext,
-  SourceIntrospectionContextError,
-} from "./source-introspection-context.ts";
-import {
   buildCollectorProtocolMismatchBody,
   isAcceptedCollectorProtocolVersion,
   readCollectorProtocolHeader,
@@ -432,6 +427,11 @@ import {
 } from "./search-semantic.ts";
 import { requireSourceDeclaration } from "./source-declaration.ts";
 import type { AcceptedSourceDeclarationRevisionStore } from "./source-declaration-trust/revision-store.ts";
+import {
+  enforceSourceReadRequest,
+  projectSourceIntrospectionWireContext,
+  SourceIntrospectionContextError,
+} from "./source-introspection-context.ts";
 import {
   createPostgresAcquisitionBatchStore,
   createSqliteAcquisitionBatchStore,
@@ -3682,10 +3682,7 @@ async function getVisibleStreamFreshness({
     storageBinding,
   });
   const summary = summaries.find((entry) => entry.name === stream);
-  return buildConnectorAwareFreshness(
-    freshnessEvidence,
-    (summary?.last_updated as string | null | undefined) || null
-  );
+  return buildConnectorAwareFreshness(freshnessEvidence, (summary?.last_updated as string | null | undefined) || null);
 }
 
 // ─── AS App ─────────────────────────────────────────────────────────────────
