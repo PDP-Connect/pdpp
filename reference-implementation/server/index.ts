@@ -722,6 +722,7 @@ interface ServerOpts {
   logger?: LoggerLike;
   makePresentationAttachmentId?: (() => string) | null;
   makeStreamingBrowserSessionId?: (() => string) | null;
+  maxRecordRejectionPageSize?: number;
   nativeManifest?: ConnectorManifest | null;
   nekoProxyAllowedHosts?: readonly string[] | null;
   nekoProxyAutoLogin?: boolean;
@@ -5496,6 +5497,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
     createRequestRecordRejectionStore,
     getOwnerSubjectId,
     handleError,
+    maxRecordRejectionPageSize: opts.maxRecordRejectionPageSize,
     pdppError,
     requireOwnerSession: ownerAuth.requireOwnerSession,
   } as unknown as Parameters<typeof mountRefRecordRejections>[1]);
@@ -7529,6 +7531,7 @@ export async function startServer(opts: ServerOpts = {}) {
     isNekoProxyTargetApproved: opts.isNekoProxyTargetApproved,
     makePresentationAttachmentId: opts.makePresentationAttachmentId,
     makeStreamingBrowserSessionId: opts.makeStreamingBrowserSessionId,
+    maxRecordRejectionPageSize: opts.maxRecordRejectionPageSize,
     nativeManifest: nativeConfig?.nativeManifest || null,
     nekoProxyAllowedHosts: opts.nekoProxyAllowedHosts,
     nekoProxyAutoLogin: opts.nekoProxyAutoLogin,

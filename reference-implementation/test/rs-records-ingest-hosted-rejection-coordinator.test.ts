@@ -18,7 +18,6 @@ const OWNER_PASSWORD = "hosted-rejection-owner-password";
 const CSRF_HIDDEN_FIELD_RE = /<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/;
 const OWNER_INSPECTION_PAGE_CAP = 2;
 const OWNER_INSPECTION_RECEIPT_COUNT = 5;
-const TEST_MAX_PAGE_SIZE_ENV = "PDPP_TEST_RECORD_REJECTION_MAX_PAGE_SIZE";
 
 interface CloseableServer {
   close: (callback?: (err?: Error) => void) => unknown;
@@ -147,11 +146,10 @@ async function withHarness(
   opts: Parameters<typeof startServer>[0],
   fn: (harness: Harness) => Promise<void>
 ): Promise<void> {
-  const previousPageCap = process.env[TEST_MAX_PAGE_SIZE_ENV];
-  process.env[TEST_MAX_PAGE_SIZE_ENV] = String(OWNER_INSPECTION_PAGE_CAP);
   const server = (await startServer({
     asPort: 0,
     dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+    maxRecordRejectionPageSize: OWNER_INSPECTION_PAGE_CAP,
     quiet: true,
     rsPort: 0,
     ...opts,
@@ -166,11 +164,6 @@ async function withHarness(
     await closeServer(server);
     await closePostgresStorage();
     closeDb();
-    if (previousPageCap === undefined) {
-      delete process.env[TEST_MAX_PAGE_SIZE_ENV];
-    } else {
-      process.env[TEST_MAX_PAGE_SIZE_ENV] = previousPageCap;
-    }
   }
 }
 

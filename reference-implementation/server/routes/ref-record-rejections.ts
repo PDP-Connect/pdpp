@@ -84,16 +84,11 @@ export interface MountRefRecordRejectionsContext {
 }
 
 const DEFAULT_MAX_PAGE_SIZE = 100;
-const TEST_MAX_PAGE_SIZE_ENV = "PDPP_TEST_RECORD_REJECTION_MAX_PAGE_SIZE";
 
 function configuredMaxPageSize(ctx: MountRefRecordRejectionsContext): number {
   const configured = ctx.maxRecordRejectionPageSize;
   if (configured !== undefined && Number.isSafeInteger(configured) && configured > 0) {
     return configured;
-  }
-  const testConfigured = Number(process.env[TEST_MAX_PAGE_SIZE_ENV]);
-  if (Number.isSafeInteger(testConfigured) && testConfigured > 0) {
-    return testConfigured;
   }
   return DEFAULT_MAX_PAGE_SIZE;
 }
