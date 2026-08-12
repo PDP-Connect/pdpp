@@ -32,9 +32,10 @@ multi-source personal server or hosted MCP resource need not map to one Source
 Declaration. Provider-native onboarding requires it for the specific protected
 resource being accepted.
 
-The retrieved `SourceDeclaration.source.id` must equal the accepted
-protected-resource identifier under the Source Declaration contract. A
-mismatch fails closed.
+The retrieved `SourceDeclaration.source.kind` must be `provider_native`, and
+`SourceDeclaration.source.id` must equal the accepted protected-resource
+identifier under the Source Declaration contract. Either mismatch fails
+closed.
 
 TLS-authenticated protected-resource metadata is authoritative for its
 declaration pointer. The declaration URI may be hosted on another origin. A
@@ -80,7 +81,12 @@ An accepted revision is identified by the accepted authority binding,
 JSON, later content under the same key must compare equal as parsed JSON. A
 deployment may use an internal content fingerprint to make that comparison
 efficient, but its algorithm is not a protocol identity or cross-implementation
-digest. A current pointer that returns a prior revision is not ordered or
+digest. When provider-native discovery is used for consent, the AS must retain
+an unambiguous AS-local accepted-revision reference in consent and audit
+evidence. The reference addresses this AS's accepted authority binding and
+parsed revision only. It is not a portable authorization right, grant identity,
+bearer handle, or cross-AS declaration credential. A current pointer that
+returns a prior revision is not ordered or
 rejected by `declaration_version`; accepting it requires explicit publisher or
 local policy. A different parsed document under the same revision is
 equivocation and is rejected.
@@ -122,8 +128,8 @@ Core grant and consent contracts.
 | Decision | Class | Basis |
 |---|---|---|
 | RFC 9728 metadata lookup, standard well-known transformation, and exact returned-resource comparison | primary precedent | RFC 9728 |
-| `pdpp_source_declaration_uri`, HTTPS/no fragment, source ID equality, onboarding, and authority separation | PDPP policy | Cross-redteam and discovery implementation review |
-| Parsed-content immutability keyed by authority, source ID, and opaque version | PDPP policy | Collection rereview and implementation map |
+| `pdpp_source_declaration_uri`, HTTPS/no fragment, provider-native kind, source ID equality, onboarding, and authority separation | PDPP policy | Cross-redteam and discovery implementation review |
+| Parsed-content immutability keyed by authority, source ID, and opaque version, with a required AS-local accepted-revision evidence reference for provider-native consent | PDPP policy | Collection rereview and implementation map |
 | Per-connection DNS/IP validation, hop-by-hop redirect policy, and final declaration URL validation | PDPP policy | Retrieval threat model; not an RFC 9728 rule |
 | Current-pointer rollback requires explicit publisher/local policy | PDPP policy | Opaque revision semantics and lifecycle boundary |
 | Client-supplied arbitrary declaration URLs are rejected | PDPP policy | Authority substitution and SSRF threat; no live accepting path is claimed |

@@ -51,8 +51,9 @@ fragment or user information. The member is OPTIONAL in generic protected-
 resource metadata. It is REQUIRED when the resource is onboarded as one
 provider-native PDPP source.
 
-The retrieved `SourceDeclaration.source.id` MUST be identical to the accepted
-protected-resource identifier. The authorization server SHALL reject a
+The retrieved `SourceDeclaration.source.kind` MUST be `provider_native`, and
+`SourceDeclaration.source.id` MUST be identical to the accepted
+protected-resource identifier. The authorization server SHALL reject either
 mismatch before consent or grant issuance.
 
 ## 3. Source onboarding and authority
@@ -113,6 +114,12 @@ parsed JSON.
 An implementation MAY use an internal content fingerprint to accelerate this
 comparison. The fingerprint algorithm is not a protocol identity and need not
 be portable between implementations.
+
+When the authorization server uses provider-native discovery for consent, its
+consent and audit evidence SHALL retain an unambiguous AS-local
+accepted-revision reference to the accepted authority binding and parsed
+revision retained by this AS. That reference is not a portable authorization
+right, grant identity, bearer handle, or cross-AS declaration credential.
 
 Different parsed content under an accepted key is equivocation. The
 authorization server SHALL reject it and retain the previously accepted

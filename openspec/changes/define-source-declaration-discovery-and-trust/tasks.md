@@ -10,8 +10,9 @@
 - [x] Define `pdpp_source_declaration_uri` as one HTTPS URI string with no
   fragment or user information, use RFC 9728's standard well-known
   transformation, and apply the RFC 9728 returned-resource equality rule.
-- [x] Require `SourceDeclaration.source.id` to equal the provider-native
-  protected resource.
+- [x] Require `SourceDeclaration.source.kind` to be `provider_native` and
+  `SourceDeclaration.source.id` to equal the provider-native protected
+  resource.
 - [x] Require owner/operator onboarding before a new provider-native resource
   identifier can be used in authorization.
 - [x] Accept connector and community sources only from an installed catalog,
