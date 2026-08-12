@@ -195,6 +195,9 @@ export interface MountRefStaticSecretCredentialsContext {
   // given (matching the existing draft-route fallback).
   canonicalConnectorKey?: (value: string | null | undefined) => string | null;
   createRequestConnectorInstanceCredentialStore: () => ConnectorInstanceCredentialStore;
+  // Credential capture changes the owner-facing connector summary state and
+  // must invalidate any in-flight summary projection before the response.
+  invalidateConnectorSummariesCache?: () => void;
   // Connector-instance store, used to recover/update non-secret setup fields
   // and claim a verified provider identity. Optional only for narrow injected
   // callers that do not use setup-field or identity-aware probing.
@@ -958,6 +961,7 @@ async function storeAndRespond(
     ownerSubjectId: args.ownerSubjectId,
     secret: args.secret,
   });
+  ctx.invalidateConnectorSummariesCache?.();
   const rotated = Boolean(previous);
   const autoResume = await autoResumeAfterCredentialCapture(ctx, args.namespace, metadata, args.ownerSubjectId);
   await emitCaptureAudit(ctx, req, res, {
