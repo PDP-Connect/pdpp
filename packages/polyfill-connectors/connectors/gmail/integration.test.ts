@@ -95,6 +95,7 @@ import {
   selectAttachmentBackfillFetchRange,
   shouldBackfillAttachments,
   trimAttachmentBackfillPageToByteBudget,
+  type UploadBodyBlobFn,
   validateAttachmentHydrationPreflight,
 } from "./index.ts";
 import type { AttachmentRecord, ProgressMessage, StreamRequest } from "./types.ts";
@@ -140,6 +141,7 @@ interface HarnessOverrides {
   nowIso?: () => string;
   requested?: Map<string, StreamRequest>;
   timeRange?: { since?: string; until?: string };
+  uploadBodyBlob?: UploadBodyBlobFn;
   wantBodies?: boolean;
   wantMessages?: boolean;
 }
@@ -167,6 +169,7 @@ function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
     hydrateAttachment: overrides.hydrateAttachment ?? ((_, attachment) => Promise.resolve(hydratedResult(attachment))),
     recoveredAttachmentGapIds: new Set<string>(),
     nowIso: overrides.nowIso ?? ((): string => FROZEN_NOW),
+    ...(overrides.uploadBodyBlob ? { uploadBodyBlob: overrides.uploadBodyBlob } : {}),
     requested,
     timeRange: overrides.timeRange,
     wantBodies: overrides.wantBodies ?? false,
@@ -2869,6 +2872,56 @@ test("processMessage: attachment bytes are not inlined into message_bodies", asy
   assert.ok(attachment);
   assert.equal(JSON.stringify(body.data).includes("secret attachment payload"), false);
   assert.equal(JSON.stringify(attachment.data).includes("secret attachment payload"), false);
+});
+
+test("processMessage: control-rich body bytes upload with field bindings and canonical nulls", async () => {
+  const bodyText = "plain\u0000body";
+  const bodyHtml = "<p>html\u0007body</p>";
+  const uploads: Array<{ bytes: Buffer; jsonPath?: string; mimeType: string; stream: string }> = [];
+  const uploadBodyBlob: UploadBodyBlobFn = async (args) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of args.content) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    uploads.push({
+      bytes: Buffer.concat(chunks),
+      ...(args.jsonPath ? { jsonPath: args.jsonPath } : {}),
+      mimeType: args.mimeType,
+      stream: args.stream,
+    });
+    return {
+      blob_id: `blob-${uploads.length}`,
+      mime_type: args.mimeType,
+      sha256: "unused",
+      size_bytes: chunks.reduce((n, chunk) => n + chunk.length, 0),
+    };
+  };
+  const { deps, emitted } = makeHarness({
+    requested: makeRequested(["message_bodies"]),
+    uploadBodyBlob,
+    fetchBodies: async () => ({ bodyHtmlFull: bodyHtml, bodyTextFull: bodyText, snippet: "plain body" }),
+    wantBodies: true,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeMsg());
+
+  const body = emitted.find((record) => record.stream === "message_bodies");
+  assert.ok(body);
+  assert.equal(body.data.body_text, null);
+  assert.equal(body.data.body_html, null);
+  assert.deepEqual(
+    uploads.map((upload) => upload.jsonPath),
+    ["/body_text", "/body_html"]
+  );
+  assert.deepEqual(
+    uploads.map((upload) => upload.bytes),
+    [Buffer.from(bodyText), Buffer.from(bodyHtml)]
+  );
+  assert.deepEqual(
+    uploads.map((upload) => upload.stream),
+    ["message_bodies", "message_bodies"]
+  );
 });
 
 test("processMessage: wantBodies=false suppresses message_bodies but still emits the messages record", async () => {

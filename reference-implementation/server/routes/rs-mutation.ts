@@ -466,6 +466,7 @@ export interface MountRsMutationContext {
     stream: string;
     recordKey: string;
     mimeType: string;
+    jsonPath?: string;
     data: Buffer;
   }) => Promise<unknown>;
   readonly putSyncState: (target: StorageTargetLike, map: unknown, args: unknown) => Promise<unknown>;
@@ -559,7 +560,7 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
             }
             return visible;
           },
-          persistBlob: async ({ connectorId, stream, recordKey, mimeType, data }) => {
+          persistBlob: async ({ connectorId, stream, recordKey, jsonPath, mimeType, data }) => {
             const namespace = storageNamespace ?? (await resolveStorageNamespace(connectorId));
             return ctx.persistContentAddressedBlob({
               connectorId: namespace.connectorId,
@@ -567,6 +568,7 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
               // ctx.persistContentAddressedBlob is untyped (.js host); Buffer extends
               // Uint8Array so the operation's coerced Uint8Array is always passable here.
               data: data instanceof Buffer ? data : Buffer.from(data),
+              jsonPath,
               mimeType,
               recordKey,
               stream,
@@ -578,6 +580,7 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
           contentType: (req.headers as Record<string, unknown>)["content-type"],
           requestParams: {
             connector_id: (req.query as Record<string, unknown>).connector_id,
+            json_path: (req.query as Record<string, unknown>).json_path,
             record_key: (req.query as Record<string, unknown>).record_key,
             stream: (req.query as Record<string, unknown>).stream,
           },

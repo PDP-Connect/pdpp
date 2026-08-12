@@ -2999,6 +2999,7 @@ interface BlobPersistArgs {
   connectorInstanceId?: string | null;
   coordinatorOwnership?: ConnectorInstanceWriteOwnership | null;
   data: Buffer | Uint8Array;
+  jsonPath?: string;
   mimeType: string;
   recordKey: string;
   /**
@@ -3028,6 +3029,7 @@ export function postgresPersistContentAddressedBlob({
   recordKey,
   mimeType,
   data,
+  jsonPath,
   coordinatorOwnership = null,
   requireConnectionAdmission,
 }: BlobPersistArgs): Promise<BlobPersistResult> {
@@ -3042,6 +3044,7 @@ export function postgresPersistContentAddressedBlob({
         mimeType,
         recordKey,
         stream,
+        ...(jsonPath ? { jsonPath } : {}),
         ...(requireConnectionAdmission ? { requireConnectionAdmission } : {}),
       }),
     coordinatorOwnership ?? undefined
@@ -3055,6 +3058,7 @@ async function postgresPersistContentAddressedBlobWithinFence({
   recordKey,
   mimeType,
   data,
+  jsonPath = "@record",
   requireConnectionAdmission,
 }: Omit<BlobPersistArgs, "coordinatorOwnership">): Promise<BlobPersistResult> {
   const effectiveConnectorInstanceId = connectorInstanceId || resolveStorageConnectorInstanceId(null, connectorId);
@@ -3100,10 +3104,10 @@ async function postgresPersistContentAddressedBlobWithinFence({
       // extractions. See docs/reference/binary-content-invariant-design-brief.md §4.6.
       const binding = await client.query(
         `INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path)
-       VALUES ($1, $2, $3, $4, $5, '@record')
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT DO NOTHING
        RETURNING blob_id`,
-        [blobId, connectorId, effectiveConnectorInstanceId, stream, recordKey]
+        [blobId, connectorId, effectiveConnectorInstanceId, stream, recordKey, jsonPath]
       );
       return { ...storedRow, binding_inserted: (binding.rowCount ?? 0) > 0 };
     },

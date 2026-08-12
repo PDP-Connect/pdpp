@@ -7,7 +7,7 @@
 
 import type { MessageAddressObject, MessageEnvelopeObject, MessageStructureObject } from "imapflow";
 import { recordFingerprint } from "../../src/fingerprint-cursor.ts";
-import { stripForbiddenControlChars } from "../../src/safe-text-preview.ts";
+import { safeTextPreview, stripForbiddenControlChars } from "../../src/safe-text-preview.ts";
 import type { AttachmentRecord, BodySource, ClassifiedBody, ThreadAggregate } from "./types.ts";
 
 // ─── Module-scoped regexes (Biome useTopLevelRegex) ─────────────────────
@@ -41,7 +41,6 @@ const REFERENCES_HEADER_RE = /^references:\s*(.*)$/im;
 const ANGLE_ID_RE = /<([^>]+)>/g;
 const QUOTED_REPLY_RE = /^\s*>/;
 const HEX_ESCAPE_RE = /[=]([0-9A-Fa-f]{2})/g;
-const CR_OR_LF_RE = /[\r\n]/g;
 
 // ─── Constants ──────────────────────────────────────────────────────────
 
@@ -675,10 +674,31 @@ function toCleanString(v: unknown): string | null {
     return null;
   }
   const s = typeof v === "string" ? v : String(v);
-  // Additional belt-and-suspenders: escape any stray LF/CR in place.
-  // sanitizeForJsonl also does this but gives us defense-in-depth at the
-  // call site (see comment on sanitizeForJsonl for full rationale).
-  return s.replace(CR_OR_LF_RE, " ");
+  const safe = safeTextPreview(s);
+  return safe.kind === "text" ? s : null;
+}
+
+export interface CanonicalBodyBlobCandidate {
+  content: Buffer;
+  jsonPath: "/body_html" | "/body_text";
+  mimeType: "text/html" | "text/plain";
+}
+
+/** Return exact UTF-8 bytes for body fields that cannot remain in record_json. */
+export function canonicalBodyBlobCandidates(params: {
+  bodyHtmlFull: string | null;
+  bodyTextFull: string | null;
+}): CanonicalBodyBlobCandidate[] {
+  const candidates: CanonicalBodyBlobCandidate[] = [];
+  for (const [value, jsonPath, mimeType] of [
+    [params.bodyTextFull, "/body_text", "text/plain"],
+    [params.bodyHtmlFull, "/body_html", "text/html"],
+  ] as const) {
+    if (typeof value === "string" && safeTextPreview(value).kind === "binary") {
+      candidates.push({ content: Buffer.from(value, "utf8"), jsonPath, mimeType });
+    }
+  }
+  return candidates;
 }
 
 function truncateField(value: string | null, max: number): string | null {
@@ -710,7 +730,7 @@ export function buildMessageBodyRecord(params: {
   bodyTextFull: string | null;
   gmMsgid: string;
   htmlCharset: string | null;
-  receivedAt: string | null;
+  receivedAt: string;
   textCharset: string | null;
 }): Record<string, unknown> {
   const { bodyText, bodySource } = classifyBodySource(params.bodyTextFull, params.bodyHtmlFull);

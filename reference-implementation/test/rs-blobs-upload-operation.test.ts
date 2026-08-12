@@ -195,6 +195,23 @@ test("rs.blobs.upload coerces string bodies to bytes", async () => {
   assert.equal(captured.data.byteLength, 2);
 });
 
+test("rs.blobs.upload preserves a field JSON Pointer for blob_bindings", async () => {
+  let captured: BlobsUploadPersistArgs | undefined;
+  await executeBlobsUpload(
+    defaultInput({
+      requestParams: { connector_id: "gmail", json_path: "/body_text", record_key: "rk_1", stream: "message_bodies" },
+    }),
+    defaultDeps({
+      persistBlob: (args) => {
+        captured = args;
+        return { blob_id: "b", mime_type: "text/plain", sha256: "s", size_bytes: args.data.byteLength };
+      },
+    })
+  );
+  assert.ok(captured);
+  assert.equal(captured.jsonPath, "/body_text");
+});
+
 test("rs.blobs.upload coerces null/undefined to empty bytes", async () => {
   let captured: BlobsUploadPersistArgs | undefined;
   await executeBlobsUpload(

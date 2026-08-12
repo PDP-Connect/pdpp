@@ -18,6 +18,7 @@ export type ReferenceBlobUploadFn = (args: {
   connectorId: string;
   connectorInstanceId?: string | null;
   content: ReferenceBlobUploadContent;
+  jsonPath?: string;
   mimeType: string;
   recordKey: string;
   stream: string;
@@ -83,6 +84,7 @@ function makeBlobUploadUrl(args: {
   connectorId: string;
   connectorInstanceId?: string | null;
   recordKey: string;
+  jsonPath?: string;
   rsUrl: string;
   stream: string;
 }): URL {
@@ -93,6 +95,9 @@ function makeBlobUploadUrl(args: {
   }
   url.searchParams.set("stream", args.stream);
   url.searchParams.set("record_key", args.recordKey);
+  if (args.jsonPath) {
+    url.searchParams.set("json_path", args.jsonPath);
+  }
   return url;
 }
 
@@ -292,7 +297,7 @@ export function makeReferenceBlobUploader(args: {
   ownerToken: string;
   rsUrl: string;
 }): ReferenceBlobUploadFn {
-  return async ({ connectorId, connectorInstanceId, content, mimeType, recordKey, stream }) => {
+  return async ({ connectorId, connectorInstanceId, content, jsonPath, mimeType, recordKey, stream }) => {
     const upload = createHashingUploadBody(content);
     const response = await fetchUploadResponse({
       fetchFn: args.fetchFn ?? fetch,
@@ -304,6 +309,7 @@ export function makeReferenceBlobUploader(args: {
         recordKey,
         rsUrl: args.rsUrl,
         stream,
+        ...(jsonPath ? { jsonPath } : {}),
       }),
     });
     return validatedBlobUploadResponse(response, upload);

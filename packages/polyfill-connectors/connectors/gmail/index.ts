@@ -45,6 +45,7 @@ import {
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import type { ReferenceBlobUploadFn } from "../../src/reference-blob-uploader.ts";
 import {
   makeReferenceBlobUploader as makeSharedReferenceBlobUploader,
   ReferenceBlobUploadFailure,
@@ -60,6 +61,7 @@ import {
   buildMessageBodyRecord,
   buildMessageRecord,
   buildThreadRecord,
+  canonicalBodyBlobCandidates,
   canonicalLabelName,
   decodeBodyPart,
   decodeBodystructureForAttachments,
@@ -283,10 +285,13 @@ export type FetchAttachmentFn = (msg: FetchMessageObject, attachment: Attachment
 export type UploadAttachmentBlobFn = (args: {
   content: AsyncIterable<Buffer | Uint8Array | string>;
   connectorId: string;
+  jsonPath?: string;
   mimeType: string;
   recordKey: string;
-  stream: "attachments";
+  stream: "attachments" | "message_bodies";
 }) => Promise<BlobRef>;
+
+export type UploadBodyBlobFn = ReferenceBlobUploadFn;
 
 type AttachmentHydrationFailureStage =
   | "blob_upload_http_4xx"
@@ -660,6 +665,7 @@ export interface PerMessageDeps {
   recoveredAttachmentGapIds?: Set<string>;
   requested: Map<string, StreamRequest>;
   timeRange: { since?: string; until?: string } | undefined;
+  uploadBodyBlob?: UploadBodyBlobFn;
   wantBodies: boolean;
   wantMessages: boolean;
 }
@@ -717,6 +723,20 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
   );
 
   if (deps.wantBodies) {
+    const bodyBlobCandidates = canonicalBodyBlobCandidates({ bodyHtmlFull, bodyTextFull });
+    if (bodyBlobCandidates.length > 0 && !deps.uploadBodyBlob) {
+      throw new Error("canonical Gmail body requires blob upload");
+    }
+    for (const candidate of bodyBlobCandidates) {
+      await deps.uploadBodyBlob?.({
+        content: [candidate.content],
+        connectorId: process.env.PDPP_CONNECTOR_ID || DEFAULT_GMAIL_CONNECTOR_ID,
+        jsonPath: candidate.jsonPath,
+        mimeType: candidate.mimeType,
+        recordKey: gmMsgid,
+        stream: "message_bodies",
+      });
+    }
     await deps.emitRecord(
       "message_bodies",
       buildMessageBodyRecord({
@@ -2748,7 +2768,7 @@ export async function fetchAttachmentPart(
   };
 }
 
-function buildRuntimeBlobUploader(): UploadAttachmentBlobFn {
+function buildRuntimeBlobUploader(): ReferenceBlobUploadFn {
   const rsUrl = process.env.PDPP_RS_URL || process.env.RS_URL;
   const ownerToken = process.env.PDPP_OWNER_TOKEN;
   if (!(rsUrl && ownerToken)) {
@@ -3135,6 +3155,7 @@ export async function runAllMailPasses(
     hydrateAttachment,
     recoveredAttachmentGapIds,
     nowIso,
+    uploadBodyBlob: buildRuntimeBlobUploader(),
     requested: deps.requested,
     timeRange,
     wantBodies: deps.requested.has("message_bodies"),

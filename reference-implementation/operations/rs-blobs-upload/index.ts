@@ -25,6 +25,7 @@
 
 export interface BlobsUploadRequestParams {
   readonly connector_id?: unknown;
+  readonly json_path?: unknown;
   readonly record_key?: unknown;
   readonly stream?: unknown;
 }
@@ -41,6 +42,7 @@ export interface BlobsUploadInput {
 export interface BlobsUploadPersistArgs {
   readonly connectorId: string;
   readonly data: Uint8Array;
+  readonly jsonPath: string;
   readonly mimeType: string;
   readonly recordKey: string;
   readonly stream: string;
@@ -128,6 +130,16 @@ function readContentType(value: unknown): string {
   return mediaType;
 }
 
+function readJsonPath(value: unknown): string {
+  if (value === undefined) {
+    return "@record";
+  }
+  if (typeof value !== "string" || !(value === "@record" || value.startsWith("/"))) {
+    throw new BlobsUploadInvalidRequestError("json_path must be '@record' or an RFC 6901 JSON Pointer");
+  }
+  return value;
+}
+
 function coerceBodyToBytes(body: unknown): Uint8Array {
   if (body instanceof Uint8Array) {
     return body;
@@ -166,6 +178,7 @@ export async function executeBlobsUpload(
   const connectorId = readSingleNonEmptyString(input.requestParams.connector_id, "connector_id");
   const stream = readSingleNonEmptyString(input.requestParams.stream, "stream");
   const recordKey = readSingleNonEmptyString(input.requestParams.record_key, "record_key");
+  const jsonPath = readJsonPath(input.requestParams.json_path);
   const mimeType = readContentType(input.contentType);
 
   const visible = await dependencies.hasManifestStream(connectorId, stream);
@@ -178,6 +191,7 @@ export async function executeBlobsUpload(
   const result = await dependencies.persistBlob({
     connectorId,
     data,
+    jsonPath,
     mimeType,
     recordKey,
     stream,
