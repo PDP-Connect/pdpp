@@ -29,21 +29,30 @@ interface StoredRevision {
   readonly content_fingerprint: string;
 }
 
-interface SqliteStatement {
-  get: (...params: never[]) => StoredRevision | undefined;
+interface LegacyStoredRevision {
+  readonly authority_binding: string;
+  readonly canonical_content: string;
+  readonly content_fingerprint: string;
+  readonly declaration_version: string;
+  readonly source_id: string;
+}
+
+interface SqliteStatement<Row = unknown> {
+  all: (...params: never[]) => Row[];
+  get: (...params: never[]) => Row | undefined;
   run: (...params: never[]) => { readonly changes: number };
 }
 
 export interface SqliteRevisionDatabase {
   exec: (sql: string) => void;
-  prepare: (sql: string) => SqliteStatement;
+  prepare: <Row = unknown>(sql: string) => SqliteStatement<Row>;
 }
 
 export interface PostgresRevisionDatabase {
-  query: (
+  query: <Row = StoredRevision>(
     sql: string,
     params?: readonly unknown[]
-  ) => Promise<{ readonly rowCount: number | null; readonly rows: readonly StoredRevision[] }>;
+  ) => Promise<{ readonly rowCount: number | null; readonly rows: readonly Row[] }>;
 }
 
 export interface RevisionStoreOptions {
@@ -142,17 +151,81 @@ function postgresSchema(table: string): string {
     );`;
 }
 
+function sqliteExistingTableSql(database: SqliteRevisionDatabase, table: string): string | null {
+  const row = database
+    .prepare<{ readonly sql: string }>("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(...([table] as never[]));
+  return row?.sql ?? null;
+}
+
+function createSqliteRevisionTable(database: SqliteRevisionDatabase, table: string): void {
+  database.exec(sqliteSchema(table));
+}
+
+function migrateSqliteRevisionTable(database: SqliteRevisionDatabase, table: string): void {
+  const existingSql = sqliteExistingTableSql(database, table);
+  if (!existingSql) {
+    createSqliteRevisionTable(database, table);
+    return;
+  }
+  if (
+    existingSql.includes("accepted_revision_reference TEXT NOT NULL") &&
+    existingSql.includes("UNIQUE (accepted_revision_reference)")
+  ) {
+    return;
+  }
+
+  const replacement = `${table}_migration`;
+  const rows = database
+    .prepare<LegacyStoredRevision>(
+      `SELECT authority_binding, source_id, declaration_version, canonical_content, content_fingerprint FROM ${table}`
+    )
+    .all();
+
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec(`DROP TABLE IF EXISTS ${replacement}`);
+    createSqliteRevisionTable(database, replacement);
+    const insert = database.prepare(
+      `INSERT INTO ${replacement} (authority_binding, source_id, declaration_version, accepted_revision_reference, canonical_content, content_fingerprint)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    for (const row of rows) {
+      insert.run(
+        ...([
+          row.authority_binding,
+          row.source_id,
+          row.declaration_version,
+          acceptedRevisionEvidenceReference({
+            authorityBinding: row.authority_binding,
+            declarationVersion: row.declaration_version,
+            sourceId: row.source_id,
+          }),
+          row.canonical_content,
+          row.content_fingerprint,
+        ] as never[])
+      );
+    }
+    database.exec(`DROP TABLE ${table}`);
+    database.exec(`ALTER TABLE ${replacement} RENAME TO ${table}`);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function createSqliteAcceptedSourceDeclarationRevisionStore(
   database: SqliteRevisionDatabase,
   options: RevisionStoreOptions = {}
 ): AcceptedSourceDeclarationRevisionStore {
   const table = tableName(options);
-  database.exec(sqliteSchema(table));
+  migrateSqliteRevisionTable(database, table);
   const insert = database.prepare(
     `INSERT INTO ${table} (authority_binding, source_id, declaration_version, accepted_revision_reference, canonical_content, content_fingerprint)
      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(authority_binding, source_id, declaration_version) DO NOTHING`
   );
-  const read = database.prepare(
+  const read = database.prepare<StoredRevision>(
     `SELECT accepted_revision_reference, canonical_content, content_fingerprint FROM ${table}
      WHERE authority_binding = ? AND source_id = ? AND declaration_version = ?`
   );
@@ -194,6 +267,39 @@ export async function createPostgresAcceptedSourceDeclarationRevisionStore(
 ): Promise<AcceptedSourceDeclarationRevisionStore> {
   const table = tableName(options);
   await database.query(postgresSchema(table));
+  await database.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS accepted_revision_reference TEXT`);
+  const missingReferences = await database.query<{
+    readonly authority_binding: string;
+    readonly declaration_version: string;
+    readonly source_id: string;
+  }>(
+    `SELECT authority_binding, source_id, declaration_version FROM ${table}
+     WHERE accepted_revision_reference IS NULL`
+  );
+  await Promise.all(
+    missingReferences.rows.map((row) =>
+      database.query(
+        `UPDATE ${table}
+         SET accepted_revision_reference = $1
+         WHERE authority_binding = $2 AND source_id = $3 AND declaration_version = $4`,
+        [
+          acceptedRevisionEvidenceReference({
+            authorityBinding: row.authority_binding,
+            declarationVersion: row.declaration_version,
+            sourceId: row.source_id,
+          }),
+          row.authority_binding,
+          row.source_id,
+          row.declaration_version,
+        ]
+      )
+    )
+  );
+  await database.query(`ALTER TABLE ${table} ALTER COLUMN accepted_revision_reference SET NOT NULL`);
+  await database.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS ${table}_accepted_revision_reference_key
+     ON ${table} (accepted_revision_reference)`
+  );
   return {
     async accept(input) {
       assertKey(input);
