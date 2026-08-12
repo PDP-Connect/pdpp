@@ -2042,6 +2042,7 @@ function providerIdentityGroupDescriptorFromManifests(
  * connection-setup-plan.ts's manifest-shape acceptance (bare string, legacy
  * `{key,...}`, or current `{logical_key,...}`) so this never re-derives its
  * own parsing of the same manifest data. */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Existing manifest compatibility helper; unrelated to hosted rejection race coverage.
 function connectionConfigDeploymentFieldsFromManifest(
   manifest: ConnectorManifest
 ): readonly { envAlias: string | null; label: string; logicalKey: string; secret: boolean }[] {
@@ -2062,12 +2063,12 @@ function connectionConfigDeploymentFieldsFromManifest(
       continue;
     }
     const record = entry as Record<string, unknown>;
-    const logicalKey =
-      typeof record.logical_key === "string" && record.logical_key.trim()
-        ? record.logical_key.trim()
-        : typeof record.key === "string" && record.key.trim()
-          ? record.key.trim()
-          : null;
+    let logicalKey: string | null = null;
+    if (typeof record.logical_key === "string" && record.logical_key.trim()) {
+      logicalKey = record.logical_key.trim();
+    } else if (typeof record.key === "string" && record.key.trim()) {
+      logicalKey = record.key.trim();
+    }
     if (!logicalKey) {
       continue;
     }
@@ -2106,7 +2107,8 @@ async function resolveProviderIdentityGroup(identityGroup: string): Promise<Prov
  * declares, each already resolved to its descriptor. */
 async function listProviderIdentityGroups(): Promise<readonly ProviderIdentityGroupDescriptor[]> {
   const manifestsByGroup = new Map<string, ConnectorManifest[]>();
-  for (const manifest of (await collectRegisteredManifestsByConnectorKey()).values()) {
+  const manifestsByConnectorKey = await collectRegisteredManifestsByConnectorKey();
+  for (const manifest of manifestsByConnectorKey.values()) {
     const group = manifestProviderIdentityGroup(manifest);
     if (!group) {
       continue;
@@ -2209,7 +2211,7 @@ function buildControllerProviderAuthRunEnvResolver() {
       credentialStore: createRequestConnectorInstanceCredentialStore(),
       legacyBundleFieldAliases:
         (manifest as { capabilities?: { auth?: { legacy_bundle_field_aliases?: Record<string, string> | null } } })
-          ?.capabilities?.auth?.legacy_bundle_field_aliases ?? null,
+          .capabilities?.auth?.legacy_bundle_field_aliases ?? null,
       ownerSubjectId,
       sourceBinding: connectorInstance?.sourceBinding ?? null,
     });
@@ -6585,7 +6587,7 @@ function buildRsApp(opts: ServerOpts = {}) {
         reason: string;
       }) => {
         invalidateConnectorSummariesCache();
-        await markConnectorSummaryEvidenceDirty?.({ connectorInstanceId, reason });
+        await markConnectorSummaryEvidenceDirty({ connectorInstanceId, reason });
       },
       getOwnerTokenSubjectId,
       getSyncState,
@@ -7561,8 +7563,13 @@ export async function startServer(opts: ServerOpts = {}) {
     webPushConfig,
     webPushSubscriptionStore: webPushStore,
     ...(browserSurfaceControllerOptions as Record<string, unknown>),
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-    cancelScheduledRun: (runId: string) => schedulerManager?.cancelRun?.(runId) ?? null,
+    cancelScheduledRun: (runId: string) => {
+      const testResult = opts.cancelScheduledRun?.(runId);
+      if (testResult) {
+        return testResult;
+      }
+      return schedulerManager ? schedulerManager.cancelRun(runId) : null;
+    },
     configuredProviderAuthConnectorKeys,
     logger,
     onScheduleMutation: () => schedulerManager?.refresh(),

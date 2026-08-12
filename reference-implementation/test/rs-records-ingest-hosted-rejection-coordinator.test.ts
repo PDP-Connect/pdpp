@@ -482,7 +482,7 @@ async function backendCounts(
 }
 
 function noReceiptSurface(response: { body: unknown; status: number }): void {
-  assert.notEqual(response.status, 200, JSON.stringify(response.body));
+  assert.ok(response.status < 200 || response.status >= 300, JSON.stringify(response.body));
   assert.equal(JSON.stringify(response.body).includes("receipt_id"), false);
 }
 
@@ -598,6 +598,48 @@ async function terminalizeRun(args: {
       "UPDATE run_history SET status = 'cancelled', completed_at = ?, terminal_reason = 'owner_cancelled' WHERE connector_instance_id = ? AND run_id = ?"
     )
     .run(now, args.connectorInstanceId, args.runId);
+}
+
+async function runningRunForRouteCancel(args: {
+  backend: "postgres" | "sqlite";
+  runId: string;
+}): Promise<{ connectorInstanceId: string } | null> {
+  if (args.backend === "postgres") {
+    const result = await postgresQuery<{ connector_instance_id: string }>(
+      "SELECT connector_instance_id FROM run_history WHERE run_id = $1 AND status = 'running'",
+      [args.runId]
+    );
+    const [row] = result.rows;
+    return row ? { connectorInstanceId: row.connector_instance_id } : null;
+  }
+  const row = getDb()
+    .prepare("SELECT connector_instance_id FROM run_history WHERE run_id = ? AND status = 'running'")
+    .get<{ connector_instance_id: string }>(args.runId);
+  return row ? { connectorInstanceId: row.connector_instance_id } : null;
+}
+
+async function runStatus(args: {
+  backend: "postgres" | "sqlite";
+  connectorInstanceId: string;
+  runId: string;
+}): Promise<string | undefined> {
+  if (args.backend === "postgres") {
+    const result = await postgresQuery<{ status: string }>(
+      "SELECT status FROM run_history WHERE connector_instance_id = $1 AND run_id = $2",
+      [args.connectorInstanceId, args.runId]
+    );
+    return result.rows[0]?.status;
+  }
+  return getDb()
+    .prepare("SELECT status FROM run_history WHERE connector_instance_id = ? AND run_id = ?")
+    .get<{ status: string }>(args.connectorInstanceId, args.runId)?.status;
+}
+
+async function cancelRun(asUrl: string, runId: string): Promise<{ body: Record<string, unknown>; status: number }> {
+  const { body, status } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: "POST",
+  });
+  return { body: body as Record<string, unknown>, status };
 }
 
 test("SQLite hosted ingest rejection coordinator rolls back joined rejection, quota, and audit effects", async () => {
@@ -916,7 +958,7 @@ async function runHostedRejectionDeleteRace(args: {
   );
 }
 
-test("SQLite hosted rejection insert loses cleanly when delete follows the serialized writable refusal", async () => {
+test("SQLite hosted rejection insert loses cleanly after serialized delete winner cleanup", async () => {
   const dbPath = join(mkdtempSync(join(homedir(), ".tmp", "pdpp-hosted-rejection-sqlite-delete-race-")), "pdpp.sqlite");
   await runHostedRejectionDeleteRace({
     backend: "sqlite",
@@ -926,7 +968,7 @@ test("SQLite hosted rejection insert loses cleanly when delete follows the seria
   });
 });
 
-test("Postgres hosted rejection insert loses cleanly when delete follows the serialized writable refusal", {
+test("Postgres hosted rejection insert loses cleanly after serialized delete winner cleanup", {
   skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL);
@@ -949,6 +991,14 @@ async function runHostedRejectionTerminalRunRace(args: {
   await withHarness(
     {
       ...backendServerOpts(args),
+      cancelScheduledRun: async (runId: string) => {
+        const activeRun = await runningRunForRouteCancel({ backend: args.backend, runId });
+        if (!activeRun) {
+          return null;
+        }
+        await terminalizeRun({ backend: args.backend, connectorInstanceId: activeRun.connectorInstanceId, runId });
+        return { run_id: runId, status: "cancel_requested" };
+      },
       ownerAuthPassword: "",
       ownerAuthSubjectId: args.ownerSubjectId,
     },
@@ -996,7 +1046,13 @@ async function runHostedRejectionTerminalRunRace(args: {
           value: "must-not-persist",
         });
         await gate.entered;
-        await terminalizeRun({ backend: args.backend, connectorInstanceId: connectionId, runId });
+        const winner = await cancelRun(asUrl, runId);
+        assert.equal(winner.status, 202, JSON.stringify(winner.body));
+        assert.deepEqual(
+          { object: winner.body.object, run_id: winner.body.run_id, status: winner.body.status },
+          { object: "run_cancel_ack", run_id: runId, status: "cancel_requested" }
+        );
+        assert.equal(await runStatus({ backend: args.backend, connectorInstanceId: connectionId, runId }), "cancelled");
         gate.release();
         noReceiptSurface(await loser);
       } finally {
