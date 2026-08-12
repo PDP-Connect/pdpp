@@ -9,7 +9,13 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-import { buildLocalDeviceOutboxId, classifyDeadLetterError, LocalDeviceOutbox } from "./local-device-outbox.ts";
+import {
+  __setOutboxMigrationV3FaultHookForTest,
+  assertSupportedOutboxSchemaVersion,
+  buildLocalDeviceOutboxId,
+  classifyDeadLetterError,
+  LocalDeviceOutbox,
+} from "./local-device-outbox.ts";
 
 test("LocalDeviceOutbox persists ready work and reopens from disk", async () => {
   const path = await tempOutboxPath();
@@ -70,6 +76,180 @@ test("LocalDeviceOutbox supports deterministic ids and idempotent enqueue", asyn
     );
   } finally {
     outbox.close();
+  }
+});
+
+test("schema v3 migration preserves pending v2 work and accepts terminal run commits", async () => {
+  const path = await tempOutboxPath();
+  const db = new DatabaseSync(path);
+  try {
+    db.exec(`
+      CREATE TABLE local_device_outbox (
+        id TEXT PRIMARY KEY, source_instance_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('record_batch', 'checkpoint', 'gap', 'blob_upload')),
+        status TEXT NOT NULL CHECK (status IN ('ready', 'leased', 'succeeded', 'dead_letter')),
+        payload_json TEXT NOT NULL, body_hash TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL,
+        lease_holder TEXT, lease_epoch INTEGER NOT NULL DEFAULT 0, lease_until TEXT,
+        last_error TEXT, acknowledged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE local_device_observed_stream (
+        outbox_id TEXT NOT NULL, source_instance_id TEXT NOT NULL, stream TEXT NOT NULL,
+        PRIMARY KEY (source_instance_id, stream, outbox_id)
+      ) WITHOUT ROWID;
+      INSERT INTO local_device_outbox VALUES (
+        'pending-v2', 'src-v2', 'checkpoint', 'leased', '{"state":{"cursor":"c1"}}', 'hash-v2',
+        3, '2026-08-11T12:00:00.000Z', 'old-worker', 7, '2026-08-11T12:05:00.000Z',
+        'retry', NULL, '2026-08-11T11:00:00.000Z', '2026-08-11T12:00:00.000Z'
+      );
+      PRAGMA user_version = 2;
+    `);
+  } finally {
+    db.close();
+  }
+
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    const pending = outbox.get("pending-v2");
+    assert.deepEqual(
+      pending && {
+        acknowledged_at: pending.acknowledged_at,
+        attempt_count: pending.attempt_count,
+        body_hash: pending.body_hash,
+        created_at: pending.created_at,
+        last_error: pending.last_error,
+        lease_epoch: pending.lease_epoch,
+        lease_holder: pending.lease_holder,
+        lease_until: pending.lease_until,
+        next_attempt_at: pending.next_attempt_at,
+        status: pending.status,
+        updated_at: pending.updated_at,
+      },
+      {
+        acknowledged_at: null,
+        attempt_count: 3,
+        body_hash: "hash-v2",
+        created_at: "2026-08-11T11:00:00.000Z",
+        last_error: "retry",
+        lease_epoch: 7,
+        lease_holder: "old-worker",
+        lease_until: "2026-08-11T12:05:00.000Z",
+        next_attempt_at: "2026-08-11T12:00:00.000Z",
+        status: "leased",
+        updated_at: "2026-08-11T12:00:00.000Z",
+      }
+    );
+    assert.deepEqual(pending?.payload, { state: { cursor: "c1" } });
+    outbox.enqueue({
+      id: "terminal-v3",
+      kind: "terminal_run_commit",
+      payload: { commit_id: "commit-1" },
+      sourceInstanceId: "src-v2",
+    });
+    assert.equal(outbox.get("terminal-v3")?.kind, "terminal_run_commit");
+  } finally {
+    outbox.close();
+  }
+
+  const migrated = new DatabaseSync(path, { readOnly: true });
+  try {
+    const version = migrated.prepare("PRAGMA user_version").get() as { user_version: number };
+    assert.equal(version.user_version, 3);
+  } finally {
+    migrated.close();
+  }
+});
+
+test("an old v2 binary uses the production version fence to refuse a v3 outbox", async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  outbox.enqueue({
+    id: "terminal-v3",
+    kind: "terminal_run_commit",
+    payload: { commit_id: "commit-1" },
+    sourceInstanceId: "src-v3",
+  });
+  outbox.close();
+
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    const version = db.prepare("PRAGMA user_version").get() as { user_version: number };
+    assert.throws(() => assertSupportedOutboxSchemaVersion(version.user_version, 2), /newer than supported version 2/);
+  } finally {
+    db.close();
+  }
+});
+
+test("current binary refuses a future v4 outbox before applying schema", async () => {
+  const path = await tempOutboxPath();
+  const db = new DatabaseSync(path);
+  db.exec("PRAGMA user_version = 4");
+  db.close();
+  assert.throws(() => new LocalDeviceOutbox({ path }), /newer than supported version 3/);
+});
+
+test("schema v3 migration failure rolls back, closes, and reopens with v2 bytes and metadata intact", async () => {
+  const path = await tempOutboxPath();
+  const db = new DatabaseSync(path);
+  const payloadJson = '{"state":{"cursor":"c1\\u0000byte"}}';
+  db.exec(`
+    CREATE TABLE local_device_outbox (
+      id TEXT PRIMARY KEY, source_instance_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('record_batch', 'checkpoint', 'gap', 'blob_upload')),
+      status TEXT NOT NULL CHECK (status IN ('ready', 'leased', 'succeeded', 'dead_letter')),
+      payload_json TEXT NOT NULL, body_hash TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL,
+      lease_holder TEXT, lease_epoch INTEGER NOT NULL DEFAULT 0, lease_until TEXT,
+      last_error TEXT, acknowledged_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    PRAGMA user_version = 2;
+  `);
+  db.prepare("INSERT INTO local_device_outbox VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+    "pending-v2-fault",
+    "src-v2",
+    "checkpoint",
+    "leased",
+    payloadJson,
+    "hash-original",
+    4,
+    "2026-08-12T12:00:00.000Z",
+    "worker-original",
+    9,
+    "2026-08-12T12:05:00.000Z",
+    "error-original",
+    null,
+    "2026-08-12T11:00:00.000Z",
+    "2026-08-12T12:00:00.000Z"
+  );
+  db.close();
+
+  __setOutboxMigrationV3FaultHookForTest(() => {
+    throw new Error("injected migration failure");
+  });
+  assert.throws(() => new LocalDeviceOutbox({ path }), /injected migration failure/);
+  __setOutboxMigrationV3FaultHookForTest(null);
+
+  const unchanged = new DatabaseSync(path, { readOnly: true });
+  const version = unchanged.prepare("PRAGMA user_version").get() as { user_version: number };
+  const row = unchanged.prepare("SELECT * FROM local_device_outbox WHERE id = ?").get("pending-v2-fault") as Record<
+    string,
+    unknown
+  >;
+  assert.equal(version.user_version, 2);
+  assert.equal(row.payload_json, payloadJson);
+  assert.equal(row.body_hash, "hash-original");
+  assert.equal(row.lease_holder, "worker-original");
+  assert.equal(row.lease_epoch, 9);
+  assert.equal(row.attempt_count, 4);
+  assert.equal(row.last_error, "error-original");
+  unchanged.close();
+
+  const reopened = new LocalDeviceOutbox({ path });
+  try {
+    assert.equal(reopened.get("pending-v2-fault")?.body_hash, "hash-original");
+  } finally {
+    reopened.close();
+    __setOutboxMigrationV3FaultHookForTest(null);
   }
 });
 

@@ -16,6 +16,13 @@
 // values (which would create a value-level cycle now that this module
 // re-exports from canonical.ts).
 export type { JsonSchema } from "./json-schema.ts";
+// biome-ignore lint/performance/noBarrelFile: ./common is the package's named entry point for shared schema helpers.
+export {
+  type CanonicalTerminalFactInput,
+  canonicalTerminalRunCommitEnvelope,
+  canonicalTerminalRunCommitJson,
+  type TerminalRunCommitEnvelopeInput,
+} from "./terminal-run-commit.ts";
 
 import type { JsonSchema } from "./json-schema.ts";
 
@@ -200,5 +207,4 @@ export const PaginationQuerySchema: JsonSchema = {
 // and shared read-input parameters. Lives in ./canonical.ts to keep the
 // legacy helpers in this file undisturbed during the migration window.
 // See openspec/changes/canonicalize-public-read-contract/.
-// biome-ignore lint/performance/noBarrelFile: ./common is the package's named entry point for shared schema helpers — call sites import members by name; the canonical primitives live in a sibling module to keep this file's legacy helpers untouched during the migration window.
 export * from "./canonical.ts";

@@ -15,9 +15,18 @@ canonical envelope whose server-recomputed SHA-256 binds its stable commit/run
 identity, authenticated device, source instance, canonical connector, resolved
 connection, supplied state delta, normalized terminal facts, and boundary. The
 reference SHALL durably retain the envelope hash, binding, and exact successful
-response. Same identity/hash SHALL replay that response without writes; any
-different envelope or binding for that identity SHALL fail closed with a typed
-non-retryable conflict and SHALL not disclose another receipt.
+response. Physical receipt and serialization identity SHALL include the full
+authorized run binding and SHALL exclude caller commit identity. The same run
+binding, commit identity, and hash SHALL replay that response without writes; a
+different commit identity or body for the same authorized run binding SHALL
+fail closed with a typed non-retryable conflict and SHALL not disclose another
+receipt. Equal caller commit ids in distinct authorized namespaces SHALL not
+collide.
+
+Local collector run identities SHALL be minted by the collector. Their first
+authorized terminal commit SHALL bind the run identity to the authenticated
+device and resolved source/connection. The reference SHALL complete device,
+source, connector, and connection authorization before receipt lookup.
 
 #### Scenario: Terminal request does not reach the reference
 

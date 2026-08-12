@@ -45,6 +45,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **POST** | `/_ref/device-exporters/{deviceId}/ingest-batches` | `refIngestDeviceExporterBatch` | Accept an idempotent source-instance-aware ingest batch from a local device exporter. |
 | **GET** | `/_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/state` | `refGetDeviceExporterSourceInstanceState` | Read device-scoped local collector state for a source instance. Owner-token and client-token routes do not accept device credentials and vice versa. |
 | **PUT** | `/_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/state` | `refPutDeviceExporterSourceInstanceState` | Persist device-scoped local collector state for a source instance. State is a stream-keyed map; existing streams are merged with last-write-wins semantics. |
+| **POST** | `/_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/terminal-run-commits` | `refCommitDeviceExporterTerminalRun` | Atomically commit a local collector state delta, terminal evidence event, receipt, and run-history projection. Exact retries return the stored receipt; the same commit identity with a different authenticated binding or body returns a typed conflict. |
 | **GET** | `/_ref/schedules` | `refListSchedules` | List all configured schedules with runtime status. |
 | **POST** | `/_ref/connectors/{connectorId}/run` | `refRunConnector` | Start a connector run asynchronously. Returns 202 with run_id + trace_id, or 409 run_already_active. |
 | **POST** | `/_ref/connections/{connectorInstanceId}/run` | `refRunConnection` | Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active. |
@@ -825,6 +826,41 @@ Persist device-scoped local collector state for a source instance. State is a st
 ### Responses
 
 - `200` — JSON body
+- `400` — Invalid request
+- `401` — Authentication required
+- `403` — Permission denied
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refCommitDeviceExporterTerminalRun
+
+`POST /_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/terminal-run-commits`
+
+Atomically commit a local collector state delta, terminal evidence event, receipt, and run-history projection. Exact retries return the stored receipt; the same commit identity with a different authenticated binding or body returns a typed conflict.
+
+### Path parameters
+
+- `deviceId` — string
+- `sourceInstanceId` — string
+
+### Request body
+
+`application/json`
+- `collection_boundary` (required) — string
+- `commit_id` (required) — string
+- `connector_id` (required) — string
+- `connector_instance_id` (required) — string
+- `device_id` (required) — string
+- `run_id` (required) — string
+- `source_instance_id` (required) — string
+- `state_delta` (required) — object
+- `terminal_facts` (required) — array
+- `version` (required) — const `1`
+
+### Responses
+
+- `200` — Exact replay
+- `201` — Committed
 - `400` — Invalid request
 - `401` — Authentication required
 - `403` — Permission denied

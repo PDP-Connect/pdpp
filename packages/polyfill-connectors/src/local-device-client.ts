@@ -1,8 +1,9 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { canonicalTerminalRunCommitEnvelope } from "@pdpp/reference-contract/common";
 import { COLLECTOR_PROTOCOL_HEADER, COLLECTOR_PROTOCOL_VERSION } from "./collector-protocol.ts";
-import type { LocalDeviceIngestBatchRequest } from "./local-device-envelope.ts";
+import { hashCanonicalJson, type LocalDeviceIngestBatchRequest } from "./local-device-envelope.ts";
 
 export const LOCAL_DEVICE_ENDPOINTS = {
   exchangeEnrollment: "/_ref/device-exporters/enroll",
@@ -10,6 +11,8 @@ export const LOCAL_DEVICE_ENDPOINTS = {
   ingestBatch: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/ingest-batches`,
   terminalCollection: (deviceId: string, sourceInstanceId: string) =>
     `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/terminal-collection`,
+  terminalRunCommit: (deviceId: string, sourceInstanceId: string) =>
+    `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/terminal-run-commits`,
   localCollectorGap: (deviceId: string, sourceInstanceId: string) =>
     `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/local-collector-gaps`,
   localCollectorGapRecovered: (deviceId: string, sourceInstanceId: string) =>
@@ -93,7 +96,7 @@ export interface HeartbeatOutboxDiagnostics {
  */
 export interface HeartbeatLastError {
   /** Discriminates the stall shape so the dashboard can pick remediation. */
-  kind: "state_read_failed" | "dead_letter_backlog";
+  kind: "state_read_failed" | "dead_letter_backlog" | "terminal_run_commit_unacknowledged";
   /** Top redacted dead-letter error classes (present for backlog stalls). */
   top_dead_letter_classes?: { count: number; error_class: string }[];
 }
@@ -129,7 +132,30 @@ export interface TerminalCollectionRequest {
 
 export interface TerminalCollectionFact {
   coverage_statuses: readonly string[];
+  scoped?: boolean;
   stream: string;
+}
+
+/** Durable terminal checkpoint and evidence envelope (local outbox schema v3). */
+export interface TerminalRunCommitRequest {
+  collection_boundary: string;
+  commit_id: string;
+  connector_id: string;
+  connector_instance_id: string;
+  device_id: string;
+  run_id: string;
+  source_instance_id: string;
+  state_delta: Record<string, unknown>;
+  terminal_facts: readonly TerminalCollectionFact[];
+  version: 1;
+}
+
+export interface TerminalRunCommitResponse {
+  commit_id: string;
+  envelope_hash: string;
+  object: "device_terminal_run_commit";
+  run_id: string;
+  terminal_event_id: string;
 }
 
 export interface GetSourceInstanceStateRequest {
@@ -142,6 +168,7 @@ export interface PutSourceInstanceStateRequest {
 }
 
 export interface SourceInstanceStateResponse {
+  connector_instance_id: string;
   device_id: string;
   object: "device_source_instance_state";
   source_instance_id: string;
@@ -290,6 +317,14 @@ export class LocalDeviceRequestTimeoutError extends Error {
   }
 }
 
+/** A 2xx response whose receipt does not acknowledge the submitted durable item. */
+export class LocalDeviceReceiptValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LocalDeviceReceiptValidationError";
+  }
+}
+
 export class LocalDeviceClient {
   readonly #baseUrl: URL;
   readonly #deviceId: string | undefined;
@@ -334,6 +369,28 @@ export class LocalDeviceClient {
       LOCAL_DEVICE_ENDPOINTS.terminalCollection(this.#requireDeviceId(), request.source_instance_id),
       { authenticate: true, body: request, method: "POST" }
     );
+  }
+
+  commitTerminalRun(request: TerminalRunCommitRequest): Promise<TerminalRunCommitResponse> {
+    return this.#request<TerminalRunCommitResponse>(
+      LOCAL_DEVICE_ENDPOINTS.terminalRunCommit(this.#requireDeviceId(), request.source_instance_id),
+      { authenticate: true, body: request, method: "POST" }
+    ).then((response) => {
+      const expectedHash = hashCanonicalJson(canonicalTerminalRunCommitEnvelope(request));
+      if (
+        response?.object !== "device_terminal_run_commit" ||
+        response.commit_id !== request.commit_id ||
+        response.run_id !== request.run_id ||
+        response.envelope_hash !== expectedHash ||
+        typeof response.terminal_event_id !== "string" ||
+        response.terminal_event_id.length === 0
+      ) {
+        throw new LocalDeviceReceiptValidationError(
+          "terminal run commit response did not match the submitted envelope"
+        );
+      }
+      return response;
+    });
   }
 
   getSourceInstanceState(request: GetSourceInstanceStateRequest): Promise<SourceInstanceStateResponse> {

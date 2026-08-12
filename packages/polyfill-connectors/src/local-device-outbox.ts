@@ -6,7 +6,21 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { hashCanonicalJson } from "./local-device-envelope.ts";
 
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
+type OutboxMigrationV3FaultPoint = "after_copy";
+let outboxMigrationV3FaultHook: ((point: OutboxMigrationV3FaultPoint) => void) | null = null;
+
+export function __setOutboxMigrationV3FaultHookForTest(
+  hook: ((point: OutboxMigrationV3FaultPoint) => void) | null
+): void {
+  outboxMigrationV3FaultHook = hook;
+}
+
+export function assertSupportedOutboxSchemaVersion(version: number, supportedVersion: number): void {
+  if (version > supportedVersion) {
+    throw new Error(`local outbox schema version ${version} is newer than supported version ${supportedVersion}`);
+  }
+}
 
 /**
  * Maximum number of legacy (pre-index) `record_batch` rows a coverage probe
@@ -36,7 +50,7 @@ const LEGACY_COVERAGE_SCAN_BUDGET = 5000;
  */
 const SQLITE_IN_CLAUSE_CHUNK = 500;
 
-export type LocalDeviceOutboxKind = "record_batch" | "checkpoint" | "gap" | "blob_upload";
+export type LocalDeviceOutboxKind = "record_batch" | "checkpoint" | "terminal_run_commit" | "gap" | "blob_upload";
 export type LocalDeviceOutboxStatus = "ready" | "leased" | "succeeded" | "dead_letter";
 
 export interface LocalDeviceOutboxItem {
@@ -261,7 +275,12 @@ export class LocalDeviceOutbox {
       mkdirSync(dirname(options.path), { recursive: true });
     }
     this.#db = new DatabaseSync(options.path);
-    this.#initialize();
+    try {
+      this.#initialize();
+    } catch (error) {
+      this.#db.close();
+      throw error;
+    }
   }
 
   close(): void {
@@ -1208,11 +1227,7 @@ export class LocalDeviceOutbox {
       PRAGMA foreign_keys = ON;
     `);
     const version = this.#schemaVersion();
-    if (version > CURRENT_SCHEMA_VERSION) {
-      throw new Error(
-        `local outbox schema version ${version} is newer than supported version ${CURRENT_SCHEMA_VERSION}`
-      );
-    }
+    assertSupportedOutboxSchemaVersion(version, CURRENT_SCHEMA_VERSION);
     // Schema DDL is `IF NOT EXISTS`, so applying every step is safe on a fresh
     // or partially-migrated DB. The version bump only records that the index
     // table now exists; the index itself is populated lazily and bounded:
@@ -1227,6 +1242,9 @@ export class LocalDeviceOutbox {
     // a 35 GB retained outbox.
     this.#applySchemaV1();
     this.#applySchemaV2();
+    if (version < 3) {
+      this.#applySchemaV3();
+    }
     if (version < CURRENT_SCHEMA_VERSION) {
       this.#db.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
     }
@@ -1283,6 +1301,70 @@ export class LocalDeviceOutbox {
       CREATE INDEX IF NOT EXISTS local_device_observed_stream_outbox_idx
         ON local_device_observed_stream (outbox_id);
     `);
+  }
+
+  /**
+   * Schema v3 — terminal run commits are first-class durable work.
+   *
+   * SQLite cannot alter a CHECK constraint in place, so the migration rebuilds
+   * the outbox table inside one immediate transaction and copies every column.
+   * Pending v1/v2 rows keep their row order, lease state, retry counters, body
+   * hashes, and payload bytes. A v2 collector opening the resulting file sees
+   * `user_version = 3` and refuses it before reading work it cannot deliver.
+   */
+  #applySchemaV3(): void {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#db.exec(`
+      CREATE TABLE local_device_outbox_v3 (
+        id TEXT PRIMARY KEY,
+        source_instance_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('record_batch', 'checkpoint', 'terminal_run_commit', 'gap', 'blob_upload')),
+        status TEXT NOT NULL CHECK (status IN ('ready', 'leased', 'succeeded', 'dead_letter')),
+        payload_json TEXT NOT NULL,
+        body_hash TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL,
+        lease_holder TEXT,
+        lease_epoch INTEGER NOT NULL DEFAULT 0,
+        lease_until TEXT,
+        last_error TEXT,
+        acknowledged_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO local_device_outbox_v3 (
+        id, source_instance_id, kind, status, payload_json, body_hash,
+        attempt_count, next_attempt_at, lease_holder, lease_epoch, lease_until,
+        last_error, acknowledged_at, created_at, updated_at
+      )
+      SELECT
+        id, source_instance_id, kind, status, payload_json, body_hash,
+        attempt_count, next_attempt_at, lease_holder, lease_epoch, lease_until,
+        last_error, acknowledged_at, created_at, updated_at
+      FROM local_device_outbox
+      ORDER BY rowid;
+      `);
+      outboxMigrationV3FaultHook?.("after_copy");
+      this.#db.exec(`
+      DROP TABLE local_device_outbox;
+      ALTER TABLE local_device_outbox_v3 RENAME TO local_device_outbox;
+      CREATE INDEX local_device_outbox_ready_idx
+        ON local_device_outbox (status, next_attempt_at, source_instance_id, created_at);
+      CREATE INDEX local_device_outbox_lease_idx
+        ON local_device_outbox (status, lease_until);
+      CREATE INDEX local_device_outbox_source_idx
+        ON local_device_outbox (source_instance_id, status);
+      `);
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.#db.exec("ROLLBACK");
+      } catch {
+        // Preserve the migration failure that caused the rollback.
+      }
+      throw error;
+    }
   }
 
   #selectReady(
@@ -1533,7 +1615,13 @@ function numberFrom(value: unknown): number {
 }
 
 function isOutboxKind(value: unknown): value is LocalDeviceOutboxKind {
-  return value === "record_batch" || value === "checkpoint" || value === "gap" || value === "blob_upload";
+  return (
+    value === "record_batch" ||
+    value === "checkpoint" ||
+    value === "terminal_run_commit" ||
+    value === "gap" ||
+    value === "blob_upload"
+  );
 }
 
 function isOutboxStatus(value: unknown): value is LocalDeviceOutboxStatus {

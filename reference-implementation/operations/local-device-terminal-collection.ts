@@ -1,4 +1,8 @@
+import { createHash } from "node:crypto";
+import { canonicalTerminalRunCommitJson } from "@pdpp/reference-contract/common";
 import { readRuntimeCollectionFact } from "../server/runtime-collection-facts.ts";
+import type { ResolvedTerminalRunCommit, TerminalRunCommitResult } from "../server/stores/terminal-run-commit-store.ts";
+import { TerminalRunCommitConflictError } from "../server/stores/terminal-run-commit-store.ts";
 
 interface TerminalRequest {
   readonly body?: unknown;
@@ -20,6 +24,110 @@ interface TerminalContext {
   emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
   handleError: (res: unknown, error: unknown) => void;
   pdppError: (res: unknown, status: number, code: string, message: string, param?: string) => void;
+}
+
+export interface TerminalRunCommitContext extends TerminalContext {
+  canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  commitTerminalRun: (input: ResolvedTerminalRunCommit) => Promise<TerminalRunCommitResult>;
+}
+
+/**
+ * Device-authenticated terminal commit boundary. Authorization and canonical
+ * connection resolution complete before the durable store can inspect an
+ * existing receipt, preventing cross-device/source receipt disclosure.
+ */
+export async function handleLocalDeviceTerminalRunCommit(input: {
+  ctx: TerminalRunCommitContext;
+  req: TerminalRequest;
+  res: TerminalResponse;
+  resolveAuthorizedSource: (deviceId: string, sourceInstanceId: string) => Promise<AuthorizedSource | null>;
+}): Promise<void> {
+  const { ctx, req, res } = input;
+  try {
+    const deviceId = decodeURIComponent(req.params.deviceId as string);
+    const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId as string);
+    if (deviceId !== req.deviceExporter?.deviceId) {
+      ctx.pdppError(res, 403, "permission_error", "Device credential is not valid for this device");
+      return;
+    }
+    // This is the only receipt-lookup gateway. It resolves the complete
+    // authenticated device/source/connection binding before store entry.
+    const authorized = await input.resolveAuthorizedSource(deviceId, sourceInstanceId);
+    if (!authorized) {
+      return;
+    }
+    const body = asObject(req.body);
+    const commitId = body && readRequiredString(body.commit_id);
+    const reportedDeviceId = body && readRequiredString(body.device_id);
+    const reportedSourceId = body && readRequiredString(body.source_instance_id);
+    const reportedConnectorId = body && readRequiredString(body.connector_id);
+    const reportedConnectorInstanceId = body && readRequiredString(body.connector_instance_id);
+    const runId = body && readRequiredString(body.run_id);
+    const collectionBoundary = body && readRequiredString(body.collection_boundary);
+    const stateDelta = body && asObject(body.state_delta);
+    const normalizedFacts =
+      body && Array.isArray(body.terminal_facts) ? normalizeTerminalFacts(body.terminal_facts) : null;
+    const canonicalConnectorId = ctx.canonicalConnectorKey(authorized.sourceInstance.connectorId);
+    if (
+      body?.version !== 1 ||
+      !commitId ||
+      reportedDeviceId !== deviceId ||
+      reportedSourceId !== sourceInstanceId ||
+      !reportedConnectorId ||
+      reportedConnectorInstanceId !== authorized.connectorInstance.connectorInstanceId ||
+      !runId ||
+      !collectionBoundary ||
+      !stateDelta ||
+      !normalizedFacts ||
+      !canonicalConnectorId ||
+      reportedConnectorId !== canonicalConnectorId
+    ) {
+      ctx.pdppError(res, 400, "invalid_request", "terminal run commit body or binding is invalid");
+      return;
+    }
+
+    const canonicalEnvelope = {
+      collection_boundary: collectionBoundary,
+      commit_id: commitId,
+      connector_id: canonicalConnectorId,
+      connector_instance_id: reportedConnectorInstanceId,
+      device_id: deviceId,
+      run_id: runId,
+      source_instance_id: sourceInstanceId,
+      state_delta: stateDelta,
+      terminal_facts: body.terminal_facts as Array<{
+        coverage_statuses: string[];
+        scoped?: boolean;
+        stream: string;
+      }>,
+      version: 1,
+    } as const;
+    const envelopeHash = createHash("sha256").update(canonicalTerminalRunCommitJson(canonicalEnvelope)).digest("hex");
+    const result = await ctx.commitTerminalRun({
+      collectionBoundary,
+      commitId,
+      connectorId: canonicalConnectorId,
+      connectorInstanceId: authorized.connectorInstance.connectorInstanceId,
+      deviceId,
+      envelopeHash,
+      normalizedFacts,
+      runId,
+      sourceInstanceId,
+      stateDelta,
+    });
+    res.status(result.replayed ? 200 : 201).json(result.response);
+  } catch (error) {
+    if (error instanceof TerminalRunCommitConflictError) {
+      ctx.pdppError(
+        res,
+        409,
+        "terminal_run_commit_conflict",
+        "Terminal run commit identity conflicts with an existing commit."
+      );
+      return;
+    }
+    ctx.handleError(res, error);
+  }
 }
 
 /**
@@ -85,6 +193,13 @@ export async function handleLocalDeviceTerminalCollection(input: {
           streams,
         },
         connector_instance_id: authorized.connectorInstance.connectorInstanceId,
+        // Durable compatibility telemetry for retiring the split terminal
+        // protocol. Operators can count this marker in the existing spine;
+        // new collectors never emit it because they use terminal-run-commits.
+        legacy_terminal_protocol: {
+          protocol: "split_state_and_terminal_collection_v1",
+          retirement_not_before: "2026-11-12",
+        },
       },
       event_id: `evt_local_device_terminal_${runId}`,
       event_type: "run.completed",
@@ -109,7 +224,7 @@ function readRequiredString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
-function normalizeTerminalFacts(rawFacts: readonly unknown[]): readonly Record<string, unknown>[] | null {
+export function normalizeTerminalFacts(rawFacts: readonly unknown[]): readonly Record<string, unknown>[] | null {
   const byStream = new Map<string, Record<string, unknown>>();
   for (const raw of rawFacts) {
     const entry = asObject(raw);

@@ -25,6 +25,7 @@
     "verify": "pnpm typecheck && pnpm check && pnpm check:noAwaitInLoops-conformance && pnpm check:noUnnecessaryConditions-expiry"
   },
   "dependencies": {
+    "@pdpp/reference-contract": "workspace:*",
     "@streamparser/json": "^0.0.23",
     "better-sqlite3": "^13.0.3",
     "dotenv": "^17.4.2",

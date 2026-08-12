@@ -12,9 +12,11 @@ The collector currently commits a supplied STATE delta and separately posts term
 
 ### Versioned canonical envelope and durable receipt
 
-The terminal item contains a versioned canonical envelope. Its SHA-256 is over canonical JSON with lexicographic object keys; terminal facts sort by normalized stream and each status set sorts/deduplicates. The server recomputes the hash; it never trusts a client hash. The envelope binds commit/run id, authenticated device id, path/body source instance id, canonical connector id, resolved connector instance id, complete supplied state delta, normalized facts, and collection boundary. Connector aliases normalize before hashing.
+The terminal item contains a versioned canonical envelope. Its SHA-256 is over canonical JSON with lexicographic object keys; terminal facts sort by normalized stream and each status set sorts/deduplicates. The server recomputes the hash; it never trusts a client hash. The envelope binds commit/run id, authenticated device id, path/body source instance id, canonical connector id, resolved connector instance id, complete supplied state delta, normalized facts, and collection boundary. The collector resolves the canonical connector id before persisting the item; the endpoint rejects aliases instead of hashing two names for one connector.
 
-The reference persists a receipt in the terminal spine event data: version, hash, all bindings, and the exact response. Same id plus same hash/binding returns that stored response without writes. Same id with any different canonical envelope/binding returns typed non-retryable `409 terminal_run_commit_conflict`, with no mutation or prior-result disclosure.
+The reference persists a receipt in the terminal spine event data: version, hash, all bindings, and the exact response. Physical receipt and PostgreSQL lock identity hash the full authorized run binding (device, source, canonical connector, resolved connection, run), excluding the caller-supplied commit id. The same run binding plus the same commit id and hash returns that stored response without writes. A different commit id or canonical body for that run binding returns typed non-retryable `409 terminal_run_commit_conflict`, with no mutation or prior-result disclosure. The same caller commit id in a different authorized namespace is independent.
+
+Local collector run ids are collector-minted: no server run-admission row exists before the first terminal commit. The authenticated device and resolved source/connection therefore authorize the first use, which durably binds that run id in the receipt. Authorization and connection resolution happen before any receipt lookup; later reuse under a different device, source, connector, or resolved connection cannot read the incumbent response and fails as not-found/permission/conflict according to the already-authorized namespace.
 
 ### Supplied delta semantics
 
@@ -30,7 +32,7 @@ Outbox schema v3 is mandatory and non-lossy for v1/v2 files. `terminal_run_commi
 
 ### Compatibility retirement
 
-Old separate state/terminal routes are non-atomic compatibility only. State-only checkpoint eligibility is exactly: no terminal facts are being asserted. Old-path usage receives versioned telemetry; retirement requires no supported collector version using it plus a compatibility-window oracle. Receipt data is in `spine_events`, already covered by SQLite/Postgres backup/restore inventories; restore tests must prove replay.
+Old separate state/terminal routes are non-atomic compatibility only. State-only checkpoint eligibility is exactly: no terminal facts are being asserted. The legacy terminal event carries durable, versioned protocol telemetry; retirement is not before 2026-11-12 and also requires no supported collector version using it plus a compatibility-window oracle. Receipt data is in `spine_events`, already covered by SQLite/Postgres backup/restore inventories; the change adds no table, and restore tests must prove replay.
 
 ## Risks / Trade-offs
 

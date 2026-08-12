@@ -21,7 +21,7 @@
 // blobs, or any non-state surface. Records/search/spine extraction is a
 // separate gate per design.md.
 
-import { allowUnboundedReadAcknowledged, referenceQueries, writeTransaction } from "../../lib/db.ts";
+import { allowUnboundedReadAcknowledged, execOn, getOneOn, referenceQueries, writeTransaction } from "../../lib/db.ts";
 import { getDb } from "../db.ts";
 import {
   getStorageBackendKind,
@@ -70,6 +70,78 @@ interface PostgresTransactionClient {
   ) => Promise<{ readonly rows: readonly { readonly manifest_generation?: number }[] }>;
 }
 
+interface SqliteTransactionHandle {
+  prepare: (sql: string) => {
+    get: (...params: unknown[]) => unknown;
+    run: (...params: unknown[]) => unknown;
+  };
+}
+
+export interface ConnectorStateDeltaTransactionHooks {
+  readonly afterStateWrite?: (stream: string) => Promise<void> | void;
+}
+
+/** Write an owner-scoped state delta on an existing SQLite transaction. */
+export function putSqliteConnectorStateDeltaInTransaction(
+  db: SqliteTransactionHandle,
+  scope: ConnectorStateScope,
+  stateByStream: ConnectorStateMap,
+  updatedAt: string,
+  hooks: ConnectorStateDeltaTransactionHooks = {}
+): void {
+  const connectorInstanceId = requireConnectorInstanceId(scope);
+  const current = getOneOn<{ manifest_generation?: number }>(
+    db,
+    referenceQueries.recordsSyncStateGetConnectorManifestGeneration,
+    [connectorInstanceId]
+  );
+  const generation = Number(current?.manifest_generation ?? 0);
+  for (const [stream, cursor] of Object.entries(stateByStream)) {
+    execOn(db, referenceQueries.recordsSyncStateUpsertConnectorStateWithGeneration, [
+      scope.connectorId,
+      connectorInstanceId,
+      stream,
+      JSON.stringify(cursor),
+      updatedAt,
+      generation,
+    ]);
+    const hookResult = hooks.afterStateWrite?.(stream);
+    if (hookResult instanceof Promise) {
+      throw new Error("SQLite state transaction hooks must be synchronous.");
+    }
+  }
+}
+
+/** Write an owner-scoped state delta on an existing PostgreSQL transaction. */
+export async function putPostgresConnectorStateDeltaInTransaction(
+  client: PostgresTransactionClient,
+  scope: ConnectorStateScope,
+  stateByStream: ConnectorStateMap,
+  updatedAt: string,
+  hooks: ConnectorStateDeltaTransactionHooks = {}
+): Promise<void> {
+  const connectorInstanceId = requireConnectorInstanceId(scope);
+  const current = await client.query(
+    "SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = $1 FOR SHARE",
+    [connectorInstanceId]
+  );
+  const generation = Number(current.rows[0]?.manifest_generation ?? 0);
+  for (const [stream, cursor] of Object.entries(stateByStream)) {
+    // biome-ignore lint/performance/noAwaitInLoops: writes and fault hooks must be ordered on one transaction client.
+    await client.query(
+      `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at, manifest_generation)
+       VALUES($1, $2, $3, $4::jsonb, $5, $6)
+       ON CONFLICT (connector_instance_id, stream) DO UPDATE
+         SET connector_id = EXCLUDED.connector_id,
+             state_json = EXCLUDED.state_json,
+             updated_at = EXCLUDED.updated_at,
+             manifest_generation = EXCLUDED.manifest_generation`,
+      [scope.connectorId, connectorInstanceId, stream, JSON.stringify(cursor), updatedAt, generation]
+    );
+    await hooks.afterStateWrite?.(stream);
+  }
+}
+
 function normalizeAllowedStreams(allowed: Iterable<string> | null | undefined): Set<string> | null {
   if (!allowed) {
     return null;
@@ -81,8 +153,7 @@ function normalizeAllowedStreams(allowed: Iterable<string> | null | undefined): 
 }
 
 function requireConnectorInstanceId(scope: ConnectorStateScope): string {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-  const connectorInstanceId = scope.connectorInstanceId?.trim();
+  const connectorInstanceId = scope.connectorInstanceId.trim();
   if (!connectorInstanceId) {
     throw new Error("connectorInstanceId is required for connector sync state.");
   }

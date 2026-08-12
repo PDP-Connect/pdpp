@@ -1064,7 +1064,7 @@ test("runCollectorConnector skips state PUT when the queue still has retrying it
   }
 });
 
-test("runCollectorConnector does not checkpoint when record work dead-letters", async () => {
+test("runCollectorConnector does not checkpoint when record work remains retryable", async () => {
   const harness = await startCollectorHarness({
     priorState: {},
     ingestFailureMode: "always-503",
@@ -1115,16 +1115,10 @@ test("runCollectorConnector does not checkpoint when record work dead-letters", 
     });
 
     assert.equal(result.flushedState, null);
-    assert.equal(result.outboxSummary.deadLetter, 1);
+    assert.equal(result.outboxSummary.deadLetter, 0);
+    assert.equal(result.outboxSummary.retrying, 1);
     assert.equal(harness.stateOps.filter((op) => op.method === "PUT").length, 0);
-    const blockedHeartbeat = harness.heartbeats.at(-1);
-    assert.equal(blockedHeartbeat?.status, "blocked");
-    // The blocked-on-backlog heartbeat now carries the redacted cause so the
-    // dashboard can answer "why did these dead-letter?" without host access.
-    const lastError = heartbeatLastError(blockedHeartbeat?.last_error);
-    assert.equal(lastError?.kind, "dead_letter_backlog");
-    assert.ok((lastError?.top_dead_letter_classes?.length ?? 0) >= 1, "expected at least one error class");
-    assert.equal(lastError?.top_dead_letter_classes?.[0]?.count, 1);
+    assert.equal(harness.heartbeats.at(-1)?.status, "retrying");
   } finally {
     await harness.close();
   }
@@ -2486,6 +2480,7 @@ test("drainCollectorOutbox blocks checkpoint behind retry-delayed predecessors b
       putSourceInstanceState(request) {
         putCalls.push(request);
         return Promise.resolve({
+          connector_instance_id: "cin-order",
           device_id: "device-1",
           object: "device_source_instance_state",
           source_instance_id: request.sourceInstanceId,

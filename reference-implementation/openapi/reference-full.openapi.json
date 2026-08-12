@@ -30277,6 +30277,645 @@
         }
       }
     },
+    "/_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/terminal-run-commits": {
+      "post": {
+        "operationId": "refCommitDeviceExporterTerminalRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deviceId",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sourceInstanceId",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exact replay",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "commit_id": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "envelope_hash": {
+                      "pattern": "^[a-f0-9]{64}$",
+                      "type": "string"
+                    },
+                    "object": {
+                      "const": "device_terminal_run_commit"
+                    },
+                    "run_id": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "terminal_event_id": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "commit_id",
+                    "run_id",
+                    "terminal_event_id",
+                    "envelope_hash"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Committed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "commit_id": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "envelope_hash": {
+                      "pattern": "^[a-f0-9]{64}$",
+                      "type": "string"
+                    },
+                    "object": {
+                      "const": "device_terminal_run_commit"
+                    },
+                    "run_id": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "terminal_event_id": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "commit_id",
+                    "run_id",
+                    "terminal_event_id",
+                    "envelope_hash"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (e.g. run_already_active)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Atomically commit a local collector state delta, terminal evidence event, receipt, and run-history projection. Exact retries return the stored receipt; the same commit identity with a different authenticated binding or body returns a typed conflict.",
+        "tags": [
+          "reference",
+          "device-exporters"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "collection_boundary": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "commit_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "connector_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "connector_instance_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "device_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "source_instance_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "state_delta": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "terminal_facts": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "coverage_statuses": {
+                          "items": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "minItems": 1,
+                          "type": "array"
+                        },
+                        "scoped": {
+                          "type": "boolean"
+                        },
+                        "stream": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "coverage_statuses",
+                        "stream"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "version": {
+                    "const": 1
+                  }
+                },
+                "required": [
+                  "version",
+                  "commit_id",
+                  "run_id",
+                  "device_id",
+                  "connector_id",
+                  "connector_instance_id",
+                  "source_instance_id",
+                  "state_delta",
+                  "terminal_facts",
+                  "collection_boundary"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
     "/_ref/schedules": {
       "get": {
         "operationId": "refListSchedules",
