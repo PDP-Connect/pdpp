@@ -103,3 +103,13 @@
   claims are not part of the resolved grant or RS enforcement.
 - Pre-v0.1 authorization rows and legacy `connection_id` grant shapes do not
   authorize reads.
+
+## P1-2 client expansion closure checkpoint
+
+- [x] Record that valid issuance materializes required relationship foreign
+  keys, so the review's hidden-ungranted-field example is not reproducible.
+- [x] Reject client-token `expand[]` and `expand_limit[...]` before current
+  declaration or serving metadata on list, detail, aggregate, and search
+  routes. Preserve owner-token current-capability expansion.
+- [x] Prove SQLite and live-PostgreSQL parity with a same-name relationship
+  repointed to a different granted stream and foreign key after issuance.

@@ -1204,16 +1204,17 @@ Returns records from a stream, filtered by the grant and any additional request 
 | `filter[{field}]` and `filter[{field}][op]` | string | Owner-token current-capability filters only. Client-token requests MUST reject exact and range forms in v0.1. |
 | `view` | string | Owner-token current-capability request for records projected to a named view. Client-token records requests MUST reject `view`; clients use explicit `fields` or the field projection already frozen into the grant. Mutually exclusive with `fields`. |
 | `fields` | comma-separated | Sparse fieldset. Schema-required fields are always included. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
-| `expand[]` | string | Expand a relation declared under `query.expand`. Depth is 1. Expanded relations appear under the `expanded` key on the parent record. |
-| `expand_limit[{relation}]` | integer | Max records per expanded `has_many` relation. Valid only for relations declared under `query.expand`; defaults and limits come from that declaration. |
+| `expand[]` | string | Owner-token current-capability request to expand a relation declared under `query.expand`. Depth is 1. Expanded relations appear under the `expanded` key on the parent record. Client-token requests MUST reject this parameter in v0.1. |
+| `expand_limit[{relation}]` | integer | Owner-token current-capability limit for an expanded `has_many` relation. Valid only for relations declared under `query.expand`; defaults and limits come from that declaration. Client-token requests MUST reject this parameter in v0.1. |
 | `changes_since` | string | Opaque incremental-sync token from a previous session (distinct token space from `cursor`). Returns only records whose grant-authorized projection changed since that cursor, plus tombstones for deletions. Use `next_changes_since` from the terminal page to seed the next session. Returns HTTP 410 Gone with error code `cursor_expired` if the cursor has expired. |
 
 The durable client-token base query surface in v0.1 is: `limit`, `cursor`,
 `order`, `fields`, `changes_since`, and blob fetch. Exact and range
-`filter[...]` parameters are not part of the client-token surface. Owner-token
-current-capability reads MAY support exact and declared range filters and
-`view`; those reads consult current serving metadata. Advanced stream-specific
-query power MUST be declared in stream metadata under `query`.
+`filter[...]`, `expand[]`, and `expand_limit[...]` parameters are not part of
+the client-token surface. Owner-token current-capability reads MAY support
+exact and declared range filters, `view`, and declared expansion; those reads
+consult current serving metadata. Advanced stream-specific query power MUST be
+declared in stream metadata under `query`.
 
 Unknown query parameters and unsupported query shapes MUST be rejected with HTTP 400 and MUST NOT be silently ignored.
 
@@ -1228,11 +1229,22 @@ scalar fields and declared range filters; unknown fields and non-scalar fields
 are HTTP 400, and fields outside the grant's authorized projection are HTTP 403
 `field_not_granted`.
 
+Client-token requests that contain `expand[]` or `expand_limit[...]` MUST be
+rejected with HTTP 400 `invalid_request` before the RS consults current
+SourceDeclaration or serving metadata. A v0.1 resolved grant does not freeze
+relationship identity, target stream, foreign-key join semantics, cardinality,
+or expansion limits. Current relationship metadata therefore cannot interpret
+client grant rights. Owner-token current-capability reads MAY use declared
+expansion against current serving metadata.
+
 For owner-token current-capability reads, range filters (`gte`, `gt`, `lte`,
 `lt`) apply only to fields declared in `query.range_filters`. Nested paths,
 arrays, OR grammar, and full-text search are not part of v0.1.
 
-Expansion is declaration-driven. A relation is structurally present if listed under `relationships`, but it is only expandable if declared under `query.expand`. `expand_limit[{relation}]` is only valid for declared `has_many` relations.
+For owner-token current-capability reads, expansion is declaration-driven. A
+relation is structurally present if listed under `relationships`, but it is
+only expandable if declared under `query.expand`. `expand_limit[{relation}]`
+is only valid for declared `has_many` relations.
 
 **Stable sort:** Records are sorted by `(cursor_field, primary_key)` for cursor safety. Null or absent `cursor_field` values sort after present values.
 
@@ -1249,7 +1261,10 @@ MUST reject a `filter[{field}]` parameter targeting a field outside the grant's
 authorized projection with 403 `field_not_granted`. Client-token requests are
 rejected earlier by the v0.1 client-filter rule above.
 
-**Expansion:** Requesting an undeclared relation returns 400 `invalid_expand`. Requesting expansion of a stream not in the grant returns 403 `insufficient_scope`. Expansion never widens stream or field permissions beyond the grant.
+**Expansion:** A client-token expansion request is rejected with 400
+`invalid_request` before declaration lookup. For an owner-token
+current-capability read, requesting an undeclared relation returns 400
+`invalid_expand`. Expansion never widens the current owner read scope.
 
 **Response:**
 ```json
@@ -1289,7 +1304,10 @@ GET /v1/streams/{stream}/records/{id}
 Authorization: Bearer <access_token>
 ```
 
-Returns a single record by primary key. The `{id}` path parameter is the percent-encoded canonical key string. Supports `expand[]`.
+Returns a single record by primary key. The `{id}` path parameter is the
+percent-encoded canonical key string. Owner-token current-capability reads
+support `expand[]`; client-token requests reject it in v0.1 before declaration
+lookup.
 
 #### Delete a record (owner-authenticated)
 

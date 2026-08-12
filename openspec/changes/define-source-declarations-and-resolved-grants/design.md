@@ -279,10 +279,15 @@ freezes fields, time field and bounds, resources, stream names, source ID,
 per-stream instance sets, subject, and client. No omitted member in an issued
 grant means future declaration expansion.
 
-Query expansion is not an authorization constraint in this change. A
-relationship or expansion capability remains current query metadata. An
-expansion response MUST remain within the authorized stream and field sets;
-expansion cannot grant a stream or field that the grant does not contain.
+The resolved grant does not freeze relationship authorization. In v0.1, a
+client-token read therefore rejects `expand[]` and `expand_limit[...]` before
+consulting current declaration or serving metadata. Owner-token reads retain
+current-capability expansion. Valid expandable foreign keys are required
+schema fields, and issuance materializes required fields into the grant; that
+prevents the proposed hidden-foreign-key example through valid issuance. It
+does not freeze the relation name, target stream, foreign key, cardinality, or
+limits. A current declaration could otherwise repoint the same relationship
+name after issuance and change a client response without changing the grant.
 
 ## Snapshot, serving metadata, and RS rules
 
@@ -306,6 +311,10 @@ than a query-time authority. A client supplies explicit `fields` or relies on
 the grant projection; the RS rejects `view` rather than resolving it from
 current metadata. Owner-token reads may resolve a current view because they are
 current-capability reads, not client grant interpretation.
+
+The same closure rule applies to expansion. A client-token read rejects both
+`expand[]` and `expand_limit[...]` before current metadata lookup. Owner-token
+reads may resolve current relationship and expansion declarations.
 
 There are two metadata modes:
 
@@ -370,6 +379,9 @@ not enter this stack's merge gate.
   is ambiguity, not consent.
 - Returning current declaration fields from a client-token schema or stream
   endpoint. Rejected because capability display is not grant authority.
+- Retaining client expansion against current relationship metadata. Rejected
+  because the grant does not freeze relationship identity or join semantics;
+  the same relationship name can change meaning after issuance.
 - Adding a digest, portable credential, security floor, discovery retrieval,
   cache, quarantine, or generic criticality member. Deferred or out of scope.
 
@@ -384,6 +396,7 @@ not enter this stack's merge gate.
 | Source-instance omission never authorizes accidental fan-in | demonstrated repo defect | Existing per-stream connection behavior and ambiguous-connection paths demonstrate the cross-account disclosure hazard. |
 | Every issued grant freezes fields, time field and bounds, resources, and instance set | demonstrated repo defect | Current grant resolution can consult live declaration terms after issuance; explicit fields alone do not freeze `consent_time_field` or account scope. |
 | Client grant metadata is projected while owner/discovery metadata is current | demonstrated repo defect | Existing client schema and stream paths can resolve live declaration metadata, creating consent confusion after declaration changes. |
+| Client expansion is rejected in v0.1 while owner expansion remains current-capability | demonstrated repo defect plus explicit PDPP policy | Valid issuance materializes required foreign-key fields, but current relation metadata can still repoint a stable name to a different granted stream or join after issuance. |
 | One snapshot governs validation through evidence retention | explicit PDPP policy | RAR supports retaining approved authorization details, while this exact atomic snapshot boundary is PDPP's coherence rule. |
 | Contract and RI work have separate ownership across five PRs | explicit PDPP policy | The independent review identifies Core, binding-carrier, and discovery seams. Separate contract and RI reviews prevent implementation detail from obscuring protocol decisions. |
 | RS enforcement does not require current declaration lookup | demonstrated repo defect plus explicit PDPP policy | Core states self-contained enforcement while reference paths revalidate against live declarations; RAR supports carrying approved details to the RS but does not itself impose this exact PDPP contract. |

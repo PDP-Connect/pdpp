@@ -242,6 +242,13 @@ consults current SourceDeclaration or serving metadata, and SHALL use HTTP 400
 `invalid_request`. Owner-token current-capability reads MAY retain exact and
 declaration-driven range filters against current serving metadata.
 
+In v0.1, client-token reads SHALL reject `expand[]` and
+`expand_limit[...]` before the RS consults current SourceDeclaration or serving
+metadata, and SHALL use HTTP 400 `invalid_request`. A resolved grant does not
+freeze relationship identity, target stream, foreign-key join semantics,
+cardinality, or expansion limits. Owner-token current-capability reads MAY
+retain declaration-driven expansion against current serving metadata.
+
 #### Scenario: Current serving metadata changes
 
 - **WHEN** the current declaration or serving metadata changes after grant
@@ -294,6 +301,16 @@ grant.
 - **AND** the RS SHALL NOT advertise typed exact or range filter capabilities
   in client grant metadata
 
+#### Scenario: Client-token reads reject expansion before metadata
+
+- **WHEN** a client-token list, detail, aggregate, or search request contains
+  `expand[]` or `expand_limit[...]`
+- **THEN** the RS SHALL reject it with HTTP 400 `invalid_request`
+- **AND** the RS SHALL reject it before consulting current SourceDeclaration
+  or serving metadata
+- **AND** changing a current relationship under the same name SHALL NOT change
+  the rejection or reinterpret the issued grant
+
 #### Scenario: Owner reads retain current filters
 
 - **WHEN** an owner-token current-capability read includes an exact or declared
@@ -301,6 +318,14 @@ grant.
 - **THEN** the RS MAY validate and apply that filter against current serving
   metadata
 - **AND** this owner behavior SHALL NOT make the filter available to
+  client-token reads
+
+#### Scenario: Owner reads retain current expansion
+
+- **WHEN** an owner-token current-capability read requests a relation declared
+  under current `query.expand`
+- **THEN** the RS MAY resolve and hydrate that current relationship
+- **AND** this owner behavior SHALL NOT make expansion available to
   client-token reads
 
 ### Requirement: Collection mechanisms are outside Core conformance
