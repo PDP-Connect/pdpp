@@ -2976,9 +2976,10 @@ test("GET /consent renders the consent page for a freshly staged pending grant",
     assert.equal(consentResp.status, 200, "a live pending-consent request_uri must render the consent page");
     assert.ok(html.includes("<!DOCTYPE html>"), "consent page is a full hosted document");
     assert.ok(
-      /action="\/consent\/approve"/.test(html),
-      "consent page must offer the approve action bound to this request_uri"
+      /action="\/consent\/review"/.test(html),
+      "consent page must require review before approval for this request_uri"
     );
+    assert.doesNotMatch(html, /action="\/consent\/approve"/, "an unreviewed request must not offer final approval");
   } finally {
     await closeServer(server);
   }

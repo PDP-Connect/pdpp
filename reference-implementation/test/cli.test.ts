@@ -72,9 +72,9 @@ const TOP_LEVEL_REGEX_46 = /Grant is malformed or no longer valid/;
 const TOP_LEVEL_REGEX_47 = /Request ID: (req_[A-Za-z0-9]+)/;
 const TOP_LEVEL_REGEX_48 = /Reference trace ID: (trc_[A-Za-z0-9]+)/;
 const TOP_LEVEL_REGEX_49 = /Invalid initial access token/;
-const TOP_LEVEL_REGEX_50 = /Unknown source/;
+const TOP_LEVEL_REGEX_50 = /Source kind does not match the retained declaration/;
 const TOP_LEVEL_REGEX_51 = /Unknown source/;
-const TOP_LEVEL_REGEX_52 = /source: \{ kind/;
+const TOP_LEVEL_REGEX_52 = /authorization_details must use source: \{ id, kind\?: 'connector' \| 'provider_native' \}/;
 const TOP_LEVEL_REGEX_53 = /Registered client:/;
 const TOP_LEVEL_REGEX_54 = /User code: ([A-Z0-9]+)/;
 const TOP_LEVEL_REGEX_55 = /is not scoped to stream saved_tracks/;
@@ -97,8 +97,8 @@ const TOP_LEVEL_REGEX_71 = /Grant is malformed or no longer valid/;
 const TOP_LEVEL_REGEX_72 = /Grant is malformed or no longer valid/;
 const TOP_LEVEL_REGEX_73 = /Request ID: (req_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_74 = /Reference trace ID: (trc_[A-Za-z0-9_]+)/;
-const TOP_LEVEL_REGEX_75 = /Filter on field 'popularity' not in grant/;
-const TOP_LEVEL_REGEX_76 = /Filter on field 'popularity' not in grant/;
+const TOP_LEVEL_REGEX_CLIENT_FILTER_UNSUPPORTED =
+  /filter\[\.\.\.\] is not supported for client-token reads in PDPP v0\.1/;
 const TOP_LEVEL_REGEX_77 = /Record not found/;
 const TOP_LEVEL_REGEX_78 = /Record not found/;
 const TOP_LEVEL_REGEX_79 = /Stream 'recently_played' not in grant/;
@@ -667,7 +667,7 @@ function sourceIdForConnectorId(connectorId: string | undefined): string | undef
   if (connectorId === undefined || connectorId.includes("://")) {
     return connectorId;
   }
-  return `https://registry.pdpp.org/connectors/${connectorId}`;
+  return `https://registry.pdpp.dev/connectors/${connectorId}`;
 }
 
 async function seedDefaultGrantInstance(
@@ -2905,8 +2905,12 @@ test("PDPP CLI smoke", async (t) => {
           };
         });
 
-        const approveResp = await approveGrantRequest(asUrl, requireRequestUri(initiate.body), "u1");
-        assert.equal(approveResp.status, 400);
+        const reviewResp = await fetchJson(`${asUrl}/consent/review`, {
+          body: JSON.stringify({ request_uri: requireRequestUri(initiate.body), subject_id: "u1" }),
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          method: "POST",
+        });
+        assert.equal(reviewResp.status, 400);
 
         const result = await runCli(["trace", "show", stagedTraceId, "--as-url", asUrl, "--format", "json"]);
         assert.ok(result.json, "expected CLI --format json output to parse");
@@ -2948,8 +2952,12 @@ test("PDPP CLI smoke", async (t) => {
           };
         });
 
-        const approveResp = await approveGrantRequest(asUrl, requireRequestUri(initiate.body), "u1");
-        assert.equal(approveResp.status, 400);
+        const reviewResp = await fetchJson(`${asUrl}/consent/review`, {
+          body: JSON.stringify({ request_uri: requireRequestUri(initiate.body), subject_id: "u1" }),
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          method: "POST",
+        });
+        assert.equal(reviewResp.status, 400);
 
         const result = await runCli(["trace", "show", stagedTraceId, "--as-url", asUrl, "--format", "json"]);
         assert.ok(result.json, "expected CLI --format json output to parse");
@@ -4357,10 +4365,10 @@ test("PDPP CLI smoke", async (t) => {
 
       const changesSince = Buffer.from(JSON.stringify({ kind: "changes_since", version: 0 })).toString("base64");
       const rejectedResp = await fetch(
-        `${rsUrl}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(changesSince)}&filter[popularity]=96`,
+        `${rsUrl}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(changesSince)}&filter[popularity][eq]=96`,
         { headers: { Authorization: `Bearer ${approved.token}` } }
       );
-      assert.equal(rejectedResp.status, 403);
+      assert.equal(rejectedResp.status, 400);
       const rejectedRequestId = rejectedResp.headers.get("Request-Id");
       const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
       assert.ok(rejectedRequestId, "expected rejectedRequestId to be present");
@@ -4368,8 +4376,8 @@ test("PDPP CLI smoke", async (t) => {
       assert.ok(rejectedTraceId, "expected rejectedTraceId to be present");
       assert.ok(rejectedTraceId.startsWith("trc_"));
       const rejectedBody = asRecord(await rejectedResp.json());
-      assert.equal(asRecord(rejectedBody.error).code, "field_not_granted");
-      assert.match(String(asRecord(rejectedBody.error).message ?? ""), TOP_LEVEL_REGEX_75);
+      assert.equal(asRecord(rejectedBody.error).code, "invalid_request");
+      assert.match(String(asRecord(rejectedBody.error).message ?? ""), TOP_LEVEL_REGEX_CLIENT_FILTER_UNSUPPORTED);
 
       const timeline = await runCli([
         "grant",
@@ -4403,8 +4411,11 @@ test("PDPP CLI smoke", async (t) => {
       assert.equal(rejectedEvent.data?.has_changes_since, true);
       assert.equal(asRecord(rejectedEvent.data?.source).kind, "connector");
       assert.equal(asRecord(rejectedEvent.data?.source).id, spotifyManifest.connector_id);
-      assert.equal(asRecord(rejectedEvent.data?.error).code, "field_not_granted");
-      assert.match(String(asRecord(rejectedEvent.data?.error).message ?? ""), TOP_LEVEL_REGEX_76);
+      assert.equal(asRecord(rejectedEvent.data?.error).code, "invalid_request");
+      assert.match(
+        String(asRecord(rejectedEvent.data?.error).message ?? ""),
+        TOP_LEVEL_REGEX_CLIENT_FILTER_UNSUPPORTED
+      );
 
       const servedEvent = (timeline.json.data || []).find(
         (event) => event.event_type === "disclosure.served" && event.object_id === rejectedRequestId
@@ -7082,6 +7093,44 @@ rl.on('line', (line) => {
   await t.test("run timeline keeps partial checkpoint commit artifacts inspectable", async () => {
     const manifest = {
       connector_id: "https://registry.pdpp.dev/connectors/cli-run-partial-checkpoint-test",
+      source_declaration: {
+        declaration_version: "cli-run-partial-checkpoint-test-v1",
+        display: { name: "CLI Run Partial Checkpoint Test" },
+        extensions: {},
+        protocol_version: "0.1.0",
+        publisher: { id: "https://publishers.example/pdpp-test" },
+        source: { id: "https://registry.pdpp.dev/connectors/cli-run-partial-checkpoint-test", kind: "connector" },
+        streams: [
+          {
+            name: "items",
+            primary_key: ["id"],
+            schema: {
+              properties: {
+                id: { type: "string" },
+                value: { type: "string" },
+              },
+              required: ["id"],
+              type: "object",
+            },
+            selection: { fields: true, resources: true },
+            semantics: "mutable_state",
+          },
+          {
+            name: "other_items",
+            primary_key: ["id"],
+            schema: {
+              properties: {
+                id: { type: "string" },
+                value: { type: "string" },
+              },
+              required: ["id"],
+              type: "object",
+            },
+            selection: { fields: true, resources: true },
+            semantics: "mutable_state",
+          },
+        ],
+      },
       streams: [
         {
           name: "items",
@@ -7094,6 +7143,8 @@ rl.on('line', (line) => {
             required: ["id"],
             type: "object",
           },
+          selection: { fields: true, resources: true },
+          semantics: "mutable_state",
         },
         {
           name: "other_items",
@@ -7106,6 +7157,8 @@ rl.on('line', (line) => {
             required: ["id"],
             type: "object",
           },
+          selection: { fields: true, resources: true },
+          semantics: "mutable_state",
         },
       ],
       version: "0.1.0",
@@ -7217,7 +7270,7 @@ rl.on('line', (line) => {
             collectionMode: "incremental",
             connectorId: manifest.connector_id,
             connectorPath,
-            manifest,
+            manifest: manifest as RuntimeConnectorManifest,
             onInteraction: async () => ({}),
             ownerToken,
             persistState: true,

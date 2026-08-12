@@ -177,10 +177,10 @@ async function runConsentGrantRead(backend: Backend, kind: SourceKind): Promise<
         authorization_details: [
           {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/runtime_neutrality_test",
+            purpose_code: "https://pdpp.dev/purpose/runtime_neutrality_test",
             source: { id: sourceId, kind: oppositeKind },
             streams: [{ name: "items" }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_id: CLIENT_ID,
@@ -196,10 +196,10 @@ async function runConsentGrantRead(backend: Backend, kind: SourceKind): Promise<
         authorization_details: [
           {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/runtime_neutrality_test",
+            purpose_code: "https://pdpp.dev/purpose/runtime_neutrality_test",
             source: { id: sourceId, kind },
             streams: [{ fields: ["id", "label"], name: "items" }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_id: CLIENT_ID,
@@ -319,10 +319,10 @@ async function approveConfiguredDefault(backend: Backend, kind: SourceKind): Pro
         authorization_details: [
           {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/configured_default_neutrality_test",
+            purpose_code: "https://pdpp.dev/purpose/configured_default_neutrality_test",
             source: { id: sourceId, kind },
             streams: [{ fields: ["id", "label"], name: "items" }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_id: CLIENT_ID,

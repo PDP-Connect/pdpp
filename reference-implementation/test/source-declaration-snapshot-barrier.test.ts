@@ -350,10 +350,10 @@ test("source declaration snapshot survives same-version replacement and deletion
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           selection_preset: "artists-basic",
           source: { id: driver.getRegisteredConnectorId(), kind: "connector" },
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: driver.getRegisteredClientId(),
@@ -379,10 +379,10 @@ test("source declaration snapshot survives same-version replacement and deletion
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           source: { id: driver.getRegisteredConnectorId(), kind: "connector" },
           streams: [{ instance_ids: ["forged-instance"], name: "top_artists" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: driver.getRegisteredClientId(),
@@ -399,10 +399,10 @@ test("source declaration snapshot survives same-version replacement and deletion
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personalization",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
               source: { id: driver.getRegisteredConnectorId(), kind: "connector" },
               streams: [{ connection_id: "legacy-public-alias", name: "top_artists" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: driver.getRegisteredClientId(),
@@ -509,10 +509,10 @@ test("registered Core source IDs resolve to one exact local connector binding", 
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/custom_source_test",
+          purpose_code: "https://pdpp.dev/purpose/custom_source_test",
           source: { id: sourceId, kind: "connector" },
           streams: [{ name: "items" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: driver.getRegisteredClientId(),
@@ -543,10 +543,10 @@ test("registered Core source IDs resolve to one exact local connector binding", 
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/custom_source_test",
+              purpose_code: "https://pdpp.dev/purpose/custom_source_test",
               source: { id: sourceId, kind: "connector" },
               streams: [{ name: "items" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: driver.getRegisteredClientId(),
@@ -570,10 +570,10 @@ test("provider-native grant snapshots its trusted declaration and binds its loca
         authorization_details: [
           {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/financial_planning",
+            purpose_code: "https://pdpp.dev/purpose/financial_planning",
             source: { id: sourceId, kind: "provider_native" },
             streams: [{ name: "pay_statements" }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_id: driver.getRegisteredClientId(),
@@ -632,10 +632,10 @@ test("provider-native grant snapshots its trusted declaration and binds its loca
         authorization_details: [
           {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/financial_planning",
+            purpose_code: "https://pdpp.dev/purpose/financial_planning",
             source: { id: sourceId, kind: "provider_native" },
             streams: [{ instance_ids: issuedStream.instance_ids, name: "pay_statements" }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_id: driver.getRegisteredClientId(),
@@ -649,10 +649,10 @@ test("provider-native grant snapshots its trusted declaration and binds its loca
         authorization_details: [
           {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/financial_planning",
+            purpose_code: "https://pdpp.dev/purpose/financial_planning",
             source: { id: sourceId, kind: "provider_native" },
             streams: [{ instance_ids: ["forged-native-instance"], name: "pay_statements" }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_id: driver.getRegisteredClientId(),
@@ -696,10 +696,10 @@ test("grant approval requires an existing unambiguous instance while staging clo
     const source = { id: driver.getRegisteredConnectorId(), kind: "connector" };
     const base = {
       access_mode: "continuous",
-      purpose_code: "https://pdpp.org/purpose/personalization",
+      purpose_code: "https://pdpp.dev/purpose/personalization",
       source,
       streams: [{ instance_ids: ["cin_spotify_a"], name: "top_artists" }],
-      type: "https://pdpp.org/data-access",
+      type: "https://pdpp.dev/data-access",
     };
     const explicitlyBound = await initiateGrant({
       authorization_details: [base],
@@ -794,10 +794,10 @@ test("private hosted wildcard expansion preserves the chosen instance across eve
       authorizationDetails: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+          purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
           source: { id: driver.getRegisteredConnectorId(), kind: "connector" },
           streams: [{ instance_ids: ["cin_spotify_work"], name: "*" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       clientId: driver.getRegisteredClientId(),
@@ -868,10 +868,10 @@ test("private hosted wildcard expansion preserves the chosen instance across eve
           authorizationDetails: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+              purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
               source: { id: driver.getRegisteredConnectorId(), kind: "connector" },
               streams: [{ connection_id: "cin_spotify_work", name: "*" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           clientId: driver.getRegisteredClientId(),

@@ -149,7 +149,7 @@ async function approveGrant(asUrl: string, sourceId: string): Promise<JsonObject
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/client-expand-closure-test",
+          purpose_code: "https://pdpp.dev/purpose/client-expand-closure-test",
           source: { id: sourceId, kind: "provider_native" },
           streams: [
             { fields: ["id", "title"], name: "parents" },
@@ -158,7 +158,7 @@ async function approveGrant(asUrl: string, sourceId: string): Promise<JsonObject
             { fields: ["id", "visible"], name: "children" },
             { fields: ["id", "visible"], name: "alternate_children" },
           ],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CLIENT_ID,

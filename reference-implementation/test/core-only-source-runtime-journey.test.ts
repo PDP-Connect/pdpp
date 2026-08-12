@@ -51,7 +51,7 @@ function declaration() {
 function selection() {
   return {
     access_mode: "continuous",
-    purpose_code: "https://pdpp.org/purpose/research",
+    purpose_code: "https://pdpp.dev/purpose/research",
     streams: [
       {
         fields: ["title"],
@@ -61,7 +61,7 @@ function selection() {
         time_range: { since: "2026-01-01T00:00:00Z" },
       },
     ],
-    type: "https://pdpp.org/data-access",
+    type: "https://pdpp.dev/data-access",
   };
 }
 

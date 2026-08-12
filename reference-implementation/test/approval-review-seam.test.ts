@@ -159,11 +159,11 @@ async function stage(stream: Record<string, unknown> = { name: "top_artists", vi
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           purpose_description: "approval review seam",
           source: { id: SOURCE_ID, kind: "connector" },
           streams: [stream],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CLIENT_ID,
@@ -181,17 +181,17 @@ async function stageBatch(accessMode: "continuous" | "single_use" = "continuous"
       authorization_details: [
         {
           access_mode: accessMode,
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           source: { id: SOURCE_ID, kind: "connector" },
           streams: [{ instance_ids: [INSTANCE_ID], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
         {
           access_mode: accessMode,
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           source: { id: SOURCE_ID, kind: "connector" },
           streams: [{ instance_ids: [INSTANCE_ID], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CLIENT_ID,
@@ -222,17 +222,17 @@ async function stageHttpBatch(asUrl: string, sourceId: string): Promise<string> 
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           source: { id: sourceId, kind: "connector" },
           streams: [{ instance_ids: [INSTANCE_ID], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           source: { id: sourceId, kind: "connector" },
           streams: [{ instance_ids: [INSTANCE_ID], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CLIENT_ID,
@@ -253,10 +253,10 @@ async function stageHttpSingle(asUrl: string, sourceId: string): Promise<string>
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           source: { id: sourceId, kind: "connector" },
           streams: [{ instance_ids: [INSTANCE_ID], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CLIENT_ID,
@@ -321,10 +321,10 @@ test("single-use SQLite atomic approval marks the grant consumed", async () => {
       authorization_details: [
         {
           access_mode: "single_use",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           source: { id: SOURCE_ID, kind: "connector" },
           streams: [{ instance_ids: [INSTANCE_ID], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CLIENT_ID,
@@ -530,10 +530,10 @@ test("transaction-time parent package revoke rejects incremental package without
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           source: { id: SOURCE_ID, kind: "connector" },
           streams: [{ instance_ids: [INSTANCE_ID], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CLIENT_ID,
@@ -1131,10 +1131,10 @@ test("request-time connector source ID must have explicit fulfillment", async ()
         authorization_details: [
           {
             access_mode: "continuous",
-            purpose_code: "https://pdpp.org/purpose/personalization",
-            source: { id: "https://registry.pdpp.org/connectors/unregistered-source", kind: "connector" },
+            purpose_code: "https://pdpp.dev/purpose/personalization",
+            source: { id: "https://registry.pdpp.dev/connectors/unregistered-source", kind: "connector" },
             streams: [{ name: "top_artists", view: "basic" }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_id: CLIENT_ID,
@@ -1150,10 +1150,10 @@ test("request source kind may be omitted and is derived from retained declaratio
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           source: { id: SOURCE_ID },
           streams: [{ instance_ids: [INSTANCE_ID], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CLIENT_ID,
