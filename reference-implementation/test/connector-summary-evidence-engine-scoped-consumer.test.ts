@@ -318,3 +318,43 @@ test(
     );
   })
 );
+
+test(
+  "a deferred scoped candidate is counted as skipped, independent of the deferred durable row",
+  withTempDb(async () => {
+    const [connectorInstanceId] = seedConnections(1, { connectorId: "deferred" });
+    assert.ok(connectorInstanceId);
+    await reconcileConnectorSummaryEvidence(null);
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET dirty = 1 WHERE connector_instance_id = ?")
+      .run(connectorInstanceId);
+    getDb()
+      .prepare(
+        `INSERT INTO controller_active_runs(
+           connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at
+         ) VALUES (?, 'deferred', 'run_deferred', 'trace_deferred', 'scenario_deferred', ?)`
+      )
+      .run(connectorInstanceId, NOW);
+
+    const result = await reconcileConnectorSummaryEvidence([connectorInstanceId]);
+    assert.equal(result.repaired, 0, "the active run defers the candidate repair");
+    assert.equal(result.skipped, 1, "a deferred candidate remains skipped for this pass");
+  })
+);
+
+test(
+  "scoped orphan pruning with zero candidates never makes skipped negative",
+  withTempDb(async () => {
+    const [connectorInstanceId] = seedConnections(1, { connectorId: "orphan" });
+    assert.ok(connectorInstanceId);
+    await reconcileConnectorSummaryEvidence(null);
+    assert.ok(await getConnectorSummaryEvidence(connectorInstanceId));
+    getDb().prepare("DELETE FROM connector_instances WHERE connector_instance_id = ?").run(connectorInstanceId);
+
+    const result = await reconcileConnectorSummaryEvidence([connectorInstanceId]);
+    assert.equal(result.discovered, 0, "the scoped census has no live connector instances");
+    assert.equal(result.repaired, 1, "the orphan evidence row is pruned");
+    assert.equal(result.skipped, 0, "orphan pruning is independent of skipped candidate accounting");
+    assert.equal(await getConnectorSummaryEvidence(connectorInstanceId), null);
+  })
+);
