@@ -88,21 +88,22 @@ class RootShapeTracker {
   }
 
   /**
-   * True while the parser is positioned inside an element of a confirmed
-   * (recognized-shape) array -- i.e. an actual supported Timeline element is
-   * being read, not the array's own brackets or an unrelated sibling field.
-   * A confirmed array frame only reports "inside an element" once its first
-   * value token has opened (`comma_or_end`), never while still awaiting that
-   * first value (`value_or_end`) -- otherwise the still-empty gap between
-   * `[` and the first element's opening token would wrongly count.
+   * True whenever a byte arriving right now could be part of a confirmed
+   * (recognized-shape) array's element -- object, array, OR primitive.
+   * Any frame nested beneath a confirmed array is inside its current
+   * element by construction. The confirmed array frame itself also counts
+   * regardless of its own state (`value_or_end` covers a primitive element
+   * in progress -- a long STRING token does not resolve into another
+   * `onToken` call until its closing quote, so the frame's state cannot
+   * advance until the whole primitive has streamed through; `comma_or_end`
+   * covers a nested object/array element still open beneath it, already
+   * true via the nested-frame case above). The only bytes this over-counts
+   * are the handful of comma/bracket/whitespace bytes between elements or
+   * at the array's own close, which cannot approach a MiB-scale bound and
+   * are cleared on the next element or container-close reset.
    */
   get insideConfirmedArrayElement(): boolean {
-    return this.stack.some(
-      (frame, index) =>
-        frame.kind === "array" &&
-        frame.confirmedFormat !== undefined &&
-        (index < this.stack.length - 1 || frame.state === "comma_or_end")
-    );
+    return this.stack.some((frame) => frame.kind === "array" && frame.confirmedFormat !== undefined);
   }
 
   onToken(token: TokenType, value: unknown): void {

@@ -79,6 +79,60 @@ test("a genuinely oversized SUPPORTED array element still throws GoogleMapsEleme
   }
 });
 
+test("an oversized PRIMITIVE array element (a bare string, not wrapped in an object) still throws GoogleMapsElementTooLargeError", async () => {
+  // Regression counter-test: a supported array's element need not be an
+  // object -- `insideConfirmedArrayElement` must also account for a
+  // primitive element's own bytes while its single (possibly multi-chunk)
+  // token is being tokenized, not just for bytes belonging to a nested
+  // object/array frame. A predicate that only recognizes "nested container
+  // frame present" silently admits this case with zero bytes counted.
+  const maxSingleElementBytes = 4 * 1024 * 1024;
+  const oversizedPrimitive = "x".repeat(maxSingleElementBytes + 1024 * 1024);
+  const content = JSON.stringify({ locations: [oversizedPrimitive] });
+  const { dir, path } = writeTmpFile(content);
+  try {
+    let elementCount = 0;
+    await assert.rejects(
+      () =>
+        streamGoogleMapsExport(
+          path,
+          (event) => {
+            if (event.kind === "element") {
+              elementCount += 1;
+            }
+          },
+          { maxSingleElementBytes }
+        ),
+      GoogleMapsElementTooLargeError
+    );
+    assert.equal(elementCount, 0, "the oversized primitive must never be emitted as an element");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("many small PRIMITIVE array elements, none oversized, are unaffected by the per-element bound", async () => {
+  const maxSingleElementBytes = 4 * 1024 * 1024;
+  const primitives = Array.from({ length: 3000 }, (_, i) => `point-${i}`);
+  const content = JSON.stringify({ locations: primitives });
+  const { dir, path } = writeTmpFile(content);
+  try {
+    let elementCount = 0;
+    await streamGoogleMapsExport(
+      path,
+      (event) => {
+        if (event.kind === "element") {
+          elementCount += 1;
+        }
+      },
+      { maxSingleElementBytes }
+    );
+    assert.equal(elementCount, primitives.length);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("many small elements across all three shapes stay unaffected by the per-element bound", async () => {
   const maxSingleElementBytes = 4 * 1024 * 1024;
   const points = Array.from({ length: 2000 }, (_, i) => ({
