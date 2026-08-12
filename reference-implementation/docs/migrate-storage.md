@@ -483,9 +483,9 @@ These are reconstructed by the PDPP runtime on first boot after migration:
 
 **Recovery:**
 1. Identify the column and type mismatch from the error output.
-2. If target is stale: drop the target database and re-bootstrap:
+2. If target is stale: drop the target database and re-bootstrap. If you cannot drop the database, clear only empty target tables with explicit SQL such as `DELETE FROM "table_name";` after verifying each table is empty or disposable.
    ```shell
-   dropdb pdpp  # or DELETE FROM <table> IF EMPTY
+   dropdb pdpp
    node scripts/migrate-storage/cli.ts plan --from sqlite://... --to postgres://...
    ```
 3. If source is stale: ensure you are running the same PDPP version for both source and target. Upgrade the older instance and re-snapshot.
@@ -526,7 +526,7 @@ These are reconstructed by the PDPP runtime on first boot after migration:
   ```shell
   TABLES=$(
     node --experimental-strip-types --input-type=module -e \
-      "import { TABLES } from './reference-implementation/scripts/migrate-storage/schema.ts'; console.log(TABLES.filter((table) => !table.skipMigration).map((table) => '\"' + table.name + '\"').join(', '));"
+      "import { TABLES } from './scripts/migrate-storage/schema.ts'; console.log(TABLES.filter((table) => !table.skipMigration).map((table) => '\"' + table.name + '\"').join(', '));"
   )
   psql postgres://user:password@localhost:5432/pdpp -c "TRUNCATE ${TABLES} CASCADE;"
   ```
