@@ -1643,13 +1643,7 @@ const StreamMetadataResponseSchema = {
               // never client-writable or grantable.
               type: { minLength: 1, type: "string" },
             },
-            required: [
-              "schema",
-              "granted",
-              "lexical_search",
-              "semantic_search",
-              "aggregation",
-            ],
+            required: ["schema", "granted", "lexical_search", "semantic_search", "aggregation"],
             type: "object",
           },
         ],
