@@ -48,3 +48,32 @@ Routing GET through the stored payload remains deferred. The ordinary LIST
 path continues to synthesize its read-time freshness and runtime-relative
 fields directly, while the durable payload is ready for a later cutover that
 can prove parity without duplicating health calculation.
+
+## Read cutover contract
+
+The RI owner owns the cutover. It is a release gate for the durability-stack
+integration that contains this change; the staged dual-write is not an
+indefinite supported architecture.
+
+Cutover requires all of the following on the assembled schema:
+
+1. A bounded parity oracle compares the complete stored list item with the
+   existing synthesizer for current, stale, failed, and unobserved evidence,
+   across SQLite and PostgreSQL. It must include runtime-relative fields and
+   reject a partial payload rather than filling from the old path.
+2. The maintenance sweep backfills every active connection under its durable
+   keyset cursor. The cutover gate reports the exact remaining unpublished or
+   stale count and requires zero before switching reads.
+3. Owner LIST GET reads only current stored payloads. A missing, stale, or
+   failed payload remains an explicit unreliable projection; GET does not
+   silently invoke the old synthesizer or write a repair.
+4. Rollback switches reads back to the synthesizer without deleting stored
+   payloads. After one observed scheduler cycle and parity re-verification,
+   remove the old synthesizer from the GET path and then remove the rollback.
+5. Stopped SQLite and real PostgreSQL backup/restore evidence covers the
+   assembled durable schema, including terminal payloads, maintenance cursor,
+   invalidation, and post-restore reconciliation.
+
+If the assembled durability release does not meet this gate, remove the
+terminal payload columns and publisher before merge rather than preserve an
+ownerless second representation.

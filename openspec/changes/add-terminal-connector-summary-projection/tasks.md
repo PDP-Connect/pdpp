@@ -33,3 +33,7 @@
   tests cover concurrent changes and no partial publish.
 - [ ] 2.3 Route owner LIST GET through terminal projection only after the
   publisher can prove complete payload parity without runtime/history reads.
+  Owner: RI owner. Milestone: assembled durability-stack release containing
+  this change. Apply the parity, zero-unpublished backfill, fail-closed read,
+  rollback/removal, and assembled backup/restore gates in `design.md`; if the
+  milestone cannot satisfy them, remove the staged projection before merge.
