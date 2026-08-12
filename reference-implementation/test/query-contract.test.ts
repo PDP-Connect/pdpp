@@ -194,7 +194,8 @@ async function approveGrantRequest(asUrl: string, requestUri: string, subjectId 
 }
 
 async function approveGrant(asUrl: string, subjectId: string, params: JsonObject) {
-  const { body: initiate } = await startGrantRequest(asUrl, params);
+  const { body: initiate, status } = await startGrantRequest(asUrl, params);
+  assert.equal(status, 201, JSON.stringify(initiate));
   const { body: approved } = await approveGrantRequest(asUrl, initiate.request_uri, subjectId);
   return approved;
 }
@@ -1412,6 +1413,32 @@ test("fields projection on a manifest-unknown field is rejected under a restrict
     assert.equal(body.error.code, "unknown_field");
     // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
     assert.match(body.error.message || "", /Unknown field: not_a_real_field/);
+  });
+});
+
+test("fields projection on a declared but ungranted field is rejected under a restricted grant", async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const connectorId = spotifyManifest.connector_id;
+    const ownerToken = await issueOwnerToken(asUrl, "ungranted_fields_owner");
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: "a1", name: "A", popularity: 95, source_updated_at: "2026-01-01T00:00:00Z" },
+    ]);
+    const approved = await approveGrant(asUrl, "ungranted_fields_owner", {
+      access_mode: "continuous",
+      client_id: "longview",
+      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_description: "projection conformance under a narrowed field grant",
+      source: { id: connectorId, kind: "connector" },
+      streams: [{ fields: ["id", "name", "source_updated_at"], name: "top_artists" }],
+    });
+    assert.ok(approved.token, `expected grant token, got ${JSON.stringify(approved)}`);
+
+    const { status, body } = await fetchJson(`${rsUrl}/v1/streams/top_artists/records?fields=id,popularity`, {
+      headers: { Authorization: `Bearer ${approved.token}` },
+    });
+    assert.equal(status, 403, JSON.stringify(body));
+    assert.equal(body.error.code, "field_not_granted");
+    assert.equal(body.error.type, "permission_error");
   });
 });
 

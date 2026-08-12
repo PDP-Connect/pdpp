@@ -74,16 +74,19 @@ test("captured introspection context enforces the response-only request matrix w
       {
         code: "context.stream_not_allowed",
         name: "stream",
+        status: 401,
         url: `${harness.rsUrl}/v1/streams/recently_played/records`,
       },
       {
         code: "context.instance_mismatch",
         name: "instance",
+        status: 401,
         url: `${harness.rsUrl}/v1/streams/top_artists/records?connection_id=account-b`,
       },
       {
-        code: "context.field_not_granted",
+        code: "unknown_field",
         name: "field",
+        status: 400,
         url: `${harness.rsUrl}/v1/streams/top_artists/records?fields=private_note`,
       },
     ] as const;
@@ -92,7 +95,7 @@ test("captured introspection context enforces the response-only request matrix w
         const response = await fetch(denied.url, { headers: bearer(harness.token) });
         const body = await jsonBody(response);
         const error = body.error as Record<string, unknown> | undefined;
-        assert.equal(response.status, 401, `${denied.name}: ${JSON.stringify(body)}`);
+        assert.equal(response.status, denied.status, `${denied.name}: ${JSON.stringify(body)}`);
         assert.equal(error?.code, denied.code, denied.name);
         return { error: error?.code, matrix: denied.name, status: response.status };
       })

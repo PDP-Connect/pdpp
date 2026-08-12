@@ -15,6 +15,7 @@ interface MutationFixture {
   kind: "credentials" | "request" | "response";
   path?: string;
   query?: string;
+  status?: number;
   value?: unknown;
 }
 
@@ -125,7 +126,7 @@ test("authenticated HTTP introspection resolves context and rejects the fixed mu
       });
       const body = await parseJson(response);
       const error = body.error as Record<string, unknown> | undefined;
-      assert.equal(response.status, 401, `${name}: ${JSON.stringify(body)}`);
+      assert.equal(response.status, current.status ?? 401, `${name}: ${JSON.stringify(body)}`);
       assert.equal(error?.code, current.expected, name);
       assert.equal(introspectionCalls, before + 1, name);
       envelopes.push({ error: error?.code, fixture: name, status: response.status });

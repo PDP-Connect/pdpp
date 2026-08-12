@@ -1785,11 +1785,9 @@ async function requireTokenWithIntrospection(
   const info = await introspectToken(token);
   if (info.active && info.pdpp_token_kind === "client" && req.params?.stream) {
     const requestedConnection = resolveRequestConnectionId(req.query ?? {}).connectionId;
-    const requestedFields = normalizeFieldListParam(req.query?.fields);
     try {
       enforceSourceReadRequest(info, {
         ...(requestedConnection ? { instance_id: requestedConnection } : {}),
-        ...(requestedFields ? { fields: requestedFields } : {}),
         stream: req.params.stream,
       });
     } catch (error: unknown) {
