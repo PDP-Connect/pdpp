@@ -46,9 +46,11 @@ import {
   registerClient,
   stageParRequest,
 } from "../examples/third-party-app/lib/flow.ts";
+import { getOne, referenceQueries } from "../lib/db.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
+import { parsePendingConsentRequestUri } from "../server/auth.ts";
 import { startServer } from "../server/index.ts";
-import { closePostgresStorage } from "../server/postgres-storage.ts";
+import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from "../server/reference-local-defaults.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { __setAgentConnectCompleteFailureForTest } from "../server/routes/as-agent-connect.ts";
@@ -186,7 +188,7 @@ async function createAgentConnectRequest({
     method: "POST",
   });
   const start = (await startResp.json()) as AgentConnectStart;
-  assert.equal(startResp.status, 201);
+  assert.equal(startResp.status, 201, JSON.stringify(start));
   assert.equal(start.status, "pending");
   assert.equal(typeof start.polling_code, "string");
   assert.equal(typeof start.approval_url, "string");
@@ -218,6 +220,36 @@ async function pollAgentConnectToken({
   return { body, resp };
 }
 
+function sqliteCommittedTokenForRequestUri(requestUri: string): string {
+  const deviceCode = parsePendingConsentRequestUri(requestUri);
+  assert.ok(deviceCode, "request_uri should parse to device code");
+  const row = getOne<{ token_id?: string | null }>(referenceQueries.authPendingConsentsGetByDeviceCode, [deviceCode]);
+  assert.ok(row?.token_id, "approved pending consent should retain committed token_id");
+  return row.token_id;
+}
+
+async function postgresCommittedTokenForRequestUri(requestUri: string): Promise<string> {
+  const deviceCode = parsePendingConsentRequestUri(requestUri);
+  assert.ok(deviceCode, "request_uri should parse to device code");
+  const result = await postgresQuery<{ token_id?: string | null }>(
+    "SELECT token_id FROM pending_consents WHERE device_code = $1",
+    [deviceCode]
+  );
+  const token = result.rows[0]?.token_id;
+  assert.ok(token, "approved pending consent should retain committed token_id");
+  return token;
+}
+
+async function tokenIsIntrospectionActive(asUrl: string, token: string): Promise<boolean> {
+  const resp = await fetch(`${asUrl}/introspect`, {
+    body: JSON.stringify({ token }),
+    headers: introspectionHeaders(),
+    method: "POST",
+  });
+  const body = (await resp.json()) as { active?: boolean };
+  return body.active === true;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -237,6 +269,11 @@ function errorCode(body: unknown): string | null {
     return code;
   }
   return null;
+}
+
+function assertCredentialNoStoreHeaders(resp: Response): void {
+  assert.equal(resp.headers.get("cache-control"), "no-store");
+  assert.equal(resp.headers.get("pragma"), "no-cache");
 }
 
 async function registerSpotify(asUrl: string): Promise<SpotifyManifest> {
@@ -612,6 +649,7 @@ test("agent-connect: owner approval completes polling without exposing owner tok
       tokenUrl: start.token_url,
     });
     assert.equal(completedPoll.resp.status, 200);
+    assertCredentialNoStoreHeaders(completedPoll.resp);
     assert.equal(completedPoll.body.token_type, "Bearer");
     assert.equal(typeof completedPoll.body.access_token, "string");
     assert.equal(typeof completedPoll.body.grant_id, "string");
@@ -626,6 +664,7 @@ test("agent-connect: owner approval completes polling without exposing owner tok
       tokenUrl: start.token_url,
     });
     assert.equal(replayPoll.resp.status, 200, "response-loss retry returns the retained token envelope");
+    assertCredentialNoStoreHeaders(replayPoll.resp);
     assert.equal(replayPoll.body.access_token, completedPoll.body.access_token);
 
     await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Prune Trigger" });
@@ -633,8 +672,9 @@ test("agent-connect: owner approval completes polling without exposing owner tok
       pollingCode: start.polling_code,
       tokenUrl: start.token_url,
     });
-    assert.equal(afterPrunePoll.resp.status, 401);
-    assert.equal(errorCode(afterPrunePoll.body), "invalid_grant");
+    assert.equal(afterPrunePoll.resp.status, 200, "unrelated registration must not delete retained response");
+    assertCredentialNoStoreHeaders(afterPrunePoll.resp);
+    assert.equal(afterPrunePoll.body.access_token, completedPoll.body.access_token);
   } finally {
     await closeServer(server);
   }
@@ -704,6 +744,79 @@ test("agent-connect: approval committed before completion recovers at poll time"
   }
 });
 
+test("agent-connect: crash-completed approval that expires before poll revokes committed token", async () => {
+  const { server, asUrl } = await spinUpServer({ agentConnectTtlMs: 1 });
+  try {
+    const { staged, start } = await createAgentConnectRequest({
+      asUrl,
+      clientName: "Agent Connect Crash Expire SQLite",
+    });
+    let tripped = false;
+    __setAgentConnectCompleteFailureForTest(() => {
+      if (!tripped) {
+        tripped = true;
+        throw new Error("agent-connect completion seam crash");
+      }
+    });
+    await assert.rejects(
+      approveInline({ asUrl, requestUri: staged.request_uri, subjectId: "owner_local" }),
+      COMPLETION_SEAM_CRASH_PATTERN
+    );
+    __setAgentConnectCompleteFailureForTest(null);
+    const committedToken = sqliteCommittedTokenForRequestUri(staged.request_uri);
+    assert.equal(await tokenIsIntrospectionActive(asUrl, committedToken), true);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const expiredPoll = await pollAgentConnectToken({
+      pollingCode: start.polling_code,
+      tokenUrl: start.token_url,
+    });
+    assert.equal(expiredPoll.resp.status, 400);
+    assert.equal(errorCode(expiredPoll.body), "expired_token");
+    assert.equal(await tokenIsIntrospectionActive(asUrl, committedToken), false);
+  } finally {
+    __setAgentConnectCompleteFailureForTest(null);
+    await closeServer(server);
+  }
+});
+
+test("agent-connect: prune reconciles crash-completed expired approval before deleting attempt", async () => {
+  const { server, asUrl } = await spinUpServer({ agentConnectTtlMs: 1 });
+  try {
+    const { staged, start } = await createAgentConnectRequest({
+      asUrl,
+      clientName: "Agent Connect Crash Prune SQLite",
+    });
+    let tripped = false;
+    __setAgentConnectCompleteFailureForTest(() => {
+      if (!tripped) {
+        tripped = true;
+        throw new Error("agent-connect completion seam crash");
+      }
+    });
+    await assert.rejects(
+      approveInline({ asUrl, requestUri: staged.request_uri, subjectId: "owner_local" }),
+      COMPLETION_SEAM_CRASH_PATTERN
+    );
+    __setAgentConnectCompleteFailureForTest(null);
+    const committedToken = sqliteCommittedTokenForRequestUri(staged.request_uri);
+    assert.equal(await tokenIsIntrospectionActive(asUrl, committedToken), true);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Crash Prune Trigger" });
+    assert.equal(await tokenIsIntrospectionActive(asUrl, committedToken), false);
+    const prunedPoll = await pollAgentConnectToken({
+      pollingCode: start.polling_code,
+      tokenUrl: start.token_url,
+    });
+    assert.equal(prunedPoll.resp.status, 401);
+    assert.equal(errorCode(prunedPoll.body), "invalid_grant");
+  } finally {
+    __setAgentConnectCompleteFailureForTest(null);
+    await closeServer(server);
+  }
+});
+
 test("agent-connect: live Postgres approved handoff survives AS restart before polling", async (t) => {
   const baseUrl = dedicatedPostgresTestUrl(
     process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
@@ -753,6 +866,140 @@ test("agent-connect: live Postgres approved handoff survives AS restart before p
         if (restarted) {
           await closeServer(restarted.server);
         }
+        await closePostgresStorage();
+      }
+    }
+  );
+});
+
+test("agent-connect: live Postgres response-loss retry survives unrelated registration", async (t) => {
+  const baseUrl = dedicatedPostgresTestUrl(
+    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
+  );
+  if (!baseUrl) {
+    t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
+    return;
+  }
+
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: baseUrl,
+      databaseName: "pdpp_test_agent_connect_response_loss_prune",
+    },
+    async (databaseUrl) => {
+      const { server, asUrl } = await spinUpServer({ databaseUrl, storageBackend: "postgres" });
+      try {
+        const { staged, start } = await createAgentConnectRequest({
+          asUrl,
+          clientName: "Agent Connect PG Response Loss A",
+        });
+        await approveInline({ asUrl, requestUri: staged.request_uri, subjectId: "owner_local" });
+        const firstPoll = await pollAgentConnectToken({
+          pollingCode: start.polling_code,
+          tokenUrl: start.token_url,
+        });
+        assert.equal(firstPoll.resp.status, 200);
+        assertCredentialNoStoreHeaders(firstPoll.resp);
+
+        await createAgentConnectRequest({ asUrl, clientName: "Agent Connect PG Response Loss B" });
+        const retryPoll = await pollAgentConnectToken({
+          pollingCode: start.polling_code,
+          tokenUrl: start.token_url,
+        });
+        assert.equal(retryPoll.resp.status, 200);
+        assertCredentialNoStoreHeaders(retryPoll.resp);
+        assert.equal(retryPoll.body.access_token, firstPoll.body.access_token);
+      } finally {
+        await closeServer(server);
+        await closePostgresStorage();
+      }
+    }
+  );
+});
+
+test("agent-connect: live Postgres crash-completed expiry and prune revoke committed tokens", async (t) => {
+  const baseUrl = dedicatedPostgresTestUrl(
+    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
+  );
+  if (!baseUrl) {
+    t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
+    return;
+  }
+
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: baseUrl,
+      databaseName: "pdpp_test_agent_connect_crash_expire_prune",
+    },
+    async (databaseUrl) => {
+      const expireServer = await spinUpServer({ agentConnectTtlMs: 1, databaseUrl, storageBackend: "postgres" });
+      try {
+        const { staged, start } = await createAgentConnectRequest({
+          asUrl: expireServer.asUrl,
+          clientName: "Agent Connect PG Crash Expire",
+        });
+        let tripped = false;
+        __setAgentConnectCompleteFailureForTest(() => {
+          if (!tripped) {
+            tripped = true;
+            throw new Error("agent-connect completion seam crash");
+          }
+        });
+        await assert.rejects(
+          approveInline({ asUrl: expireServer.asUrl, requestUri: staged.request_uri, subjectId: "owner_local" }),
+          COMPLETION_SEAM_CRASH_PATTERN
+        );
+        __setAgentConnectCompleteFailureForTest(null);
+        const committedToken = await postgresCommittedTokenForRequestUri(staged.request_uri);
+        assert.equal(await tokenIsIntrospectionActive(expireServer.asUrl, committedToken), true);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        const expiredPoll = await pollAgentConnectToken({
+          pollingCode: start.polling_code,
+          tokenUrl: start.token_url,
+        });
+        assert.equal(expiredPoll.resp.status, 400);
+        assert.equal(errorCode(expiredPoll.body), "expired_token");
+        assert.equal(await tokenIsIntrospectionActive(expireServer.asUrl, committedToken), false);
+      } finally {
+        __setAgentConnectCompleteFailureForTest(null);
+        await closeServer(expireServer.server);
+        await closePostgresStorage();
+      }
+
+      const pruneServer = await spinUpServer({ agentConnectTtlMs: 1, databaseUrl, storageBackend: "postgres" });
+      try {
+        const { staged, start } = await createAgentConnectRequest({
+          asUrl: pruneServer.asUrl,
+          clientName: "Agent Connect PG Crash Prune",
+        });
+        let tripped = false;
+        __setAgentConnectCompleteFailureForTest(() => {
+          if (!tripped) {
+            tripped = true;
+            throw new Error("agent-connect completion seam crash");
+          }
+        });
+        await assert.rejects(
+          approveInline({ asUrl: pruneServer.asUrl, requestUri: staged.request_uri, subjectId: "owner_local" }),
+          COMPLETION_SEAM_CRASH_PATTERN
+        );
+        __setAgentConnectCompleteFailureForTest(null);
+        const committedToken = await postgresCommittedTokenForRequestUri(staged.request_uri);
+        assert.equal(await tokenIsIntrospectionActive(pruneServer.asUrl, committedToken), true);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await createAgentConnectRequest({ asUrl: pruneServer.asUrl, clientName: "Agent Connect PG Prune Trigger" });
+        assert.equal(await tokenIsIntrospectionActive(pruneServer.asUrl, committedToken), false);
+        const prunedPoll = await pollAgentConnectToken({
+          pollingCode: start.polling_code,
+          tokenUrl: start.token_url,
+        });
+        assert.equal(prunedPoll.resp.status, 401);
+        assert.equal(errorCode(prunedPoll.body), "invalid_grant");
+      } finally {
+        __setAgentConnectCompleteFailureForTest(null);
+        await closeServer(pruneServer.server);
         await closePostgresStorage();
       }
     }

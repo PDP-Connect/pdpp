@@ -47,6 +47,10 @@ async function assertFocusedTestsPass(file: string, testNames: readonly string[]
   }
 }
 
+async function assertFocusedNestedTestsPass(file: string, testNames: readonly string[]): Promise<void> {
+  await runNodeTests(file, testNames);
+}
+
 test("owner-device-approval-atomicity: rollback, owner concurrency, and cross-subject recovery", async () => {
   await assertFocusedTestsPass("test/owner-device-approval-atomicity.test.ts", [
     "owner-device approval rolls back when token insertion has not started",
@@ -62,6 +66,19 @@ test("owner-device-approval-atomicity: rollback, owner concurrency, and cross-su
 test("agent-cli: crash recovery from committed pending approval", async () => {
   await assertFocusedTestsPass("test/agent-cli.test.ts", [
     "agent-connect: approval committed before completion recovers at poll time",
+  ]);
+});
+
+test("agent-cli: crash-completed expiry and prune revoke committed approvals", async () => {
+  await assertFocusedTestsPass("test/agent-cli.test.ts", [
+    "agent-connect: crash-completed approval that expires before poll revokes committed token",
+    "agent-connect: prune reconciles crash-completed expired approval before deleting attempt",
+  ]);
+});
+
+test("agent-cli: response-loss replay survives unrelated registration", async () => {
+  await assertFocusedTestsPass("test/agent-cli.test.ts", [
+    "agent-connect: owner approval completes polling without exposing owner token",
   ]);
 });
 
@@ -88,5 +105,36 @@ test("agent-cli: live PostgreSQL approved expiry and revocation fail closed befo
   assert.ok(process.env.PDPP_TEST_POSTGRES_URL, "live PostgreSQL is required");
   await assertFocusedTestsPass("test/agent-cli.test.ts", [
     "agent-connect: live Postgres approved expiry and revocation fail closed before delivery",
+  ]);
+});
+
+test("agent-cli: live PostgreSQL crash expiry/prune and response-loss replay", async () => {
+  assert.ok(process.env.PDPP_TEST_POSTGRES_URL, "live PostgreSQL is required");
+  await assertFocusedTestsPass("test/agent-cli.test.ts", [
+    "agent-connect: live Postgres response-loss retry survives unrelated registration",
+    "agent-connect: live Postgres crash-completed expiry and prune revoke committed tokens",
+  ]);
+});
+
+test("consent-exchange: SQLite restart, single-use, and response-loss recovery", async () => {
+  await assertFocusedNestedTestsPass("test/security-consent-token-handoff.test.ts", [
+    "concurrent SQLite redemptions converge on one stored transition",
+    "an already-committed approval can create a fresh HTML handoff",
+    "an exchange code survives a SQLite-backed server restart",
+  ]);
+});
+
+test("batch consent: package handoff and revocation are durable", async () => {
+  await assertFocusedTestsPass("test/batch-consent-per-source-gate.test.ts", [
+    "batch consent gate: HTML approval hands off the package token durably",
+    "batch consent gate: a revoked package is not delivered by a stored exchange code",
+  ]);
+});
+
+test("auth consent device PostgreSQL: concurrent redemption and package revocation", async () => {
+  assert.ok(process.env.PDPP_TEST_POSTGRES_URL, "live PostgreSQL is required");
+  await assertFocusedTestsPass("test/auth-consent-device-postgres-path.test.ts", [
+    "consent handoff: concurrent Postgres redemption converges on one persisted token",
+    "consent handoff: Postgres package delivery works and revocation fails closed",
   ]);
 });
