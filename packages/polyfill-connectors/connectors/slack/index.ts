@@ -1829,7 +1829,7 @@ async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
 
 export async function runChannelsStream(deps: StreamDeps): Promise<void> {
   // Dedupe across chunks; keep the latest (max CHUNK_ID) snapshot per ID.
-  let rows: ChannelRow[];
+  let rowIterator: Iterator<Record<string, unknown>>;
   try {
     const rawRows = deps.db
       .prepare(
@@ -1840,12 +1840,8 @@ export async function runChannelsStream(deps: StreamDeps): Promise<void> {
       ON m.ID = c.ID AND m.mx = c.CHUNK_ID
   `
       )
-      .all();
-    rows = rawRows.map((raw) => ({
-      id: raw.id as string,
-      name: (raw.name as string | null) ?? null,
-      data: (raw.data as Uint8Array | string | null) ?? null,
-    }));
+      .iterate() as IterableIterator<Record<string, unknown>>;
+    rowIterator = rawRows[Symbol.iterator]();
   } catch {
     // A failed archive enumeration is not an empty archive. Leave coverage
     // unmeasured so the shared projection exposes the exact run failure.
@@ -1853,8 +1849,26 @@ export async function runChannelsStream(deps: StreamDeps): Promise<void> {
   }
   const observedOn = deps.emittedAt.slice(0, 10);
   const wantsChannels = deps.requested.has("channels");
+  let channelsConsidered = 0;
   let channelsCovered = 0;
-  for (const r of rows) {
+  while (true) {
+    let nextRow: IteratorResult<Record<string, unknown>>;
+    try {
+      nextRow = rowIterator.next();
+    } catch {
+      // A mid-scan read failure cannot prove that the inventory was complete.
+      return;
+    }
+    if (nextRow.done) {
+      break;
+    }
+    channelsConsidered += 1;
+    const raw = nextRow.value;
+    const r: ChannelRow = {
+      id: raw.id as string,
+      name: (raw.name as string | null) ?? null,
+      data: (raw.data as Uint8Array | string | null) ?? null,
+    };
     if (wantsChannels) {
       // Entity record: fingerprinted so unchanged structural fields don't re-emit.
       // Every enumerated channel row is accounted for (emitted or
@@ -1870,16 +1884,16 @@ export async function runChannelsStream(deps: StreamDeps): Promise<void> {
   }
   // `channels` is a fingerprint-suppressed full-sync stream: it re-enumerates the
   // whole channel inventory every run and suppresses unchanged rows. Declaring
-  // `considered = rows.length` with `covered = channelsCovered` lets a
+  // the enumerated row count with `covered = channelsCovered` lets a
   // steady-state run read `complete` instead of a false `partial`. `channel_stats`
   // is append-keyed (one observation per channel per day), not an inventory, so it
   // declares no denominator. The denominators are measured at the query site,
   // never aliased to the emitted count.
   if (wantsChannels) {
-    await declareListConsidered(deps, "channels", rows.length, channelsCovered);
+    await declareListConsidered(deps, "channels", channelsConsidered, channelsCovered);
   }
   if (deps.requested.has("channel_stats")) {
-    await deps.emit(buildFullScanCoverageMessage("channel_stats", rows.length));
+    await deps.emit(buildFullScanCoverageMessage("channel_stats", channelsConsidered));
   }
 }
 
