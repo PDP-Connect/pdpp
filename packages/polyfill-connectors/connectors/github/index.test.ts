@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { afterEach, before, beforeEach, test } from "node:test";
+import { after, afterEach, before, test } from "node:test";
 import { evaluateStreamCoherence } from "@pdpp/reference-contract/evidence";
+import { closeDb, getDb, initDb } from "../../../../reference-implementation/server/db.ts";
+import { drainConnectorInstanceIndexWork, ingestRecord } from "../../../../reference-implementation/server/records.ts";
 import { buildPacingStateFields, readPersistedPacingInterval } from "../../src/connector-http-governor.ts";
 import type { StreamScope } from "../../src/connector-runtime.ts";
 import {
-  __resetGithubHttpGovernorForTests,
-  __setGithubHttpSleepForTests,
   __setMaxGithubListPages,
   collectGists,
   collectIssues,
@@ -16,6 +16,7 @@ import {
   collectRepositories,
   collectStarred,
   collectUser,
+  createGithubHttpGovernor,
   GITHUB_RETRYABLE_PATTERN,
   isoYear,
   prCreatedWindows,
@@ -26,10 +27,10 @@ import {
 const ORIGINAL_FETCH = globalThis.fetch;
 
 // The connector now ships adaptive pacing on by default (the shared governor's
-// default-on rate control). Its module-scoped governor sleeps the real GCRA
-// interval between requests, which would make these fetch-stubbing collector
-// tests pay seconds of real wall-clock. Resolve pacing waits instantly so the
-// suite stays fast and timing-deterministic; behavioral pacing is proven in
+// default-on rate control). A per-run governor sleeps the real GCRA interval
+// between requests, which would make these fetch-stubbing collector tests pay
+// seconds of real wall-clock. Resolve pacing waits instantly so the suite stays
+// fast and timing-deterministic; behavioral pacing is proven in
 // src/connector-http-governor.test.ts, not here.
 const ORIGINAL_SET_TIMEOUT = globalThis.setTimeout;
 before(() => {
@@ -50,14 +51,15 @@ before(() => {
       return handle;
     },
   });
+  initDb(":memory:");
 });
 
-beforeEach(() => {
-  __resetGithubHttpGovernorForTests();
+after(async () => {
+  await drainConnectorInstanceIndexWork();
+  closeDb();
 });
 
 afterEach(() => {
-  __setGithubHttpSleepForTests(undefined);
   globalThis.fetch = ORIGINAL_FETCH;
 });
 
@@ -106,7 +108,8 @@ function isRetryableGithubGap(error: unknown): boolean {
 
 function makeCtx(
   requestedStreams: readonly string[],
-  state: Record<string, unknown> = {}
+  state: Record<string, unknown> = {},
+  options: { retrySleep?: (ms: number) => void | Promise<void> } = {}
 ): {
   ctx: StreamCtx;
   coverages: CapturedCoverage[];
@@ -121,6 +124,7 @@ function makeCtx(
   const coverages: CapturedCoverage[] = [];
   const progresses: Array<{ message: string; extra?: { phase?: string } }> = [];
   const requested = new Map<string, StreamScope>(requestedStreams.map((name) => [name, { name }]));
+  const httpGovernor = createGithubHttpGovernor(options);
   return {
     ctx: {
       emit: (msg) => {
@@ -150,6 +154,7 @@ function makeCtx(
         records.push({ stream, data });
         return Promise.resolve();
       },
+      httpGovernor,
       progress: (message, extra) => {
         progresses.push({ message, ...(extra?.phase === undefined ? {} : { extra: { phase: extra.phase } }) });
         return Promise.resolve();
@@ -334,6 +339,55 @@ function installPrFetch(items: Record<string, unknown>[], failDetailForRepos: Re
     }
     return Promise.resolve(jsonResponse({}));
   };
+}
+
+const REPLAY_CONNECTOR_ID = "github";
+const REPLAY_STREAM = "pull_requests";
+
+async function ingestPullRequestRecords(
+  connectorInstanceId: string,
+  records: Array<{ stream: string; data: Record<string, unknown> }>
+): Promise<void> {
+  await records.reduce(
+    (previous, { stream, data }) =>
+      previous
+        .then(() =>
+          ingestRecord(
+            {
+              connector_id: REPLAY_CONNECTOR_ID,
+              connector_instance_id: connectorInstanceId,
+            },
+            {
+              data,
+              emitted_at: "2026-08-11T00:00:00.000Z",
+              key: String(data.id),
+              op: "upsert",
+              stream,
+            }
+          )
+        )
+        .then(() => undefined),
+    Promise.resolve()
+  );
+}
+
+function readDurablePullRequestRows(connectorInstanceId: string): Array<{
+  connector_instance_id: string;
+  record_key: string;
+  stream: string;
+}> {
+  return getDb()
+    .prepare(
+      `SELECT connector_instance_id, stream, record_key
+       FROM records
+       WHERE connector_id = ? AND connector_instance_id = ? AND stream = ? AND deleted = 0
+       ORDER BY record_key`
+    )
+    .all(REPLAY_CONNECTOR_ID, connectorInstanceId, REPLAY_STREAM) as Array<{
+    connector_instance_id: string;
+    record_key: string;
+    stream: string;
+  }>;
 }
 
 test("collectPullRequests: detail-fetch failures emit one bounded degradation SKIP_RESULT, records still emitted", async () => {
@@ -1217,13 +1271,8 @@ test("collectPullRequests: invalid JSON search 200 also fails closed without sta
   assert.equal(states.length, 0);
 });
 
-test("collectPullRequests: shared Retry-After retry recovers a transient search 429", {
-  concurrency: false,
-}, async () => {
+test("collectPullRequests: shared Retry-After retry recovers a transient search 429", async () => {
   const sleeps: number[] = [];
-  __setGithubHttpSleepForTests((ms) => {
-    sleeps.push(ms);
-  });
   let searchCalls = 0;
   globalThis.fetch = (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -1240,7 +1289,15 @@ test("collectPullRequests: shared Retry-After retry recovers a transient search 
     }
     return Promise.resolve(jsonResponse({}));
   };
-  const { ctx, states } = makeCtx(["pull_requests"]);
+  const { ctx, states } = makeCtx(
+    ["pull_requests"],
+    {},
+    {
+      retrySleep: (ms) => {
+        sleeps.push(ms);
+      },
+    }
+  );
 
   await collectPullRequests(ctx);
   assert.equal(searchCalls, 2, "Retry-After must trigger one bounded real retry");
@@ -1250,6 +1307,7 @@ test("collectPullRequests: shared Retry-After retry recovers a transient search 
 
 for (const failure of ["429", "transport"] as const) {
   test(`collectPullRequests: ${failure} on a later detail retains only the valid prefix and withholds completion`, async () => {
+    const connectorInstanceId = `cin_github_api_green_replay_${failure}`;
     const items = [prSearchItem(1, "owner/a"), prSearchItem(2, "owner/b")];
     let detailCalls = 0;
     globalThis.fetch = (input: string | URL | Request) => {
@@ -1282,12 +1340,51 @@ for (const failure of ["429", "transport"] as const) {
     assert.equal(coverages.length, 0, "fatal later detail failure withholds coverage");
     assert.equal(states.length, 0, "fatal later detail failure withholds STATE");
 
-    // Replay with the same source page: storage sees the same stable key for
-    // the retained prefix, so upsert cannot create a logical duplicate.
+    // Persist the retained prefix first. The replay uses the same durable
+    // connector instance, so the storage oracle can distinguish an upsert
+    // from a capture that merely echoed one matching id.
+    await ingestPullRequestRecords(connectorInstanceId, records);
+    assert.deepEqual(
+      readDurablePullRequestRows(connectorInstanceId).map((row) => row.record_key),
+      ["1"],
+      "the fatal run's retained prefix is durably present before replay"
+    );
+
     installPrFetch(items, new Set());
     const replay = makeCtx(["pull_requests"]);
     await collectPullRequests(replay.ctx);
-    assert.equal(replay.records[0]?.data.id, records[0]?.data.id, "replay re-emits the stable record key");
+    assert.deepEqual(
+      replay.records.map((record) => record.data.id),
+      ["1", "2"],
+      "successful replay emits the complete source key set"
+    );
+    assert.equal(new Set(replay.records.map((record) => record.data.id)).size, 2);
+    assert.deepEqual(replay.coverages, [
+      {
+        considered: 2,
+        covered: 2,
+        hydratedKeys: 0,
+        requiredKeys: 0,
+        stateStream: REPLAY_STREAM,
+        stream: REPLAY_STREAM,
+      },
+    ]);
+    assert.deepEqual(
+      replay.states,
+      [{ cursor: { last_updated_at: "2026-05-02T00:00:00Z" }, stream: REPLAY_STREAM }],
+      "successful replay emits STATE only after the complete collection"
+    );
+
+    await ingestPullRequestRecords(connectorInstanceId, replay.records);
+    const durableRows = readDurablePullRequestRows(connectorInstanceId);
+    assert.deepEqual(
+      durableRows.map((row) => row.record_key),
+      ["1", "2"],
+      "same-instance durable upsert leaves one logical row per replay key"
+    );
+    assert.equal(new Set(durableRows.map((row) => row.record_key)).size, 2);
+    assert.ok(durableRows.every((row) => row.connector_instance_id === connectorInstanceId));
+    assert.ok(durableRows.every((row) => row.stream === REPLAY_STREAM));
   });
 }
 

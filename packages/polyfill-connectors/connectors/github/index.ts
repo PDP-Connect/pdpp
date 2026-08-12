@@ -71,39 +71,37 @@ import type {
 
 const USER_AGENT = "pdpp-connector-github/0.1";
 
-// Single per-provider send governor + retry layer. The bare factory call yields
-// the shared ADAPTIVE rate controller by default: slow-start discovery → AIMD
+// Single per-run provider send governor + retry layer. The factory yields the
+// shared ADAPTIVE rate controller by default: slow-start discovery → AIMD
 // accelerate-under-success → ceiling-bounded back-off, all automatic (Phase A
 // collection-governor generalization). A run-shared retry budget enables real
 // Retry-After retries without multiplying requests across every PR detail.
 //
-// `let` (not `const`) so `collect` can re-seed it WARM-STARTED from durable state
-// at run start, compounding the AIMD descent across runs. This is the reference
-// for the warm-start seam every API connector can copy: read the prior run's
-// learned interval off a declared stream cursor → re-seed → persist it back onto
-// the same cursor at run end (see `collectUser`). The runtime gates STATE on
-// declared streams, so warm-start state must piggyback a REAL stream cursor (here
-// the `user` entity stream, which github collects whenever `user`/`user_stats` is
-// requested) — never a synthetic one. When `user` is not in scope this run simply
-// does not persist a learned rate; the next run cold-starts.
+// The run owns this governor so its pacing, retry budget, and injected test
+// effects cannot leak across concurrent collections. Warm-start restoration
+// still reads the prior run's learned interval from durable state and seeds the
+// same single governor before collection begins. The rate is persisted back onto
+// the real `user` stream cursor at run end (see `collectUser`).
 // §3 ProviderProfile: github declares its own AUDITED pacing ceiling (1000ms ≈
 // 60 req/min, ~72% of the 5000/hr primary limit; WI-1b). NOT a borrow of
 // ChatGPT's 250ms. See src/provider-profile.ts → githubPacingProfile and
 // docs/research/per-connector-rate-profiles-2026-06-13.md for the derivation.
-let githubHttpSleep: ((ms: number) => void | Promise<void>) | undefined;
 
-function createGithubHttpGovernor(restoredIntervalMs?: number): ConnectorHttpGovernor {
+interface GithubHttpGovernorOptions {
+  restoredIntervalMs?: number;
+  retrySleep?: (ms: number) => void | Promise<void>;
+}
+
+export function createGithubHttpGovernor(options: GithubHttpGovernorOptions = {}): ConnectorHttpGovernor {
   return createConnectorHttpGovernor({
     name: "github",
     maxAttempts: 4,
     profile: githubPacingProfile(),
     retryBudget: new RetryBudget({ capacity: 8, initialTokens: 2, refillPerSuccess: 0.25 }),
-    ...(githubHttpSleep === undefined ? {} : { retrySleep: githubHttpSleep }),
-    ...(restoredIntervalMs === undefined ? {} : { restoredIntervalMs }),
+    ...(options.retrySleep === undefined ? {} : { retrySleep: options.retrySleep }),
+    ...(options.restoredIntervalMs === undefined ? {} : { restoredIntervalMs: options.restoredIntervalMs }),
   });
 }
-
-let httpGovernor: ConnectorHttpGovernor = createGithubHttpGovernor();
 
 const DEFAULT_GITHUB_MAX_LIST_PAGES = 200;
 let maxGithubListPages = DEFAULT_GITHUB_MAX_LIST_PAGES;
@@ -111,17 +109,6 @@ let maxGithubListPages = DEFAULT_GITHUB_MAX_LIST_PAGES;
 /** Runtime retry classification, including the governor's exhausted 5xx form. */
 export const GITHUB_RETRYABLE_PATTERN =
   /github_malformed_response|rate_limited|ECONN|fetch failed|retryable status \d+/i;
-
-/** Test-only reset for direct collector tests that bypass the runtime's collect hook. */
-export function __resetGithubHttpGovernorForTests(): void {
-  httpGovernor = createGithubHttpGovernor();
-}
-
-/** Test-only request-sleep seam; production leaves the shared default intact. */
-export function __setGithubHttpSleepForTests(sleep: ((ms: number) => void | Promise<void>) | undefined): void {
-  githubHttpSleep = sleep;
-  __resetGithubHttpGovernorForTests();
-}
 
 /** Test-only cap injection; production keeps the bounded default. */
 export function __setMaxGithubListPages(maxPages: number): void {
@@ -132,14 +119,14 @@ export function __setMaxGithubListPages(maxPages: number): void {
 }
 
 /**
- * Re-seed the module governor warm-started from the prior run's learned rate,
+ * Re-seed the run governor warm-started from the prior run's learned rate,
  * read off the `user` stream cursor where the previous run persisted it (see
  * `collectUser`). A stale or absent value cold-starts at the discovery seed.
  */
-function restoreGithubPacing(state: Record<string, unknown>): void {
+function restoreGithubPacing(state: Record<string, unknown>): ConnectorHttpGovernor {
   const userCursor = state.user as Record<string, unknown> | undefined;
   const restoredIntervalMs = readPersistedPacingInterval(userCursor);
-  httpGovernor = createGithubHttpGovernor(restoredIntervalMs === null ? undefined : restoredIntervalMs);
+  return createGithubHttpGovernor(restoredIntervalMs === null ? {} : { restoredIntervalMs });
 }
 
 interface ProgressExtra {
@@ -163,19 +150,18 @@ interface GhRawResponse {
 }
 
 async function gh<T>(
+  ctx: StreamCtx,
   path: string,
-  token: string,
   { accept = "application/vnd.github+json" }: GhFetchOptions = {},
-  progress?: (message: string, extra?: ProgressExtra) => Promise<void>,
   extra?: ProgressExtra
 ): Promise<GhResult<T>> {
   let raw: GhRawResponse;
   try {
-    const r = await httpGovernor.request<GhRawResponse, GhRawResponse>(
+    const r = await ctx.httpGovernor.request<GhRawResponse, GhRawResponse>(
       async (): Promise<GhRawResponse> => {
         const res = await fetch(`${BASE}${path}`, {
           headers: {
-            Authorization: `Bearer ${token}`,
+            Authorization: `Bearer ${ctx.token}`,
             Accept: accept,
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": USER_AGENT,
@@ -203,7 +189,7 @@ async function gh<T>(
     raw = r.value;
   } catch (error) {
     if (error instanceof Error && error.message === "github_rate_limited") {
-      await progress?.("GitHub request rate limited", { ...extra, phase: "rate_limit", rate_limit_pressure: 1 });
+      await ctx.progress("GitHub request rate limited", { ...extra, phase: "rate_limit", rate_limit_pressure: 1 });
     }
     throw error;
   }
@@ -239,6 +225,7 @@ export interface StreamCtx {
       | Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }>
   ) => Promise<void>;
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>;
+  httpGovernor: ConnectorHttpGovernor;
   progress: (message: string, extra?: ProgressExtra) => Promise<void>;
   requested: Map<string, { name?: string; time_range?: { since?: string; until?: string } }>;
   state: Record<string, unknown>;
@@ -340,7 +327,7 @@ async function declareListConsidered(
 
 export async function collectUser(ctx: StreamCtx): Promise<void> {
   await ctx.progress("Fetching user profile", { stream: "user" });
-  const { data: u } = await gh<GitHubUser>("/user", ctx.token);
+  const { data: u } = await gh<GitHubUser>(ctx, "/user");
 
   if (ctx.requested.has("user")) {
     // Entity record: stable identity fields only. Gate on fingerprint so
@@ -446,7 +433,7 @@ export async function collectRepositories(ctx: StreamCtx): Promise<void> {
       cursor_present: pageIndex > 0,
     };
     await ctx.progress("Fetching GitHub repositories page", pageExtra);
-    const page: GhResult<unknown> = await gh<unknown>(path, ctx.token, {}, ctx.progress, pageExtra);
+    const page: GhResult<unknown> = await gh<unknown>(ctx, path, {}, pageExtra);
     const items = parseGithubListResponse<GitHubRepo>(page.data, "repositories");
     totalSeen += items.length;
     await ctx.progress("Fetched GitHub repositories page", {
@@ -545,12 +532,11 @@ export async function collectStarred(ctx: StreamCtx): Promise<void> {
     };
     await ctx.progress("Fetching GitHub starred page", pageExtra);
     const page: GhResult<unknown> = await gh<unknown>(
+      ctx,
       path,
-      ctx.token,
       {
         accept: "application/vnd.github.star+json",
       },
-      ctx.progress,
       pageExtra
     );
     const entries = parseGithubListResponse<GitHubStarredEntry>(page.data, "starred");
@@ -642,7 +628,7 @@ export async function collectIssues(ctx: StreamCtx): Promise<void> {
       cursor_present: pageIndex > 0 || Boolean(sinceParam),
     };
     await ctx.progress("Fetching GitHub issues page", pageExtra);
-    const page: GhResult<unknown> = await gh<unknown>(path, ctx.token, {}, ctx.progress, pageExtra);
+    const page: GhResult<unknown> = await gh<unknown>(ctx, path, {}, pageExtra);
     const items = parseGithubListResponse<GitHubIssue>(page.data, "issues");
     totalSeen += items.length;
     await ctx.progress("Fetched GitHub issues page", {
@@ -740,15 +726,15 @@ interface PullDetailResult {
 }
 
 async function fetchPullDetail(
+  ctx: StreamCtx,
   repoFull: string | null,
-  number: number | undefined,
-  token: string
+  number: number | undefined
 ): Promise<PullDetailResult> {
   if (!(repoFull && number !== undefined)) {
     return { detail: null, detailFailed: false };
   }
   try {
-    const r = await gh<GitHubPullDetail>(`/repos/${repoFull}/pulls/${String(number)}`, token);
+    const r = await gh<GitHubPullDetail>(ctx, `/repos/${repoFull}/pulls/${String(number)}`);
     return { detail: r.data, detailFailed: false };
   } catch (e) {
     // Non-fatal: emit what we have from search. Rate-limit errors
@@ -848,7 +834,7 @@ async function emitPullRequestItem(
 ): Promise<PrItemResult> {
   const repoFull = repoFullFromUrl(it.repository_url);
   // Fetch PR detail for fields not in search summary.
-  const { detail, detailFailed } = await fetchPullDetail(repoFull, it.number, ctx.token);
+  const { detail, detailFailed } = await fetchPullDetail(ctx, repoFull, it.number);
   // Streaming is intentional: a later fatal detail/page failure retains this
   // already-emitted idempotent record. The collector withholds coverage and
   // STATE until the collection succeeds; a retry re-emits the same stable key
@@ -924,7 +910,7 @@ async function drainPrSearchWindow(
     await ctx.progress("Fetching GitHub pull requests page", pageExtra);
     let page: GhResult<GitHubSearchResponse>;
     try {
-      page = await gh<GitHubSearchResponse>(path, ctx.token, {}, ctx.progress, pageExtra);
+      page = await gh<GitHubSearchResponse>(ctx, path, {}, pageExtra);
     } catch (error) {
       if (error instanceof SyntaxError) {
         throw createConnectorFailure(
@@ -981,7 +967,7 @@ export async function collectPullRequests(ctx: StreamCtx): Promise<void> {
 
   // Need the login to build the search query (and created_at to floor the
   // full-resync windowing at the user's account-creation year).
-  const { data: me } = await gh<GitHubUser>("/user", ctx.token);
+  const { data: me } = await gh<GitHubUser>(ctx, "/user");
 
   // Full resync (no incremental `since`) is the cap-prone path: partition by
   // immutable `created:` year so each window stays under the search cap.
@@ -1131,7 +1117,7 @@ export async function collectGists(ctx: StreamCtx): Promise<void> {
       cursor_present: pageIndex > 0 || Boolean(sinceParam),
     };
     await ctx.progress("Fetching GitHub gists page", pageExtra);
-    const page: GhResult<unknown> = await gh<unknown>(path, ctx.token, {}, ctx.progress, pageExtra);
+    const page: GhResult<unknown> = await gh<unknown>(ctx, path, {}, pageExtra);
     const items = parseGithubListResponse<GitHubGist>(page.data, "gists");
     totalSeen += items.length;
     await ctx.progress("Fetched GitHub gists page", {
@@ -1175,13 +1161,14 @@ if (isMainModule(import.meta.url)) {
       }
       // Warm-start the adaptive rate controller from the prior run's learned
       // interval (line 1 of the seam: restore).
-      restoreGithubPacing(state);
+      const httpGovernor = restoreGithubPacing(state);
       const ctx: StreamCtx = {
         token,
         state,
         requested,
         emit,
         emitRecord,
+        httpGovernor,
         progress,
       };
 
