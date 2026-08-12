@@ -78,11 +78,15 @@ async function waitForGroup(pgid: number, timeoutMs: number): Promise<boolean> {
  * removed. `startedAt` is the time the wrapper received its signal, rather
  * than the time its direct child eventually closes.
  */
-async function terminateRemainingGroup(pgid: number, startedAt = Date.now()): Promise<boolean> {
+async function terminateRemainingGroup(
+  pgid: number,
+  startedAt = Date.now(),
+  initiatingSignal: Signal = "SIGTERM"
+): Promise<boolean> {
   if (!groupExists(pgid)) {
     return true;
   }
-  signalGroup(pgid, "SIGTERM");
+  signalGroup(pgid, initiatingSignal);
   const termGraceRemaining = Math.max(0, GROUP_GRACE_MS - (Date.now() - startedAt));
   if (await waitForGroup(pgid, termGraceRemaining)) {
     return true;
@@ -130,7 +134,7 @@ export interface RunScratchCommandOptions {
   /** Test seam for the signal window before the child PID is latched as PGID. */
   beforePgidAssignment?: () => Promise<void>;
   /** Test seam for the fail-closed path after a process-group shutdown attempt. */
-  stopGroup?: (pgid: number, startedAt?: number) => Promise<boolean>;
+  stopGroup?: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>;
 }
 
 export async function runScratchCommand(
@@ -163,7 +167,7 @@ export async function runScratchCommand(
   const stopGroup = options.stopGroup ?? terminateRemainingGroup;
   const startSignalShutdown = () => {
     if (firstSignal && pgid !== undefined && !signalShutdown) {
-      signalShutdown = stopGroup(pgid, signalReceivedAt);
+      signalShutdown = stopGroup(pgid, signalReceivedAt, firstSignal);
     }
   };
   const forwardSignal = (signal: Signal) => {
@@ -203,7 +207,7 @@ export async function runScratchCommand(
     process.stderr.write(`test scratch command failed: ${reason}\n`);
     let groupStopped = true;
     if (pgid !== undefined) {
-      groupStopped = signalShutdown ? await signalShutdown : await stopGroup(pgid, signalReceivedAt);
+      groupStopped = signalShutdown ? await signalShutdown : await stopGroup(pgid, signalReceivedAt, firstSignal);
     }
     return await cleanupWithResult(ownership, { code: INFRASTRUCTURE_EXIT_CODE, signal: null }, groupStopped);
   } finally {

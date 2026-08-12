@@ -84,6 +84,7 @@ test("shell writer command-position prefixes cannot bypass review", async () => 
       ["scripts/env-options.sh", "env --ignore-environment --unset=HOME tee /tmp/env-options"],
       ["scripts/command-options.sh", "command -p -- tee /tmp/command-options"],
       ["scripts/sudo-options.sh", "sudo -n -u runner -- tee /tmp/sudo-options"],
+      ["scripts/sudo-long-option.sh", "sudo --user runner tee /tmp/sudo-long-option"],
       ["scripts/combined.sh", "env -- command -p sudo -- tee /tmp/combined"],
     ]);
     await Promise.all([...mutations].map(([path, source]) => writeFixture(root, path, `${source}\n`)));
@@ -100,10 +101,45 @@ test("a reviewed occurrence does not exempt another writer in the same file", as
     await writeFixture(
       root,
       "scripts/docker-smoke.sh",
-      ['PDPP_DB_PATH="', "$", '{PDPP_DB_PATH:-/tmp/pdpp-smoke.sqlite}"\ncommand tee /tmp/unreviewed\n'].join("")
+      ['export PDPP_DB_PATH="', "$", '{PDPP_DB_PATH:-/tmp/pdpp-smoke.sqlite}"\ncommand tee /tmp/unreviewed\n'].join("")
     );
     const findings = await findCanonicalEntrypointBypasses(root);
     assert.ok(findings.some((finding) => finding.path === "scripts/docker-smoke.sh"));
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("owner tokens outside the test command cannot bless a workflow bypass", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFixture(
+      root,
+      ".github/workflows/new.yml",
+      "jobs:\n  check:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          echo test:scratch\n          node --test bypass.test.ts\n"
+    );
+    const findings = await findCanonicalEntrypointBypasses(root);
+    assert.ok(findings.some((finding) => finding.path === ".github/workflows/new.yml"));
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("a reviewed root alias cannot hide a newly added raw test", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({
+        scripts: {
+          "test:scratch": "node test-scratch/run-command.ts",
+          "friend-journey:acceptance": "node --test bypass.test.ts",
+        },
+      })
+    );
+    const findings = await findCanonicalEntrypointBypasses(root);
+    assert.ok(findings.some((finding) => finding.path === "package.json"));
   } finally {
     await rm(root, { force: true, recursive: true });
   }

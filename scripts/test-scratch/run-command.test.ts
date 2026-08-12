@@ -31,6 +31,8 @@ import {
 import { runScratchCommand } from "./run-command.ts";
 
 const child = new URL("./fixtures/child.ts", import.meta.url).pathname;
+const CHILD_SIGINT_OUTPUT = /child-signal:SIGINT/;
+const CHILD_SIGTERM_OUTPUT = /child-signal:SIGTERM/;
 
 function temporaryParent(): Promise<string> {
   return mkdtemp(join(tmpdir(), "pdpp-test-scratch-test-"));
@@ -441,6 +443,44 @@ test("SIGTERM reaches the owned group and cleanup completes before wrapper termi
     wrapper.kill("SIGTERM");
   });
   assert.deepEqual(result, { code: null, signal: "SIGTERM" });
+  await assert.rejects(access(root));
+});
+
+test("SIGINT is forwarded unchanged to the owned group before cleanup", async () => {
+  let output = "";
+  const wrapper = spawn(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      new URL("./run-command.ts", import.meta.url).pathname,
+      ...command(["--print-root", "--record-signals", "--wait"]),
+    ],
+    { stdio: ["ignore", "pipe", "ignore"] }
+  );
+  wrapper.stdout?.on("data", (chunk: Buffer) => {
+    output += chunk.toString();
+  });
+  const root = await new Promise<string>((resolve, reject) => {
+    const deadline = setTimeout(() => reject(new Error("child did not report its scratch root")), 5000);
+    const observe = () => {
+      const [value] = output.trim().split("\n");
+      if (value) {
+        clearTimeout(deadline);
+        resolve(value);
+      }
+    };
+    wrapper.stdout?.on("data", observe);
+    wrapper.once("error", reject);
+  });
+  const result = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    wrapper.once("error", reject);
+    wrapper.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  wrapper.kill("SIGINT");
+  assert.deepEqual(await result, { code: null, signal: "SIGINT" });
+  assert.match(output, CHILD_SIGINT_OUTPUT);
+  assert.doesNotMatch(output, CHILD_SIGTERM_OUTPUT);
   await assert.rejects(access(root));
 });
 

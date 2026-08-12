@@ -24,7 +24,7 @@ const WORKFLOW_DIRECTORY = ".github/workflows";
 const OWNER_COMMAND = "test-scratch/run-command.ts";
 const ROOT_OWNER_COMMAND = "test:scratch";
 const RAW_TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
-const ROOT_REVIEWED_NON_TEST_SCRIPTS = new Set(["test-accounting:inventory", "friend-journey:acceptance"]);
+const ROOT_REVIEWED_NON_TEST_SCRIPTS = new Set(["test-accounting:inventory"]);
 const TMP_PATH = /\/tmp/;
 const WHITESPACE = /\s/;
 const ROOT_HOST_ALIAS = /(?:^|:)(?:smoke|acceptance)(?::|$)/;
@@ -75,22 +75,23 @@ const REVIEWED_WRITER_EXCEPTIONS: readonly ReviewedWriterException[] = [
   {
     path: "scripts/docker-neko-network-durability-smoke.sh",
     reason: "direct invocation fallback; canonical runs provide the owner root",
-    source: /PDPP_TEST_SCRATCH_ROOT:-\$\{TMPDIR:-\/tmp\}/,
+    source: /SCRATCH_BASE="\$\{PDPP_TEST_SCRATCH_ROOT:-\$\{TMPDIR:-\/tmp\}\}"/,
   },
   {
     path: "scripts/docker-neko-network-migration-smoke.sh",
     reason: "direct invocation fallback; canonical runs provide the owner root",
-    source: /PDPP_TEST_SCRATCH_ROOT:-\$\{TMPDIR:-\/tmp\}/,
+    source: /SCRATCH_BASE="\$\{PDPP_TEST_SCRATCH_ROOT:-\$\{TMPDIR:-\/tmp\}\}"/,
   },
   {
     path: "scripts/docker-neko-dynamic-allocator-smoke.sh",
     reason: "stable cross-run flock coordination state",
-    source: /PDPP_NEKO_DYNAMIC_SMOKE_PORT_LOCK_FILE:-\/tmp\/pdpp-neko-dynamic-smoke-ports\.lock/,
+    source:
+      /exec \{PORT_LOCK_FD\}>"\$\{PDPP_NEKO_DYNAMIC_SMOKE_PORT_LOCK_FILE:-\/tmp\/pdpp-neko-dynamic-smoke-ports\.lock\}"/,
   },
   {
     path: "scripts/docker-smoke.sh",
     reason: "container-internal database path",
-    source: /PDPP_DB_PATH:-\/tmp\/pdpp-smoke\.sqlite/,
+    source: /export PDPP_DB_PATH="\$\{PDPP_DB_PATH:-\/tmp\/pdpp-smoke\.sqlite\}"/,
   },
   {
     path: "scripts/core-headed-patchright-runtime-oracle.ts",
@@ -180,6 +181,8 @@ function shellTokenSegments(command: string): string[][] {
       }
     } else if (character === "'" || character === '"') {
       quote = character;
+    } else if (character === "\n") {
+      endSegment();
     } else if (WHITESPACE.test(character)) {
       push();
     } else if (";|&".includes(character)) {
@@ -203,7 +206,28 @@ function commandBasename(token: string): string {
 const SHELL_WRAPPER_ARGUMENTS: Readonly<Record<string, ReadonlySet<string>>> = {
   env: new Set(["-u", "--unset"]),
   command: new Set(),
-  sudo: new Set(["-a", "-C", "-D", "-g", "-h", "-p", "-R", "-r", "-t", "-U", "-u"]),
+  sudo: new Set([
+    "-a",
+    "-C",
+    "-D",
+    "-g",
+    "-h",
+    "-p",
+    "-R",
+    "-r",
+    "-t",
+    "-U",
+    "-u",
+    "--chdir",
+    "--close-from",
+    "--group",
+    "--host",
+    "--other-user",
+    "--prompt",
+    "--role",
+    "--type",
+    "--user",
+  ]),
 };
 
 function isShellAssignment(token: string): boolean {
@@ -256,8 +280,7 @@ function shellCommandToken(tokens: readonly string[]): string | undefined {
   }
 }
 
-function isRawTestCommand(command: string): boolean {
-  const tokens = shellTokens(command);
+function isRawTestTokens(tokens: readonly string[]): boolean {
   const hasNodeTest = tokens.some((token) => commandBasename(token) === "node") && tokens.includes("--test");
   const hasTsxTest =
     tokens.some((token) => commandBasename(token) === "tsx") && tokens.some((token) => RAW_TEST_FILE.test(token));
@@ -268,10 +291,26 @@ function isRawTestCommand(command: string): boolean {
   return hasNodeTest || hasTsxTest || hasShellTest;
 }
 
+function isRawTestCommand(command: string): boolean {
+  return shellTokenSegments(command).some(isRawTestTokens);
+}
+
+function tokensHaveOwnerInvocation(tokens: readonly string[]): boolean {
+  const command = commandBasename(shellCommandToken(tokens) ?? "");
+  return tokens.some((token) => {
+    if (token === ROOT_OWNER_COMMAND) {
+      return command === "pnpm";
+    }
+    return (token === OWNER_COMMAND || token.endsWith(`/${OWNER_COMMAND}`)) && ["node", "tsx"].includes(command);
+  });
+}
+
 function hasOwnerInvocation(command: string): boolean {
-  return shellTokens(command).some(
-    (token) => token === ROOT_OWNER_COMMAND || token === OWNER_COMMAND || token.endsWith(`/${OWNER_COMMAND}`)
-  );
+  return shellTokenSegments(command).some(tokensHaveOwnerInvocation);
+}
+
+function hasUnroutedRawTest(command: string): boolean {
+  return shellTokenSegments(command).some((tokens) => isRawTestTokens(tokens) && !tokensHaveOwnerInvocation(tokens));
 }
 
 function referencesTestScript(command: string): boolean {
@@ -288,8 +327,11 @@ function isPackageFrontDoor(name: string, command: string): boolean {
 }
 
 function isRootFrontDoor(name: string, command: string): boolean {
-  if (name === "test:scratch" || ROOT_REVIEWED_NON_TEST_SCRIPTS.has(name)) {
-    return name === "test:scratch";
+  if (name === "test:scratch") {
+    return true;
+  }
+  if (ROOT_REVIEWED_NON_TEST_SCRIPTS.has(name)) {
+    return false;
   }
   if (
     name === "reference-implementation:test" ||
@@ -305,7 +347,7 @@ function isRootFrontDoor(name: string, command: string): boolean {
 }
 
 function isOwnerRouted(command: string): boolean {
-  return hasOwnerInvocation(command);
+  return hasOwnerInvocation(command) && !hasUnroutedRawTest(command);
 }
 
 function isReviewedRootDelegate(path: string, name: string, command: string): boolean {
@@ -381,7 +423,7 @@ async function workflowFindings(root: string, files: readonly string[]): Promise
       workflowFiles.map(async (path) => {
         const source = await readFile(join(root, path), "utf8");
         return workflowRuns(source, path).flatMap((run) =>
-          isRawTestCommand(run) && !isOwnerRouted(run)
+          hasUnroutedRawTest(run)
             ? [{ path, reason: `workflow run bypasses the scratch owner: ${singleLine(run)}` }]
             : []
         );

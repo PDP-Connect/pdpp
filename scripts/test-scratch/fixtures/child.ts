@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawn } from "node:child_process";
+import { writeSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +20,14 @@ if (process.argv.includes("--ignore-term")) {
   process.on("SIGTERM", () => {
     // Intentional fixture: both the direct child and descendant can require KILL.
   });
+}
+if (process.argv.includes("--record-signals")) {
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signal, () => {
+      writeSync(process.stdout.fd, `child-signal:${signal}\n`);
+      process.exit(signal === "SIGINT" ? 130 : 143);
+    });
+  }
 }
 function startGrandchild(name: string, throughShell = false): void {
   const grandchildArgs = process.argv.includes("--grandchild-ignore-term") ? ["--ignore-term"] : [];
