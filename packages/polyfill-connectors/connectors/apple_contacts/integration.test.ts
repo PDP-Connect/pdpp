@@ -260,7 +260,10 @@ test("apple_contacts integration: an unchanged incremental sync does not prove a
     });
 
     assert.equal(recordsOf(second.messages, "contact_groups").length, 0);
-    assert.equal(second.messages.some((m) => m.type === "STATE" && m.stream === "contact_groups"), false);
+    assert.equal(
+      second.messages.some((m) => m.type === "STATE" && m.stream === "contact_groups"),
+      false
+    );
     assert.equal(
       second.messages.some((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contact_groups"),
       false,

@@ -312,6 +312,28 @@ async function emitAddressBookRecordIfRequested(args: {
   return true;
 }
 
+async function emitContactGroupsIfRequested(args: {
+  bookUrl: string;
+  boundaryEstablished: boolean;
+  emit: (message: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
+  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  requested: Map<string, unknown>;
+  seenCards: Array<{ card: ParsedVCard; uid: string }>;
+}): Promise<number> {
+  const { bookUrl, boundaryEstablished, emit, emitRecord, requested, seenCards } = args;
+  if (!(requested.has("contact_groups") && boundaryEstablished)) {
+    return 0;
+  }
+
+  let groupsEmitted = 0;
+  for (const group of deriveGroups(bookUrl, seenCards)) {
+    await emitRecord("contact_groups", group);
+    groupsEmitted += 1;
+  }
+  await emit({ type: "STATE", stream: "contact_groups", cursor: { fetched_at: nowIso() } });
+  return groupsEmitted;
+}
+
 /**
  * Collect one address book: probe sync capability, fetch (sync-collection or
  * bounded full snapshot), emit the address-book entity record plus contact +
@@ -400,7 +422,7 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   };
 
   if (supportsSync) {
-      for (const resource of resolvedSyncResult.resources) {
+    for (const resource of resolvedSyncResult.resources) {
       await emitContactRecord(resource);
     }
     for (const deletedHref of resolvedSyncResult.deletedHrefs) {
@@ -437,20 +459,18 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     });
   }
 
-  let groupsEmitted = 0;
-  if (requested.has("contact_groups") && groupsBoundaryEstablished) {
-    for (const group of deriveGroups(book.url, seenCards)) {
-      await emitRecord("contact_groups", group);
-      groupsEmitted += 1;
-    }
-    // Group membership is a derived full snapshot. Stage its stream only
-    // after the source enumeration and derivation complete successfully;
-    // this lets a genuine zero-group result prove coverage without turning a
-    // failed or unattempted scan into proof.
-    if (groupsBoundaryEstablished) {
-      await emit({ type: "STATE", stream: "contact_groups", cursor: { fetched_at: nowIso() } });
-    }
-  }
+  // Group membership is a derived full snapshot. Stage its stream only
+  // after the source enumeration and derivation complete successfully;
+  // this lets a genuine zero-group result prove coverage without turning a
+  // failed or unattempted scan into proof.
+  const groupsEmitted = await emitContactGroupsIfRequested({
+    bookUrl: book.url,
+    boundaryEstablished: groupsBoundaryEstablished,
+    emit,
+    emitRecord,
+    requested,
+    seenCards,
+  });
 
   const contactsState =
     (newState.contacts as Record<string, { sync_token?: string; fingerprints?: Record<string, string> }>) ?? {};
