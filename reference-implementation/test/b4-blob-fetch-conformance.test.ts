@@ -27,7 +27,10 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const POLYFILL_MANIFESTS_DIR = join(__dirname, "..", "..", "packages", "polyfill-connectors", "manifests");
@@ -191,6 +194,32 @@ interface ClientGrantParams {
   streams: { name: string; fields: string[] }[];
 }
 
+function sourceIdForConnectorId(connectorId: string): string {
+  return connectorId.includes("://") ? connectorId : `https://registry.pdpp.org/connectors/${connectorId}`;
+}
+
+async function seedDefaultGrantInstance(connectorId: string, ownerSubjectId: string): Promise<void> {
+  const store = createRequestConnectorInstanceStore();
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
+  const connectorInstanceId = makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorKey);
+  if (await store.get(connectorInstanceId)) {
+    return;
+  }
+  const now = new Date().toISOString();
+  await store.upsert({
+    connectorId: connectorKey,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: "GroupMe",
+    ownerSubjectId,
+    sourceBinding: { fixture: "b4-conformance-default-account" },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+}
+
 interface ApprovedGrant {
   grant: { grant_id: string; access_mode: string; expires_at?: string };
   token: string;
@@ -200,6 +229,7 @@ interface ApprovedGrant {
  * Issue a grant-scoped client token via PAR + consent/approve.
  */
 async function issueClientGrant(asUrl: string, subjectId: string, params: ClientGrantParams): Promise<ApprovedGrant> {
+  await seedDefaultGrantInstance(params.connector_id, subjectId);
   const { body: par } = await fetchJson<{ request_uri: string }>(`${asUrl}/oauth/par`, {
     body: JSON.stringify({
       authorization_details: [
@@ -207,7 +237,7 @@ async function issueClientGrant(asUrl: string, subjectId: string, params: Client
           access_mode: params.access_mode,
           purpose_code: params.purpose_code,
           purpose_description: params.purpose_description,
-          source: { id: params.connector_id, kind: "connector" },
+          source: { id: sourceIdForConnectorId(params.connector_id), kind: "connector" },
           streams: params.streams,
           type: "https://pdpp.dev/data-access",
         },

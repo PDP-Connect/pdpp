@@ -22,7 +22,10 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -151,6 +154,32 @@ interface SpotifyManifest {
   streams: SpotifyManifestStream[];
 }
 
+function sourceIdForConnectorId(connectorId: string): string {
+  return connectorId.includes("://") ? connectorId : `https://registry.pdpp.org/connectors/${connectorId}`;
+}
+
+async function seedDefaultGrantInstance(connectorId: string, ownerSubjectId: string): Promise<void> {
+  const store = createRequestConnectorInstanceStore();
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
+  const connectorInstanceId = makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorKey);
+  if (await store.get(connectorInstanceId)) {
+    return;
+  }
+  const now = new Date().toISOString();
+  await store.upsert({
+    connectorId: connectorKey,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: "Spotify",
+    ownerSubjectId,
+    sourceBinding: { fixture: "b3-conformance-default-account" },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+}
+
 /**
  * Issue an owner token via the device flow. Needed to seed records before
  * issuing a client-scoped grant.
@@ -192,6 +221,7 @@ async function issueClientGrant(
   subjectId: string,
   params: IssueClientGrantParams
 ): Promise<ApprovedGrant> {
+  await seedDefaultGrantInstance(params.connector_id, subjectId);
   const { body: par } = await fetchJson<ParResponse>(`${asUrl}/oauth/par`, {
     body: JSON.stringify({
       authorization_details: [
@@ -199,7 +229,7 @@ async function issueClientGrant(
           access_mode: params.access_mode,
           purpose_code: params.purpose_code,
           purpose_description: params.purpose_description,
-          source: { id: params.connector_id, kind: "connector" },
+          source: { id: sourceIdForConnectorId(params.connector_id), kind: "connector" },
           streams: params.streams,
           type: "https://pdpp.dev/data-access",
         },

@@ -11,7 +11,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { runConnector } from "../runtime/index.ts";
-import { parsePendingConsentRequestUri } from "../server/auth.ts";
+import { parsePendingConsentRequestUri, registerConnector } from "../server/auth.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
@@ -21,6 +21,8 @@ import {
   admitOwnerRunConnection,
   makeDefaultAccountConnectorInstanceId,
 } from "../server/stores/connector-instance-store.ts";
+
+type RuntimeConnectorManifest = NonNullable<Parameters<typeof runConnector>[0]["manifest"]>;
 
 const TOP_LEVEL_REGEX_1 = /Reference trace ID: (trc_[A-Za-z0-9]+)/;
 const TOP_LEVEL_REGEX_2 = /^warning: "pdpp trace show" is deprecated; use "pdpp ref trace show" instead\.$/m;
@@ -157,6 +159,7 @@ const TOP_LEVEL_REGEX_133 = /Reference trace ID: (trc_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_134 = /Stream 'not_a_stream' not found/;
 const TOP_LEVEL_REGEX_135 = /connector_id must be a single non-empty string for polyfill owner access/;
 const TOP_LEVEL_REGEX_136 = /request\.source_binding must include only kind and id/;
+const CLI_GRANT_FIXTURE_OWNER_SUBJECTS = ["cli_owner", "u1", "employee_1"] as const;
 
 const execFile = promisify(execFileCallback);
 
@@ -177,6 +180,14 @@ interface CloseableHttpServer {
 // callers of withHarness/withNativeHarness.
 interface TestManifest {
   readonly connector_id: string;
+  readonly name?: string;
+  readonly provider_id?: string;
+  readonly source_declaration?: {
+    readonly protocol_version: string;
+    readonly streams: readonly Record<string, unknown>[];
+  };
+  readonly storage_binding?: { readonly connector_id: string };
+  readonly version?: string;
   readonly [key: string]: unknown;
 }
 
@@ -424,6 +435,7 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>) {
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
+    await seedCliGrantInstances(spotifyManifest.connector_id, "Spotify");
 
     await fn({ asUrl, rsUrl, spotifyManifest });
   } finally {
@@ -473,7 +485,7 @@ function startGrantRequest(asUrl: string, params: GrantRequestParams) {
             params.source ||
             (params.provider_id
               ? { id: params.provider_id, kind: "provider_native" }
-              : { id: params.connector_id, kind: "connector" }),
+              : { id: sourceIdForConnectorId(params.connector_id), kind: "connector" }),
           streams: params.streams,
           type: "https://pdpp.dev/data-access",
         },
@@ -641,6 +653,47 @@ function fakeAdmitRunConnection(
   };
 }
 
+function sourceIdForConnectorId(connectorId: string | undefined): string | undefined {
+  if (connectorId === undefined || connectorId.includes("://")) {
+    return connectorId;
+  }
+  return `https://registry.pdpp.org/connectors/${connectorId}`;
+}
+
+async function seedDefaultGrantInstance(
+  connectorId: string,
+  ownerSubjectId: string,
+  displayName: string
+): Promise<void> {
+  const store = createRequestConnectorInstanceStore();
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
+  const connectorInstanceId = makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorKey);
+  if (await store.get(connectorInstanceId)) {
+    return;
+  }
+  const now = new Date().toISOString();
+  await store.upsert({
+    connectorId: connectorKey,
+    connectorInstanceId,
+    createdAt: now,
+    displayName,
+    ownerSubjectId,
+    sourceBinding: { fixture: "cli-grant-omission-default-account" },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+}
+
+async function seedCliGrantInstances(connectorId: string, displayName: string): Promise<void> {
+  await Promise.all(
+    CLI_GRANT_FIXTURE_OWNER_SUBJECTS.map((ownerSubjectId) =>
+      seedDefaultGrantInstance(connectorId, ownerSubjectId, displayName)
+    )
+  );
+}
+
 function seedSpotify(rsUrl: string, manifest: TestManifest, ownerToken: string, ownerSubjectId = "cli_owner") {
   const connectorPath = join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts");
   return runConnector({
@@ -654,7 +707,7 @@ function seedSpotify(rsUrl: string, manifest: TestManifest, ownerToken: string, 
     collectionMode: "full_refresh",
     connectorId: manifest.connector_id,
     connectorPath,
-    manifest,
+    manifest: manifest as RuntimeConnectorManifest,
     ownerSubjectId,
     ownerToken,
     rsUrl,
@@ -715,19 +768,20 @@ async function seedNorthstar(nativeManifest: TestManifest, ownerSubjectId = "cli
   ];
 
   const storageBinding = nativeManifest.storage_binding as { connector_id: string };
-  const storageManifest = {
-    connector_id: storageBinding.connector_id,
-    name: nativeManifest.name,
-    streams: nativeManifest.streams,
-    version: nativeManifest.version,
-  };
-  getDb()
-    .prepare(`
-      INSERT INTO connectors(connector_id, manifest, created_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(connector_id) DO UPDATE SET manifest = excluded.manifest
-    `)
-    .run(storageBinding.connector_id, JSON.stringify(storageManifest), new Date().toISOString());
+  assert.ok(nativeManifest.name, "native manifest includes name");
+  assert.ok(nativeManifest.source_declaration, "native manifest includes source_declaration");
+  assert.ok(nativeManifest.version, "native manifest includes version");
+  await registerConnector(
+    {
+      connector_id: storageBinding.connector_id,
+      display_name: nativeManifest.name,
+      protocol_version: nativeManifest.source_declaration.protocol_version,
+      source_declaration: nativeManifest.source_declaration,
+      streams: nativeManifest.source_declaration.streams,
+      version: nativeManifest.version,
+    },
+    { backfillRetrievalIndexes: false }
+  );
 
   const connectorInstanceId = makeDefaultAccountConnectorInstanceId(ownerSubjectId, storageBinding.connector_id);
   const now = new Date().toISOString();
@@ -763,6 +817,9 @@ function issueNorthstarClientGrant(asUrl: string, nativeManifest: TestManifest, 
 }
 
 async function approveGrant(asUrl: string, subjectId: string, params: GrantRequestParams): Promise<ApprovedGrant> {
+  if (params.connector_id) {
+    await seedDefaultGrantInstance(params.connector_id, subjectId, "Grant fixture");
+  }
   const { body: initiate } = await startGrantRequest(asUrl, params);
   assert.ok(initiate.request_uri, "expected request_uri from PAR");
 
@@ -4738,7 +4795,7 @@ test("PDPP CLI smoke", async (t) => {
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
-          manifest: spotifyManifest,
+          manifest: spotifyManifest as RuntimeConnectorManifest,
           ownerToken,
           rsUrl,
           state: null,
@@ -4817,7 +4874,7 @@ rl.on('line', (line) => {
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
-          manifest: spotifyManifest,
+          manifest: spotifyManifest as RuntimeConnectorManifest,
           onInteraction: async (message: unknown) => ({
             data: { token: "super_secret_token" },
             request_id: (message as { request_id?: string }).request_id,
@@ -4911,7 +4968,7 @@ rl.on('line', (line) => {
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
-          manifest: spotifyManifest,
+          manifest: spotifyManifest as RuntimeConnectorManifest,
           onInteraction: async () => new Promise(() => undefined),
           ownerToken,
           rsUrl,
@@ -4986,7 +5043,7 @@ rl.on('line', (line) => {
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
-          manifest: spotifyManifest,
+          manifest: spotifyManifest as RuntimeConnectorManifest,
           onInteraction: () => Promise.reject(new Error("user aborted interaction")),
           ownerToken,
           rsUrl,
@@ -5056,7 +5113,7 @@ rl.on('line', (line) => {
             collectionMode: "full_refresh",
             connectorId: spotifyManifest.connector_id,
             connectorPath,
-            manifest: spotifyManifest,
+            manifest: spotifyManifest as RuntimeConnectorManifest,
             onInteraction: async (message: unknown) => ({
               request_id: (message as { request_id?: string }).request_id,
               status: "success",
@@ -5155,7 +5212,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               onInteraction: async () => ({
                 data: {},
                 request_id: "cli_run_interaction_invalid_envelope",
@@ -5241,7 +5298,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               onInteraction: async () => ({
                 data: {},
                 request_id: "cli_run_interaction_invalid_schema",
@@ -5324,7 +5381,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken,
               rsUrl,
               state: null,
@@ -5401,7 +5458,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken,
               rsUrl,
               state: null,
@@ -5477,7 +5534,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken,
               rsUrl,
               state: null,
@@ -5554,7 +5611,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken,
               rsUrl,
               state: null,
@@ -5630,7 +5687,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken,
               rsUrl,
               state: null,
@@ -5790,7 +5847,7 @@ rl.on('line', (line) => {
                   collectionMode: "full_refresh",
                   connectorId: spotifyManifest.connector_id,
                   connectorPath,
-                  manifest: spotifyManifest,
+                  manifest: spotifyManifest as RuntimeConnectorManifest,
                   onInteraction: async () => new Promise(() => undefined),
                   ownerToken,
                   rsUrl,
@@ -5876,7 +5933,7 @@ rl.on('line', (line) => {
         collectionMode: "incremental",
         connectorId: spotifyManifest.connector_id,
         connectorPath,
-        manifest: spotifyManifest,
+        manifest: spotifyManifest as RuntimeConnectorManifest,
         ownerToken,
         rsUrl,
         state: null,
@@ -5971,7 +6028,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken: "invalid_owner_token",
               rsUrl: `http://localhost:${rsPort}`,
               state: null,
@@ -6084,7 +6141,7 @@ rl.on('line', (line) => {
               collectionMode: "incremental",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken: "client_token_instead_of_owner",
               persistState: true,
               rsUrl: `http://localhost:${rsPort}`,
@@ -6197,7 +6254,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken: "owner_token",
               rsUrl: `http://localhost:${rsPort}`,
               state: null,
@@ -6302,7 +6359,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken: "owner_token",
               rsUrl: `http://localhost:${rsPort}`,
               state: null,
@@ -6385,7 +6442,7 @@ rl.on('line', (line) => {
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
-          manifest: spotifyManifest,
+          manifest: spotifyManifest as RuntimeConnectorManifest,
           onInteraction: async () => ({}),
           ownerToken,
           rsUrl,
@@ -6457,7 +6514,7 @@ rl.on('line', (line) => {
             collectionMode: "full_refresh",
             connectorId: spotifyManifest.connector_id,
             connectorPath,
-            manifest: spotifyManifest,
+            manifest: spotifyManifest as RuntimeConnectorManifest,
             onInteraction: async () => ({}),
             ownerToken,
             rsUrl,
@@ -6544,7 +6601,7 @@ rl.on('line', (line) => {
               collectionMode: "incremental",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               onInteraction: async () => ({}),
               ownerToken,
               persistState: true,
@@ -6641,7 +6698,7 @@ rl.on('line', (line) => {
               collectionMode: "incremental",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               onInteraction: async () => ({}),
               ownerToken,
               persistState: true,
@@ -6762,7 +6819,7 @@ rl.on('line', (line) => {
                 collectionMode: "incremental",
                 connectorId: spotifyManifest.connector_id,
                 connectorPath,
-                manifest: spotifyManifest,
+                manifest: spotifyManifest as RuntimeConnectorManifest,
                 onInteraction: async () => ({}),
                 ownerToken,
                 persistState: true,
@@ -6853,7 +6910,7 @@ rl.on('line', (line) => {
                 collectionMode: "full_refresh",
                 connectorId: spotifyManifest.connector_id,
                 connectorPath,
-                manifest: spotifyManifest,
+                manifest: spotifyManifest as RuntimeConnectorManifest,
                 onInteraction: async () => ({}),
                 ownerToken,
                 rsUrl,
@@ -6960,7 +7017,7 @@ rl.on('line', (line) => {
               collectionMode: "incremental",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               onInteraction: async () => ({}),
               ownerToken,
               persistState: true,
