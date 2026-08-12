@@ -3318,6 +3318,16 @@ export interface BoundedSweepResult {
  * cold page has a one-page missing-evidence cap. `options.maxPages`
  * additionally caps the number of pages processed; `options.pageSize`
  * controls how many connections each page covers.
+ *
+ * `options.firstTranche` (2026-08-12) alternates which tranche gets the
+ * round's genuine first opportunity — the FULL, undivided `maxDurationMs`
+ * budget, before the other tranche runs at all. See the ordering comment
+ * inside this function for why a fixed walk-always-first order left a
+ * genuine, unbounded starvation hole, and why a soft time-slice (reserving
+ * part of the walk's deadline for acceleration) cannot structurally close
+ * it. Defaults to `"walk"`, reproducing the exact prior behavior for a
+ * caller that does not opt in; callers that want the closed invariant must
+ * alternate this value across calls (`connector-maintenance-sweep.ts` does).
  */
 export async function runBoundedSummaryEvidenceSweep(options: {
   readonly maxDurationMs: number;
@@ -3325,6 +3335,7 @@ export async function runBoundedSummaryEvidenceSweep(options: {
   readonly pageSize?: number;
   readonly afterId?: string | null;
   readonly maxEventsPerFold?: number;
+  readonly firstTranche?: "walk" | "acceleration";
 }): Promise<BoundedSweepResult> {
   const deadline = sweepNow() + options.maxDurationMs;
   const pageSize = options.pageSize ?? 25;
@@ -3355,72 +3366,103 @@ export async function runBoundedSummaryEvidenceSweep(options: {
   const foldEventCap: { maxEvents?: number } =
     typeof options.maxEventsPerFold === "number" ? { maxEvents: options.maxEventsPerFold } : {};
 
-  // ORDER: correctness backstop FIRST, acceleration second, both under the ONE
+  // ORDER: alternating first opportunity, both tranches under the ONE
   // absolute `deadline`.
   //
-  // With cooperative, non-preemptible units you cannot simultaneously have
-  // dirty-FIRST ordering, a hard total wall-clock bound, and a guaranteed
-  // cursor turn every round: a tranche unit that overruns consumes the round,
-  // and the only ways to still give the walk a turn are to break the caller's
-  // bound (a fresh post-overrun deadline — what an earlier revision did, and
-  // it silently let a round exceed `maxDurationMs` by an unbounded amount) or
-  // to preempt a running unit (no such machinery here, and adding a second
-  // timer would be worse).
+  // With cooperative, non-preemptible units, a "reserve" computed as a
+  // shorter sub-deadline for one tranche does NOT structurally guarantee the
+  // other tranche any time: an individual observe/fold/repair unit only
+  // checks its deadline BETWEEN internal steps (never mid-step — that is the
+  // whole cooperative-budget contract elsewhere in this file), so a single
+  // slow unit inside the "capped" tranche can already overshoot past its own
+  // shortened sub-deadline before the next check ever fires, consuming into
+  // — or past — the time meant to be reserved for the other tranche. A
+  // shorter deadline is therefore a probabilistic time-slice, not a
+  // guarantee, and encoding a fixed number of reserved milliseconds as a
+  // correctness property would be exactly the kind of unproven margin this
+  // codebase's cooperative-deadline design otherwise refuses to rely on
+  // (2026-08-12 correction — an earlier revision of this comment claimed a
+  // `minAccelerationReserveMs` sub-deadline closed this gap; it did not).
   //
-  // Running the walk first dissolves the conflict instead of trading one
-  // contract away for another. What that buys, stated precisely:
+  // What DOES structurally bound worst-case starvation is alternating which
+  // tranche receives first opportunity — the round's FULL, undivided
+  // `maxDurationMs`, before the other tranche is even attempted:
   //
-  //   - FIRST OPPORTUNITY every tick. The walk is offered the round's budget
-  //     before any acceleration can touch it. This is structural, not bought
-  //     with extra wall-clock.
-  //   - DURABLE RESUME. A round that makes no progress leaves the cursor
-  //     exactly where it was, so nothing is skipped and the next tick retries
-  //     the same page.
+  //   - FIRST OPPORTUNITY, every round, for WHICHEVER tranche goes first.
+  //     The first tranche is offered the round's complete budget before the
+  //     second tranche can touch it — the same structural guarantee the
+  //     walk-always-first design gave the walk, now available to either
+  //     tranche on alternating rounds.
+  //   - HARD 2-ROUND STARVATION BOUND. If round N's first tranche overshoots
+  //     and consumes the entire round (leaving the second tranche zero
+  //     time — the exact failure mode a fixed walk-first order could not
+  //     avoid), round N+1 gives the OTHER tranche first opportunity instead.
+  //     A tranche can therefore be denied first opportunity for at most one
+  //     consecutive round, regardless of how badly any single unit inside
+  //     the other tranche overshoots. This is the caller's structural
+  //     contract to uphold (see `firstTranche`'s doc above) — this function
+  //     only honors whichever value it is given each call; the CALLER must
+  //     alternate the value across rounds for the bound to hold across
+  //     rounds, which `connector-maintenance-sweep.ts` does.
+  //   - DURABLE RESUME. A round that makes no progress on the walk leaves
+  //     its cursor exactly where it was, so nothing is skipped and the next
+  //     tick that walks retries the same page.
   //   - EVENTUAL CONVERGENCE under repeated normally-budgeted ticks, given
   //     folds that are finite and progressing.
   //
-  // It does NOT guarantee a page per round, and this comment previously
-  // claimed it did. A zero or tiny budget, a discovery read that consumes the
-  // deadline, or a fold that legitimately reports incomplete each produce a
-  // round with no cursor advance — all correct behavior under a hard total
-  // deadline. Convergence is therefore a property of repeated adequately
-  // budgeted ticks, not an arithmetic bound on round count.
-  //
-  // The acceleration tranche then runs only from time that genuinely remains,
-  // under the same deadline.
-  //
-  // What this costs: under sustained overload the dirty-first ACCELERATION is
-  // sacrificed. Freshly-dirtied rows still converge — the walk repairs them
-  // when the cursor reaches them, exactly as it does for stale-but-not-dirty
-  // rows — they just lose the latency win. That is the right thing to give up
-  // first: acceleration is a latency hint, while the cursor turn is
-  // correctness and `maxDurationMs` is the caller's contract.
-  const walk = await runCursorWalk({
-    cursor: options.afterId ?? null,
-    deadline,
-    foldEventCap,
-    maxPages,
-    pageSize,
-  });
-  discovered += walk.discovered;
-  repaired += walk.repaired;
-  skipped += walk.skipped;
+  // Neither tranche is starved of CORRECTNESS by losing a round's first
+  // opportunity: a walk round with no progress leaves its cursor unmoved
+  // (never lost), and an acceleration round with no turn leaves the dirty
+  // marker set (never lost) — both converge via the walk regardless, exactly
+  // as before. What alternation closes is the LATENCY bound: without it, a
+  // sufficiently fold-heavy page could make acceleration's "eventually" mean
+  // "not within this page's entire multi-round convergence window," which is
+  // unbounded in the general case and is exactly the live UAT defect.
+  const walkFirst = (options.firstTranche ?? "walk") === "walk";
 
-  // Acceleration, from whatever the walk left. `runDirtyPriorityAcceleration` performs
-  // its own entry and post-await deadline checks, so an exhausted round makes
-  // it a no-op; the synchronous guard here keeps a spent round from paying even
-  // one microtask yield.
-  const acceleration =
-    sweepNow() < deadline
-      ? await runDirtyPriorityAcceleration({
-          deadline,
-          foldEventCap,
-          limit: pageSize,
-        })
-      : { discovered: 0, incomplete: false, repaired: 0, skipped: 0 };
-  discovered += acceleration.discovered;
-  repaired += acceleration.repaired;
-  skipped += acceleration.skipped;
+  async function runWalkTranche() {
+    // Whichever tranche runs SECOND uses `sweepNow()` — whatever the round's
+    // clock reads after the first tranche's own await — as ITS effective
+    // starting point, but both tranches are still handed the SAME absolute
+    // `deadline`: the second tranche gets "whatever remains," the first
+    // tranche gets the round's complete, undivided allotment.
+    const walk = await runCursorWalk({
+      cursor: options.afterId ?? null,
+      deadline,
+      foldEventCap,
+      maxPages,
+      pageSize,
+    });
+    discovered += walk.discovered;
+    repaired += walk.repaired;
+    skipped += walk.skipped;
+    return walk;
+  }
+
+  async function runAccelerationTranche() {
+    const acceleration =
+      sweepNow() < deadline
+        ? await runDirtyPriorityAcceleration({
+            deadline,
+            foldEventCap,
+            limit: pageSize,
+          })
+        : { discovered: 0, incomplete: false, repaired: 0, skipped: 0 };
+    discovered += acceleration.discovered;
+    repaired += acceleration.repaired;
+    skipped += acceleration.skipped;
+    return acceleration;
+  }
+
+  let walk: Awaited<ReturnType<typeof runWalkTranche>>;
+  let acceleration: Awaited<ReturnType<typeof runAccelerationTranche>>;
+  if (walkFirst) {
+    walk = await runWalkTranche();
+    acceleration = await runAccelerationTranche();
+  } else {
+    acceleration = await runAccelerationTranche();
+    walk = await runWalkTranche();
+  }
 
   const { coveredCompleteSet, cursor } = walk;
   // A tranche whose own fold did not converge within budget makes the sweep as

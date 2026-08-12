@@ -6152,10 +6152,14 @@ export interface ConnectorSummaryEvidenceRow {
 }
 
 /**
- * Index the maintained evidence rows by connector_instance_id. Read AFTER
- * the observation barrier (`reconcileDirtyConnectorSummaryEvidence`) has
- * run, so every row reflects canonical state as of this render — not a
- * pre-repair snapshot. Spec: openspec/changes/reconcile-active-summary-evidence.
+ * Index the read model's evidence rows by connector_instance_id. Terminal-
+ * gate revision (2026-07-29): this is no longer read after an inline
+ * observation barrier — ordinary GET never calls
+ * `reconcileDirtyConnectorSummaryEvidence` (see
+ * `loadConnectorSummaryProjectionDeps`'s comment above). Each row reflects
+ * canonical state as of the periodic maintenance sweep's last pass, honestly
+ * labeled `stale`/`dirty` when that pass has not yet caught up — never a
+ * fabricated freshness claim. Spec: openspec/changes/reconcile-active-summary-evidence.
  */
 function buildEvidenceIndex(rows: readonly Row[]): Map<string, ConnectorSummaryEvidenceRow> {
   const index = new Map<string, ConnectorSummaryEvidenceRow>();

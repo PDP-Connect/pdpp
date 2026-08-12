@@ -825,10 +825,14 @@ const STARTUP_SUMMARY_EVIDENCE_PAGE_SIZE = 25;
 // but does not resume — the cursor cannot resume an interrupted fold").
 // Each round is itself bounded by STARTUP_SUMMARY_EVIDENCE_MAX_DURATION_MS,
 // so this is a genuine outer bound on total startup-acceleration work (an
-// owner with an unusually large connection set stops accelerating after
-// this many rounds and falls back to the per-request barrier for the rest —
-// design.md "Startup is acceleration, not authority": never the correctness
-// gate regardless of how many rounds actually ran).
+// owner with an unusually large connection set stops accelerating after this
+// many rounds). Terminal-gate revision (2026-07-29) removed the per-request
+// repair barrier that used to cover whatever startup did not reach — ordinary
+// GET is now read-only, so a connection this cap leaves unrepaired is instead
+// covered by the recurring CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS periodic
+// tick below, never by a per-request fallback (design.md "Startup is
+// acceleration, not authority" still holds: startup is acceleration, but what
+// now backstops it is the periodic sweep, not the request path).
 const STARTUP_SUMMARY_EVIDENCE_MAX_RESUME_ROUNDS = 20;
 // Terminal-gate revision (2026-07-29): periodic tick interval for the
 // connector-maintenance sweep (browser-enrollment-shell retirement, due-
@@ -7298,6 +7302,7 @@ export async function startServer(opts: ServerOpts = {}) {
     runEvidenceSweep: (args) =>
       runBoundedSummaryEvidenceSweep({
         ...(args.afterId === undefined ? {} : { afterId: args.afterId }),
+        ...(args.firstTranche === undefined ? {} : { firstTranche: args.firstTranche }),
         maxDurationMs: args.maxDurationMs,
         pageSize: args.pageSize ?? CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
       }),
@@ -7667,11 +7672,16 @@ export async function startServer(opts: ServerOpts = {}) {
   // STARTUP_SUMMARY_EVIDENCE_MAX_RESUME_ROUNDS total rounds so an
   // unusually large connection set (or one connection with an unusually
   // large terminal history) cannot serialize startup acceleration
-  // indefinitely. The per-request observation barrier remains the actual
-  // correctness backstop regardless of how many rounds run or whether any
-  // round fails (design.md "Startup is acceleration, not authority") — a
-  // connection this multi-round pass still does not reach is repaired by
-  // the next real read, never lost.
+  // indefinitely. Correction (2026-08-12): this comment previously claimed
+  // "the per-request observation barrier remains the actual correctness
+  // backstop" — that barrier was removed from ordinary GET by the
+  // 2026-07-29 terminal-gate revision (see `ref-control.ts`'s
+  // `loadConnectorSummaryProjectionDeps`). The actual backstop for a
+  // connection this multi-round startup pass still does not reach is the
+  // recurring periodic sweep (`CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS`
+  // below), never a per-request repair — design.md "Startup is
+  // acceleration, not authority" still holds, just with the periodic sweep
+  // as the authority instead of the request path.
   const startupSummaryEvidenceSweepDone = new Promise<void>((resolve) => {
     setImmediate(() => {
       // biome-ignore lint/complexity/noVoid: The side effect is intentionally fire-and-forget by this runtime contract.
@@ -7700,7 +7710,7 @@ export async function startServer(opts: ServerOpts = {}) {
           if (last?.incomplete && last.resumeAfterId) {
             logger.info(
               { resumeAfterId: last.resumeAfterId, rounds: rounds.length },
-              "startup summary-evidence observation stopped after the resume-round cap; the per-request barrier covers the remainder"
+              "startup summary-evidence observation stopped after the resume-round cap; the periodic maintenance sweep covers the remainder"
             );
           }
         })
