@@ -2555,6 +2555,12 @@ async function rebuildSemanticIndexForStream({
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error("semantic backfill aborted");
     }
+    // UNFENCED scan + embed: no connector-instance writer-admission slot
+    // held across the page read or buildSemanticIndexEntries' embedding
+    // calls (embedDocumentWithAdmission, gated by their OWN separate
+    // activeSemanticWork pool). This is the unbounded-duration part of a
+    // rebuild; holding the shared ingest admission slot across it is what
+    // starved unrelated live ingest in the UAT startup-backfill incident.
     const rows: readonly SemanticDbRow[] = usePostgres
       ? ((await postgresSemanticRecordsPage({
           connectorInstanceId,
@@ -2580,11 +2586,19 @@ async function rebuildSemanticIndexForStream({
       existingKeys
     );
     const nextIndexed = indexed + entries.length;
-    if (usePostgres) {
-      await postgresSemanticIndexInsertManyGuarded({ connectorId, connectorInstanceId, entries, stream });
-    } else {
-      await upsertLiveSqliteEntries(vectorIndex, entries, connectorInstanceId, stream);
-    }
+    // Fenced ONLY for this page's bounded, already version-CAS'd write
+    // (postgresSemanticIndexInsertManyGuarded / upsertLiveSqliteEntries's
+    // liveEntriesOnly both re-check records.version immediately before
+    // writing — a row a concurrent delete/newer-write has since superseded
+    // is skipped, not resurrected). Held for O(one page's write), never
+    // O(the whole rebuild).
+    await withConnectorInstanceWrite(connectorInstanceId, async () => {
+      if (usePostgres) {
+        await postgresSemanticIndexInsertManyGuarded({ connectorId, connectorInstanceId, entries, stream });
+      } else {
+        await upsertLiveSqliteEntries(vectorIndex, entries, connectorInstanceId, stream);
+      }
+    });
     if (currentProgressJob) {
       currentProgressJob = updateBackfillJob(currentProgressJob, {
         indexedVectors: nextIndexed,
@@ -2985,20 +2999,24 @@ async function deleteSemanticNonParticipatingStream({
   stream: string;
 }): Promise<void> {
   const { connectorId, usePostgres, vectorIndex } = context;
-  await runSequential(connectorInstanceIds, async (connectorInstanceId) => {
-    if (usePostgres) {
-      await postgresSemanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
-      await postgresDeleteSemanticMeta({ connectorInstanceId, stream });
-      await postgresDeleteSemanticProgress({ connectorInstanceId, stream });
-    } else {
-      await vectorIndex.deleteByConnectorStream({ connectorId, connectorInstanceId, stream });
-      execDynamicSqlAcknowledged("DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?", [
-        connectorInstanceId,
-        stream,
-      ]);
-      deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
-    }
-  });
+  // Fenced ONLY for this bounded per-stream cleanup delete — matches the
+  // orphan-stream cleanup in backfillSemanticIndexForConnectorInstance.
+  await runSequential(connectorInstanceIds, (connectorInstanceId) =>
+    withConnectorInstanceWrite(connectorInstanceId, async () => {
+      if (usePostgres) {
+        await postgresSemanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+        await postgresDeleteSemanticMeta({ connectorInstanceId, stream });
+        await postgresDeleteSemanticProgress({ connectorInstanceId, stream });
+      } else {
+        await vectorIndex.deleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+        execDynamicSqlAcknowledged("DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?", [
+          connectorInstanceId,
+          stream,
+        ]);
+        deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+      }
+    })
+  );
 }
 
 async function backfillSemanticManifestStream({
@@ -3108,14 +3126,19 @@ export async function semanticIndexBackfillForManifest({
   const connectorId = manifest.connector_id;
   const connectorInstanceIds = await resolveSemanticBackfillConnectorInstanceIds({ connectorId, manifest });
   await runSequential(connectorInstanceIds, async (connectorInstanceId) => {
-    await withConnectorInstanceWrite(connectorInstanceId, () =>
-      backfillSemanticIndexForConnectorInstance({
-        fencedConnectorInstanceId: connectorInstanceId,
-        log,
-        manifest,
-        signal,
-      })
-    );
+    // No connector-instance writer-admission fence around the whole
+    // per-instance backfill: see rebuildSemanticIndexForStream below for
+    // where the fence now lives (one bounded page write at a time, never
+    // O(the whole rebuild's scan+embed duration)). Embedding calls
+    // (embedDocumentWithAdmission) are already bounded by their OWN
+    // separate admission pool (activeSemanticWork), independent of the
+    // ingest writer-admission gate this used to also hold hostage.
+    await backfillSemanticIndexForConnectorInstance({
+      fencedConnectorInstanceId: connectorInstanceId,
+      log,
+      manifest,
+      signal,
+    });
   });
 }
 
@@ -3246,28 +3269,31 @@ async function backfillSemanticIndexForConnectorInstance({
         : listSemanticConnectorInstanceIds({ connectorId, stream: orphanStream });
       await runSequential(
         connectorInstanceIds.filter((id) => id === fencedConnectorInstanceId),
-        async (connectorInstanceId) => {
-          if (usePostgres) {
-            await postgresSemanticIndexDeleteByConnectorStream({
-              connectorId,
-              connectorInstanceId,
-              stream: orphanStream,
-            });
-            await postgresDeleteSemanticMeta({ connectorInstanceId, stream: orphanStream });
-            await postgresDeleteSemanticProgress({ connectorInstanceId, stream: orphanStream });
-          } else {
-            await vectorIndex.deleteByConnectorStream({
-              connectorId,
-              connectorInstanceId,
-              stream: orphanStream,
-            });
-            execDynamicSqlAcknowledged(
-              "DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?",
-              [connectorInstanceId, orphanStream]
-            );
-            deleteBackfillProgress({ connectorId, connectorInstanceId, stream: orphanStream });
-          }
-        }
+        // Fenced ONLY for this bounded per-stream cleanup delete, not for
+        // the orphan-discovery reads above.
+        (connectorInstanceId) =>
+          withConnectorInstanceWrite(connectorInstanceId, async () => {
+            if (usePostgres) {
+              await postgresSemanticIndexDeleteByConnectorStream({
+                connectorId,
+                connectorInstanceId,
+                stream: orphanStream,
+              });
+              await postgresDeleteSemanticMeta({ connectorInstanceId, stream: orphanStream });
+              await postgresDeleteSemanticProgress({ connectorInstanceId, stream: orphanStream });
+            } else {
+              await vectorIndex.deleteByConnectorStream({
+                connectorId,
+                connectorInstanceId,
+                stream: orphanStream,
+              });
+              execDynamicSqlAcknowledged(
+                "DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?",
+                [connectorInstanceId, orphanStream]
+              );
+              deleteBackfillProgress({ connectorId, connectorInstanceId, stream: orphanStream });
+            }
+          })
       );
     });
   } finally {

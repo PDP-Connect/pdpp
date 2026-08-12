@@ -154,8 +154,19 @@ async function runScopeBackfills(
     assertStorageGenerationCurrent(generation);
   }
 
-  await clearSearchIndexDirty({ connectorInstanceId, stream }, new Date().toISOString());
-  return { connectorId, connectorInstanceId, ok: true, stream };
+  // CAS on scope.markedAt (captured when this round listed the scope,
+  // before either backfill ran): if a concurrent write re-dirtied this
+  // scope mid-scan, marked_at has since advanced and this clear is a
+  // deliberate no-op -- the fresh dirty mark survives for the next round
+  // instead of being silently discarded. Not a failure: the scans above
+  // may well have converged everything they saw, just not the write that
+  // raced past them.
+  const cleared = await clearSearchIndexDirty(
+    { connectorInstanceId, stream },
+    scope.markedAt,
+    new Date().toISOString()
+  );
+  return { connectorId, connectorInstanceId, ok: cleared, stream };
 }
 
 /**
@@ -200,9 +211,16 @@ export async function reconcileSearchIndexDirtyScope(
       // reason. lexicalIndexBackfillForManifest/semanticIndexBackfillForManifest
       // already handle "declared before, not declared now" cleanup via
       // their own manifest-driven sweeps; this only short-circuits THIS
-      // scope's flag.
-      await clearSearchIndexDirty({ connectorInstanceId, stream }, new Date().toISOString());
-      return { connectorId, connectorInstanceId, ok: true, stream };
+      // scope's flag. CAS'd on scope.markedAt for the same reason as
+      // runScopeBackfills' clear: a write racing in between this round's
+      // listing and this decision must not have its fresh dirty mark
+      // silently discarded.
+      const cleared = await clearSearchIndexDirty(
+        { connectorInstanceId, stream },
+        scope.markedAt,
+        new Date().toISOString()
+      );
+      return { connectorId, connectorInstanceId, ok: cleared, stream };
     }
     return await runScopeBackfills(scope, manifest, targetStream, generation);
   } catch (err) {

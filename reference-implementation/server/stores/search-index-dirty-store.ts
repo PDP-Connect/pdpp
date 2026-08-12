@@ -62,18 +62,38 @@ export async function markSearchIndexDirtyPostgres(
   );
 }
 
-/** Clears the flag after a reconcile proves this scope's lexical+semantic index is in sync. Idempotent. */
-export async function clearSearchIndexDirty(key: SearchIndexScopeKey, nowIso: string): Promise<void> {
+/**
+ * Clears the flag after a reconcile proves this scope's lexical+semantic
+ * index was in sync AS OF `expectedMarkedAt` (the `marked_at` value read at
+ * scan-start, from the `DirtySearchIndexScope` the reconcile round is
+ * processing). CAS'd on `marked_at`: a write that lands mid-scan re-dirties
+ * the scope with a fresh `marked_at` (see `markSearchIndexDirtySqlite`),
+ * and this clear must not discard that fresh mark just because it observed
+ * the OLD value when the round started. Returns `false` (no-op, scope
+ * stays dirty) when `marked_at` has since moved; `true` when the clear
+ * actually applied.
+ */
+export async function clearSearchIndexDirty(
+  key: SearchIndexScopeKey,
+  expectedMarkedAt: string,
+  nowIso: string
+): Promise<boolean> {
   if (isPostgresStorageBackend()) {
-    await postgresQuery(
+    const result = await postgresQuery(
       `UPDATE search_index_dirty
-       SET dirty = 0, reconciled_at = $3, last_error = NULL, attempts = 0, next_attempt_at = NULL
-       WHERE connector_instance_id = $1 AND stream = $2`,
-      [key.connectorInstanceId, key.stream, nowIso]
+       SET dirty = 0, reconciled_at = $4, last_error = NULL, attempts = 0, next_attempt_at = NULL
+       WHERE connector_instance_id = $1 AND stream = $2 AND marked_at = $3`,
+      [key.connectorInstanceId, key.stream, expectedMarkedAt, nowIso]
     );
-    return;
+    return (result.rowCount ?? 0) > 0;
   }
-  exec(referenceQueries.searchIndexDirtyClear, [nowIso, key.connectorInstanceId, key.stream]);
+  const result = exec(referenceQueries.searchIndexDirtyClear, [
+    nowIso,
+    key.connectorInstanceId,
+    key.stream,
+    expectedMarkedAt,
+  ]);
+  return result.changes > 0;
 }
 
 // Starvation-avoidance backoff schedule (I5/review): each successive

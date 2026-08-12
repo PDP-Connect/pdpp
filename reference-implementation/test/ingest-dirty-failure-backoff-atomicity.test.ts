@@ -95,7 +95,10 @@ test("recordSearchIndexDirtyFailure: attempts and next_attempt_at are always joi
     // A successful clear resets both fields together -- also proven as one
     // statement (clearSearchIndexDirty), so a scope that recovers does not
     // carry stale attempts/backoff state into its next dirty cycle.
-    await clearSearchIndexDirty({ connectorInstanceId, stream }, new Date().toISOString());
+    // marked_at is unchanged by recordSearchIndexDirtyFailure, so the
+    // original markSearchIndexDirtySqlite value is still the CAS target.
+    const clearedOk = await clearSearchIndexDirty({ connectorInstanceId, stream }, markedAt, new Date().toISOString());
+    assert.equal(clearedOk, true, "clear must apply: marked_at has not moved since this test's initial mark");
     const cleared = rawRow(connectorInstanceId, stream);
     assert.equal(cleared.attempts, 0, "attempts resets to 0 on clear");
     assert.equal(cleared.next_attempt_at, null, "next_attempt_at resets to null on clear");

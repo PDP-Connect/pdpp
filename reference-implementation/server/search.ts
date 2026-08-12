@@ -928,7 +928,13 @@ async function rebuildLexicalIndexForStream({
 }): Promise<number> {
   const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
   const usePostgres = isPostgresStorageBackend();
-  await rebuildLexicalDeleteStreamIndex(usePostgres, { connectorId, resolvedConnectorInstanceId, stream });
+  // Fenced ONLY for this one bounded, indexed DELETE — not for the scan
+  // that follows. See the per-page write below for why: a same-instance
+  // live write racing this delete is not lost, only deferred to the next
+  // reconcile sweep via search_index_dirty's atomic, write-transaction-scoped mark.
+  await withConnectorInstanceWrite(resolvedConnectorInstanceId, () =>
+    rebuildLexicalDeleteStreamIndex(usePostgres, { connectorId, resolvedConnectorInstanceId, stream })
+  );
 
   // Stream the records page-by-page so we don't pull the whole table into
   // memory on big stores.
@@ -943,6 +949,13 @@ async function rebuildLexicalIndexForStream({
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error("lexical backfill aborted");
     }
+    // UNFENCED scan + field extraction: no connector-instance writer-admission
+    // slot held here. This is the expensive/unbounded-duration part of a
+    // rebuild (arbitrarily large record counts); holding a shared admission
+    // slot across it is what starved unrelated live ingest in the UAT
+    // startup-backfill incident. Matches records.ts's
+    // maintainRecordIndexesWithinPermit: "expensive/unlocked compute first
+    // ... THEN one short transaction."
     const rows = await rebuildLexicalFetchRecordsPage(usePostgres, {
       lastId,
       limit: PAGE,
@@ -962,12 +975,21 @@ async function rebuildLexicalIndexForStream({
     const nextScanned = scanned + scannedRecords;
     let nextIndexed = indexed;
     if (entries.length > 0) {
-      await rebuildLexicalInsertEntries(usePostgres, {
-        connectorId,
-        entries,
-        resolvedConnectorInstanceId,
-        stream,
-      });
+      // Fenced ONLY for this page's bounded, already version-CAS'd write
+      // (rebuildLexicalInsertEntries re-reads records.version per entry
+      // immediately before writing, inside the same transaction — a row a
+      // concurrent delete/newer-write has since superseded is skipped, not
+      // resurrected). The fence here is a short in-process mutual-exclusion
+      // convenience, not a correctness requirement the write itself lacks;
+      // it is held for O(one page's write), never O(the whole rebuild).
+      await withConnectorInstanceWrite(resolvedConnectorInstanceId, () =>
+        rebuildLexicalInsertEntries(usePostgres, {
+          connectorId,
+          entries,
+          resolvedConnectorInstanceId,
+          stream,
+        })
+      );
       nextIndexed += indexEntries;
     }
     if (progressJob) {
@@ -1222,7 +1244,9 @@ async function backfillLexicalStream({
         `[PDPP] Lexical index: stream='${stream}' connector='${connectorId}' ` +
           "no longer declares lexical_fields — dropping stale index + meta"
       );
-      await lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream });
+      await withConnectorInstanceWrite(connectorInstanceId, () =>
+        lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream })
+      );
     }
     return progressJob;
   }
@@ -1301,13 +1325,15 @@ async function backfillLexicalStream({
   );
 
   // Persist the new fingerprint so subsequent backfill calls can skip.
-  await lexicalMetaUpsertFingerprint({
-    connectorId,
-    connectorInstanceId,
-    fieldsFingerprint: newFingerprint,
-    stream,
-    updatedAt: new Date().toISOString(),
-  });
+  await withConnectorInstanceWrite(connectorInstanceId, () =>
+    lexicalMetaUpsertFingerprint({
+      connectorId,
+      connectorInstanceId,
+      fieldsFingerprint: newFingerprint,
+      stream,
+      updatedAt: new Date().toISOString(),
+    })
+  );
   return progressJob;
 }
 
@@ -1371,7 +1397,9 @@ async function backfillLexicalConnectorInstance(
       `[PDPP] Lexical index: stream='${row.stream}' connector='${connectorId}' ` +
         "no longer in manifest — dropping stale index + meta"
     );
-    await lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream: row.stream });
+    await withConnectorInstanceWrite(connectorInstanceId, () =>
+      lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream: row.stream })
+    );
   });
 
   return currentProgressJob;
@@ -1417,8 +1445,30 @@ export async function lexicalIndexBackfillForManifest({
         connectorId,
         connectorInstanceId,
       });
-      progressJob = await withConnectorInstanceWrite(connectorInstanceId, () =>
-        backfillLexicalConnectorInstance(connectorId, connectorInstanceId, manifest.streams, progressJob, log, signal)
+      // No connector-instance writer-admission fence here. The scan +
+      // per-page durable write below is the SAME shape records.ts's
+      // maintainRecordIndexesWithinPermit already uses for live-ingest
+      // derived-index maintenance: expensive/unlocked read work first, then
+      // a short version-CAS'd write (rebuildLexicalInsertEntries already
+      // re-checks records.version immediately before writing, skipping any
+      // row a concurrent write has since superseded). Holding
+      // withConnectorInstanceWrite across the WHOLE scan+write here — as
+      // this used to — meant one connector instance's rebuild occupied a
+      // GLOBAL admission slot for the full scan duration, starving
+      // unrelated live ingest for other instances until its own bounded
+      // wait elapsed (the UAT startup-backfill-vs-GroupMe-ingest incident).
+      // A concurrent same-instance write this scan misses is not lost: the
+      // write path's own atomic search_index_dirty mark re-flags the scope
+      // for the next reconcile sweep (search-index-reconcile.ts), which is
+      // itself CAS'd on marked_at so it can never clear a mark a concurrent
+      // write just set.
+      progressJob = await backfillLexicalConnectorInstance(
+        connectorId,
+        connectorInstanceId,
+        manifest.streams,
+        progressJob,
+        log,
+        signal
       );
     });
     return progressJob;
