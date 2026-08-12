@@ -10,6 +10,7 @@ import {
   initiateOwnerDeviceAuthorization,
   introspect,
   type OwnerDeviceApprovalFaultHook,
+  registerDynamicClient,
   seedPreRegisteredClients,
 } from "../server/auth.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
@@ -54,10 +55,10 @@ function countRows(table: string, where = "1 = 1"): number {
   return row.count;
 }
 
-function ownerDeviceRow(deviceCode: string): { status: string; token_id: string | null } {
-  const row = getDb().prepare("SELECT status, token_id FROM owner_device_auth WHERE device_code = ?").get(deviceCode) as
-    | { status: string; token_id: string | null }
-    | undefined;
+function ownerDeviceRow(deviceCode: string): { status: string; subject_id: string | null; token_id: string | null } {
+  const row = getDb()
+    .prepare("SELECT status, subject_id, token_id FROM owner_device_auth WHERE device_code = ?")
+    .get(deviceCode) as { status: string; subject_id: string | null; token_id: string | null } | undefined;
   assert.ok(row, "owner_device_auth row must exist");
   return row;
 }
@@ -71,6 +72,15 @@ function countOwnerDeviceEvents(deviceCode: string, eventType: string): number {
     "spine_events",
     `object_id = '${deviceCode}' AND object_type = 'owner_device_auth' AND event_type = '${eventType}'`
   );
+}
+
+function clientIssuerSubject(clientId: string): string | null {
+  const row = getDb().prepare("SELECT metadata_json FROM oauth_clients WHERE client_id = ?").get(clientId) as
+    | { metadata_json: string }
+    | undefined;
+  assert.ok(row, "oauth client row must exist");
+  const metadata = JSON.parse(row.metadata_json) as { issuer_subject_id?: string };
+  return metadata.issuer_subject_id || null;
 }
 
 function throwingHook(stageToThrow: Parameters<OwnerDeviceApprovalFaultHook>[0]): OwnerDeviceApprovalFaultHook {
@@ -96,7 +106,7 @@ test("owner-device approval rolls back when token insertion has not started", as
     FORCED_BEFORE_TOKEN_INSERT_RE
   );
 
-  assert.deepEqual(ownerDeviceRow(started.device_code), { status: "pending", token_id: null });
+  assert.deepEqual(ownerDeviceRow(started.device_code), { status: "pending", subject_id: null, token_id: null });
   assert.equal(countOwnerTokensForClient(), 0, "no owner token is persisted");
   assert.equal(countOwnerDeviceEvents(started.device_code, "consent.approved"), 0, "approval event rolls back");
 });
@@ -112,7 +122,7 @@ test("owner-device approval rolls back token insert and events on mid-transactio
     FORCED_AFTER_TOKEN_INSERT_RE
   );
 
-  assert.deepEqual(ownerDeviceRow(started.device_code), { status: "pending", token_id: null });
+  assert.deepEqual(ownerDeviceRow(started.device_code), { status: "pending", subject_id: null, token_id: null });
   assert.equal(countOwnerTokensForClient(), 0, "inserted owner token is rolled back");
   assert.equal(countOwnerDeviceEvents(started.device_code, "consent.approved"), 0, "approval event rolls back");
   assert.equal(countRows("spine_events", "event_type = 'token.issued'"), 0, "token event rolls back");
@@ -131,7 +141,11 @@ test("owner-device approval retry after rollback mints exactly one introspectabl
   const approved = await approveOwnerDeviceAuthorization(started.user_code, "owner_local");
   assert.equal(typeof approved.access_token, "string");
 
-  assert.deepEqual(ownerDeviceRow(started.device_code), { status: "approved", token_id: approved.access_token });
+  assert.deepEqual(ownerDeviceRow(started.device_code), {
+    status: "approved",
+    subject_id: "owner_local",
+    token_id: approved.access_token,
+  });
   assert.equal(countOwnerTokensForClient(), 1);
   assert.equal(countOwnerDeviceEvents(started.device_code, "consent.approved"), 1);
   assert.equal(countRows("spine_events", "event_type = 'token.issued'"), 1);
@@ -139,6 +153,32 @@ test("owner-device approval retry after rollback mints exactly one introspectabl
   const tokenState = await introspect(approved.access_token);
   assert.equal(tokenState.active, true, "bound owner token introspects active");
   assert.equal(tokenState.pdpp_token_kind, "owner");
+});
+
+test("owner-device dynamic client binding rolls back with failed approval", async () => {
+  initDb();
+  const registered = await registerDynamicClient({
+    client_name: "Owner Device Dynamic Client",
+    token_endpoint_auth_method: "none",
+  });
+  const clientId = String(registered.client_id);
+  const started = await initiateOwnerDeviceAuthorization(clientId, {
+    expiresIn: 300,
+    interval: 1,
+  });
+  assert.equal(clientIssuerSubject(clientId), null);
+
+  await assert.rejects(
+    approveOwnerDeviceAuthorization(started.user_code, "owner_A", {
+      faultHook: throwingHook("after_token_insert"),
+    }),
+    FORCED_AFTER_TOKEN_INSERT_RE
+  );
+
+  assert.equal(clientIssuerSubject(clientId), null, "dynamic subject stamp rolls back with approval failure");
+  const recovered = await approveOwnerDeviceAuthorization(started.user_code, "owner_A");
+  assert.equal(clientIssuerSubject(clientId), "owner_A", "retry binds dynamic client in the successful transaction");
+  assert.equal(recovered.subject_id, "owner_A");
 });
 
 test("owner-device approval is idempotent across concurrent approval and response-loss retry", async () => {
@@ -164,4 +204,69 @@ test("owner-device approval is idempotent across concurrent approval and respons
     deviceCode: started.device_code,
   });
   assert.equal(exchanged.access_token, token, "device-code exchange returns the same approved token");
+});
+
+test("owner-device approval recovery rejects a different authenticated subject", async () => {
+  await setupSqliteAuth();
+  const started = await startOwnerDeviceAuth();
+
+  const ownerA = await approveOwnerDeviceAuthorization(started.user_code, "owner_A");
+  assert.equal(ownerA.subject_id, "owner_A");
+
+  await assert.rejects(
+    approveOwnerDeviceAuthorization(started.user_code, "owner_B"),
+    (err: unknown) => err instanceof Error && "code" in err && err.code === "not_found"
+  );
+
+  assert.deepEqual(ownerDeviceRow(started.device_code), {
+    status: "approved",
+    subject_id: "owner_A",
+    token_id: ownerA.access_token,
+  });
+  assert.equal(countOwnerTokensForClient(), 1, "cross-subject recovery does not remint");
+  const tokenState = await introspect(ownerA.access_token);
+  assert.equal(tokenState.active, true, "original owner token remains active");
+  assert.equal(tokenState.subject_id, "owner_A");
+});
+
+test("owner-device approval allows only the claimed subject under mixed concurrent calls", async () => {
+  await setupSqliteAuth();
+  const started = await startOwnerDeviceAuth();
+
+  const attempts = await Promise.allSettled(
+    Array.from({ length: 16 }, (_, index) =>
+      approveOwnerDeviceAuthorization(started.user_code, index % 2 === 0 ? "owner_A" : "owner_B")
+    )
+  );
+  const approvals = attempts
+    .filter((attempt): attempt is PromiseFulfilledResult<Record<string, unknown>> => attempt.status === "fulfilled")
+    .map((attempt) => attempt.value);
+  assert.ok(approvals.length >= 1, "one subject claims the pending authorization");
+  assert.ok(approvals.length <= 8, "only calls for the claimed subject can recover");
+  const approvedSubjects = new Set(approvals.map((approval) => approval.subject_id));
+  const approvedTokens = new Set(approvals.map((approval) => approval.access_token));
+  assert.equal(approvedSubjects.size, 1, "all successful callers have the same subject");
+  assert.equal(approvedTokens.size, 1, "all successful callers have the same token");
+  assert.equal(countOwnerTokensForClient(), 1, "mixed concurrent calls mint one owner token");
+
+  const row = ownerDeviceRow(started.device_code);
+  assert.equal(row.status, "approved");
+  assert.equal(row.subject_id, [...approvedSubjects][0]);
+  assert.equal(row.token_id, [...approvedTokens][0]);
+});
+
+test("owner-device approval rejects expired rows before owner token issuance", async () => {
+  await setupSqliteAuth();
+  const started = await startOwnerDeviceAuth();
+  getDb()
+    .prepare("UPDATE owner_device_auth SET expires_at = ? WHERE device_code = ?")
+    .run(new Date(Date.now() - 1000).toISOString(), started.device_code);
+
+  await assert.rejects(
+    approveOwnerDeviceAuthorization(started.user_code, "owner_local"),
+    (err: unknown) => err instanceof Error && "code" in err && err.code === "not_found"
+  );
+
+  assert.deepEqual(ownerDeviceRow(started.device_code), { status: "expired", subject_id: null, token_id: null });
+  assert.equal(countOwnerTokensForClient(), 0, "expired approval does not mint");
 });

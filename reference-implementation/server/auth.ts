@@ -445,6 +445,7 @@ interface OwnerDeviceApprovalInput {
   deviceCode: string;
   expiresAt: string;
   faultHook?: OwnerDeviceApprovalFaultHook | undefined;
+  pendingSnapshot: OwnerDeviceAuthRow;
   subjectId: string;
   tokenId: string;
   tokenIssuedEvent: AuthSpineEventInput;
@@ -2671,6 +2672,57 @@ function getPendingConsentStore() {
   return isPostgresStorageBackend() ? postgresPendingConsentStore : sqlitePendingConsentStore;
 }
 
+function buildOwnerDeviceUnavailableError(row: OwnerDeviceAuthRow): AuthError {
+  return attachOwnerDeviceTraceContext(
+    Object.assign(new Error("Owner device authorization is not available"), {
+      code: "not_found",
+    }),
+    row
+  );
+}
+
+function requireOwnerDeviceApprovedSubject(row: OwnerDeviceAuthRow, subjectId: string): void {
+  if (row.subject_id === subjectId) {
+    return;
+  }
+  throw buildOwnerDeviceUnavailableError(row);
+}
+
+function requireOwnerDevicePendingForApproval(row: OwnerDeviceAuthRow, input: OwnerDeviceApprovalInput): void {
+  if (
+    row.client_id !== input.clientId ||
+    input.clientId !== input.pendingSnapshot.client_id ||
+    row.user_code !== input.pendingSnapshot.user_code ||
+    row.approval_id !== input.pendingSnapshot.approval_id
+  ) {
+    throw buildOwnerDeviceUnavailableError(row);
+  }
+}
+
+function buildOwnerDeviceExpiredError(row: OwnerDeviceAuthRow): AuthError {
+  return attachOwnerDeviceTraceContext(
+    Object.assign(new Error("Owner device authorization has expired"), {
+      code: "not_found",
+    }),
+    row
+  );
+}
+
+function isOwnerDeviceExpiredError(err: unknown): err is AuthError {
+  return isAuthError(err) && err.code === "not_found" && err.message === "Owner device authorization has expired";
+}
+
+function requireDynamicClientSubject(registeredClient: RegisteredClient, subjectId: string): RegisteredClient {
+  const existingSubject =
+    registeredClient.registration_mode === "dynamic" ? registeredClient.metadata.issuer_subject_id || null : null;
+  if (existingSubject && existingSubject !== subjectId) {
+    const err: AuthError = new Error("Dynamic client is bound to a different owner subject");
+    err.code = "forbidden";
+    throw err;
+  }
+  return registeredClient;
+}
+
 const postgresOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
   approveAtomically: (input) =>
     withPostgresTransaction(async (client) => {
@@ -2688,14 +2740,40 @@ const postgresOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
         throw err;
       }
       if (row.status === "approved" && row.token_id) {
+        requireOwnerDeviceApprovedSubject(row, input.subjectId);
         return row;
       }
       if (row.status !== "pending") {
-        throw attachOwnerDeviceTraceContext(
-          Object.assign(new Error("Owner device authorization is not available"), {
-            code: "not_found",
-          }),
-          row
+        throw buildOwnerDeviceUnavailableError(row);
+      }
+      requireOwnerDevicePendingForApproval(row, input);
+      if (isExpired(row)) {
+        throw buildOwnerDeviceExpiredError(row);
+      }
+      const clientRowResult = await client.query<RegisteredClientRow>(
+        `SELECT client_id, registration_mode, token_endpoint_auth_method,
+                client_secret, metadata_json::text AS metadata_json, created_at, updated_at
+         FROM oauth_clients
+         WHERE client_id = $1
+         FOR UPDATE`,
+        [input.clientId]
+      );
+      const registeredClient = mapRegisteredClientRow(clientRowResult.rows[0] ?? null);
+      if (!registeredClient) {
+        throw ownerDeviceExchangeError(row, "invalid_client", `Unknown client_id: ${input.clientId}`);
+      }
+      requireDynamicClientSubject(registeredClient, input.subjectId);
+      if (registeredClient.registration_mode === "dynamic" && !registeredClient.metadata.issuer_subject_id) {
+        await client.query(
+          `UPDATE oauth_clients
+           SET metadata_json = $2::jsonb,
+               updated_at = $3
+           WHERE client_id = $1`,
+          [
+            registeredClient.client_id,
+            JSON.stringify({ ...registeredClient.metadata, issuer_subject_id: input.subjectId }),
+            nowIso(),
+          ]
         );
       }
       input.faultHook?.("before_token_insert");
@@ -2807,15 +2885,33 @@ const sqliteOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
         throw err;
       }
       if (row.status === "approved" && row.token_id) {
+        requireOwnerDeviceApprovedSubject(row, input.subjectId);
         return row;
       }
       if (row.status !== "pending") {
-        throw attachOwnerDeviceTraceContext(
-          Object.assign(new Error("Owner device authorization is not available"), {
-            code: "not_found",
-          }),
-          row
-        );
+        throw buildOwnerDeviceUnavailableError(row);
+      }
+      requireOwnerDevicePendingForApproval(row, input);
+      if (isExpired(row)) {
+        throw buildOwnerDeviceExpiredError(row);
+      }
+      const registeredClient = mapRegisteredClientRow(
+        getOne<RegisteredClientRow>(referenceQueries.authOauthClientsGetByClientId, [input.clientId])
+      );
+      if (!registeredClient) {
+        throw ownerDeviceExchangeError(row, "invalid_client", `Unknown client_id: ${input.clientId}`);
+      }
+      requireDynamicClientSubject(registeredClient, input.subjectId);
+      if (registeredClient.registration_mode === "dynamic" && !registeredClient.metadata.issuer_subject_id) {
+        exec(referenceQueries.authOauthClientsUpsert, [
+          registeredClient.client_id,
+          registeredClient.registration_mode,
+          registeredClient.token_endpoint_auth_method,
+          registeredClient.client_secret,
+          JSON.stringify({ ...registeredClient.metadata, issuer_subject_id: input.subjectId }),
+          registeredClient.created_at || nowIso(),
+          nowIso(),
+        ]);
       }
       input.faultHook?.("before_token_insert");
       exec(referenceQueries.authTokensInsertOwner, [input.tokenId, input.subjectId, input.clientId, input.expiresAt]);
@@ -4389,38 +4485,6 @@ export async function deleteCimdDocument(
     // Best effort for callers that only know the document id.
     invalidateCimdCache(documentId);
   }
-}
-
-async function bindDynamicClientToApprovingOwner(
-  registeredClient: RegisteredClient,
-  subjectId: string
-): Promise<RegisteredClient> {
-  if (!(registeredClient.client_id && subjectId)) {
-    return registeredClient;
-  }
-  if (registeredClient.registration_mode !== "dynamic") {
-    return registeredClient;
-  }
-  const existingSubject = registeredClient.metadata.issuer_subject_id || null;
-  if (existingSubject) {
-    if (existingSubject !== subjectId) {
-      const err: AuthError = new Error("Dynamic client is bound to a different owner subject");
-      err.code = "forbidden";
-      throw err;
-    }
-    return registeredClient;
-  }
-
-  await upsertRegisteredClient({
-    clientId: registeredClient.client_id,
-    clientSecret: registeredClient.client_secret || null,
-    metadata: {
-      ...registeredClient.metadata,
-      issuer_subject_id: subjectId,
-    },
-    registrationMode: registeredClient.registration_mode,
-  });
-  return (await getRegisteredClient(registeredClient.client_id)) || registeredClient;
 }
 
 /**
@@ -10392,73 +10456,40 @@ export async function approveOwnerDeviceAuthorization(
     err.code = "not_found";
     throw err;
   }
-  if (pending.status === "approved" && pending.token_id) {
-    return ownerDeviceApprovalResponse(pending, subjectId);
-  }
-  if (pending.status !== "pending") {
-    throw attachOwnerDeviceTraceContext(
-      Object.assign(new Error("Owner device authorization is not available"), {
-        code: "not_found",
-      }),
-      pending
-    );
-  }
-  if (isExpired(pending)) {
-    await markOwnerDeviceAuthExpired(pending.device_code);
-    throw attachOwnerDeviceTraceContext(
-      Object.assign(new Error("Owner device authorization has expired"), {
-        code: "not_found",
-      }),
-      pending
-    );
-  }
-  let registeredClient: RegisteredClient | null;
-  try {
-    registeredClient = await getRegisteredClient(pending.client_id);
-  } catch (err: unknown) {
-    if (isAuthError(err) && err.code === "invalid_client") {
-      throw attachOwnerDeviceTraceContext(err, pending);
-    }
-    throw err;
-  }
-  if (!registeredClient) {
-    const err: AuthError = new Error(`Unknown client_id: ${pending.client_id}`);
-    err.code = "invalid_client";
-    throw attachOwnerDeviceTraceContext(err, pending);
-  }
-  try {
-    registeredClient = await bindDynamicClientToApprovingOwner(registeredClient, subjectId);
-  } catch (err: unknown) {
-    if (!isAuthError(err)) {
-      throw err;
-    }
-    throw attachOwnerDeviceTraceContext(err, pending);
-  }
 
   const traceContext = ownerDeviceTraceContext(pending);
   const token = generateToken();
   const tokenExpiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
-  const approved = await getOwnerDeviceAuthStore().approveAtomically({
-    clientId: registeredClient.client_id,
-    consentApprovedEvent: buildOwnerDeviceConsentApprovedEvent({
-      clientId: registeredClient.client_id,
-      pending,
+  let approved: OwnerDeviceAuthRow;
+  try {
+    approved = await getOwnerDeviceAuthStore().approveAtomically({
+      clientId: pending.client_id,
+      consentApprovedEvent: buildOwnerDeviceConsentApprovedEvent({
+        clientId: pending.client_id,
+        pending,
+        subjectId,
+        traceContext,
+      }),
+      deviceCode: pending.device_code,
+      expiresAt: tokenExpiresAt,
+      faultHook: opts.faultHook,
+      pendingSnapshot: pending,
       subjectId,
-      traceContext,
-    }),
-    deviceCode: pending.device_code,
-    expiresAt: tokenExpiresAt,
-    faultHook: opts.faultHook,
-    subjectId,
-    tokenId: token,
-    tokenIssuedEvent: buildOwnerDeviceTokenIssuedEvent({
-      clientId: registeredClient.client_id,
-      pending,
-      subjectId,
-      token,
-      traceContext,
-    }),
-  });
+      tokenId: token,
+      tokenIssuedEvent: buildOwnerDeviceTokenIssuedEvent({
+        clientId: pending.client_id,
+        pending,
+        subjectId,
+        token,
+        traceContext,
+      }),
+    });
+  } catch (err: unknown) {
+    if (isOwnerDeviceExpiredError(err)) {
+      await markOwnerDeviceAuthExpired(pending.device_code);
+    }
+    throw err;
+  }
 
   return ownerDeviceApprovalResponse(approved, subjectId);
 }

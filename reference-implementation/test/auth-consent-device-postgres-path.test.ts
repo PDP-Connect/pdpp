@@ -260,6 +260,73 @@ if (POSTGRES_URL) {
     assert.equal(tokenState.pdpp_token_kind, "owner");
   });
 
+  test("owner device authorization: approved recovery rejects a different subject on postgres", async () => {
+    assert.equal(setupOk, true, "before() setup must have completed");
+
+    const initiated = await initiateOwnerDeviceAuthorization(CONSOLE_CLIENT_ID, {
+      expiresIn: 300,
+      interval: 1,
+    });
+    assert.equal(typeof initiated.user_code, "string");
+    assert.equal(typeof initiated.device_code, "string");
+
+    const ownerA = await approveOwnerDeviceAuthorization(initiated.user_code, "owner_A");
+    assert.equal(ownerA.subject_id, "owner_A");
+    await assert.rejects(approveOwnerDeviceAuthorization(initiated.user_code, "owner_B"), (err) => {
+      assert.ok(isDeviceAuthError(err), "rejection is an Error");
+      assert.equal(err.code, "not_found", "cross-subject recovery is hidden");
+      return true;
+    });
+
+    const ownerRows = await postgresQuery<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM tokens WHERE client_id = $1 AND token_kind = 'owner'",
+      [CONSOLE_CLIENT_ID]
+    );
+    assert.equal(Number(ownerRows.rows[0]?.count) >= 1, true, "owner token rows remain queryable");
+    const row = await postgresQuery<{ status: string; subject_id: string | null; token_id: string | null }>(
+      "SELECT status, subject_id, token_id FROM owner_device_auth WHERE device_code = $1",
+      [initiated.device_code]
+    );
+    assert.deepEqual(row.rows[0], { status: "approved", subject_id: "owner_A", token_id: ownerA.access_token });
+  });
+
+  test("owner device authorization: mixed concurrent subjects produce one postgres owner token", async () => {
+    assert.equal(setupOk, true, "before() setup must have completed");
+
+    const initiated = await initiateOwnerDeviceAuthorization(CONSOLE_CLIENT_ID, {
+      expiresIn: 300,
+      interval: 1,
+    });
+    assert.equal(typeof initiated.user_code, "string");
+    const attempts = await Promise.allSettled(
+      Array.from({ length: 8 }, (_, index) =>
+        approveOwnerDeviceAuthorization(initiated.user_code, index % 2 === 0 ? "owner_A" : "owner_B")
+      )
+    );
+    const approvals = attempts
+      .filter((attempt): attempt is PromiseFulfilledResult<Record<string, unknown>> => attempt.status === "fulfilled")
+      .map((attempt) => attempt.value);
+    assert.ok(approvals.length >= 1, "one subject claims the row");
+    assert.ok(approvals.length <= 4, "only the claimed subject recovers");
+    assert.equal(new Set(approvals.map((approval) => approval.subject_id)).size, 1);
+    assert.equal(new Set(approvals.map((approval) => approval.access_token)).size, 1);
+
+    const row = await postgresQuery<{ status: string; subject_id: string | null; token_id: string | null }>(
+      "SELECT status, subject_id, token_id FROM owner_device_auth WHERE device_code = $1",
+      [initiated.device_code]
+    );
+    assert.deepEqual(row.rows[0], {
+      status: "approved",
+      subject_id: approvals[0]?.subject_id as string,
+      token_id: approvals[0]?.access_token as string,
+    });
+    const tokenRows = await postgresQuery<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM tokens WHERE token_id = $1",
+      [approvals[0]?.access_token]
+    );
+    assert.equal(tokenRows.rows[0]?.count, "1", "claimed token is stored once");
+  });
+
   test("owner device authorization: deny then exchange fails through real auth.js postgres adapters", async () => {
     assert.equal(setupOk, true, "before() setup must have completed");
 
