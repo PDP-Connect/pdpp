@@ -37,6 +37,8 @@ import { createRequestConnectorInstanceStore } from "../server/request-store-fac
 import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
 import { writeSqliteRunHistoryForSpineEvent } from "../server/stores/run-history-writer.ts";
 
+const REJECTION_RECEIPT_ID_RE = /^rr_[A-Za-z0-9_-]{24}$/;
+
 function fakeAdmitRunConnection(): (input: {
   connectorId: string;
   connectorInstanceId: string | null;
@@ -679,10 +681,10 @@ test("runtime-level: a count-only permanent rejection cannot advance the cursor 
     assert.equal(body.records_rejected, 1, "the real invalid-identity write must be rejected permanently");
     assert.ok(Array.isArray(body.rejections), "the real server must return durable rejection evidence");
     assert.equal(body.rejections.length, 1);
-    const [rejection] = body.rejections as Array<Record<string, unknown>>;
+    const [rejection] = body.rejections as Record<string, unknown>[];
     assert.equal(rejection?.code, "invalid_record_identity");
     assert.equal(rejection?.input_index, 0);
-    assert.match(String(rejection?.receipt_id), /^rr_[A-Za-z0-9_-]{24}$/);
+    assert.match(String(rejection?.receipt_id), REJECTION_RECEIPT_ID_RE);
     observedDurableReceipt = true;
     return new Response(
       JSON.stringify({
