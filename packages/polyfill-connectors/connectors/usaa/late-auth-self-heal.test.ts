@@ -90,6 +90,46 @@ function makeSequencedPage(landedUrls: string[]): { calls: string[]; page: Page 
   };
 }
 
+function makeFallbackLoginPage(): {
+  filled: Array<{ selector: string; value: string }>;
+  page: Page;
+  context: BrowserContext;
+} {
+  let currentUrl = LOGON_URL;
+  let loggedIn = false;
+  let navigationCount = 0;
+  const filled: Array<{ selector: string; value: string }> = [];
+  const context = {
+    cookies: () => Promise.resolve(loggedIn ? [{ name: "UsaaMbWebMemberLoggedIn", value: "true" }] : []),
+  } as BrowserContext;
+  const page = Object.assign({} as Page, {
+    goto: (url: string) => {
+      navigationCount += 1;
+      currentUrl = navigationCount === 1 ? LOGON_URL : url;
+      return Promise.resolve(null);
+    },
+    url: () => currentUrl,
+    waitForSelector: () => Promise.resolve(null),
+    waitForTimeout: () => Promise.resolve(),
+    fill: (selector: string, value: string) => {
+      filled.push({ selector, value });
+      return Promise.resolve();
+    },
+    click: (selector: string) => {
+      if (selector === "#next-button" && filled.some((entry) => entry.selector === 'input[name="password"]')) {
+        loggedIn = true;
+      }
+      return Promise.resolve();
+    },
+    locator: () =>
+      Object.assign({} as Page, {
+        waitFor: () => Promise.resolve(),
+        innerText: () => Promise.resolve("Log Off"),
+      }),
+  });
+  return { context, filled, page };
+}
+
 // ─── gotoOrRepairSession: the shared primitive ──────────────────────────
 
 test("gotoOrRepairSession: lands on the real page first try → ok, no reauth attempted", async () => {
@@ -214,6 +254,48 @@ test("gotoOrRepairSession: no reauthenticate override falls through to ensureUsa
   );
 
   assert.deepEqual(result, { ok: false });
+});
+
+test("gotoOrRepairSession: default recovery uses the run-scoped Online ID, not the connector identity or ambient env", async () => {
+  const priorUsername = process.env.USAA_USERNAME;
+  const priorPassword = process.env.USAA_PASSWORD;
+  process.env.USAA_USERNAME = "usaa";
+  process.env.USAA_PASSWORD = "ambient-password";
+  try {
+    const fixture = makeFallbackLoginPage();
+    const run = makeHarness();
+    run.deps.credentials = { USAA_PASSWORD: "saved-password", USAA_USERNAME: "saved-online-id" };
+
+    const result = await gotoOrRepairSession(
+      run.deps,
+      fixture.context,
+      fixture.page,
+      NEVER_CALLED_SEND_INTERACTION,
+      DASHBOARD_URL,
+      { timeout: 1000 },
+      "accounts",
+      freshRunState()
+    );
+
+    assert.deepEqual(result, { ok: true });
+    assert.equal(
+      fixture.filled.find(({ selector }) => selector === 'input[name="memberId"]')?.value,
+      "saved-online-id"
+    );
+    assert.notEqual(fixture.filled.find(({ selector }) => selector === 'input[name="memberId"]')?.value, "usaa");
+    assert.equal(fixture.filled.find(({ selector }) => selector === 'input[name="password"]')?.value, "saved-password");
+  } finally {
+    if (priorUsername === undefined) {
+      delete process.env.USAA_USERNAME;
+    } else {
+      process.env.USAA_USERNAME = priorUsername;
+    }
+    if (priorPassword === undefined) {
+      delete process.env.USAA_PASSWORD;
+    } else {
+      process.env.USAA_PASSWORD = priorPassword;
+    }
+  }
 });
 
 // ─── extractAccounts: accounts stream self-heal ─────────────────────────

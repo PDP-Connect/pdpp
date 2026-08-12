@@ -201,6 +201,8 @@ const NON_STATEMENT_TITLE_RE = /(TERMS\b|AGREEMENT\b|NOTICE\b|DISCLOSURE\b|CONDI
 export interface EmitDeps {
   browserSurface?: BrowserSurfaceManagedState;
   capture?: BrowserCollectContext["capture"];
+  /** The run-scoped credential bundle resolved by the runtime. */
+  credentials?: Readonly<Record<string, string>>;
   emit: EmitFn;
   emitRecord: EmitRecordFn;
   reauthenticate?: (input: {
@@ -1602,7 +1604,13 @@ async function reauthAfterSessionLapse(
     if (deps.reauthenticate) {
       await deps.reauthenticate({ context, page, sendInteraction });
     } else {
-      await ensureUsaaSession({ capture: deps.capture ?? null, context, page, sendInteraction });
+      await ensureUsaaSession({
+        capture: deps.capture ?? null,
+        context,
+        ...(deps.credentials === undefined ? {} : { credentials: deps.credentials }),
+        page,
+        sendInteraction,
+      });
     }
     return true;
   } catch {
@@ -1687,7 +1695,13 @@ export async function gotoOrRepairSession(
     if (deps.reauthenticate) {
       await deps.reauthenticate({ context, page, sendInteraction });
     } else {
-      await ensureUsaaSession({ capture: deps.capture ?? null, context, page, sendInteraction });
+      await ensureUsaaSession({
+        capture: deps.capture ?? null,
+        context,
+        ...(deps.credentials === undefined ? {} : { credentials: deps.credentials }),
+        page,
+        sendInteraction,
+      });
     }
   } catch {
     return { ok: false };
@@ -3187,6 +3201,7 @@ export async function collectUsaa(ctx: BrowserCollectContext): Promise<void> {
   const deps: EmitDeps = {
     browserSurface: browserSurfaceManagedState(browserSurface),
     capture,
+    credentials: ctx.credentials,
     emit,
     emitRecord,
     servedAccountTransactionGaps: buildServedAccountTransactionGapLookup(ctx.detailGaps),
