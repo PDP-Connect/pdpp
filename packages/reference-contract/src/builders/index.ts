@@ -156,9 +156,7 @@ export interface ParRequestInput {
 
 function assertNoLegacySourceKeys(input: object): void {
   if ("connector_id" in input || "provider_id" in input) {
-    throw new Error(
-      "buildParRequest no longer accepts top-level connector_id/provider_id; pass source: { kind: 'connector' | 'provider_native', id }"
-    );
+    throw new Error("buildParRequest no longer accepts top-level connector_id/provider_id; pass source: { id, kind? }");
   }
 }
 

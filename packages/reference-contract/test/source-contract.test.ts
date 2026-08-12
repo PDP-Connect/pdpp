@@ -78,6 +78,7 @@ test("SourceDeclaration is a public 2020-12 Core contract for both source kinds"
   assertValid(validate, declaration);
   assert.deepEqual(validateSourceDeclarationSemantics(declaration), { ok: true });
   assertValid(validate, { ...declaration, source: { ...source, kind: "provider_native" } });
+  assertInvalid(validate, { ...declaration, source: { id: source.id } });
   assertInvalid(validate, { ...declaration, source: { id: "github", kind: "connector" } });
   assertInvalid(validate, { ...declaration, protocol_version: "0.2.0" });
   assertInvalid(validate, { ...declaration, streams: [{ ...issuesStream, name: "*" }] });
@@ -155,7 +156,7 @@ test("SourceDeclaration semantic validation reports stable uniqueness and refere
   const invalid: SourceDeclaration = {
     ...declaration,
     selection_presets: [
-      { id: "duplicate", label: "First", streams: [{ name: "missing" }] },
+      { id: "duplicate", label: "First", streams: [{ name: "missing" }, { name: "missing" }] },
       { id: "duplicate", label: "Second", streams: [{ name: "issues", view: "missing-view" }] },
     ],
     streams: [
@@ -223,6 +224,16 @@ test("SourceDeclaration semantic validation reports stable uniqueness and refere
       {
         code: "source.declaration.unknown_stream",
         path: "/selection_presets/0/streams/0/name",
+        reference: "missing",
+      },
+      {
+        code: "source.declaration.duplicate_preset_stream_name",
+        path: "/selection_presets/0/streams/1/name",
+        reference: "missing",
+      },
+      {
+        code: "source.declaration.unknown_stream",
+        path: "/selection_presets/0/streams/1/name",
         reference: "missing",
       },
       {
@@ -350,6 +361,8 @@ test("selection requests keep convenience forms request-only and never imply fan
     type: "https://pdpp.org/data-access",
   };
   assertValid(validate, { ...base, streams: [{ name: "*" }] });
+  assertValid(validate, { ...base, source: { id: source.id }, streams: [{ name: "*" }] });
+  assertInvalid(validate, { ...base, source: { id: source.id, kind: "native" }, streams: [{ name: "*" }] });
   assertValid(validate, { ...base, selection_preset: "issues-basic" });
   assertInvalid(validate, { ...base, selection_preset: "issues-basic", streams: [{ name: "issues" }] });
   assertInvalid(validate, { ...base });

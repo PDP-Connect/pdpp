@@ -494,10 +494,11 @@ declaration. Embedded `$ref` and `$dynamicRef` values MUST be local fragment
 references. A declaration MUST NOT make consent interpretation depend on a
 mutable remote schema.
 
-`source.id` is the authorization identity. `source.kind` records whether the
-accepted declaration authority is connector-backed or provider-native. It is
-not authorization equality, a runtime type, or a Collection Profile claim. A
-connector declaration with no Collection extension remains valid Core input.
+`source.id` is the authorization identity. In a retained declaration or grant,
+`source.kind` records the provenance class that the AS accepted from its
+declaration authority. It is not authorization equality, a runtime type, or a
+Collection Profile claim, and it never selects serving or acquisition runtime.
+A connector declaration with no Collection extension remains valid Core input.
 The declaration never contains owner-specific account or instance handles.
 Those appear on each stream in the selection request and resolved grant.
 
@@ -706,7 +707,7 @@ PDPP does not standardize consent screen layout, visual design, or copywriting. 
 
 | Parameter | Type | Required | Status | Description |
 |-----------|------|----------|--------|-------------|
-| `source` | object | yes | Protocol-enforced | Source binding: exactly `{ kind, id }`. `kind` is `connector` or `provider_native`; `id` is the stable absolute URI authorization identity for the data surface. Both MUST match the retained SourceDeclaration. `kind` is provenance and authority-class metadata, not authorization equality. |
+| `source` | object | yes | Protocol-enforced | Source binding. `id` is required and is the stable absolute URI authorization identity for the data surface. `kind` is optional. When present, it is a client trust expectation that the accepted declaration's provenance class is `connector` or `provider_native`. It is not authorization equality and never selects runtime. |
 | `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (absolute URI). See Appendix A for the initial registry. The AS MUST accept any syntactically valid absolute-URI purpose code. For unrecognized codes, the AS MUST display `purpose_description` if present, or the raw URI if not, and MUST NOT reject the request solely because the purpose code is unrecognized. Consent properties associated with purpose codes in the registry are advisory, not protocol-enforced, with the exception of `https://pdpp.org/purpose/ai_training` (see below). |
 | `purpose_description` | string | no | Structured policy declaration | Human-readable purpose, displayed to the user during consent. Clients SHOULD provide this field. When present, the AS MUST display it. For standard purpose codes, the AS MAY display a human-readable label from the registry when `purpose_description` is absent. |
 | `access_mode` | enum | yes | Protocol-enforced | `single_use` or `continuous`. See Section 7. |
@@ -722,7 +723,12 @@ PDPP does not standardize consent screen layout, visual design, or copywriting. 
 | `"connector"` | The declaration authority represents a connector-backed source. `source.id` is its public source URI, not a local package name, connector key, storage namespace, account identifier, or runtime binding. A connector declaration remains Core-valid without Collection Profile data. |
 | `"provider_native"` | The declaration authority represents the provider's own PDPP data surface. `source.id` is normally the OAuth protected-resource identifier for that surface, not merely the provider's legal-entity URI. |
 
-An unrecognized or declaration-mismatched `source.kind` produces a Source validation failure before consent. The OAuth/RAR binding returns RFC 9396 `invalid_authorization_details`.
+If the request includes `source.kind`, an unrecognized value or a mismatch
+with the AS-accepted declaration provenance produces a Source validation
+failure before consent. If the request omits `source.kind`, the AS derives
+provenance from the accepted declaration and records it in consent evidence
+and any issued grant. The OAuth/RAR binding returns RFC 9396
+`invalid_authorization_details` for invalid authorization details.
 
 #### AI training consent {#ai-training-consent}
 
@@ -768,7 +774,11 @@ Source declarations may define selection presets. A client can reference a prese
 }
 ```
 
-The authorization server expands the preset from the retained snapshot into explicit streams and fields before issuing the grant.
+The authorization server expands the preset from the retained snapshot into
+explicit streams and fields before final owner review and issuance.
+Each selection preset MUST NOT contain the same stream name more than once.
+Duplicate stream names make the declaration invalid. They are not deferred to
+grant issuance.
 
 Every field in the issued grant is derived from either the selection request, client registration, or authorization server policy. The grant never contains values whose source is ambiguous.
 
@@ -844,7 +854,16 @@ The authorization server issues an access token bound to the grant. The client u
 | `time_constraint` | object | no | Protocol-enforced | Frozen `{ field, since?, until? }` resolved from the retained declaration. `field` is required and at least one bound is present. `since` is inclusive; `until` is exclusive. |
 | `resources` | string[] | no | Protocol-enforced | Authorized record IDs in canonical key string encoding. Absent means all records. |
 
-Request-only conveniences such as wildcard names, `view`, omitted fields, and omitted instance handles are fully resolved before issuance. They are not continuing authority in the grant. Selection provenance may be retained at grant level through `selection_preset`; the concrete stream rows remain authoritative.
+Request-only conveniences such as wildcard names, `view`, omitted fields, and omitted instance handles are fully resolved before final owner review and issuance. They are not continuing authority in the grant. Selection provenance may be retained at grant level through `selection_preset`; the concrete stream rows remain authoritative.
+
+Before the final approval surface is shown, the AS MUST resolve omitted
+`instance_ids` to exact eligible instance handles or require an explicit owner
+choice. The final approval artifact MUST include the exact resolved
+`instance_ids`, stream names, fields, resources, temporal field, `since`,
+`until`, purpose, retention, client identity, and grant expiry. The approval
+mutation MUST bind to an immutable review revision or digest over those
+fields. If instance eligibility or the reviewed revision becomes stale before
+approval, the AS MUST reject approval and require a new review.
 
 ### Time concepts
 
@@ -1357,8 +1376,12 @@ A conformant authorization server:
 12. MUST NOT define a view including fields absent from the retained SourceDeclaration schema.
 13. Resolves view names to field lists at issuance time; stores resolved `fields` in the `StreamGrant`.
 14. Obtains explicit affirmative user consent before issuing grants with `purpose_code: "https://pdpp.org/purpose/ai_training"`.
-15. Retains one exact SourceDeclaration snapshot through request validation, consent display, narrowing, issuance, and consent evidence. A later current declaration never substitutes for it.
-16. Returns 400 `unsupported_version` if `PDPP-Version` header specifies an unsupported version.
+15. Resolves omitted instance IDs before the final approval surface. Binds
+    exact resolved instances and all final decision fields to an immutable
+    review revision or digest. Rejects stale approval if eligibility or the
+    reviewed revision changes before approval.
+16. Retains one exact SourceDeclaration snapshot through request validation, consent display, narrowing, issuance, and consent evidence. A later current declaration never substitutes for it.
+17. Returns 400 `unsupported_version` if `PDPP-Version` header specifies an unsupported version.
 
 ### Resource Server conformance
 
@@ -1574,16 +1597,21 @@ interface PresetStreamSelection {
   fields?: string[];       // Top-level field names only in v0.1; mutually exclusive with view
 }
 
-// --- Source binding (request + grant) ---
+// --- Source binding ---
 
 interface SourceObject {
   kind: 'connector' | 'provider_native';
   id: string;              // Stable absolute URI for the authorization and data surface
 }
 
+interface SourceRequestObject {
+  id: string;              // Stable absolute URI for the authorization and data surface
+  kind?: 'connector' | 'provider_native'; // Optional client trust expectation
+}
+
 type SelectionRequest = {
   type: 'https://pdpp.org/data-access';
-  source: SourceObject;
+  source: SourceRequestObject;
   purpose_code: string;
   purpose_description?: string;
   access_mode: 'single_use' | 'continuous';

@@ -2,17 +2,19 @@
 
 ## Boundary and identity
 
-Core defines one declaration for both source kinds. `source.kind` is retained
-because the independent review recommended it. It is a provenance and
-authority class. It is not authorization equality, a runtime type, or a
-Collection-conformance claim. A `connector` declaration is therefore usable by
-Core without a Collection extension. The deletion test does not require
-removing `source.kind`.
+Core defines one declaration for both source kinds. A retained declaration and
+grant include `source.kind` as AS-accepted provenance and authority class.
+It is not authorization equality, a runtime type, or a Collection-conformance
+claim. A request may include `source.kind` only as a client trust expectation.
+If it is omitted, the AS derives provenance from the accepted declaration.
+A `connector` declaration is therefore usable by Core without a Collection
+extension. The deletion test does not require removing `source.kind`.
 
 `source.id` is the stable absolute URI for the authorization and data surface.
-Authorization equality uses `source.id` only. `source.kind` must match the
-trusted declaration as provenance and accountability metadata, but does not
-make two equal source IDs different. Core requires an absolute URI and
+Authorization equality uses `source.id` only. A client-supplied `source.kind`,
+when present, must match the trusted declaration as a trust-policy check, but
+does not make two equal source IDs different and never selects runtime. Core
+requires an absolute URI and
 rejects local, storage, or instance keys. It does not reject an absolute URI
 because it resembles a package coordinate. Trusted allocation and publisher
 authority belong to the Discovery Contract PR. An ID is not a storage key, runtime identity, account
@@ -94,7 +96,8 @@ Required declaration members are `protocol_version`, `source`,
 absolute URI; and `declaration_version` is a non-empty opaque string.
 `publisher.id` is an absolute URI. `display.name` is non-empty.
 `selection_presets` and `extensions` are optional. `selection_presets` is an
-array of uniquely identified preset selections.
+array of uniquely identified preset selections. Each preset must list a stream
+name at most once.
 
 Every stream has a unique non-empty non-wildcard `name`, `semantics`, `schema`, unique
 non-empty `primary_key`, and `selection`. It may have `description`, `display`,
@@ -144,10 +147,11 @@ concurrent-run controller.
 
 ### Selection request
 
-The declaration, request, and grant source object is exactly `{ kind, id }`.
-A SourceDeclaration never carries owner-specific instance IDs. A request
-stream may carry `instance_ids`; every resolved grant stream carries a unique,
-non-empty `instance_ids` array.
+The declaration and grant source object is exactly `{ kind, id }`. A request
+source object contains required `id` and optional `kind`. A SourceDeclaration
+never carries owner-specific instance IDs. A request stream may carry
+`instance_ids`; every resolved grant stream carries a unique, non-empty
+`instance_ids` array.
 
 ```json
 {
@@ -177,8 +181,9 @@ non-empty `instance_ids` array.
 `type`, `source`, `purpose_code`, `access_mode`, and exactly one of `streams`
 or `selection_preset` are required. Apart from that selector,
 `purpose_description`, `retention`, and `client_claims` are optional. A request
-source has exactly `kind` and `id`; both must metadata-match the selected
-declaration.
+source has required `id` and optional `kind`. The ID must match the selected
+declaration. If kind is present, it must match the accepted declaration
+provenance before consent.
 
 Each stream request has `name` and optional `necessity`, `instance_ids`,
 `fields`, `view`, `time_range`, and `resources`. `name` may be `*` only in a
@@ -256,13 +261,18 @@ a unique non-empty array of canonical primary-key strings. Omission means no
 resource restriction, not an empty allowlist. A stream resource array is
 separate from other streams and cannot be inferred from another stream.
 
-The AS validates instance eligibility and uniqueness before issuance. For each
-stream, it resolves an omitted request set to exactly one eligible instance,
-or requires an explicit owner choice. Multiple instances are authorized only
-when that approved stream explicitly lists them. The AS freezes fields, time
-field and bounds, resources, stream names, source ID, per-stream instance sets,
-subject, and client. No omitted
-member in an issued grant means future declaration expansion.
+The AS validates instance eligibility and uniqueness before final owner review
+and issuance. For each stream, it resolves an omitted request set to exactly
+one eligible instance, or requires an explicit owner choice. Multiple
+instances are authorized only when that approved stream explicitly lists them.
+The final approval artifact includes the exact resolved instance IDs and all
+decision fields. The approval mutation binds to an immutable review revision
+or digest over source, streams, fields, resources, temporal field and bounds,
+purpose, retention, client identity, and expiry. If instance eligibility or
+the reviewed revision is stale at approval time, the AS rejects approval and
+requires a new review. The AS freezes fields, time field and bounds, resources,
+stream names, source ID, per-stream instance sets, subject, and client. No
+omitted member in an issued grant means future declaration expansion.
 
 Query expansion is not an authorization constraint in this change. A
 relationship or expansion capability remains current query metadata. An

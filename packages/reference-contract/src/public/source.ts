@@ -10,6 +10,11 @@ export interface SourceObject {
   kind: SourceKind;
 }
 
+export interface SourceRequestObject {
+  id: string;
+  kind?: SourceKind;
+}
+
 export interface SourceDeclarationStream {
   consent_time_field?: string;
   cursor_field?: string;
@@ -78,7 +83,7 @@ interface SelectionRequestBase {
   purpose_code: string;
   purpose_description?: string;
   retention?: { max_duration: string; on_expiry: "anonymize" | "delete" };
-  source: SourceObject;
+  source: SourceRequestObject;
   type: "https://pdpp.org/data-access";
 }
 
@@ -194,6 +199,16 @@ export const SourceObjectSchema = {
     kind: { enum: ["connector", "provider_native"], type: "string" },
   },
   required: ["kind", "id"],
+  type: "object",
+} satisfies JsonSchema;
+
+export const SourceRequestObjectSchema = {
+  additionalProperties: false,
+  properties: {
+    id: { format: "uri", minLength: 1, type: "string" },
+    kind: { enum: ["connector", "provider_native"], type: "string" },
+  },
+  required: ["id"],
   type: "object",
 } satisfies JsonSchema;
 
@@ -314,6 +329,7 @@ export const SourceDeclarationSchema = {
 
 export type SourceDeclarationSemanticFailureCode =
   | "source.declaration.duplicate_preset_id"
+  | "source.declaration.duplicate_preset_stream_name"
   | "source.declaration.duplicate_expand_name"
   | "source.declaration.duplicate_relationship_name"
   | "source.declaration.duplicate_stream_name"
@@ -633,8 +649,17 @@ function validatePresets(
       });
     }
     presetIds.add(preset.id);
+    const presetStreamNames = new Set<string>();
     for (const [selectionIndex, selection] of preset.streams.entries()) {
       const basePath = `/selection_presets/${presetIndex}/streams/${selectionIndex}`;
+      if (presetStreamNames.has(selection.name)) {
+        failures.push({
+          code: "source.declaration.duplicate_preset_stream_name",
+          path: `${basePath}/name`,
+          reference: selection.name,
+        });
+      }
+      presetStreamNames.add(selection.name);
       const stream = streamsByName.get(selection.name);
       if (!stream) {
         failures.push({
@@ -813,7 +838,7 @@ export const SelectionRequestSchema = {
     purpose_description: NonEmptyStringSchema,
     retention: RetentionSchema,
     selection_preset: NonEmptyStringSchema,
-    source: SourceObjectSchema,
+    source: SourceRequestObjectSchema,
     streams: { items: SelectionRequestStreamSchema, minItems: 1, type: "array", uniqueItems: true },
     type: { const: "https://pdpp.org/data-access" },
   },

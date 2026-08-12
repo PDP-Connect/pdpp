@@ -28,12 +28,20 @@ to per-stream request and grant scope, and the AS SHALL validate their
 eligibility there. The complete member and omission rules are defined in the
 design for this change.
 
+Each selection preset SHALL NOT contain the same stream name more than once.
+Duplicate stream names inside one preset SHALL make the SourceDeclaration
+invalid.
+
 `extensions`, when present, SHALL be an object keyed by collision-resistant
 profile URIs. Each profile SHALL own its entire value. Core SHALL NOT parse or
 validate a profile-owned value. An operation that requires an unsupported
 profile SHALL reject the operation. A profile SHALL NOT redefine or weaken a
-Core member. `source.kind` SHALL be provenance and authority-class metadata. It SHALL NOT
-be authorization equality, a runtime type, or a Collection-conformance claim.
+Core member. In declarations and grants, `source.kind` SHALL be AS-derived
+provenance and authority-class metadata. In requests, `source.kind` MAY be
+omitted. If present, it SHALL be a client trust expectation that must match
+the accepted declaration provenance before consent. It SHALL NOT be
+authorization equality, a runtime type, or a Collection-conformance claim.
+It SHALL NOT select runtime.
 `source.id` SHALL be the authorization identity. Core SHALL require an
 absolute URI and SHALL reject local, storage, or instance keys, but SHALL NOT
 reject an absolute URI merely because it resembles a package coordinate.
@@ -57,6 +65,13 @@ stream members and MAY appear only in a Collection-owned extension.
 - **THEN** authorization equality SHALL use `source.id`
 - **AND** `source.kind` SHALL remain provenance metadata rather than runtime or
   Collection conformance
+
+#### Scenario: Preset contains a duplicate stream name
+
+- **WHEN** a SourceDeclaration selection preset lists the same stream name more
+  than once
+- **THEN** SourceDeclaration validation SHALL reject the declaration before any
+  grant is resolved
 
 ### Requirement: Source identity and source instance scope are explicit
 
@@ -107,7 +122,7 @@ A request SHALL contain `type`, `source`, `purpose_code`, `access_mode`, and
 exactly one of `streams` or `selection_preset`; optional members SHALL be
 limited to `purpose_description`, `retention`, and `client_claims`, apart from
 the selected `streams` or `selection_preset` member. A request source SHALL
-contain exactly `kind` and `id`. Request stream members SHALL be `name`,
+contain required `id` and optional `kind`. Request stream members SHALL be `name`,
 optional `necessity`, `instance_ids`, `fields`, `view`, `time_range`, and
 `resources`; `fields` and `view` SHALL be mutually exclusive. Wildcards SHALL
 be request-only. Explicit request stream names SHALL be unique, and a wildcard
@@ -127,10 +142,16 @@ contain exact `field` and at least one of `since` or `until`; `resources`, when
 present, SHALL be unique non-empty canonical primary-key strings. Omission
 means no constraint and never means future declaration expansion.
 
-The AS SHALL resolve and freeze stream names, fields, source ID, subject,
-client, every approved per-stream instance set, temporal field and bounds, and resources
-from one declaration snapshot. Grant authorization equality SHALL use source
-ID, not source kind.
+The AS SHALL resolve omitted instance IDs before the final approval surface is
+shown. It SHALL bind exact resolved instances and all final decision fields to
+an immutable review revision or digest before final approval. Those decision
+fields SHALL include source, stream names, fields, resources, temporal field
+and bounds, purpose, retention, client identity, and expiry. If instance
+eligibility or the reviewed revision becomes stale before approval, the AS
+SHALL reject approval and require a new review. The AS SHALL resolve and freeze
+stream names, fields, source ID, subject, client, every approved per-stream
+instance set, temporal field and bounds, and resources from one declaration
+snapshot. Grant authorization equality SHALL use source ID, not source kind.
 A request that violates this request contract SHALL produce the binding-neutral
 Source validation failure `source.authorization_details_invalid`. The binding
 SHALL own its protocol response mapping.
@@ -142,6 +163,14 @@ SHALL own its protocol response mapping.
 - **THEN** the issued grant SHALL contain concrete stream names, non-empty
   fields, and a non-empty approved instance set on every stream
 - **AND** it SHALL not retain those convenience forms as continuing authority
+
+#### Scenario: Stale review revision is rejected
+
+- **WHEN** a final review artifact resolved omitted instance IDs and the
+  eligible instance set or reviewed revision changes before approval
+- **THEN** approval SHALL fail closed
+- **AND** the owner SHALL review the exact resolved decision again before a
+  grant can be issued
 
 #### Scenario: Time constraint is frozen
 

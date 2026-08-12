@@ -11,7 +11,7 @@ import {
   buildRecordsQuery,
 } from "../src/builders/index.ts";
 
-const LEGACY_SOURCE_RE = /source: \{ kind: 'connector' \| 'provider_native', id \}/;
+const LEGACY_SOURCE_RE = /source: \{ id, kind\? \}/;
 
 test("buildExpandParams normalizes repeated relation names and expand limits", () => {
   assert.deepEqual(

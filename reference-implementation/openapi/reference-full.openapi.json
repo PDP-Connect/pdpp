@@ -2181,7 +2181,6 @@
                             }
                           },
                           "required": [
-                            "kind",
                             "id"
                           ],
                           "type": "object"

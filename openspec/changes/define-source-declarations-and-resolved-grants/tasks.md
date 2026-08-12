@@ -18,8 +18,13 @@
     instance IDs, concrete names, fields, frozen time constraints,
     canonical resources, the retained Core grant fields,
     `source_declaration.version`, and omission rules.
+  - Keep declaration and grant `source.kind` required as AS-derived provenance.
+    Allow request `source.kind` only as an optional client trust expectation.
+    Never use kind to select runtime.
   - Require unique non-empty approved instance IDs and fields on every grant
     stream. Prove that omitted requested instance IDs never authorize fan-in.
+  - Reject duplicate stream names inside each selection preset during
+    SourceDeclaration validation.
   - Emit binding-neutral `source.authorization_details_invalid` when a request
     violates the Source request or narrowing contract. Leave the OAuth response
     mapping to PR89.
@@ -73,6 +78,15 @@
   and supports grant-filtered reads without importing Collection code.
 - Every issued grant stream has a concrete name, fields, and a unique non-empty
   instance array; fan-in requires an explicit array on that stream.
+- Request omission of `source.kind` is valid, but SourceDeclaration omission is
+  invalid. A supplied request kind is a trust expectation, not runtime
+  selection.
+- Duplicate stream names inside one selection preset are rejected before grant
+  resolution.
+- Omitted instance IDs are resolved before the final approval surface. The
+  exact resolved instances and final decision fields are bound to an immutable
+  review revision or digest, and stale eligibility or revision requires a new
+  review.
 - A declaration mutation, deletion, or same-version replacement between any
   barrier cannot change display, narrowing, issuance, evidence, or an existing
   grant.
