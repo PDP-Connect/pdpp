@@ -7857,7 +7857,7 @@ test("PDPP reference implementation integration", async (t) => {
     });
   });
 
-  await t.test("client stream metadata projects the granted field subset", async () => {
+  await t.test("client stream metadata preserves source fields and marks grant usability", async () => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
       const ownerToken = await issueOwnerToken(asUrl, "u1");
       await seedSpotify(rsUrl, spotifyManifest, ownerToken);
@@ -7884,13 +7884,28 @@ test("PDPP reference implementation integration", async (t) => {
       assert.equal(metadataBody.object, "stream_metadata");
       // biome-ignore lint/suspicious/noUnnecessaryConditions: Runtime guard protects an untyped external/test boundary.
       const metadataFields = Object.keys(metadataBody.schema.properties || {}).sort();
-      assert.deepEqual(metadataFields, ["genres", "id", "name"]);
+      assert.deepEqual(metadataFields, [
+        "followers",
+        "genres",
+        "id",
+        "image_url",
+        "name",
+        "popularity",
+        "source_updated_at",
+      ]);
       // biome-ignore lint/suspicious/noUnnecessaryConditions: Runtime guard protects an untyped external/test boundary.
       assert.deepEqual((metadataBody.schema.required || []).sort(), ["id", "name"]);
       // biome-ignore lint/suspicious/noUnnecessaryConditions: Runtime guard protects an untyped external/test boundary.
-      assert.deepEqual((metadataBody.views || []).map((view) => view.id).sort(), []);
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: Runtime guard protects an untyped external/test boundary.
-      assert.ok(!("popularity" in (metadataBody.schema.properties || {})));
+      assert.deepEqual((metadataBody.views || []).map((view) => view.id).sort(), ["basic", "full"]);
+      assert.equal(metadataBody.field_capabilities.id?.granted, true);
+      assert.equal(metadataBody.field_capabilities.name?.granted, true);
+      assert.equal(metadataBody.field_capabilities.genres?.granted, true);
+      assert.equal(metadataBody.field_capabilities.popularity?.granted, false);
+      assert.deepEqual(metadataBody.field_capabilities.popularity?.exact_filter, {
+        declared: true,
+        reason: "field_not_granted",
+        usable: false,
+      });
     });
   });
 
