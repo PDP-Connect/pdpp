@@ -18,13 +18,20 @@ record rejections onto the accepted #112/#113 durability stack.
 
 ## #123 Boundary
 
+- Hosted `POST /v1/ingest/:stream` enters `withConnectorInstanceWrite` before
+  it opens the rejection durability transaction. This composes with the accepted
+  connector-instance coordinator for the failed line's admitted instance.
 - `insertOrReplaySqliteRecordRejectionInTransaction(db, input)` performs the
   writable/run check, replay lookup/update, quota admission, receipt insert, and
   audit insert on the caller's explicit SQLite handle.
 - `insertOrReplayPostgresRecordRejectionWithClient(client, input)` performs the
   same work on the caller's explicit `PoolClient`.
-- Standalone wrappers only open the backend transaction and delegate to those
-  seams.
+- Hosted rejection wrappers open one backend transaction for the failed line's
+  rejection, quota, and audit effects, then delegate to those seams. SQLite uses
+  the coordinator-held process gate plus `writeTransaction`; PostgreSQL uses the
+  same process gate plus `withPostgresTransaction({ lockConnectorInstanceId })`.
+- Standalone store wrappers remain compatibility adapters for non-route callers
+  and still delegate to the backend-local seams.
 
 ## Non-Claims
 

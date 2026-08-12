@@ -57,6 +57,10 @@ export interface RecordRejectionReceipt {
   readonly replayed: boolean;
 }
 
+export interface HostedRecordRejectionCoordinatorHooks {
+  readonly afterInsertOrReplayBeforeCommit?: (receipt: RecordRejectionReceipt) => Promise<void> | void;
+}
+
 export interface RecordRejectionMetadata {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
@@ -600,6 +604,24 @@ export function insertOrReplaySqliteRecordRejection(input: InsertOrReplayRecordR
   return writeTransaction(() => insertOrReplaySqliteRecordRejectionInTransaction(getDb(), input));
 }
 
+export function insertOrReplayHostedSqliteRecordRejection(
+  input: InsertOrReplayRecordRejectionInput,
+  hooks: HostedRecordRejectionCoordinatorHooks = {}
+): RecordRejectionReceipt {
+  return writeTransaction(() => {
+    const receipt = insertOrReplaySqliteRecordRejectionInTransaction(getDb(), input);
+    const hookResult = hooks.afterInsertOrReplayBeforeCommit?.(receipt);
+    if (hookResult && typeof (hookResult as Promise<void>).then === "function") {
+      throw new RecordRejectionStoreError(
+        "invalid_hosted_rejection_hook",
+        "SQLite hosted record rejection hooks must be synchronous.",
+        { retryable: false }
+      );
+    }
+    return receipt;
+  });
+}
+
 export function getSqliteRecordRejectionDetail(args: {
   connectorInstanceId: string;
   ownerSubjectId: string;
@@ -836,6 +858,32 @@ export function insertOrReplayPostgresRecordRejection(
   return withPostgresTransaction((client) => insertOrReplayPostgresRecordRejectionWithClient(client, input), {
     lockConnectorInstanceId: input.connectorInstanceId,
   });
+}
+
+export function insertOrReplayHostedPostgresRecordRejection(
+  input: InsertOrReplayRecordRejectionInput,
+  hooks: HostedRecordRejectionCoordinatorHooks = {}
+): Promise<RecordRejectionReceipt> {
+  return withPostgresTransaction(
+    async (client) => {
+      const receipt = await insertOrReplayPostgresRecordRejectionWithClient(client, input);
+      await hooks.afterInsertOrReplayBeforeCommit?.(receipt);
+      return receipt;
+    },
+    {
+      lockConnectorInstanceId: input.connectorInstanceId,
+    }
+  );
+}
+
+export function insertOrReplayHostedRecordRejection(
+  input: InsertOrReplayRecordRejectionInput,
+  hooks: HostedRecordRejectionCoordinatorHooks = {}
+): Promise<RecordRejectionReceipt> {
+  if (isPostgresStorageBackend()) {
+    return insertOrReplayHostedPostgresRecordRejection(input, hooks);
+  }
+  return Promise.resolve(insertOrReplayHostedSqliteRecordRejection(input, hooks));
 }
 
 export async function getPostgresRecordRejectionDetail(args: {

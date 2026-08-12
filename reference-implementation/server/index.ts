@@ -511,6 +511,8 @@ import {
   deletePostgresRecordRejectionsForConnectionWithClient,
   deleteSqliteRecordRejectionsForConnectionWithinTransaction,
   type InsertOrReplayRecordRejectionInput,
+  insertOrReplayHostedRecordRejection,
+  type RecordRejectionReceipt,
 } from "./stores/record-rejection-store.ts";
 import {
   createResumableRunHistoryBackfillStage,
@@ -705,6 +707,7 @@ interface ServerOpts {
   deviceExporterStore?: unknown;
   dynamicClientRegistrationInitialAccessTokens?: readonly string[];
   enableDynamicClientRegistration?: boolean;
+  hostedRecordRejectionAfterInsertBeforeCommit?: (receipt: RecordRejectionReceipt) => Promise<void> | void;
   hybridRetrievalCapability?: unknown;
   hybridRetrievalSupported?: boolean;
   ignoreAmbientPublicUrls?: boolean;
@@ -6207,10 +6210,17 @@ function buildRsApp(opts: ServerOpts = {}) {
       code,
       ...input
     }: Omit<InsertOrReplayRecordRejectionInput, "reasonCode"> & { code: string }) => {
-      const receipt = await createRequestRecordRejectionStore().insertOrReplay({
-        ...input,
-        reasonCode: code,
-      });
+      const receipt = await withConnectorInstanceWrite(input.connectorInstanceId, () =>
+        insertOrReplayHostedRecordRejection(
+          {
+            ...input,
+            reasonCode: code,
+          },
+          opts.hostedRecordRejectionAfterInsertBeforeCommit
+            ? { afterInsertOrReplayBeforeCommit: opts.hostedRecordRejectionAfterInsertBeforeCommit }
+            : {}
+        )
+      );
       return {
         code: receipt.code,
         input_index: receipt.inputIndex,
@@ -7604,6 +7614,7 @@ export async function startServer(opts: ServerOpts = {}) {
     asPublicUrl,
     configuredProviderAuthConnectorKeys,
     controller,
+    hostedRecordRejectionAfterInsertBeforeCommit: opts.hostedRecordRejectionAfterInsertBeforeCommit,
     hybridRetrievalCapability: opts.hybridRetrievalCapability,
     // Hybrid retrieval experimental extension knobs — see search-hybrid.js +
     // the metadata route. Forwarded verbatim so test harnesses and operator
