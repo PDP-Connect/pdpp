@@ -141,6 +141,8 @@ test("apple_contacts integration: a genuinely empty address book completes with 
     assert.ok(groupsCoverage && groupsCoverage.type === "DETAIL_COVERAGE", "contact_groups must emit DETAIL_COVERAGE");
     assert.equal(groupsCoverage.considered, 0);
     assert.equal(groupsCoverage.covered, 0);
+    const groupsState = result.messages.find((m) => m.type === "STATE" && m.stream === "contact_groups");
+    assert.ok(groupsState, "a successful empty group enumeration must stage its stream checkpoint");
 
     const addressBooksCoverage = result.messages.find(
       (m) => m.type === "DETAIL_COVERAGE" && m.stream === "address_books"
@@ -247,6 +249,11 @@ test("apple_contacts integration: fails cleanly on rejected credentials", async 
     // goes through the same redaction as any other connector diagnostic.
     assert.equal(done.error?.code, "auth_failed");
     assert.equal(done.error?.message, "Apple ID or app-specific password was rejected");
+    assert.equal(
+      result.messages.some((m) => m.type === "STATE" && m.stream === "contact_groups"),
+      false,
+      "a failed scan must not stage contact_groups coverage"
+    );
     // No vCard or credential content leaked into the terminal error/progress trace.
     const serialized = JSON.stringify(result.messages);
     assert.equal(serialized.includes("wrong-password"), false);

@@ -40,6 +40,7 @@
  */
 
 import {
+  buildFullScanCoverageMessage,
   createConnectorFailure,
   emitDetailCoverage,
   nowIso,
@@ -433,6 +434,11 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
       await emitRecord("contact_groups", group);
       groupsEmitted += 1;
     }
+    // Group membership is a derived full snapshot. Stage its stream only
+    // after the source enumeration and derivation complete successfully;
+    // this lets a genuine zero-group result prove coverage without turning a
+    // failed or unattempted scan into proof.
+    await emit({ type: "STATE", stream: "contact_groups", cursor: { fetched_at: nowIso() } });
   }
 
   const contactsState =
@@ -530,7 +536,6 @@ if (isMainModule(import.meta.url)) {
       let considered = 0;
       let covered = 0;
       let groupsConsidered = 0;
-      let groupsCovered = 0;
       let contactsConsidered = 0;
       let contactsCovered = 0;
       let anyUnparseableResource = false;
@@ -563,7 +568,6 @@ if (isMainModule(import.meta.url)) {
         // unconditionally emitted, so considered === covered === the exact
         // count emitted for this book (including a genuine zero-group book).
         groupsConsidered += groupsEmitted;
-        groupsCovered += groupsEmitted;
         contactsConsidered += bookContactsConsidered;
         contactsCovered += bookContactsCovered;
         anyUnparseableResource = anyUnparseableResource || hadUnparseableResource;
@@ -600,17 +604,7 @@ if (isMainModule(import.meta.url)) {
       }
 
       if (requested.has("contact_groups")) {
-        await emitDetailCoverage(
-          { emit },
-          {
-            stream: "contact_groups",
-            stateStream: "contact_groups",
-            requiredKeys: [],
-            hydratedKeys: [],
-            considered: groupsConsidered,
-            covered: groupsCovered,
-          }
-        );
+        await emit(buildFullScanCoverageMessage("contact_groups", groupsConsidered));
       }
 
       if (requested.has("address_books")) {
