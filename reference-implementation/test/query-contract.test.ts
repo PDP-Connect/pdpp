@@ -725,12 +725,22 @@ test("schema discovery scopes a client token to its grant source and streams", a
 
     // biome-ignore lint/style/useDestructuring: the property access names the fixture value at its point of use.
     const topArtists = connector.streams[0];
-    // field-limited grant: granted fields are usable; ungranted fields are omitted from the client schema.
+    // field-limited grant: granted fields are usable; ungranted fields retain metadata but are unusable.
     assert.equal(topArtists.field_capabilities.id.granted, true);
     assert.equal(topArtists.field_capabilities.name.granted, true);
     assert.equal(topArtists.field_capabilities.source_updated_at.granted, true);
     assert.equal(topArtists.field_capabilities.source_updated_at.range_filter.usable, true);
-    assert.equal(topArtists.field_capabilities.popularity, undefined);
+    assert.equal(topArtists.field_capabilities.popularity.granted, false);
+    assert.deepEqual(topArtists.field_capabilities.popularity.exact_filter, {
+      declared: true,
+      reason: "field_not_granted",
+      usable: false,
+    });
+    assert.deepEqual(topArtists.field_capabilities.popularity.aggregation.max, {
+      declared: true,
+      reason: "field_not_granted",
+      usable: false,
+    });
 
     const serialized = JSON.stringify(body);
     assert.equal(serialized.includes(gmailManifest.connector_id), false, "must not leak other connectors");
@@ -876,7 +886,17 @@ test("stream metadata marks grant-limited field capabilities unusable for client
       operators: ["gte", "gt", "lte", "lt"],
       usable: true,
     });
-    assert.equal(body.field_capabilities.popularity, undefined);
+    assert.equal(body.field_capabilities.popularity.granted, false);
+    assert.deepEqual(body.field_capabilities.popularity.exact_filter, {
+      declared: true,
+      reason: "field_not_granted",
+      usable: false,
+    });
+    assert.deepEqual(body.field_capabilities.popularity.aggregation.max, {
+      declared: true,
+      reason: "field_not_granted",
+      usable: false,
+    });
 
     const gmailManifest = readGmailManifest();
     const registerResp = await registerConnectorManifest(asUrl, gmailManifest);
@@ -908,10 +928,37 @@ test("stream metadata marks grant-limited field capabilities unusable for client
     });
 
     assert.equal(gmailMetadata.status, 200);
-    assert.equal(gmailMetadata.body.field_capabilities.date, undefined);
-    assert.equal(gmailMetadata.body.field_capabilities.from_email, undefined);
-    assert.equal(gmailMetadata.body.field_capabilities.snippet, undefined);
-    assert.deepEqual(gmailMetadata.body.expand_capabilities, []);
+    assert.equal(gmailMetadata.body.field_capabilities.date.granted, false);
+    assert.deepEqual(gmailMetadata.body.field_capabilities.date.range_filter, {
+      declared: true,
+      operators: ["gte", "gt", "lte", "lt"],
+      reason: "field_not_granted",
+      usable: false,
+    });
+    assert.equal(gmailMetadata.body.field_capabilities.from_email.granted, false);
+    assert.equal(gmailMetadata.body.field_capabilities.snippet.granted, false);
+    assert.deepEqual(
+      gmailMetadata.body.expand_capabilities.map((capability: JsonObject) => ({
+        granted: capability.granted,
+        name: capability.name,
+        reason: capability.reason,
+        usable: capability.usable,
+      })),
+      [
+        {
+          granted: false,
+          name: "message_bodies",
+          reason: "related_stream_not_granted",
+          usable: false,
+        },
+        {
+          granted: false,
+          name: "attachments",
+          reason: "related_stream_not_granted",
+          usable: false,
+        },
+      ]
+    );
   });
 });
 
