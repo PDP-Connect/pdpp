@@ -21,7 +21,7 @@
  * adapters (`postgresPendingConsentStore` and `postgresOwnerDeviceAuthStore`)
  * actually execute:
  *   - createOwnerDeviceAuth / getOwnerDeviceAuthRowByUserCode /
- *     markOwnerDeviceAuthApproved / getOwnerDeviceAuthRow (owner device flow)
+ *     approveAtomically / getOwnerDeviceAuthRow (owner device flow)
  *   - createPendingConsent / getPendingConsentRow (incl. the
  *     `params_json::text` cast) / markPendingConsentApproved (consent flow)
  *
@@ -78,6 +78,7 @@ const REFERENCE_IMPL_DIR = join(__dirname, "..");
 
 const CONSOLE_CLIENT_ID = "pg_path_console";
 const POSTGRES_AUTH_INSTANCE_ID = "cin_pg_auth_source_snapshot_0811";
+const FORCED_POSTGRES_AFTER_TOKEN_INSERT_RE = /forced postgres after_token_insert/;
 const GRANT_BINDING_RE = /Grant is malformed|grant/i;
 const PROJECTED_DECLARATION_VERSION_RE = /^reference\.legacy-connector-projection\.v1:sha256:[0-9a-f]{64}$/;
 
@@ -138,8 +139,8 @@ if (POSTGRES_URL) {
   // A) Owner-device-authorization flow.
   //
   // Exercises the postgresOwnerDeviceAuthStore adapter: insert (createOwnerDeviceAuth),
-  // getByUserCode (getOwnerDeviceAuthRowByUserCode), markApproved
-  // (markOwnerDeviceAuthApproved), getByDeviceCode (getOwnerDeviceAuthRow).
+  // getByUserCode (getOwnerDeviceAuthRowByUserCode), approveAtomically,
+  // getByDeviceCode (getOwnerDeviceAuthRow).
   // ---------------------------------------------------------------------
   test("owner device authorization: approve + exchange through real auth.js postgres adapters", async () => {
     assert.equal(setupOk, true, "before() setup must have completed");
@@ -172,6 +173,82 @@ if (POSTGRES_URL) {
     });
     assert.ok(exchanged.access_token, "exchange returns an access token");
     assert.equal(exchanged.access_token, approved.access_token, "exchanged token is the token bound at approval");
+  });
+
+  test("owner device authorization: atomic approval rolls back faults and is retry-idempotent on postgres", async () => {
+    assert.equal(setupOk, true, "before() setup must have completed");
+
+    const failed = await initiateOwnerDeviceAuthorization(CONSOLE_CLIENT_ID, {
+      expiresIn: 300,
+      interval: 1,
+    });
+    assert.equal(typeof failed.user_code, "string");
+    assert.equal(typeof failed.device_code, "string");
+    const ownerTokenCountBeforeFault = await postgresQuery<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM tokens WHERE client_id = $1 AND token_kind = 'owner'",
+      [CONSOLE_CLIENT_ID]
+    );
+
+    await assert.rejects(
+      approveOwnerDeviceAuthorization(failed.user_code, "owner_local", {
+        faultHook: (stage) => {
+          if (stage === "after_token_insert") {
+            throw new Error("forced postgres after_token_insert");
+          }
+        },
+      }),
+      FORCED_POSTGRES_AFTER_TOKEN_INSERT_RE
+    );
+
+    const failedRow = await postgresQuery<{ status: string; token_id: string | null }>(
+      "SELECT status, token_id FROM owner_device_auth WHERE device_code = $1",
+      [failed.device_code]
+    );
+    assert.deepEqual(failedRow.rows[0], { status: "pending", token_id: null });
+    const orphanCount = await postgresQuery<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM tokens WHERE client_id = $1 AND token_kind = 'owner'",
+      [CONSOLE_CLIENT_ID]
+    );
+    assert.equal(orphanCount.rows[0]?.count, ownerTokenCountBeforeFault.rows[0]?.count, "fault leaves no owner token");
+
+    const recovered = await approveOwnerDeviceAuthorization(failed.user_code, "owner_local");
+    assert.equal(typeof recovered.access_token, "string");
+    const retry = await approveOwnerDeviceAuthorization(failed.user_code, "owner_local");
+    assert.equal(retry.access_token, recovered.access_token, "retry returns the bound token");
+
+    const concurrentStarted = await initiateOwnerDeviceAuthorization(CONSOLE_CLIENT_ID, {
+      expiresIn: 300,
+      interval: 1,
+    });
+    assert.equal(typeof concurrentStarted.user_code, "string");
+    const approvals = await Promise.all(
+      Array.from({ length: 8 }, () => approveOwnerDeviceAuthorization(concurrentStarted.user_code, "owner_local"))
+    );
+    const tokens = new Set(approvals.map((approval) => approval.access_token));
+    assert.equal(tokens.size, 1, "concurrent postgres approvals return one token");
+
+    const recoveredApprovalEvents = await postgresQuery<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM spine_events
+       WHERE object_id = $1
+         AND object_type = 'owner_device_auth'
+         AND event_type = 'consent.approved'`,
+      [failed.device_code]
+    );
+    assert.equal(recoveredApprovalEvents.rows[0]?.count, "1");
+    const recoveredTokenEvents = await postgresQuery<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM spine_events
+       WHERE token_id = $1
+         AND object_type = 'token'
+         AND event_type = 'token.issued'`,
+      [recovered.access_token]
+    );
+    assert.equal(recoveredTokenEvents.rows[0]?.count, "1");
+
+    const tokenState = await introspect(recovered.access_token);
+    assert.equal(tokenState.active, true, "recovered postgres owner token introspects active");
+    assert.equal(tokenState.pdpp_token_kind, "owner");
   });
 
   test("owner device authorization: deny then exchange fails through real auth.js postgres adapters", async () => {

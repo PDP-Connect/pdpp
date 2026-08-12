@@ -175,10 +175,15 @@ export function createMemoryConsentDeviceAuthDriver() {
         err.code = "not_found";
         throw err;
       }
+      if (row.status === "approved" && row.token_id) {
+        return {
+          access_token: row.token_id,
+          expires_in: 365 * 24 * 60 * 60,
+          subject_id: row.subject_id || "owner_local",
+          token_type: "Bearer",
+        };
+      }
       if (row.status !== "pending") {
-        // Terminal state — re-approval is rejected and the originally-
-        // issued token (if any) stays bound to the row. Pins scenario 9b's
-        // "approval is terminal" invariant.
         const err = codedError("Owner device authorization is not available");
         err.code = "not_found";
         throw err;

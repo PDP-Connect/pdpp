@@ -436,6 +436,19 @@ interface OwnerDeviceAuthRow extends DbRow {
   user_code: string;
 }
 
+export type OwnerDeviceApprovalFaultHook = (stage: "before_token_insert" | "after_token_insert") => void;
+
+interface OwnerDeviceApprovalInput {
+  clientId: string;
+  consentApprovedEvent: AuthSpineEventInput;
+  deviceCode: string;
+  expiresAt: string;
+  faultHook?: OwnerDeviceApprovalFaultHook | undefined;
+  subjectId: string;
+  tokenId: string;
+  tokenIssuedEvent: AuthSpineEventInput;
+}
+
 interface OAuthPendingCodeRow extends DbRow {
   client_id: string;
   consumed_at: string | null;
@@ -581,6 +594,7 @@ interface PendingConsentStore {
 }
 
 interface OwnerDeviceAuthStore {
+  approveAtomically: (input: OwnerDeviceApprovalInput) => MaybePromise<OwnerDeviceAuthRow>;
   getByApprovalId: (approvalId: string) => MaybePromise<OwnerDeviceAuthRow | null>;
   getByDeviceCode: (deviceCode: string) => MaybePromise<OwnerDeviceAuthRow | null>;
   getByUserCode: (userCode: string) => MaybePromise<OwnerDeviceAuthRow | null>;
@@ -2657,6 +2671,55 @@ function getPendingConsentStore() {
 }
 
 const postgresOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
+  approveAtomically: (input) =>
+    withPostgresTransaction(async (client) => {
+      const existing = await client.query<OwnerDeviceAuthRow>(
+        `SELECT *
+         FROM owner_device_auth
+         WHERE device_code = $1
+         FOR UPDATE`,
+        [input.deviceCode]
+      );
+      const [row] = existing.rows;
+      if (!row) {
+        const err: AuthError = new Error("Unknown user code");
+        err.code = "not_found";
+        throw err;
+      }
+      if (row.status === "approved" && row.token_id) {
+        return row;
+      }
+      if (row.status !== "pending") {
+        throw attachOwnerDeviceTraceContext(
+          Object.assign(new Error("Owner device authorization is not available"), {
+            code: "not_found",
+          }),
+          row
+        );
+      }
+      input.faultHook?.("before_token_insert");
+      await client.query(
+        `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
+         VALUES($1, NULL, $2, $3, 'owner', $4)`,
+        [input.tokenId, input.subjectId, input.clientId, input.expiresAt]
+      );
+      input.faultHook?.("after_token_insert");
+      await postgresEmitSpineEventInTransaction(client, input.consentApprovedEvent as SpineEventInput);
+      await postgresEmitSpineEventInTransaction(client, input.tokenIssuedEvent as SpineEventInput);
+      const approved = await client.query<OwnerDeviceAuthRow>(
+        `UPDATE owner_device_auth
+         SET status = 'approved',
+             subject_id = $2,
+             token_id = $3,
+             approved_at = $4
+         WHERE device_code = $1
+           AND status = 'pending'
+        RETURNING *`,
+        [input.deviceCode, input.subjectId, input.tokenId, nowIso()]
+      );
+      const [approvedRow] = approved.rows;
+      return approvedRow as OwnerDeviceAuthRow;
+    }),
   getByApprovalId: (approvalId) =>
     pgOne<OwnerDeviceAuthRow>(
       `SELECT *
@@ -2734,6 +2797,43 @@ const postgresOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
 };
 
 const sqliteOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
+  approveAtomically: (input) =>
+    transaction(() => {
+      const row = getOne<OwnerDeviceAuthRow>(referenceQueries.authOwnerDeviceAuthGetByDeviceCode, [input.deviceCode]);
+      if (!row) {
+        const err: AuthError = new Error("Unknown user code");
+        err.code = "not_found";
+        throw err;
+      }
+      if (row.status === "approved" && row.token_id) {
+        return row;
+      }
+      if (row.status !== "pending") {
+        throw attachOwnerDeviceTraceContext(
+          Object.assign(new Error("Owner device authorization is not available"), {
+            code: "not_found",
+          }),
+          row
+        );
+      }
+      input.faultHook?.("before_token_insert");
+      exec(referenceQueries.authTokensInsertOwner, [input.tokenId, input.subjectId, input.clientId, input.expiresAt]);
+      input.faultHook?.("after_token_insert");
+      emitRawSpineEvent(input.consentApprovedEvent as SpineEventInput, getDb());
+      emitRawSpineEvent(input.tokenIssuedEvent as SpineEventInput, getDb());
+      exec(referenceQueries.authOwnerDeviceAuthMarkApproved, [
+        input.subjectId,
+        input.tokenId,
+        nowIso(),
+        input.deviceCode,
+      ]);
+      return {
+        ...row,
+        status: "approved",
+        subject_id: input.subjectId,
+        token_id: input.tokenId,
+      };
+    }),
   getByApprovalId: (approvalId) =>
     getOne<OwnerDeviceAuthRow>(referenceQueries.authOwnerDeviceAuthGetByApprovalId, [approvalId]),
   getByDeviceCode: (deviceCode) =>
@@ -3976,18 +4076,6 @@ export async function getOwnerDeviceAuthRowByApprovalId(approvalId: unknown): Pr
     return null;
   }
   return await getOwnerDeviceAuthStore().getByApprovalId(approvalId);
-}
-
-async function markOwnerDeviceAuthApproved(
-  deviceCode: string,
-  { subjectId, tokenId }: { subjectId: string; tokenId: string }
-): Promise<void> {
-  await getOwnerDeviceAuthStore().markApproved({
-    approvedAt: nowIso(),
-    deviceCode,
-    subjectId,
-    tokenId,
-  });
 }
 
 async function markOwnerDeviceAuthDenied(deviceCode: string): Promise<void> {
@@ -10217,13 +10305,17 @@ export async function getOwnerDeviceAuthorizationByUserCode(
  */
 export async function approveOwnerDeviceAuthorization(
   userCode: unknown,
-  subjectId = "owner_local"
+  subjectId = "owner_local",
+  opts: { faultHook?: OwnerDeviceApprovalFaultHook } = {}
 ): Promise<Record<string, unknown>> {
   const pending = await getOwnerDeviceAuthRowByUserCode(userCode);
   if (!pending) {
     const err: AuthError = new Error("Unknown user code");
     err.code = "not_found";
     throw err;
+  }
+  if (pending.status === "approved" && pending.token_id) {
+    return ownerDeviceApprovalResponse(pending, subjectId);
   }
   if (pending.status !== "pending") {
     throw attachOwnerDeviceTraceContext(
@@ -10265,47 +10357,32 @@ export async function approveOwnerDeviceAuthorization(
     throw attachOwnerDeviceTraceContext(err, pending);
   }
 
-  const traceContext =
-    isNonEmptyString(pending.trace_id) && isNonEmptyString(pending.request_id)
-      ? {
-          request_id: pending.request_id,
-          ...(isNonEmptyString(pending.scenario_id) ? { scenario_id: pending.scenario_id } : {}),
-          trace_id: pending.trace_id,
-        }
-      : null;
-
-  await emitSpineEvent({
-    actor_id: subjectId,
-    actor_type: "subject",
-    client_id: registeredClient.client_id,
-    data: {
-      issuance_path: "owner_device_flow",
-      user_code: pending.user_code,
-    },
-    event_type: "consent.approved",
-    object_id: pending.device_code,
-    object_type: "owner_device_auth",
-    request_id: traceContext?.request_id || undefined,
-    scenario_id: traceContext?.scenario_id || undefined,
-    status: "succeeded",
-    subject_id: subjectId,
-    subject_type: "subject",
-    trace_id: traceContext?.trace_id || undefined,
-  });
-
-  const token = await issueOwnerToken(subjectId, {
+  const traceContext = ownerDeviceTraceContext(pending);
+  const token = generateToken();
+  const tokenExpiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+  const approved = await getOwnerDeviceAuthStore().approveAtomically({
     clientId: registeredClient.client_id,
-    traceContext,
-    userCode: pending.user_code,
+    consentApprovedEvent: buildOwnerDeviceConsentApprovedEvent({
+      clientId: registeredClient.client_id,
+      pending,
+      subjectId,
+      traceContext,
+    }),
+    deviceCode: pending.device_code,
+    expiresAt: tokenExpiresAt,
+    faultHook: opts.faultHook,
+    subjectId,
+    tokenId: token,
+    tokenIssuedEvent: buildOwnerDeviceTokenIssuedEvent({
+      clientId: registeredClient.client_id,
+      pending,
+      subjectId,
+      token,
+      traceContext,
+    }),
   });
-  await markOwnerDeviceAuthApproved(pending.device_code, { subjectId, tokenId: token });
 
-  return {
-    access_token: token,
-    expires_in: 365 * 24 * 60 * 60,
-    subject_id: subjectId,
-    token_type: "Bearer",
-  };
+  return ownerDeviceApprovalResponse(approved, subjectId);
 }
 
 export async function denyOwnerDeviceAuthorization(userCode: unknown, subjectId = "owner_local"): Promise<void> {
@@ -10371,6 +10448,100 @@ function ownerDeviceExchangeError(row: OwnerDeviceAuthRow, code: string, message
   const err: AuthError = new Error(message);
   err.code = code;
   return attachOwnerDeviceTraceContext(err, row);
+}
+
+function ownerDeviceApprovalResponse(row: OwnerDeviceAuthRow, fallbackSubjectId: string): Record<string, unknown> {
+  return {
+    access_token: row.token_id,
+    expires_in: 365 * 24 * 60 * 60,
+    subject_id: row.subject_id || fallbackSubjectId,
+    token_type: "Bearer",
+  };
+}
+
+function ownerDeviceTraceContext(row: OwnerDeviceAuthRow): TraceContext | null {
+  if (!(isNonEmptyString(row.trace_id) && isNonEmptyString(row.request_id))) {
+    return null;
+  }
+  return {
+    request_id: row.request_id,
+    ...(isNonEmptyString(row.scenario_id) ? { scenario_id: row.scenario_id } : {}),
+    trace_id: row.trace_id,
+  };
+}
+
+function ownerDeviceTraceEventFields(
+  traceContext: TraceContext | null
+): Pick<AuthSpineEventInput, "request_id" | "scenario_id" | "trace_id"> {
+  return traceContext
+    ? {
+        request_id: traceContext.request_id,
+        scenario_id: traceContext.scenario_id,
+        trace_id: traceContext.trace_id,
+      }
+    : {};
+}
+
+function buildOwnerDeviceConsentApprovedEvent({
+  clientId,
+  pending,
+  subjectId,
+  traceContext,
+}: {
+  clientId: string;
+  pending: OwnerDeviceAuthRow;
+  subjectId: string;
+  traceContext: TraceContext | null;
+}): AuthSpineEventInput {
+  return {
+    actor_id: subjectId,
+    actor_type: "subject",
+    client_id: clientId,
+    data: {
+      issuance_path: "owner_device_flow",
+      user_code: pending.user_code,
+    },
+    event_type: "consent.approved",
+    object_id: pending.device_code,
+    object_type: "owner_device_auth",
+    status: "succeeded",
+    subject_id: subjectId,
+    subject_type: "subject",
+    ...ownerDeviceTraceEventFields(traceContext),
+  };
+}
+
+function buildOwnerDeviceTokenIssuedEvent({
+  clientId,
+  pending,
+  subjectId,
+  token,
+  traceContext,
+}: {
+  clientId: string;
+  pending: OwnerDeviceAuthRow;
+  subjectId: string;
+  token: string;
+  traceContext: TraceContext | null;
+}): AuthSpineEventInput {
+  return {
+    actor_id: "pdpp_as",
+    actor_type: "authorization_server",
+    client_id: clientId,
+    data: {
+      issuance_path: "owner_device_flow",
+      token_kind: "owner",
+      user_code: pending.user_code,
+    },
+    event_type: "token.issued",
+    object_id: token,
+    object_type: "token",
+    status: "succeeded",
+    subject_id: subjectId,
+    subject_type: "subject",
+    token_id: token,
+    ...ownerDeviceTraceEventFields(traceContext),
+  };
 }
 
 async function requireOwnerDeviceClient(row: OwnerDeviceAuthRow, clientId: string): Promise<void> {
