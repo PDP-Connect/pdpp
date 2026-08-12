@@ -1091,6 +1091,7 @@ test("SQLite refresh failure rolls back rotation and bearer issuance together", 
   const asUrl = `http://localhost:${server.asPort}`;
   try {
     const manifest = await registerSpotify(asUrl);
+    await seedDefaultHostedInstance(manifest);
     const client = await registerAuthCodeClient(asUrl);
     const issued = await completeOauthCodeFlow({ asUrl, client, manifest });
     const refreshToken = mustExist(issued.refreshToken, "fault flow must issue a refresh token");
