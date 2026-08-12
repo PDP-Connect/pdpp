@@ -610,3 +610,34 @@ test("outcome proof: a single oversized array element is rejected under a hard h
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("outcome proof: an oversized primitive element fails before tokenizer buffering can OOM", async () => {
+  const ELEMENT_BYTES = 80 * 1024 * 1024;
+  const primitive = "x".repeat(ELEMENT_BYTES);
+  const content = JSON.stringify({ locations: [primitive] });
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-google-maps-primitive-p1-oracle-"));
+  const path = join(dir, "Timeline.json");
+  try {
+    writeFileSync(path, content);
+    const { statSync } = await import("node:fs");
+    const fileSize = statSync(path).size;
+
+    const { spawnSync } = await import("node:child_process");
+    const childPath = new URL("./oversized-element-oracle-child.ts", import.meta.url);
+    const result = spawnSync(
+      process.execPath,
+      ["--max-old-space-size=100", "--import", "tsx", childPath.pathname, path, String(fileSize)],
+      { encoding: "utf8", timeout: 30_000 }
+    );
+
+    assert.equal(
+      result.status,
+      0,
+      `expected the primitive child to exit cleanly, got status=${result.status} signal=${result.signal} stderr=${result.stderr}`
+    );
+    assert.equal(result.signal, null);
+    assert.equal(JSON.parse(result.stdout.trim()).status, "too_large");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});

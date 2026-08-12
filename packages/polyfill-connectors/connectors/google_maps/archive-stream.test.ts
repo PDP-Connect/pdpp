@@ -18,7 +18,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { GoogleMapsElementTooLargeError, streamGoogleMapsExport } from "./archive-stream.ts";
+import {
+  GoogleMapsElementTooLargeError,
+  GoogleMapsUnsupportedShapeError,
+  streamGoogleMapsExport,
+} from "./archive-stream.ts";
 
 function writeTmpFile(content: string): { dir: string; path: string } {
   const dir = mkdtempSync(join(tmpdir(), "pdpp-google-maps-archive-stream-"));
@@ -81,7 +85,7 @@ test("a genuinely oversized SUPPORTED array element still throws GoogleMapsEleme
 
 test("an oversized PRIMITIVE array element (a bare string, not wrapped in an object) still throws GoogleMapsElementTooLargeError", async () => {
   // Regression counter-test: a supported array's element need not be an
-  // object -- `insideConfirmedArrayElement` must also account for a
+  // object -- the byte tracker must also account for a
   // primitive element's own bytes while its single (possibly multi-chunk)
   // token is being tokenized, not just for bytes belonging to a nested
   // object/array frame. A predicate that only recognizes "nested container
@@ -128,6 +132,103 @@ test("many small PRIMITIVE array elements, none oversized, are unaffected by the
       { maxSingleElementBytes }
     );
     assert.equal(elementCount, primitives.length);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("primitive string, number, boolean, and null boundaries count the exact element bytes", async () => {
+  const values = [
+    { label: "string", value: "boundary" },
+    { label: "number", value: 123_456_789 },
+    { label: "boolean", value: true },
+    { label: "null", value: null },
+  ] as const;
+
+  await Promise.all(
+    values.map(async ({ label, value }) => {
+      const encoded = JSON.stringify(value);
+      const content = JSON.stringify({ locations: [value] });
+      const { dir, path } = writeTmpFile(content);
+      try {
+        await streamGoogleMapsExport(path, () => undefined, {
+          maxSingleElementBytes: Buffer.byteLength(encoded, "utf8"),
+        });
+        await assert.rejects(
+          () =>
+            streamGoogleMapsExport(path, () => undefined, {
+              maxSingleElementBytes: Buffer.byteLength(encoded, "utf8") - 1,
+            }),
+          GoogleMapsElementTooLargeError,
+          `${label} element must fail one byte below its exact bound`
+        );
+      } finally {
+        rmSync(dir, { force: true, recursive: true });
+      }
+    })
+  );
+});
+
+test("object and nested-array elements count across read-buffer boundaries", async () => {
+  const maxSingleElementBytes = 70_000;
+  const objectElement = { note: "x".repeat(maxSingleElementBytes - 20) };
+  const objectContent = JSON.stringify({ locations: [objectElement] });
+  const { dir: objectDir, path: objectPath } = writeTmpFile(objectContent);
+  try {
+    const objectBytes = Buffer.byteLength(JSON.stringify(objectElement), "utf8");
+    await streamGoogleMapsExport(objectPath, () => undefined, { maxSingleElementBytes: objectBytes });
+    await assert.rejects(
+      () => streamGoogleMapsExport(objectPath, () => undefined, { maxSingleElementBytes: objectBytes - 1 }),
+      GoogleMapsElementTooLargeError
+    );
+  } finally {
+    rmSync(objectDir, { force: true, recursive: true });
+  }
+
+  const arrayElement = ["x".repeat(maxSingleElementBytes - 20)];
+  const arrayContent = JSON.stringify([arrayElement]);
+  const { dir: arrayDir, path: arrayPath } = writeTmpFile(arrayContent);
+  try {
+    const arrayBytes = Buffer.byteLength(JSON.stringify(arrayElement), "utf8");
+    await streamGoogleMapsExport(arrayPath, () => undefined, { maxSingleElementBytes: arrayBytes });
+    await assert.rejects(
+      () => streamGoogleMapsExport(arrayPath, () => undefined, { maxSingleElementBytes: arrayBytes - 1 }),
+      GoogleMapsElementTooLargeError
+    );
+  } finally {
+    rmSync(arrayDir, { force: true, recursive: true });
+  }
+});
+
+test("large whitespace between selected elements is not attributed to either element", async () => {
+  const maxSingleElementBytes = 64;
+  const content = `{"locations":[{"id":1}${" ".repeat(4096)},{"id":2}]}`;
+  const { dir, path } = writeTmpFile(content);
+  try {
+    let elementCount = 0;
+    await streamGoogleMapsExport(
+      path,
+      (event) => {
+        if (event.kind === "element") {
+          elementCount += 1;
+        }
+      },
+      { maxSingleElementBytes }
+    );
+    assert.equal(elementCount, 2);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("a recognized key with a malformed non-array value reports unsupported, not too-large", async () => {
+  const content = JSON.stringify({ locations: { note: "not an array" }, trailing: "x".repeat(4096) });
+  const { dir, path } = writeTmpFile(content);
+  try {
+    await assert.rejects(
+      () => streamGoogleMapsExport(path, () => undefined, { maxSingleElementBytes: 16 }),
+      GoogleMapsUnsupportedShapeError
+    );
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

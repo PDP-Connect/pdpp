@@ -66,6 +66,21 @@ type ShapeFrame =
       state: "comma_or_end" | "value_or_end";
     };
 
+type ByteTrackerFrame =
+  | {
+      kind: "object";
+      pendingKey: string | undefined;
+      root: boolean;
+      state: "comma_or_end" | "colon" | "key_or_end" | "value";
+    }
+  | {
+      activeElement: boolean;
+      elementBytes: number;
+      format: GoogleMapsSourceFormat | undefined;
+      kind: "array";
+      state: "comma_or_end" | "primitive" | "value_or_end";
+    };
+
 /**
  * Tracks only the root object's property/value boundary. The JSON parser's
  * `paths` option cannot both select wrapped array elements and observe a
@@ -85,25 +100,6 @@ class RootShapeTracker {
 
   get invalidKey(): string | null {
     return this.invalidRecognizedKey;
-  }
-
-  /**
-   * True whenever a byte arriving right now could be part of a confirmed
-   * (recognized-shape) array's element -- object, array, OR primitive.
-   * Any frame nested beneath a confirmed array is inside its current
-   * element by construction. The confirmed array frame itself also counts
-   * regardless of its own state (`value_or_end` covers a primitive element
-   * in progress -- a long STRING token does not resolve into another
-   * `onToken` call until its closing quote, so the frame's state cannot
-   * advance until the whole primitive has streamed through; `comma_or_end`
-   * covers a nested object/array element still open beneath it, already
-   * true via the nested-frame case above). The only bytes this over-counts
-   * are the handful of comma/bracket/whitespace bytes between elements or
-   * at the array's own close, which cannot approach a MiB-scale bound and
-   * are cleared on the next element or container-close reset.
-   */
-  get insideConfirmedArrayElement(): boolean {
-    return this.stack.some((frame) => frame.kind === "array" && frame.confirmedFormat !== undefined);
   }
 
   onToken(token: TokenType, value: unknown): void {
@@ -210,6 +206,256 @@ class RootShapeTracker {
   }
 }
 
+/**
+ * Counts selected array-element bytes before the JSON tokenizer sees them.
+ * Token callbacks cannot do this for primitive values because the tokenizer
+ * buffers a primitive until its closing token. This scanner keeps only JSON
+ * structure and the current root key; it never retains an element value.
+ */
+class ElementByteTracker {
+  private readonly stack: ByteTrackerFrame[] = [];
+  private mode: "normal" | "primitive" | "string" | "string_escape" = "normal";
+  private primitiveIsDirectArrayElement = false;
+  private stringIsKey = false;
+  private stringRaw = "";
+  private readonly maxElementBytes: number;
+
+  constructor(maxElementBytes: number) {
+    this.maxElementBytes = maxElementBytes;
+  }
+
+  consume(text: string): void {
+    for (const char of text) {
+      this.consumeChar(char, char.charCodeAt(0) < 0x80 ? 1 : Buffer.byteLength(char, "utf8"));
+    }
+  }
+
+  private consumeChar(char: string, bytes: number): void {
+    if (this.mode === "string" || this.mode === "string_escape") {
+      this.consumeStringChar(char, bytes);
+      return;
+    }
+    if (this.mode === "primitive") {
+      this.consumePrimitiveChar(char, bytes);
+      return;
+    }
+
+    this.consumeNormalChar(char, bytes);
+  }
+
+  private consumeStringChar(char: string, bytes: number): void {
+    this.count(bytes);
+    if (this.mode === "string_escape") {
+      if (this.stringIsKey) {
+        this.stringRaw += char;
+      }
+      this.mode = "string";
+    } else if (char === "\\") {
+      if (this.stringIsKey) {
+        this.stringRaw += char;
+      }
+      this.mode = "string_escape";
+    } else if (char === '"') {
+      this.finishString();
+    } else if (this.stringIsKey) {
+      this.stringRaw += char;
+    }
+  }
+
+  private consumePrimitiveChar(char: string, bytes: number): void {
+    if (isJsonDelimiter(char)) {
+      this.finishPrimitive();
+      this.consumeChar(char, bytes);
+      return;
+    }
+    this.count(bytes);
+  }
+
+  private consumeNormalChar(char: string, bytes: number): void {
+    if (char === '"') {
+      const frame = this.stack.at(-1);
+      this.stringIsKey = frame?.kind === "object" && frame.root && frame.state === "key_or_end";
+      if (!this.stringIsKey) {
+        this.beginScalar();
+      }
+      this.count(bytes);
+      this.stringRaw = "";
+      this.mode = "string";
+      return;
+    }
+    if (char === "{" || char === "[") {
+      this.beginContainer(char === "{" ? "object" : "array");
+      this.count(bytes);
+      return;
+    }
+    if (char === "}" || char === "]") {
+      this.count(bytes);
+      this.finishContainer(char);
+      return;
+    }
+    if (char === ":" || char === ",") {
+      this.count(bytes);
+      this.transition(char);
+      return;
+    }
+    if (isJsonWhitespace(char)) {
+      this.count(bytes);
+      return;
+    }
+    this.beginScalar();
+    this.count(bytes);
+    this.mode = "primitive";
+  }
+
+  private beginContainer(kind: "object" | "array"): void {
+    const parent = this.stack.at(-1);
+    if (!parent) {
+      this.stack.push(
+        kind === "object"
+          ? { kind, pendingKey: undefined, root: true, state: "key_or_end" }
+          : { activeElement: false, elementBytes: 0, format: "timeline_objects", kind, state: "value_or_end" }
+      );
+      return;
+    }
+    if (parent.kind === "object") {
+      if (parent.state !== "value") {
+        return;
+      }
+      const format = parent.root ? (formatForShapeKey(parent.pendingKey ?? "") ?? undefined) : undefined;
+      parent.pendingKey = undefined;
+      parent.state = "comma_or_end";
+      this.stack.push(
+        kind === "object"
+          ? { kind, pendingKey: undefined, root: false, state: "key_or_end" }
+          : { activeElement: false, elementBytes: 0, format, kind, state: "value_or_end" }
+      );
+      return;
+    }
+    if (parent.state !== "value_or_end") {
+      return;
+    }
+    parent.activeElement = true;
+    parent.state = "comma_or_end";
+    this.stack.push(
+      kind === "object"
+        ? { kind, pendingKey: undefined, root: false, state: "key_or_end" }
+        : { activeElement: false, elementBytes: 0, format: undefined, kind, state: "value_or_end" }
+    );
+  }
+
+  private beginScalar(): void {
+    const frame = this.stack.at(-1);
+    if (!frame) {
+      return;
+    }
+    if (frame.kind === "object") {
+      if (frame.state === "value") {
+        frame.pendingKey = undefined;
+        frame.state = "comma_or_end";
+      }
+      return;
+    }
+    if (frame.state === "value_or_end") {
+      frame.activeElement = true;
+      frame.elementBytes = 0;
+      frame.state = "primitive";
+      this.primitiveIsDirectArrayElement = true;
+    }
+  }
+
+  private finishString(): void {
+    if (this.stringIsKey) {
+      const frame = this.stack.at(-1);
+      if (frame?.kind === "object" && frame.state === "key_or_end") {
+        frame.pendingKey = decodeJsonString(this.stringRaw);
+        frame.state = "colon";
+      }
+    } else {
+      this.finishPrimitive();
+    }
+    this.mode = "normal";
+    this.stringIsKey = false;
+    this.stringRaw = "";
+  }
+
+  private finishPrimitive(): void {
+    if (this.primitiveIsDirectArrayElement) {
+      const frame = this.stack.at(-1);
+      if (frame?.kind === "array" && frame.state === "primitive") {
+        frame.activeElement = false;
+        frame.state = "comma_or_end";
+        frame.elementBytes = 0;
+      }
+    }
+    this.primitiveIsDirectArrayElement = false;
+    this.mode = "normal";
+  }
+
+  private finishContainer(char: string): void {
+    const frame = this.stack.at(-1);
+    if (!frame || (char === "}" && frame.kind !== "object") || (char === "]" && frame.kind !== "array")) {
+      return;
+    }
+    this.stack.pop();
+    const parent = this.stack.at(-1);
+    if (parent?.kind === "array" && parent.activeElement && parent.state === "comma_or_end") {
+      parent.activeElement = false;
+      parent.elementBytes = 0;
+    }
+  }
+
+  private transition(char: ":" | ","): void {
+    const frame = this.stack.at(-1);
+    if (!frame) {
+      return;
+    }
+    if (frame.kind === "object") {
+      if (char === ":" && frame.state === "colon") {
+        frame.state = "value";
+      } else if (char === "," && frame.state === "comma_or_end") {
+        frame.state = "key_or_end";
+      }
+      return;
+    }
+    if (char === "," && frame.state === "comma_or_end") {
+      frame.state = "value_or_end";
+      frame.activeElement = false;
+    }
+  }
+
+  private count(bytes: number): void {
+    const frame = this.stack.find(
+      (candidate): candidate is Extract<ByteTrackerFrame, { kind: "array" }> =>
+        candidate.kind === "array" && candidate.format !== undefined && candidate.activeElement
+    );
+    if (!frame) {
+      return;
+    }
+    frame.elementBytes += bytes;
+    if (frame.elementBytes > this.maxElementBytes) {
+      throw new GoogleMapsElementTooLargeError(
+        `a single Timeline array element exceeded ${String(this.maxElementBytes)} bytes`
+      );
+    }
+  }
+}
+
+function isJsonWhitespace(char: string): boolean {
+  return char === " " || char === "\t" || char === "\r" || char === "\n";
+}
+
+function isJsonDelimiter(char: string): boolean {
+  return isJsonWhitespace(char) || char === "," || char === "]" || char === "}";
+}
+
+function decodeJsonString(raw: string): string {
+  try {
+    return JSON.parse(`"${raw}"`) as string;
+  } catch {
+    return raw;
+  }
+}
+
 function formatForElementEvent(
   key: StreamStackKey,
   stack: readonly { readonly key: StreamStackKey }[],
@@ -276,9 +522,7 @@ function initializeParser(
 async function feedParserChunk(
   parser: JSONParser,
   text: string,
-  maxSingleElementBytes: number,
-  bytesSinceElementStart: { value: number },
-  shapeTracker: RootShapeTracker,
+  elementByteTracker: ElementByteTracker,
   pending: GoogleMapsStreamEvent[],
   onEvent: GoogleMapsStreamEventHandler
 ): Promise<void> {
@@ -288,21 +532,7 @@ async function feedParserChunk(
     parser.write(text);
     return;
   }
-  // Only bytes read while actually inside a supported array's element count
-  // toward the per-element bound. An unrelated/unselected trailing root
-  // field (or any byte outside a confirmed array's element) cannot inflate
-  // this counter, however large it is -- the bound protects against one
-  // oversized SUPPORTED element, not against whatever else shares the root.
-  if (shapeTracker.insideConfirmedArrayElement) {
-    bytesSinceElementStart.value += Buffer.byteLength(text, "utf8");
-    if (bytesSinceElementStart.value > maxSingleElementBytes) {
-      throw new GoogleMapsElementTooLargeError(
-        `a single Timeline array element exceeded ${String(maxSingleElementBytes)} bytes`
-      );
-    }
-  } else {
-    bytesSinceElementStart.value = 0;
-  }
+  elementByteTracker.consume(text);
   parser.write(text);
   await drain(pending, onEvent);
 }
@@ -320,7 +550,6 @@ export async function streamGoogleMapsExport(
   const maxSingleElementBytes = options.maxSingleElementBytes ?? DEFAULT_MAX_SINGLE_ELEMENT_BYTES;
   const pending: GoogleMapsStreamEvent[] = [];
   const seenShapes = new Set<GoogleMapsSourceFormat>();
-  const bytesSinceElementStart = { value: 0 };
 
   const markShape = (format: GoogleMapsSourceFormat): void => {
     if (seenShapes.has(format)) {
@@ -331,8 +560,8 @@ export async function streamGoogleMapsExport(
   };
 
   const shapeTracker = new RootShapeTracker(markShape);
+  const elementByteTracker = new ElementByteTracker(maxSingleElementBytes);
   const onElement = (format: GoogleMapsSourceFormat, value: unknown): void => {
-    bytesSinceElementStart.value = 0;
     pending.push({ format, kind: "element", value });
   };
   let parser: JSONParser | null = null;
@@ -349,15 +578,7 @@ export async function streamGoogleMapsExport(
         }
         ({ parser, text: toFeed } = initialized);
       }
-      await feedParserChunk(
-        parser,
-        toFeed,
-        maxSingleElementBytes,
-        bytesSinceElementStart,
-        shapeTracker,
-        pending,
-        onEvent
-      );
+      await feedParserChunk(parser, toFeed, elementByteTracker, pending, onEvent);
     }
   } finally {
     stream.destroy();

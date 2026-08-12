@@ -811,7 +811,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/google_maps/archive-stream.ts",
-    line: 219,
+    line: 486,
     column: 7,
     category: "ordered_protocol_emission",
     note: "drain(): sequential event callbacks preserve source order and backpressure",
