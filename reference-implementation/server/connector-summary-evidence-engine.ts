@@ -971,7 +971,16 @@ function shouldSkipFailedEvidencePublication(
   if (!existing) {
     return false;
   }
-  if (!sourceRevisionsEqual(existing.source_revision, sourceRevision)) {
+  // A stale evidence receipt is the normal reason this repair was admitted:
+  // canonical source revision has advanced, so the repair rereads the new
+  // revision while the existing row still carries the old one. If that
+  // current-revision read then fails, the failure must advance the row to the
+  // revision it failed to verify. Only failures without a captured current
+  // revision (for example, admission/lock failure) need the old receipt match
+  // as a guard against publishing an unscoped failure over newer evidence.
+  const failureCapturedCurrentRevision =
+    failedRow.source_revision !== undefined && sourceRevisionsEqual(failedRow.source_revision, sourceRevision);
+  if (!(failureCapturedCurrentRevision || sourceRevisionsEqual(existing.source_revision, sourceRevision))) {
     return true;
   }
   const existingIsFresh = isFreshEvidenceRow(existing);
