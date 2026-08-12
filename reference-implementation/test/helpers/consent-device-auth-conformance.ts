@@ -196,12 +196,10 @@ export function runConsentDeviceAuthConformance({
     }
   });
 
-  // 2. Approval terminates the pending row. After approval, the public
-  //    lookup MUST stop returning the pending view (the row is no longer
-  //    available for re-approval), and a second approval MUST fail with
-  //    `not_found`. This pins the terminal-state invariant: approve is a
-  //    one-shot transition, not idempotent.
-  t("pending consent: approval is terminal — public lookup disappears and re-approval fails", async () => {
+  // 2. Approval terminates the pending row. After approval, the public lookup
+  //    MUST stop returning the pending view. A retry MAY resume delivery, but
+  //    it MUST return the exact persisted issuance and MUST NOT mint again.
+  t("pending consent: approval is terminal — public lookup disappears and retry resumes exact issuance", async () => {
     const driver = await makeDriver();
     await driver.setup();
     try {
@@ -220,19 +218,8 @@ export function runConsentDeviceAuthConformance({
       const afterApprove = await driver.lookupPendingConsentByRequestUri(start.request_uri);
       assert.equal(afterApprove, null, "after approval, public lookup MUST NOT return a pending view");
 
-      // biome-ignore lint/suspicious/noEvolvingTypes: localized test assertion preserves its explicit contract.
-      let reApproveError = null;
-      try {
-        await driver.approvePendingConsent(start.request_uri);
-      } catch (err) {
-        reApproveError = err;
-      }
-      assert.ok(reApproveError, "re-approval after approval MUST throw");
-      assert.equal(
-        errorCode(reApproveError),
-        "not_found",
-        `re-approval error MUST carry code='not_found'; got '${errorCode(reApproveError)}'`
-      );
+      const resumed = await driver.approvePendingConsent(start.request_uri);
+      assert.deepEqual(resumed, result, "approval retry MUST resume the exact persisted grant and token");
     } finally {
       await driver.teardown();
     }

@@ -87,7 +87,7 @@ test("harness detects at least one consent/device-auth invariant violation in a 
   const terminalApproveFailed = failures.some((f) => /pending consent: approval is terminal/.test(f.name));
   assert.ok(
     terminalApproveFailed,
-    `expected the pending-consent terminal-approval scenario to fail. failures=${JSON.stringify(
+    `expected the pending-consent durable-resume scenario to fail. failures=${JSON.stringify(
       failures.map((f) => f.name),
       null,
       2

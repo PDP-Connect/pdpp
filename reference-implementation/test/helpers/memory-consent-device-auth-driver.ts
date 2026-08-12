@@ -4,8 +4,8 @@
 /**
  * Conforming in-memory driver for the consent + owner-device-auth conformance harness.
  *
- * Test-only second adapter that mirrors the SQLite reference's terminal-state
- * semantics, approval-id indirection, expiry behavior, owner-device polling
+ * Test-only second adapter that mirrors the SQLite reference's durable
+ * approval-resume semantics, approval-id indirection, expiry behavior, owner-device polling
  * `slow_down` enforcement, denial-vs-approval terminal distinction, and
  * polling exchange shape — without touching SQLite, the file system, or the
  * production auth helpers. Its purpose is the storage-only security proof
@@ -209,9 +209,13 @@ export function createMemoryConsentDeviceAuthDriver() {
         err.code = "not_found";
         throw err;
       }
+      if (row.status === "approved" && row.grant_id && row.token_id) {
+        return {
+          grant: { grant_id: row.grant_id, version: "0.1.0" },
+          token: row.token_id,
+        };
+      }
       if (row.status !== "pending") {
-        // Terminal state (approved, denied, expired) — re-approval is not
-        // allowed. This pins scenario 2's "approval is terminal" invariant.
         const err = codedError("Pending consent request is not available");
         err.code = "not_found";
         throw err;
