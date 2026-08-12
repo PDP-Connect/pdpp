@@ -43,8 +43,7 @@ if (process.argv.includes("--nested-participant")) {
       process.execPath,
       "--import",
       "tsx",
-      new URL("./grandchild.ts", import.meta.url).pathname,
-      "--name=nested",
+      new URL("./participant.ts", import.meta.url).pathname,
     ],
     { detached: false, env: process.env, stdio: "ignore" }
   );
@@ -60,5 +59,8 @@ if (exit) {
 if (process.argv.includes("--wait")) {
   await new Promise(() => {
     // Intentional fixture hang for signal tests.
+    setInterval(() => {
+      // Keep an active handle so SIGKILL leaves a real orphaned group.
+    }, 1000);
   });
 }

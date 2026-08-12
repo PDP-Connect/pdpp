@@ -346,11 +346,11 @@ export async function recoverStaleScratch(options: { now?: number; parent?: stri
         if (typeof marker.pgid !== "number" || !Number.isSafeInteger(marker.pgid) || marker.pgid <= 0) {
           return { path: candidate, reason: "malformed-marker", removed: false };
         }
+        if (marker.boot_id === undefined || bootId === null) {
+          return { path: candidate, reason: "unverifiable-boot", removed: false };
+        }
         if (marker.boot_id === bootId && !groupAbsent(marker.pgid)) {
           return { path: candidate, reason: "group-live", removed: false };
-        }
-        if (marker.boot_id === undefined && bootId === null) {
-          return { path: candidate, reason: "unverifiable-boot", removed: false };
         }
       }
       try {

@@ -3,7 +3,21 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -131,6 +145,23 @@ async function eventuallyRecover(parent: string, root: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error("killed orphan group was not recoverable");
+}
+
+async function eventuallyAbsentGroup(pgid: number): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(-pgid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+        return;
+      }
+      throw error;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: bounded polling observes init reaping a killed process group.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`process group ${pgid} did not exit`);
 }
 
 test("owner contains tmpdir writes, preserves numeric exits, and removes only its root", async () => {
@@ -331,6 +362,8 @@ test("SIGTERM escalates a TERM-ignoring group descendant before cleanup", async 
 
 test("SIGKILL leaves a live orphan, then a later recovery removes its dead group", async () => {
   const runnerTemp = await temporaryParent();
+  const sibling = join(runnerTemp, "sibling-sentinel");
+  await writeFile(sibling, "unchanged");
   const proc = startWrapper(["--print-root", "--grandchild", "--grandchild-ignore-term", "--wait"], {
     ...process.env,
     RUNNER_TEMP: runnerTemp,
@@ -341,39 +374,53 @@ test("SIGKILL leaves a live orphan, then a later recovery removes its dead group
   const close = exited(proc);
   proc.kill("SIGKILL");
   assert.deepEqual(await close, { code: null, signal: "SIGKILL" });
+  assert.throws(() => process.kill(proc.pid, 0), { code: "ESRCH" });
+  process.kill(-marker.pgid, 0);
   await writeFile(
     markerPath,
     `${JSON.stringify({ ...marker, created_at: new Date(Date.now() - 120_000).toISOString() })}\n`
   );
   const parent = join(runnerTemp, "pdpp-test-scratch");
   assert.deepEqual(await recoverStaleScratch({ parent }), [{ path: root, reason: "group-live", removed: false }]);
+  assert.equal(await readFile(join(root, "child-root.txt"), "utf8"), `${root}\n`);
+  assert.equal(await readFile(sibling, "utf8"), "unchanged");
   process.kill(-marker.pgid, "SIGKILL");
+  await eventuallyAbsentGroup(marker.pgid);
   await eventuallyRecover(parent, root);
   await assert.rejects(access(root));
+  assert.equal(await readFile(sibling, "utf8"), "unchanged");
   await rm(runnerTemp, { force: true, recursive: true });
 });
 
 test("recovery has stable fail-closed classifications for every stale candidate state", async () => {
   const parent = await temporaryParent();
   const allocated = await allocateScratchOwnership({ parent });
+  const sameBootDead = await allocateScratchOwnership({ parent });
   const priorBoot = await allocateScratchOwnership({ parent });
   const ownerLive = await allocateScratchOwnership({ parent });
   const malformed = join(parent, "run-malformed");
+  const unknownState = await allocateScratchOwnership({ parent });
   const wrongMode = await allocateScratchOwnership({ parent });
+  const invalidRoot = join(parent, "run-invalid-root");
   const target = join(parent, "target");
   const link = join(parent, "run-link");
   const swapped = await allocateScratchOwnership({ parent });
   const foreign = join(parent, "not-a-scratch-root");
+  const fresh = await allocateScratchOwnership({ parent });
+  const unverifiableBoot = await allocateScratchOwnership({ parent });
   const bootId = await currentBootId();
   const liveGroup = spawn("sh", ["-c", "exec sleep 30"], { detached: true, stdio: "ignore" });
   assert.ok(liveGroup.pid);
   const runningLiveGroup = await allocateScratchOwnership({ parent });
   try {
     await oldMarker(allocated);
+    await oldMarker(sameBootDead, { boot_id: bootId, pgid: 999_999_999, state: "running" });
     await oldMarker(priorBoot, { boot_id: "prior-boot", pgid: 999_999_999, state: "running" });
     await oldMarker(ownerLive, { owner_pid: process.pid });
     await mkdir(malformed, { mode: 0o700 });
+    await oldMarker(unknownState, { state: "unexpected" });
     await chmod(wrongMode.allocation.root, 0o755);
+    await writeFile(invalidRoot, "not a directory");
     await writeFile(target, "not a directory");
     await symlink(target, link);
     await oldMarker(swapped);
@@ -387,22 +434,40 @@ test("recovery has stable fail-closed classifications for every stale candidate 
       pgid: liveGroup.pid,
       state: "running",
     });
+    await oldMarker(unverifiableBoot, { pgid: liveGroup.pid, state: "running" });
 
     const results = await recoverStaleScratch({ parent });
     const reason = new Map(results.map((result) => [result.path, result.reason]));
     assert.equal(reason.get(allocated.allocation.root), "dead-verified");
-    assert.equal(reason.get(priorBoot.allocation.root), "dead-verified");
+    assert.equal(reason.get(sameBootDead.allocation.root), bootId ? "dead-verified" : "unverifiable-boot");
+    assert.equal(reason.get(priorBoot.allocation.root), bootId ? "dead-verified" : "unverifiable-boot");
     assert.equal(reason.get(ownerLive.allocation.root), "owner-live");
     assert.equal(reason.get(malformed), "malformed-marker");
+    assert.equal(reason.get(unknownState.allocation.root), "malformed-marker");
     assert.equal(reason.get(wrongMode.allocation.root), "wrong-mode");
+    assert.equal(reason.get(invalidRoot), "invalid-root");
     assert.equal(reason.get(link), "symlink");
     assert.equal(reason.get(swapped.allocation.root), "identity-mismatch");
     assert.equal(reason.get(foreign), "foreign-entry");
+    assert.equal(reason.get(fresh.allocation.root), "fresh");
     if (bootId) {
       assert.equal(reason.get(runningLiveGroup.allocation.root), "group-live");
     } else {
-      assert.equal(reason.get(runningLiveGroup.allocation.root), "dead-verified");
+      assert.equal(reason.get(runningLiveGroup.allocation.root), "unverifiable-boot");
     }
+    assert.equal(reason.get(unverifiableBoot.allocation.root), "unverifiable-boot");
+    await assert.rejects(access(allocated.allocation.root));
+    if (bootId) {
+      await assert.rejects(access(sameBootDead.allocation.root));
+      await assert.rejects(access(priorBoot.allocation.root));
+    } else {
+      await access(sameBootDead.allocation.root);
+      await access(priorBoot.allocation.root);
+    }
+    await access(ownerLive.allocation.root);
+    await access(runningLiveGroup.allocation.root);
+    await access(unverifiableBoot.allocation.root);
+    process.kill(-liveGroup.pid, 0);
   } finally {
     process.kill(-liveGroup.pid, "SIGKILL");
     await rm(parent, { force: true, recursive: true });
@@ -435,27 +500,37 @@ test("wrong-owner candidates have a stable conservative recovery reason", async 
   }
 });
 
-test("parallel outer owners isolate nested, Node, and shell participants in one inherited root each", async () => {
+test("parallel outer owners isolate participant worker trees under one inherited root each", async () => {
   const runnerTemp = await temporaryParent();
   const env = { ...process.env, RUNNER_TEMP: runnerTemp };
-  const first = startWrapper(
-    ["--print-root", "--node-grandchild", "--shell-grandchild", "--nested-participant", "--wait"],
-    env
-  );
-  const second = startWrapper(
-    ["--print-root", "--node-grandchild", "--shell-grandchild", "--nested-participant", "--wait"],
-    env
-  );
+  const first = startWrapper(["--print-root", "--nested-participant", "--wait"], env);
+  const second = startWrapper(["--print-root", "--nested-participant", "--wait"], env);
   const [firstRoot, secondRoot] = await Promise.all([reportedRoot(first), reportedRoot(second)]);
   try {
-    assert.notEqual(firstRoot, secondRoot);
+    assert.notEqual(await realpath(firstRoot), await realpath(secondRoot));
+    const firstMarker = JSON.parse(await readFile(join(firstRoot, ".pdpp-test-scratch.json"), "utf8")) as {
+      nonce: string;
+    };
+    const secondMarker = JSON.parse(await readFile(join(secondRoot, ".pdpp-test-scratch.json"), "utf8")) as {
+      nonce: string;
+    };
+    assert.notEqual(firstMarker.nonce, secondMarker.nonce);
     for (const root of [firstRoot, secondRoot]) {
-      // biome-ignore lint/performance/noAwaitInLoops: each descendant must publish the exact inherited root.
+      // biome-ignore lint/performance/noAwaitInLoops: each descendant publishes a bounded readiness sentinel.
       assert.equal((await eventuallyRead(join(root, "child-root.txt"))).trim(), root);
-      for (const name of ["node", "shell", "nested"]) {
-        // biome-ignore lint/performance/noAwaitInLoops: each independent fixture has bounded readiness polling.
-        assert.equal((await eventuallyRead(join(root, `grandchild-${name}-root.txt`))).trim(), root);
+      assert.equal((await eventuallyRead(join(root, "participant-root.txt"))).trim(), root);
+      for (const name of ["one", "two"]) {
+        // biome-ignore lint/performance/noAwaitInLoops: two parallel workers and their leaves publish independently.
+        assert.equal((await eventuallyRead(join(root, `worker-${name}-root.txt`))).trim(), root);
+        assert.equal((await eventuallyRead(join(root, `grandchild-${name}-leaf-root.txt`))).trim(), root);
       }
+      const workerPaths = await Promise.all(
+        ["one", "two"].map((name) => eventuallyRead(join(root, `worker-${name}-path.txt`)))
+      );
+      assert.notEqual(workerPaths[0].trim(), workerPaths[1].trim());
+      assert.ok(workerPaths.every((path) => path.trim().startsWith(`${root}/worker-`)));
+      assert.equal((await readdir(root)).filter((entry) => entry === ".pdpp-test-scratch.json").length, 1);
+      await access(join(root, "child.txt"));
     }
   } finally {
     const firstClose = closed(first);
