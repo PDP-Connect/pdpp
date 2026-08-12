@@ -150,7 +150,7 @@ const REGEXP_103 = /Grant is malformed or no longer valid/;
 const REGEXP_104 = /Grant is malformed or no longer valid/;
 const REGEXP_105 = /Grant is malformed or no longer valid/;
 const REGEXP_106 = /source\/id must match format "uri"/;
-const REGEXP_107 = /source: \{ id, kind\?/;
+const REGEXP_107 = /Selection request is invalid: \/ must NOT have additional properties/;
 const REGEXP_108 = /source_binding is required/;
 const REGEXP_109 = /source_binding is required/;
 const REGEXP_110 = /source_binding must include only kind and id/;
@@ -184,12 +184,12 @@ const REGEXP_138 = /Unknown connector: missing_spotify_connector/;
 const REGEXP_139 = /connector_id must be a single non-empty string/;
 const REGEXP_140 = /connector_id must be a single non-empty string/;
 const REGEXP_141 = /Connector manifest .* is malformed or no longer valid/;
-const REGEXP_142 = /Stream 'recently_played' not in grant/;
-const REGEXP_143 = /Stream 'recently_played' not in grant/;
-const REGEXP_144 = /Stream 'recently_played' not in grant/;
-const REGEXP_145 = /Stream 'recently_played' not in grant/;
-const REGEXP_146 = /Stream 'saved_tracks' not in grant/;
-const REGEXP_147 = /Stream 'saved_tracks' not in grant/;
+const REGEXP_142 = /Token introspection failed closed/;
+const REGEXP_143 = /Invalid or expired token/;
+const REGEXP_144 = /Token introspection failed closed/;
+const REGEXP_145 = /Invalid or expired token/;
+const REGEXP_146 = /Token introspection failed closed/;
+const REGEXP_147 = /Invalid or expired token/;
 const REGEXP_148 = /Record not found/;
 const REGEXP_149 = /Record not found/;
 const REGEXP_150 = /Record not found/;
@@ -378,6 +378,9 @@ interface OAuthDeviceErrorResponse {
 
 interface IntrospectionResponse {
   active: boolean;
+  authorization_details?: Array<{
+    source: SourceDescriptor | null | undefined;
+  }>;
   grant?:
     | {
         source: SourceDescriptor | null | undefined;
@@ -737,12 +740,24 @@ function parseOAuthDeviceErrorResponse(value: unknown): OAuthDeviceErrorResponse
 
 function parseIntrospectionResponse(value: unknown): IntrospectionResponse {
   const body = requireJsonRecord(value, "introspection response");
+  const authorizationDetails =
+    body.authorization_details === undefined
+      ? undefined
+      : requireJsonRecordArray(body.authorization_details, "introspection response.authorization_details").map(
+          (detail, index) => ({
+            source: optionalSourceDescriptor(
+              detail.source,
+              `introspection response.authorization_details[${index}].source`
+            ),
+          })
+        );
   const grant =
     body.grant === undefined || body.grant === null
       ? undefined
       : requireJsonRecord(body.grant, "introspection response.grant");
   return {
     active: requireBoolean(body.active, "introspection response.active"),
+    ...(authorizationDetails === undefined ? {} : { authorization_details: authorizationDetails }),
     inactive_reason: optionalString(body.inactive_reason, "introspection response.inactive_reason"),
     ...(grant === undefined
       ? {}
@@ -4351,9 +4366,11 @@ test("PDPP reference implementation integration", async (t) => {
 
       const { body: introspection } = await introspectToken(asUrl, approved.token);
       assert.equal(introspection.active, true);
-      assert.ok(introspection.grant, "active native grant introspection must include a grant");
-      assert.equal(introspection.grant.source?.kind, "provider_native");
-      assert.equal(introspection.grant.source?.id, nativeManifest.provider_id);
+      assert.ok(Array.isArray(introspection.authorization_details));
+      const [introspectedDetail] = introspection.authorization_details;
+      assert.ok(introspectedDetail, "active native grant introspection must include authorization_details");
+      assert.equal(introspectedDetail.source?.kind, "provider_native");
+      assert.equal(introspectedDetail.source?.id, nativeManifest.provider_id);
       assert.ok(
         !("grant_storage_connector_id" in introspection),
         "public introspection should not leak storage connector ids"
@@ -4617,7 +4634,7 @@ test("PDPP reference implementation integration", async (t) => {
           },
           method: "POST",
         });
-        assert.equal(revokeResp.status, 403);
+        assert.equal(revokeResp.status, 403, JSON.stringify(revokeResp.body));
         const revokeError = parseErrorResponse(revokeResp.body);
         assert.equal(revokeError.error.code, "grant_invalid");
         assert.match(revokeError.error.message, REGEXP_89);
@@ -5006,6 +5023,7 @@ test("PDPP reference implementation integration", async (t) => {
         nativeManifest,
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
 
@@ -5045,12 +5063,13 @@ test("PDPP reference implementation integration", async (t) => {
           nativeManifest,
           quiet: true,
           rsPort: server.rsPort,
+          ...TEST_INTROSPECTION_SERVER_OPTS,
         });
 
         const introspectResp = await introspectFormToken(asUrl, approved.token);
         assert.equal(introspectResp.status, 200);
         assert.equal(introspectResp.body.active, false);
-        assert.equal(introspectResp.body.inactive_reason, "grant_invalid");
+        assert.equal(introspectResp.body.inactive_reason, "authorization_state.unsupported_legacy_shape");
         assert.ok(
           !("grant" in introspectResp.body),
           "malformed persisted grant source should not be surfaced publicly"
@@ -5063,7 +5082,7 @@ test("PDPP reference implementation integration", async (t) => {
           },
           method: "POST",
         });
-        assert.equal(revokeResp.status, 403);
+        assert.equal(revokeResp.status, 403, JSON.stringify(revokeResp.body));
         const revokeError = parseErrorResponse(revokeResp.body);
         assert.equal(revokeError.error.code, "grant_invalid");
         assert.match(revokeError.error.message, REGEXP_96);
@@ -5096,6 +5115,7 @@ test("PDPP reference implementation integration", async (t) => {
         dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
 
@@ -5141,6 +5161,7 @@ test("PDPP reference implementation integration", async (t) => {
           dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
           quiet: true,
           rsPort: server.rsPort,
+          ...TEST_INTROSPECTION_SERVER_OPTS,
         });
 
         const reRegisterResp = await fetchJson(`${asUrl}/connectors`, {
@@ -5153,7 +5174,7 @@ test("PDPP reference implementation integration", async (t) => {
         const introspectResp = await introspectFormToken(asUrl, approved.token);
         assert.equal(introspectResp.status, 200);
         assert.equal(introspectResp.body.active, false);
-        assert.equal(introspectResp.body.inactive_reason, "grant_invalid");
+        assert.equal(introspectResp.body.inactive_reason, "authorization_state.unsupported_legacy_shape");
         assert.ok(
           !("grant" in introspectResp.body),
           "malformed persisted grant source should not be surfaced publicly"
@@ -5199,6 +5220,7 @@ test("PDPP reference implementation integration", async (t) => {
         dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;
@@ -5240,7 +5262,7 @@ test("PDPP reference implementation integration", async (t) => {
         const introspectResp = await introspectFormToken(asUrl, approved.token);
         assert.equal(introspectResp.status, 200);
         assert.equal(introspectResp.body.active, false);
-        assert.equal(introspectResp.body.inactive_reason, "grant_invalid");
+        assert.equal(introspectResp.body.inactive_reason, "authorization_state.unsupported_legacy_shape");
 
         const streamsResp = await fetchJson(`${rsUrl}/v1/streams`, {
           headers: { Authorization: `Bearer ${approved.token}` },
@@ -5289,6 +5311,7 @@ test("PDPP reference implementation integration", async (t) => {
         dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;
@@ -5330,7 +5353,7 @@ test("PDPP reference implementation integration", async (t) => {
         const introspectResp = await introspectFormToken(asUrl, approved.token);
         assert.equal(introspectResp.status, 200);
         assert.equal(introspectResp.body.active, false);
-        assert.equal(introspectResp.body.inactive_reason, "grant_invalid");
+        assert.equal(introspectResp.body.inactive_reason, "authorization_state.unsupported_legacy_shape");
 
         const metadataResp = await fetchJson(`${rsUrl}/v1/streams/top_artists`, {
           headers: { Authorization: `Bearer ${approved.token}` },
@@ -5400,7 +5423,7 @@ test("PDPP reference implementation integration", async (t) => {
         const introspectResp = await introspectFormToken(asUrl, approved.token);
         assert.equal(introspectResp.status, 200);
         assert.equal(introspectResp.body.active, false);
-        assert.equal(introspectResp.body.inactive_reason, "grant_invalid");
+        assert.equal(introspectResp.body.inactive_reason, "authorization_state.unsupported_legacy_shape");
 
         const metadataResp = await fetchJson(`${rsUrl}/v1/streams/pay_statements`, {
           headers: { Authorization: `Bearer ${approved.token}` },
@@ -5467,7 +5490,7 @@ test("PDPP reference implementation integration", async (t) => {
         const introspectResp = await introspectFormToken(asUrl, approved.token);
         assert.equal(introspectResp.status, 200);
         assert.equal(introspectResp.body.active, false);
-        assert.equal(introspectResp.body.inactive_reason, "grant_invalid");
+        assert.equal(introspectResp.body.inactive_reason, "authorization_state.unsupported_legacy_shape");
 
         const metadataResp = await fetchJson(`${rsUrl}/v1/streams/pay_statements`, {
           headers: { Authorization: `Bearer ${approved.token}` },
@@ -7211,7 +7234,7 @@ test("PDPP reference implementation integration", async (t) => {
             method: "POST",
           }
         );
-        assert.equal(rejectedResp.status, 400);
+        assert.equal(rejectedResp.status, 401);
         assert.equal(rejectedResp.body.error.code, "connector_invalid");
         assert.match(
           rejectedResp.body.error.message,
@@ -7508,7 +7531,7 @@ test("PDPP reference implementation integration", async (t) => {
         assert.ok(rejectedRequestId?.startsWith("req_"));
         assert.ok(rejectedTraceId, "rejected client metadata reads should carry a reference trace id");
         const rejectedBody = parseErrorResponse(await rejectedResp.json());
-        assert.equal(rejectedBody.error.code, "grant_stream_not_allowed");
+        assert.equal(rejectedBody.error.code, "context.stream_not_allowed");
         assert.match(rejectedBody.error.message, REGEXP_142);
 
         const { body: timeline } = await fetchGrantTimeline(asUrl, approved.grant.grant_id);
@@ -7522,8 +7545,7 @@ test("PDPP reference implementation integration", async (t) => {
         assert.equal(queryReceivedEvent.trace_id, rejectedTraceId);
         assert.equal(queryReceivedEvent.stream_id, "recently_played");
         assert.equal(queryReceivedEvent.data.query_shape, "stream_metadata");
-        assert.equal(queryReceivedEvent.data.source?.kind, "connector");
-        assert.equal(queryReceivedEvent.data.source?.id, SPOTIFY_SOURCE_ID);
+        assert.equal(queryReceivedEvent.data.source, undefined);
 
         const rejectedEvent = timeline.data.find(
           (event) => event.event_type === "query.rejected" && event.object_id === rejectedRequestId
@@ -7532,9 +7554,8 @@ test("PDPP reference implementation integration", async (t) => {
         assert.equal(rejectedEvent.trace_id, rejectedTraceId);
         assert.equal(rejectedEvent.stream_id, "recently_played");
         assert.equal(rejectedEvent.data.query_shape, "stream_metadata");
-        assert.equal(rejectedEvent.data.source?.kind, "connector");
-        assert.equal(rejectedEvent.data.source?.id, SPOTIFY_SOURCE_ID);
-        assert.equal(rejectedEvent.data.error?.code, "grant_stream_not_allowed");
+        assert.equal(rejectedEvent.data.source, undefined);
+        assert.equal(rejectedEvent.data.error?.code, "context.stream_not_allowed");
         assert.match(rejectedEvent.data.error?.message || "", REGEXP_143);
 
         const servedEvent = timeline.data.find(
@@ -7564,13 +7585,13 @@ test("PDPP reference implementation integration", async (t) => {
         const rejectedResp = await fetch(`${rsUrl}/v1/streams/recently_played/records?limit=1`, {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
-        assert.equal(rejectedResp.status, 403);
+        assert.equal(rejectedResp.status, 401);
         const rejectedRequestId = rejectedResp.headers.get("Request-Id");
         const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
         assert.ok(rejectedRequestId?.startsWith("req_"));
         assert.ok(rejectedTraceId, "rejected client record-list reads should carry a reference trace id");
         const rejectedBody = parseErrorResponse(await rejectedResp.json());
-        assert.equal(rejectedBody.error.code, "grant_stream_not_allowed");
+        assert.equal(rejectedBody.error.code, "context.stream_not_allowed");
         assert.match(rejectedBody.error.message, REGEXP_144);
 
         const { body: timeline } = await fetchGrantTimeline(asUrl, approved.grant.grant_id);
@@ -7581,8 +7602,7 @@ test("PDPP reference implementation integration", async (t) => {
         assert.equal(queryReceivedEvent.trace_id, rejectedTraceId);
         assert.equal(queryReceivedEvent.stream_id, "recently_played");
         assert.equal(queryReceivedEvent.data.query_shape, "record_list");
-        assert.equal(queryReceivedEvent.data.source?.kind, "connector");
-        assert.equal(queryReceivedEvent.data.source?.id, SPOTIFY_SOURCE_ID);
+        assert.equal(queryReceivedEvent.data.source, undefined);
 
         const rejectedEvent = timeline.data.find(
           (event) => event.event_type === "query.rejected" && event.object_id === rejectedRequestId
@@ -7591,7 +7611,8 @@ test("PDPP reference implementation integration", async (t) => {
         assert.equal(rejectedEvent.trace_id, rejectedTraceId);
         assert.equal(rejectedEvent.stream_id, "recently_played");
         assert.equal(rejectedEvent.data.query_shape, "record_list");
-        assert.equal(rejectedEvent.data.error?.code, "grant_stream_not_allowed");
+        assert.equal(rejectedEvent.data.source, undefined);
+        assert.equal(rejectedEvent.data.error?.code, "context.stream_not_allowed");
         assert.match(rejectedEvent.data.error?.message || "", REGEXP_145);
 
         const servedEvent = timeline.data.find(
@@ -7631,13 +7652,13 @@ test("PDPP reference implementation integration", async (t) => {
             headers: { Authorization: `Bearer ${approved.token}` },
           }
         );
-        assert.equal(rejectedResp.status, 403);
+        assert.equal(rejectedResp.status, 401);
         const rejectedRequestId = rejectedResp.headers.get("Request-Id");
         const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
         assert.ok(rejectedRequestId?.startsWith("req_"));
         assert.ok(rejectedTraceId, "rejected client record-detail reads should carry a reference trace id");
         const rejectedBody = parseErrorResponse(await rejectedResp.json());
-        assert.equal(rejectedBody.error.code, "grant_stream_not_allowed");
+        assert.equal(rejectedBody.error.code, "context.stream_not_allowed");
         assert.match(rejectedBody.error.message, REGEXP_146);
 
         const { body: timeline } = await fetchGrantTimeline(asUrl, approved.grant.grant_id);
@@ -7648,8 +7669,7 @@ test("PDPP reference implementation integration", async (t) => {
         assert.equal(queryReceivedEvent.trace_id, rejectedTraceId);
         assert.equal(queryReceivedEvent.stream_id, "saved_tracks");
         assert.equal(queryReceivedEvent.data.query_shape, "record_detail");
-        assert.equal(queryReceivedEvent.data.source?.kind, "connector");
-        assert.equal(queryReceivedEvent.data.source?.id, SPOTIFY_SOURCE_ID);
+        assert.equal(queryReceivedEvent.data.source, undefined);
 
         const rejectedEvent = timeline.data.find(
           (event) => event.event_type === "query.rejected" && event.object_id === rejectedRequestId
@@ -7658,7 +7678,8 @@ test("PDPP reference implementation integration", async (t) => {
         assert.equal(rejectedEvent.trace_id, rejectedTraceId);
         assert.equal(rejectedEvent.stream_id, "saved_tracks");
         assert.equal(rejectedEvent.data.query_shape, "record_detail");
-        assert.equal(rejectedEvent.data.error?.code, "grant_stream_not_allowed");
+        assert.equal(rejectedEvent.data.source, undefined);
+        assert.equal(rejectedEvent.data.error?.code, "context.stream_not_allowed");
         assert.match(rejectedEvent.data.error?.message || "", REGEXP_147);
 
         const servedEvent = timeline.data.find(

@@ -71,14 +71,14 @@ const TOP_LEVEL_REGEX_40 = /Unknown client_id/;
 const TOP_LEVEL_REGEX_42 = /Access Denied/;
 const TOP_LEVEL_REGEX_43 = /Access Denied/;
 const TOP_LEVEL_REGEX_44 = /Unsupported request fields: redirect_uri, response_type/;
-const TOP_LEVEL_REGEX_45 = /authorization_details\[0\] is invalid: \/streams\/0 must NOT be valid/;
+const TOP_LEVEL_REGEX_45 = /Selection request is invalid: \/streams\/0 must NOT be valid/;
 const TOP_LEVEL_REGEX_46 = /Grant is malformed or no longer valid/;
 const TOP_LEVEL_REGEX_47 = /Request ID: (req_[A-Za-z0-9]+)/;
 const TOP_LEVEL_REGEX_48 = /Reference trace ID: (trc_[A-Za-z0-9]+)/;
 const TOP_LEVEL_REGEX_49 = /Invalid initial access token/;
 const TOP_LEVEL_REGEX_50 = /Source kind does not match the retained declaration/;
 const TOP_LEVEL_REGEX_51 = /Unknown source/;
-const TOP_LEVEL_REGEX_52 = /authorization_details must use source: \{ id, kind\?: 'connector' \| 'provider_native' \}/;
+const TOP_LEVEL_REGEX_52 = /Selection request is invalid: .*additional properties.*source\/id must match format "uri"/s;
 const TOP_LEVEL_REGEX_53 = /Registered client:/;
 const TOP_LEVEL_REGEX_54 = /User code: ([A-Z0-9]+)/;
 const TOP_LEVEL_REGEX_55 = /is not scoped to stream saved_tracks/;
@@ -103,11 +103,10 @@ const TOP_LEVEL_REGEX_73 = /Request ID: (req_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_74 = /Reference trace ID: (trc_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_CLIENT_FILTER_UNSUPPORTED =
   /filter\[\.\.\.\] is not supported for client-token reads in PDPP v0\.1/;
+const TOP_LEVEL_REGEX_INTROSPECTION_FAILED = /Token introspection failed closed/;
+const TOP_LEVEL_REGEX_INVALID_TOKEN = /Invalid or expired token/;
 const TOP_LEVEL_REGEX_77 = /Record not found/;
 const TOP_LEVEL_REGEX_78 = /Record not found/;
-const TOP_LEVEL_REGEX_79 = /Stream 'recently_played' not in grant/;
-const TOP_LEVEL_REGEX_80 = /Stream 'recently_played' not in grant/;
-const TOP_LEVEL_REGEX_81 = /Stream 'saved_tracks' not in grant/;
 const TOP_LEVEL_REGEX_82 = /Record not found/;
 const TOP_LEVEL_REGEX_83 = /Record not found/;
 const TOP_LEVEL_REGEX_84 = /invalid INTERACTION.kind/;
@@ -3112,7 +3111,7 @@ test("PDPP CLI smoke", async (t) => {
     async () => {
       await withNativeHarness(async ({ asUrl, nativeManifest }) => {
         const initiate = await startGrantRequest(asUrl, {
-          access_mode: "single_use",
+          access_mode: "continuous",
           client_id: "longview",
           purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
@@ -4575,56 +4574,68 @@ test("PDPP CLI smoke", async (t) => {
 
         const scenarios = [
           {
-            expectedCode: "grant_stream_not_allowed",
-            expectedMessage: TOP_LEVEL_REGEX_79,
-            expectStatus: 403,
+            expectedBodyMessage: TOP_LEVEL_REGEX_INTROSPECTION_FAILED,
+            expectedCode: "context.stream_not_allowed",
+            expectedTimelineMessage: TOP_LEVEL_REGEX_INVALID_TOKEN,
+            expectStatus: 401,
             label: "stream-metadata reads",
             queryShape: "stream_metadata",
             streamId: "recently_played",
-            trigger: () =>
+            trigger: (token: string) =>
               fetch(`${rsUrl}/v1/streams/recently_played`, {
-                headers: { Authorization: `Bearer ${approved.token}` },
+                headers: { Authorization: `Bearer ${token}` },
               }),
           },
           {
-            expectedCode: "grant_stream_not_allowed",
-            expectedMessage: TOP_LEVEL_REGEX_80,
-            expectStatus: 403,
+            expectedBodyMessage: TOP_LEVEL_REGEX_INTROSPECTION_FAILED,
+            expectedCode: "context.stream_not_allowed",
+            expectedTimelineMessage: TOP_LEVEL_REGEX_INVALID_TOKEN,
+            expectStatus: 401,
             label: "record-list reads",
             queryShape: "record_list",
             streamId: "recently_played",
-            trigger: () =>
+            trigger: (token: string) =>
               fetch(`${rsUrl}/v1/streams/recently_played/records?limit=1`, {
-                headers: { Authorization: `Bearer ${approved.token}` },
+                headers: { Authorization: `Bearer ${token}` },
               }),
           },
           {
-            expectedCode: "grant_stream_not_allowed",
-            expectedMessage: TOP_LEVEL_REGEX_81,
-            expectStatus: 403,
+            expectedBodyMessage: TOP_LEVEL_REGEX_INTROSPECTION_FAILED,
+            expectedCode: "context.stream_not_allowed",
+            expectedTimelineMessage: TOP_LEVEL_REGEX_INVALID_TOKEN,
+            expectStatus: 401,
             label: "record-detail reads",
             queryShape: "record_detail",
             requestedRecordId: hiddenRecord.id,
             streamId: "saved_tracks",
-            trigger: () =>
+            trigger: (token: string) =>
               fetch(`${rsUrl}/v1/streams/saved_tracks/records/${encodeURIComponent(String(hiddenRecord.id))}`, {
-                headers: { Authorization: `Bearer ${approved.token}` },
+                headers: { Authorization: `Bearer ${token}` },
               }),
           },
         ];
 
         for await (const scenario of scenarios) {
-          const rejectedResp = await scenario.trigger();
-          assert.equal(rejectedResp.status, scenario.expectStatus);
+          const approved = await approveGrant(asUrl, "cli_owner", {
+            access_mode: "continuous",
+            client_display: { name: "Concert Recommendation App" },
+            client_id: "concert_recommendation_app",
+            purpose_code: "https://pdpp.org/purpose/personalization",
+            purpose_description: "Recommend concerts using top artists only",
+            source: { id: spotifyManifest.connector_id, kind: "connector" },
+            streams: [{ name: "top_artists", view: "basic" }],
+          });
+          const rejectedResp = await scenario.trigger(approved.token);
+          const rejectedBody = asRecord(await rejectedResp.clone().json());
+          assert.equal(rejectedResp.status, scenario.expectStatus, JSON.stringify({ body: rejectedBody, scenario }));
           const rejectedRequestId = rejectedResp.headers.get("Request-Id");
           const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
           assert.ok(rejectedRequestId, "expected rejectedRequestId to be present");
           assert.ok(rejectedRequestId.startsWith("req_"));
           assert.ok(rejectedTraceId, "expected rejectedTraceId to be present");
           assert.ok(rejectedTraceId.startsWith("trc_"));
-          const rejectedBody = asRecord(await rejectedResp.json());
           assert.equal(asRecord(rejectedBody.error).code, scenario.expectedCode);
-          assert.match(String(asRecord(rejectedBody.error).message ?? ""), scenario.expectedMessage);
+          assert.match(String(asRecord(rejectedBody.error).message ?? ""), scenario.expectedBodyMessage);
 
           const timeline = await runCli([
             "grant",
@@ -4645,8 +4656,12 @@ test("PDPP CLI smoke", async (t) => {
           assert.equal(queryReceived.stream_id, scenario.streamId);
           assert.equal(queryReceived.data?.query_shape, scenario.queryShape);
           assert.equal(queryReceived.data?.requested_record_id ?? null, scenario.requestedRecordId ?? null);
-          assert.equal(asRecord(queryReceived.data?.source).kind, "connector");
-          assert.equal(asRecord(queryReceived.data?.source).id, spotifyManifest.connector_id);
+          if (scenario.expectStatus === 403) {
+            assert.equal(asRecord(queryReceived.data?.source).kind, "connector");
+            assert.equal(asRecord(queryReceived.data?.source).id, spotifyManifest.connector_id);
+          } else {
+            assert.equal(queryReceived.data?.source, undefined);
+          }
 
           const rejectedEvent = (timeline.json.data || []).find(
             (event) => event.event_type === "query.rejected" && event.object_id === rejectedRequestId
@@ -4656,10 +4671,14 @@ test("PDPP CLI smoke", async (t) => {
           assert.equal(rejectedEvent.stream_id, scenario.streamId);
           assert.equal(rejectedEvent.data?.query_shape, scenario.queryShape);
           assert.equal(rejectedEvent.data?.requested_record_id ?? null, scenario.requestedRecordId ?? null);
-          assert.equal(asRecord(rejectedEvent.data?.source).kind, "connector");
-          assert.equal(asRecord(rejectedEvent.data?.source).id, spotifyManifest.connector_id);
+          if (scenario.expectStatus === 403) {
+            assert.equal(asRecord(rejectedEvent.data?.source).kind, "connector");
+            assert.equal(asRecord(rejectedEvent.data?.source).id, spotifyManifest.connector_id);
+          } else {
+            assert.equal(rejectedEvent.data?.source, undefined);
+          }
           assert.equal(asRecord(rejectedEvent.data?.error).code, scenario.expectedCode);
-          assert.match(String(asRecord(rejectedEvent.data?.error).message ?? ""), scenario.expectedMessage);
+          assert.match(String(asRecord(rejectedEvent.data?.error).message ?? ""), scenario.expectedTimelineMessage);
 
           const servedEvent = (timeline.json.data || []).find(
             (event) => event.event_type === "disclosure.served" && event.object_id === rejectedRequestId

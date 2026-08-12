@@ -10888,6 +10888,11 @@ interface GrantRevocationContext {
   trace_id?: string | null;
 }
 
+const REVOCATION_INVALID_GRANT_ERROR_CODES = new Set([
+  "authorization_state.unsupported_legacy_shape",
+  "grant_invalid",
+]);
+
 async function requireRevocablePersistedGrant(
   row: GrantRevocationRow,
   grantId: string,
@@ -10897,7 +10902,7 @@ async function requireRevocablePersistedGrant(
     const { grant } = requirePersistedGrantState(row);
     return grant;
   } catch (err: unknown) {
-    if (!(isAuthError(err) && err.code === "grant_invalid")) {
+    if (!(isAuthError(err) && REVOCATION_INVALID_GRANT_ERROR_CODES.has(err.code))) {
       throw err;
     }
     const sourceDescriptor = describePersistedGrantSource(row);
