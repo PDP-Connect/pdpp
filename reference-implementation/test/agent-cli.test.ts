@@ -46,15 +46,17 @@ import {
   registerClient,
   stageParRequest,
 } from "../examples/third-party-app/lib/flow.ts";
-import { getOne, referenceQueries } from "../lib/db.ts";
-import { canonicalConnectorKey } from "../server/connector-key.ts";
+import { exec as dbExec, getOne, referenceQueries } from "../lib/db.ts";
 import { parsePendingConsentRequestUri } from "../server/auth.ts";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
 import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from "../server/reference-local-defaults.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import {
   __setAgentConnectCleanupAfterMissForTest,
+  __setAgentConnectCleanupBeforeExpireForTest,
+  __setAgentConnectCompleteBeforeMarkForTest,
   __setAgentConnectCompleteFailureForTest,
 } from "../server/routes/as-agent-connect.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
@@ -269,6 +271,25 @@ function createCleanupPause() {
     },
     paused,
     release: releaseCleanup,
+  };
+}
+
+function createPause() {
+  let release!: () => void;
+  let observed!: () => void;
+  const resume = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const paused = new Promise<void>((resolve) => {
+    observed = resolve;
+  });
+  return {
+    hook: async () => {
+      observed();
+      await resume;
+    },
+    paused,
+    release,
   };
 }
 
@@ -872,6 +893,95 @@ test("agent-connect: cleanup miss racing approval commit revokes the committed t
   }
 });
 
+test("agent-connect: approval after cleanup second miss before tombstone is revoked", async () => {
+  const { server, asUrl } = await spinUpServer({ agentConnectTtlMs: 1 });
+  try {
+    const { staged, start } = await createAgentConnectRequest({
+      asUrl,
+      clientName: "Agent Connect Cleanup Second Miss SQLite",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const pause = createPause();
+    __setAgentConnectCleanupBeforeExpireForTest(pause.hook);
+    const pollPromise = pollAgentConnectToken({
+      pollingCode: start.polling_code,
+      tokenUrl: start.token_url,
+    });
+    await pause.paused;
+
+    const approval = await approveInline({
+      asUrl,
+      requestUri: staged.request_uri,
+      subjectId: "owner_local",
+    });
+    assert.equal(await tokenIsIntrospectionActive(asUrl, approval.token), true);
+    pause.release();
+    const expiredPoll = await pollPromise;
+    assert.equal(expiredPoll.resp.status, 400);
+    assert.equal(errorCode(expiredPoll.body), "expired_token");
+    assert.equal(await tokenIsIntrospectionActive(asUrl, approval.token), false);
+  } finally {
+    __setAgentConnectCleanupBeforeExpireForTest(null);
+    await closeServer(server);
+  }
+});
+
+test("agent-connect: approval completion after tombstone revokes its token", async () => {
+  const { server, asUrl } = await spinUpServer({ agentConnectTtlMs: 1 });
+  try {
+    const { staged, start } = await createAgentConnectRequest({
+      asUrl,
+      clientName: "Agent Connect Tombstone Then Complete SQLite",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const pause = createPause();
+    __setAgentConnectCompleteBeforeMarkForTest(pause.hook);
+    const approvalPromise = approveInline({
+      asUrl,
+      requestUri: staged.request_uri,
+      subjectId: "owner_local",
+    });
+    await pause.paused;
+
+    const expiredPoll = await pollAgentConnectToken({
+      pollingCode: start.polling_code,
+      tokenUrl: start.token_url,
+    });
+    assert.equal(expiredPoll.resp.status, 400);
+    assert.equal(errorCode(expiredPoll.body), "expired_token");
+    pause.release();
+    const approval = await approvalPromise;
+    assert.equal(await tokenIsIntrospectionActive(asUrl, approval.token), false);
+  } finally {
+    __setAgentConnectCompleteBeforeMarkForTest(null);
+    await closeServer(server);
+  }
+});
+
+test("agent-connect: prune reconciles more than one expired SQLite batch", async () => {
+  const { server, asUrl } = await spinUpServer();
+  try {
+    const expiredAt = Date.now() - 1;
+    const createdAt = new Date(expiredAt - 1).toISOString();
+    for (let index = 0; index < 1001; index += 1) {
+      dbExec(referenceQueries.authAgentConnectAttemptsInsert, [
+        `expired-batch-${index}`,
+        `urn:ietf:params:oauth:request_uri:expired-batch-${index}`,
+        null,
+        `expired-batch-hash-${index}`,
+        `${asUrl}/consent?request_uri=expired-batch-${index}`,
+        `${asUrl}/token`,
+        createdAt,
+        expiredAt,
+      ]);
+    }
+
+    await createAgentConnectRequest({ asUrl, clientName: "Agent Connect 1001 Prune Trigger" });
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test("agent-connect: live Postgres approved handoff survives AS restart before polling", async (t) => {
   const baseUrl = dedicatedPostgresTestUrl(
     process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
@@ -1106,6 +1216,86 @@ test("agent-connect: live Postgres cleanup miss racing approval commit revokes c
       } finally {
         __setAgentConnectCleanupAfterMissForTest(null);
         await closeServer(server);
+        await closePostgresStorage();
+      }
+    }
+  );
+});
+
+test("agent-connect: live Postgres expiry CAS interleavings revoke committed tokens", async (t) => {
+  const baseUrl = dedicatedPostgresTestUrl(
+    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
+  );
+  if (!baseUrl) {
+    t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
+    return;
+  }
+
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: baseUrl,
+      databaseName: "pdpp_test_agent_connect_expiry_cas",
+    },
+    async (databaseUrl) => {
+      const secondMissServer = await spinUpServer({ agentConnectTtlMs: 1, databaseUrl, storageBackend: "postgres" });
+      try {
+        const { staged, start } = await createAgentConnectRequest({
+          asUrl: secondMissServer.asUrl,
+          clientName: "Agent Connect PG Cleanup Second Miss",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        const pause = createPause();
+        __setAgentConnectCleanupBeforeExpireForTest(pause.hook);
+        const pollPromise = pollAgentConnectToken({
+          pollingCode: start.polling_code,
+          tokenUrl: start.token_url,
+        });
+        await pause.paused;
+        const approval = await approveInline({
+          asUrl: secondMissServer.asUrl,
+          requestUri: staged.request_uri,
+          subjectId: "owner_local",
+        });
+        assert.equal(await tokenIsIntrospectionActive(secondMissServer.asUrl, approval.token), true);
+        pause.release();
+        const expiredPoll = await pollPromise;
+        assert.equal(expiredPoll.resp.status, 400);
+        assert.equal(errorCode(expiredPoll.body), "expired_token");
+        assert.equal(await tokenIsIntrospectionActive(secondMissServer.asUrl, approval.token), false);
+      } finally {
+        __setAgentConnectCleanupBeforeExpireForTest(null);
+        await closeServer(secondMissServer.server);
+        await closePostgresStorage();
+      }
+
+      const tombstoneServer = await spinUpServer({ agentConnectTtlMs: 1, databaseUrl, storageBackend: "postgres" });
+      try {
+        const { staged, start } = await createAgentConnectRequest({
+          asUrl: tombstoneServer.asUrl,
+          clientName: "Agent Connect PG Tombstone Then Complete",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        const pause = createPause();
+        __setAgentConnectCompleteBeforeMarkForTest(pause.hook);
+        const approvalPromise = approveInline({
+          asUrl: tombstoneServer.asUrl,
+          requestUri: staged.request_uri,
+          subjectId: "owner_local",
+        });
+        await pause.paused;
+        const expiredPoll = await pollAgentConnectToken({
+          pollingCode: start.polling_code,
+          tokenUrl: start.token_url,
+        });
+        assert.equal(expiredPoll.resp.status, 400);
+        assert.equal(errorCode(expiredPoll.body), "expired_token");
+        pause.release();
+        const approval = await approvalPromise;
+        assert.equal(await tokenIsIntrospectionActive(tombstoneServer.asUrl, approval.token), false);
+      } finally {
+        __setAgentConnectCompleteBeforeMarkForTest(null);
+        await closeServer(tombstoneServer.server);
         await closePostgresStorage();
       }
     }

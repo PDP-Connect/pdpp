@@ -325,6 +325,7 @@ export const CASE_DEFINITIONS = {
       "approval_commit_handoff_resume",
       "approved_after_expiry_bearer_revoked",
       "approved_cleanup_race_bearer_revoked",
+      "approved_expiry_cas_bearer_revoked",
       "approved_crash_expiry_reconciled",
       "approved_crash_prune_reconciled",
       "credential_response_no_store",

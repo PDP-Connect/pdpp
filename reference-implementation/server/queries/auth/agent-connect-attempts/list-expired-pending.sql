@@ -1,8 +1,9 @@
 -- @terminator: many
--- @cursor_field: id
-SELECT *
+-- @cursor_field: rowid
+SELECT rowid,
+       *
 FROM agent_connect_attempts
 WHERE status = 'pending'
   AND expires_at_ms <= ?
-ORDER BY id
+ORDER BY rowid
 LIMIT ?

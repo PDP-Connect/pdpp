@@ -79,6 +79,8 @@ test("agent-cli: crash-completed expiry and prune revoke committed approvals", a
 test("agent-cli: cleanup/approval race revokes committed token", async () => {
   await assertFocusedTestsPass("test/agent-cli.test.ts", [
     "agent-connect: cleanup miss racing approval commit revokes the committed token",
+    "agent-connect: approval after cleanup second miss before tombstone is revoked",
+    "agent-connect: approval completion after tombstone revokes its token",
   ]);
 });
 
@@ -120,6 +122,7 @@ test("agent-cli: live PostgreSQL crash expiry/prune and response-loss replay", a
     "agent-connect: live Postgres response-loss retry survives unrelated registration",
     "agent-connect: live Postgres crash-completed expiry and prune revoke committed tokens",
     "agent-connect: live Postgres cleanup miss racing approval commit revokes committed token",
+    "agent-connect: live Postgres expiry CAS interleavings revoke committed tokens",
   ]);
 });
 
