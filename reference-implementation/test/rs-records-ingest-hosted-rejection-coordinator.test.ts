@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { __setConnectorInstanceWritePhaseHookForTest } from "../server/connector-instance-write-coordinator.ts";
 import { closeDb, getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
@@ -253,6 +254,7 @@ async function ingestRejectedLine(args: {
   connectorInstanceId?: string;
   id: string;
   key: string;
+  runId?: string;
   rsUrl: string;
   token: string;
   value: string;
@@ -261,6 +263,9 @@ async function ingestRejectedLine(args: {
   url.searchParams.set("connector_id", args.connectorId);
   if (args.connectorInstanceId) {
     url.searchParams.set("connector_instance_id", args.connectorInstanceId);
+  }
+  if (args.runId) {
+    url.searchParams.set("run_id", args.runId);
   }
   const { body, status } = await fetchJson(url.toString(), {
     body: JSON.stringify({ data: { id: args.id, value: args.value }, key: args.key }),
@@ -346,6 +351,26 @@ async function deleteConnection(asUrl: string, sessionCookie: string, connection
     headers: {
       "Content-Type": "application/json",
       Cookie: sessionCookie,
+    },
+    method: "DELETE",
+  });
+}
+
+async function revokeConnectionWithOwnerToken(asUrl: string, token: string, connectionId: string) {
+  return await fetchJson(`${asUrl}/v1/owner/connections/${encodeURIComponent(connectionId)}/revoke`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+}
+
+async function deleteConnectionWithOwnerToken(asUrl: string, token: string, connectionId: string) {
+  return await fetchJson(`${asUrl}/v1/owner/connections/${encodeURIComponent(connectionId)}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
     },
     method: "DELETE",
   });
@@ -438,6 +463,141 @@ async function postgresCounts(connectorId: string, ownerSubjectId: string) {
     quota: Number(quota.rows[0]?.count ?? 0),
     rejections: Number(rejections.rows[0]?.count ?? 0),
   };
+}
+
+interface RejectionCounts {
+  audit: number | string | undefined;
+  quota: number | string | undefined;
+  rejections: number | string | undefined;
+}
+
+async function backendCounts(
+  backend: "postgres" | "sqlite",
+  connectorId: string,
+  ownerSubjectId: string
+): Promise<RejectionCounts> {
+  return backend === "postgres"
+    ? await postgresCounts(connectorId, ownerSubjectId)
+    : sqliteCounts(connectorId, ownerSubjectId);
+}
+
+function noReceiptSurface(response: { body: unknown; status: number }): void {
+  assert.notEqual(response.status, 200, JSON.stringify(response.body));
+  assert.equal(JSON.stringify(response.body).includes("receipt_id"), false);
+}
+
+function installBeforeRejectionWriteGate(connectorInstanceId: string): {
+  entered: Promise<void>;
+  release: () => void;
+} {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let signalEntered!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    signalEntered = resolve;
+  });
+  let used = false;
+  __setConnectorInstanceWritePhaseHookForTest(async (stage, context) => {
+    if (used || stage !== "after_acquire" || context.connectorInstanceId !== connectorInstanceId) {
+      return;
+    }
+    used = true;
+    signalEntered();
+    await released;
+  });
+  return { entered, release };
+}
+
+function installBeforeRejectionKeyGate(connectorInstanceId: string): {
+  entered: Promise<void>;
+  release: () => void;
+} {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let signalEntered!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    signalEntered = resolve;
+  });
+  let used = false;
+  __setConnectorInstanceWritePhaseHookForTest(async (stage, context) => {
+    if (used || stage !== "before_key_acquire" || context.connectorInstanceId !== connectorInstanceId) {
+      return;
+    }
+    used = true;
+    signalEntered();
+    await released;
+  });
+  return { entered, release };
+}
+
+async function seedRunningRun(args: {
+  backend: "postgres" | "sqlite";
+  connectorId: string;
+  connectorInstanceId: string;
+  runId: string;
+}): Promise<void> {
+  const now = new Date().toISOString();
+  if (args.backend === "postgres") {
+    await postgresQuery(
+      `INSERT INTO controller_active_runs(connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation)
+       VALUES($1, $2, $3, $4, $5, $6, 1)
+       ON CONFLICT(connector_instance_id) DO UPDATE SET run_id = EXCLUDED.run_id, started_at = EXCLUDED.started_at`,
+      [args.connectorInstanceId, args.connectorId, args.runId, `trc_${args.runId}`, "test", now]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history(connector_instance_id, connector_id, run_id, source_json, status, trace_id, started_at, known_gaps_json, scheduler_managed)
+       VALUES($1, $2, $3, '{}', 'running', $4, $5, '[]', 0)
+       ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL
+       DO UPDATE SET status = 'running', completed_at = NULL`,
+      [args.connectorInstanceId, args.connectorId, args.runId, `trc_${args.runId}`, now]
+    );
+    return;
+  }
+  getDb()
+    .prepare(
+      `INSERT OR REPLACE INTO controller_active_runs(connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation)
+       VALUES(?, ?, ?, ?, ?, ?, 1)`
+    )
+    .run(args.connectorInstanceId, args.connectorId, args.runId, `trc_${args.runId}`, "test", now);
+  getDb()
+    .prepare(
+      `INSERT INTO run_history(connector_instance_id, connector_id, run_id, source_json, status, trace_id, started_at, known_gaps_json, scheduler_managed)
+       VALUES(?, ?, ?, '{}', 'running', ?, ?, '[]', 0)
+       ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL
+       DO UPDATE SET status = 'running', completed_at = NULL`
+    )
+    .run(args.connectorInstanceId, args.connectorId, args.runId, `trc_${args.runId}`, now);
+}
+
+async function terminalizeRun(args: {
+  backend: "postgres" | "sqlite";
+  connectorInstanceId: string;
+  runId: string;
+}): Promise<void> {
+  const now = new Date().toISOString();
+  if (args.backend === "postgres") {
+    await postgresQuery("DELETE FROM controller_active_runs WHERE connector_instance_id = $1 AND run_id = $2", [
+      args.connectorInstanceId,
+      args.runId,
+    ]);
+    await postgresQuery(
+      "UPDATE run_history SET status = 'cancelled', completed_at = $1, terminal_reason = 'owner_cancelled' WHERE connector_instance_id = $2 AND run_id = $3",
+      [now, args.connectorInstanceId, args.runId]
+    );
+    return;
+  }
+  getDb()
+    .prepare("DELETE FROM controller_active_runs WHERE connector_instance_id = ? AND run_id = ?")
+    .run(args.connectorInstanceId, args.runId);
+  getDb()
+    .prepare(
+      "UPDATE run_history SET status = 'cancelled', completed_at = ?, terminal_reason = 'owner_cancelled' WHERE connector_instance_id = ? AND run_id = ?"
+    )
+    .run(now, args.connectorInstanceId, args.runId);
 }
 
 test("SQLite hosted ingest rejection coordinator rolls back joined rejection, quota, and audit effects", async () => {
@@ -603,6 +763,275 @@ test("Postgres hosted ingest replays response-loss retry with the exact receipt 
       assert.equal(Number(replay.rows[0]?.replay_count ?? 0), 1);
     }
   );
+});
+
+async function runHostedRejectionRevokeRace(args: {
+  backend: "postgres" | "sqlite";
+  connectorId: string;
+  connectorInstanceId?: string;
+  dbPath?: string;
+  ownerSubjectId: string;
+}): Promise<void> {
+  await withHarness(
+    {
+      ...backendServerOpts(args),
+      ownerAuthPassword: "",
+      ownerAuthSubjectId: args.ownerSubjectId,
+    },
+    async ({ asUrl, rsUrl }) => {
+      await registerConnector(asUrl, args.connectorId);
+      if (args.backend === "postgres") {
+        await seedPostgresActiveConnection({
+          connectorId: args.connectorId,
+          connectorInstanceId: args.connectorInstanceId as string,
+          ownerSubjectId: args.ownerSubjectId,
+        });
+      }
+      const token = await issueOwnerToken(asUrl, args.ownerSubjectId);
+      const first = await ingestRejectedLine({
+        connectorId: args.connectorId,
+        id: "baseline",
+        key: "wrong-baseline",
+        rsUrl,
+        token,
+        value: "baseline-private",
+        ...(args.connectorInstanceId ? { connectorInstanceId: args.connectorInstanceId } : {}),
+      });
+      assert.equal(first.status, 200, JSON.stringify(first.body));
+      const connectionId =
+        args.connectorInstanceId ??
+        (await connectionIdForConnector(args.connectorId, args.backend, args.ownerSubjectId));
+      const before = await backendCounts(args.backend, args.connectorId, args.ownerSubjectId);
+      const gate = installBeforeRejectionKeyGate(connectionId);
+      try {
+        const loser = ingestRejectedLine({
+          connectorId: args.connectorId,
+          connectorInstanceId: connectionId,
+          id: "revoked-loser",
+          key: "wrong-revoked-loser",
+          rsUrl,
+          token,
+          value: "must-not-persist",
+        });
+        await gate.entered;
+        const winner = await revokeConnectionWithOwnerToken(rsUrl, token, connectionId);
+        assert.equal(winner.status, 200, JSON.stringify(winner.body));
+        gate.release();
+        noReceiptSurface(await loser);
+      } finally {
+        __setConnectorInstanceWritePhaseHookForTest(null);
+        gate.release();
+      }
+      assert.deepEqual(await backendCounts(args.backend, args.connectorId, args.ownerSubjectId), before);
+    }
+  );
+}
+
+test("SQLite hosted rejection insert loses cleanly when revoke wins before the writable check", async () => {
+  const dbPath = join(mkdtempSync(join(homedir(), ".tmp", "pdpp-hosted-rejection-sqlite-revoke-race-")), "pdpp.sqlite");
+  await runHostedRejectionRevokeRace({
+    backend: "sqlite",
+    connectorId: `hosted-rejection-sqlite-revoke-race-${RUN_ID}`,
+    dbPath,
+    ownerSubjectId: `owner_sqlite_rejection_revoke_race_${RUN_ID}`,
+  });
+});
+
+test("Postgres hosted rejection insert loses cleanly when revoke wins before the writable check", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  assert.ok(POSTGRES_URL);
+  const connectorId = `hosted-rejection-pg-revoke-race-${RUN_ID}`;
+  await runHostedRejectionRevokeRace({
+    backend: "postgres",
+    connectorId,
+    connectorInstanceId: `cin_${connectorId}`,
+    ownerSubjectId: `owner_pg_rejection_revoke_race_${RUN_ID}`,
+  });
+});
+
+async function runHostedRejectionDeleteRace(args: {
+  backend: "postgres" | "sqlite";
+  connectorId: string;
+  connectorInstanceId?: string;
+  dbPath?: string;
+  ownerSubjectId: string;
+}): Promise<void> {
+  await withHarness(
+    {
+      ...backendServerOpts(args),
+      ownerAuthPassword: "",
+      ownerAuthSubjectId: args.ownerSubjectId,
+    },
+    async ({ asUrl, rsUrl }) => {
+      await registerConnector(asUrl, args.connectorId);
+      if (args.backend === "postgres") {
+        await seedPostgresActiveConnection({
+          connectorId: args.connectorId,
+          connectorInstanceId: args.connectorInstanceId as string,
+          ownerSubjectId: args.ownerSubjectId,
+        });
+      }
+      const token = await issueOwnerToken(asUrl, args.ownerSubjectId);
+      const first = await ingestRejectedLine({
+        connectorId: args.connectorId,
+        id: "baseline",
+        key: "wrong-baseline",
+        rsUrl,
+        token,
+        value: "baseline-private",
+        ...(args.connectorInstanceId ? { connectorInstanceId: args.connectorInstanceId } : {}),
+      });
+      assert.equal(first.status, 200, JSON.stringify(first.body));
+      const connectionId =
+        args.connectorInstanceId ??
+        (await connectionIdForConnector(args.connectorId, args.backend, args.ownerSubjectId));
+      await makeConnectionDeleteEligible(connectionId, args.backend);
+      const gate = installBeforeRejectionKeyGate(connectionId);
+      try {
+        const loser = ingestRejectedLine({
+          connectorId: args.connectorId,
+          connectorInstanceId: connectionId,
+          id: "delete-loser",
+          key: "wrong-delete-loser",
+          rsUrl,
+          token,
+          value: "must-not-persist",
+        });
+        await gate.entered;
+        const winner = await deleteConnectionWithOwnerToken(rsUrl, token, connectionId);
+        assert.equal(winner.status, 200, JSON.stringify(winner.body));
+        gate.release();
+        noReceiptSurface(await loser);
+      } finally {
+        __setConnectorInstanceWritePhaseHookForTest(null);
+        gate.release();
+      }
+      assert.deepEqual(await backendCounts(args.backend, args.connectorId, args.ownerSubjectId), {
+        audit: 0,
+        quota: 0,
+        rejections: 0,
+      });
+    }
+  );
+}
+
+test("SQLite hosted rejection insert loses cleanly when delete follows the serialized writable refusal", async () => {
+  const dbPath = join(mkdtempSync(join(homedir(), ".tmp", "pdpp-hosted-rejection-sqlite-delete-race-")), "pdpp.sqlite");
+  await runHostedRejectionDeleteRace({
+    backend: "sqlite",
+    connectorId: `hosted-rejection-sqlite-delete-race-${RUN_ID}`,
+    dbPath,
+    ownerSubjectId: `owner_sqlite_rejection_delete_race_${RUN_ID}`,
+  });
+});
+
+test("Postgres hosted rejection insert loses cleanly when delete follows the serialized writable refusal", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  assert.ok(POSTGRES_URL);
+  const connectorId = `hosted-rejection-pg-delete-race-${RUN_ID}`;
+  await runHostedRejectionDeleteRace({
+    backend: "postgres",
+    connectorId,
+    connectorInstanceId: `cin_${connectorId}`,
+    ownerSubjectId: `owner_pg_rejection_delete_race_${RUN_ID}`,
+  });
+});
+
+async function runHostedRejectionTerminalRunRace(args: {
+  backend: "postgres" | "sqlite";
+  connectorId: string;
+  connectorInstanceId?: string;
+  dbPath?: string;
+  ownerSubjectId: string;
+}): Promise<void> {
+  await withHarness(
+    {
+      ...backendServerOpts(args),
+      ownerAuthPassword: "",
+      ownerAuthSubjectId: args.ownerSubjectId,
+    },
+    async ({ asUrl, rsUrl }) => {
+      await registerConnector(asUrl, args.connectorId);
+      if (args.backend === "postgres") {
+        await seedPostgresActiveConnection({
+          connectorId: args.connectorId,
+          connectorInstanceId: args.connectorInstanceId as string,
+          ownerSubjectId: args.ownerSubjectId,
+        });
+      }
+      const token = await issueOwnerToken(asUrl, args.ownerSubjectId);
+      const first = await ingestRejectedLine({
+        connectorId: args.connectorId,
+        id: "baseline",
+        key: "wrong-baseline",
+        rsUrl,
+        token,
+        value: "baseline-private",
+        ...(args.connectorInstanceId ? { connectorInstanceId: args.connectorInstanceId } : {}),
+      });
+      assert.equal(first.status, 200, JSON.stringify(first.body));
+      const connectionId =
+        args.connectorInstanceId ??
+        (await connectionIdForConnector(args.connectorId, args.backend, args.ownerSubjectId));
+      const runId = `run_hosted_rejection_terminal_race_${args.backend}_${RUN_ID}`;
+      await seedRunningRun({
+        backend: args.backend,
+        connectorId: args.connectorId,
+        connectorInstanceId: connectionId,
+        runId,
+      });
+      const before = await backendCounts(args.backend, args.connectorId, args.ownerSubjectId);
+      const gate = installBeforeRejectionWriteGate(connectionId);
+      try {
+        const loser = ingestRejectedLine({
+          connectorId: args.connectorId,
+          connectorInstanceId: connectionId,
+          id: "terminal-loser",
+          key: "wrong-terminal-loser",
+          rsUrl,
+          runId,
+          token,
+          value: "must-not-persist",
+        });
+        await gate.entered;
+        await terminalizeRun({ backend: args.backend, connectorInstanceId: connectionId, runId });
+        gate.release();
+        noReceiptSurface(await loser);
+      } finally {
+        __setConnectorInstanceWritePhaseHookForTest(null);
+        gate.release();
+      }
+      assert.deepEqual(await backendCounts(args.backend, args.connectorId, args.ownerSubjectId), before);
+    }
+  );
+}
+
+test("SQLite hosted rejection insert loses cleanly when its run terminalizes before the writable check", async () => {
+  const dbPath = join(
+    mkdtempSync(join(homedir(), ".tmp", "pdpp-hosted-rejection-sqlite-terminal-race-")),
+    "pdpp.sqlite"
+  );
+  await runHostedRejectionTerminalRunRace({
+    backend: "sqlite",
+    connectorId: `hosted-rejection-sqlite-terminal-race-${RUN_ID}`,
+    dbPath,
+    ownerSubjectId: `owner_sqlite_rejection_terminal_race_${RUN_ID}`,
+  });
+});
+
+test("Postgres hosted rejection insert loses cleanly when its run terminalizes before the writable check", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  assert.ok(POSTGRES_URL);
+  const connectorId = `hosted-rejection-pg-terminal-race-${RUN_ID}`;
+  await runHostedRejectionTerminalRunRace({
+    backend: "postgres",
+    connectorId,
+    connectorInstanceId: `cin_${connectorId}`,
+    ownerSubjectId: `owner_pg_rejection_terminal_race_${RUN_ID}`,
+  });
 });
 
 async function runOwnerInspectionJourney(args: {
