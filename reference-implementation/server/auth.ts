@@ -10888,7 +10888,7 @@ interface GrantRevocationContext {
   trace_id?: string | null;
 }
 
-const REVOCATION_INVALID_GRANT_ERROR_CODES = new Set([
+const REVOCATION_INVALID_GRANT_ERROR_CODES = new Set<string | undefined>([
   "authorization_state.unsupported_legacy_shape",
   "grant_invalid",
 ]);

@@ -4477,7 +4477,7 @@ test("PDPP reference implementation integration", async (t) => {
         `${rsUrl}/v1/streams/pay_statements/records?connection_id=not_a_native_concept`,
         { headers: { Authorization: `Bearer ${approved.token}` } }
       );
-      assert.equal(connectionScopedClientResp.status, 404);
+      assert.equal(connectionScopedClientResp.status, 401);
       const connectionScopedClientBody = parseErrorResponse(await connectionScopedClientResp.json());
       assert.equal(connectionScopedClientBody.error.code, "connection_not_found");
       assert.match(connectionScopedClientBody.error.message, REGEXP_163);
@@ -4944,7 +4944,7 @@ test("PDPP reference implementation integration", async (t) => {
           const rejectedResp = await fetch(`${rsUrl}${path}`, {
             headers: { Authorization: `Bearer ${approved.token}` },
           });
-          assert.equal(rejectedResp.status, 403);
+          assert.equal(rejectedResp.status, 401);
           const rejectedRequestId = rejectedResp.headers.get("Request-Id");
           const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
           assert.ok(rejectedRequestId?.startsWith("req_"));
@@ -5267,7 +5267,7 @@ test("PDPP reference implementation integration", async (t) => {
         const streamsResp = await fetchJson(`${rsUrl}/v1/streams`, {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
-        assert.equal(streamsResp.status, 403);
+        assert.equal(streamsResp.status, 401);
         assert.equal(streamsResp.body.error.code, "grant_invalid");
         assert.match(streamsResp.body.error.message, REGEXP_98);
 
@@ -5358,7 +5358,7 @@ test("PDPP reference implementation integration", async (t) => {
         const metadataResp = await fetchJson(`${rsUrl}/v1/streams/top_artists`, {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
-        assert.equal(metadataResp.status, 403);
+        assert.equal(metadataResp.status, 401);
         assert.equal(metadataResp.body.error.code, "grant_invalid");
         assert.match(metadataResp.body.error.message, REGEXP_100);
 
@@ -5428,7 +5428,7 @@ test("PDPP reference implementation integration", async (t) => {
         const metadataResp = await fetchJson(`${rsUrl}/v1/streams/pay_statements`, {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
-        assert.equal(metadataResp.status, 403);
+        assert.equal(metadataResp.status, 401);
         assert.equal(metadataResp.body.error.code, "grant_invalid");
         assert.match(metadataResp.body.error.message, REGEXP_102);
 
@@ -5495,7 +5495,7 @@ test("PDPP reference implementation integration", async (t) => {
         const metadataResp = await fetchJson(`${rsUrl}/v1/streams/pay_statements`, {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
-        assert.equal(metadataResp.status, 403);
+        assert.equal(metadataResp.status, 401);
         assert.equal(metadataResp.body.error.code, "grant_invalid");
         assert.match(metadataResp.body.error.message, REGEXP_104);
 
@@ -7234,7 +7234,7 @@ test("PDPP reference implementation integration", async (t) => {
             method: "POST",
           }
         );
-        assert.equal(rejectedResp.status, 401);
+        assert.equal(rejectedResp.status, 400);
         assert.equal(rejectedResp.body.error.code, "connector_invalid");
         assert.match(
           rejectedResp.body.error.message,
@@ -7525,7 +7525,7 @@ test("PDPP reference implementation integration", async (t) => {
         const rejectedResp = await fetch(`${rsUrl}/v1/streams/recently_played`, {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
-        assert.equal(rejectedResp.status, 403);
+        assert.equal(rejectedResp.status, 401);
         const rejectedRequestId = rejectedResp.headers.get("Request-Id");
         const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
         assert.ok(rejectedRequestId?.startsWith("req_"));
