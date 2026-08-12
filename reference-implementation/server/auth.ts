@@ -437,11 +437,17 @@ interface OwnerDeviceAuthRow extends DbRow {
 
 interface OAuthPendingCodeRow extends DbRow {
   client_id: string;
+  consumed_at: string | null;
   device_code: string;
   expires_at: string;
+  grant_id: string | null;
+  issued_at: string | null;
+  issued_code: string | null;
+  package_id: string | null;
   redirect_uri: string;
   state: string | null;
   status: string;
+  token_id: string | null;
 }
 
 interface OAuthIssuedCodeRow extends DbRow {
@@ -7229,7 +7235,19 @@ function buildOAuthRefreshTokenError(code: string, message: string): AuthError {
   return err;
 }
 
-async function issueOAuthRefreshToken({
+interface PreparedInitialOAuthRefreshToken {
+  readonly clientId: string;
+  readonly createdAt: string;
+  readonly expiresAt: string | null;
+  readonly familyId: string;
+  readonly grantId?: string;
+  readonly packageId?: string;
+  readonly refreshToken: string;
+  readonly refreshTokenHash: string;
+  readonly subjectId: string;
+}
+
+function prepareInitialOAuthRefreshToken({
   clientId,
   grantId,
   subjectId,
@@ -7239,25 +7257,21 @@ async function issueOAuthRefreshToken({
   grantId: string;
   subjectId: string;
   expiresAt?: string | null;
-}): Promise<string> {
+}): PreparedInitialOAuthRefreshToken {
   const refreshToken = generateOAuthRefreshToken();
-  const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
-  const createdAt = nowIso();
-  await getRefreshTokenStore().insert({
+  return {
     clientId,
-    createdAt,
+    createdAt: nowIso(),
     expiresAt,
     familyId: generateId("rtf"),
-    generation: 0,
     grantId,
-    parentGeneration: null,
-    refreshTokenHash,
+    refreshToken,
+    refreshTokenHash: hashOAuthRefreshToken(refreshToken),
     subjectId,
-  });
-  return refreshToken;
+  };
 }
 
-async function issueOAuthRefreshTokenForPackage({
+function prepareInitialOAuthRefreshTokenForPackage({
   clientId,
   packageId,
   subjectId,
@@ -7267,22 +7281,18 @@ async function issueOAuthRefreshTokenForPackage({
   packageId: string;
   subjectId: string;
   expiresAt?: string | null;
-}): Promise<string> {
+}): PreparedInitialOAuthRefreshToken {
   const refreshToken = generateOAuthRefreshToken();
-  const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
-  const createdAt = nowIso();
-  await getRefreshTokenStore().insertForPackage({
+  return {
     clientId,
-    createdAt,
+    createdAt: nowIso(),
     expiresAt,
     familyId: generateId("rtf"),
-    generation: 0,
     packageId,
-    parentGeneration: null,
-    refreshTokenHash,
+    refreshToken,
+    refreshTokenHash: hashOAuthRefreshToken(refreshToken),
     subjectId,
-  });
-  return refreshToken;
+  };
 }
 
 // Grant-package row operations. One adapter per backend; the dialect SQL
@@ -7543,7 +7553,8 @@ const postgresOAuthCodeStore: OAuthCodeStore = {
     ),
   getByDeviceCode: (deviceCode) =>
     pgOne<OAuthPendingCodeRow>(
-      `SELECT id, device_code, client_id, redirect_uri, state, status, expires_at
+      `SELECT id, device_code, client_id, redirect_uri, state, status, expires_at,
+              code AS issued_code, grant_id, package_id, token_id, issued_at, consumed_at
          FROM oauth_authorization_codes
          WHERE device_code = $1`,
       [deviceCode]
@@ -7593,6 +7604,7 @@ const postgresOAuthCodeStore: OAuthCodeStore = {
          status = 'pending',
          code = NULL,
          grant_id = NULL,
+         package_id = NULL,
          token_id = NULL,
          created_at = excluded.created_at,
          expires_at = excluded.expires_at,
@@ -7655,47 +7667,6 @@ function getOAuthCodeStore() {
   return isPostgresStorageBackend() ? postgresOAuthCodeStore : sqliteOAuthCodeStore;
 }
 
-const postgresRefreshTokenStore: RefreshTokenStore = {
-  insert: ({
-    refreshTokenHash,
-    familyId,
-    generation,
-    parentGeneration,
-    clientId,
-    grantId,
-    subjectId,
-    createdAt,
-    expiresAt,
-  }) =>
-    pgExec(
-      `INSERT INTO oauth_refresh_tokens(
-         refresh_token_hash, family_id, generation, parent_generation, client_id,
-         grant_id, subject_id, status, created_at, expires_at, last_used_at,
-         superseded_at, revoked_at
-       ) VALUES($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, NULL, NULL, NULL)`,
-      [refreshTokenHash, familyId, generation, parentGeneration, clientId, grantId, subjectId, createdAt, expiresAt]
-    ),
-  insertForPackage: ({
-    refreshTokenHash,
-    familyId,
-    generation,
-    parentGeneration,
-    clientId,
-    packageId,
-    subjectId,
-    createdAt,
-    expiresAt,
-  }) =>
-    pgExec(
-      `INSERT INTO oauth_refresh_tokens(
-         refresh_token_hash, family_id, generation, parent_generation, client_id,
-         grant_id, package_id, subject_id, status, created_at, expires_at,
-         last_used_at, superseded_at, revoked_at
-       ) VALUES($1, $2, $3, $4, $5, NULL, $6, $7, 'active', $8, $9, NULL, NULL, NULL)`,
-      [refreshTokenHash, familyId, generation, parentGeneration, clientId, packageId, subjectId, createdAt, expiresAt]
-    ),
-};
-
 const sqliteRefreshTokenStore: RefreshTokenStore = {
   insert: ({
     refreshTokenHash,
@@ -7735,10 +7706,6 @@ const sqliteRefreshTokenStore: RefreshTokenStore = {
       [refreshTokenHash, familyId, generation, parentGeneration, clientId, packageId, subjectId, createdAt, expiresAt]
     ),
 };
-
-function getRefreshTokenStore() {
-  return isPostgresStorageBackend() ? postgresRefreshTokenStore : sqliteRefreshTokenStore;
-}
 
 const postgresTokenStore: TokenStore = {
   getIntrospection: (token) =>
@@ -8802,18 +8769,59 @@ export async function revokeGrantPackage(
   };
 }
 
-export async function issueOAuthAuthorizationCodeForPackageDeviceCode(
+type OAuthAuthorizationCodeBinding =
+  | { grantId: string; kind: "grant"; token: string }
+  | { kind: "package"; packageId: string; token: string };
+
+function authorizationCodeDelivery(row: OAuthPendingCodeRow): Record<string, unknown> {
+  return {
+    client_id: row.client_id,
+    code: row.issued_code,
+    expires_at: row.expires_at,
+    redirect_uri: row.redirect_uri,
+    state: row.state || null,
+  };
+}
+
+function issuedCodeMatchesBinding(row: OAuthPendingCodeRow, binding: OAuthAuthorizationCodeBinding): boolean {
+  if (row.token_id !== binding.token) {
+    return false;
+  }
+  return binding.kind === "package"
+    ? row.package_id === binding.packageId && row.grant_id === null
+    : row.grant_id === binding.grantId && row.package_id === null;
+}
+
+function recoverIssuedOAuthAuthorizationCode(
+  row: OAuthPendingCodeRow | null,
+  binding: OAuthAuthorizationCodeBinding
+): Record<string, unknown> | null {
+  if (!row) {
+    return null;
+  }
+  if (
+    row.status !== "issued" ||
+    row.consumed_at ||
+    isExpired(row) ||
+    !isNonEmptyString(row.issued_code) ||
+    !issuedCodeMatchesBinding(row, binding)
+  ) {
+    throw buildOAuthAuthorizationCodeError("invalid_grant", "OAuth authorization code delivery is not recoverable");
+  }
+  return authorizationCodeDelivery(row);
+}
+
+async function issueOrRecoverOAuthAuthorizationCode(
   deviceCode: unknown,
-  { packageId, token }: { packageId: string; token: string }
+  binding: OAuthAuthorizationCodeBinding
 ): Promise<Record<string, unknown> | null> {
   if (!isNonEmptyString(deviceCode)) {
     return null;
   }
   const oauthCodeStore = getOAuthCodeStore();
   const row = await oauthCodeStore.getByDeviceCode(deviceCode);
-
   if (row?.status !== "pending") {
-    return null;
+    return recoverIssuedOAuthAuthorizationCode(row, binding);
   }
   if (isExpired(row)) {
     await oauthCodeStore.markExpiredByDeviceCode(deviceCode);
@@ -8823,15 +8831,45 @@ export async function issueOAuthAuthorizationCodeForPackageDeviceCode(
   const code = generateId("oacode");
   const issuedAt = nowIso();
   const expiresAt = expiresInIso(300);
-  await oauthCodeStore.issueForPackageDeviceCode({ code, deviceCode, expiresAt, issuedAt, packageId, token });
-
-  return {
-    client_id: row.client_id,
-    code,
+  const updated =
+    binding.kind === "package"
+      ? await oauthCodeStore.issueForPackageDeviceCode({
+          code,
+          deviceCode,
+          expiresAt,
+          issuedAt,
+          packageId: binding.packageId,
+          token: binding.token,
+        })
+      : await oauthCodeStore.issueForDeviceCode({
+          code,
+          deviceCode,
+          expiresAt,
+          grantId: binding.grantId,
+          issuedAt,
+          token: binding.token,
+        });
+  if (!updated.changes) {
+    return recoverIssuedOAuthAuthorizationCode(await oauthCodeStore.getByDeviceCode(deviceCode), binding);
+  }
+  return authorizationCodeDelivery({
+    ...row,
+    consumed_at: null,
     expires_at: expiresAt,
-    redirect_uri: row.redirect_uri,
-    state: row.state || null,
-  };
+    grant_id: binding.kind === "grant" ? binding.grantId : null,
+    issued_at: issuedAt,
+    issued_code: code,
+    package_id: binding.kind === "package" ? binding.packageId : null,
+    status: "issued",
+    token_id: binding.token,
+  });
+}
+
+export async function issueOAuthAuthorizationCodeForPackageDeviceCode(
+  deviceCode: unknown,
+  { packageId, token }: { packageId: string; token: string }
+): Promise<Record<string, unknown> | null> {
+  return await issueOrRecoverOAuthAuthorizationCode(deviceCode, { kind: "package", packageId, token });
 }
 
 export async function stageOAuthAuthorizationCodeRequest({
@@ -8901,32 +8939,7 @@ export async function issueOAuthAuthorizationCodeForDeviceCode(
   deviceCode: unknown,
   { grantId, token }: { grantId: string; token: string }
 ): Promise<Record<string, unknown> | null> {
-  if (!isNonEmptyString(deviceCode)) {
-    return null;
-  }
-  const oauthCodeStore = getOAuthCodeStore();
-  const row = await oauthCodeStore.getByDeviceCode(deviceCode);
-
-  if (row?.status !== "pending") {
-    return null;
-  }
-  if (isExpired(row)) {
-    await oauthCodeStore.markExpiredByDeviceCode(deviceCode);
-    throw buildOAuthAuthorizationCodeError("invalid_request", "OAuth authorization request has expired");
-  }
-
-  const code = generateId("oacode");
-  const issuedAt = nowIso();
-  const expiresAt = expiresInIso(300);
-  await oauthCodeStore.issueForDeviceCode({ code, deviceCode, expiresAt, grantId, issuedAt, token });
-
-  return {
-    client_id: row.client_id,
-    code,
-    expires_at: expiresAt,
-    redirect_uri: row.redirect_uri,
-    state: row.state || null,
-  };
+  return await issueOrRecoverOAuthAuthorizationCode(deviceCode, { grantId, kind: "grant", token });
 }
 
 function requireOAuthAuthorizationCodeExchangeInput(input: {
@@ -8982,30 +8995,111 @@ function requireRedeemableOAuthAuthorizationCode(
   return row;
 }
 
-async function addOAuthRefreshTokenToAuthorizationResponse(
-  response: Record<string, unknown>,
+function prepareOAuthRefreshTokenForAuthorizationCode(
   row: OAuthIssuedCodeRow,
   clientId: string,
   tokenInfo: TokenIntrospectionResult & { subject_id: string }
-): Promise<void> {
+): PreparedInitialOAuthRefreshToken {
   const expiresAt = typeof tokenInfo.exp === "number" ? new Date(tokenInfo.exp * 1000).toISOString() : null;
   if (isNonEmptyString(row.package_id)) {
-    response.refresh_token = await issueOAuthRefreshTokenForPackage({
+    return prepareInitialOAuthRefreshTokenForPackage({
       clientId,
       expiresAt,
       packageId: row.package_id,
       subjectId: tokenInfo.subject_id,
     });
-    return;
   }
   if (!isNonEmptyString(row.grant_id)) {
     throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code is missing its grant binding");
   }
-  response.refresh_token = await issueOAuthRefreshToken({
+  return prepareInitialOAuthRefreshToken({
     clientId,
     expiresAt,
     grantId: row.grant_id,
     subjectId: tokenInfo.subject_id,
+  });
+}
+
+async function consumeOAuthAuthorizationCodeAtomically({
+  code,
+  consumedAt,
+  refresh,
+}: {
+  code: string;
+  consumedAt: string;
+  refresh: PreparedInitialOAuthRefreshToken | null;
+}): Promise<void> {
+  if (isPostgresStorageBackend()) {
+    await withPostgresTransaction(async (client) => {
+      const consumed = await client.query(
+        `UPDATE oauth_authorization_codes
+            SET status = 'consumed', consumed_at = $1
+          WHERE code = $2 AND status = 'issued' AND consumed_at IS NULL`,
+        [consumedAt, code]
+      );
+      if (consumed.rowCount !== 1) {
+        throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code is invalid or already used");
+      }
+      if (!refresh) {
+        return;
+      }
+      await client.query(
+        `INSERT INTO oauth_refresh_tokens(
+           refresh_token_hash, family_id, generation, parent_generation, client_id,
+           grant_id, package_id, subject_id, status, created_at, expires_at,
+           last_used_at, superseded_at, revoked_at
+         ) VALUES($1, $2, 0, NULL, $3, $4, $5, $6, 'active', $7, $8, NULL, NULL, NULL)`,
+        [
+          refresh.refreshTokenHash,
+          refresh.familyId,
+          refresh.clientId,
+          refresh.grantId ?? null,
+          refresh.packageId ?? null,
+          refresh.subjectId,
+          refresh.createdAt,
+          refresh.expiresAt,
+        ]
+      );
+    });
+    return;
+  }
+
+  writeTransaction(() => {
+    const consumed = exec(referenceQueries.authOauthAuthorizationCodesConsumeCode, [consumedAt, code]);
+    if (!consumed.changes) {
+      throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code is invalid or already used");
+    }
+    if (!refresh) {
+      return;
+    }
+    if (refresh.packageId) {
+      sqliteRefreshTokenStore.insertForPackage({
+        clientId: refresh.clientId,
+        createdAt: refresh.createdAt,
+        expiresAt: refresh.expiresAt,
+        familyId: refresh.familyId,
+        generation: 0,
+        packageId: refresh.packageId,
+        parentGeneration: null,
+        refreshTokenHash: refresh.refreshTokenHash,
+        subjectId: refresh.subjectId,
+      });
+      return;
+    }
+    if (!refresh.grantId) {
+      throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code is missing its grant binding");
+    }
+    sqliteRefreshTokenStore.insert({
+      clientId: refresh.clientId,
+      createdAt: refresh.createdAt,
+      expiresAt: refresh.expiresAt,
+      familyId: refresh.familyId,
+      generation: 0,
+      grantId: refresh.grantId,
+      parentGeneration: null,
+      refreshTokenHash: refresh.refreshTokenHash,
+      subjectId: refresh.subjectId,
+    });
   });
 }
 
@@ -9057,13 +9151,6 @@ export async function exchangeOAuthAuthorizationCode({
     throw buildOAuthAuthorizationCodeError("invalid_client", "Unknown client_id");
   }
 
-  const consumedAt = nowIso();
-  const updated = await oauthCodeStore.consumeCode({ code: normalized.code, consumedAt });
-
-  if (!updated.changes) {
-    throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code is invalid or already used");
-  }
-
   const response: Record<string, unknown> = {
     access_token: row.token_id,
     token_type: "Bearer",
@@ -9074,8 +9161,12 @@ export async function exchangeOAuthAuthorizationCode({
   if (row.grant_id) {
     response.authorization_details = [buildGrantedAuthorizationDetail(tokenInfo.grant)];
   }
-  if (clientSupportsOAuthRefreshToken(registeredClient)) {
-    await addOAuthRefreshTokenToAuthorizationResponse(response, row, normalized.clientId, tokenInfo);
+  const refresh = clientSupportsOAuthRefreshToken(registeredClient)
+    ? prepareOAuthRefreshTokenForAuthorizationCode(row, normalized.clientId, tokenInfo)
+    : null;
+  await consumeOAuthAuthorizationCodeAtomically({ code: normalized.code, consumedAt: nowIso(), refresh });
+  if (refresh) {
+    response.refresh_token = refresh.refreshToken;
   }
 
   return response;

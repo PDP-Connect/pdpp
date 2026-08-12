@@ -417,7 +417,7 @@ interface OauthCodeFlowResult {
   refreshToken: string | null;
 }
 
-async function completeOauthCodeFlow({
+async function prepareOauthCodeFlow({
   asUrl,
   client,
   manifest,
@@ -425,18 +425,8 @@ async function completeOauthCodeFlow({
   asUrl: string;
   client: RegisteredClient;
   manifest: ConnectorManifest;
-}): Promise<OauthCodeFlowResult> {
+}): Promise<{ code: string; verifier: string }> {
   const verifier = randomBytes(32).toString("base64url");
-  const authorizationDetails = [
-    {
-      access_mode: "continuous",
-      purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
-      purpose_description: "Use PDPP data through hosted MCP.",
-      source: { id: publicSourceIdForManifest(manifest), kind: "connector" },
-      streams: [{ name: "*" }],
-      type: "https://pdpp.dev/data-access",
-    },
-  ];
   const authorizeUrl = new URL(`${asUrl}/oauth/authorize`);
   authorizeUrl.searchParams.set("client_id", client.client_id);
   authorizeUrl.searchParams.set("redirect_uri", "https://client.example/callback");
@@ -444,7 +434,7 @@ async function completeOauthCodeFlow({
   authorizeUrl.searchParams.set("state", "state-123");
   authorizeUrl.searchParams.set("code_challenge", pkceChallenge(verifier));
   authorizeUrl.searchParams.set("code_challenge_method", "S256");
-  authorizeUrl.searchParams.set("authorization_details", JSON.stringify(authorizationDetails));
+  authorizeUrl.searchParams.set("authorization_details", JSON.stringify(hostedMcpAuthorizationDetails(manifest)));
 
   const authorizeResp = await fetch(authorizeUrl, { redirect: "manual" });
   assert.equal(authorizeResp.status, 302);
@@ -454,12 +444,8 @@ async function completeOauthCodeFlow({
   );
   const requestUri = mustExist(consentUrl.searchParams.get("request_uri"), "consent redirect must carry request_uri");
   const reviewRevision = await reviewConsent(asUrl, requestUri);
-
   const approveResp = await fetch(`${asUrl}/consent/approve`, {
-    body: new URLSearchParams({
-      approval_review_revision: reviewRevision,
-      request_uri: requestUri,
-    }).toString(),
+    body: new URLSearchParams({ approval_review_revision: reviewRevision, request_uri: requestUri }).toString(),
     headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
     method: "POST",
     redirect: "manual",
@@ -472,7 +458,22 @@ async function completeOauthCodeFlow({
   assert.equal(callback.searchParams.get("state"), "state-123");
   assert.equal(callback.searchParams.has("access_token"), false);
   assert.equal(callback.searchParams.has("grant"), false);
-  const code = mustExist(callback.searchParams.get("code"), "callback must carry an authorization code");
+  return {
+    code: mustExist(callback.searchParams.get("code"), "callback must carry an authorization code"),
+    verifier,
+  };
+}
+
+async function completeOauthCodeFlow({
+  asUrl,
+  client,
+  manifest,
+}: {
+  asUrl: string;
+  client: RegisteredClient;
+  manifest: ConnectorManifest;
+}): Promise<OauthCodeFlowResult> {
+  const { code, verifier } = await prepareOauthCodeFlow({ asUrl, client, manifest });
 
   const { status, body } = await fetchJson(`${asUrl}/oauth/token`, {
     body: new URLSearchParams({
@@ -963,6 +964,53 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
       { generation: 0, status: "revoked" },
       { generation: 1, status: "revoked" },
     ]);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("SQLite authorization-code failure rolls back consumption with initial refresh issuance", async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    const manifest = await registerAuthorizedSpotify(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+    const prepared = await prepareOauthCodeFlow({ asUrl, client, manifest });
+    getDb().exec(`
+      CREATE TRIGGER fail_initial_refresh_issuance
+      BEFORE INSERT ON oauth_refresh_tokens
+      BEGIN
+        SELECT RAISE(ABORT, 'injected initial refresh failure');
+      END
+    `);
+    const redeem = () =>
+      fetchJson(`${asUrl}/oauth/token`, {
+        body: new URLSearchParams({
+          client_id: client.client_id,
+          code: prepared.code,
+          code_verifier: prepared.verifier,
+          grant_type: "authorization_code",
+          redirect_uri: "https://client.example/callback",
+        }).toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+
+    const failed = await redeem();
+    assert.notEqual(failed.status, 200);
+    const afterFailure = getDb()
+      .prepare("SELECT status, consumed_at FROM oauth_authorization_codes WHERE code = ?")
+      .get(prepared.code) as { consumed_at: string | null; status: string };
+    assert.deepEqual(afterFailure, { consumed_at: null, status: "issued" });
+    assert.equal(
+      (getDb().prepare("SELECT COUNT(*) AS count FROM oauth_refresh_tokens").get() as { count: number }).count,
+      0
+    );
+
+    getDb().exec("DROP TRIGGER fail_initial_refresh_issuance");
+    const retried = await redeem();
+    assert.equal(retried.status, 200);
+    assert.equal(typeof retried.body.refresh_token, "string");
   } finally {
     await closeServer(server);
   }

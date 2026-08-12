@@ -53,7 +53,13 @@ import { fileURLToPath } from "node:url";
 
 import { validateResponse } from "@pdpp/reference-contract";
 
-import { issueToken, revokeGrant } from "../server/auth.ts";
+import {
+  issueOAuthAuthorizationCodeForDeviceCode,
+  issueOAuthAuthorizationCodeForPackageDeviceCode,
+  issueToken,
+  revokeGrant,
+  stageOAuthAuthorizationCodeRequest,
+} from "../server/auth.ts";
 import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { closeDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
@@ -63,6 +69,7 @@ import { createPostgresConnectorInstanceStore } from "../server/stores/connector
 import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
+const NOT_RECOVERABLE_OR_INVALID = /not recoverable|invalid/;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -466,6 +473,105 @@ if (POSTGRES_URL) {
     const sequentialReplay = await redeem();
     assert.equal(sequentialReplay.status, 400);
     assert.equal(sequentialReplay.body.error, "invalid_grant");
+  });
+
+  test("authorization-code failure rolls back PostgreSQL consumption with initial refresh issuance", async () => {
+    assert.ok(client, "client must be registered in test.before");
+    assert.ok(spotify, "spotify manifest must be registered in test.before");
+    const registeredClient = client;
+    const prepared = await prepareOauthCodeFlow({ asUrl, client: registeredClient, manifest: spotify });
+    await postgresQuery(`
+      CREATE OR REPLACE FUNCTION fail_initial_refresh_issuance()
+      RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'injected initial refresh failure';
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await postgresQuery(`
+      CREATE TRIGGER fail_initial_refresh_issuance
+      BEFORE INSERT ON oauth_refresh_tokens
+      FOR EACH ROW EXECUTE FUNCTION fail_initial_refresh_issuance()
+    `);
+    const redeem = () =>
+      fetchJson<{ error?: string; refresh_token?: string }>(`${asUrl}/oauth/token`, {
+        body: new URLSearchParams({
+          client_id: registeredClient.client_id,
+          code: prepared.code,
+          code_verifier: prepared.verifier,
+          grant_type: "authorization_code",
+          redirect_uri: "https://client.example/callback",
+        }).toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+
+    const failed = await redeem();
+    assert.notEqual(failed.status, 200);
+    const afterFailure = await postgresQuery<{ consumed_at: string | null; status: string }>(
+      "SELECT status, consumed_at FROM oauth_authorization_codes WHERE code = $1",
+      [prepared.code]
+    );
+    assert.deepEqual(afterFailure.rows[0], { consumed_at: null, status: "issued" });
+
+    await postgresQuery("DROP TRIGGER fail_initial_refresh_issuance ON oauth_refresh_tokens");
+    await postgresQuery("DROP FUNCTION fail_initial_refresh_issuance()");
+    const retried = await redeem();
+    assert.equal(retried.status, 200);
+    assert.equal(typeof retried.body.refresh_token, "string");
+  });
+
+  test("authorization-code delivery converges and recovers on PostgreSQL", async () => {
+    assert.ok(client, "client must be registered in test.before");
+    const challenge = pkceChallenge(randomBytes(32).toString("base64url"));
+    const redirectUri = "https://client.example/callback";
+    const exercise = async (
+      kind: "grant" | "package",
+      deviceCode: string,
+      binding: { grantId: string; token: string } | { packageId: string; token: string }
+    ) => {
+      await stageOAuthAuthorizationCodeRequest({
+        clientId: client?.client_id,
+        codeChallenge: challenge,
+        codeChallengeMethod: "S256",
+        deviceCode,
+        redirectUri,
+      });
+      const issue = () =>
+        kind === "grant"
+          ? issueOAuthAuthorizationCodeForDeviceCode(deviceCode, binding as { grantId: string; token: string })
+          : issueOAuthAuthorizationCodeForPackageDeviceCode(
+              deviceCode,
+              binding as { packageId: string; token: string }
+            );
+      const issued = await Promise.all([issue(), issue()]);
+      assert.deepEqual(issued[1], issued[0]);
+      assert.equal(issued[0]?.redirect_uri, redirectUri);
+      assert.equal(typeof issued[0]?.code, "string");
+      return issued[0];
+    };
+
+    const grantDeviceCode = `device_delivery_grant_${randomBytes(6).toString("hex")}`;
+    const grantCode = await exercise("grant", grantDeviceCode, {
+      grantId: "grt_delivery",
+      token: "tok_delivery",
+    });
+    await postgresQuery(
+      "UPDATE oauth_authorization_codes SET status = 'consumed', consumed_at = NOW() WHERE code = $1",
+      [grantCode?.code]
+    );
+    await assert.rejects(
+      () =>
+        issueOAuthAuthorizationCodeForDeviceCode(grantDeviceCode, {
+          grantId: "grt_delivery",
+          token: "tok_delivery",
+        }),
+      NOT_RECOVERABLE_OR_INVALID
+    );
+    await exercise("package", `device_delivery_package_${randomBytes(6).toString("hex")}`, {
+      packageId: "gpkg_delivery",
+      token: "tok_package_delivery",
+    });
   });
 
   test("single-use grant issuance has one PostgreSQL race winner", async () => {
