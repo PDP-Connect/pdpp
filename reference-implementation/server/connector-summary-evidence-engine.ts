@@ -41,6 +41,14 @@ import {
   type ConnectorInstanceWriteOwnership,
   withConnectorInstanceWrite,
 } from "./connector-instance-write-coordinator.ts";
+import {
+  readConnectorInstanceIdPage,
+  readEvidenceIdPage,
+  readPostgresConnectorManifests,
+  readSqliteConnectorManifests,
+  runBoundedConnectorReconciliation,
+  runScopedConnectorReconciliation,
+} from "./connector-summary-evidence-bounded-reconciliation.ts";
 import { getDb } from "./db.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "./postgres-storage.ts";
 import {
@@ -585,18 +593,7 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
       ];
   const evidenceByInstance = new Map(evidenceRows.map((row) => [String(row.connector_instance_id), row]));
   const connectorIds = [...new Set(instanceRows.map((row) => String(row.connector_id)))];
-  let connectorRows: Row[];
-  if (!scoped) {
-    connectorRows = [...iterateDynamicSqlAcknowledged<Row>("SELECT connector_id, manifest FROM connectors")];
-  } else if (connectorIds.length === 0) {
-    connectorRows = [];
-  } else {
-    connectorRows = db
-      .prepare(
-        `SELECT connector_id, manifest FROM connectors WHERE connector_id IN (${sqlitePlaceholders(connectorIds)})`
-      )
-      .all(...connectorIds) as Row[];
-  }
+  const connectorRows = readSqliteConnectorManifests(db, connectorIds, sqlitePlaceholders(connectorIds));
   const manifestByConnector = new Map(connectorRows.map((row) => [String(row.connector_id), String(row.manifest)]));
   const retainedByteRows: Row[] = scoped
     ? db
@@ -749,19 +746,7 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
     (evidenceResult.rows as Row[]).map((row) => [String(row.connector_instance_id), row])
   );
   const connectorIds = [...new Set((instanceResult.rows as Row[]).map((row) => String(row.connector_id)))];
-  let connectorRows: Row[];
-  if (!scoped) {
-    const connectorResult = await postgresQuery("SELECT connector_id, manifest::text AS manifest FROM connectors");
-    connectorRows = connectorResult.rows as Row[];
-  } else if (connectorIds.length === 0) {
-    connectorRows = [];
-  } else {
-    const connectorResult = await postgresQuery(
-      "SELECT connector_id, manifest::text AS manifest FROM connectors WHERE connector_id = ANY($1::text[])",
-      [connectorIds]
-    );
-    connectorRows = connectorResult.rows as Row[];
-  }
+  const connectorRows = await readPostgresConnectorManifests(connectorIds);
   const manifestByConnector = new Map(connectorRows.map((row) => [String(row.connector_id), String(row.manifest)]));
   const retainedByteResult = scoped
     ? await postgresQuery("SELECT * FROM retained_size_connection WHERE connector_instance_id = ANY($1::text[])", [
@@ -2094,8 +2079,7 @@ function pruneReconciledEvidence(
  * "merely not yet discovered" — a partial discovery pass could not safely
  * prune at all without risking deleting a live connection's evidence.
  */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The unscoped coordinator owns page traversal, candidate budgeting, repair fencing, and complete cleanup as one ordered state machine.
-export async function reconcileConnectorSummaryEvidence(
+export function reconcileConnectorSummaryEvidence(
   connectorInstanceIds: readonly string[] | null = null,
   options: {
     readonly candidateReasons?: readonly RepairCandidateReason[];
@@ -2105,141 +2089,37 @@ export async function reconcileConnectorSummaryEvidence(
   } = {}
 ): Promise<ReconcileResult> {
   if (connectorInstanceIds === null) {
-    let afterId: string | null = null;
-    const candidateReasonCounts = {} as Record<RepairCandidateReason, number>;
-    let candidatesInspected = 0;
-    let discovered = 0;
-    let candidateRepairs = 0;
-    let failed = 0;
-    let skipped = 0;
-    let candidateBudgetUsed = 0;
-    const failedRows = new Map<string, Row>();
     const deadline = resolveReconcileDeadline(options);
-
-    for (;;) {
-      if (deadline !== null && Date.now() >= deadline) {
-        break;
-      }
-      // biome-ignore lint/performance/noAwaitInLoops: Pages are intentionally sequential so the keyset cursor and repair order remain stable.
-      const pageIds = await readInstanceIdPage(afterId, RECONCILE_PAGE_SIZE);
-      if (pageIds.length === 0) {
-        break;
-      }
-      const { instanceRows, candidates } = await discoverCandidates(pageIds);
-      const allowedReasons = options.candidateReasons === undefined ? null : new Set(options.candidateReasons);
-      const candidateEntries = [...candidates].filter(
-        ([, reason]) => allowedReasons === null || allowedReasons.has(reason)
-      );
-      for (const [, reason] of candidateEntries) {
-        candidateReasonCounts[reason] = (candidateReasonCounts[reason] ?? 0) + 1;
-      }
-      candidatesInspected += instanceRows.length;
-      discovered += instanceRows.length;
-
-      const remainingBudget =
-        typeof options.maxCandidates === "number" && options.maxCandidates >= 0
-          ? Math.max(0, options.maxCandidates - candidateBudgetUsed)
-          : undefined;
-      const selectedCandidates =
-        remainingBudget === undefined ? candidateEntries : candidateEntries.slice(0, remainingBudget);
-      let processedCandidates = 0;
-      for (const [connectorInstanceId] of selectedCandidates) {
-        if (deadline !== null && Date.now() >= deadline) {
-          break;
-        }
-        // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-        const result = await repairCandidate(connectorInstanceId);
-        processedCandidates += 1;
-        candidateBudgetUsed += 1;
-        if (result.deferred) {
-          continue;
-        }
-        candidateRepairs += 1;
-        if (result.failed) {
-          failed += 1;
-          if (!result.persisted) {
-            failedRows.set(connectorInstanceId, result.row);
-          }
-        }
-      }
-      skipped += candidateEntries.length - processedCandidates;
-      const dropped = await pruneReconciledEvidence(pageIds, instanceRows, deadline);
-      candidateRepairs += dropped;
-
-      afterId = pageIds.at(-1) ?? afterId;
-      if (pageIds.length < RECONCILE_PAGE_SIZE) {
-        break;
-      }
-    }
-
-    const dropped =
-      deadline !== null && Date.now() >= deadline ? 0 : await pruneOrphanedEvidenceCompleteByKeyset(deadline);
-    return {
-      candidateReasonCounts,
-      candidatesInspected,
-      discovered,
-      failed,
-      failedRows,
-      repaired: candidateRepairs + dropped,
-      skipped,
-    };
+    return runBoundedConnectorReconciliation<Row, RepairCandidateReason, Row>({
+      candidateReasons: options.candidateReasons,
+      deadline,
+      discover: discoverCandidates,
+      maxCandidates:
+        typeof options.maxCandidates === "number" && options.maxCandidates >= 0 ? options.maxCandidates : undefined,
+      pageSize: RECONCILE_PAGE_SIZE,
+      prune: pruneReconciledEvidence,
+      pruneComplete: pruneOrphanedEvidenceCompleteByKeyset,
+      readPage: readConnectorInstanceIdPage,
+      repair: repairCandidate,
+    });
   }
 
-  const { instanceRows, candidates } = await discoverCandidates(connectorInstanceIds);
-
-  const allowedReasons = options.candidateReasons === undefined ? null : new Set(options.candidateReasons);
-  const candidateEntries = [...candidates].filter(
-    ([, reason]) => allowedReasons === null || allowedReasons.has(reason)
-  );
-  const candidateReasonCounts = {} as Record<RepairCandidateReason, number>;
-  for (const [, reason] of candidateEntries) {
-    candidateReasonCounts[reason] = (candidateReasonCounts[reason] ?? 0) + 1;
-  }
-  const countBounded = typeof options.maxCandidates === "number" && options.maxCandidates >= 0;
-  const countLimited = countBounded ? candidateEntries.slice(0, options.maxCandidates) : candidateEntries;
   // A maintenance caller passes its one absolute deadline through every
   // phase. Standalone callers retain the existing relative-duration API.
   const deadline = resolveReconcileDeadline(options);
-
-  let repaired = 0;
-  let failed = 0;
-  const failedRows = new Map<string, Row>();
-  for (const [connectorInstanceId] of countLimited) {
-    if (deadline !== null && Date.now() >= deadline) {
-      // Time budget exhausted between candidates — never mid-repair. The
-      // remaining candidates (both count-limited-away and time-cut-off) are
-      // reported via `skipped` below, deferred to the next observation.
-      break;
-    }
-    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-    const result = await repairCandidate(connectorInstanceId);
-    if (result.deferred) {
-      continue;
-    }
-    repaired += 1;
-    if (result.failed) {
-      failed += 1;
-      if (!result.persisted) {
-        failedRows.set(connectorInstanceId, result.row);
-      }
-    }
-  }
-  const skipped = candidateEntries.length - repaired;
-
   // A deadline-expired maintenance round defers even the fixed-cost prune:
   // it must not begin another SQL work unit after its owner deadline. An
   // unbounded or still-live call retains the original complete cleanup.
-  const dropped = await pruneReconciledEvidence(connectorInstanceIds, instanceRows, deadline);
-
-  return {
-    candidateReasonCounts,
-    candidatesInspected: instanceRows.length,
-    discovered: instanceRows.length,
-    failed,
-    failedRows,
-    repaired: repaired + dropped,
-    skipped,
-  };
+  return runScopedConnectorReconciliation<Row, RepairCandidateReason, Row>({
+    candidateReasons: options.candidateReasons,
+    connectorInstanceIds,
+    deadline,
+    discover: discoverCandidates,
+    maxCandidates:
+      typeof options.maxCandidates === "number" && options.maxCandidates >= 0 ? options.maxCandidates : undefined,
+    prune: pruneReconciledEvidence,
+    repair: repairCandidate,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2256,64 +2136,6 @@ export async function reconcileConnectorSummaryEvidence(
  * (via `connector-summary-read-model.ts`'s `runBoundedSummaryEvidenceSweep`,
  * which also needs the fold phase this engine module does not itself run).
  */
-export async function readInstanceIdPage(afterId: string | null, limit: number): Promise<readonly string[]> {
-  if (isPostgresStorageBackend()) {
-    const result = afterId
-      ? await postgresQuery(
-          "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id > $1 ORDER BY connector_instance_id ASC LIMIT $2",
-          [afterId, limit]
-        )
-      : await postgresQuery(
-          "SELECT connector_instance_id FROM connector_instances ORDER BY connector_instance_id ASC LIMIT $1",
-          [limit]
-        );
-    return (result.rows as Row[]).map((row) => String(row.connector_instance_id));
-  }
-  const db: Db = getDb();
-  const rows = (
-    afterId
-      ? db
-          .prepare(
-            "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id > ? ORDER BY connector_instance_id ASC LIMIT ?"
-          )
-          .all(afterId, limit)
-      : db
-          .prepare("SELECT connector_instance_id FROM connector_instances ORDER BY connector_instance_id ASC LIMIT ?")
-          .all(limit)
-  ) as Row[];
-  return rows.map((row) => String(row.connector_instance_id));
-}
-
-async function readEvidenceIdPage(afterId: string | null, limit: number): Promise<readonly string[]> {
-  if (isPostgresStorageBackend()) {
-    const result = afterId
-      ? await postgresQuery(
-          "SELECT connector_instance_id FROM connector_summary_evidence WHERE connector_instance_id > $1 ORDER BY connector_instance_id ASC LIMIT $2",
-          [afterId, limit]
-        )
-      : await postgresQuery(
-          "SELECT connector_instance_id FROM connector_summary_evidence ORDER BY connector_instance_id ASC LIMIT $1",
-          [limit]
-        );
-    return (result.rows as Row[]).map((row) => String(row.connector_instance_id));
-  }
-  const db: Db = getDb();
-  const rows = (
-    afterId
-      ? db
-          .prepare(
-            "SELECT connector_instance_id FROM connector_summary_evidence WHERE connector_instance_id > ? ORDER BY connector_instance_id ASC LIMIT ?"
-          )
-          .all(afterId, limit)
-      : db
-          .prepare(
-            "SELECT connector_instance_id FROM connector_summary_evidence ORDER BY connector_instance_id ASC LIMIT ?"
-          )
-          .all(limit)
-  ) as Row[];
-  return rows.map((row) => String(row.connector_instance_id));
-}
-
 async function pruneOrphanedEvidenceCompleteByKeyset(deadline: number | null): Promise<number> {
   let afterId: string | null = null;
   let dropped = 0;

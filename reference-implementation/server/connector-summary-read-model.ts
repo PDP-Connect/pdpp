@@ -36,10 +36,10 @@
 
 import { iterateDynamicSqlAcknowledged } from "../lib/db.ts";
 import type { EphemeralBrowserRuntimeProjection } from "../runtime/browser-surface/ephemeral-health-projection.ts";
+import { readConnectorInstanceIdPage as readInstanceIdPage } from "./connector-summary-evidence-bounded-reconciliation.ts";
 import type { RepairCandidateReason } from "./connector-summary-evidence-engine.ts";
 import {
   pruneOrphanedEvidenceComplete,
-  readInstanceIdPage,
   reconcileConnectorSummaryEvidence,
 } from "./connector-summary-evidence-engine.ts";
 import type { ConnectorSummaryReconcileObservation } from "./connector-summary-reconcile-observability.ts";
