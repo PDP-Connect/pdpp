@@ -1045,7 +1045,7 @@ function reauthActionPresentation({
     case "stored_credential":
       return {
         href: storedCredentialUpdateHref ?? fallbackHref,
-        label: action.cta,
+        label: "Update credential",
         title: "Replace the stored credential for this connection. Records, history, and schedule are preserved.",
       };
     case "browser_session":

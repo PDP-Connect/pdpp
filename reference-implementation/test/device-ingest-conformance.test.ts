@@ -29,8 +29,8 @@ import {
   setClientEventEnqueueHook,
 } from "../server/records.ts";
 import { __setDeviceIngestPhaseFaultHookForTest } from "../server/routes/ref-device-exporters.ts";
-import { __setLexicalBackfillPhaseHookForTest, lexicalIndexBackfillForManifest } from "../server/search.ts";
-import { configureSemanticBackend, semanticIndexBackfillForManifest } from "../server/search-semantic.ts";
+import { __setLexicalBackfillPhaseHookForTest } from "../server/search.ts";
+import { configureSemanticBackend } from "../server/search-semantic.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
@@ -2450,6 +2450,10 @@ interface WriterCollisionCase {
 }
 
 async function runWriterCollisionOracle(driver: Driver): Promise<void> {
+  // Lexical and semantic manifest backfills intentionally do not hold the
+  // connector-instance admission fence across their scans. Their bounded
+  // per-page write coordination is covered by the dedicated backfill tests;
+  // this matrix covers writers that participate in admission ordering.
   const writers: WriterCollisionCase[] = [
     {
       apply: async (target) => await ingestRecord(target, directRecord("collision", "direct final")),
@@ -2462,16 +2466,6 @@ async function runWriterCollisionOracle(driver: Driver): Promise<void> {
     {
       apply: async (target) => await deleteAllRecords(target, "messages"),
       name: "stream-delete",
-    },
-    {
-      apply: async (_target, manifest) =>
-        await Reflect.apply(lexicalIndexBackfillForManifest, undefined, [{ manifest }]),
-      name: "lexical-backfill",
-    },
-    {
-      apply: async (_target, manifest) =>
-        await Reflect.apply(semanticIndexBackfillForManifest, undefined, [{ manifest }]),
-      name: "semantic-backfill",
     },
   ];
 
