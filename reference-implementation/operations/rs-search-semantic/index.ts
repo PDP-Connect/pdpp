@@ -248,6 +248,7 @@ export interface SearchSemanticOwnerBinding {
  * downstream plan compiler scopes vector queries to that binding.
  */
 export interface SearchSemanticClientBinding {
+  connectorId?: string | null;
   connectorInstanceId: string;
   displayName?: string | null;
   manifest: SearchSemanticManifest;
@@ -952,8 +953,17 @@ export async function executeSearchSemantic(
         { connectionId: requestConnectionId }
       );
       for (const cb of clientBindings) {
+        const bindingManifest = cb.manifest as SearchSemanticManifest & {
+          connector_id?: string | null;
+          storage_binding?: { connector_id?: string | null } | null;
+        };
+        const bindingConnectorId =
+          cb.connectorId ??
+          bindingManifest.storage_binding?.connector_id ??
+          bindingManifest.connector_id ??
+          connectorId;
         const planEntries = dependencies.buildSearchPlanForGrant({
-          connectorId,
+          connectorId: bindingConnectorId,
           filter: params.filter,
           filteredStream: params.filteredStream,
           grant,
@@ -968,7 +978,7 @@ export async function executeSearchSemantic(
           continue;
         }
         perConnectorPlans.push({
-          connectorId,
+          connectorId: bindingConnectorId,
           grant,
           manifest: cb.manifest,
           planEntries,

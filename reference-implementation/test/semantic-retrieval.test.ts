@@ -49,6 +49,8 @@ import { fileURLToPath } from "node:url";
 import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { isPostgresStorageBackend, postgresQuery } from "../server/postgres-storage.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import {
   buildPostgresSemanticPlanRequests,
   DEFAULT_SEMANTIC_EMBEDDING_INPUT_MAX_CHARS,
@@ -59,7 +61,6 @@ import {
   resolveSemanticPerConnectorLimit,
   semanticIndexDelete,
 } from "../server/search-semantic.ts";
-import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 // ─── harness ────────────────────────────────────────────────────────────────
 
@@ -202,6 +203,7 @@ const MANIFEST_A = {
         properties: {
           body: { type: "string" },
           id: { type: "string" },
+          marker: { type: "string" },
           post_title: { type: "string" },
           source_created_at: { format: "date-time", type: "string" },
         },
@@ -352,7 +354,7 @@ async function approveClientGrant(asUrl: string, params: ClientGrantParams): Pro
 
 async function materializeSemanticConnection(connectorId: string, connectorInstanceId: string): Promise<void> {
   const now = "2026-01-01T00:00:00.000Z";
-  await createSqliteConnectorInstanceStore().upsert({
+  await createRequestConnectorInstanceStore().upsert({
     connectorId,
     connectorInstanceId,
     createdAt: now,
@@ -364,6 +366,56 @@ async function materializeSemanticConnection(connectorId: string, connectorInsta
     status: "active",
     updatedAt: now,
   });
+}
+
+async function listSemanticVectorRows(connectorId: string, recordKeys: readonly string[]) {
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `
+      SELECT connector_instance_id, connector_id, scope_key, record_key
+      FROM semantic_search_blob
+      WHERE connector_id = $1 AND record_key = ANY($2::text[])
+      ORDER BY connector_instance_id
+    `,
+      [connectorId, recordKeys]
+    );
+    return result.rows;
+  }
+
+  const db = getDb();
+  const vectorTable = db.vectorIndexKind === "sqlite-vec" ? "semantic_search_rowid" : "semantic_search_blob";
+  return db
+    .prepare(`
+      SELECT connector_instance_id, connector_id, scope_key, record_key
+      FROM ${vectorTable}
+      WHERE connector_id = ? AND record_key IN (?, ?)
+      ORDER BY connector_instance_id
+    `)
+    .all(connectorId, ...recordKeys);
+}
+
+async function listSemanticMetaRows(connectorId: string) {
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `
+      SELECT connector_instance_id
+      FROM semantic_search_meta
+      WHERE connector_id = $1 AND stream = 'posts'
+      ORDER BY connector_instance_id
+    `,
+      [connectorId]
+    );
+    return result.rows;
+  }
+
+  return getDb()
+    .prepare(`
+      SELECT connector_instance_id
+      FROM semantic_search_meta
+      WHERE connector_id = ? AND stream = 'posts'
+      ORDER BY connector_instance_id
+    `)
+    .all(connectorId);
 }
 
 interface SemanticRecordInput {
@@ -948,22 +1000,29 @@ test("client grant authorizing only one of two declared semantic_fields restrict
   });
 });
 
-// ─── 14.14 — zero intersection stream contributes zero hits ─────────────────
+// 14.14 - retained instance authority with current full-stream fields
 
-test("stream declared in semantic_fields but with empty grant∩declared intersection contributes zero hits", async () => {
+test("client grant without a retained field subset searches declared semantic_fields", async () => {
   await withHarness({}, async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
     const connectorA = MANIFEST_A.connector_id;
-    // Comments declares semantic_fields: ['body']. Grant authorizes only `id`
-    // — no overlap with declared semantic_fields. Should contribute zero hits
-    // AND return no per-stream error.
+    // Comments declares semantic_fields: ['body']. This approval path retains
+    // instance authority but no field subset, so semantic search follows the
+    // current full-stream grant behavior.
     await materializeSemanticConnection(connectorA, SEMANTIC_A_TEST_INSTANCE_ID);
     await ingest(
       rsUrl,
       ownerToken,
       connectorA,
       "comments",
-      [{ body: "something about overdrafts", id: "c1", source_created_at: "2026-04-01T00:00:00Z" }],
+      [
+        {
+          body: "something about overdrafts",
+          id: "c1",
+          marker: "not semantic",
+          source_created_at: "2026-04-01T00:00:00Z",
+        },
+      ],
       SEMANTIC_A_TEST_INSTANCE_ID
     );
     const approved = await approveClientGrant(asUrl, {
@@ -972,7 +1031,13 @@ test("stream declared in semantic_fields but with empty grant∩declared interse
       connector_id: connectorA,
       purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "zero-intersection test",
-      streams: [{ fields: ["id"], instance_ids: [SEMANTIC_A_TEST_INSTANCE_ID], name: "comments" }], // id not in declared semantic_fields
+      streams: [
+        {
+          fields: ["marker"],
+          instance_ids: [SEMANTIC_A_TEST_INSTANCE_ID],
+          name: "comments",
+        },
+      ],
     });
     const { status, body } = await fetchJson(`${rsUrl}/v1/search/semantic?q=overdrafts&streams=comments`, {
       headers: { Authorization: `Bearer ${String(approved.token)}` },
@@ -980,7 +1045,9 @@ test("stream declared in semantic_fields but with empty grant∩declared interse
     assert.equal(status, 200);
     const bodyRecord = asRecord(body);
     assert.equal(bodyRecord.object, "list");
-    assert.deepEqual(bodyRecord.data, []);
+    const hits = asArray(bodyRecord.data);
+    assert.equal(hits.length, 1);
+    assert.equal(asRecord(hits[0]).record_key, "c1");
   });
 });
 
@@ -1536,11 +1603,10 @@ test("semantic upsert with an empty field deletes only that record, not the whol
   });
 });
 
-test("semantic index metadata isolates instances", async () => {
+test("semantic index metadata isolates instances and client search fans in across granted active bindings", async () => {
   await withHarness({}, async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
 
-    const db = getDb();
     await materializeSemanticConnection(MANIFEST_A.connector_id, "cin_semantic_work");
     await materializeSemanticConnection(MANIFEST_A.connector_id, "cin_semantic_personal");
 
@@ -1568,34 +1634,47 @@ test("semantic index metadata isolates instances", async () => {
       "cin_semantic_personal"
     );
 
-    const vectorTable = db.vectorIndexKind === "sqlite-vec" ? "semantic_search_rowid" : "semantic_search_blob";
-    const indexed = db
-      .prepare(`
-      SELECT connector_instance_id, connector_id, scope_key, record_key
-      FROM ${vectorTable}
-      WHERE connector_id = ? AND record_key IN (?, ?)
-      ORDER BY connector_instance_id
-    `)
-      .all(MANIFEST_A.connector_id, "personal-record-key", "work-record-key");
+    const indexed = await listSemanticVectorRows(MANIFEST_A.connector_id, ["personal-record-key", "work-record-key"]);
     assert.deepEqual(
       indexed.map((row: Record<string, unknown>) => row.connector_instance_id),
       ["cin_semantic_personal", "cin_semantic_work"],
       "semantic vector identity includes connector_instance_id"
     );
 
-    const metaRows = db
-      .prepare(`
-      SELECT connector_instance_id
-      FROM semantic_search_meta
-      WHERE connector_id = ? AND stream = 'posts'
-      ORDER BY connector_instance_id
-    `)
-      .all(MANIFEST_A.connector_id);
+    const metaRows = await listSemanticMetaRows(MANIFEST_A.connector_id);
     assert.deepEqual(
       metaRows.map((row: Record<string, unknown>) => row.connector_instance_id),
       ["cin_semantic_personal", "cin_semantic_work"],
       "semantic metadata is per connector instance"
     );
+
+    const approved = await approveClientGrant(asUrl, {
+      access_mode: "continuous",
+      client_id: "longview",
+      connector_id: MANIFEST_A.connector_id,
+      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_description: "semantic instance fan-in test",
+      streams: [
+        {
+          fields: ["id", "title", "source_created_at"],
+          instance_ids: ["cin_semantic_personal", "cin_semantic_work"],
+          name: "posts",
+        },
+      ],
+    });
+    assert.ok(approved.token, `expected issued grant token, got ${JSON.stringify(approved)}`);
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/search/semantic?q=${encodeURIComponent(baseRecord.title)}&streams=posts`,
+      { headers: { Authorization: `Bearer ${String(approved.token)}` } }
+    );
+
+    assert.equal(status, 200);
+    const hits = asArray(asRecord(body).data);
+    assert.equal(hits.length, 2, "fan-in returns one hit per granted active binding");
+    const cids = hits.map((h) => asRecord(h).connection_id).sort(compareStrings);
+    assert.deepEqual(cids, ["cin_semantic_personal", "cin_semantic_work"]);
+    const keys = hits.map((h) => asRecord(h).record_key).sort(compareStrings);
+    assert.deepEqual(keys, ["personal-record-key", "work-record-key"]);
   });
 });
 

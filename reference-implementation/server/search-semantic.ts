@@ -3424,7 +3424,6 @@ export async function runSemanticSearch({
       const typedGrant = grant as SemanticGrant;
       const connectorInstanceId: string | null =
         (typedManifest.storage_binding as { connector_instance_id?: string } | undefined)?.connector_instance_id ||
-        (typedManifest.connector_id as string | undefined) ||
         null;
       const compiledFilter = compileSingleStreamSearchFilter({
         filter,
