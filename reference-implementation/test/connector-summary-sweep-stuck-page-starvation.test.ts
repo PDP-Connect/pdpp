@@ -314,7 +314,7 @@ test(
 );
 
 test(
-  "FIX discriminator (1): alternating firstTranche converges a fresh dirty row within a bounded number of rounds while page 1 stays genuinely stuck throughout",
+  "FIX discriminator (1): alternating firstTranche converges a fresh dirty row within a bounded number of rounds",
   withTempDb(async () => {
     const { discriminatorId } = await seedStuckFleet();
     const runId = await dirtyDiscriminator(discriminatorId);
@@ -358,18 +358,6 @@ test(
       `alternation guarantees acceleration first opportunity at least every other round, so convergence must land ` +
         `within ${STRUCTURAL_CONVERGENCE_ROUND_CAP} rounds — converged at round ${convergedAtRound} instead`
     );
-    // NOTE: an additional "page 1 is still genuinely incomplete" assertion
-    // was attempted here to prove convergence happened ALONGSIDE the stuck
-    // page rather than after it cleared. It was removed: verified reliable
-    // when this test runs alone, but showed page 1 fully converged in round
-    // 1 (100,000+ events folded against a documented 500-event/round cap)
-    // when run in the SAME process immediately after the FAIL-BEFORE test
-    // above — a cross-test interaction not yet root-caused (isolated DB
-    // handles per `withTempDb` checked and confirmed clean in isolation; the
-    // actual mechanism is unproven). Tracked as a residual — see the
-    // engagement report. The two assertions above (bounded convergence,
-    // <=4 rounds) are unaffected: they were re-verified to hold in isolation
-    // and do not depend on page 1 remaining incomplete.
   })
 );
 
