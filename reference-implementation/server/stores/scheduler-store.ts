@@ -386,27 +386,33 @@ function legacySchedulerDefaultInstanceId(connectorId: string): string {
   return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
+function parseLegacyMarkerPayload(error: string | null, prefix: string): unknown | null {
+  if (typeof error !== "string" || !error.startsWith(prefix)) {
+    return null;
+  }
+  try {
+    return JSON.parse(error.slice(prefix.length).trim());
+  } catch {
+    // A namespaced marker with a malformed/non-JSON suffix is not marker evidence.
+    return null;
+  }
+}
+
+function hasLegacyMarkerReason(payload: unknown, reasonClass: string): boolean {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    return false;
+  }
+  return (payload as { reason_class?: unknown }).reason_class === reasonClass;
+}
+
 function hasLegacyMarkerPayload(
   rows: Iterable<{ readonly error: string | null }>,
   prefix: string,
   reasonClass: string
 ): boolean {
   for (const row of rows) {
-    if (typeof row.error !== "string" || !row.error.startsWith(prefix)) {
-      continue;
-    }
-    try {
-      const payload: unknown = JSON.parse(row.error.slice(prefix.length).trim());
-      if (
-        payload !== null &&
-        typeof payload === "object" &&
-        !Array.isArray(payload) &&
-        (payload as { reason_class?: unknown }).reason_class === reasonClass
-      ) {
-        return true;
-      }
-    } catch {
-      // A namespaced marker with a malformed/non-JSON suffix is not marker evidence.
+    if (hasLegacyMarkerReason(parseLegacyMarkerPayload(row.error, prefix), reasonClass)) {
+      return true;
     }
   }
   return false;

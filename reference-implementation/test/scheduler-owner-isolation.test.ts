@@ -403,7 +403,7 @@ async function assertLegacyMarkerProbe(store: SchedulerStore): Promise<void> {
     // biome-ignore lint/performance/noAwaitInLoops: the ordered 501-row prefix proves the uncapped durable scan.
     await store.appendRunHistory(
       legacyMarkerRecord({
-        completedAt: `2026-08-11T12:00:${String(index % 60).padStart(2, "0")}.000Z`,
+        completedAt: "2026-08-11T12:00:00.000Z",
         error: `${MARKER_PREFIX} malformed-${index}`,
       })
     );
@@ -426,9 +426,9 @@ async function assertLegacyMarkerProbe(store: SchedulerStore): Promise<void> {
   );
 
   assert.equal(
-    await probe(CONNECTOR_ID, MARKER_DEFAULT_INSTANCE, MARKER_PREFIX, MARKER_REASON, "2026-08-11T12:00:09.000Z"),
+    await probe(CONNECTOR_ID, MARKER_DEFAULT_INSTANCE, MARKER_PREFIX, MARKER_REASON, null),
     true,
-    "backfilled default-instance marker payload must be recognized"
+    "an uncapped marker scan must find a valid payload after 501 matching malformed rows"
   );
   assert.equal(
     await probe(CONNECTOR_ID, MARKER_DEFAULT_INSTANCE, MARKER_PREFIX, "payload-only", null),
