@@ -268,11 +268,15 @@ instances are authorized only when that approved stream explicitly lists them.
 The final approval artifact includes the exact resolved instance IDs and all
 decision fields. The approval mutation binds to an immutable review revision
 or digest over source, streams, fields, resources, temporal field and bounds,
-purpose, retention, client identity, and expiry. If instance eligibility or
-the reviewed revision is stale at approval time, the AS rejects approval and
-requires a new review. The AS freezes fields, time field and bounds, resources,
-stream names, source ID, per-stream instance sets, subject, and client. No
-omitted member in an issued grant means future declaration expansion.
+purpose, retention, client identity, and expiry. The same final review
+revision or retained consent evidence binds any rendered `client_claims` as
+client-authored consent context, but those claims are not grant rights and are
+outside authorization equality, the resolved grant, introspection rights, and
+RS enforcement input. If instance eligibility or the reviewed revision is stale
+at approval time, the AS rejects approval and requires a new review. The AS
+freezes fields, time field and bounds, resources, stream names, source ID,
+per-stream instance sets, subject, and client. No omitted member in an issued
+grant means future declaration expansion.
 
 Query expansion is not an authorization constraint in this change. A
 relationship or expansion capability remains current query metadata. An
@@ -295,6 +299,12 @@ metadata to reinterpret canonical resource keys, widen a field set, change a
 time field, resolve a preset or view, or turn absent instance IDs into fan-in.
 The retained snapshot is evidence and audit material, not a current
 declaration lookup.
+
+For client-token records reads, `view` is a consent-time convenience rather
+than a query-time authority. A client supplies explicit `fields` or relies on
+the grant projection; the RS rejects `view` rather than resolving it from
+current metadata. Owner-token reads may resolve a current view because they are
+current-capability reads, not client grant interpretation.
 
 There are two metadata modes:
 

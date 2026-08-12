@@ -687,6 +687,8 @@ The optional `client_claims` object within each `authorization_details` entry ca
 
 **Trust boundary:** Client claims are self-asserted and unverifiable by the server. The AS MUST render `client_claims` content separately from protocol-enforced grant terms and MUST attribute it to the client (e.g., "[client name] says:"). The AS MUST NOT render client claims in the same visual register as protocol-enforced grant terms, structured policy declarations, or declaration-authored data descriptions.
 
+If rendered on the final owner review surface, `client_claims` MUST be bound into the immutable review revision or retained consent evidence with client attribution. They are material consent context, not grant rights. They remain outside authorization equality, the resolved grant, introspection rights, and RS enforcement.
+
 **Relationship to `purpose_description`:** `purpose_description` is a first-class request field describing what the authorization is for. It is part of the authorization semantics the user reviews. `client_claims.commitments` are supplementary promises that are not reducible to structured protocol fields. Both are client-authored, but `purpose_description` is the primary purpose statement while `commitments` are additional assurances.
 
 **Commitments that ARE machine-readable:** Structured grant fields (e.g., `retention.max_duration`, `access_mode`) SHOULD be rendered by the AS as server-generated display text (e.g., "Deleted within 90 days", "Ongoing access until you revoke it"). Clients SHOULD NOT duplicate machine-readable constraints as free-text commitments. If a commitment duplicates a structured field, the structured field is authoritative.
@@ -860,10 +862,14 @@ Before the final approval surface is shown, the AS MUST resolve omitted
 `instance_ids` to exact eligible instance handles or require an explicit owner
 choice. The final approval artifact MUST include the exact resolved
 `instance_ids`, stream names, fields, resources, temporal field, `since`,
-`until`, purpose, retention, client identity, and grant expiry. The approval
-mutation MUST bind to an immutable review revision or digest over those
-fields. If instance eligibility or the reviewed revision becomes stale before
-approval, the AS MUST reject approval and require a new review.
+`until`, purpose, retention, client identity, and grant expiry. If
+`client_claims` are rendered during final review, the final approval artifact
+or retained consent evidence MUST also bind those exact attributed claims. The
+approval mutation MUST bind to an immutable review revision or digest over the
+authorization decision fields. `client_claims` MUST remain outside the
+resolved grant and RS enforcement. If instance eligibility or the reviewed
+revision becomes stale before approval, the AS MUST reject approval and require
+a new review.
 
 ### Time concepts
 
@@ -1191,13 +1197,13 @@ Returns records from a stream, filtered by the grant and any additional request 
 | `filter[{field}][gt]` | string | Greater than. Valid only for fields declared in `query.range_filters`. |
 | `filter[{field}][lte]` | string | Less than or equal. Valid only for fields declared in `query.range_filters`. |
 | `filter[{field}][lt]` | string | Less than. Valid only for fields declared in `query.range_filters`. |
-| `view` | string | Request records projected to a named view. Mutually exclusive with `fields`. |
+| `view` | string | Owner-token current-capability request for records projected to a named view. Client-token records requests MUST reject `view`; clients use explicit `fields` or the field projection already frozen into the grant. Mutually exclusive with `fields`. |
 | `fields` | comma-separated | Sparse fieldset. Schema-required fields are always included. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
 | `expand[]` | string | Expand a relation declared under `query.expand`. Depth is 1. Expanded relations appear under the `expanded` key on the parent record. |
 | `expand_limit[{relation}]` | integer | Max records per expanded `has_many` relation. Valid only for relations declared under `query.expand`; defaults and limits come from that declaration. |
 | `changes_since` | string | Opaque incremental-sync token from a previous session (distinct token space from `cursor`). Returns only records whose grant-authorized projection changed since that cursor, plus tombstones for deletions. Use `next_changes_since` from the terminal page to seed the next session. Returns HTTP 410 Gone with error code `cursor_expired` if the cursor has expired. |
 
-The durable base query surface in v0.1 is: `limit`, `cursor`, `order`, exact top-level scalar `filter[{field}]`, `fields`, `view`, `changes_since`, and blob fetch. Advanced stream-specific query power MUST be declared in stream metadata under `query`.
+The durable client-token base query surface in v0.1 is: `limit`, `cursor`, `order`, exact top-level scalar `filter[{field}]`, `fields`, `changes_since`, and blob fetch. Owner-token current-capability reads MAY also support `view`. Advanced stream-specific query power MUST be declared in stream metadata under `query`.
 
 Unknown query parameters and unsupported query shapes MUST be rejected with HTTP 400 and MUST NOT be silently ignored.
 
@@ -1368,13 +1374,13 @@ A conformant authorization server:
 4. Expands wildcards and selection presets into explicit stream names, fields, per-stream instance handles, resources, and frozen time constraints before issuing the grant.
 5. Produces a binding-neutral Source validation failure when a request contains both or neither of `streams` and `selection_preset`. The OAuth/RAR binding maps it to RFC 9396 `invalid_authorization_details`.
 6. MUST NOT reject a `purpose_code` solely because it is not in the PDPP registry. For unrecognized codes, displays `purpose_description` if present, or the raw URI. MAY reject a `purpose_code` based on local policy.
-7. Renders requester identity metadata, declaration-authored data descriptions, structured policy declarations, and client-authored claims as semantically distinct categories during consent. MUST attribute `client_claims` to the client and MUST NOT present them as protocol-enforced terms.
+7. Renders requester identity metadata, declaration-authored data descriptions, structured policy declarations, and client-authored claims as semantically distinct categories during consent. MUST attribute `client_claims` to the client and MUST NOT present them as protocol-enforced terms. If `client_claims` are rendered during final review, binds the exact rendered claims into the immutable review revision or retained consent evidence without adding them to the resolved grant or RS enforcement.
 8. Tracks grant lifecycle (active, expired, revoked). Reflects revocation immediately in introspection responses (`active: false`).
 9. Issues access tokens bound to specific grants. Access tokens include the PDPP introspection extension fields.
 10. For `single_use` grants, consumes the grant atomically with first client-token issuance and rejects subsequent attempts to issue new client access tokens against that grant.
 11. Validates stream/field/view/resource-id shape at grant issuance.
 12. MUST NOT define a view including fields absent from the retained SourceDeclaration schema.
-13. Resolves view names to field lists at issuance time; stores resolved `fields` in the `StreamGrant`.
+13. Resolves view names to field lists at issuance time; stores resolved `fields` in the `StreamGrant`. Client-token record reads reject query-time `view` in v0.1. Owner-token current-capability reads MAY resolve current views.
 14. Obtains explicit affirmative user consent before issuing grants with `purpose_code: "https://pdpp.org/purpose/ai_training"`.
 15. Resolves omitted instance IDs before the final approval surface. Binds
     exact resolved instances and all final decision fields to an immutable

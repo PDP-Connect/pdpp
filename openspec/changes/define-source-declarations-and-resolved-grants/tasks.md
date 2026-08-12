@@ -71,6 +71,9 @@
   - Run `openspec validate define-source-declarations-and-resolved-grants
     --strict`, `git diff --check`, and stale-term sweeps for deleted live
     declaration lookups, implicit fan-in, broad renames, and excluded scope.
+  - Reviewer correction: move the client-token query-time view rule into the
+    Source Contract, and require final consent evidence to bind rendered
+    `client_claims` without adding them to grant rights.
 
 ## Acceptance checks
 
@@ -92,5 +95,9 @@
   grant.
 - RS decisions remain stable when the current declaration is absent or changed,
   subject only to lifecycle and serving-capability rejection.
+- Client-token records reads reject query-time `view`; owner-token reads may
+  resolve current views.
+- Rendered `client_claims` are bound into final review or retained consent
+  evidence, but are not part of the resolved grant or RS enforcement.
 - Pre-v0.1 authorization rows and legacy `connection_id` grant shapes do not
   authorize reads.

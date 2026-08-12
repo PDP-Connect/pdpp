@@ -146,12 +146,16 @@ The AS SHALL resolve omitted instance IDs before the final approval surface is
 shown. It SHALL bind exact resolved instances and all final decision fields to
 an immutable review revision or digest before final approval. Those decision
 fields SHALL include source, stream names, fields, resources, temporal field
-and bounds, purpose, retention, client identity, and expiry. If instance
-eligibility or the reviewed revision becomes stale before approval, the AS
-SHALL reject approval and require a new review. The AS SHALL resolve and freeze
-stream names, fields, source ID, subject, client, every approved per-stream
-instance set, temporal field and bounds, and resources from one declaration
-snapshot. Grant authorization equality SHALL use source ID, not source kind.
+and bounds, purpose, retention, client identity, and expiry. The final review
+revision or retained consent evidence SHALL also bind any `client_claims`
+rendered to the owner as attributed client-authored context. `client_claims`
+SHALL remain outside authorization equality, resolved grant rights, and RS
+enforcement. If instance eligibility or the reviewed revision becomes stale
+before approval, the AS SHALL reject approval and require a new review. The AS
+SHALL resolve and freeze stream names, fields, source ID, subject, client,
+every approved per-stream instance set, temporal field and bounds, and
+resources from one declaration snapshot. Grant authorization equality SHALL use
+source ID, not source kind.
 A request that violates this request contract SHALL produce the binding-neutral
 Source validation failure `source.authorization_details_invalid`. The binding
 SHALL own its protocol response mapping.
@@ -171,6 +175,14 @@ SHALL own its protocol response mapping.
 - **THEN** approval SHALL fail closed
 - **AND** the owner SHALL review the exact resolved decision again before a
   grant can be issued
+
+#### Scenario: Client-authored claims are retained as consent context
+
+- **WHEN** the AS renders `client_claims` on the final owner review surface
+- **THEN** the immutable review revision or retained consent evidence SHALL bind
+  those exact claims with client attribution
+- **AND** the issued grant SHALL NOT treat those claims as granted rights or RS
+  enforcement input
 
 #### Scenario: Time constraint is frozen
 
@@ -215,6 +227,12 @@ turn absent instance IDs into fan-in.
 The retained snapshot SHALL be evidence and audit material, not a current
 declaration lookup.
 
+For a client-token records request, the RS SHALL reject a query-time `view`
+parameter. A client SHALL request explicit `fields`, or rely on the field
+projection already frozen into the grant. Owner-token reads MAY resolve a
+current view because they are current-capability requests, not grant
+reinterpretation.
+
 #### Scenario: Current serving metadata changes
 
 - **WHEN** the current declaration or serving metadata changes after grant
@@ -250,6 +268,12 @@ grant.
   resolved constraint
 - **AND** it SHALL NOT replace the grant projection, resolve a current view, or
   authorize a field absent from the grant
+
+#### Scenario: Client-token reads reject query-time views
+
+- **WHEN** a client-token records request includes `view`
+- **THEN** the RS SHALL reject the request with `invalid_request`
+- **AND** the RS SHALL NOT resolve the named view from current metadata
 
 ### Requirement: Collection mechanisms are outside Core conformance
 
