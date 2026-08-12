@@ -305,7 +305,7 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 
 | stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
 | --- | --- | --- | --- | --- | --- | --- |
-| profile | full_inventory | scheduled_window | — | false | — | — |
+| profile | singleton_presence | scheduled_window | — | false | — | — |
 | owned_games | full_inventory | scheduled_window | — | false | — | — |
 | recently_played_games | full_inventory | scheduled_window | — | false | — | — |
 | friends | full_inventory | scheduled_window | — | false | — | — |
@@ -372,14 +372,14 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | budgets | full_inventory | scheduled_window | — | true | — | — |
 | accounts | full_inventory | scheduled_window | — | true | — | — |
 | account_stats | singleton_presence | scheduled_window | — | true | — | — |
-| category_groups | full_inventory | scheduled_window | — | true | — | — |
-| categories | full_inventory | scheduled_window | — | true | — | — |
-| payees | full_inventory | scheduled_window | — | true | — | — |
+| category_groups | checkpoint_window | scheduled_window | — | true | — | — |
+| categories | checkpoint_window | scheduled_window | — | true | — | — |
+| payees | checkpoint_window | scheduled_window | — | true | — | — |
 | payee_locations | full_inventory | scheduled_window | — | true | — | — |
 | transactions | checkpoint_window | scheduled_window | — | true | — | — |
 | scheduled_transactions | full_inventory | scheduled_window | — | true | — | — |
-| months | full_inventory | scheduled_window | — | true | — | — |
-| month_categories | full_inventory | scheduled_window | — | true | — | — |
+| months | checkpoint_window | scheduled_window | — | true | — | — |
+| month_categories | checkpoint_window | scheduled_window | — | true | — | — |
 
 ## reference/github
 
