@@ -76,8 +76,8 @@ test("a scope whose stream declares semantic_fields is NOT cleared when no seman
     const result = await reconcileSearchIndexDirtyScope(scope);
 
     assert.equal(
-      result.ok,
-      false,
+      result.outcome,
+      "failed",
       "reconcile must NOT report success for a scope whose semantic participation is configured but unchecked"
     );
     assert.equal(
@@ -114,7 +114,7 @@ test("the SAME scope converges once a semantic backend becomes available, using 
     const scope = scopesBefore.find((s) => s.connectorInstanceId === connectorInstanceId);
     assert.ok(scope, "scope is dirty before the first attempt");
     const attempt1 = await reconcileSearchIndexDirtyScope(scope);
-    assert.equal(attempt1.ok, false);
+    assert.equal(attempt1.outcome, "failed");
     assert.equal(
       await isSearchIndexScopeDirty({ connectorInstanceId, stream: "items" }),
       true,
@@ -135,8 +135,8 @@ test("the SAME scope converges once a semantic backend becomes available, using 
 
     const attempt2 = await reconcileSearchIndexDirtyScope(scope);
     assert.equal(
-      attempt2.ok,
-      true,
+      attempt2.outcome,
+      "converged",
       "now that a backend exists, the retained dirty flag lets reconcile actually check and converge it"
     );
     assert.equal(

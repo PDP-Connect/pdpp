@@ -36,7 +36,19 @@ export interface SearchIndexScopeKey {
 
 export interface DirtySearchIndexScope extends SearchIndexScopeKey {
   readonly connectorId: string;
+  /** Queue-ordering/diagnostics ONLY -- not a CAS token. See `revision`. */
   readonly markedAt: string;
+  /**
+   * Monotonic per-scope generation, incremented atomically by every
+   * mark-dirty write. This — NOT `markedAt` — is the CAS token
+   * `clearSearchIndexDirty` checks: two durable marks issued within the
+   * same millisecond receive an identical ISO `markedAt` string (no
+   * guaranteed sub-millisecond monotonicity across writers/backends), so a
+   * `markedAt`-only CAS can pass even though a write re-dirtied the scope
+   * after a reconcile round read it. `revision` cannot collide this way —
+   * it only ever increases by exactly 1 per mark.
+   */
+  readonly revision: number;
 }
 
 /** Call from inside the SAME SQLite `writeTransaction` as the record mutation. */
@@ -53,37 +65,45 @@ export async function markSearchIndexDirtyPostgres(
   key: SearchIndexScopeKey & { readonly connectorId: string },
   nowIso: string
 ): Promise<void> {
+  // revision increments ATOMICALLY in this same statement (fresh row: 1;
+  // existing row: current + 1) — see mark-dirty.sql's identical SQLite
+  // shape and this file's DirtySearchIndexScope doc comment for why this,
+  // not marked_at, is the reconcile clear's CAS token.
   await client.query(
-    `INSERT INTO search_index_dirty(connector_instance_id, connector_id, stream, dirty, marked_at)
-     VALUES ($1, $2, $3, 1, $4)
+    `INSERT INTO search_index_dirty(connector_instance_id, connector_id, stream, dirty, marked_at, revision)
+     VALUES ($1, $2, $3, 1, $4, 1)
      ON CONFLICT(connector_instance_id, stream) DO UPDATE SET
-       connector_id = excluded.connector_id, dirty = 1, marked_at = excluded.marked_at`,
+       connector_id = excluded.connector_id,
+       dirty = 1,
+       marked_at = excluded.marked_at,
+       revision = search_index_dirty.revision + 1`,
     [key.connectorInstanceId, key.connectorId, key.stream, nowIso]
   );
 }
 
 /**
  * Clears the flag after a reconcile proves this scope's lexical+semantic
- * index was in sync AS OF `expectedMarkedAt` (the `marked_at` value read at
- * scan-start, from the `DirtySearchIndexScope` the reconcile round is
- * processing). CAS'd on `marked_at`: a write that lands mid-scan re-dirties
- * the scope with a fresh `marked_at` (see `markSearchIndexDirtySqlite`),
- * and this clear must not discard that fresh mark just because it observed
- * the OLD value when the round started. Returns `false` (no-op, scope
- * stays dirty) when `marked_at` has since moved; `true` when the clear
- * actually applied.
+ * index was in sync AS OF `expectedRevision` (the `revision` value read
+ * when the reconcile round listed this scope, from
+ * `DirtySearchIndexScope.revision`). CAS'd on `revision`, NOT `marked_at`
+ * (see that field's doc comment for why a timestamp-based CAS is unsound —
+ * two marks within the same millisecond collide on `marked_at` but never
+ * on `revision`). Returns `false` (no-op, scope stays dirty) when
+ * `revision` has since advanced — a concurrent write re-dirtied the scope
+ * after this round's read, so the fresh mark must survive, not be silently
+ * discarded; `true` when the clear actually applied.
  */
 export async function clearSearchIndexDirty(
   key: SearchIndexScopeKey,
-  expectedMarkedAt: string,
+  expectedRevision: number,
   nowIso: string
 ): Promise<boolean> {
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery(
       `UPDATE search_index_dirty
        SET dirty = 0, reconciled_at = $4, last_error = NULL, attempts = 0, next_attempt_at = NULL
-       WHERE connector_instance_id = $1 AND stream = $2 AND marked_at = $3`,
-      [key.connectorInstanceId, key.stream, expectedMarkedAt, nowIso]
+       WHERE connector_instance_id = $1 AND stream = $2 AND revision = $3`,
+      [key.connectorInstanceId, key.stream, expectedRevision, nowIso]
     );
     return (result.rowCount ?? 0) > 0;
   }
@@ -91,7 +111,7 @@ export async function clearSearchIndexDirty(
     nowIso,
     key.connectorInstanceId,
     key.stream,
-    expectedMarkedAt,
+    expectedRevision,
   ]);
   return result.changes > 0;
 }
@@ -191,9 +211,10 @@ export async function listDirtySearchIndexScopes(limit: number): Promise<DirtySe
       connector_id: string;
       connector_instance_id: string;
       marked_at: string;
+      revision: string | number;
       stream: string;
     }>(
-      `SELECT connector_instance_id, connector_id, stream, marked_at
+      `SELECT connector_instance_id, connector_id, stream, marked_at, revision
        FROM search_index_dirty
        WHERE dirty <> 0
          AND (next_attempt_at IS NULL OR next_attempt_at <= $2)
@@ -205,6 +226,7 @@ export async function listDirtySearchIndexScopes(limit: number): Promise<DirtySe
       connectorId: row.connector_id,
       connectorInstanceId: row.connector_instance_id,
       markedAt: row.marked_at,
+      revision: Number(row.revision),
       stream: row.stream,
     }));
   }
@@ -213,12 +235,14 @@ export async function listDirtySearchIndexScopes(limit: number): Promise<DirtySe
     connector_id: string;
     connector_instance_id: string;
     marked_at: string;
+    revision: number;
     stream: string;
   }>(referenceQueries.searchIndexDirtyListDirty, [new Date().toISOString()])) {
     scopes.push({
       connectorId: row.connector_id,
       connectorInstanceId: row.connector_instance_id,
       markedAt: row.marked_at,
+      revision: Number(row.revision),
       stream: row.stream,
     });
     if (scopes.length >= limit) {

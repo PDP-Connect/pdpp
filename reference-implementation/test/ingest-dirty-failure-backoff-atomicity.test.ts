@@ -34,12 +34,14 @@ const BACKOFF_SCHEDULE_SECONDS = [0, 5, 15, 30, 60, 120, 300, 600];
 function rawRow(connectorInstanceId: string, stream: string) {
   return getDb()
     .prepare(
-      "SELECT attempts, next_attempt_at, last_error FROM search_index_dirty WHERE connector_instance_id = ? AND stream = ?"
+      "SELECT attempts, dirty, last_error, next_attempt_at, revision FROM search_index_dirty WHERE connector_instance_id = ? AND stream = ?"
     )
     .get(connectorInstanceId, stream) as {
     attempts: number;
+    dirty: number;
     last_error: string | null;
     next_attempt_at: string | null;
+    revision: number;
   };
 }
 
@@ -95,14 +97,52 @@ test("recordSearchIndexDirtyFailure: attempts and next_attempt_at are always joi
     // A successful clear resets both fields together -- also proven as one
     // statement (clearSearchIndexDirty), so a scope that recovers does not
     // carry stale attempts/backoff state into its next dirty cycle.
-    // marked_at is unchanged by recordSearchIndexDirtyFailure, so the
-    // original markSearchIndexDirtySqlite value is still the CAS target.
-    const clearedOk = await clearSearchIndexDirty({ connectorInstanceId, stream }, markedAt, new Date().toISOString());
-    assert.equal(clearedOk, true, "clear must apply: marked_at has not moved since this test's initial mark");
+    const clearedOk = await clearSearchIndexDirty({ connectorInstanceId, stream }, 1, new Date().toISOString());
+    assert.equal(clearedOk, true, "clear must apply: revision has not advanced since this test's initial mark");
     const cleared = rawRow(connectorInstanceId, stream);
     assert.equal(cleared.attempts, 0, "attempts resets to 0 on clear");
     assert.equal(cleared.next_attempt_at, null, "next_attempt_at resets to null on clear");
     assert.equal(cleared.last_error, null, "last_error resets to null on clear");
+  } finally {
+    closeDb();
+  }
+});
+
+test("clearSearchIndexDirty preserves a second mark even when both marks have the same timestamp", async () => {
+  initDb(":memory:");
+  try {
+    const connectorInstanceId = "cin_same_millisecond";
+    const stream = "items";
+    const sameMarkedAt = "2026-08-12T00:00:00.000Z";
+    const key = { connectorId: "same-millisecond", connectorInstanceId, stream };
+
+    markSearchIndexDirtySqlite(key, sameMarkedAt);
+    const listedRevision = rawRow(connectorInstanceId, stream).revision;
+    markSearchIndexDirtySqlite(key, sameMarkedAt);
+
+    const recontended = rawRow(connectorInstanceId, stream);
+    assert.equal(
+      recontended.revision,
+      listedRevision + 1,
+      "every mark advances the generation despite timestamp collision"
+    );
+    assert.equal(recontended.dirty, 1);
+
+    const staleClear = await clearSearchIndexDirty(
+      { connectorInstanceId, stream },
+      listedRevision,
+      "2026-08-12T00:00:01.000Z"
+    );
+    assert.equal(staleClear, false, "a reconcile holding the first generation cannot clear the second mark");
+    assert.equal(rawRow(connectorInstanceId, stream).dirty, 1, "the newer mark remains eligible for reconciliation");
+
+    const currentClear = await clearSearchIndexDirty(
+      { connectorInstanceId, stream },
+      recontended.revision,
+      "2026-08-12T00:00:02.000Z"
+    );
+    assert.equal(currentClear, true);
+    assert.equal(rawRow(connectorInstanceId, stream).dirty, 0);
   } finally {
     closeDb();
   }

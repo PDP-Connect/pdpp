@@ -78,10 +78,26 @@ function declaresSemanticFields(manifestStream: Record<string, unknown>): boolea
   return Array.isArray(fields) && fields.length > 0;
 }
 
+/**
+ * `converged`: the clear's revision CAS applied -- this scope's index was
+ * proven in sync and no write raced past the check.
+ * `recontended`: the backfills themselves threw nothing, but the clear's
+ * revision CAS was a no-op -- a concurrent write re-dirtied this scope
+ * AFTER this round read it and BEFORE the clear ran, so the fresh mark
+ * correctly survives. This is NOT a reconcile failure: nothing was proven
+ * wrong, the scope just needs another round to check the newer state. It
+ * must not be counted or evidenced the same as `failed`, which reflects the
+ * backfills/storage-fence themselves throwing.
+ * `failed`: a backfill or the storage-generation fence threw; structured
+ * failure evidence was recorded (or dropped as a lifecycle race) and the
+ * scope's dirty flag is left untouched.
+ */
+export type ReconcileScopeOutcome = "converged" | "failed" | "recontended";
+
 export interface ReconcileScopeResult {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
-  readonly ok: boolean;
+  readonly outcome: ReconcileScopeOutcome;
   readonly stream: string;
 }
 
@@ -147,26 +163,30 @@ async function runScopeBackfills(
       { connectorInstanceId, stream },
       "semantic_fields is declared for this stream but no semantic backend is currently configured; semantic sync is unproven, dirty flag retained"
     );
-    return { connectorId, connectorInstanceId, ok: false, stream };
+    return { connectorId, connectorInstanceId, outcome: "failed", stream };
   }
   if (semanticBackend) {
     await semanticIndexBackfillForManifest({ manifest: pinnedManifest } as unknown as SemanticBackfillOptions);
     assertStorageGenerationCurrent(generation);
   }
 
-  // CAS on scope.markedAt (captured when this round listed the scope,
-  // before either backfill ran): if a concurrent write re-dirtied this
-  // scope mid-scan, marked_at has since advanced and this clear is a
-  // deliberate no-op -- the fresh dirty mark survives for the next round
-  // instead of being silently discarded. Not a failure: the scans above
-  // may well have converged everything they saw, just not the write that
-  // raced past them.
+  // CAS on scope.revision (captured when this round listed the scope,
+  // before either backfill ran), NOT scope.markedAt: two durable marks
+  // within the same millisecond can share an identical marked_at string,
+  // but revision is atomically incremented exactly once per mark and can
+  // never collide. If a concurrent write re-dirtied this scope mid-scan,
+  // revision has since advanced and this clear is a deliberate no-op --
+  // the fresh dirty mark survives for the next round instead of being
+  // silently discarded. This is `recontended`, NOT `failed`: the scans
+  // above may well have converged everything they saw, just not the write
+  // that raced past them, so no failure evidence is recorded and the
+  // scope's existing backoff state is left untouched.
   const cleared = await clearSearchIndexDirty(
     { connectorInstanceId, stream },
-    scope.markedAt,
+    scope.revision,
     new Date().toISOString()
   );
-  return { connectorId, connectorInstanceId, ok: cleared, stream };
+  return { connectorId, connectorInstanceId, outcome: cleared ? "converged" : "recontended", stream };
 }
 
 /**
@@ -211,16 +231,17 @@ export async function reconcileSearchIndexDirtyScope(
       // reason. lexicalIndexBackfillForManifest/semanticIndexBackfillForManifest
       // already handle "declared before, not declared now" cleanup via
       // their own manifest-driven sweeps; this only short-circuits THIS
-      // scope's flag. CAS'd on scope.markedAt for the same reason as
-      // runScopeBackfills' clear: a write racing in between this round's
-      // listing and this decision must not have its fresh dirty mark
-      // silently discarded.
+      // scope's flag. CAS'd on scope.revision for the same reason as
+      // runScopeBackfills' clear (see that comment): a write racing in
+      // between this round's listing and this decision must not have its
+      // fresh dirty mark silently discarded, and revision -- not markedAt
+      // -- is the token that can prove that reliably.
       const cleared = await clearSearchIndexDirty(
         { connectorInstanceId, stream },
-        scope.markedAt,
+        scope.revision,
         new Date().toISOString()
       );
-      return { connectorId, connectorInstanceId, ok: cleared, stream };
+      return { connectorId, connectorInstanceId, outcome: cleared ? "converged" : "recontended", stream };
     }
     return await runScopeBackfills(scope, manifest, targetStream, generation);
   } catch (err) {
@@ -229,13 +250,13 @@ export async function reconcileSearchIndexDirtyScope(
       // evidence would touch a different generation's table under the same
       // scope key. Matches scheduleRecordIndexMaintenance's identical
       // re-check in records.ts.
-      return { connectorId, connectorInstanceId, ok: false, stream };
+      return { connectorId, connectorInstanceId, outcome: "failed", stream };
     }
     const message = err instanceof Error ? err.message : String(err);
     await recordSearchIndexDirtyFailure({ connectorInstanceId, stream }, message).catch(() => {
       // Evidence write is itself best-effort; never mask the original failure.
     });
-    return { connectorId, connectorInstanceId, ok: false, stream };
+    return { connectorId, connectorInstanceId, outcome: "failed", stream };
   }
 }
 
@@ -243,6 +264,16 @@ export interface SearchIndexDirtyReconcileRoundResult {
   readonly attempted: number;
   readonly failed: number;
   readonly incomplete: boolean;
+  /**
+   * A scope whose clear CAS was a no-op because a concurrent write
+   * re-dirtied it between this round's listing and its clear (see
+   * ReconcileScopeOutcome's `recontended` case). Counted separately from
+   * `failed`: nothing was proven wrong for these scopes, they simply need
+   * another round to check the newer state their own write already
+   * re-flagged. Folding this into `failed` would misreport ordinary,
+   * expected contention as a reconcile defect.
+   */
+  readonly recontended: number;
   readonly succeeded: number;
 }
 
@@ -272,8 +303,11 @@ export async function runSearchIndexDirtyReconcileRound(options?: {
   const generation = currentStorageGeneration();
   const scopes = await listDirtySearchIndexScopes(pageSize);
 
-  let succeeded = 0;
-  let failed = 0;
+  const outcomeCounts: Record<ReconcileScopeOutcome, number> = {
+    converged: 0,
+    failed: 0,
+    recontended: 0,
+  };
   let incomplete = false;
   let attempted = 0;
 
@@ -285,18 +319,15 @@ export async function runSearchIndexDirtyReconcileRound(options?: {
     attempted += 1;
     // biome-ignore lint/performance/noAwaitInLoops: Bounded round; each scope's reconcile is independent but sequential to keep this sweep's DB load predictable.
     const result = await reconcileSearchIndexDirtyScope(scope, generation);
-    if (result.ok) {
-      succeeded += 1;
-    } else {
-      failed += 1;
-    }
+    outcomeCounts[result.outcome] += 1;
   }
 
   return {
     attempted,
-    failed,
+    failed: outcomeCounts.failed,
     incomplete: incomplete || scopes.length >= pageSize,
-    succeeded,
+    recontended: outcomeCounts.recontended,
+    succeeded: outcomeCounts.converged,
   };
 }
 

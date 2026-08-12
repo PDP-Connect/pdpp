@@ -2144,13 +2144,18 @@ export async function bootstrapPostgresSchema({
 
       -- Scope-keyed (never per-record) dirty flag for lexical+semantic
       -- derived index maintenance. See server/db.ts for the SQLite mirror
-      -- and full rationale.
+      -- and full rationale, including why revision (not marked_at) is
+      -- the clear's CAS token: two durable marks can land within the same
+      -- millisecond and receive an identical marked_at ISO string, but
+      -- revision is atomically incremented once per mark and can never
+      -- collide.
       CREATE TABLE IF NOT EXISTS search_index_dirty (
         connector_instance_id TEXT NOT NULL,
         connector_id TEXT NOT NULL,
         stream TEXT NOT NULL,
         dirty INTEGER NOT NULL DEFAULT 1,
         marked_at TEXT NOT NULL,
+        revision BIGINT NOT NULL DEFAULT 0,
         reconciled_at TEXT,
         last_error TEXT,
         attempts INTEGER NOT NULL DEFAULT 0,
@@ -2161,6 +2166,7 @@ export async function bootstrapPostgresSchema({
         ON search_index_dirty(dirty);
       ALTER TABLE search_index_dirty ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
       ALTER TABLE search_index_dirty ADD COLUMN IF NOT EXISTS next_attempt_at TEXT;
+      ALTER TABLE search_index_dirty ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 0;
 
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS last_record_updated_at TEXT;

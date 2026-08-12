@@ -1961,12 +1961,25 @@ CREATE TABLE IF NOT EXISTS manifest_write_violations (
 -- listing query excludes rows still in backoff, so a permanently-failing
 -- scope rotates out of contention and a later healthy scope can take its
 -- page slot, while the failing scope still gets retried periodically.
+-- revision is a monotonic per-scope generation counter, atomically
+-- incremented by every mark-dirty write (revision = revision + 1 in the
+-- SAME statement, same idiom as connector_instances.manifest_generation).
+-- A reconcile's clear is CAS'd on the revision value it read when it
+-- listed the scope, NOT on marked_at: two durable marks issued within
+-- the same millisecond receive the identical ISO marked_at string (no
+-- guaranteed sub-millisecond monotonicity), so a marked_at-only CAS can
+-- silently pass even though a concurrent write re-dirtied the scope after
+-- the reconcile's read -- revision cannot collide, because it only ever
+-- increases by exactly 1 per mark and the clear demands an exact match.
+-- marked_at is kept for queue ordering (oldest-first) and operator-facing
+-- diagnostics ONLY; it is no longer part of any correctness-bearing check.
 CREATE TABLE IF NOT EXISTS search_index_dirty (
   connector_instance_id TEXT NOT NULL,
   connector_id          TEXT NOT NULL,
   stream                TEXT NOT NULL,
   dirty                 INTEGER NOT NULL DEFAULT 1,
   marked_at             TEXT NOT NULL,
+  revision              INTEGER NOT NULL DEFAULT 0,
   reconciled_at         TEXT,
   last_error            TEXT,
   attempts              INTEGER NOT NULL DEFAULT 0,
@@ -5402,6 +5415,14 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
     addColumnIfMissing(raw, "search_index_dirty", "attempts", "INTEGER NOT NULL DEFAULT 0")
   );
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "search_index_dirty", "next_attempt_at", "TEXT"));
+  // Monotonic per-scope CAS generation (see the CREATE TABLE comment above):
+  // a pre-existing reference DB created the table before this column
+  // existed. Pre-existing rows seed with 0; any subsequent mark-dirty write
+  // bumps it, so a reconcile that read revision=0 before this migration ran
+  // still correctly fails its clear CAS if a mark landed in between.
+  runWithSqliteBusyRetrySync(() =>
+    addColumnIfMissing(raw, "search_index_dirty", "revision", "INTEGER NOT NULL DEFAULT 0")
+  );
   runWithSqliteBusyRetrySync(() => ensureRecordResetGenerationColumn(raw));
   runWithSqliteBusyRetrySync(() => ensureRecordIdentityGenerationColumn(raw));
   // Incremental add-source linkage: a later same-client ceremony records the
