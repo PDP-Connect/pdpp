@@ -282,3 +282,40 @@ test("runConnectorProtocolSubprocess: failed DONE reports records emitted before
   assert.equal(done.error?.retryable, true);
   assert.match(done.error?.message ?? "", /retry budget exhausted/iu);
 });
+
+test("runConnectorProtocolSubprocess: stream failure evidence forces failed DONE without discarding independent output", async () => {
+  const result = await runConnectorProtocolSubprocess({
+    allowFailedDone: true,
+    cwd: PACKAGE_ROOT,
+    entrypoint: fixturePath("protocol-subprocess-stream-failure.ts"),
+    start: {
+      scope: { streams: [{ name: "healthy" }, { name: "failed" }] },
+      type: "START",
+    },
+  });
+
+  assert.equal(result.code, 1);
+  assert.ok(
+    result.messages.some((message) => message.type === "RECORD" && message.stream === "healthy"),
+    "successful independent stream output must survive a sibling stream failure"
+  );
+  assert.ok(
+    result.messages.some(
+      (message) =>
+        message.type === "SKIP_RESULT" && message.stream === "failed" && message.reason === "stream_collection_failed"
+    ),
+    "stream failure must be durable protocol evidence"
+  );
+  assert.ok(
+    result.messages.some((message) => message.type === "STATE" && message.stream === "healthy"),
+    "successful independent stream state must remain observable"
+  );
+  const done = result.messages.at(-1);
+  assert.equal(done?.type, "DONE");
+  if (done?.type !== "DONE") {
+    assert.fail("expected terminal DONE");
+  }
+  assert.equal(done.status, "failed");
+  assert.equal(done.error?.code, "stream_collection_failed");
+  assert.equal(done.error?.retryable, true);
+});

@@ -1309,7 +1309,8 @@ async function runCollectionPass(
   stream: string,
   errorLabel: string,
   progressWithSignals: ProgressFn,
-  body: () => Promise<{ considered: number }>
+  body: () => Promise<{ considered: number }>,
+  reportStreamFailure?: CollectContext["reportStreamFailure"]
 ): Promise<CollectionOutcome> {
   try {
     const { considered } = await body();
@@ -1325,6 +1326,11 @@ async function runCollectionPass(
         phase: "error",
       }
     );
+    await reportStreamFailure?.(
+      stream,
+      `Error fetching ${errorLabel}: ${error instanceof Error ? error.message : String(error)}`,
+      { retryable: true }
+    );
     return { considered: 0, failed: true };
   }
 }
@@ -1333,45 +1339,59 @@ export async function collectGroups(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
   progressWithSignals: ProgressFn,
-  emitRecord: (stream: string, data: RecordData) => Promise<void>
+  emitRecord: (stream: string, data: RecordData) => Promise<void>,
+  reportStreamFailure?: CollectContext["reportStreamFailure"]
 ): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe groups", { stream: "groups", phase: "start" });
-  return await runCollectionPass("groups", "groups", progressWithSignals, async () => {
-    const { items: groups } = await fetchPaginatedList<GroupMeGroup>(token, "/groups", "groups", progressWithSignals);
+  return await runCollectionPass(
+    "groups",
+    "groups",
+    progressWithSignals,
+    async () => {
+      const { items: groups } = await fetchPaginatedList<GroupMeGroup>(token, "/groups", "groups", progressWithSignals);
 
-    for (const group of groups) {
-      const record = toGroupRecord(group);
-      if (cursor.shouldEmit(record)) {
-        await emitRecord("groups", record);
+      for (const group of groups) {
+        const record = toGroupRecord(group);
+        if (cursor.shouldEmit(record)) {
+          await emitRecord("groups", record);
+        }
       }
-    }
-    return { considered: groups.length };
-  });
+      return { considered: groups.length };
+    },
+    reportStreamFailure
+  );
 }
 
 export async function collectDirectChats(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
   progressWithSignals: ProgressFn,
-  emitRecord: (stream: string, data: RecordData) => Promise<void>
+  emitRecord: (stream: string, data: RecordData) => Promise<void>,
+  reportStreamFailure?: CollectContext["reportStreamFailure"]
 ): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe direct chats", { stream: "direct_messages", phase: "start" });
-  return await runCollectionPass("direct_messages", "direct chats", progressWithSignals, async () => {
-    const { items: chats } = await fetchPaginatedList<GroupMeDirectChat>(
-      token,
-      "/chats",
-      "direct_messages",
-      progressWithSignals
-    );
+  return await runCollectionPass(
+    "direct_messages",
+    "direct chats",
+    progressWithSignals,
+    async () => {
+      const { items: chats } = await fetchPaginatedList<GroupMeDirectChat>(
+        token,
+        "/chats",
+        "direct_messages",
+        progressWithSignals
+      );
 
-    for (const chat of chats) {
-      const record = toDirectChatRecord(chat);
-      if (cursor.shouldEmit(record)) {
-        await emitRecord("direct_messages", record);
+      for (const chat of chats) {
+        const record = toDirectChatRecord(chat);
+        if (cursor.shouldEmit(record)) {
+          await emitRecord("direct_messages", record);
+        }
       }
-    }
-    return { considered: chats.length };
-  });
+      return { considered: chats.length };
+    },
+    reportStreamFailure
+  );
 }
 
 interface DirectMessagesResponse {
@@ -1482,35 +1502,42 @@ export async function collectDirectChatMessages(
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
-  sinceEpochSeconds: number | null = null
+  sinceEpochSeconds: number | null = null,
+  reportStreamFailure?: CollectContext["reportStreamFailure"]
 ): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe direct messages", {
     stream: "direct_chat_messages",
     phase: "start",
   });
-  return await runCollectionPass("direct_chat_messages", "direct messages", progressWithSignals, async () => {
-    let considered = 0;
-    const { items: chats } = await fetchPaginatedList<GroupMeDirectChat>(
-      token,
-      "/chats",
-      "direct_chat_messages",
-      progressWithSignals
-    );
-    for (const chat of chats) {
-      const chatResult = await collectDirectChatMessagesForChat(
+  return await runCollectionPass(
+    "direct_chat_messages",
+    "direct messages",
+    progressWithSignals,
+    async () => {
+      let considered = 0;
+      const { items: chats } = await fetchPaginatedList<GroupMeDirectChat>(
         token,
-        chat,
-        cursor,
-        uploader,
-        emitAttachmentRecord,
-        progressWithSignals,
-        emitRecord,
-        sinceEpochSeconds
+        "/chats",
+        "direct_chat_messages",
+        progressWithSignals
       );
-      considered += chatResult.totalSeen;
-    }
-    return { considered };
-  });
+      for (const chat of chats) {
+        const chatResult = await collectDirectChatMessagesForChat(
+          token,
+          chat,
+          cursor,
+          uploader,
+          emitAttachmentRecord,
+          progressWithSignals,
+          emitRecord,
+          sinceEpochSeconds
+        );
+        considered += chatResult.totalSeen;
+      }
+      return { considered };
+    },
+    reportStreamFailure
+  );
 }
 
 /**
@@ -1586,7 +1613,8 @@ export async function collectGroupMessages(
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
   sinceEpochSeconds: number | null = null,
   priorCursors: GroupMessageCursors = {},
-  collectionMode: "full_refresh" | "incremental" = "incremental"
+  collectionMode: "full_refresh" | "incremental" = "incremental",
+  reportStreamFailure?: CollectContext["reportStreamFailure"]
 ): Promise<GroupMessagesCollectionOutcome> {
   await progressWithSignals("Fetching GroupMe group messages", { stream: "group_messages", phase: "start" });
   // Seeded from the prior cursors so a group absent from THIS run's listing
@@ -1602,35 +1630,41 @@ export async function collectGroupMessages(
   // cursor. The cursor MAP is still rebuilt from what this full walk
   // observes, so the next ordinary run resumes forward-incrementally again.
   const bypassCursor = collectionMode === "full_refresh";
-  const outcome = await runCollectionPass("group_messages", "group messages", progressWithSignals, async () => {
-    let considered = 0;
-    const { items: groups } = await fetchPaginatedList<GroupMeGroup>(
-      token,
-      "/groups",
-      "group_messages",
-      progressWithSignals
-    );
-    for (const group of groups) {
-      const priorCursor = priorCursors[group.id];
-      const groupResult = await collectOneGroupMessages(
+  const outcome = await runCollectionPass(
+    "group_messages",
+    "group messages",
+    progressWithSignals,
+    async () => {
+      let considered = 0;
+      const { items: groups } = await fetchPaginatedList<GroupMeGroup>(
         token,
-        group,
-        priorCursor,
-        bypassCursor,
-        cursor,
-        uploader,
-        emitAttachmentRecord,
-        progressWithSignals,
-        emitRecord,
-        sinceEpochSeconds
+        "/groups",
+        "group_messages",
+        progressWithSignals
       );
-      considered += groupResult.totalSeen;
-      if (groupResult.newestMessageId !== undefined) {
-        nextCursors[group.id] = groupResult.newestMessageId;
+      for (const group of groups) {
+        const priorCursor = priorCursors[group.id];
+        const groupResult = await collectOneGroupMessages(
+          token,
+          group,
+          priorCursor,
+          bypassCursor,
+          cursor,
+          uploader,
+          emitAttachmentRecord,
+          progressWithSignals,
+          emitRecord,
+          sinceEpochSeconds
+        );
+        considered += groupResult.totalSeen;
+        if (groupResult.newestMessageId !== undefined) {
+          nextCursors[group.id] = groupResult.newestMessageId;
+        }
       }
-    }
-    return { considered };
-  });
+      return { considered };
+    },
+    reportStreamFailure
+  );
   return { ...outcome, nextCursors: outcome.failed ? {} : nextCursors };
 }
 
@@ -1670,6 +1704,7 @@ export async function collect({
   emit,
   emitRecord,
   progress,
+  reportStreamFailure,
   collectionMode,
 }: CollectContext): Promise<void> {
   const progressWithSignals = progress as ProgressFn;
@@ -1703,7 +1738,7 @@ export async function collect({
 
   let groupsOutcome: CollectionOutcome | undefined;
   if (requested.has("groups")) {
-    groupsOutcome = await collectGroups(token, groupCursor, progressWithSignals, emitRecord);
+    groupsOutcome = await collectGroups(token, groupCursor, progressWithSignals, emitRecord, reportStreamFailure);
   }
   let groupMessagesOutcome: GroupMessagesCollectionOutcome | undefined;
   if (requested.has("group_messages")) {
@@ -1716,12 +1751,19 @@ export async function collect({
       emitRecord,
       parseSinceEpochSeconds(requested, "group_messages"),
       decodeGroupMessageCursors(state.group_messages),
-      effectiveCollectionMode
+      effectiveCollectionMode,
+      reportStreamFailure
     );
   }
   let directChatsOutcome: CollectionOutcome | undefined;
   if (requested.has("direct_messages")) {
-    directChatsOutcome = await collectDirectChats(token, directChatCursor, progressWithSignals, emitRecord);
+    directChatsOutcome = await collectDirectChats(
+      token,
+      directChatCursor,
+      progressWithSignals,
+      emitRecord,
+      reportStreamFailure
+    );
   }
   let directChatMessagesOutcome: CollectionOutcome | undefined;
   if (requested.has("direct_chat_messages")) {
@@ -1732,7 +1774,8 @@ export async function collect({
       emitAttachmentRecord,
       progressWithSignals,
       emitRecord,
-      parseSinceEpochSeconds(requested, "direct_chat_messages")
+      parseSinceEpochSeconds(requested, "direct_chat_messages"),
+      reportStreamFailure
     );
   }
 

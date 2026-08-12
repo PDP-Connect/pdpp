@@ -1058,3 +1058,80 @@ test("collect(): successful message walks durably emit complete proof, including
     restore();
   }
 });
+
+test("collect(): failed direct_chat_messages reports failure while preserving successful sibling coverage", async () => {
+  const restore = stubFetchSequence([
+    { body: { response: [group()] } },
+    { body: { error: "server error" }, status: 500 },
+  ]);
+  try {
+    const messages: EmittedMessage[] = [];
+    const failures: Array<{ message: string; options?: { retryable?: boolean }; stream: string }> = [];
+    await collect({
+      state: {},
+      requested: new Map<string, StreamScope>([
+        ["groups", { name: "groups" }],
+        ["direct_chat_messages", { name: "direct_chat_messages" }],
+      ]),
+      credentials: { GROUPME_ACCESS_TOKEN: TOKEN },
+      emit: (message: EmittedMessage) => {
+        messages.push(message);
+        return Promise.resolve();
+      },
+      emitRecord: async () => {
+        await Promise.resolve();
+      },
+      progress: async () => {
+        await Promise.resolve();
+      },
+      reportStreamFailure: (stream, message, options) => {
+        failures.push({ message, ...(options ? { options } : {}), stream });
+        messages.push({
+          type: "SKIP_RESULT",
+          stream,
+          reason: "stream_collection_failed",
+          message,
+        });
+        return Promise.resolve();
+      },
+      assist: async () => "",
+      capture: null,
+      completeAssistance: async () => {
+        await Promise.resolve();
+      },
+      detailGaps: [],
+      emittedAt: new Date().toISOString(),
+      requestDetailGapPage: async () => [],
+      scope: { streams: [{ name: "groups" }, { name: "direct_chat_messages" }] },
+      sendInteraction: async () => ({}) as never,
+    } satisfies CollectContext);
+
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0]?.stream, "direct_chat_messages");
+    assert.equal(failures[0]?.options?.retryable, true);
+    assert.match(failures[0]?.message ?? "", /direct messages: .*500/iu);
+    assert.ok(
+      messages.some((message) => message.type === "SKIP_RESULT" && message.stream === "direct_chat_messages"),
+      "the failed stream must emit failure evidence"
+    );
+    const groupsCoverage = messages.find(
+      (message): message is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+        message.type === "DETAIL_COVERAGE" && message.stream === "groups"
+    );
+    assert.ok(groupsCoverage, "the successful sibling stream must retain its coverage proof");
+    assert.equal(groupsCoverage.considered, 1);
+    assert.equal(groupsCoverage.covered, 1);
+    assert.equal(
+      messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "direct_chat_messages"),
+      false,
+      "the failed stream must not claim coverage"
+    );
+    assert.equal(
+      messages.some((message) => message.type === "STATE" && message.stream === "direct_chat_messages"),
+      false,
+      "the failed stream must not advance its checkpoint"
+    );
+  } finally {
+    restore();
+  }
+});

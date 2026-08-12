@@ -203,6 +203,17 @@ interface BaseCollectContext {
    * optional so connectors that do not implement recovery-only ignore it.
    */
   recoveryOnly?: boolean;
+  /**
+   * Report a stream-level collection failure while allowing independent
+   * streams to finish. The runtime emits bounded failure evidence immediately
+   * and converts the eventual terminal DONE to `failed`; a connector must not
+   * turn a failed stream into a successful run merely by returning from
+   * `collect()`.
+   *
+   * Optional for compatibility with hand-built test contexts. The real runtime
+   * always supplies it.
+   */
+  reportStreamFailure?: (stream: string, message: string, options?: { retryable?: boolean }) => Promise<void>;
   requestDetailGapPage: (req?: {
     maxBytes?: number;
     streams?: readonly string[];
@@ -789,6 +800,7 @@ export function runConnector(config: RunConnectorConfig): void {
   };
 
   let observedCounters: { totalEmitted: number; totalSkipped: number } | null = null;
+  let reportedStreamFailure: { message: string; retryable: boolean; stream: string } | null = null;
 
   const emitFailed = (
     message: string,
@@ -963,6 +975,29 @@ export function runConnector(config: RunConnectorConfig): void {
   const completeAssistance: BaseCollectContext["completeAssistance"] = (assistanceRequestId, status, extra = {}) =>
     emit({ type: "ASSISTANCE_STATUS", assistance_request_id: assistanceRequestId, status, ...extra });
 
+  const reportStreamFailure: NonNullable<BaseCollectContext["reportStreamFailure"]> = async (
+    stream,
+    message,
+    options = {}
+  ): Promise<void> => {
+    if (!stream.trim()) {
+      throw new TerminalError("Stream failure report is missing a stream", { code: "stream_failure_invalid" });
+    }
+    const normalizedMessage = message.trim();
+    if (!normalizedMessage) {
+      throw new TerminalError("Stream failure report is missing a message", { code: "stream_failure_invalid" });
+    }
+    const retryable = options.retryable === true;
+    reportedStreamFailure ??= { message: normalizedMessage, retryable, stream };
+    await emit({
+      type: "SKIP_RESULT",
+      stream,
+      reason: "stream_collection_failed",
+      message: normalizedMessage,
+      recovery_hint: { action: "retry_by_runtime", retryable },
+    });
+  };
+
   // Kick off the run. The outer catch distinguishes TerminalError (which
   // the runtime threw deliberately with an explicit retryable bit) from
   // unexpected throws (where we pattern-match the message).
@@ -1004,6 +1039,7 @@ export function runConnector(config: RunConnectorConfig): void {
       assist,
       completeAssistance,
       progress,
+      reportStreamFailure,
       capture,
       sendInteraction,
       emittedAt,
@@ -1037,6 +1073,15 @@ export function runConnector(config: RunConnectorConfig): void {
       await collect(baseCtx);
     }
 
+    if (reportedStreamFailure) {
+      emitFailed(
+        `stream collection failed: ${reportedStreamFailure.stream}: ${reportedStreamFailure.message}`,
+        reportedStreamFailure.retryable,
+        emitRecord.counters.totalEmitted,
+        "stream_collection_failed"
+      );
+      return;
+    }
     await finalizeRun(emitRecord.counters, progress, emit);
     flushAndExit(0);
   }
