@@ -16,6 +16,9 @@ const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 const RUN_ID = `${process.pid}_${Date.now()}`;
 const OWNER_PASSWORD = "hosted-rejection-owner-password";
 const CSRF_HIDDEN_FIELD_RE = /<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/;
+const OWNER_INSPECTION_PAGE_CAP = 2;
+const OWNER_INSPECTION_RECEIPT_COUNT = 5;
+const TEST_MAX_PAGE_SIZE_ENV = "PDPP_TEST_RECORD_REJECTION_MAX_PAGE_SIZE";
 
 interface CloseableServer {
   close: (callback?: (err?: Error) => void) => unknown;
@@ -144,6 +147,8 @@ async function withHarness(
   opts: Parameters<typeof startServer>[0],
   fn: (harness: Harness) => Promise<void>
 ): Promise<void> {
+  const previousPageCap = process.env[TEST_MAX_PAGE_SIZE_ENV];
+  process.env[TEST_MAX_PAGE_SIZE_ENV] = String(OWNER_INSPECTION_PAGE_CAP);
   const server = (await startServer({
     asPort: 0,
     dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
@@ -161,6 +166,11 @@ async function withHarness(
     await closeServer(server);
     await closePostgresStorage();
     closeDb();
+    if (previousPageCap === undefined) {
+      delete process.env[TEST_MAX_PAGE_SIZE_ENV];
+    } else {
+      process.env[TEST_MAX_PAGE_SIZE_ENV] = previousPageCap;
+    }
   }
 }
 
@@ -227,21 +237,41 @@ async function seedPostgresActiveConnection(args: {
   );
 }
 
-async function ingestBadLine(
+function ingestBadLine(
   rsUrl: string,
   token: string,
   connectorId: string,
   connectorInstanceId?: string
 ): Promise<{ body: { rejections?: Array<{ receipt_id?: string }> }; status: number }> {
-  const url = new URL(`${rsUrl}/v1/ingest/items`);
-  url.searchParams.set("connector_id", connectorId);
-  if (connectorInstanceId) {
-    url.searchParams.set("connector_instance_id", connectorInstanceId);
+  return ingestRejectedLine({
+    connectorId,
+    id: "declared-id",
+    key: "wrong-key",
+    rsUrl,
+    token,
+    value: "private",
+    ...(connectorInstanceId ? { connectorInstanceId } : {}),
+  });
+}
+
+async function ingestRejectedLine(args: {
+  connectorId: string;
+  connectorInstanceId?: string;
+  id: string;
+  key: string;
+  rsUrl: string;
+  token: string;
+  value: string;
+}): Promise<{ body: { rejections?: Array<{ receipt_id?: string }> }; status: number }> {
+  const url = new URL(`${args.rsUrl}/v1/ingest/items`);
+  url.searchParams.set("connector_id", args.connectorId);
+  if (args.connectorInstanceId) {
+    url.searchParams.set("connector_instance_id", args.connectorInstanceId);
   }
   const { body, status } = await fetchJson(url.toString(), {
-    body: JSON.stringify({ data: { id: "declared-id", value: "private" }, key: "wrong-key" }),
+    body: JSON.stringify({ data: { id: args.id, value: args.value }, key: args.key }),
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${args.token}`,
       "Content-Type": "application/x-ndjson",
     },
     method: "POST",
@@ -249,11 +279,15 @@ async function ingestBadLine(
   return { body: body as { rejections?: Array<{ receipt_id?: string }> }, status };
 }
 
-async function connectionIdForConnector(connectorId: string, backend: "postgres" | "sqlite"): Promise<string> {
+async function connectionIdForConnector(
+  connectorId: string,
+  backend: "postgres" | "sqlite",
+  ownerSubjectId: string
+): Promise<string> {
   if (backend === "postgres") {
     const result = await postgresQuery<{ connector_instance_id: string }>(
-      "SELECT connector_instance_id FROM connector_instances WHERE connector_id = $1 ORDER BY created_at DESC LIMIT 1",
-      [connectorId]
+      "SELECT connector_instance_id FROM connector_instances WHERE connector_id = $1 AND owner_subject_id = $2 ORDER BY created_at DESC LIMIT 1",
+      [connectorId, ownerSubjectId]
     );
     const id = result.rows[0]?.connector_instance_id;
     assert.ok(id, `expected connection for ${connectorId}`);
@@ -261,9 +295,9 @@ async function connectionIdForConnector(connectorId: string, backend: "postgres"
   }
   const id = getDb()
     .prepare(
-      "SELECT connector_instance_id FROM connector_instances WHERE connector_id = ? ORDER BY created_at DESC LIMIT 1"
+      "SELECT connector_instance_id FROM connector_instances WHERE connector_id = ? AND owner_subject_id = ? ORDER BY created_at DESC LIMIT 1"
     )
-    .get<{ connector_instance_id: string }>(connectorId)?.connector_instance_id;
+    .get<{ connector_instance_id: string }>(connectorId, ownerSubjectId)?.connector_instance_id;
   assert.ok(id, `expected connection for ${connectorId}`);
   return id;
 }
@@ -321,6 +355,44 @@ async function deleteConnection(asUrl: string, sessionCookie: string, connection
     },
     method: "DELETE",
   });
+}
+
+interface RecordRejectionListBody {
+  data?: Record<string, unknown>[];
+  has_more?: boolean;
+  next_cursor?: string | null;
+}
+
+async function collectRejectionReceiptIds(args: {
+  asUrl: string;
+  connectionId: string;
+  excessiveLimit: number;
+  expectedFirstPageSize: number;
+  sessionCookie: string;
+}): Promise<string[]> {
+  const seen: string[] = [];
+  let cursor: string | undefined;
+  let pageCount = 0;
+  do {
+    // biome-ignore lint/performance/noAwaitInLoops: Cursor traversal is intentionally sequential; each page depends on the prior cursor.
+    const page = await listRejections(args.asUrl, args.sessionCookie, args.connectionId, args.excessiveLimit, cursor);
+    assert.equal(page.status, 200, JSON.stringify(page.body));
+    const body = page.body as RecordRejectionListBody;
+    const rows = body.data ?? [];
+    if (pageCount === 0) {
+      assert.equal(rows.length, args.expectedFirstPageSize, "configured max page size must cap excessive limits");
+      assert.equal(body.has_more, true, "more rows than the configured cap must produce a cursor");
+    }
+    for (const row of rows) {
+      const receiptId = String(row.receipt_id ?? "");
+      assert.ok(receiptId, "list row must include receipt_id");
+      assert.equal(seen.includes(receiptId), false, `duplicate receipt across cursor pages: ${receiptId}`);
+      seen.push(receiptId);
+    }
+    cursor = typeof body.next_cursor === "string" ? body.next_cursor : undefined;
+    pageCount += 1;
+  } while (cursor);
+  return seen;
 }
 
 function sqliteCounts(connectorId: string, ownerSubjectId: string) {
@@ -485,10 +557,18 @@ async function runOwnerInspectionJourney(args: {
   dbPath?: string;
   ownerSubjectId: string;
   connectorId: string;
-}): Promise<{ connectionId: string; firstReceiptId: string; secondReceiptId: string }> {
+}): Promise<{
+  connectionId: string;
+  foreignConnectionId: string;
+  foreignOwnerSubjectId: string;
+  foreignReceiptId: string;
+  receiptIds: string[];
+}> {
   let connectionId = "";
-  let firstReceiptId = "";
-  let secondReceiptId = "";
+  let foreignConnectionId = "";
+  let foreignReceiptId = "";
+  const receiptIds: string[] = [];
+  const foreignOwnerSubjectId = `${args.ownerSubjectId}_foreign`;
   await withHarness(
     {
       ...backendServerOpts(args),
@@ -497,40 +577,56 @@ async function runOwnerInspectionJourney(args: {
     async ({ asUrl, rsUrl }) => {
       await registerConnector(asUrl, args.connectorId);
       const seededConnectionId = args.backend === "postgres" ? `cin_${args.connectorId}` : undefined;
+      const seededForeignConnectionId = args.backend === "postgres" ? `cin_${args.connectorId}_foreign` : undefined;
       if (seededConnectionId) {
         await seedPostgresActiveConnection({
           connectorId: args.connectorId,
           connectorInstanceId: seededConnectionId,
           ownerSubjectId: args.ownerSubjectId,
         });
+        await seedPostgresActiveConnection({
+          connectorId: args.connectorId,
+          connectorInstanceId: seededForeignConnectionId as string,
+          ownerSubjectId: foreignOwnerSubjectId,
+        });
       }
       const token = await issueOwnerToken(asUrl, args.ownerSubjectId);
-      const first = await ingestBadLine(rsUrl, token, args.connectorId, seededConnectionId);
-      const second = await fetchJson(
-        `${rsUrl}/v1/ingest/items?connector_id=${encodeURIComponent(args.connectorId)}${
-          seededConnectionId ? `&connector_instance_id=${encodeURIComponent(seededConnectionId)}` : ""
-        }`,
-        {
-          body: JSON.stringify({ data: { id: "second-id", value: "sensitive-second" }, key: "wrong-second" }),
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/x-ndjson",
-          },
-          method: "POST",
-        }
-      );
-      assert.equal(first.status, 200, JSON.stringify(first.body));
-      assert.equal(second.status, 200, JSON.stringify(second.body));
-      connectionId = await connectionIdForConnector(args.connectorId, args.backend);
+      for (let index = 0; index < OWNER_INSPECTION_RECEIPT_COUNT; index += 1) {
+        // biome-ignore lint/performance/noAwaitInLoops: Sequential inserts make cursor order deterministic for this paging oracle.
+        const response = await ingestRejectedLine({
+          connectorId: args.connectorId,
+          id: `owner-one-${index}`,
+          key: `wrong-owner-one-${index}`,
+          rsUrl,
+          token,
+          value: `sensitive-owner-one-${index}`,
+          ...(seededConnectionId ? { connectorInstanceId: seededConnectionId } : {}),
+        });
+        assert.equal(response.status, 200, JSON.stringify(response.body));
+        const receiptId = response.body.rejections?.[0]?.receipt_id ?? "";
+        assert.ok(receiptId, `owner-one receipt ${index} must be returned`);
+        receiptIds.push(receiptId);
+      }
+      const foreignToken = await issueOwnerToken(asUrl, foreignOwnerSubjectId);
+      const foreign = await ingestRejectedLine({
+        connectorId: args.connectorId,
+        id: "owner-two",
+        key: "wrong-owner-two",
+        rsUrl,
+        token: foreignToken,
+        value: "sensitive-owner-two",
+        ...(seededForeignConnectionId ? { connectorInstanceId: seededForeignConnectionId } : {}),
+      });
+      assert.equal(foreign.status, 200, JSON.stringify(foreign.body));
+      foreignReceiptId = foreign.body.rejections?.[0]?.receipt_id ?? "";
+      assert.ok(foreignReceiptId, "owner-two receipt must be returned");
+      connectionId = await connectionIdForConnector(args.connectorId, args.backend, args.ownerSubjectId);
+      foreignConnectionId = await connectionIdForConnector(args.connectorId, args.backend, foreignOwnerSubjectId);
       await makeConnectionDeleteEligible(connectionId, args.backend);
-      firstReceiptId = first.body.rejections?.[0]?.receipt_id ?? "";
-      secondReceiptId =
-        ((second.body as { rejections?: Array<{ receipt_id?: string }> }).rejections ?? [])[0]?.receipt_id ?? "";
-      assert.ok(firstReceiptId, "first ingest must return a receipt id");
-      assert.ok(secondReceiptId, "second ingest must return a receipt id");
+      await makeConnectionDeleteEligible(foreignConnectionId, args.backend);
     }
   );
-  return { connectionId, firstReceiptId, secondReceiptId };
+  return { connectionId, foreignConnectionId, foreignOwnerSubjectId, foreignReceiptId, receiptIds };
 }
 
 async function inspectAndDeleteOwnerRejections(args: {
@@ -538,9 +634,11 @@ async function inspectAndDeleteOwnerRejections(args: {
   connectionId: string;
   connectorId: string;
   dbPath?: string;
-  firstReceiptId: string;
+  foreignConnectionId: string;
+  foreignOwnerSubjectId: string;
+  foreignReceiptId: string;
   ownerSubjectId: string;
-  secondReceiptId: string;
+  receiptIds: string[];
 }): Promise<void> {
   await withHarness(
     {
@@ -551,56 +649,63 @@ async function inspectAndDeleteOwnerRejections(args: {
     async ({ asUrl }) => {
       const sessionCookie = await loginOwnerSession(asUrl);
 
-      const unauthenticated = await fetchJson(
+      const unauthenticatedList = await fetchJson(
         `${asUrl}/_ref/connections/${encodeURIComponent(args.connectionId)}/record-rejections`,
         { headers: { Accept: "application/json" } }
       );
-      assert.equal(unauthenticated.status, 401, "owner-session gate must reject bare callers");
+      assert.equal(unauthenticatedList.status, 401, "owner-session gate must reject bare list callers");
+      const unauthenticatedDetail = await fetchJson(
+        `${asUrl}/_ref/connections/${encodeURIComponent(args.connectionId)}/record-rejections/${encodeURIComponent(
+          args.receiptIds[0] as string
+        )}`,
+        { headers: { Accept: "application/json" } }
+      );
+      assert.equal(unauthenticatedDetail.status, 401, "owner-session gate must reject bare detail callers");
 
-      const firstPage = await listRejections(asUrl, sessionCookie, args.connectionId, 1);
-      assert.equal(firstPage.status, 200, JSON.stringify(firstPage.body));
-      const firstPageBody = firstPage.body as {
-        data?: Record<string, unknown>[];
-        has_more?: boolean;
-        next_cursor?: string | null;
-      };
-      assert.equal(firstPageBody.data?.length, 1, "limit=1 must page, not disclose all rows");
-      assert.equal(firstPageBody.has_more, true);
-      assert.equal(typeof firstPageBody.next_cursor, "string");
-      assert.equal(JSON.stringify(firstPageBody).includes("payload_text"), false);
-      assert.equal(JSON.stringify(firstPageBody).includes("payload_base64"), false);
-      assert.equal(JSON.stringify(firstPageBody).includes("sensitive-"), false);
+      const overLimitPage = await listRejections(asUrl, sessionCookie, args.connectionId, 999);
+      assert.equal(overLimitPage.status, 200, JSON.stringify(overLimitPage.body));
+      assert.equal(JSON.stringify(overLimitPage.body).includes("payload_text"), false);
+      assert.equal(JSON.stringify(overLimitPage.body).includes("payload_base64"), false);
+      assert.equal(JSON.stringify(overLimitPage.body).includes("sensitive-"), false);
 
-      const secondPage = await listRejections(
+      const listedReceiptIds = await collectRejectionReceiptIds({
+        asUrl,
+        connectionId: args.connectionId,
+        excessiveLimit: 999,
+        expectedFirstPageSize: OWNER_INSPECTION_PAGE_CAP,
+        sessionCookie,
+      });
+      assert.deepEqual(
+        listedReceiptIds.sort((a, b) => a.localeCompare(b)),
+        args.receiptIds.toSorted((a, b) => a.localeCompare(b))
+      );
+
+      const foreignList = await listRejections(asUrl, sessionCookie, args.foreignConnectionId, 999);
+      assert.equal(foreignList.status, 404);
+      assert.equal(JSON.stringify(foreignList.body).includes(args.foreignReceiptId), false);
+      assert.equal(JSON.stringify(foreignList.body).includes("sensitive-owner-two"), false);
+      const foreignDetail = await getRejectionDetail(
         asUrl,
         sessionCookie,
-        args.connectionId,
-        10,
-        firstPageBody.next_cursor ?? ""
+        args.foreignConnectionId,
+        args.foreignReceiptId
       );
-      assert.equal(secondPage.status, 200, JSON.stringify(secondPage.body));
-      const secondPageBody = secondPage.body as { data?: Record<string, unknown>[]; has_more?: boolean };
-      assert.equal(secondPageBody.data?.length, 1);
-      assert.equal(secondPageBody.has_more, false);
-      assert.deepEqual(
-        [...(firstPageBody.data ?? []), ...(secondPageBody.data ?? [])]
-          .map((item) => item.receipt_id)
-          .sort((a, b) => String(a).localeCompare(String(b))),
-        [args.firstReceiptId, args.secondReceiptId].sort((a, b) => a.localeCompare(b))
-      );
+      assert.equal(foreignDetail.status, 404);
+      assert.equal(JSON.stringify(foreignDetail.body).includes(args.foreignReceiptId), false);
+      assert.equal(JSON.stringify(foreignDetail.body).includes("sensitive-owner-two"), false);
 
-      const wrongConnection = await getRejectionDetail(asUrl, sessionCookie, "cin_other_owner", args.firstReceiptId);
-      assert.equal(wrongConnection.status, 404);
-
-      const detail = await getRejectionDetail(asUrl, sessionCookie, args.connectionId, args.firstReceiptId);
+      const detail = await getRejectionDetail(asUrl, sessionCookie, args.connectionId, args.receiptIds[0] as string);
       assert.equal(detail.status, 200, JSON.stringify(detail.body));
       const detailBody = detail.body as Record<string, unknown>;
-      assert.equal(detailBody.receipt_id, args.firstReceiptId);
+      assert.equal(detailBody.receipt_id, args.receiptIds[0]);
       assert.equal(detailBody.payload_encoding, "base64");
-      assert.equal(detailBody.payload_text, '{"data":{"id":"declared-id","value":"private"},"key":"wrong-key"}');
+      assert.equal(
+        detailBody.payload_text,
+        '{"data":{"id":"owner-one-0","value":"sensitive-owner-one-0"},"key":"wrong-owner-one-0"}'
+      );
       assert.equal(
         Buffer.from(String(detailBody.payload_base64), "base64").toString("utf8"),
-        '{"data":{"id":"declared-id","value":"private"},"key":"wrong-key"}'
+        '{"data":{"id":"owner-one-0","value":"sensitive-owner-one-0"},"key":"wrong-owner-one-0"}'
       );
 
       const deleted = await deleteConnection(asUrl, sessionCookie, args.connectionId);
@@ -618,6 +723,51 @@ async function inspectAndDeleteOwnerRejections(args: {
         const remaining = getDb()
           .prepare("SELECT COUNT(*) AS count FROM record_rejections WHERE connector_instance_id = ?")
           .get<{ count: number }>(args.connectionId)?.count;
+        assert.equal(remaining, 0);
+      }
+    }
+  );
+
+  await withHarness(
+    {
+      ...backendServerOpts(args),
+      ownerAuthPassword: OWNER_PASSWORD,
+      ownerAuthSubjectId: args.foreignOwnerSubjectId,
+    },
+    async ({ asUrl }) => {
+      const sessionCookie = await loginOwnerSession(asUrl);
+      const list = await listRejections(asUrl, sessionCookie, args.foreignConnectionId, 999);
+      assert.equal(list.status, 200, JSON.stringify(list.body));
+      const listBody = list.body as RecordRejectionListBody;
+      assert.deepEqual(
+        (listBody.data ?? []).map((row) => row.receipt_id),
+        [args.foreignReceiptId]
+      );
+      assert.equal(JSON.stringify(list.body).includes("payload_text"), false);
+      assert.equal(JSON.stringify(list.body).includes("payload_base64"), false);
+      assert.equal(JSON.stringify(list.body).includes("sensitive-owner-two"), false);
+
+      const detail = await getRejectionDetail(asUrl, sessionCookie, args.foreignConnectionId, args.foreignReceiptId);
+      assert.equal(detail.status, 200, JSON.stringify(detail.body));
+      const detailBody = detail.body as Record<string, unknown>;
+      assert.equal(detailBody.receipt_id, args.foreignReceiptId);
+      assert.equal(
+        detailBody.payload_text,
+        '{"data":{"id":"owner-two","value":"sensitive-owner-two"},"key":"wrong-owner-two"}'
+      );
+
+      const deleted = await deleteConnection(asUrl, sessionCookie, args.foreignConnectionId);
+      assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+      if (args.backend === "postgres") {
+        const remaining = await postgresQuery<{ count: string }>(
+          "SELECT COUNT(*)::bigint AS count FROM record_rejections WHERE connector_instance_id = $1",
+          [args.foreignConnectionId]
+        );
+        assert.equal(Number(remaining.rows[0]?.count ?? 0), 0);
+      } else {
+        const remaining = getDb()
+          .prepare("SELECT COUNT(*) AS count FROM record_rejections WHERE connector_instance_id = ?")
+          .get<{ count: number }>(args.foreignConnectionId)?.count;
         assert.equal(remaining, 0);
       }
     }
