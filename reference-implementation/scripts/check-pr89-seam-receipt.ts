@@ -52,6 +52,7 @@ const FORBIDDEN_RESPONSE_KEYS = new Set([
   "set-cookie",
   "token",
 ]);
+const FORBIDDEN_RESPONSE_KEY_PARTS = new Set(["bearer", "cookie", "credentials", "password", "secret", "token"]);
 const TOKEN_VALUE_PATTERN = /\b(?:rt|tok)_[A-Za-z0-9_-]{12,}\b/;
 const DYNAMIC_LOCAL_PORT_PATTERN = /https?:\/\/(?:127\.0\.0\.1|localhost):\d+/;
 
@@ -151,7 +152,15 @@ function assertSafeResponseValue(value: Json, path = "response_envelopes"): void
   }
   if (value && typeof value === "object") {
     for (const [key, entry] of Object.entries(value)) {
-      if (FORBIDDEN_RESPONSE_KEYS.has(key.toLowerCase())) {
+      const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+      const keyParts = normalizedKey.split("_").filter(Boolean);
+      const secretBearingKey =
+        FORBIDDEN_RESPONSE_KEYS.has(normalizedKey) ||
+        keyParts.some((part) => FORBIDDEN_RESPONSE_KEY_PARTS.has(part)) ||
+        (keyParts.includes("authorization") && keyParts.includes("header")) ||
+        (keyParts.includes("api") && keyParts.includes("key")) ||
+        (keyParts.includes("client") && keyParts.includes("assertion"));
+      if (secretBearingKey) {
         fail(`${path} contains forbidden secret-bearing key '${key}'`);
       }
       assertSafeResponseValue(entry, `${path}.${key}`);

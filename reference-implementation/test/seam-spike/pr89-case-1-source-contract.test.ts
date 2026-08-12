@@ -42,7 +42,7 @@ function assertAuthCode(code: ApprovedAuthorizationError["code"], mutate: (value
   );
 }
 
-test("Case 1 parses Source rights into one provenance-neutral authorization", () => {
+test("persisted grant and approved RAR project to equal neutral authorization", async (t) => {
   const declaration = fixture("source.json");
   const grant = fixture("grant-v01.json");
   const rar = fixture("rar-approved.json");
@@ -58,28 +58,30 @@ test("Case 1 parses Source rights into one provenance-neutral authorization", ()
     ]
   );
 
-  const changedBindingFacts = clone(grant);
-  changedBindingFacts.client = { client_id: "different-client" };
-  changedBindingFacts.subject = { id: "different-subject" };
-  changedBindingFacts.grant_id = "different-grant";
-  assert.deepEqual(parseResolvedGrantApprovedAuthorization(changedBindingFacts, declaration), fromGrant);
+  await t.test("provenance variants stay outside equality and mismatches fail before projection", () => {
+    const changedBindingFacts = clone(grant);
+    changedBindingFacts.client = { client_id: "different-client" };
+    changedBindingFacts.subject = { id: "different-subject" };
+    changedBindingFacts.grant_id = "different-grant";
+    assert.deepEqual(parseResolvedGrantApprovedAuthorization(changedBindingFacts, declaration), fromGrant);
 
-  const providerDeclaration = clone(declaration);
-  (providerDeclaration.source as Record<string, unknown>).kind = "provider_native";
-  const providerGrant = clone(grant);
-  (providerGrant.source as Record<string, unknown>).kind = "provider_native";
-  const providerRar = clone(rar);
-  (providerRar.source as Record<string, unknown>).kind = "provider_native";
-  assert.deepEqual(parseResolvedGrantApprovedAuthorization(providerGrant, providerDeclaration), fromGrant);
-  assert.deepEqual(parseGrantedAuthorizationDetail(providerRar, providerDeclaration).authorization, fromGrant);
+    const providerDeclaration = clone(declaration);
+    (providerDeclaration.source as Record<string, unknown>).kind = "provider_native";
+    const providerGrant = clone(grant);
+    (providerGrant.source as Record<string, unknown>).kind = "provider_native";
+    const providerRar = clone(rar);
+    (providerRar.source as Record<string, unknown>).kind = "provider_native";
+    assert.deepEqual(parseResolvedGrantApprovedAuthorization(providerGrant, providerDeclaration), fromGrant);
+    assert.deepEqual(parseGrantedAuthorizationDetail(providerRar, providerDeclaration).authorization, fromGrant);
 
-  const mismatched = clone(rar);
-  (mismatched.source as Record<string, unknown>).kind = "provider_native";
-  assert.throws(
-    () => parseGrantedAuthorizationDetail(mismatched, declaration),
-    (error: unknown) =>
-      error instanceof CoreSourceAuthorizationError && error.code === "source.authorization_details_invalid"
-  );
+    const mismatched = clone(rar);
+    (mismatched.source as Record<string, unknown>).kind = "provider_native";
+    assert.throws(
+      () => parseGrantedAuthorizationDetail(mismatched, declaration),
+      (error: unknown) =>
+        error instanceof CoreSourceAuthorizationError && error.code === "source.authorization_details_invalid"
+    );
+  });
 
   const invalidCases: [ApprovedAuthorizationError["code"], (value: Record<string, unknown>) => void][] = [
     [
@@ -183,18 +185,20 @@ test("Case 1 parses Source rights into one provenance-neutral authorization", ()
       },
     ],
   ];
-  for (const [code, mutate] of invalidCases) {
-    assertAuthCode(code, mutate);
-  }
+  await t.test("invalid and widening mutations return stable authorization codes", () => {
+    for (const [code, mutate] of invalidCases) {
+      assertAuthCode(code, mutate);
+    }
 
-  const widened = clone(fromRar);
-  const [widenedStream] = widened.streams;
-  assert.ok(widenedStream);
-  widenedStream.instance_ids.push("account-c");
-  assert.throws(
-    () => requireApprovedAuthorizationNarrowing(widened, fromGrant),
-    (error: unknown) => error instanceof ApprovedAuthorizationError && error.code === "auth.widened"
-  );
+    const widened = clone(fromRar);
+    const [widenedStream] = widened.streams;
+    assert.ok(widenedStream);
+    widenedStream.instance_ids.push("account-c");
+    assert.throws(
+      () => requireApprovedAuthorizationNarrowing(widened, fromGrant),
+      (error: unknown) => error instanceof ApprovedAuthorizationError && error.code === "auth.widened"
+    );
+  });
 
   writePr89CaseOutput({
     case_id: "case-1",
@@ -204,7 +208,7 @@ test("Case 1 parses Source rights into one provenance-neutral authorization", ()
       "instance_and_field_rows_observed",
       "invalid_mutations_rejected",
     ],
-    oracle_code: "source_contract_and_neutral_equality",
+    oracle_code: "equal",
     response_envelopes: [],
     schema: "pdpp.pr89.case-output.v1",
   });

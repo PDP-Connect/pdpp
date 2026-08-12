@@ -3,6 +3,8 @@
 
 import { writeFileSync } from "node:fs";
 
+import { canonicalJson, type Json } from "../../scripts/pr89-seam-evidence-contract.ts";
+
 export interface Pr89CaseOutput {
   case_id: `case-${1 | 2 | 3 | 4}`;
   observations: string[];
@@ -17,5 +19,6 @@ export function writePr89CaseOutput(output: Pr89CaseOutput): void {
     return;
   }
   const observations = [...new Set(output.observations)].sort();
-  writeFileSync(outputPath, `${JSON.stringify({ ...output, observations })}\n`, { encoding: "utf8", mode: 0o600 });
+  const canonical = canonicalJson({ ...output, observations } as unknown as Json);
+  writeFileSync(outputPath, `${canonical}\n`, { encoding: "utf8", mode: 0o600 });
 }

@@ -179,18 +179,26 @@ test("receipt verification rejects a canonical but invented claim", async () => 
 
 test("case output rejects secret-bearing response envelopes", () => {
   const definition = CASE_DEFINITIONS["case-2"];
-  assert.throws(
-    () =>
-      parseCaseOutput(
-        {
-          case_id: "case-2",
-          observations: exactSortedValues(definition.observations),
-          oracle_code: definition.oracleCode,
-          response_envelopes: [{ access_token: "tok_not_allowed" }],
-          schema: CASE_OUTPUT_SCHEMA,
-        },
-        "case-2"
-      ),
-    SECRET_RESPONSE
-  );
+  for (const responseEnvelope of [
+    { access_token: "tok_not_allowed" },
+    { authorization_header: "Bearer not-allowed" },
+    { bearer_token: "not-allowed" },
+    { client_password: "not-allowed" },
+    { secret: "not-allowed" },
+  ]) {
+    assert.throws(
+      () =>
+        parseCaseOutput(
+          {
+            case_id: "case-2",
+            observations: exactSortedValues(definition.observations),
+            oracle_code: definition.oracleCode,
+            response_envelopes: [responseEnvelope],
+            schema: CASE_OUTPUT_SCHEMA,
+          },
+          "case-2"
+        ),
+      SECRET_RESPONSE
+    );
+  }
 });

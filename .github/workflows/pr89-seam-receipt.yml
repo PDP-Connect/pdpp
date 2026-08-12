@@ -71,7 +71,7 @@ jobs:
       - name: Test receipt derivation and fail-closed checks
         run: pnpm --filter pdpp-reference-implementation test:seam:pr89:receipt
       - name: Validate PR89 OpenSpec target
-        run: pnpm exec openspec validate harden-pdpp-authorization-and-0-1-migration --strict
+        run: pnpm dlx @fission-ai/openspec@1.8.0 validate harden-pdpp-authorization-and-0-1-migration --strict
       - name: Execute all seven cases and generate receipt
         id: seam
         continue-on-error: true

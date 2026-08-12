@@ -94,7 +94,7 @@ test("captured introspection context enforces the response-only request matrix w
         const error = body.error as Record<string, unknown> | undefined;
         assert.equal(response.status, 401, `${denied.name}: ${JSON.stringify(body)}`);
         assert.equal(error?.code, denied.code, denied.name);
-        return { code: error?.code, matrix: denied.name, status: response.status };
+        return { error: error?.code, matrix: denied.name, status: response.status };
       })
     );
     const envelopes: Record<string, unknown>[] = [{ matrix: "allowed", status: allowed.status }, ...deniedEnvelopes];

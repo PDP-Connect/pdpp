@@ -243,6 +243,7 @@ export async function runSeam(argv = process.argv.slice(2)): Promise<void> {
   await rm(EVIDENCE_ROOT, { force: true, recursive: true });
   await rm(CASE_OUTPUT_ROOT, { force: true, recursive: true });
   await rm(RECEIPT_PATH, { force: true });
+  await mkdir(CASE_OUTPUT_ROOT, { recursive: true });
   const missing = new Map<CaseId, string[]>();
   for (const caseId of CASE_EXECUTION_ORDER) {
     const absent = missingInputs(caseId);

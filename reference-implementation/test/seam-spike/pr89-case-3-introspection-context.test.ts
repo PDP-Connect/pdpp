@@ -128,7 +128,7 @@ test("authenticated HTTP introspection resolves context and rejects the fixed mu
       assert.equal(response.status, 401, `${name}: ${JSON.stringify(body)}`);
       assert.equal(error?.code, current.expected, name);
       assert.equal(introspectionCalls, before + 1, name);
-      envelopes.push({ code: error?.code, fixture: name, status: response.status });
+      envelopes.push({ error: error?.code, fixture: name, status: response.status });
     }
 
     writePr89CaseOutput({

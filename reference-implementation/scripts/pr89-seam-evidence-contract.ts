@@ -123,6 +123,8 @@ export const CASE_DEFINITIONS = {
   },
   "case-3": {
     fixturePaths: [
+      "reference-implementation/test/seam-spike/fixtures/pr89/rar-request.json",
+      "reference-implementation/test/seam-spike/fixtures/pr89/source.json",
       "reference-implementation/test/seam-spike/fixtures/pr89/introspection/mutations/client-mismatch.json",
       "reference-implementation/test/seam-spike/fixtures/pr89/introspection/mutations/expired.json",
       "reference-implementation/test/seam-spike/fixtures/pr89/introspection/mutations/field-mismatch.json",
@@ -140,12 +142,16 @@ export const CASE_DEFINITIONS = {
       "reference-implementation/test/seam-spike/fixtures/pr89/introspection/valid.json",
     ],
     implementationInputPaths: [
-      "reference-implementation/server/source-approved-authorization.ts",
       "reference-implementation/server/core-source-authorization.ts",
       "reference-implementation/operations/as-introspect/index.ts",
-      "reference-implementation/server/auth-middleware.ts",
       "reference-implementation/server/auth.ts",
+      "reference-implementation/server/index.ts",
       "reference-implementation/server/introspection-http.ts",
+      "reference-implementation/server/routes/as-oauth.ts",
+      "reference-implementation/server/routes/rs-read.ts",
+      "reference-implementation/server/source-approved-authorization.ts",
+      "reference-implementation/server/source-introspection-context.ts",
+      "reference-implementation/test/seam-spike/pr89-oauth-harness.ts",
     ],
     observations: [
       "authenticated_http_introspection",
@@ -161,15 +167,23 @@ export const CASE_DEFINITIONS = {
   },
   "case-4": {
     fixturePaths: [
-      "reference-implementation/test/seam-spike/fixtures/pr89/introspection/valid.json",
+      "reference-implementation/test/seam-spike/fixtures/pr89/rar-request.json",
+      "reference-implementation/test/seam-spike/fixtures/pr89/records.json",
       "reference-implementation/test/seam-spike/fixtures/pr89/source.json",
     ],
     implementationInputPaths: [
-      "reference-implementation/server/source-approved-authorization.ts",
       "reference-implementation/server/core-source-authorization.ts",
-      "reference-implementation/server/auth-middleware.ts",
+      "reference-implementation/operations/as-introspect/index.ts",
+      "reference-implementation/server/auth.ts",
+      "reference-implementation/server/index.ts",
+      "reference-implementation/server/introspection-http.ts",
       "reference-implementation/server/record-filters.ts",
+      "reference-implementation/server/records.ts",
+      "reference-implementation/server/routes/as-oauth.ts",
       "reference-implementation/server/routes/rs-read.ts",
+      "reference-implementation/server/source-approved-authorization.ts",
+      "reference-implementation/server/source-introspection-context.ts",
+      "reference-implementation/test/seam-spike/pr89-oauth-harness.ts",
     ],
     observations: ["allowed_matrix_passed", "as_disabled", "denied_matrix_passed", "response_only_enforcement"],
     oracleCode: "response_only",
@@ -207,8 +221,11 @@ export const CASE_DEFINITIONS = {
   "case-6": {
     fixturePaths: ["reference-implementation/test/seam-spike/fixtures/pr89/legacy-grant-v01.bytes"],
     implementationInputPaths: [
-      "reference-implementation/server/auth-middleware.ts",
+      "reference-implementation/operations/as-introspect/index.ts",
       "reference-implementation/server/auth.ts",
+      "reference-implementation/server/index.ts",
+      "reference-implementation/server/introspection-http.ts",
+      "reference-implementation/server/routes/as-oauth.ts",
     ],
     observations: [
       "before_introspection_or_route",
@@ -289,6 +306,7 @@ export const RECEIPT_STATIC_PATHS = [
   "reference-implementation/scripts/check-pr89-seam-receipt.ts",
   "reference-implementation/scripts/pr89-seam-evidence-contract.ts",
   "reference-implementation/scripts/run-pr89-seam.ts",
+  "reference-implementation/test/seam-spike/pr89-case-output.ts",
   "reference-implementation/test/seam-spike/artifacts/.gitignore",
   "reference-implementation/test/seam-spike/pr89-receipt.schema.json",
   "scripts/test-accounting/node-reporter.ts",

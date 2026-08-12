@@ -329,6 +329,7 @@ if (POSTGRES_URL) {
     server = await startServer({
       asPort: 0,
       dbPath: ":memory:",
+      introspectionCallerCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
       ownerAuthPassword: "",
       quiet: true,
       reconcilePolyfillManifests: false,

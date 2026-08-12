@@ -138,7 +138,7 @@ function authorizeUrl(asUrl: string, clientId: string, verifier: string, detail:
   return url;
 }
 
-test("Case 2 returns the narrowed Source authorization through the real OAuth code flow", async () => {
+test("real authorization-code PKCE flow preserves narrowed approval and policy terms", async (t) => {
   const tempBase = join(homedir(), ".tmp");
   mkdirSync(tempBase, { recursive: true });
   const tempDir = mkdtempSync(join(tempBase, "pdpp-pr89-case2-"));
@@ -186,8 +186,10 @@ test("Case 2 returns the narrowed Source authorization through the real OAuth co
       redirect: "manual",
     });
     const invalidBody = (await invalidResponse.json()) as { error: string };
-    assert.equal(invalidResponse.status, 400, JSON.stringify(invalidBody));
-    assert.equal(invalidBody.error, "invalid_authorization_details");
+    await t.test("invalid Source selection maps to invalid_authorization_details", () => {
+      assert.equal(invalidResponse.status, 400, JSON.stringify(invalidBody));
+      assert.equal(invalidBody.error, "invalid_authorization_details");
+    });
 
     const authorize = await fetch(authorizeUrl(asUrl, clientId, verifier, requestDetail), {
       redirect: "manual",
@@ -291,7 +293,7 @@ test("Case 2 returns the narrowed Source authorization through the real OAuth co
         "policy_terms_preserved",
         "source_error_mapped",
       ],
-      oracle_code: "oauth_partial_approval",
+      oracle_code: "partial_approval",
       response_envelopes: [
         {
           authorization_details: tokenBody.authorization_details,

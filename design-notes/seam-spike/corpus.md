@@ -222,10 +222,10 @@ OAuth response returns RFC 9396 `invalid_authorization_details`, recorded as
 
 ### Case 3: Authenticated AS to RS context resolution
 
-Fixtures: `introspection/valid.json` plus the table-driven mutation fixtures
-under `introspection/mutations/`. Enter through the RS. It calls authenticated
-RFC 7662 introspection using the fixed local confidential-RS credentials and
-the exact RS audience.
+Fixtures: `source.json`, `rar-request.json`, `introspection/valid.json`, and the
+table-driven mutation fixtures under `introspection/mutations/`. Enter through
+the RS. It calls authenticated RFC 7662 introspection using the fixed local
+confidential-RS credentials and the exact RS audience.
 
 Test the exact mutation fixtures `wrong-credentials.json`, `wrong-issuer.json`,
 `wrong-audience.json`, `expired.json`, `stale-cache.json`, `inactive.json`,
@@ -244,13 +244,11 @@ the response.
 
 ### Case 4: Response-only RS enforcement
 
-Fixtures: `introspection/valid.json` as the captured Case 3 response,
-`source.json` as the retained declaration, and `records.json` as the local
-record matrix. After capture, disable the AS endpoint and
-use only the decoded context. Test an allowed stream, allowed instance,
-allowed field, in-range record, allowed resource, ungranted stream, wrong
-instance, ungranted field, out-of-range record, and a record outside the
-resource allowlist.
+Fixtures: `source.json`, `rar-request.json`, and `records.json`. Capture the
+live introspection response, disable the AS endpoint, and use only the decoded
+context. Test an allowed stream, allowed instance, allowed field, in-range
+record, allowed resource, ungranted stream, wrong instance, ungranted field,
+out-of-range record, and a record outside the resource allowlist.
 
 Oracle: allowed requests succeed. Wrong instances return
 `context.instance_mismatch`, ungranted streams return
