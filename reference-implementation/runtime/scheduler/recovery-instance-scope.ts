@@ -10,11 +10,7 @@ export function matchesRecoveryInstance(
   return (rowInstanceId || defaultInstanceId) === requestedInstanceId;
 }
 
-export async function mergeMarkerEvidence(inMemory: boolean, durable: Promise<boolean>): Promise<boolean> {
-  return [inMemory, await durable].includes(true);
-}
-
-export async function hasDurableLegacyMarker(
+export async function resolveSchedulerMarkers(
   checker: (
     connectorId: string,
     connectorInstanceId: string,
@@ -24,57 +20,18 @@ export async function hasDurableLegacyMarker(
   ) => Promise<boolean> | boolean,
   connectorId: string,
   connectorInstanceId: string,
-  prefix: string,
-  reasonClass: string,
-  history: readonly { status: string; completedAt: string }[]
-): Promise<boolean> {
-  const sinceCompletedAt = history.findLast((record) => record.status === "succeeded")?.completedAt ?? null;
-  return await checker(connectorId, connectorInstanceId, prefix, reasonClass, sinceCompletedAt);
-}
-
-export async function resolveSchedulerMarker(
-  inMemory: boolean,
-  checker: Parameters<typeof hasDurableLegacyMarker>[0],
-  connectorId: string,
-  connectorInstanceId: string,
-  prefix: string,
-  reasonClass: string,
-  history: readonly { status: string; completedAt: string }[]
-): Promise<boolean> {
-  return await mergeMarkerEvidence(
-    inMemory,
-    hasDurableLegacyMarker(checker, connectorId, connectorInstanceId, prefix, reasonClass, history)
-  );
-}
-
-export async function resolveSchedulerMarkers(
-  checker: Parameters<typeof hasDurableLegacyMarker>[0],
-  connectorId: string,
-  connectorInstanceId: string,
   history: readonly { status: string; completedAt: string }[],
   reasonClass: string,
   backoffStarted: boolean,
   gaveUp: boolean
 ): Promise<{ readonly backoffStarted: boolean; readonly gaveUp: boolean }> {
-  const [resolvedBackoffStarted, resolvedGaveUp] = await Promise.all([
-    resolveSchedulerMarker(
-      backoffStarted,
-      checker,
-      connectorId,
-      connectorInstanceId,
-      "schedule.back_off.started:",
-      reasonClass,
-      history
-    ),
-    resolveSchedulerMarker(
-      gaveUp,
-      checker,
-      connectorId,
-      connectorInstanceId,
-      "schedule.gave_up:",
-      reasonClass,
-      history
-    ),
+  const sinceCompletedAt = history.findLast((record) => record.status === "succeeded")?.completedAt ?? null;
+  const [legacyBackoffStarted, legacyGaveUp] = await Promise.all([
+    checker(connectorId, connectorInstanceId, "schedule.back_off.started:", reasonClass, sinceCompletedAt),
+    checker(connectorId, connectorInstanceId, "schedule.gave_up:", reasonClass, sinceCompletedAt),
   ]);
-  return { backoffStarted: resolvedBackoffStarted, gaveUp: resolvedGaveUp };
+  return {
+    backoffStarted: [backoffStarted, legacyBackoffStarted].includes(true),
+    gaveUp: [gaveUp, legacyGaveUp].includes(true),
+  };
 }
