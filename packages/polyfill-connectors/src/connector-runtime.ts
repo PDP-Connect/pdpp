@@ -838,18 +838,41 @@ export function runConnector(config: RunConnectorConfig): void {
     // Fire the INTERACTION; response arrives separately on stdin.
     emit(wrapped).catch((): undefined => undefined);
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = (): void => {
+        rl.off("line", onLine);
+        rl.off("close", onClose);
+        process.stdin.off("end", onClose);
+        process.stdin.off("error", onError);
+      };
+      const settle = (fn: () => void): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        fn();
+      };
       const onLine = (line: string): void => {
         try {
           const parsed = JSON.parse(line) as InteractionResponse;
           if (parsed.type === "INTERACTION_RESPONSE" && parsed.request_id === request_id) {
-            rl.off("line", onLine);
-            resolve(parsed);
+            settle(() => resolve(parsed));
           }
         } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)));
+          settle(() => reject(err instanceof Error ? err : new Error(String(err))));
         }
       };
+      const onClose = (): void => {
+        settle(() => reject(new Error(`Interaction ${request_id} ended before a response`)));
+      };
+      const onError = (err: Error): void => {
+        settle(() => reject(new Error(`Interaction ${request_id} stdin error: ${err.message}`)));
+      };
       rl.on("line", onLine);
+      rl.once("close", onClose);
+      process.stdin.once("end", onClose);
+      process.stdin.once("error", onError);
     });
   };
 

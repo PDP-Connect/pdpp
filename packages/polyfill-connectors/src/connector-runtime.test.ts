@@ -676,21 +676,29 @@ test("makeBrowserInteractionKeepalive records poll-only disconnect timing withou
     },
   });
 
-  assert.equal((await wrapped({ kind: "otp", message: "Enter OTP" })).status, "success");
-  const responseDiagnostic = JSON.parse(
-    progressMessages.at(-1)?.replace(/^browser_surface\.diagnostic /u, "") ?? "{}"
-  ) as {
-    keepalive?: {
-      disconnectEventElapsedMs?: number;
-      firstObservedDisconnectedElapsedMs?: number;
-      pingAttempts: number;
-      skippedDisconnected: number;
+  // The production readline owner keeps the event loop alive while waiting
+  // for input. Keep that ownership explicit in this synthetic poll-only test;
+  // the keepalive timer itself is intentionally unref'ed.
+  const inputOwner = setTimeout(() => undefined, 100);
+  try {
+    assert.equal((await wrapped({ kind: "otp", message: "Enter OTP" })).status, "success");
+    const responseDiagnostic = JSON.parse(
+      progressMessages.at(-1)?.replace(/^browser_surface\.diagnostic /u, "") ?? "{}"
+    ) as {
+      keepalive?: {
+        disconnectEventElapsedMs?: number;
+        firstObservedDisconnectedElapsedMs?: number;
+        pingAttempts: number;
+        skippedDisconnected: number;
+      };
     };
-  };
-  assert.equal(responseDiagnostic.keepalive?.disconnectEventElapsedMs, undefined);
-  assert.equal(typeof responseDiagnostic.keepalive?.firstObservedDisconnectedElapsedMs, "number");
-  assert.equal(responseDiagnostic.keepalive?.skippedDisconnected, 1);
-  assert.equal(responseDiagnostic.keepalive?.pingAttempts, 1);
+    assert.equal(responseDiagnostic.keepalive?.disconnectEventElapsedMs, undefined);
+    assert.equal(typeof responseDiagnostic.keepalive?.firstObservedDisconnectedElapsedMs, "number");
+    assert.equal(responseDiagnostic.keepalive?.skippedDisconnected, 1);
+    assert.equal(responseDiagnostic.keepalive?.pingAttempts, 1);
+  } finally {
+    clearTimeout(inputOwner);
+  }
 });
 
 function delay(ms: number): Promise<void> {
