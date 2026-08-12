@@ -22,8 +22,8 @@
  *     Patchright's stealth patches are what make the session credible.
  *   - `ensureSession` (src/auto-login/venmo.ts) probes/establishes a live
  *     venmo.com session: reused from the persistent profile when already
- *     live, credential-assisted when `VENMO_USERNAME`/`VENMO_PASSWORD` are
- *     set, or a `manual_action` browser handoff when they are not — the
+ *     live, credential-assisted when setup supplies credentials, or a
+ *     `manual_action` browser handoff when they are not — the
  *     owner can always sign in by hand with nothing saved.
  *   - Once the session is live, every stream reads the SAME structured
  *     JSON endpoints the v0.1.0 connector used
@@ -461,20 +461,13 @@ if (isMainModule(import.meta.url)) {
     // See VENMO_RETRYABLE_PATTERN's doc above for why this is an exact-name
     // pattern rather than the wildcard/bare-vocabulary form it replaced (B4).
     retryablePattern: VENMO_RETRYABLE_PATTERN,
-    // No `auth:` config — credentials are optional. src/auto-login/venmo.ts
-    // reads VENMO_USERNAME/VENMO_PASSWORD directly from process.env only to
-    // ASSIST login when present, and falls to a manual_action browser
-    // handoff when absent, so a run with zero saved credentials still
-    // completes via owner-driven sign-in. Declaring `auth: { kind: "env",
-    // required: [...] }` here would block every run behind a blocking
-    // `credentials` INTERACTION before ensureSession ever gets a chance to
-    // hand off to the browser — see /tmp/venmo-provider-path-audit-0810.md
-    // and the reddit/amazon precedent this connector now follows.
+    auth: { kind: "env", required: ["VENMO_USERNAME", "VENMO_PASSWORD"] },
     browser: { profileName: "venmo" },
-    async ensureSession({ capture, checkpoint, onCredentialSubmit, page, sendInteraction }): Promise<void> {
+    async ensureSession({ capture, checkpoint, credentials, onCredentialSubmit, page, sendInteraction }): Promise<void> {
       await ensureVenmoSession({
         ...(capture ? { capture } : {}),
         checkpoint,
+        credentials,
         onCredentialSubmit,
         page,
         sendInteraction,

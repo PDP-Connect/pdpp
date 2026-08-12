@@ -264,6 +264,15 @@ test("ensureVenmoSession: hands off to manual_action when no credentials are sav
   });
 });
 
+test("ensureVenmoSession: ignores provider credential environment variables and uses the setup bundle", async () => {
+  await withVenmoCredentials(async () => {
+    const { page } = makeProbePage(false);
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await assert.rejects(ensureVenmoSession({ page, sendInteraction }), /venmo_login_manual_incomplete/);
+    assert.equal(requests[0]?.kind, "manual_action");
+  });
+});
+
 test("ensureVenmoSession: manual browser login succeeding is accepted without asking for a password", async () => {
   await withoutVenmoCredentials(async () => {
     const { page, setLive } = makeProbePage(false);
@@ -298,7 +307,12 @@ test("ensureVenmoSession: captures a locator probe of the login page, recording 
       },
     };
     const { sendInteraction } = recordingSendInteraction();
-    const result = await ensureVenmoSession({ capture: capture as CaptureSession, page, sendInteraction });
+    const result = await ensureVenmoSession({
+      capture: capture as CaptureSession,
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page,
+      sendInteraction,
+    });
     assert.equal(result.live, true);
     assert.equal(fillCalls.username, "test-user");
     assert.ok(probeCalls.length > 0, "expected at least one locator-probe capture during login");
@@ -322,7 +336,11 @@ test("ensureVenmoSession: fills saved credentials and completes login without an
   await withVenmoCredentials(async () => {
     const { fillCalls, page } = makePageWithWorkingLoginForm();
     const { requests, sendInteraction } = recordingSendInteraction();
-    const result = await ensureVenmoSession({ page, sendInteraction });
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page,
+      sendInteraction,
+    });
     assert.equal(result.live, true);
     assert.equal(fillCalls.username, "test-user");
     assert.equal(fillCalls.password, "test-password");
@@ -336,6 +354,7 @@ test("ensureVenmoSession: onCredentialSubmit fires exactly once when the saved p
     const { sendInteraction } = recordingSendInteraction();
     let markerCount = 0;
     const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
       onCredentialSubmit: () => {
         markerCount += 1;
       },
@@ -411,7 +430,11 @@ test("ensureVenmoSession: an OTP input drives sendInteraction with kind=otp, nev
       },
     };
     const { requests, sendInteraction } = recordingSendInteraction();
-    const result = await ensureVenmoSession({ page: page as Page, sendInteraction });
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page: page as Page,
+      sendInteraction,
+    });
     assert.equal(result.live, true);
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.kind, "otp");
@@ -425,7 +448,11 @@ test("ensureVenmoSession: an expired session (dead initial probe) with saved cre
   await withVenmoCredentials(async () => {
     const { fillCalls, page } = makePageWithWorkingLoginForm();
     const { sendInteraction } = recordingSendInteraction();
-    const result = await ensureVenmoSession({ page, sendInteraction });
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page,
+      sendInteraction,
+    });
     assert.equal(result.live, true, "expired session must be repaired via the credential-assisted form, not just fail");
     assert.equal(fillCalls.username, "test-user");
   });

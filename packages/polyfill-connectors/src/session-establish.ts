@@ -56,6 +56,8 @@ export interface EnsureSessionArgs {
     status: AssistanceCompletionStatus,
     extra?: { message?: string }
   ) => Promise<void>;
+  /** Credentials resolved by the runtime's declared setup auth strategy. */
+  credentials: Readonly<Record<string, string>>;
   context: BrowserContext;
   /**
    * Call this at the exact line `ensureSession` submits a saved credential to

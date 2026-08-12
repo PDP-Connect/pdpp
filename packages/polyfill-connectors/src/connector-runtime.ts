@@ -1268,6 +1268,7 @@ async function runInBrowser(args: {
           checkpoint: watchdog.checkpoint,
           completeAssistance: watchdog.wrapCompleteAssistance(browserCompleteAssistance),
           context: ctx,
+          credentials: baseCtx.credentials,
           page: page as Page,
           name,
           progress,

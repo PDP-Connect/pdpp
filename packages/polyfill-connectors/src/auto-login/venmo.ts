@@ -17,7 +17,7 @@
  * Flow:
  *   1. Probe — page-context fetch to `/account` with `credentials:
  *      "include"`; a 2xx with a `user.id` means the session is live.
- *   2. If dead and `VENMO_USERNAME`/`VENMO_PASSWORD` are set, drive
+ *   2. If dead and setup-supplied credentials are available, drive
  *      venmo.com's own sign-in form (assists login only; never a
  *      substitute for it — the owner may still see a device-approval or
  *      SMS/2FA prompt Venmo serves to its own web app).
@@ -109,6 +109,7 @@ const noopCheckpoint: SessionCheckpointFn = () => Promise.resolve();
 interface EnsureVenmoSessionArgs {
   capture?: CaptureSession | null;
   checkpoint?: SessionCheckpointFn;
+  credentials?: Readonly<Record<string, string>>;
   onCredentialSubmit?: () => void;
   page: Page;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
@@ -474,6 +475,7 @@ async function loginWithSavedCredentials({
 export async function ensureVenmoSession({
   capture,
   checkpoint = noopCheckpoint,
+  credentials = {},
   onCredentialSubmit,
   page,
   sendInteraction,
@@ -485,8 +487,8 @@ export async function ensureVenmoSession({
     return initial;
   }
 
-  const username = process.env.VENMO_USERNAME;
-  const password = process.env.VENMO_PASSWORD;
+  const username = credentials.VENMO_USERNAME;
+  const password = credentials.VENMO_PASSWORD;
   if (!(username && password)) {
     return await ensureManualSessionWithoutCredentials({
       ...(capture ? { capture } : {}),
