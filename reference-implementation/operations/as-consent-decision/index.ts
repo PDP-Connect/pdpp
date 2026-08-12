@@ -28,13 +28,13 @@ export interface AsConsentDecisionInput {
   readonly action: AsConsentDecisionAction;
   readonly approvalId: string | null | undefined;
   readonly approveOptions?: {
-    readonly ai_training_consented?: unknown;
+    readonly approval_review_revision?: unknown;
     readonly approvedSourceIndexes?: readonly number[];
     readonly confirmedApproveAll?: boolean;
     readonly sourceNarrowing?: Readonly<Record<number, unknown>>;
   };
   readonly requestUri: string | null | undefined;
-  readonly subjectId: string;
+  readonly subjectId?: string;
 }
 
 export interface AsConsentDecisionPendingRow {
@@ -64,10 +64,10 @@ export interface AsConsentDecisionApproveResult {
 export interface AsConsentDecisionDependencies {
   approveGrant: (
     deviceCode: string,
-    subjectId: string,
+    subjectId: string | undefined,
     opts:
       | {
-          ai_training_consented?: unknown;
+          approval_review_revision?: unknown;
           approvedSourceIndexes?: readonly number[];
           baseUrl?: string | null;
           confirmedApproveAll?: boolean;
@@ -159,7 +159,7 @@ export async function executeAsConsentDecision(
   const traceContext = pending?.request?.trace_context ?? null;
 
   if (input.action === "approve") {
-    const approve = await deps.approveGrant(deviceCode, input.subjectId, input.approveOptions);
+    const approve = await deps.approveGrant(deviceCode, undefined, input.approveOptions);
     return {
       action: "approve",
       grant: approve.grant,

@@ -4,7 +4,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { emitSpineEvent } from "../lib/spine.ts";
 import { configureNativeManifest, registerConnector } from "../server/auth.ts";
+import {
+  type ConnectorSchemaManifestStream,
+  getConnectorFreshnessEvidence as getSchemaBuilderFreshnessEvidence,
+} from "../server/connector-schema-builder.ts";
 import { closeDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { closePostgresStorage } from "../server/postgres-storage.ts";
@@ -137,6 +142,32 @@ async function runConsentGrantRead(backend: Backend, kind: SourceKind): Promise<
         stream: "items",
       }
     );
+    const runAt = new Date().toISOString();
+    await emitSpineEvent({
+      actor_id: connectorKey,
+      actor_type: "runtime",
+      data: {
+        connector_instance_id: connectorInstanceId,
+        source: { id: connectorKey, kind: "connector" },
+      },
+      event_type: "run.completed",
+      object_id: `run_${suffix}`,
+      object_type: "run",
+      occurred_at: runAt,
+      run_id: `run_${suffix}`,
+      source_id: connectorKey,
+      source_kind: "connector",
+      status: "succeeded",
+    });
+    const schemaBuilderEvidence = await getSchemaBuilderFreshnessEvidence({
+      manifest: runtimeManifest(connectorKey) as { capabilities?: unknown; streams: ConnectorSchemaManifestStream[] },
+      storageBinding: { connector_id: connectorKey },
+    });
+    assert.deepEqual(
+      schemaBuilderEvidence.lastRun,
+      { last_at: runAt, status: "succeeded" },
+      "connector-schema-builder must use the storage connector run"
+    );
 
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
@@ -179,9 +210,23 @@ async function runConsentGrantRead(backend: Backend, kind: SourceKind): Promise<
     assert.equal(initiated.status, 201, JSON.stringify(initiated.body));
     assert.ok(initiated.body.request_uri);
 
-    const approved = await fetchJson(`${asUrl}/consent/approve`, {
+    const review = await fetchJson(`${asUrl}/consent/review`, {
       body: JSON.stringify({ request_uri: initiated.body.request_uri, subject_id: OWNER_ID }),
-      headers: { "Content-Type": "application/json" },
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(review.status, 200, JSON.stringify(review.body));
+    assert.equal(
+      typeof review.body.approval_review_revision,
+      "string",
+      "consent review must return approval_review_revision"
+    );
+    const approved = await fetchJson(`${asUrl}/consent/approve`, {
+      body: JSON.stringify({
+        approval_review_revision: review.body.approval_review_revision,
+        request_uri: initiated.body.request_uri,
+      }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
       method: "POST",
     });
     assert.equal(approved.status, 200, JSON.stringify(approved.body));
@@ -209,6 +254,31 @@ async function runConsentGrantRead(backend: Backend, kind: SourceKind): Promise<
         display_name: `Runtime neutrality ${kind}`,
       },
     ]);
+    assert.equal(
+      schema.body.connectors[0].streams[0].freshness.last_attempted_at,
+      runAt,
+      "schema freshness must use the storage connector run, not the source URI"
+    );
+
+    const connectors = await fetchJson(`${rsUrl}/v1/connectors`, {
+      headers: { Authorization: `Bearer ${approved.body.token}` },
+    });
+    assert.equal(connectors.status, 200, JSON.stringify(connectors.body));
+    assert.equal(
+      connectors.body.data[0].streams[0].freshness.last_attempted_at,
+      runAt,
+      "connector discovery freshness must use the storage connector run"
+    );
+
+    const streamMetadata = await fetchJson(`${rsUrl}/v1/streams/items`, {
+      headers: { Authorization: `Bearer ${approved.body.token}` },
+    });
+    assert.equal(streamMetadata.status, 200, JSON.stringify(streamMetadata.body));
+    assert.equal(
+      streamMetadata.body.freshness.last_attempted_at,
+      runAt,
+      "stream freshness must use the storage connector run"
+    );
 
     const records = await fetchJson(`${rsUrl}/v1/streams/items/records`, {
       headers: { Authorization: `Bearer ${approved.body.token}` },
@@ -227,11 +297,88 @@ async function runConsentGrantRead(backend: Backend, kind: SourceKind): Promise<
   }
 }
 
+async function approveConfiguredDefault(backend: Backend, kind: SourceKind): Promise<unknown[]> {
+  const sourceId = `https://sources.example/configured-default-${backend.name}`;
+  const connectorKey = `configured_default_${backend.name}`;
+  let server: TestServer | null = null;
+  try {
+    server = (await startServer({
+      asPort: 0,
+      ...(backend.databaseUrl ? { databaseUrl: backend.databaseUrl, storageBackend: "postgres" as const } : {}),
+      dbPath: ":memory:",
+      nativeManifest: localFulfillment(sourceId, kind, connectorKey),
+      quiet: true,
+      reconcilePolyfillManifests: false,
+      rsPort: 0,
+      startClientEventDeliveryWorker: false,
+    })) as TestServer;
+
+    const asUrl = `http://localhost:${server.asPort}`;
+    const initiated = await fetchJson(`${asUrl}/oauth/par`, {
+      body: JSON.stringify({
+        authorization_details: [
+          {
+            access_mode: "continuous",
+            purpose_code: "https://pdpp.org/purpose/configured_default_neutrality_test",
+            source: { id: sourceId, kind },
+            streams: [{ fields: ["id", "label"], name: "items" }],
+            type: "https://pdpp.org/data-access",
+          },
+        ],
+        client_id: CLIENT_ID,
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(initiated.status, 201, JSON.stringify(initiated.body));
+
+    const review = await fetchJson(`${asUrl}/consent/review`, {
+      body: JSON.stringify({ request_uri: initiated.body.request_uri, subject_id: OWNER_ID }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(review.status, 200, JSON.stringify(review.body));
+    const reviewedInstanceIds = review.body.approval_review?.resolved_streams?.[0]?.instance_ids;
+    assert.deepEqual(
+      reviewedInstanceIds?.length,
+      1,
+      "review resolves the configured default without a stored instance"
+    );
+
+    const approved = await fetchJson(`${asUrl}/consent/approve`, {
+      body: JSON.stringify({
+        approval_review_revision: review.body.approval_review_revision,
+        request_uri: initiated.body.request_uri,
+      }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(approved.status, 200, JSON.stringify(approved.body));
+    assert.deepEqual(
+      approved.body.grant.streams[0].instance_ids,
+      reviewedInstanceIds,
+      "final issuance preserves the configured default selected at review"
+    );
+    return reviewedInstanceIds as unknown[];
+  } finally {
+    await closeServer(server);
+    configureNativeManifest(null);
+    await closePostgresStorage();
+    closeDb();
+  }
+}
+
 test("source.kind is provenance while local connector storage fulfills reads on SQLite", async (t) => {
   for (const kind of ["connector", "provider_native"] as const) {
     // biome-ignore lint/performance/noAwaitInLoops: The runtime backend is process-global, so these journeys must be serialized.
     await t.test(kind, () => runConsentGrantRead({ name: "sqlite" }, kind));
   }
+});
+
+test("configured fulfillment default is identical for connector and provider_native sources on SQLite", async () => {
+  const connector = await approveConfiguredDefault({ name: "sqlite" }, "connector");
+  const providerNative = await approveConfiguredDefault({ name: "sqlite" }, "provider_native");
+  assert.deepEqual(providerNative, connector);
 });
 
 test("source.kind is provenance while local connector storage fulfills reads on PostgreSQL", {
@@ -242,4 +389,16 @@ test("source.kind is provenance while local connector storage fulfills reads on 
     // biome-ignore lint/performance/noAwaitInLoops: The runtime backend is process-global, so these journeys must be serialized.
     await t.test(kind, () => runConsentGrantRead({ databaseUrl: POSTGRES_URL, name: "postgres" }, kind));
   }
+});
+
+test("configured fulfillment default is identical for connector and provider_native sources on PostgreSQL", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL is required",
+}, async () => {
+  assert.ok(POSTGRES_URL);
+  const connector = await approveConfiguredDefault({ databaseUrl: POSTGRES_URL, name: "postgres" }, "connector");
+  const providerNative = await approveConfiguredDefault(
+    { databaseUrl: POSTGRES_URL, name: "postgres" },
+    "provider_native"
+  );
+  assert.deepEqual(providerNative, connector);
 });

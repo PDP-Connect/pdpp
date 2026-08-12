@@ -35,9 +35,14 @@
     "date": "2026-07-30"
   },
   "server/ref-control.ts": {
-    "allowed_mass": 217,
-    "reason": "Fable ruling terminal-read-architecture-fable-0730.md §8 (2026-07-30, identity_inventory) + design doc add-source-perf-design-agy-0730.md R4/R5 (2026-07-30, retained_count_summary). The second increment adds the retained_count_summary named profile to the same listConnectorSummaryPage/getConnectorSummaryForRoute projection (one-projection-N-profiles, not a third projection): projectConnectorRetainedCountSummaryPage's own bounded dependency read (identity page + one evidence-row batch + one acquisition-batch-store batch, zero spine/browser-surface/runtime/schedule/run-history reads), its extracted deriveRetainedCountState helper (kept separate specifically to hold the per-row closure under the cognitive-complexity budget), a third profile branch and overload at each public entry point, and the new getConnectorSummaryForRoute overload. Removing the branch would either fold the retained-count path into the full projection (defeating the cost reduction the profile exists to prove) or duplicate the two public functions a second time.",
-    "date": "2026-07-30"
+    "allowed_mass": 221,
+    "reason": "PR114 operator approval projection (2026-08-12): the existing approvals queue now distinguishes single consent, which supports the one-click reviewed-revision action, from batch consent, which must route to the hosted per-source review ceremony. The added discriminator prevents the operator surface from implicitly approving every batch source and is proven by projection and console guard tests. This extends the existing bounded approvals projection rather than adding another read model.",
+    "date": "2026-08-12"
+  },
+  "server/routes/as-consent.ts": {
+    "allowed_mass": 84,
+    "reason": "PR114 reviewed-consent ceremony (2026-08-12): the route must keep review and issuance as separate HTTP transitions, map approval_id to a canonical server-side request URI, distinguish single and batch review inputs, reject mutable facts on final approval, and render the exact persisted artifact for resumed HTML. These branches are the public security boundary for explicit human consent; collapsing them would permit post-review mutation or bypass per-source batch confirmation. Exact-artifact HTML/JSON, stale-revision, console batch, and concurrent final-approval regressions cover the states.",
+    "date": "2026-08-12"
   },
   "server/routes/ref-connectors.ts": {
     "allowed_mass": 33,
@@ -115,9 +120,9 @@
     "date": "2026-07-30"
   },
   "server/auth.ts": {
-    "allowed_mass": 395,
-    "reason": "TypeScript migration (2026-07-27) + strict-typing closure (2026-07-28): auth.ts migrated from auth.js and fully typed under strict-plus contracts. Baseline tightened from 581 to 395 after explicit type annotations eliminated implicit branching from unknown/object-typed parameters. D4 complexity: gates registerConnector's derived-column repair backfill behind the same backfillRetrievalIndexes flag that guards retrieval-index backfill, requiring at least one extra branch to express two different flag-gated behaviors sharing one backend check.",
-    "date": "2026-07-27"
+    "allowed_mass": 441,
+    "reason": "PR114 approval-review authority (2026-08-12): single and batch consent now have an explicit two-phase state machine. The authorization server must distinguish unreviewed, reviewed, stale, malformed, terminal, and transaction-time-ineligible states; bind a canonical artifact digest and revision; and issue the pending-row CAS, grants, tokens, packages, and events atomically on both SQLite and PostgreSQL. These branches are the security boundary that prevents post-review widening and partial issuance, not extraction opportunities: artifact construction/parsing remains separate from persistence, while the backend transaction adapters must retain explicit parity and failure ordering. Focused exact-artifact HTML/JSON, stale-revision, concurrent approval, injected rollback, SQLite, and live-PostgreSQL regressions prove the states.",
+    "date": "2026-08-12"
   },
   "runtime/detail-gap-paging.ts": {
     "allowed_mass": 24,

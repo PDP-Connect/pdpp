@@ -1039,6 +1039,287 @@ const GrantApprovalResponseSchema = {
   type: "object",
 };
 
+const BatchGrantApprovalResponseSchema = {
+  additionalProperties: false,
+  properties: {
+    grant: {
+      additionalProperties: false,
+      properties: {
+        child_grants: {
+          items: {
+            additionalProperties: false,
+            properties: {
+              grant_id: NonEmptyStringSchema,
+              source: {
+                additionalProperties: false,
+                properties: {
+                  connection_id: NonEmptyStringSchema,
+                  id: NonEmptyStringSchema,
+                  kind: NonEmptyStringSchema,
+                },
+                required: ["id"],
+                type: "object",
+              },
+            },
+            required: ["grant_id", "source"],
+            type: "object",
+          },
+          minItems: 1,
+          type: "array",
+        },
+        grant_id: NonEmptyStringSchema,
+        package: { const: true },
+        package_id: NonEmptyStringSchema,
+      },
+      required: ["child_grants", "grant_id", "package", "package_id"],
+      type: "object",
+    },
+    package_id: NonEmptyStringSchema,
+    token: NonEmptyStringSchema,
+  },
+  required: ["grant", "package_id", "token"],
+  type: "object",
+};
+
+const BatchSourceNarrowingSchema = {
+  additionalProperties: false,
+  properties: {
+    fields: {
+      additionalProperties: {
+        items: NonEmptyStringSchema,
+        type: "array",
+      },
+      type: "object",
+    },
+    since: {
+      additionalProperties: NonEmptyStringSchema,
+      type: "object",
+    },
+    streams: {
+      items: NonEmptyStringSchema,
+      type: "array",
+    },
+  },
+  type: "object",
+};
+
+const BatchApprovalReviewRequestSchema = {
+  additionalProperties: false,
+  anyOf: [
+    { required: ["approved_source_indexes"] },
+    { required: ["confirm_approve_all"] },
+    { required: ["source_narrowing"] },
+  ],
+  oneOf: [{ required: ["request_uri"] }, { required: ["approval_id"] }],
+  properties: {
+    approval_id: NonEmptyStringSchema,
+    approved_source_indexes: {
+      oneOf: [
+        { minimum: 0, type: "integer" },
+        { pattern: "^[0-9]+$", type: "string" },
+        {
+          items: {
+            oneOf: [
+              { minimum: 0, type: "integer" },
+              { pattern: "^[0-9]+$", type: "string" },
+            ],
+          },
+          type: "array",
+        },
+      ],
+    },
+    confirm_approve_all: {
+      oneOf: [{ type: "boolean" }, { enum: ["true", "1", "on"], type: "string" }],
+    },
+    request_uri: NonEmptyStringSchema,
+    source_narrowing: {
+      additionalProperties: BatchSourceNarrowingSchema,
+      propertyNames: { pattern: "^(0|[1-9][0-9]*)$" },
+      type: "object",
+    },
+    subject_id: NonEmptyStringSchema,
+  },
+  type: "object",
+};
+
+const SingleApprovalReviewRequestSchema = {
+  additionalProperties: false,
+  oneOf: [{ required: ["request_uri"] }, { required: ["approval_id"] }],
+  properties: {
+    approval_id: NonEmptyStringSchema,
+    ai_training_consented: {
+      oneOf: [{ type: "boolean" }, { enum: ["true", "false", "1", "0", "on", "off"], type: "string" }],
+    },
+    request_uri: NonEmptyStringSchema,
+    subject_id: NonEmptyStringSchema,
+  },
+  type: "object",
+};
+
+const ReviewClientDisplaySchema = {
+  additionalProperties: false,
+  properties: {
+    logo_uri: { oneOf: [UriSchema, { type: "null" }] },
+    name: { oneOf: [NonEmptyStringSchema, { type: "null" }] },
+    policy_uri: { oneOf: [UriSchema, { type: "null" }] },
+    tos_uri: { oneOf: [UriSchema, { type: "null" }] },
+    uri: { oneOf: [UriSchema, { type: "null" }] },
+  },
+  type: "object",
+};
+
+const ReviewClientSchema = {
+  additionalProperties: false,
+  properties: {
+    client_display: {
+      oneOf: [ReviewClientDisplaySchema, { type: "null" }],
+    },
+    client_id: NonEmptyStringSchema,
+    registration_mode: {
+      enum: ["dynamic", "client_id_metadata_document", "pre_registered_public"],
+      type: "string",
+    },
+  },
+  required: ["client_id", "registration_mode"],
+  type: "object",
+};
+
+const ReviewRetentionSchema = {
+  oneOf: [GrantSchema.properties.retention, { type: "null" }],
+};
+
+const SingleApprovalReviewArtifactSchema = {
+  additionalProperties: false,
+  properties: {
+    access_mode: { enum: ["continuous", "single_use"], type: "string" },
+    ai_training_consented: { type: ["boolean", "null"] },
+    client: ReviewClientSchema,
+    expires_at: { type: ["string", "null"] },
+    purpose_code: NonEmptyStringSchema,
+    purpose_description: { type: ["string", "null"] },
+    resolved_streams: GrantSchema.properties.streams,
+    retention: ReviewRetentionSchema,
+    selection_preset: { type: ["string", "null"] },
+    source: GrantSchema.properties.source,
+    source_declaration: {
+      additionalProperties: false,
+      properties: {
+        digest: NonEmptyStringSchema,
+        version: NonEmptyStringSchema,
+      },
+      required: ["digest", "version"],
+      type: "object",
+    },
+    subject: {
+      additionalProperties: false,
+      properties: { id: NonEmptyStringSchema },
+      required: ["id"],
+      type: "object",
+    },
+    version: { const: "reference.approval-review.v1" },
+  },
+  required: [
+    "access_mode",
+    "ai_training_consented",
+    "client",
+    "expires_at",
+    "purpose_code",
+    "purpose_description",
+    "resolved_streams",
+    "retention",
+    "selection_preset",
+    "source",
+    "source_declaration",
+    "subject",
+    "version",
+  ],
+  type: "object",
+};
+
+const BatchApprovalReviewArtifactSchema = {
+  additionalProperties: false,
+  properties: {
+    access_mode: { enum: ["continuous", "single_use"], type: ["string", "null"] },
+    approved_source_indexes: { items: { minimum: 0, type: "integer" }, type: "array" },
+    client: ReviewClientSchema,
+    expires_at: { type: ["string", "null"] },
+    parent_package_id: { type: ["string", "null"] },
+    source_narrowing: {
+      additionalProperties: BatchSourceNarrowingSchema,
+      propertyNames: { pattern: "^(0|[1-9][0-9]*)$" },
+      type: "object",
+    },
+    sources: {
+      items: {
+        additionalProperties: false,
+        properties: {
+          access_mode: { enum: ["continuous", "single_use"], type: "string" },
+          index: { minimum: 0, type: "integer" },
+          purpose_code: NonEmptyStringSchema,
+          purpose_description: { type: ["string", "null"] },
+          resolved_streams: GrantSchema.properties.streams,
+          retention: ReviewRetentionSchema,
+          selection_preset: { type: ["string", "null"] },
+          source: GrantSchema.properties.source,
+          source_declaration: {
+            additionalProperties: false,
+            properties: {
+              digest: NonEmptyStringSchema,
+              version: NonEmptyStringSchema,
+            },
+            required: ["digest", "version"],
+            type: "object",
+          },
+        },
+        required: [
+          "access_mode",
+          "index",
+          "purpose_code",
+          "purpose_description",
+          "resolved_streams",
+          "retention",
+          "selection_preset",
+          "source",
+          "source_declaration",
+        ],
+        type: "object",
+      },
+      type: "array",
+    },
+    subject: {
+      additionalProperties: false,
+      properties: { id: NonEmptyStringSchema },
+      required: ["id"],
+      type: "object",
+    },
+    version: { const: "reference.batch-approval-review.v1" },
+  },
+  required: [
+    "access_mode",
+    "approved_source_indexes",
+    "client",
+    "expires_at",
+    "parent_package_id",
+    "source_narrowing",
+    "sources",
+    "subject",
+    "version",
+  ],
+  type: "object",
+};
+
+const BatchApprovalReviewResponseSchema = {
+  additionalProperties: false,
+  properties: {
+    approval_review: { oneOf: [SingleApprovalReviewArtifactSchema, BatchApprovalReviewArtifactSchema] },
+    approval_review_revision: NonEmptyStringSchema,
+    batch: { type: "boolean" },
+    request_uri: NonEmptyStringSchema,
+  },
+  required: ["approval_review", "approval_review_revision", "batch", "request_uri"],
+  type: "object",
+};
+
 const RevokeGrantResponseSchema = {
   additionalProperties: false,
   properties: {
@@ -1046,6 +1327,32 @@ const RevokeGrantResponseSchema = {
   },
   required: ["revoked"],
   type: "object",
+};
+
+const ApproveConsentRequestSchema = {
+  oneOf: [
+    {
+      additionalProperties: false,
+      properties: {
+        approval_review_revision: NonEmptyStringSchema,
+        request_uri: NonEmptyStringSchema,
+      },
+      required: ["approval_review_revision", "request_uri"],
+      type: "object",
+    },
+    {
+      additionalProperties: false,
+      properties: {
+        approval_review_revision: NonEmptyStringSchema,
+        confirm_reviewed_decision: {
+          oneOf: [{ type: "boolean" }, { enum: ["true", "1", "on"], type: "string" }],
+        },
+        request_uri: NonEmptyStringSchema,
+      },
+      required: ["approval_review_revision", "confirm_reviewed_decision", "request_uri"],
+      type: "object",
+    },
+  ],
 };
 
 const RecordSchema = {
@@ -1808,47 +2115,44 @@ export const publicManifests = [
     tags: ["grants"],
   },
   {
+    id: "reviewConsent",
+    method: "POST",
+    path: "/consent/review",
+    request: {
+      body: {
+        contentType: "application/json",
+        schema: { oneOf: [SingleApprovalReviewRequestSchema, BatchApprovalReviewRequestSchema] },
+      },
+    },
+    responses: {
+      200: { description: "Approval review finalized", schema: BatchApprovalReviewResponseSchema },
+      400: { description: "Invalid request", schema: ErrorObjectSchema },
+      403: { description: "Grant is malformed or no longer valid", schema: ErrorObjectSchema },
+      404: { description: "Pending consent request not found", schema: ErrorObjectSchema },
+    },
+    summary: "Finalize a consent review before approval.",
+    surface: "public",
+    tags: ["grants"],
+  },
+  {
     id: "approveConsent",
     method: "POST",
     path: "/consent/approve",
     request: {
       body: {
         contentType: "application/json",
-        schema: {
-          additionalProperties: false,
-          properties: {
-            ai_training_consented: { type: "boolean" },
-            approved_source_indexes: {
-              oneOf: [
-                { minimum: 0, type: "integer" },
-                { pattern: "^[0-9]+$", type: "string" },
-                {
-                  items: {
-                    oneOf: [
-                      { minimum: 0, type: "integer" },
-                      { pattern: "^[0-9]+$", type: "string" },
-                    ],
-                  },
-                  type: "array",
-                },
-              ],
-            },
-            confirm_approve_all: {
-              oneOf: [{ type: "boolean" }, { enum: ["true", "1", "on"], type: "string" }],
-            },
-            request_uri: NonEmptyStringSchema,
-            subject_id: NonEmptyStringSchema,
-          },
-          required: ["request_uri"],
-          type: "object",
-        },
+        schema: ApproveConsentRequestSchema,
       },
     },
     responses: {
-      200: { description: "Grant approved and client token issued", schema: GrantApprovalResponseSchema },
+      200: {
+        description: "Grant approved and client token issued",
+        schema: { oneOf: [GrantApprovalResponseSchema, BatchGrantApprovalResponseSchema] },
+      },
       400: { description: "Invalid request", schema: ErrorObjectSchema },
       403: { description: "Grant is malformed or no longer valid", schema: ErrorObjectSchema },
       404: { description: "Pending consent request not found", schema: ErrorObjectSchema },
+      409: { description: "Pending consent approval conflict", schema: ErrorObjectSchema },
     },
     summary: "Approve a pending data-access request through the JSON consent surface used by tests and automation.",
     surface: "public",

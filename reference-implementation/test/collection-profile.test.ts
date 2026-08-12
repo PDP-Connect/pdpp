@@ -10265,11 +10265,24 @@ async function startGrantRequest(asUrl: string, params: { sourceId: string }) {
   });
 }
 
-// biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
 async function approveGrantRequest(asUrl: string, requestUri: string, subjectId: string) {
-  return fetchJson(`${asUrl}/consent/approve`, {
+  const review = await fetchJson(`${asUrl}/consent/review`, {
     body: JSON.stringify({ request_uri: requestUri, subject_id: subjectId }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(review.status, 200, JSON.stringify(review.body));
+  assert.equal(
+    typeof review.body.approval_review_revision,
+    "string",
+    "consent review must return approval_review_revision"
+  );
+  return fetchJson(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({
+      approval_review_revision: review.body.approval_review_revision,
+      request_uri: requestUri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
 }

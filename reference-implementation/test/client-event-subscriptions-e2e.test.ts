@@ -124,9 +124,23 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
       method: "POST",
     })
   ).body;
-  const approved = await fetchJson<ApprovedGrant>(`${asUrl}/consent/approve`, {
+  const review = await fetchJson<{
+    approval_review?: unknown;
+    approval_review_revision?: unknown;
+  }>(`${asUrl}/consent/review`, {
     body: JSON.stringify({ request_uri: par.request_uri, subject_id: "e2e_owner" }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(review.status, 200, JSON.stringify(review.body));
+  assert.ok(review.body.approval_review && typeof review.body.approval_review === "object");
+  assert.equal(typeof review.body.approval_review_revision, "string");
+  const approved = await fetchJson<ApprovedGrant>(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({
+      approval_review_revision: review.body.approval_review_revision,
+      request_uri: par.request_uri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   assert.equal(approved.status, 200, JSON.stringify(approved.body));

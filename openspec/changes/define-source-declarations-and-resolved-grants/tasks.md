@@ -113,3 +113,25 @@
   routes. Preserve owner-token current-capability expansion.
 - [x] Prove SQLite and live-PostgreSQL parity with a same-name relationship
   repointed to a different granted stream and foreign key after issuance.
+
+## PR114 corrective checkpoint
+
+- [x] Single-source approval requires a persisted reviewed revision before
+  issuance.
+- [x] The reviewed artifact freezes retained declaration evidence, source,
+  exact resolved instance IDs, streams, fields, resources, time, purpose,
+  retention, client, subject, and grant expiry.
+- [x] Single-source approval recomputes the reviewed artifact after current
+  instance eligibility revalidation and rejects stale review revisions.
+- [x] Single-source approval writes the pending-row CAS claim, grant, token,
+  approval events, and final approved state in one SQLite or PostgreSQL
+  transaction, with a typed conflict for CAS losers.
+- [x] Request-time source fulfillment no longer falls back from source kind/id
+  to a canonical connector key. Source fulfillment must be explicit.
+- [x] Selection request `source.kind` may be omitted; when omitted, the AS
+  derives provenance from the retained declaration. SourceDeclaration and
+  resolved grants still require `source.kind`.
+- [x] Staged batch approval uses the same reviewed-artifact and atomic
+  transaction seam. The finalized batch review binds approved source indexes,
+  exact resolved source/stream facts, parent linkage, member order, and the
+  posted review revision before issuing the package.

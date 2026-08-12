@@ -42,6 +42,8 @@ export interface RefApprovalConsentGrantPreview {
 
 export interface RefApprovalConsent {
   readonly approval_id: string;
+  /** True when the hosted per-source batch ceremony is required. */
+  readonly batch: boolean;
   readonly client_id: string | null;
   readonly created_at: string;
   readonly grant_preview: RefApprovalConsentGrantPreview;

@@ -103,11 +103,11 @@ mint bearer tokens.
 
 Overrides:
 
-- `PDPP_DCR_INITIAL_ACCESS_TOKENS=token1,token2` — comma-separated initial
+- `PDPP_DCR_INITIAL_ACCESS_TOKENS=token1,token2` - comma-separated initial
   access tokens for optional operator/bootstrap registration. If a caller sends
   a bearer token, it must be one of these tokens; callers can omit the bearer
   token for public self-registration.
-- `PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION=0` — explicitly disables DCR. The
+- `PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION=0` - explicitly disables DCR. The
   AS metadata then omits `registration_endpoint` and advertises only
   `pdpp_registration_modes_supported: ["pre_registered_public"]`.
 
@@ -122,8 +122,14 @@ deployments should supply their own `preRegisteredPublicClients` option.
 ### Consent and grant issuance
 
 - `GET /consent?request_uri=...`
+- `POST /consent/review`
 - `POST /consent/approve`
 - `POST /consent/deny`
+
+`POST /consent/review` returns the exact `approval_review` artifact and
+`approval_review_revision`. Final `POST /consent/approve` sends the
+`request_uri` and that revision only. Batch approval also sends
+`confirm_reviewed_decision`.
 
 The reference AS also exposes a stable owner-entry page at `GET /owner/login`.
 It behaves as a small reference-only owner access hub:
@@ -202,12 +208,12 @@ multilingual behavior.
 
 Operators can switch profiles without changing the public API:
 
-- `PDPP_EMBEDDING_PROFILE_ID=minilm` — compact English-biased default.
-- `PDPP_EMBEDDING_PROFILE_ID=multilingual-minilm` — multilingual MiniLM profile
+- `PDPP_EMBEDDING_PROFILE_ID=minilm` - compact English-biased default.
+- `PDPP_EMBEDDING_PROFILE_ID=multilingual-minilm` - multilingual MiniLM profile
   suitable for Italian-language data.
-- `PDPP_EMBEDDING_MODEL_ID=...` — override the Hugging Face model ID.
-- `PDPP_EMBEDDING_CACHE_DIR=...` — override the local model cache.
-- `PDPP_SEMANTIC_EMBEDDING_BACKEND=stub|local|disabled` — force a backend mode.
+- `PDPP_EMBEDDING_MODEL_ID=...` - override the Hugging Face model ID.
+- `PDPP_EMBEDDING_CACHE_DIR=...` - override the local model cache.
+- `PDPP_SEMANTIC_EMBEDDING_BACKEND=stub|local|disabled` - force a backend mode.
 
 Changing the profile/model/dtype/dimensions/metric invalidates existing
 semantic vectors. The reference reports `index_state: "stale"` or `"building"`
@@ -270,28 +276,28 @@ The reference ships a minimal local-only owner-auth placeholder for the current 
 
 Environment variables:
 
-- `PDPP_OWNER_PASSWORD` — if set, the current owner/operator browser surfaces below require a valid owner session. If unset, the server keeps its current open local-dev behavior.
-- `PDPP_OWNER_SUBJECT_ID` — optional. Defaults to `owner_local`. When placeholder auth is enabled, this value is the owner subject id used for every approved grant and device authorization; any `subject_id` submitted from a form or JSON body is ignored.
+- `PDPP_OWNER_PASSWORD` - if set, the current owner/operator browser surfaces below require a valid owner session. If unset, the server keeps its current open local-dev behavior.
+- `PDPP_OWNER_SUBJECT_ID` - optional. Defaults to `owner_local`. When placeholder auth is enabled, this value is the owner subject id used for every approved grant and device authorization; any `subject_id` submitted from a form or JSON body is ignored.
 
 Routes gated by the placeholder (when enabled):
 
-- `GET /consent`, `POST /consent/approve`, `POST /consent/deny`
+- `GET /consent`, `POST /consent/review`, `POST /consent/approve`, `POST /consent/deny`
 - `GET /device`, `POST /device/approve`, `POST /device/deny`
 - clean owner-console routes (via the composed console origin)
-- every reference-only `_ref` read (`GET /_ref/*`) and mutation (`POST/PUT /_ref/*`). When `PDPP_OWNER_PASSWORD` is unset, `_ref` routes preserve the open local-dev behavior. When set, callers must present an owner session — the dashboard already forwards the `pdpp_owner_session` cookie, and CLI callers can pass the same value via `PDPP_OWNER_SESSION_COOKIE`.
+- every reference-only `_ref` read (`GET /_ref/*`) and mutation (`POST/PUT /_ref/*`). When `PDPP_OWNER_PASSWORD` is unset, `_ref` routes preserve the open local-dev behavior. When set, callers must present an owner session - the dashboard already forwards the `pdpp_owner_session` cookie, and CLI callers can pass the same value via `PDPP_OWNER_SESSION_COOKIE`.
 
 Stable owner-entry routes:
 
-- `GET /owner/login` — owner access page (supports a safe same-origin `return_to` query parameter). When placeholder auth is disabled it renders an honest disabled-state landing page; when enabled it renders either the sign-in form or a signed-in landing page.
-- `POST /owner/login` — when placeholder auth is enabled, submits the owner password; on success sets a signed HTTP-only session cookie (`pdpp_owner_session`, 7 day lifetime by default, configurable with `PDPP_OWNER_SESSION_TTL_SECONDS`, `SameSite=Lax`, `Secure` when served over HTTPS) and redirects to `return_to`
-- `POST /owner/logout` — clears the session cookie when present
+- `GET /owner/login` - owner access page (supports a safe same-origin `return_to` query parameter). When placeholder auth is disabled it renders an honest disabled-state landing page; when enabled it renders either the sign-in form or a signed-in landing page.
+- `POST /owner/login` - when placeholder auth is enabled, submits the owner password; on success sets a signed HTTP-only session cookie (`pdpp_owner_session`, 7 day lifetime by default, configurable with `PDPP_OWNER_SESSION_TTL_SECONDS`, `SameSite=Lax`, `Secure` when served over HTTPS) and redirects to `return_to`
+- `POST /owner/logout` - clears the session cookie when present
 
 Unauthenticated HTML requests to the protected routes redirect to `/owner/login?return_to=...`; non-HTML callers receive an honest `401` with error code `owner_session_required`.
 
 The placeholder is intentionally narrow:
 
 - no user table, no external IdP, no multi-user auth
-- stateless HMAC-signed session cookie — rotating `PDPP_OWNER_PASSWORD` invalidates existing sessions
+- stateless HMAC-signed session cookie - rotating `PDPP_OWNER_PASSWORD` invalidates existing sessions
 - public protocol surfaces (`/oauth/par`, `/oauth/register`, `/oauth/token`, `/v1/*`, `/.well-known/*`) are **not** gated
 - the placeholder is still not a durable owner-auth story; it is only the current reference-local browser/session gate
 
@@ -307,8 +313,8 @@ This hosted-UI layer is **reference-only** implementation support. It is **not**
 
 The reference now supports two deliberate local hosting modes:
 
-- `direct` — AS on `:7662`, RS on `:7663`; best for protocol debugging, conformance-style testing, CLI, and agents
-- `composed` — one browser-facing origin (default `http://localhost:3002`) proxying the internal AS/RS; best for the dashboard, owner flows, and demos
+- `direct` - AS on `:7662`, RS on `:7663`; best for protocol debugging, conformance-style testing, CLI, and agents
+- `composed` - one browser-facing origin (default `http://localhost:3002`) proxying the internal AS/RS; best for the dashboard, owner flows, and demos
 
 The shared topology inputs are:
 
@@ -414,8 +420,8 @@ pnpm docker:reference:quick
 Open `http://localhost:${PDPP_WEB_PORT:-3002}` for the browser-facing reference origin. The
 Compose stack runs:
 
-- `reference` — one AS/RS process, AS on `:7662`, RS on `:7663`
-- `web` — the Next app on container `:3000`, mapped to host `${PDPP_WEB_PORT:-3002}` by default,
+- `reference` - one AS/RS process, AS on `:7662`, RS on `:7663`
+- `web` - the Next app on container `:3000`, mapped to host `${PDPP_WEB_PORT:-3002}` by default,
   proxying the AS/RS in composed mode
 
 To test the owner-present n.eko interaction-streaming backend, use the
@@ -642,16 +648,14 @@ pnpm --dir reference-implementation example-client
 
 Defaults: `PORT=7674`, `AS_URL=http://localhost:7662`, `RS_URL=http://localhost:7663`.
 
-The example supports both approval modes honestly:
+The example uses the two-phase approval flow:
 
-- when the reference server runs without `PDPP_OWNER_PASSWORD`, the example
-  uses the reference-local JSON shortcut at `POST /consent/approve` and
-  captures the token inline
+- the example calls `POST /consent/review`, inspects the exact approval artifact,
+  and then calls `POST /consent/approve` with its revision
 - when `PDPP_OWNER_PASSWORD` is set, the inline shortcut is refused by the
-  reference server. The example surfaces that honestly, links out to the
-  hosted `/consent` page, and lets you paste the issued token back
+  reference server. The example links out to the hosted `/consent` page.
 
-The example is a third-party client illustration — it is **not** a full
+The example is a third-party client illustration - it is **not** a full
 generic OAuth authorization-code redirect client. It has no PKCE, no
 `/callback`, and no code exchange. It only exercises the endpoints the
 reference currently advertises.

@@ -14,7 +14,7 @@
 
 import { listGrantedConnectionsForStream } from "./connection-identity.ts";
 import {
-  getConnectorRunEvidenceSource,
+  getConnectorRunEvidenceConnectorId,
   getLatestConnectorRunSummary,
   getManifestRefreshPolicy,
   getMaximumStalenessSeconds,
@@ -101,13 +101,13 @@ function buildFreshness(lastUpdated = null) {
 }
 
 export async function getConnectorFreshnessEvidence({
-  source,
+  storageBinding,
   manifest,
 }: {
-  source: ConnectorSource | null | undefined;
+  storageBinding: unknown;
   manifest: Manifest;
 }): Promise<ConnectorFreshnessEvidence> {
-  const connectorId = getConnectorRunEvidenceSource(source);
+  const connectorId = getConnectorRunEvidenceConnectorId(storageBinding);
   const refreshPolicy = getManifestRefreshPolicy(manifest);
   const [lastRun, lastSuccessfulRun] = await Promise.all([
     getLatestConnectorRunSummary(connectorId),
@@ -195,7 +195,7 @@ export async function buildConnectorSchemaItem({
   // Streams the loaded manifest declares — lets the expand-capabilities builder
   // distinguish "target stream not granted" from "target stream unknown".
   const manifestStreamNames = new Set(manifest.streams.map((stream) => stream.name));
-  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, source });
+  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, storageBinding });
 
   const streams = await Promise.all(
     visibleStreams.map(async (manifestStream) => {
@@ -242,18 +242,16 @@ export async function buildConnectorSchemaItem({
 
 export async function getVisibleStreamFreshness({
   tokenInfo,
-  source,
   storageBinding,
   stream,
   manifest,
 }: {
   manifest: Manifest;
-  source: ConnectorSource | null | undefined;
   storageBinding: unknown;
   stream: string;
   tokenInfo: { grant: Grant; pdpp_token_kind?: string } | null | undefined;
 }) {
-  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, source });
+  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, storageBinding });
   if (tokenInfo?.pdpp_token_kind === "owner") {
     const summaries: Array<{ last_updated?: string | null; name: string }> = await Reflect.apply(
       listAllStreams,

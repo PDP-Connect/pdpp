@@ -245,11 +245,18 @@ async function startGrantRequest(asUrl: string, params: GrantRequestParams) {
   });
 }
 
-// biome-ignore lint/suspicious/useAwait: mock preserves the production Promise contract and rejection timing
 async function approveGrantRequest(asUrl: string, requestUri: string, subjectId = "owner_local") {
-  return fetchJson(`${asUrl}/consent/approve`, {
+  const review = await fetchJson(`${asUrl}/consent/review`, {
     body: JSON.stringify({ request_uri: requestUri, subject_id: subjectId }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(review.status, 200, JSON.stringify(review.body));
+  const reviewRevision = (review.body as Record<string, unknown>).approval_review_revision;
+  assert.equal(typeof reviewRevision, "string", "consent review must return approval_review_revision");
+  return fetchJson(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({ approval_review_revision: reviewRevision, request_uri: requestUri }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
 }

@@ -210,7 +210,11 @@ test("source declaration snapshot survives same-version replacement and deletion
     const displayedAfterDeletion = await getPendingConsent(deviceCode);
     assert.deepEqual(displayedAfterDeletion?.resolvedStreams, displayedAfterReplacement.resolvedStreams);
 
-    const approved = await approveGrant(deviceCode, "owner_local");
+    const reviewed = await getPendingConsent(deviceCode, { finalizeReview: true, subjectId: "owner_local" });
+    assert.ok(typeof reviewed?.reviewRevision === "string");
+    const approved = await approveGrant(deviceCode, "owner_local", {
+      approval_review_revision: reviewed?.reviewRevision,
+    });
     const issuedStreams = approved.grant.streams as unknown as ResolvedStream[];
     const [issuedStream] = issuedStreams;
     assert.ok(issuedStream);
@@ -335,9 +339,12 @@ test("source declaration snapshot survives same-version replacement and deletion
     }
 
     const manifestWithPreset = structuredClone(registeredManifest);
-    manifestWithPreset.profiles = [
-      { id: "artists-basic", label: "Basic artists", streams: [{ name: "top_artists", view: "basic" }] },
-    ];
+    manifestWithPreset.source_declaration = {
+      ...retained.source_declaration_snapshot.declaration,
+      selection_presets: [
+        { id: "artists-basic", label: "Basic artists", streams: [{ name: "top_artists", view: "basic" }] },
+      ],
+    };
     await registerConnector(manifestWithPreset);
     const presetStarted = await initiateGrant({
       authorization_details: [
@@ -356,7 +363,11 @@ test("source declaration snapshot survives same-version replacement and deletion
     const presetPending = await getPendingConsent(presetDeviceCode);
     assert.ok(presetPending);
     assert.deepEqual((presetPending.resolvedStreams as ResolvedStream[])[0]?.fields, ["id", "name", "genres"]);
-    const presetApproved = await approveGrant(presetDeviceCode, "owner_local");
+    const presetReview = await getPendingConsent(presetDeviceCode, { finalizeReview: true, subjectId: "owner_local" });
+    assert.ok(typeof presetReview?.reviewRevision === "string");
+    const presetApproved = await approveGrant(presetDeviceCode, "owner_local", {
+      approval_review_revision: presetReview?.reviewRevision,
+    });
     assert.equal(presetApproved.grant.selection_preset, "artists-basic");
     assert.deepEqual((presetApproved.grant.streams as unknown as ResolvedStream[])[0]?.fields, [
       "id",
@@ -378,7 +389,10 @@ test("source declaration snapshot survives same-version replacement and deletion
     });
     const forgedInstanceDeviceCode = parsePendingConsentRequestUri(forgedInstanceStarted.request_uri);
     assert.ok(forgedInstanceDeviceCode);
-    await assert.rejects(() => approveGrant(forgedInstanceDeviceCode, "owner_local"), INELIGIBLE_INSTANCE_RE);
+    await assert.rejects(
+      () => getPendingConsent(forgedInstanceDeviceCode, { subjectId: "owner_local" }),
+      INELIGIBLE_INSTANCE_RE
+    );
     await assert.rejects(
       () =>
         initiateGrant({
@@ -515,7 +529,11 @@ test("registered Core source IDs resolve to one exact local connector binding", 
     assert.deepEqual(pending.source_binding, { id: sourceId, kind: "connector" });
     assert.deepEqual(pending.storage_binding, { connector_id: connectorKey });
 
-    const approved = await approveGrant(deviceCode, "owner_local");
+    const reviewed = await getPendingConsent(deviceCode, { finalizeReview: true, subjectId: "owner_local" });
+    assert.ok(typeof reviewed?.reviewRevision === "string");
+    const approved = await approveGrant(deviceCode, "owner_local", {
+      approval_review_revision: reviewed?.reviewRevision,
+    });
     assert.deepEqual((approved.grant.streams as unknown as ResolvedStream[])[0]?.instance_ids, [connectorInstanceId]);
 
     await registerConnector(customCoreSourceManifest("custom_core_source_b", sourceId));
@@ -578,7 +596,16 @@ test("provider-native grant snapshots its trusted declaration and binds its loca
     });
 
     const nativeOwnerId = "owner_native_alice";
-    const approved = await approveGrant(deviceCode, nativeOwnerId, { nativeManifest });
+    const reviewed = await getPendingConsent(deviceCode, {
+      finalizeReview: true,
+      nativeManifest,
+      subjectId: nativeOwnerId,
+    });
+    assert.ok(typeof reviewed?.reviewRevision === "string");
+    const approved = await approveGrant(deviceCode, nativeOwnerId, {
+      approval_review_revision: reviewed?.reviewRevision,
+      nativeManifest,
+    });
     assert.deepEqual(approved.grant.source_declaration, { version: "reference.native-config.northstar-hr.v1" });
     const [issuedStream] = approved.grant.streams as unknown as ResolvedStream[];
     assert.ok(issuedStream);
@@ -635,7 +662,7 @@ test("provider-native grant snapshots its trusted declaration and binds its loca
     const forgedNativeDeviceCode = parsePendingConsentRequestUri(forgedNativeStarted.request_uri);
     assert.ok(forgedNativeDeviceCode);
     await assert.rejects(
-      () => approveGrant(forgedNativeDeviceCode, nativeOwnerId, { nativeManifest }),
+      () => getPendingConsent(forgedNativeDeviceCode, { nativeManifest, subjectId: nativeOwnerId }),
       INVALID_NATIVE_INSTANCE_RE
     );
   } finally {
@@ -651,14 +678,20 @@ test("grant approval requires an existing unambiguous instance while staging clo
     const noInstanceStarted = await driver.startPendingConsent();
     const noInstanceDeviceCode = parsePendingConsentRequestUri(noInstanceStarted.request_uri);
     assert.ok(noInstanceDeviceCode);
-    await assert.rejects(() => approveGrant(noInstanceDeviceCode, "owner_local"), NO_ACTIVE_INSTANCE_RE);
+    await assert.rejects(
+      () => getPendingConsent(noInstanceDeviceCode, { subjectId: "owner_local" }),
+      NO_ACTIVE_INSTANCE_RE
+    );
 
     await seedActiveSpotifyInstance("cin_spotify_a", "a@example.com");
     await seedActiveSpotifyInstance("cin_spotify_b", "b@example.com");
     const multipleInstancesStarted = await driver.startPendingConsent();
     const multipleInstancesDeviceCode = parsePendingConsentRequestUri(multipleInstancesStarted.request_uri);
     assert.ok(multipleInstancesDeviceCode);
-    await assert.rejects(() => approveGrant(multipleInstancesDeviceCode, "owner_local"), MULTIPLE_ACTIVE_INSTANCES_RE);
+    await assert.rejects(
+      () => getPendingConsent(multipleInstancesDeviceCode, { subjectId: "owner_local" }),
+      MULTIPLE_ACTIVE_INSTANCES_RE
+    );
 
     const source = { id: driver.getRegisteredConnectorId(), kind: "connector" };
     const base = {
@@ -711,6 +744,21 @@ test("grant approval requires an existing unambiguous instance while staging clo
     const topArtists = streams.find((stream) => stream.name === "top_artists");
     assert.ok(topArtists);
     topArtists.primary_key = ["id", "name"];
+    const declarationProbeStarted = await driver.startPendingConsent({
+      streams: [{ instance_ids: ["cin_spotify_a"], name: "top_artists" }],
+    });
+    const declarationProbeDeviceCode = parsePendingConsentRequestUri(declarationProbeStarted.request_uri);
+    assert.ok(declarationProbeDeviceCode);
+    const declarationProbeRow = getDb()
+      .prepare("SELECT params_json FROM pending_consents WHERE device_code = ?")
+      .get(declarationProbeDeviceCode) as { params_json: string };
+    const declarationProbe = JSON.parse(declarationProbeRow.params_json) as PendingPayload;
+    compoundManifest.source_declaration = {
+      ...declarationProbe.source_declaration_snapshot.declaration,
+      streams: declarationProbe.source_declaration_snapshot.declaration.streams.map((stream) =>
+        stream.name === "top_artists" ? { ...stream, primary_key: ["id", "name"] } : stream
+      ),
+    };
     await registerConnector(compoundManifest);
     await assert.rejects(
       () =>
@@ -722,7 +770,7 @@ test("grant approval requires an existing unambiguous instance while staging clo
                 {
                   instance_ids: ["cin_spotify_a"],
                   name: "top_artists",
-                  resources: ['["artist-1", "Artist One"]'],
+                  resources: ['["artist-1"]'],
                 },
               ],
             },

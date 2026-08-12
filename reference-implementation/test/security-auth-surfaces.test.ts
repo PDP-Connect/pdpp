@@ -160,7 +160,7 @@ async function approveSpotifyGrant(
       ],
       client_id: "concert_recommendation_app",
     }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   if (initResp.status !== 201) {
@@ -168,9 +168,27 @@ async function approveSpotifyGrant(
     throw new Error(`PAR failed (${initResp.status}): ${errBody}`);
   }
   const initiate = (await initResp.json()) as ParInitiateBody;
-  const approveResp = await fetch(`${asUrl}/consent/approve`, {
+  const reviewResp = await fetch(`${asUrl}/consent/review`, {
     body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: subjectId }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const reviewText = await reviewResp.text();
+  assert.equal(reviewResp.status, 200, reviewText);
+  const review = JSON.parse(reviewText) as {
+    approval_review: object;
+    approval_review_revision: string;
+    request_uri: string;
+  };
+  assert.ok(review.approval_review);
+  assert.ok(review.approval_review_revision);
+  assert.equal(review.request_uri, initiate.request_uri);
+  const approveResp = await fetch(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({
+      approval_review_revision: review.approval_review_revision,
+      request_uri: review.request_uri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   const approveBody = await approveResp.text();

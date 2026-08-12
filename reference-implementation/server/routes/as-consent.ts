@@ -80,7 +80,7 @@ interface OwnerAuth {
 interface ConsentStore {
   approveGrant: (
     deviceCode: string,
-    subjectId: string,
+    subjectId: string | undefined,
     opts: unknown
   ) => Promise<{
     grant: { grant_id: string; [k: string]: unknown };
@@ -92,7 +92,15 @@ interface ConsentStore {
   getPendingConsentByApprovalId: (id: string) => Promise<AsConsentDecisionPendingRow | null>;
   getPendingConsentByDeviceCode: (
     deviceCode: string,
-    opts?: { baseUrl?: string | null }
+    opts?: {
+      ai_training_consented?: unknown;
+      approvedSourceIndexes?: number[];
+      baseUrl?: string | null;
+      confirmedApproveAll?: boolean;
+      finalizeReview?: boolean;
+      sourceNarrowing?: Record<number, SourceNarrowing>;
+      subjectId?: string | null;
+    }
   ) => Promise<PendingGrant | null>;
   parseRequestUri: (requestUri: string) => string | null;
 }
@@ -334,8 +342,23 @@ function parseStructuredSourceNarrowing(raw: unknown): Record<number, SourceNarr
   const out: Record<number, SourceNarrowing> = {};
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     const index = Number(key);
-    if (!(Number.isInteger(index) && value) || typeof value !== "object") {
-      continue;
+    if (!CANONICAL_NON_NEGATIVE_INTEGER_KEY_RE.test(key)) {
+      const err = new Error(`source_narrowing key '${key}' must be a staged source index`) as Error & {
+        code?: string;
+        param?: string;
+      };
+      err.code = "invalid_request";
+      err.param = "source_narrowing";
+      throw err;
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      const err = new Error(`source_narrowing entry '${key}' must be an object`) as Error & {
+        code?: string;
+        param?: string;
+      };
+      err.code = "invalid_request";
+      err.param = "source_narrowing";
+      throw err;
     }
     const entry = value as Record<string, unknown>;
     const narrowing: SourceNarrowing = {};
@@ -355,6 +378,7 @@ function parseStructuredSourceNarrowing(raw: unknown): Record<number, SourceNarr
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+const CANONICAL_NON_NEGATIVE_INTEGER_KEY_RE = /^(0|[1-9][0-9]*)$/;
 const NARROW_STREAMS_KEY = /^narrow_streams_(\d+)$/;
 const NARROW_FIELDS_KEY = /^narrow_fields_(\d+)__(.+)$/;
 const NARROW_SINCE_KEY = /^narrow_since_(\d+)__(.+)$/;
@@ -497,6 +521,22 @@ function parseBatchApproveSelection(body: Readonly<Record<string, unknown>> | un
   return out;
 }
 
+function hasBatchApproveSelection(selection: {
+  approvedSourceIndexes?: readonly number[];
+  confirmedApproveAll?: boolean;
+  sourceNarrowing?: Readonly<Record<number, SourceNarrowing>>;
+}): boolean {
+  return (
+    selection.approvedSourceIndexes !== undefined ||
+    selection.confirmedApproveAll === true ||
+    selection.sourceNarrowing !== undefined
+  );
+}
+
+function isReviewedDecisionConfirmed(value: unknown): boolean {
+  return value === true || value === "true" || value === "1" || value === "on";
+}
+
 // ─── Route mount ─────────────────────────────────────────────────────────────
 
 export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
@@ -510,7 +550,7 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
 
   async function getPendingGrantFromRequestUri(
     requestUri: string,
-    opts: { baseUrl?: string | null } = {}
+    opts: { baseUrl?: string | null; subjectId?: string | null } = {}
   ): Promise<{
     deviceCode: string | null;
     pending: PendingGrant | null;
@@ -541,22 +581,168 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
     };
   }
 
+  function resolveSubjectId(req: RouteRequest): string {
+    return ctx.ownerAuth.enabled
+      ? ctx.ownerAuth.subjectId
+      : (req.body?.subject_id as string | undefined) ||
+          (req.query.subject_id as string | undefined) ||
+          OWNER_AUTH_DEFAULT_SUBJECT_ID;
+  }
+
+  function requestUriFrom(req: RouteRequest): string | null | undefined {
+    return (req.body?.request_uri || req.query.request_uri) as string | null | undefined;
+  }
+
+  async function resolveConsentReviewRequestUri(req: RouteRequest): Promise<string | null> {
+    const requestUri = requestUriFrom(req);
+    const approvalId = (req.body?.approval_id || req.query.approval_id) as string | null | undefined;
+    if (requestUri && approvalId) {
+      const err = new Error("Specify either request_uri or approval_id, not both") as Error & {
+        code?: string;
+      };
+      err.code = "invalid_request";
+      throw err;
+    }
+    if (requestUri) {
+      return requestUri;
+    }
+    if (!approvalId) {
+      return null;
+    }
+    const pending = await ctx.consentStore.getPendingConsentByApprovalId(approvalId);
+    if (pending?.status !== "pending") {
+      return null;
+    }
+    return ctx.buildPendingConsentRequestUri(pending.device_code);
+  }
+
+  async function rejectInvalidReviewedBatchApproval(
+    req: RouteRequest,
+    res: RouteResponse,
+    requestUri: string | null | undefined,
+    batchSelection: ReturnType<typeof parseBatchApproveSelection>
+  ): Promise<boolean> {
+    if (!(requestUri && req.body?.approval_review_revision)) {
+      return false;
+    }
+    const deviceCode = ctx.consentStore.parseRequestUri(requestUri);
+    if (!deviceCode) {
+      return false;
+    }
+    const pending = await ctx.consentStore.getPendingConsentByDeviceCode(deviceCode, {
+      baseUrl: resolveBaseUrlForRequest(req),
+    });
+    if (!pending?.batch) {
+      return false;
+    }
+    if (hasBatchApproveSelection(batchSelection)) {
+      ctx.pdppError(res, 400, "invalid_request", "Reviewed batch approval must not submit source choices again");
+      return true;
+    }
+    if (!isReviewedDecisionConfirmed(req.body.confirm_reviewed_decision)) {
+      ctx.pdppError(res, 400, "invalid_request", "Reviewed batch approval requires confirmation");
+      return true;
+    }
+    return false;
+  }
+
+  function rejectFinalApprovalFrozenFacts(req: RouteRequest, res: RouteResponse): boolean {
+    if (req.body?.subject_id !== undefined || req.query.subject_id !== undefined) {
+      ctx.pdppError(res, 400, "invalid_request", "subject_id is only accepted during consent review");
+      return true;
+    }
+    if (req.body?.ai_training_consented !== undefined) {
+      ctx.pdppError(res, 400, "invalid_request", "ai_training_consented is only accepted during consent review");
+      return true;
+    }
+    return false;
+  }
+
   // Primary consent shell for the current provider-connect request/approval profile.
   app.get(
     "/consent",
     ctx.ownerAuth.requireOwnerSession as RouteArg<RouteHandler | MiddlewareFn>,
     async (req: RouteRequest, res: RouteResponse): Promise<void> => {
       try {
-        const requestUri = typeof req.query.request_uri === "string" ? req.query.request_uri : null;
+        const requestUri = await resolveConsentReviewRequestUri(req);
         if (!requestUri) {
-          ctx.pdppError(res, 400, "invalid_request", "request_uri is required");
+          ctx.pdppError(res, 400, "invalid_request", "request_uri or approval_id is required");
           return;
         }
         const { pending } = await getPendingGrantFromRequestUri(requestUri, {
           baseUrl: resolveBaseUrlForRequest(req),
+          ...(ctx.ownerAuth.enabled ? { subjectId: ctx.ownerAuth.subjectId } : {}),
         });
         if (!pending) {
           res.status(404).send(renderPendingConsentNotFoundHtml(ctx.providerName, ctx.consentUi));
+          return;
+        }
+        const csrfToken = ctx.ownerAuth.ensureCsrfToken(req, res);
+        res.send(
+          renderPendingGrantConsentHtml(
+            pending,
+            requestUri,
+            csrfToken,
+            ctx.ownerAuth.csrfFieldName,
+            ctx.providerName,
+            ctx.consentUi
+          )
+        );
+      } catch (err) {
+        ctx.handleError(res, err);
+      }
+    }
+  );
+
+  app.post(
+    "/consent/review",
+    { contract: "reviewConsent" } as RouteArg<RouteHandler | MiddlewareFn>,
+    ctx.ownerAuth.requireOwnerSession as RouteArg<RouteHandler | MiddlewareFn>,
+    ctx.ownerAuth.requireCsrf as RouteArg<RouteHandler | MiddlewareFn>,
+    async (req: RouteRequest, res: RouteResponse): Promise<void> => {
+      try {
+        const subjectId = resolveSubjectId(req);
+        const batchSelection = parseBatchApproveSelection(req.body);
+        const requestUri = await resolveConsentReviewRequestUri(req);
+        if (!requestUri) {
+          ctx.pdppError(res, 400, "invalid_request", "request_uri or approval_id is required");
+          return;
+        }
+        const deviceCode = ctx.consentStore.parseRequestUri(requestUri);
+        if (!deviceCode) {
+          ctx.pdppError(res, 400, "invalid_request", "request_uri is invalid");
+          return;
+        }
+        const pending = await ctx.consentStore.getPendingConsentByDeviceCode(deviceCode, {
+          ai_training_consented: req.body?.ai_training_consented,
+          baseUrl: resolveBaseUrlForRequest(req),
+          finalizeReview: true,
+          subjectId,
+          ...batchSelection,
+        });
+        if (!pending) {
+          res.status(404).send(renderPendingConsentNotFoundHtml(ctx.providerName, ctx.consentUi));
+          return;
+        }
+        if (pending.batch !== true && hasBatchApproveSelection(batchSelection)) {
+          ctx.pdppError(res, 400, "invalid_request", "Single approval review does not accept batch choices");
+          return;
+        }
+        if (!pending.reviewRevision) {
+          ctx.pdppError(res, 400, "invalid_request", "Approval review could not be finalized");
+          return;
+        }
+        if (req.accepts(["html", "json"]) === "json") {
+          if (!pending.review) {
+            ctx.pdppError(res, 400, "invalid_request", "Approval review artifact is unavailable");
+            return;
+          }
+          res.json({
+            approval_review: pending.review,
+            approval_review_revision: pending.reviewRevision,
+            batch: pending.batch === true,
+            request_uri: requestUri,
+          });
           return;
         }
         const csrfToken = ctx.ownerAuth.ensureCsrfToken(req, res);
@@ -590,24 +776,23 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
     ctx.ownerAuth.requireCsrf as RouteArg<RouteHandler | MiddlewareFn>,
     async (req: RouteRequest, res: RouteResponse): Promise<void> => {
       try {
-        const subjectId = ctx.ownerAuth.enabled
-          ? ctx.ownerAuth.subjectId
-          : (req.body?.subject_id as string | undefined) ||
-            // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-            (req.query?.subject_id as string | undefined) ||
-            OWNER_AUTH_DEFAULT_SUBJECT_ID;
+        const batchSelection = parseBatchApproveSelection(req.body);
+        const requestUri = requestUriFrom(req);
+        if (rejectFinalApprovalFrozenFacts(req, res)) {
+          return;
+        }
+        if (await rejectInvalidReviewedBatchApproval(req, res, requestUri, batchSelection)) {
+          return;
+        }
         const outcome = await executeAsConsentDecision(
           {
             action: "approve",
-            // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-            approvalId: (req.body?.approval_id || req.query?.approval_id) as string | null | undefined,
+            approvalId: (req.body?.approval_id || req.query.approval_id) as string | null | undefined,
             approveOptions: {
-              ai_training_consented: req.body?.ai_training_consented,
-              ...parseBatchApproveSelection(req.body),
+              approval_review_revision: req.body?.approval_review_revision,
+              ...(req.body?.approval_review_revision ? {} : batchSelection),
             },
-            // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-            requestUri: (req.body?.request_uri || req.query?.request_uri) as string | null | undefined,
-            subjectId,
+            requestUri,
           },
           buildConsentDecisionDeps(req)
         );

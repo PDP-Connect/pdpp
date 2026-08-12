@@ -19,7 +19,7 @@ const REGEXP_5 = /I confirm allowing all/;
 const REGEXP_6 = /Approve-all is not available/;
 const REGEXP_7 = /sensitive_no_time_bound/;
 const REGEXP_8 = /three_or_more_sensitive_sources/;
-const REGEXP_9 = /requires a re-asserting confirmation/;
+const REGEXP_9 = /requires (?:a re-asserting )?confirmation/;
 const REGEXP_10 = /out-of-range/;
 const REGEXP_11 = /Broad setup/;
 const REGEXP_12 = /reference warning threshold/;
@@ -202,10 +202,50 @@ function sourceCardHtml(html: string, sourceIndex: number): string {
   return next === -1 ? html.slice(start) : html.slice(start, next);
 }
 
-async function approve(asUrl: string, requestBody: Record<string, unknown>): Promise<GateResult> {
+async function approve(
+  asUrl: string,
+  requestBody: Record<string, unknown>,
+  options: { confirmReviewedDecision?: boolean } = {}
+): Promise<GateResult> {
+  // The review artifact owns the complete batch decision. The final approval
+  // only re-asserts that artifact by revision; source choices must not be
+  // accepted again at the approval boundary.
+  const reviewBody = { ...requestBody };
+  if (
+    reviewBody.approved_source_indexes === undefined &&
+    reviewBody.source_narrowing === undefined &&
+    reviewBody.confirm_approve_all === undefined
+  ) {
+    reviewBody.confirm_approve_all = true;
+  }
+  const reviewResp = await fetch(`${asUrl}/consent/review`, {
+    body: JSON.stringify(reviewBody),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const reviewResult = {
+    body: (await reviewResp.json().catch(() => null)) as GateResponseBody | null,
+    status: reviewResp.status,
+  };
+  if (reviewResp.status !== 200) {
+    return reviewResult;
+  }
+  const reviewedBody = reviewResult.body as GateResponseBody & {
+    approval_review?: unknown;
+    approval_review_revision?: unknown;
+  };
+  assert.ok(reviewedBody.approval_review && typeof reviewedBody.approval_review === "object");
+  assert.equal(typeof reviewedBody.approval_review_revision, "string");
+  const finalBody: Record<string, unknown> = {
+    approval_review_revision: reviewedBody.approval_review_revision,
+    request_uri: requestBody.request_uri,
+  };
+  if (options.confirmReviewedDecision !== false) {
+    finalBody.confirm_reviewed_decision = "1";
+  }
   const resp = await fetch(`${asUrl}/consent/approve`, {
-    body: JSON.stringify(requestBody),
-    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(finalBody),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   return { body: (await resp.json().catch(() => null)) as GateResponseBody | null, status: resp.status };
@@ -219,8 +259,34 @@ async function approveForm(asUrl: string, fields: Record<string, unknown>): Prom
       params.append(key, String(item));
     }
   }
-  const resp = await fetch(`${asUrl}/consent/approve`, {
+  if (!(params.has("approved_source_indexes") || params.has("source_narrowing") || params.has("confirm_approve_all"))) {
+    params.set("confirm_approve_all", "1");
+  }
+  const reviewResp = await fetch(`${asUrl}/consent/review`, {
     body: params.toString(),
+    headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
+  });
+  const reviewResult = {
+    body: (await reviewResp.json().catch(() => null)) as GateResponseBody | null,
+    status: reviewResp.status,
+  };
+  if (reviewResp.status !== 200) {
+    return reviewResult;
+  }
+  const reviewedBody = reviewResult.body as GateResponseBody & {
+    approval_review?: unknown;
+    approval_review_revision?: unknown;
+  };
+  assert.ok(reviewedBody.approval_review && typeof reviewedBody.approval_review === "object");
+  assert.equal(typeof reviewedBody.approval_review_revision, "string");
+  const finalParams = new URLSearchParams({
+    approval_review_revision: reviewedBody.approval_review_revision as string,
+    confirm_reviewed_decision: "1",
+    request_uri: String(fields.request_uri ?? ""),
+  });
+  const resp = await fetch(`${asUrl}/consent/approve`, {
+    body: finalParams.toString(),
     headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
     method: "POST",
   });
@@ -444,10 +510,14 @@ test("batch consent gate: low-risk approve-all requires re-asserting confirmatio
     ];
     const first = await par(asUrl, entries);
 
-    const missingConfirmation = await approve(asUrl, {
-      request_uri: unwrapBody(first).request_uri,
-      subject_id: "owner_local",
-    });
+    const missingConfirmation = await approve(
+      asUrl,
+      {
+        request_uri: unwrapBody(first).request_uri,
+        subject_id: "owner_local",
+      },
+      { confirmReviewedDecision: false }
+    );
     assert.equal(missingConfirmation.status, 400);
     assert.match(unwrapBody(missingConfirmation).error?.message ?? "", REGEXP_9);
 

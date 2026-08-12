@@ -1241,7 +1241,11 @@ if (POSTGRES_URL) {
       if (!approvedOwnerSubjectId) {
         throw new Error("owner subject must be configured");
       }
-      const approved = await approveGrant(deviceCode, approvedOwnerSubjectId);
+      const reviewed = await getPendingConsent(deviceCode, { finalizeReview: true, subjectId: approvedOwnerSubjectId });
+      assert.ok(typeof reviewed?.reviewRevision === "string");
+      const approved = await approveGrant(deviceCode, approvedOwnerSubjectId, {
+        approval_review_revision: reviewed?.reviewRevision,
+      });
       issuedGrantId = (approved.grant as { grant_id: string }).grant_id;
       assert.deepEqual((approved.grant as { source?: unknown }).source, { id: sourceId, kind: "connector" });
       assert.deepEqual((approved.grant as { streams: Array<{ instance_ids?: string[] }> }).streams[0]?.instance_ids, [

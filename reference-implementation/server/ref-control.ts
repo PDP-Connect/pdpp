@@ -945,6 +945,8 @@ interface PendingOwnerDeviceRow {
 
 interface ConsentRequestEnvelope {
   client?: { client_id?: string };
+  entries?: unknown[];
+  request_kind?: string;
   selection?: {
     access_mode?: string;
     purpose_code?: string;
@@ -961,6 +963,8 @@ interface SourcePreview {
 
 interface ConsentApproval {
   readonly approval_id: string;
+  /** The console must send batch rows through hosted source review. */
+  readonly batch: boolean;
   readonly client_id: string | null;
   readonly created_at: string;
   readonly grant_preview: {
@@ -6786,6 +6790,7 @@ function buildConsentApproval(row: PendingConsentRow): ConsentApproval | null {
   const source = sourcePreviewFromConsentRequest(request);
   return {
     approval_id: row.approval_id,
+    batch: request.request_kind === "pdpp_selection_request_batch" && Array.isArray(request.entries),
     client_id: request.client?.client_id || null,
     created_at: row.created_at,
     grant_preview: {

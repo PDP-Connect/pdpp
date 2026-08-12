@@ -163,9 +163,21 @@ async function completeOauthCodeFlow({
   const requestUri = consentUrl.searchParams.get("request_uri");
   assert.ok(requestUri);
 
+  const reviewResp = await fetch(`${asUrl}/consent/review`, {
+    body: JSON.stringify({ request_uri: requestUri, subject_id: "owner_local" }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const reviewBody = (await reviewResp.json()) as { approval_review?: unknown; approval_review_revision?: unknown };
+  assert.equal(reviewResp.status, 200, JSON.stringify(reviewBody));
+  assert.ok(reviewBody.approval_review && typeof reviewBody.approval_review === "object");
+  assert.equal(typeof reviewBody.approval_review_revision, "string");
   const approveResp = await fetch(`${asUrl}/consent/approve`, {
-    body: new URLSearchParams({ request_uri: requestUri, subject_id: "owner_local" }).toString(),
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: JSON.stringify({
+      approval_review_revision: reviewBody.approval_review_revision,
+      request_uri: requestUri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
     redirect: "manual",
   });

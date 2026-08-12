@@ -12,6 +12,7 @@ export function buildGrantsDemoData(): {
       data: [
         {
           approval_id: "apr_demo_agent_review",
+          batch: false,
           client_id: "https://agent.example.test/oauth/client",
           created_at: "2026-07-01T12:04:00.000Z",
           grant_preview: {

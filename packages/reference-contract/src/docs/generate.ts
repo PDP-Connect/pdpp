@@ -25,16 +25,26 @@ function methodBadge(method: string): string {
   return `**${method}**`;
 }
 
-function propertyLines(heading: string, properties: Record<string, JsonSchema>): string[] {
+function propertyLines(heading: string, properties: Record<string, JsonSchema>, separator: string): string[] {
   const lines: string[] = [heading, ""];
   for (const [name, schema] of Object.entries(properties)) {
-    lines.push(`- \`${name}\` — ${describeSchema(schema)}`);
+    lines.push(`- \`${name}\` ${separator} ${describeSchema(schema)}`);
   }
   lines.push("");
   return lines;
 }
 
-function requestBodyLines(body: NonNullable<RouteManifest["request"]>["body"]): string[] {
+function requiredAlternativesLines(label: string, variants: readonly JsonSchema[] | undefined): string[] {
+  const requiredSets = (variants || [])
+    .map((variant) => variant.required || [])
+    .filter((required) => required.length > 0);
+  if (requiredSets.length === 0) {
+    return [];
+  }
+  return ["", label, ...requiredSets.map((required) => `- ${required.map((name) => `\`${name}\``).join(" + ")}`)];
+}
+
+function requestBodyLines(body: NonNullable<RouteManifest["request"]>["body"], separator: string): string[] {
   if (!body) {
     return [];
   }
@@ -42,36 +52,58 @@ function requestBodyLines(body: NonNullable<RouteManifest["request"]>["body"]): 
   if (body.schema?.properties) {
     for (const [name, schema] of Object.entries(body.schema.properties)) {
       const required = (body.schema.required || []).includes(name);
-      lines.push(`- \`${name}\`${required ? " (required)" : ""} — ${describeSchema(schema)}`);
+      lines.push(`- \`${name}\`${required ? " (required)" : ""} ${separator} ${describeSchema(schema)}`);
     }
+    lines.push(...requiredAlternativesLines("Required alternatives:", body.schema.oneOf));
+    lines.push(...requiredAlternativesLines("At least one required:", body.schema.anyOf));
+  } else if (Array.isArray(body.schema?.oneOf)) {
+    body.schema.oneOf.forEach((variant, index) => {
+      if (!variant.properties) {
+        return;
+      }
+      const properties: Record<string, JsonSchema> = variant.properties;
+      lines.push("", `Alternative ${index + 1}:`);
+      for (const [name, schema] of Object.entries(properties)) {
+        const required = (variant.required || []).includes(name);
+        lines.push(`- \`${name}\`${required ? " (required)" : ""} ${separator} ${describeSchema(schema)}`);
+      }
+      lines.push(...requiredAlternativesLines("  Required alternatives:", variant.oneOf));
+      lines.push(...requiredAlternativesLines("  At least one required:", variant.anyOf));
+    });
   }
   lines.push("");
   return lines;
 }
 
-function manifestDetailLines(m: RouteManifest): string[] {
+function manifestDetailLines(m: RouteManifest, separator: string): string[] {
   const lines: string[] = [`## ${m.id}`, "", `\`${m.method} ${m.path}\``, ""];
   if (m.summary) {
     lines.push(m.summary, "");
   }
   const q = m.request?.query?.properties;
   if (q) {
-    lines.push(...propertyLines("### Query parameters", q));
+    lines.push(...propertyLines("### Query parameters", q, separator));
   }
   const p = m.request?.params?.properties;
   if (p) {
-    lines.push(...propertyLines("### Path parameters", p));
+    lines.push(...propertyLines("### Path parameters", p, separator));
   }
-  lines.push(...requestBodyLines(m.request?.body));
+  lines.push(...requestBodyLines(m.request?.body, separator));
   lines.push("### Responses", "");
   for (const [code, spec] of Object.entries(m.responses || {})) {
-    lines.push(`- \`${code}\` — ${spec.description || (spec.schema ? "JSON body" : "")}`);
+    lines.push(`- \`${code}\` ${separator} ${spec.description || (spec.schema ? "JSON body" : "")}`);
   }
   lines.push("");
   return lines;
 }
 
-function manifestsToRouteMarkdown(manifests: readonly RouteManifest[], title: string, lead: string): string {
+function manifestsToRouteMarkdown(
+  manifests: readonly RouteManifest[],
+  title: string,
+  lead: string,
+  options: { separator?: string } = {}
+): string {
+  const separator = options.separator || "\u2014";
   const lines: string[] = [`# ${title}`, ""];
   if (lead) {
     lines.push(lead, "");
@@ -84,7 +116,7 @@ function manifestsToRouteMarkdown(manifests: readonly RouteManifest[], title: st
   }
   lines.push("");
   for (const m of manifests) {
-    lines.push(...manifestDetailLines(m));
+    lines.push(...manifestDetailLines(m, separator));
   }
   return lines.join("\n");
 }
@@ -120,7 +152,7 @@ function queryCookbook(): string {
   return [
     "# PDPP query cookbook",
     "",
-    "All examples below target the public record-query surface at `/v1/streams/...`. Tokens are Bearer access tokens bound to a PDPP grant. Core spec §8 (Resource Server Interface) is authoritative for query syntax — the canonical `filter[<field>]` / `filter[<field>][op]` shapes, declaration-driven `query.range_filters` and `query.expand`, and the `limit_clamped` warning. This cookbook shows the smallest correct call for each shape; where it is terser than §8, §8 governs.",
+    "All examples below target the public record-query surface at `/v1/streams/...`. Tokens are Bearer access tokens bound to a PDPP grant. Core spec §8 (Resource Server Interface) is authoritative for query syntax - the canonical `filter[<field>]` / `filter[<field>][op]` shapes, declaration-driven `query.range_filters` and `query.expand`, and the `limit_clamped` warning. This cookbook shows the smallest correct call for each shape; where it is terser than §8, §8 governs.",
     "",
     "## Discovery (one shot)",
     "",
@@ -202,9 +234,9 @@ function queryCookbook(): string {
     "",
     "## Logical cursor pagination",
     "",
-    "Records are sorted by `(cursor_field, primary_key)`. Null cursor values sort after present values. Cursors are opaque — clients must not parse or construct them. Cursors are direction-bound: follow a page cursor with the same `order` value that produced it. To change direction, restart pagination without a cursor; the reference rejects order-mismatched cursors as `invalid_cursor`.",
+    "Records are sorted by `(cursor_field, primary_key)`. Null cursor values sort after present values. Cursors are opaque - clients must not parse or construct them. Cursors are direction-bound: follow a page cursor with the same `order` value that produced it. To change direction, restart pagination without a cursor; the reference rejects order-mismatched cursors as `invalid_cursor`.",
     "",
-    '`limit` defaults to 25 and is capped at 100. A request for more than 100 is clamped to 100 and returns a non-fatal `meta.warnings[]` entry with `code: "limit_clamped"`, not an error — page forward with the returned cursor rather than expecting a larger page.',
+    '`limit` defaults to 25 and is capped at 100. A request for more than 100 is clamped to 100 and returns a non-fatal `meta.warnings[]` entry with `code: "limit_clamped"`, not an error - page forward with the returned cursor rather than expecting a larger page.',
     "",
     "```http",
     "GET /v1/streams/top_artists/records?order=asc&limit=50",
@@ -232,7 +264,7 @@ function queryCookbook(): string {
     "",
     "## Blob fetch",
     "",
-    "Records that include attachment-like bytes carry a `data.blob_ref` object. The reference RS decorates that object with a `fetch_url` (e.g., `/v1/blobs/<blob_id>`) which is the only supported byte-fetch path. There is no `/v1/attachments/<id>/content` (or similar) endpoint — discover bytes from the record's `blob_ref.fetch_url` rather than constructing attachment-specific content URLs.",
+    "Records that include attachment-like bytes carry a `data.blob_ref` object. The reference RS decorates that object with a `fetch_url` (e.g., `/v1/blobs/<blob_id>`) which is the only supported byte-fetch path. There is no `/v1/attachments/<id>/content` (or similar) endpoint - discover bytes from the record's `blob_ref.fetch_url` rather than constructing attachment-specific content URLs.",
     "",
     "```http",
     "GET /v1/blobs/<blob_id>",
@@ -245,8 +277,10 @@ function queryCookbook(): string {
     "",
     "1. Register a client: `POST /oauth/register` (DCR initial access token required).",
     "2. Start a grant request: `POST /oauth/par` with `authorization_details[0].type = https://pdpp.dev/data-access`.",
-    "3. Approve via the hosted consent page or `POST /consent/approve` with `request_uri` + subject id.",
-    "4. In the current thin reference flow, `POST /consent/approve` returns `{ grant_id, token, grant }` directly; there is no follow-on `/oauth/token` exchange for third-party client connect yet.",
+    "3. Review the request with `POST /consent/review` and inspect the exact `approval_review` artifact and `approval_review_revision`.",
+    "4. Approve with `POST /consent/approve` using `request_uri` and `approval_review_revision`. Do not submit stream or field choices again.",
+    "5. For a finalized batch review, also send `confirm_reviewed_decision` with the approval revision.",
+    "6. In the current thin reference flow, `POST /consent/approve` returns `{ grant_id, token, grant }` directly; there is no follow-on `/oauth/token` exchange for third-party client connect yet.",
     "",
     "## Owner device flow",
     "",
@@ -256,16 +290,16 @@ function queryCookbook(): string {
     "",
     "## Error codes (spec §8)",
     "",
-    "- `400 invalid_request` — malformed query shape (unknown param, bad filter shape, nested path).",
-    "- `400 unknown_field` — `fields=` references a field outside the stream schema.",
-    "- `400 invalid_expand` — expansion requests an undeclared or non-`has_many` relation.",
-    "- `400 invalid_cursor` — cursor token malformed.",
-    "- `403 field_not_granted` — filter targets a field outside the grant projection.",
-    "- `403 grant_stream_not_allowed` — stream not in grant.",
-    "- `403 insufficient_scope` — expansion requests a stream not in the grant.",
-    "- `404 not_found` — stream or record not found.",
-    "- `404 blob_not_found` — `blob_id` is unknown or stale.",
-    "- `410 cursor_expired` — `changes_since` cursor too old; full re-sync required.",
+    "- `400 invalid_request` - malformed query shape (unknown param, bad filter shape, nested path).",
+    "- `400 unknown_field` - `fields=` references a field outside the stream schema.",
+    "- `400 invalid_expand` - expansion requests an undeclared or non-`has_many` relation.",
+    "- `400 invalid_cursor` - cursor token malformed.",
+    "- `403 field_not_granted` - filter targets a field outside the grant projection.",
+    "- `403 grant_stream_not_allowed` - stream not in grant.",
+    "- `403 insufficient_scope` - expansion requests a stream not in the grant.",
+    "- `404 not_found` - stream or record not found.",
+    "- `404 blob_not_found` - `blob_id` is unknown or stale.",
+    "- `410 cursor_expired` - `changes_since` cursor too old; full re-sync required.",
     "",
   ].join("\n");
 }
@@ -285,7 +319,8 @@ export function generateDocs(): { routes: string; referenceRoutes: string; cookb
     routes: manifestsToRouteMarkdown(
       publicManifests,
       "PDPP reference-implementation public API",
-      "Generated from `packages/reference-contract/src/public/`. Do not edit by hand."
+      "Generated from `packages/reference-contract/src/public/`. Do not edit by hand.",
+      { separator: "-" }
     ),
   };
 }

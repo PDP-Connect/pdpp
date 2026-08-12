@@ -791,9 +791,8 @@ test("as.consent.decision approve returns grant + token", async () => {
     {
       action: "approve",
       approvalId: null,
-      approveOptions: { ai_training_consented: true },
+      approveOptions: { approval_review_revision: "reference.approval-review.v1:sha256:test" },
       requestUri: "urn:par:dev_1",
-      subjectId: "owner",
     },
     makeConsentDeps({
       approveGrant: (deviceCode, subjectId, opts) => {
@@ -816,8 +815,8 @@ test("as.consent.decision approve returns grant + token", async () => {
   assert.equal(outcome.grant.grant_id, "g1");
   assert.deepEqual(approveArgs, {
     deviceCode: "dev_1",
-    opts: { ai_training_consented: true },
-    subjectId: "owner",
+    opts: { approval_review_revision: "reference.approval-review.v1:sha256:test" },
+    subjectId: undefined,
   });
 });
 

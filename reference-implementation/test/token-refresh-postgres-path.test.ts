@@ -195,14 +195,22 @@ async function completeOauthCodeFlow({
   const requestUri = consentUrl.searchParams.get("request_uri");
   assert.ok(requestUri, "authorize redirect carries a request_uri");
 
+  const review = await fetchJson<{ approval_review_revision?: unknown }>(`${asUrl}/consent/review`, {
+    body: JSON.stringify({ request_uri: requestUri, subject_id: "owner_local" }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(review.status, 200, JSON.stringify(review.body));
+  assert.equal(typeof review.body.approval_review_revision, "string", "consent review returns a revision");
+  const reviewRevision = review.body.approval_review_revision as string;
   // POST /consent/approve drives issueOAuthAuthorizationCodeForDeviceCode:
   // the oauth_authorization_codes SELECT-by-device + the issue UPDATE.
   const approveResp = await fetch(`${asUrl}/consent/approve`, {
     body: new URLSearchParams({
+      approval_review_revision: reviewRevision,
       request_uri: requestUri,
-      subject_id: "owner_local",
     }).toString(),
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
     method: "POST",
     redirect: "manual",
   });

@@ -602,6 +602,8 @@ export interface PendingGrantRequest {
       time_constraint?: { field?: string | null; since?: string | null; until?: string | null } | null;
       time_range?: { since?: string | null } | null;
       fields?: string[] | null;
+      instance_ids?: string[] | null;
+      resources?: string[] | null;
       view?: string | null;
       necessity?: string | null;
     }> | null;
@@ -619,6 +621,81 @@ export interface PendingGrantRequest {
   } | null;
 }
 
+interface ApprovalReviewStream {
+  fields: string[];
+  instance_ids: string[];
+  name: string;
+  resources?: string[];
+  time_constraint?: { field: string; since?: string; until?: string };
+}
+
+interface ApprovalReviewClient {
+  client_display?: {
+    logo_uri?: string | null;
+    name?: string | null;
+    policy_uri?: string | null;
+    tos_uri?: string | null;
+    uri?: string | null;
+  } | null;
+  client_id: string;
+  registration_mode: string;
+}
+
+interface ApprovalReviewSource {
+  id: string;
+  kind: string;
+}
+
+interface ApprovalReviewSourceDeclaration {
+  digest: string;
+  version: string;
+}
+
+interface ApprovalReviewSourceEntry {
+  access_mode: string;
+  index: number;
+  purpose_code: string;
+  purpose_description: string | null;
+  resolved_streams: ApprovalReviewStream[];
+  retention: { max_duration?: string; on_expiry?: string } | null;
+  selection_preset: string | null;
+  source: ApprovalReviewSource;
+  source_declaration: ApprovalReviewSourceDeclaration;
+}
+
+interface SingleApprovalReviewArtifact {
+  access_mode: string;
+  ai_training_consented: boolean | null;
+  client: ApprovalReviewClient;
+  expires_at: string | null;
+  purpose_code: string;
+  purpose_description: string | null;
+  resolved_streams: ApprovalReviewStream[];
+  retention: { max_duration?: string; on_expiry?: string } | null;
+  selection_preset: string | null;
+  source: ApprovalReviewSource;
+  source_declaration: ApprovalReviewSourceDeclaration;
+  subject: { id: string };
+  version: "reference.approval-review.v1";
+}
+
+interface BatchApprovalReviewArtifact {
+  access_mode: string | null;
+  approved_source_indexes: number[];
+  client: ApprovalReviewClient;
+  expires_at: string | null;
+  parent_package_id: string | null;
+  source_narrowing: Record<
+    string,
+    { fields?: Record<string, string[]>; since?: Record<string, string>; streams?: string[] }
+  >;
+  sources: ApprovalReviewSourceEntry[];
+  subject: { id: string };
+  version: "reference.batch-approval-review.v1";
+}
+
+type ApprovalReviewArtifact = SingleApprovalReviewArtifact | BatchApprovalReviewArtifact;
+
 export interface PendingGrant {
   approveAllGate?: { approve_all_suppressed: boolean; suppression_reasons: string[] } | null;
   batch?: boolean;
@@ -628,6 +705,10 @@ export interface PendingGrant {
   overCapSources?: Array<{ id?: string | null; kind?: string | null } | null> | null;
   overSoftCap?: boolean;
   request: PendingGrantRequest;
+  review?: ApprovalReviewArtifact | null;
+  reviewArtifact?: string | null;
+  reviewDigest?: string | null;
+  reviewRevision?: string | null;
   softCap?: number;
   softCapWarning?: boolean;
   userCode?: string | null;
@@ -773,6 +854,100 @@ function buildClientClaimsBlock(clientClaims: PendingClientClaims | null | undef
   const items = commitments.map((c: string) => `<li>${ui.escapeHtml(c)}</li>`).join("");
   const body = `<span class="pdpp-title">What this app says it will do</span><ul class="hosted-ui-client-claim-commitments">${items}</ul><p class="hosted-ui-client-claim-disclaimer">These are the app's own claims, not enforced by your server.</p>`;
   return renderAuthorshipBlock("client", "Client-authored claims", body, ui);
+}
+
+function displayOptional(value: string | null | undefined): string {
+  return value ?? "None";
+}
+
+function displayList(values: string[] | null | undefined): string {
+  return values && values.length > 0 ? values.join(", ") : "None";
+}
+
+function buildReviewedClientFacts(client: ApprovalReviewClient): Array<{ label: string; value: string }> {
+  return [
+    { label: "Client ID", value: client.client_id },
+    { label: "Registration mode", value: client.registration_mode },
+    { label: "Display name", value: displayOptional(client.client_display?.name) },
+    { label: "Client URI", value: displayOptional(client.client_display?.uri) },
+    { label: "Logo URI", value: displayOptional(client.client_display?.logo_uri) },
+    { label: "Policy URI", value: displayOptional(client.client_display?.policy_uri) },
+    { label: "Terms URI", value: displayOptional(client.client_display?.tos_uri) },
+  ];
+}
+
+function renderReviewedStreams(streams: ApprovalReviewStream[], ui: ConsentUiRenderer): string {
+  return streams
+    .map((stream) => {
+      const timeFacts = stream.time_constraint
+        ? [
+            { label: "Time field", value: stream.time_constraint.field },
+            { label: "Since", value: displayOptional(stream.time_constraint.since) },
+            { label: "Until", value: displayOptional(stream.time_constraint.until) },
+          ]
+        : [{ label: "Time constraint", value: "None" }];
+      return ui.renderSurface({
+        ariaLabel: `Reviewed stream ${stream.name}`,
+        children: `<h4 class="pdpp-title">${ui.escapeHtml(stream.name)}</h4>${ui.renderKeyValueList([
+          { label: "Instance IDs", value: displayList(stream.instance_ids) },
+          { label: "Fields", value: displayList(stream.fields) },
+          { label: "Resources", value: displayList(stream.resources) },
+          ...timeFacts,
+        ])}`,
+        surface: "protocol",
+      });
+    })
+    .join("\n");
+}
+
+function buildReviewedSelectionFacts(review: SingleApprovalReviewArtifact | ApprovalReviewSourceEntry) {
+  return [
+    { label: "Purpose code", value: review.purpose_code },
+    { label: "Purpose description", value: displayOptional(review.purpose_description) },
+    { label: "Access mode", value: review.access_mode },
+    { label: "Selection preset", value: displayOptional(review.selection_preset) },
+    { label: "Retention duration", value: displayOptional(review.retention?.max_duration) },
+    { label: "Retention on expiry", value: displayOptional(review.retention?.on_expiry) },
+  ];
+}
+
+function buildReviewedSourceFacts(
+  source: ApprovalReviewSource,
+  declaration: ApprovalReviewSourceDeclaration
+): Array<{ label: string; value: string }> {
+  return [
+    { label: "Source ID", value: source.id },
+    { label: "Source kind", value: source.kind },
+    { label: "Declaration version", value: declaration.version },
+    { label: "Declaration digest", value: declaration.digest },
+  ];
+}
+
+function displayAiTrainingDecision(value: boolean | null): string {
+  if (value === null) {
+    return "Not applicable";
+  }
+  return value ? "Agreed" : "Not agreed";
+}
+
+function renderReviewedNarrowing(
+  narrowing: BatchApprovalReviewArtifact["source_narrowing"][string] | undefined,
+  ui: ConsentUiRenderer
+): string {
+  if (!narrowing) {
+    return ui.renderKeyValueList([{ label: "Owner narrowing", value: "None" }]);
+  }
+  const fieldEntries = narrowing.fields
+    ? Object.entries(narrowing.fields).map(([stream, fields]) => `${stream}: ${displayList(fields)}`)
+    : [];
+  const sinceEntries = narrowing.since
+    ? Object.entries(narrowing.since).map(([stream, since]) => `${stream}: ${since}`)
+    : [];
+  return ui.renderKeyValueList([
+    { label: "Streams kept", value: displayList(narrowing.streams) },
+    { label: "Field narrowing", value: displayList(fieldEntries) },
+    { label: "Time narrowing", value: displayList(sinceEntries) },
+  ]);
 }
 
 function renderRequestedStreamItem(stream: StreamItem, ui: ConsentUiRenderer): string {
@@ -952,6 +1127,7 @@ const APPROVE_ALL_SUPPRESSION_LABELS: Record<string, string> = {
 function buildPerSourceConfirmForm(
   cards: PendingConsentCard[],
   requestUri: string,
+  reviewRevision: string | null | undefined,
   csrfToken: string | null,
   csrfFieldName: string,
   ui: ConsentUiRenderer
@@ -968,8 +1144,11 @@ function buildPerSourceConfirmForm(
       )}" checked /> ${ui.escapeHtml(sourceLabel)}</label>${narrowControls}</div>`;
     })
     .join("\n");
-  return `<form class="hosted-ui-form" method="POST" action="/consent/approve" aria-label="Confirm each source">
-${csrfInput}<input type="hidden" name="request_uri" value="${ui.escapeHtml(requestUri)}" />
+  const reviewInput = reviewRevision
+    ? `<input type="hidden" name="approval_review_revision" value="${ui.escapeHtml(reviewRevision)}" />`
+    : "";
+  return `<form class="hosted-ui-form" method="POST" action="/consent/review" aria-label="Confirm each source">
+  ${csrfInput}${reviewInput}<input type="hidden" name="request_uri" value="${ui.escapeHtml(requestUri)}" />
 <div class="hosted-ui-source-toggles"><span class="pdpp-title">Confirm each source</span>${checkboxes}</div>
 <button type="submit" class="hosted-ui-button" data-variant="primary">Confirm selected sources</button>
 </form>`;
@@ -986,11 +1165,115 @@ function buildApproveAllForm(
     ? `<input type="hidden" name="${ui.escapeHtml(csrfFieldName)}" value="${ui.escapeHtml(csrfToken)}" />`
     : "";
   const sourceList = cards.map((card) => ui.escapeHtml(card.source?.id || `source ${card.index + 1}`)).join(", ");
-  return `<form class="hosted-ui-form" method="POST" action="/consent/approve" aria-label="Allow all sources">
-${csrfInput}<input type="hidden" name="request_uri" value="${ui.escapeHtml(requestUri)}" />
+  return `<form class="hosted-ui-form" method="POST" action="/consent/review" aria-label="Allow all sources">
+  ${csrfInput}<input type="hidden" name="request_uri" value="${ui.escapeHtml(requestUri)}" />
 <label class="hosted-ui-source-toggle"><input type="checkbox" name="confirm_approve_all" value="1" required /> I confirm allowing all ${cards.length} sources: ${sourceList}</label>
 <button type="submit" class="hosted-ui-button" data-variant="default">Allow all sources</button>
 </form>`;
+}
+
+function buildFinalBatchReviewForm(
+  cards: PendingConsentCard[],
+  requestUri: string,
+  reviewRevision: string,
+  csrfToken: string | null,
+  csrfFieldName: string,
+  ui: ConsentUiRenderer
+): string {
+  const csrfInput = csrfToken
+    ? `<input type="hidden" name="${ui.escapeHtml(csrfFieldName)}" value="${ui.escapeHtml(csrfToken)}" />`
+    : "";
+  const sourceList = cards
+    .map((card) => `<li>${ui.escapeHtml(card.source?.id || `source ${card.index + 1}`)}</li>`)
+    .join("");
+  return `<form class="hosted-ui-form" method="POST" action="/consent/approve" aria-label="Confirm reviewed batch decision">
+  ${csrfInput}<input type="hidden" name="request_uri" value="${ui.escapeHtml(requestUri)}" />
+  <input type="hidden" name="approval_review_revision" value="${ui.escapeHtml(reviewRevision)}" />
+<div class="hosted-ui-source-toggles"><span class="pdpp-title">Reviewed sources</span><ul>${sourceList}</ul></div>
+<label class="hosted-ui-source-toggle"><input type="checkbox" name="confirm_reviewed_decision" value="1" required /> I confirm this reviewed decision</label>
+<button type="submit" class="hosted-ui-button" data-variant="primary">Approve reviewed decision</button>
+</form>`;
+}
+
+function renderReviewedBatchConsentHtml(
+  review: BatchApprovalReviewArtifact,
+  pending: PendingGrant,
+  requestUri: string,
+  csrfToken: string | null,
+  csrfFieldName: string,
+  providerName: string,
+  ui: ConsentUiRenderer
+): string {
+  if (!pending.reviewRevision) {
+    throw new Error("Reviewed batch consent is missing its approval revision");
+  }
+  const cards: PendingConsentCard[] = review.sources.map((source) => ({
+    access_mode: source.access_mode,
+    index: source.index,
+    purpose_code: source.purpose_code,
+    resolvedStreams: source.resolved_streams,
+    retention: source.retention,
+    source: source.source,
+  }));
+  const csrfHidden = csrfToken ? [{ name: csrfFieldName, value: csrfToken }] : [];
+  const denyForm = ui.renderActionRow([
+    {
+      action: "/consent/deny",
+      hidden: [...csrfHidden, { name: "request_uri", value: requestUri }],
+      label: "Deny",
+      method: "POST",
+      variant: "danger",
+    },
+  ]);
+  const sourceSections = review.sources
+    .map((source, order) =>
+      ui.renderSurface({
+        ariaLabel: `Reviewed source ${source.index + 1}`,
+        children: [
+          `<h3 class="pdpp-heading">${ui.escapeHtml(source.source.id)}</h3>`,
+          ui.renderKeyValueList([
+            { label: "Approval order", value: order + 1 },
+            { label: "Staged source index", value: source.index },
+            ...buildReviewedSourceFacts(source.source, source.source_declaration),
+            ...buildReviewedSelectionFacts(source),
+          ]),
+          renderReviewedNarrowing(review.source_narrowing[String(source.index)], ui),
+          `<span class="pdpp-title">Exact reviewed streams</span>${renderReviewedStreams(source.resolved_streams, ui)}`,
+        ].join("\n"),
+        surface: "human",
+      })
+    )
+    .join("\n");
+  const actions = [
+    buildFinalBatchReviewForm(cards, requestUri, pending.reviewRevision, csrfToken, csrfFieldName, ui),
+    denyForm,
+  ].join("\n");
+  const body = [
+    ui.renderPageIntro({
+      eyebrow: "Final approval",
+      lede: "These are the exact facts your server saved when you completed review.",
+      title: "Approve the reviewed sources",
+    }),
+    ui.renderSurface({
+      ariaLabel: "Reviewed batch decision",
+      children: ui.renderKeyValueList([
+        ...buildReviewedClientFacts(review.client),
+        { label: "Subject ID", value: review.subject.id },
+        { label: "Access mode", value: displayOptional(review.access_mode) },
+        { label: "Grant expiry", value: displayOptional(review.expires_at) },
+        { label: "Parent package ID", value: displayOptional(review.parent_package_id) },
+        { label: "Approved source order", value: review.approved_source_indexes.join(", ") },
+      ]),
+      surface: "human",
+    }),
+    sourceSections,
+    ui.renderSurface({ ariaLabel: "Consent actions", children: actions, surface: "human" }),
+  ].join("\n");
+  return ui.renderHostedDocument({
+    body,
+    providerName,
+    title: `${providerName} — Reviewed batch consent`,
+  });
 }
 
 function renderBatchConsentHtml(
@@ -1001,6 +1284,17 @@ function renderBatchConsentHtml(
   providerName: string,
   ui: ConsentUiRenderer
 ): string {
+  if (pending.review?.version === "reference.batch-approval-review.v1") {
+    return renderReviewedBatchConsentHtml(
+      pending.review,
+      pending,
+      requestUri,
+      csrfToken,
+      csrfFieldName,
+      providerName,
+      ui
+    );
+  }
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const request = pending.request;
   const client = request.client || {};
@@ -1042,14 +1336,18 @@ function renderBatchConsentHtml(
       variant: "danger",
     },
   ]);
-  const actions = [
-    suppressionNote,
-    buildPerSourceConfirmForm(cards, requestUri, csrfToken, csrfFieldName, ui),
-    approveAllSuppressed ? "" : buildApproveAllForm(cards, requestUri, csrfToken, csrfFieldName, ui),
-    denyForm,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const actions = pending.reviewRevision
+    ? [buildFinalBatchReviewForm(cards, requestUri, pending.reviewRevision, csrfToken, csrfFieldName, ui), denyForm]
+        .filter(Boolean)
+        .join("\n")
+    : [
+        suppressionNote,
+        buildPerSourceConfirmForm(cards, requestUri, null, csrfToken, csrfFieldName, ui),
+        approveAllSuppressed ? "" : buildApproveAllForm(cards, requestUri, csrfToken, csrfFieldName, ui),
+        denyForm,
+      ]
+        .filter(Boolean)
+        .join("\n");
 
   const body = [
     ui.renderPageIntro({
@@ -1092,6 +1390,131 @@ function renderBatchConsentHtml(
   });
 }
 
+function hiddenInputs(fields: Array<{ name: string; value: string }>, ui: ConsentUiRenderer): string {
+  return fields
+    .map((field) => `<input type="hidden" name="${ui.escapeHtml(field.name)}" value="${ui.escapeHtml(field.value)}" />`)
+    .join("");
+}
+
+function buildSingleConsentActions({
+  csrfFieldName,
+  csrfToken,
+  isAiTraining,
+  pending,
+  requestUri,
+  ui,
+}: {
+  csrfFieldName: string;
+  csrfToken: string | null;
+  isAiTraining: boolean;
+  pending: PendingGrant;
+  requestUri: string;
+  ui: ConsentUiRenderer;
+}): string {
+  const csrfHidden = csrfToken ? [{ name: csrfFieldName, value: csrfToken }] : [];
+  const reviewHidden = pending.reviewRevision
+    ? [{ name: "approval_review_revision", value: pending.reviewRevision }]
+    : [];
+  const allowAction = pending.reviewRevision
+    ? ui.renderActionRow([
+        {
+          action: "/consent/approve",
+          hidden: [...csrfHidden, ...reviewHidden, { name: "request_uri", value: requestUri }],
+          label: "Allow access",
+          method: "POST",
+          variant: "primary",
+        },
+      ])
+    : `<form class="hosted-ui-form" method="POST" action="/consent/review" aria-label="Finalize consent review">
+${hiddenInputs(csrfHidden, ui)}<input type="hidden" name="request_uri" value="${ui.escapeHtml(requestUri)}" />
+${
+  isAiTraining
+    ? '<label class="hosted-ui-source-toggle"><input type="checkbox" name="ai_training_consented" value="1" required /> I explicitly agree to AI training use</label>'
+    : ""
+}
+<button type="submit" class="hosted-ui-button" data-variant="primary">Allow access</button>
+</form>`;
+  const denyAction = ui.renderActionRow([
+    {
+      action: "/consent/deny",
+      hidden: [...csrfHidden, { name: "request_uri", value: requestUri }],
+      label: "Deny",
+      method: "POST",
+      variant: "danger",
+    },
+  ]);
+  return [allowAction, denyAction].join("\n");
+}
+
+function renderReviewedSingleConsentHtml(
+  review: SingleApprovalReviewArtifact,
+  pending: PendingGrant,
+  requestUri: string,
+  csrfToken: string | null,
+  csrfFieldName: string,
+  providerName: string,
+  ui: ConsentUiRenderer
+): string {
+  const actions = buildSingleConsentActions({
+    csrfFieldName,
+    csrfToken,
+    isAiTraining: false,
+    pending,
+    requestUri,
+    ui,
+  });
+  const body = [
+    ui.renderPageIntro({
+      eyebrow: "Final approval",
+      lede: "These are the exact facts your server saved when you completed review.",
+      title: "Approve the reviewed data access",
+    }),
+    ui.renderSurface({
+      ariaLabel: "Reviewed consent decision",
+      children: [
+        renderAuthorshipBlock(
+          "protocol",
+          "Reviewed client and subject",
+          ui.renderKeyValueList([
+            ...buildReviewedClientFacts(review.client),
+            { label: "Subject ID", value: review.subject.id },
+          ]),
+          ui
+        ),
+        renderAuthorshipBlock(
+          "protocol",
+          "Reviewed source declaration",
+          ui.renderKeyValueList(buildReviewedSourceFacts(review.source, review.source_declaration)),
+          ui
+        ),
+        renderAuthorshipBlock(
+          "client",
+          "Reviewed purpose",
+          ui.renderKeyValueList(buildReviewedSelectionFacts(review)),
+          ui
+        ),
+        renderAuthorshipBlock(
+          "protocol",
+          "Reviewed approval conditions",
+          ui.renderKeyValueList([
+            { label: "AI training consent", value: displayAiTrainingDecision(review.ai_training_consented) },
+            { label: "Grant expiry", value: displayOptional(review.expires_at) },
+          ]),
+          ui
+        ),
+        `<span class="pdpp-title">Exact reviewed streams</span>${renderReviewedStreams(review.resolved_streams, ui)}`,
+        actions,
+      ].join("\n"),
+      surface: "human",
+    }),
+  ].join("\n");
+  return ui.renderHostedDocument({
+    body,
+    providerName,
+    title: `${providerName} — Reviewed consent`,
+  });
+}
+
 /**
  * Renders the active consent review page for GET /consent when a live
  * pending-consent row exists. The owner reviews streams, facts, and submits
@@ -1107,6 +1530,17 @@ export function renderPendingGrantConsentHtml(
 ): string {
   if (pending.batch) {
     return renderBatchConsentHtml(pending, requestUri, csrfToken, csrfFieldName, providerName, ui);
+  }
+  if (pending.review?.version === "reference.approval-review.v1") {
+    return renderReviewedSingleConsentHtml(
+      pending.review,
+      pending,
+      requestUri,
+      csrfToken,
+      csrfFieldName,
+      providerName,
+      ui
+    );
   }
 
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
@@ -1182,24 +1616,14 @@ export function renderPendingGrantConsentHtml(
   const codeBlock = pending.userCode
     ? `<div><span class="pdpp-eyebrow">Verification code</span><div class="hosted-ui-code">${ui.escapeHtml(pending.userCode)}</div></div>`
     : "";
-
-  const csrfHidden = csrfToken ? [{ name: csrfFieldName, value: csrfToken }] : [];
-  const actions = ui.renderActionRow([
-    {
-      action: "/consent/approve",
-      hidden: [...csrfHidden, { name: "request_uri", value: requestUri }],
-      label: "Allow access",
-      method: "POST",
-      variant: "primary",
-    },
-    {
-      action: "/consent/deny",
-      hidden: [...csrfHidden, { name: "request_uri", value: requestUri }],
-      label: "Deny",
-      method: "POST",
-      variant: "danger",
-    },
-  ]);
+  const actions = buildSingleConsentActions({
+    csrfFieldName,
+    csrfToken,
+    isAiTraining: selection.purpose_code === "https://pdpp.org/purpose/ai_training",
+    pending,
+    requestUri,
+    ui,
+  });
 
   const body = [
     ui.renderPageIntro({

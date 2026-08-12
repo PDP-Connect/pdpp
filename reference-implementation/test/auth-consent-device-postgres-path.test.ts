@@ -247,7 +247,7 @@ if (POSTGRES_URL) {
 
     // getPendingConsent -> getPendingConsentRow -> Postgres getByDeviceCode,
     // which reads params_json via the ::text cast and JSON.parse()s it.
-    const pending = await getPendingConsent(deviceCode);
+    const pending = await getPendingConsent(deviceCode, { finalizeReview: true, subjectId: "owner_local" });
     assert.ok(pending, "pending consent request is returned");
     assert.ok(pending.request, "pending consent carries the parsed request (params_json round-trip)");
     assert.equal(pending.userCode, initiated.user_code, "pending userCode matches the initiated user_code");
@@ -283,7 +283,10 @@ if (POSTGRES_URL) {
     assert.equal(pendingRequest.source_declaration_snapshot?.declaration?.declaration_version, declarationVersion);
 
     // Approve: markPendingConsentApproved (PG UPDATE) + issues the grant.
-    const approved = await approveGrant(deviceCode, "owner_local");
+    assert.equal(typeof pending.reviewRevision, "string", "review materializes an approval revision");
+    const approved = await approveGrant(deviceCode, "owner_local", {
+      approval_review_revision: pending.reviewRevision,
+    });
     assert.ok(approved, "approveGrant resolves");
     // approveGrant's two branches (single grant / staged batch package) both
     // return { grant: { grant_id }, token, ... }; there is no top-level

@@ -158,10 +158,24 @@ async function approveClientGrant(
       method: "POST",
     })
   ).body as { request_uri?: string };
+  assert.ok(par.request_uri);
+  const review = (
+    await fetchJson(`${asUrl}/consent/review`, {
+      body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    })
+  ).body as { approval_review?: object; approval_review_revision?: string; request_uri?: string };
+  assert.ok(review.approval_review);
+  assert.ok(review.approval_review_revision);
+  assert.equal(review.request_uri, par.request_uri);
   const approved = (
     await fetchJson(`${asUrl}/consent/approve`, {
-      body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
-      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        approval_review_revision: review.approval_review_revision,
+        request_uri: review.request_uri,
+      }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
       method: "POST",
     })
   ).body as { token?: string };

@@ -780,6 +780,20 @@ async function readBody(resp: Response): Promise<{ json: JsonValue; text: string
   return { text, json };
 }
 
+function reviewedConsent(body: JsonValue, requestUri: string): { requestUri: string; revision: string } {
+  const review = jsonRecord(body);
+  if (!(review && jsonRecord(review.approval_review))) {
+    throw new Error("consent review returned without the exact approval artifact");
+  }
+  if (typeof review.approval_review_revision !== "string" || !review.approval_review_revision) {
+    throw new Error("consent review returned without approval_review_revision");
+  }
+  if (review.request_uri !== requestUri) {
+    throw new Error("consent review returned a different canonical request_uri");
+  }
+  return { requestUri, revision: review.approval_review_revision };
+}
+
 function pkceChallenge(verifier: string): string {
   return crypto.createHash("sha256").update(verifier).digest("base64url");
 }
@@ -881,12 +895,33 @@ async function mintScopedClientToken({
   const consentCsrfCookie = findSetCookiePair(getSetCookieList(consentPageResp), "pdpp_owner_csrf");
   const consentCsrfField = extractCsrfFieldValue(await consentPageResp.text());
 
-  const approveHeaders: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
+  const reviewResp = await fetch(`${origin}/consent/review`, {
+    body: JSON.stringify({ request_uri: requestUri, subject_id: ownerSubject || "owner_local" }),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Cookie: sessionCookie,
+    },
+    method: "POST",
+  });
+  const reviewResult = await readBody(reviewResp);
+  if (!reviewResp.ok) {
+    throw new Error(`consent/review failed ${reviewResp.status}: ${reviewResult.text}`);
+  }
+  const review = reviewedConsent(reviewResult.json, requestUri);
+
+  const approveHeaders: Record<string, string> = {
+    Accept: "text/html",
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
   const cookieParts = [sessionCookie, consentCsrfCookie].filter(Boolean) as string[];
   if (cookieParts.length > 0) {
     approveHeaders.Cookie = cookieParts.join("; ");
   }
-  const approveBody: Record<string, string> = { request_uri: requestUri, subject_id: ownerSubject || "owner_local" };
+  const approveBody: Record<string, string> = {
+    approval_review_revision: review.revision,
+    request_uri: review.requestUri,
+  };
   if (consentCsrfField) {
     approveBody._csrf = consentCsrfField;
   }

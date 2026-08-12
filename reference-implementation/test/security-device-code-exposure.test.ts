@@ -341,9 +341,22 @@ test("security: device-code exposure on _ref read surfaces", async (t) => {
         throw new Error("unreachable: assert.ok would have thrown");
       }
 
-      const approveResp = await fetch(`${asUrl}/consent/approve`, {
+      const reviewResp = await fetch(`${asUrl}/consent/review`, {
         body: JSON.stringify({ approval_id: consentEntry.approval_id, subject_id: "owner_local" }),
-        headers: { "Content-Type": "application/json" },
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const reviewText = await reviewResp.text();
+      assert.equal(reviewResp.status, 200, reviewText);
+      const review = JSON.parse(reviewText) as { approval_review_revision: string; request_uri: string };
+      assert.equal(review.request_uri, consentPar.request_uri);
+
+      const approveResp = await fetch(`${asUrl}/consent/approve`, {
+        body: JSON.stringify({
+          approval_review_revision: review.approval_review_revision,
+          request_uri: review.request_uri,
+        }),
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
         method: "POST",
       });
       assert.equal(approveResp.status, 200);

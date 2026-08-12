@@ -13,6 +13,7 @@ import {
 } from "../src/public/index.ts";
 
 const CONSENT_APPROVE_RE = /consent\/approve.*\{ grant_id, token, grant \}/;
+const CONSENT_REVIEW_RE = /\/consent\/review/;
 const GRANT_REVOKE_RE = /\/grants\/\{grantId\}\/revoke/;
 const OAUTH_PAR_RE = /\/oauth\/par/;
 const OAUTH_TOKEN_RE = /\/oauth\/token/;
@@ -29,6 +30,7 @@ test("public manifests cover metadata, auth, grant, and record surfaces", () => 
     "getProtectedResourceMetadata",
     "registerDynamicClient",
     "createPushedAuthorizationRequest",
+    "reviewConsent",
     "approveConsent",
     "startOwnerDeviceAuthorization",
     "exchangeOwnerDeviceToken",
@@ -45,6 +47,7 @@ test("public manifests cover metadata, auth, grant, and record surfaces", () => 
 
   const publicOperations = listOperations().filter((entry) => entry.surface === "public");
   assert.ok(publicOperations.some((entry) => entry.id === "createPushedAuthorizationRequest"));
+  assert.ok(publicOperations.some((entry) => entry.id === "reviewConsent"));
   assert.ok(publicOperations.some((entry) => entry.id === "revokeGrant"));
 });
 
@@ -64,6 +67,129 @@ test("request validators accept the shipped public flow shapes", () => {
     },
   });
   assert.deepEqual(parRequest, { ok: true });
+
+  const batchReviewRequest = validateRequest("reviewConsent", {
+    body: {
+      approved_source_indexes: [0],
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+      source_narrowing: {
+        0: {
+          fields: { top_artists: ["id"] },
+          since: { top_artists: "2026-01-01T00:00:00Z" },
+          streams: ["top_artists"],
+        },
+      },
+    },
+  });
+  assert.deepEqual(batchReviewRequest, { ok: true });
+
+  const singleReviewRequest = validateRequest("reviewConsent", {
+    body: {
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+    },
+  });
+  assert.deepEqual(singleReviewRequest, { ok: true });
+
+  const singleAiTrainingBooleanReviewRequest = validateRequest("reviewConsent", {
+    body: {
+      ai_training_consented: true,
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+      subject_id: "owner_local",
+    },
+  });
+  assert.deepEqual(singleAiTrainingBooleanReviewRequest, { ok: true });
+
+  const singleAiTrainingFormReviewRequest = validateRequest("reviewConsent", {
+    body: {
+      ai_training_consented: "1",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+      subject_id: "owner_local",
+    },
+  });
+  assert.deepEqual(singleAiTrainingFormReviewRequest, { ok: true });
+
+  const singleAiTrainingMalformedReviewRequest = validateRequest("reviewConsent", {
+    body: {
+      ai_training_consented: "yes",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+      subject_id: "owner_local",
+    },
+  });
+  assert.equal(singleAiTrainingMalformedReviewRequest.ok, false);
+
+  const approvalIdReviewRequest = validateRequest("reviewConsent", {
+    body: {
+      approval_id: "appr_public_reference_id",
+    },
+  });
+  assert.deepEqual(approvalIdReviewRequest, { ok: true });
+
+  const reviewRejectsBothIdentifiers = validateRequest("reviewConsent", {
+    body: {
+      approval_id: "appr_public_reference_id",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+    },
+  });
+  assert.equal(reviewRejectsBothIdentifiers.ok, false);
+
+  const batchReviewRejectsUnknownShape = validateRequest("reviewConsent", {
+    body: {
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+      source_narrowing: { 0: { arbitrary: true } },
+    },
+  });
+  assert.equal(batchReviewRejectsUnknownShape.ok, false);
+
+  const batchReviewRejectsBadKey = validateRequest("reviewConsent", {
+    body: {
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+      source_narrowing: { nope: { streams: ["top_artists"] } },
+    },
+  });
+  assert.equal(batchReviewRejectsBadKey.ok, false);
+
+  const singleApprovalRequest = validateRequest("approveConsent", {
+    body: {
+      approval_review_revision: "reference.approval-review.v1:sha256:test",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+    },
+  });
+  assert.deepEqual(singleApprovalRequest, { ok: true });
+
+  const batchApprovalRequest = validateRequest("approveConsent", {
+    body: {
+      approval_review_revision: "reference.batch-approval-review.v1:sha256:test",
+      confirm_reviewed_decision: "1",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+    },
+  });
+  assert.deepEqual(batchApprovalRequest, { ok: true });
+
+  const batchApprovalRequiresReview = validateRequest("approveConsent", {
+    body: {
+      confirm_reviewed_decision: "1",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+    },
+  });
+  assert.equal(batchApprovalRequiresReview.ok, false);
+
+  const finalApprovalRejectsSubjectReplay = validateRequest("approveConsent", {
+    body: {
+      approval_review_revision: "reference.approval-review.v1:sha256:test",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+      subject_id: "owner_local",
+    },
+  });
+  assert.equal(finalApprovalRejectsSubjectReplay.ok, false);
+
+  const finalApprovalRejectsAiTrainingReplay = validateRequest("approveConsent", {
+    body: {
+      ai_training_consented: true,
+      approval_review_revision: "reference.approval-review.v1:sha256:test",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+    },
+  });
+  assert.equal(finalApprovalRejectsAiTrainingReplay.ok, false);
 
   const deviceAuthRequest = validateRequest("startOwnerDeviceAuthorization", {
     body: {
@@ -203,6 +329,7 @@ test("OpenAPI and docs generation include the auth/control routes alongside reco
   assert.ok(publicDocument.paths["/.well-known/oauth-authorization-server"]);
   assert.ok(publicDocument.paths["/.well-known/oauth-protected-resource"]);
   assert.ok(publicDocument.paths["/oauth/par"]);
+  assert.ok(publicDocument.paths["/consent/review"]);
   assert.ok(publicDocument.paths["/oauth/token"]);
   assert.ok(publicDocument.paths["/grants/{grantId}/revoke"]);
   assert.equal(publicDocument.paths["/_ref/connectors"], undefined);
@@ -221,6 +348,7 @@ test("OpenAPI and docs generation include the auth/control routes alongside reco
   assert.equal(reconcileOperation.post.operationId, "refDatasetSummaryReconcile");
 
   assert.match(docs.routes, OAUTH_PAR_RE);
+  assert.match(docs.routes, CONSENT_REVIEW_RE);
   assert.match(docs.routes, OAUTH_TOKEN_RE);
   assert.match(docs.routes, GRANT_REVOKE_RE);
   assert.match(docs.routes, RECORDS_ROUTE_RE);

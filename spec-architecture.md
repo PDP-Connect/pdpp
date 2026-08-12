@@ -114,7 +114,7 @@ Event-driven ingestion (a platform pushes events to the personal server) is defe
 |-----------|----------------------|-------|
 | Grant object | **Yes** | The parameterized consent artifact (Core Section 7) |
 | Record model | **Yes** | Streams, schemas, keys, blob_ref, resource_ref (Core Section 4) |
-| Source binding | **Yes** | `source: { kind, id }` on requests and grants (Core Section 6) |
+| Source binding | **Yes** | Requests use `source: { id, kind? }`; grants use `source: { kind, id }` (Core Sections 6-7) |
 | Connector manifest | **Yes** | What a connector produces and requires (Core Section 5) |
 | Connector run protocol | **Yes** | START/RECORD/STATE/INTERACTION/DONE (Collection Profile) |
 | Selection request format | **Yes** | RFC 9396 authorization_details (Core Section 6) |

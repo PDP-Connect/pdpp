@@ -174,6 +174,7 @@ test("relDay produces calm relative labels", () => {
 test("hero is DECIDE when an approval is pending", () => {
   const pending: PendingApproval = {
     approval_id: "a1",
+    batch: false,
     client_id: "Atlas Mortgage",
     created_at: NOW.toISOString(),
     grant_preview: { streams: [{ name: "pay_statements" }, { name: "transactions" }] },
@@ -264,6 +265,7 @@ test("failed syncs/traces alone do NOT drive the alarm — only the rendered-ver
 test("decide wins over alarm", () => {
   const pending = {
     approval_id: "a1",
+    batch: false,
     created_at: NOW.toISOString(),
     kind: "consent",
     object: "approval",

@@ -17,6 +17,7 @@ import {
   BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
   ResolvedGrantSchema,
   SelectionRequestSchema,
+  validateResponse,
 } from "@pdpp/reference-contract";
 import {
   allowUnboundedReadAcknowledged,
@@ -28,6 +29,7 @@ import {
   referenceQueries,
   transaction,
 } from "../lib/db.ts";
+import { postgresEmitSpineEventInTransaction } from "../lib/postgres-spine.ts";
 import { createTraceContext, emitSpineEvent as emitRawSpineEvent, type SpineEventInput } from "../lib/spine.ts";
 import type { CimdFetchDependencies, CimdTransportFailureEvent } from "./cimd.ts";
 import { listActiveBindingsForGrant, projectBindingForWire } from "./connection-identity.ts";
@@ -56,6 +58,7 @@ import {
 } from "./oauth-substrate/primitives.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "./postgres-storage.ts";
 import { snapshotSourceDeclaration } from "./source-declaration.ts";
+import { snapshotContentAddressedSourceDeclarationFromLegacyConnectorManifest } from "./source-declaration-legacy-collection.ts";
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
@@ -364,6 +367,9 @@ interface GrantPackageCursor {
 }
 
 interface PendingConsentRow extends DbRow {
+  approval_review_digest?: string | null;
+  approval_review_json?: string | null;
+  approval_review_revision?: string | null;
   created_at: string;
   device_code: string;
   expires_at: string;
@@ -902,11 +908,12 @@ function getManifestStreams(manifest: DbRow): Record<string, unknown>[] {
 
 const CURRENT_GRANT_PACKAGE_VERSION = "reference.mcp_package.v2";
 const LEGACY_CONNECTOR_PROJECTION_PUBLISHER_ID = "https://pdpp.dev/reference-implementation";
+const CANONICAL_NON_NEGATIVE_INTEGER_KEY_RE = /^(0|[1-9][0-9]*)$/;
 
-async function retainableSourceDeclaration(
+function retainableSourceDeclaration(
   sourceBinding: SourceBinding,
   manifest: DbRow
-): Promise<{ declaration: DbRow; declarationVersion: string }> {
+): { declaration: DbRow; declarationVersion: string } {
   if (manifest.source_declaration !== undefined) {
     const declaration = snapshotSourceDeclaration(manifest.source_declaration);
     if (declaration.source.id !== sourceBinding.id || declaration.source.kind !== sourceBinding.kind) {
@@ -926,9 +933,6 @@ async function retainableSourceDeclaration(
   if (!isNonEmptyString(manifest.version)) {
     throw bindingError("invalid_request", "Connector manifest version must be a non-empty string");
   }
-  const { snapshotContentAddressedSourceDeclarationFromLegacyConnectorManifest } = await import(
-    "./source-declaration-legacy-collection.ts"
-  );
   const declaration = snapshotContentAddressedSourceDeclarationFromLegacyConnectorManifest(manifest, {
     connectorImplementationId,
     publisherId: LEGACY_CONNECTOR_PROJECTION_PUBLISHER_ID,
@@ -1007,6 +1011,16 @@ function resolveConfiguredSourceBinding(opts: { nativeManifest?: DbRow | null } 
   }
   const declaration = snapshotSourceDeclaration(manifest.source_declaration);
   return { id: declaration.source.id, kind: declaration.source.kind };
+}
+
+function isConfiguredFulfillment(
+  sourceBinding: SourceBinding,
+  storageBinding: StorageBinding,
+  opts: { nativeManifest?: DbRow | null } = {}
+): boolean {
+  const configuredSource = resolveConfiguredSourceBinding(opts);
+  const configuredStorage = resolveConfiguredNativeStorageBinding(opts);
+  return configuredSource?.id === sourceBinding.id && configuredStorage?.connector_id === storageBinding.connector_id;
 }
 
 export function buildPendingConsentRequestUri(deviceCode: string): string {
@@ -1355,7 +1369,7 @@ function requireAuthorizationDetailInput(detail: unknown, index: number): Author
   }
   if ("connector_id" in detail || "provider_id" in detail) {
     invalidGrantInitiationRequest(
-      "authorization_details must use source: { kind: 'connector' | 'provider_native', id }"
+      "authorization_details must use source: { id, kind?: 'connector' | 'provider_native' }"
     );
   }
   const unsupportedDetailFields = Object.keys(detail).filter(
@@ -1422,6 +1436,33 @@ async function resolveRegisteredSourceStorageConnectorId(sourceBinding: SourceBi
   return row.connector_id;
 }
 
+async function resolveRegisteredSourceBindingById(sourceId: string): Promise<{
+  sourceBinding: SourceBinding;
+  storageConnectorId: string;
+} | null> {
+  const rows = await getConnectorCatalogStore().listBySourceId(sourceId);
+  if (rows.length === 0) {
+    return null;
+  }
+  if (rows.length > 1) {
+    throw bindingError("invalid_request", `Source '${sourceId}' has multiple local fulfillment bindings`);
+  }
+  const [row] = rows;
+  if (!(row && isNonEmptyString(row.connector_id))) {
+    throw bindingError("invalid_request", `Source '${sourceId}' has an invalid local fulfillment binding`);
+  }
+  const manifest = parseAndValidateConnectorManifestRow(row, row.connector_id);
+  const declaration = snapshotSourceDeclaration(manifest.source_declaration);
+  if (declaration.source.id !== sourceId) {
+    invalidGrantInitiationRequest(`Source id does not match the retained declaration for '${sourceId}'`);
+  }
+  return {
+    sourceBinding: { id: declaration.source.id, kind: declaration.source.kind },
+    storageConnectorId: row.connector_id,
+  };
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Existing request/declaration compatibility boundary; keep validation local.
 async function resolveAuthorizationDetailBindings(
   detail: AuthorizationDetailInput,
   index: number,
@@ -1433,45 +1474,60 @@ async function resolveAuthorizationDetailBindings(
   const configuredNativeStorageConnectorId = configuredNativeStorageBinding?.connector_id || null;
   const detailSource = detail.source;
   if (!isRecord(detailSource)) {
-    throw bindingError("invalid_request", `${at}.source must be { kind: 'connector' | 'provider_native', id }`);
-  }
-  const detailSourceKeys = Object.keys(detailSource).sort();
-  if (detailSourceKeys.length !== 2 || detailSourceKeys[0] !== "id" || detailSourceKeys[1] !== "kind") {
-    invalidGrantInitiationRequest(`${at}.source must include only kind and id`);
-  }
-  const bindingKind = detailSource.kind;
-  const sourceId = detailSource.id;
-  if (!((bindingKind === "connector" || bindingKind === "provider_native") && isNonEmptyString(sourceId))) {
     throw bindingError(
       "invalid_request",
-      `${at}.source.kind must be 'connector' or 'provider_native' and source.id is required`
+      `${at}.source must be { id } or { kind: 'connector' | 'provider_native', id }`
+    );
+  }
+  const detailSourceKeys = Object.keys(detailSource).sort();
+  const sourceHasKind = detailSourceKeys.includes("kind");
+  if (
+    !(
+      (detailSourceKeys.length === 1 && detailSourceKeys[0] === "id") ||
+      (detailSourceKeys.length === 2 && detailSourceKeys[0] === "id" && detailSourceKeys[1] === "kind")
+    )
+  ) {
+    invalidGrantInitiationRequest(`${at}.source must include only id and optional kind`);
+  }
+  const sourceId = detailSource.id;
+  const explicitKind = sourceHasKind ? detailSource.kind : null;
+  if (
+    !(
+      (explicitKind === null || explicitKind === "connector" || explicitKind === "provider_native") &&
+      isNonEmptyString(sourceId)
+    )
+  ) {
+    throw bindingError(
+      "invalid_request",
+      `${at}.source.kind must be 'connector' or 'provider_native' when present and source.id is required`
     );
   }
   if (!isAbsoluteUriPurposeCode(sourceId)) {
     throw bindingError("invalid_request", `${at}.source.id must be an absolute URI`);
   }
   const selectsConfiguredSource = configuredSource?.id === sourceId;
-  if (selectsConfiguredSource && configuredSource.kind !== bindingKind) {
+  if (selectsConfiguredSource && explicitKind && configuredSource.kind !== explicitKind) {
     invalidGrantInitiationRequest(`Source kind does not match the retained declaration for '${sourceId}'`);
   }
-
-  // source.id selects the accepted declaration. Local fulfillment config maps
-  // that source to its storage namespace; source.kind remains provenance only.
-  // Catalog connectors without local fulfillment config retain their canonical
-  // connector-key storage mapping.
-  const sourceBinding: SourceBinding = { id: sourceId, kind: bindingKind };
+  let sourceBinding: SourceBinding = {
+    id: sourceId,
+    kind: explicitKind || configuredSource?.kind || "connector",
+  };
   let rawSourceConnectorId: string | null = null;
   if (selectsConfiguredSource) {
     rawSourceConnectorId = configuredNativeStorageConnectorId;
   } else {
-    rawSourceConnectorId = await resolveRegisteredSourceStorageConnectorId(sourceBinding);
-    if (!rawSourceConnectorId && bindingKind === "connector") {
-      rawSourceConnectorId = canonicalConnectorKey(sourceId);
+    const registered = explicitKind
+      ? { sourceBinding, storageConnectorId: await resolveRegisteredSourceStorageConnectorId(sourceBinding) }
+      : await resolveRegisteredSourceBindingById(sourceId);
+    if (registered?.sourceBinding) {
+      ({ sourceBinding } = registered);
     }
+    rawSourceConnectorId = registered?.storageConnectorId ?? null;
   }
   const resolvedConnectorId = rawSourceConnectorId;
   if (!resolvedConnectorId) {
-    throw bindingError("invalid_request", `Unknown source: { kind: '${bindingKind}', id: '${sourceId}' }`);
+    throw bindingError("invalid_request", `Unknown source: { id: '${sourceId}' }`);
   }
 
   return { sourceBinding, storageBinding: { connector_id: resolvedConnectorId } };
@@ -1886,11 +1942,8 @@ async function resolveEligibleInstanceIdsForApproval(
   const connectorInstanceStore = isPostgresStorageBackend()
     ? createPostgresConnectorInstanceStore()
     : createSqliteConnectorInstanceStore();
-  const configuredSource = resolveConfiguredSourceBinding();
-  const configuredStorage = resolveConfiguredNativeStorageBinding();
-  const isConfiguredFulfillment =
-    configuredSource?.id === sourceBinding.id && configuredStorage?.connector_id === storageBinding.connector_id;
-  const configuredDefaultInstanceId = isConfiguredFulfillment
+  const configuredFulfillment = isConfiguredFulfillment(sourceBinding, storageBinding);
+  const configuredDefaultInstanceId = configuredFulfillment
     ? makeDefaultAccountConnectorInstanceId(subjectId, storageBinding.connector_id)
     : null;
   const explicitIds = Array.from(new Set(streams.flatMap((stream) => stream.instance_ids ?? [])));
@@ -1909,7 +1962,7 @@ async function resolveEligibleInstanceIdsForApproval(
         if (configuredDefaultInstanceId === connectorInstanceId) {
           return [connectorInstanceId, connectorInstanceId] as const;
         }
-        if (isConfiguredFulfillment) {
+        if (configuredFulfillment) {
           throw bindingError(
             "invalid_request",
             `Configured source instance_ids must equal its configured local instance '${configuredDefaultInstanceId}'`
@@ -2248,7 +2301,9 @@ const postgresPendingConsentStore: PendingConsentStore = {
       `SELECT device_code, user_code, params_json::text AS params_json, status,
               subject_id, grant_id, token_id, ai_training_consented,
               request_id, trace_id, scenario_id, created_at, expires_at,
-              approved_at, denied_at, interval_seconds, last_polled_at, approval_id
+              approved_at, denied_at, interval_seconds, last_polled_at,
+              approval_review_revision, approval_review_digest, approval_review_json::text AS approval_review_json,
+              approval_id
        FROM pending_consents
        WHERE approval_id = $1`,
       [approvalId]
@@ -2258,7 +2313,9 @@ const postgresPendingConsentStore: PendingConsentStore = {
       `SELECT device_code, user_code, params_json::text AS params_json, status,
               subject_id, grant_id, token_id, ai_training_consented,
               request_id, trace_id, scenario_id, created_at, expires_at,
-              approved_at, denied_at, interval_seconds, last_polled_at, approval_id
+              approved_at, denied_at, interval_seconds, last_polled_at,
+              approval_review_revision, approval_review_digest, approval_review_json::text AS approval_review_json,
+              approval_id
        FROM pending_consents
        WHERE device_code = $1`,
       [deviceCode]
@@ -2779,22 +2836,773 @@ export async function getPendingConsentRowByApprovalId(approvalId: unknown): Pro
   return await getPendingConsentStore().getByApprovalId(approvalId);
 }
 
-async function markPendingConsentApproved(
-  deviceCode: string,
-  {
-    subjectId,
-    grantId,
-    tokenId,
-    aiTrainingConsented,
-  }: { subjectId: string; grantId: string; tokenId: string; aiTrainingConsented: boolean | null | undefined }
+function buildConsentApprovedEventInput({
+  deviceCode,
+  pending,
+  registeredClient,
+  request,
+  resolvedStreams,
+  sourceBinding,
+  subjectId,
+  traceContext,
+  grantId,
+}: {
+  deviceCode: string;
+  pending: PendingConsentRow;
+  registeredClient: RegisteredClient;
+  request: PendingRequest;
+  resolvedStreams: ResolvedGrantStream[];
+  sourceBinding: SourceBinding;
+  subjectId: string;
+  traceContext: TraceContext;
+  grantId: string;
+}): AuthSpineEventInput {
+  return {
+    actor_id: subjectId,
+    actor_type: "subject",
+    client_id: registeredClient.client_id,
+    data: {
+      source: describeSourceBinding(sourceBinding),
+      ...buildResolvedSnapshotEvidence(request, resolvedStreams),
+      user_code: pending.user_code,
+    },
+    event_type: "consent.approved",
+    grant_id: grantId,
+    object_id: deviceCode,
+    object_type: "pending_consent",
+    request_id: traceContext.request_id,
+    scenario_id: traceContext.scenario_id,
+    status: "succeeded",
+    subject_id: subjectId,
+    subject_type: "subject",
+    trace_id: traceContext.trace_id,
+  };
+}
+
+function buildGrantIssuedEventInput({
+  grant,
+  grantId,
+  registeredClient,
+  request,
+  resolvedStreams,
+  selection,
+  subjectId,
+  traceContext,
+}: {
+  grant: GrantEnvelope;
+  grantId: string;
+  registeredClient: RegisteredClient;
+  request: PendingRequest;
+  resolvedStreams: ResolvedGrantStream[];
+  selection: GrantSelection;
+  subjectId: string;
+  traceContext: TraceContext;
+}): AuthSpineEventInput {
+  return {
+    actor_id: "pdpp_as",
+    actor_type: "authorization_server",
+    client_id: registeredClient.client_id,
+    data: {
+      access_mode: selection.access_mode,
+      purpose_code: selection.purpose_code,
+      retention: selection.retention ?? null,
+      source: describeGrantSource(grant),
+      ...buildResolvedSnapshotEvidence(request, resolvedStreams),
+      stream_names: resolvedStreams.map((stream) => stream.name),
+    },
+    event_type: "grant.issued",
+    grant_id: grantId,
+    object_id: grantId,
+    object_type: "grant",
+    request_id: traceContext.request_id,
+    scenario_id: traceContext.scenario_id,
+    status: "succeeded",
+    subject_id: subjectId,
+    subject_type: "subject",
+    trace_id: traceContext.trace_id,
+  };
+}
+
+function buildTokenIssuedEventInput({
+  clientId,
+  grant,
+  grantId,
+  subjectId,
+  tokenId,
+  traceContext,
+}: {
+  clientId: string;
+  grant: GrantEnvelope;
+  grantId: string;
+  subjectId: string;
+  tokenId: string;
+  traceContext: TraceContext;
+}): AuthSpineEventInput {
+  return {
+    actor_id: "pdpp_as",
+    actor_type: "authorization_server",
+    client_id: clientId,
+    data: {
+      issuance_path: "grant_approval",
+      source: describeGrantSource(grant),
+      token_kind: "client",
+    },
+    event_type: "token.issued",
+    grant_id: grantId,
+    object_id: tokenId,
+    object_type: "token",
+    request_id: traceContext.request_id,
+    scenario_id: traceContext.scenario_id,
+    status: "succeeded",
+    subject_id: subjectId,
+    subject_type: "subject",
+    token_id: tokenId,
+    trace_id: traceContext.trace_id,
+  };
+}
+
+function canonicalApprovalReviewJson(value: unknown): string {
+  return JSON.stringify(value, (_key, candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return candidate;
+    }
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(candidate).sort()) {
+      sorted[key] = candidate[key];
+    }
+    return sorted;
+  });
+}
+
+function buildApprovalReviewArtifact(input: {
+  aiTrainingConsented: boolean | null;
+  client: unknown;
+  expiresAt: string | null;
+  request: PendingRequest;
+  resolvedStreams: ResolvedGrantStream[] | StreamSelection[];
+  subjectId: string;
+}): { artifactJson: string; digest: string; revision: string } {
+  const { request } = input;
+  const snapshot = readRetainedSourceDeclarationSnapshot(request);
+  const { selection } = request;
+  const artifact = {
+    access_mode: selection.access_mode,
+    ai_training_consented: input.aiTrainingConsented,
+    client: input.client,
+    expires_at: input.expiresAt,
+    purpose_code: selection.purpose_code,
+    purpose_description: selection.purpose_description ?? null,
+    resolved_streams: input.resolvedStreams,
+    retention: selection.retention ?? null,
+    selection_preset: selection.selection_preset ?? null,
+    source: describeSourceBinding(request.source_binding),
+    source_declaration: {
+      digest: `sha256:${base64UrlSha256(canonicalApprovalReviewJson(snapshot.declaration))}`,
+      version: snapshot.declaration_version,
+    },
+    subject: { id: input.subjectId },
+    version: "reference.approval-review.v1",
+  };
+  const artifactJson = canonicalApprovalReviewJson(artifact);
+  const digest = `sha256:${base64UrlSha256(artifactJson)}`;
+  return { artifactJson, digest, revision: `reference.approval-review.v1:${digest}` };
+}
+
+function buildBatchApprovalReviewArtifact(input: {
+  approvedIndexes: number[];
+  client: unknown;
+  entries: {
+    index: number;
+    request: PendingRequest;
+    resolvedStreams: ResolvedGrantStream[] | StreamSelection[];
+  }[];
+  expiresAt: string | null;
+  parentPackageId: string | null;
+  sourceNarrowing: Record<string, unknown>;
+  subjectId: string;
+}): { artifactJson: string; digest: string; revision: string } {
+  const [firstEntry] = input.entries;
+  const artifact = {
+    access_mode: firstEntry ? firstEntry.request.selection.access_mode : null,
+    approved_source_indexes: input.approvedIndexes,
+    client: input.client,
+    expires_at: input.expiresAt,
+    parent_package_id: input.parentPackageId,
+    source_narrowing: input.sourceNarrowing,
+    sources: input.entries.map(({ index, request, resolvedStreams }) => {
+      const snapshot = readRetainedSourceDeclarationSnapshot(request);
+      return {
+        access_mode: request.selection.access_mode,
+        index,
+        purpose_code: request.selection.purpose_code,
+        purpose_description: request.selection.purpose_description ?? null,
+        resolved_streams: resolvedStreams,
+        retention: request.selection.retention ?? null,
+        selection_preset: request.selection.selection_preset ?? null,
+        source: describeSourceBinding(request.source_binding),
+        source_declaration: {
+          digest: `sha256:${base64UrlSha256(canonicalApprovalReviewJson(snapshot.declaration))}`,
+          version: snapshot.declaration_version,
+        },
+      };
+    }),
+    subject: { id: input.subjectId },
+    version: "reference.batch-approval-review.v1",
+  };
+  const artifactJson = canonicalApprovalReviewJson(artifact);
+  const digest = `sha256:${base64UrlSha256(artifactJson)}`;
+  return { artifactJson, digest, revision: `reference.batch-approval-review.v1:${digest}` };
+}
+
+async function persistApprovalReviewArtifact(input: {
+  deviceCode: string;
+  artifactJson: string;
+  digest: string;
+  revision: string;
+}): Promise<void> {
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `UPDATE pending_consents
+          SET approval_review_revision = $2,
+              approval_review_digest = $3,
+              approval_review_json = $4::jsonb
+        WHERE device_code = $1
+          AND status = 'pending'`,
+      [input.deviceCode, input.revision, input.digest, input.artifactJson]
+    );
+    if (result.rowCount !== 1) {
+      const err: AuthError = new Error("Pending consent approval conflict");
+      err.code = "approval_conflict";
+      throw err;
+    }
+    return;
+  }
+  const result = execDynamicSqlAcknowledged(
+    `UPDATE pending_consents
+        SET approval_review_revision = ?,
+            approval_review_digest = ?,
+            approval_review_json = ?
+      WHERE device_code = ?
+        AND status = 'pending'`,
+    [input.revision, input.digest, input.artifactJson, input.deviceCode]
+  );
+  if (result.changes !== 1) {
+    const err: AuthError = new Error("Pending consent approval conflict");
+    err.code = "approval_conflict";
+    throw err;
+  }
+}
+
+function requireMatchingApprovalReview(
+  row: PendingConsentRow,
+  revision: unknown
+): { aiTrainingConsented: boolean | null; expiresAt: string | null; subjectId: string } {
+  if (!isNonEmptyString(revision)) {
+    throw bindingError("invalid_request", "approval_review_revision is required");
+  }
+  if (!(isNonEmptyString(row.approval_review_revision) && isNonEmptyString(row.approval_review_json))) {
+    throw bindingError("invalid_request", "Pending consent must be reviewed again before approval");
+  }
+  if (revision !== row.approval_review_revision) {
+    throw bindingError("invalid_request", "Pending consent review is stale");
+  }
+  const parsed = parsePersistedApprovalReviewRow(row);
+  if (!(isRecord(parsed.subject) && isNonEmptyString(parsed.subject.id))) {
+    throw bindingError("invalid_request", "Pending consent review subject is malformed; review the request again");
+  }
+  return {
+    aiTrainingConsented: typeof parsed.ai_training_consented === "boolean" ? parsed.ai_training_consented : null,
+    expiresAt: typeof parsed.expires_at === "string" ? parsed.expires_at : null,
+    subjectId: parsed.subject.id,
+  };
+}
+
+function persistedBatchReviewOptions(row: PendingConsentRow): ApproveStagedGrantBatchOptions {
+  if (!isNonEmptyString(row.approval_review_json)) {
+    throw bindingError("invalid_request", "Pending consent must be reviewed again before approval");
+  }
+  const parsed = parsePersistedApprovalReviewRow(row);
+  requireBatchApprovalReviewArtifact(parsed);
+  return {
+    approvedSourceIndexes: parsed.approved_source_indexes.map((index) => Number(index)),
+    reviewExpiresAt: typeof parsed.expires_at === "string" ? parsed.expires_at : null,
+    sourceNarrowing: isRecord(parsed.source_narrowing) ? parsed.source_narrowing : {},
+  };
+}
+
+function parsePersistedApprovalReview(raw: string): Record<string, unknown> & { subject?: { id?: unknown } } {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!isRecord(parsed)) {
+      throw new Error("approval review must be an object");
+    }
+    requirePersistedApprovalReviewShape(parsed);
+    return parsed as Record<string, unknown> & { subject?: { id?: unknown } };
+  } catch (err: unknown) {
+    if (isAuthError(err) && err.code) {
+      throw err;
+    }
+    throw bindingError("invalid_request", "Pending consent review is malformed; review the request again");
+  }
+}
+
+function parsePersistedApprovalReviewRow(
+  row: PendingConsentRow
+): Record<string, unknown> & { subject?: { id?: unknown } } {
+  if (!(isNonEmptyString(row.approval_review_json) && isNonEmptyString(row.approval_review_digest))) {
+    throw bindingError("invalid_request", "Pending consent must be reviewed again before approval");
+  }
+  const parsed = parsePersistedApprovalReview(row.approval_review_json);
+  const artifactJson = canonicalApprovalReviewJson(parsed);
+  const digest = `sha256:${base64UrlSha256(artifactJson)}`;
+  const version = typeof parsed.version === "string" ? parsed.version : null;
+  if (digest !== row.approval_review_digest || !version || `${version}:${digest}` !== row.approval_review_revision) {
+    throw bindingError("invalid_request", "Pending consent review is stale");
+  }
+  const validation = validateResponse("reviewConsent", {
+    body: {
+      approval_review: parsed,
+      approval_review_revision: row.approval_review_revision,
+      batch: version === "reference.batch-approval-review.v1",
+      request_uri: "urn:pdpp:pending-consent:review-validation",
+    },
+    status: 200,
+  });
+  if (validation.ok !== true) {
+    throw bindingError("invalid_request", "Pending consent review is malformed; review the request again");
+  }
+  return parsed;
+}
+
+function hasPersistedApprovalReview(row: PendingConsentRow): boolean {
+  return [row.approval_review_json, row.approval_review_digest, row.approval_review_revision].some(
+    (value) => value !== null && value !== undefined
+  );
+}
+
+async function readValidatedPersistedApprovalReview(deviceCode: string): Promise<{
+  artifact: Record<string, unknown> & { subject?: { id?: unknown } };
+  artifactJson: string;
+  digest: string;
+  revision: string;
+}> {
+  const row = await getPendingConsentRow(deviceCode);
+  if (row?.status !== "pending") {
+    const err: AuthError = new Error("Pending consent approval conflict");
+    err.code = "approval_conflict";
+    throw err;
+  }
+  const artifact = parsePersistedApprovalReviewRow(row);
+  if (
+    !(
+      isNonEmptyString(row.approval_review_json) &&
+      isNonEmptyString(row.approval_review_digest) &&
+      isNonEmptyString(row.approval_review_revision)
+    )
+  ) {
+    throw bindingError("invalid_request", "Pending consent must be reviewed again before approval");
+  }
+  return {
+    artifact,
+    artifactJson: row.approval_review_json,
+    digest: row.approval_review_digest,
+    revision: row.approval_review_revision,
+  };
+}
+
+function requirePersistedApprovalReviewShape(parsed: Record<string, unknown>): void {
+  const { version } = parsed;
+  if (version === "reference.approval-review.v1") {
+    if (
+      !(
+        isRecord(parsed.subject) &&
+        isNonEmptyString(parsed.subject.id) &&
+        Array.isArray(parsed.resolved_streams) &&
+        (typeof parsed.ai_training_consented === "boolean" || parsed.ai_training_consented === null)
+      )
+    ) {
+      throw bindingError("invalid_request", "Pending consent review is malformed; review the request again");
+    }
+    return;
+  }
+  if (version === "reference.batch-approval-review.v1") {
+    requireBatchApprovalReviewArtifact(parsed);
+    return;
+  }
+  throw bindingError("invalid_request", "Pending consent review is malformed; review the request again");
+}
+
+function requireBatchApprovalReviewArtifact(parsed: Record<string, unknown>): asserts parsed is Record<
+  string,
+  unknown
+> & {
+  approved_source_indexes: unknown[];
+  expires_at?: unknown;
+  source_narrowing?: unknown;
+  sources: unknown[];
+} {
+  if (
+    parsed.version !== "reference.batch-approval-review.v1" ||
+    !Array.isArray(parsed.approved_source_indexes) ||
+    !(isRecord(parsed.subject) && isNonEmptyString(parsed.subject.id)) ||
+    !Array.isArray(parsed.sources)
+  ) {
+    throw bindingError("invalid_request", "Pending batch review is malformed; review the request again");
+  }
+  for (const index of parsed.approved_source_indexes) {
+    if (!Number.isInteger(Number(index))) {
+      throw bindingError(
+        "invalid_request",
+        "Pending batch review has invalid source indexes; review the request again"
+      );
+    }
+  }
+  for (const source of parsed.sources) {
+    if (!(isRecord(source) && Number.isInteger(Number(source.index)) && Array.isArray(source.resolved_streams))) {
+      throw bindingError("invalid_request", "Pending batch review has invalid source facts; review the request again");
+    }
+  }
+  if (parsed.source_narrowing !== undefined && !isRecord(parsed.source_narrowing)) {
+    throw bindingError("invalid_request", "Pending batch review has invalid narrowing facts; review the request again");
+  }
+}
+
+function requireNumericObjectKeys(input: Record<string, unknown>, param: string): void {
+  for (const key of Object.keys(input)) {
+    if (!CANONICAL_NON_NEGATIVE_INTEGER_KEY_RE.test(key)) {
+      const err: AuthError = new Error(`${param} key '${key}' must be a staged source index`);
+      err.code = "invalid_request";
+      err.param = param;
+      throw err;
+    }
+  }
+}
+
+interface ReviewedInstanceCheck {
+  allowConfiguredFulfillmentDefault: boolean;
+  connectorId: string;
+  connectorInstanceId: string;
+  subjectId: string;
+}
+
+function reviewedInstanceChecksForGrant(input: {
+  resolvedStreams: ResolvedGrantStream[];
+  sourceBinding: SourceBinding;
+  storageBinding: StorageBinding;
+  subjectId: string;
+}): ReviewedInstanceCheck[] {
+  const configuredDefaultInstanceId = isConfiguredFulfillment(input.sourceBinding, input.storageBinding)
+    ? makeDefaultAccountConnectorInstanceId(input.subjectId, input.storageBinding.connector_id)
+    : null;
+  const seen = new Set<string>();
+  const checks: ReviewedInstanceCheck[] = [];
+  for (const stream of input.resolvedStreams) {
+    for (const connectorInstanceId of stream.instance_ids) {
+      const key = `${input.storageBinding.connector_id}\0${connectorInstanceId}\0${input.subjectId}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      checks.push({
+        allowConfiguredFulfillmentDefault: connectorInstanceId === configuredDefaultInstanceId,
+        connectorId: input.storageBinding.connector_id,
+        connectorInstanceId,
+        subjectId: input.subjectId,
+      });
+    }
+  }
+  return checks;
+}
+
+function reviewedInstanceChangedError(connectorInstanceId: string): AuthError {
+  const err: AuthError = new Error(
+    `Reviewed source instance '${connectorInstanceId}' is no longer eligible; review the request again`
+  );
+  err.code = "invalid_request";
+  return err;
+}
+
+function coerceAiTrainingConsent(value: unknown): boolean | null {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (value === "true" || value === "1" || value === "on") {
+    return true;
+  }
+  if (value === "false" || value === "0" || value === "off") {
+    return false;
+  }
+  const err = bindingError("invalid_request", "ai_training_consented must be a boolean");
+  err.param = "ai_training_consented";
+  throw err;
+}
+
+function requireReviewedAiTrainingConsent(selection: GrantSelection, aiTrainingConsented: boolean | null): void {
+  if (selection.purpose_code === "https://pdpp.dev/purpose/ai_training" && aiTrainingConsented !== true) {
+    const err: AuthError = new Error("Explicit affirmative consent required for ai_training purpose");
+    err.code = "invalid_request";
+    err.param = "ai_training_consented";
+    throw err;
+  }
+}
+
+function requireSqliteReviewedInstancesActive(checks: ReviewedInstanceCheck[]): void {
+  for (const check of checks) {
+    const row = getOne(referenceQueries.authConnectorInstancesGetReviewedActive, [
+      check.connectorInstanceId,
+      check.connectorId,
+      check.subjectId,
+    ]);
+    if (!row) {
+      if (check.allowConfiguredFulfillmentDefault) {
+        continue;
+      }
+      throw reviewedInstanceChangedError(check.connectorInstanceId);
+    }
+  }
+}
+
+async function requirePostgresReviewedInstancesActive(
+  client: PostgresTransactionClient,
+  checks: ReviewedInstanceCheck[]
 ): Promise<void> {
-  await getPendingConsentStore().markApproved({
-    aiTrainingConsented,
-    approvedAt: nowIso(),
-    deviceCode,
-    grantId,
-    subjectId,
-    tokenId,
+  for (const check of checks) {
+    // biome-ignore lint/performance/noAwaitInLoops: These row locks are intentionally acquired inside the approval transaction.
+    const result = await client.query(
+      `SELECT connector_instance_id
+         FROM connector_instances
+        WHERE connector_instance_id = $1
+          AND connector_id = $2
+          AND owner_subject_id = $3
+          AND status = 'active'
+        FOR UPDATE`,
+      [check.connectorInstanceId, check.connectorId, check.subjectId]
+    );
+    if (result.rowCount !== 1) {
+      if (check.allowConfiguredFulfillmentDefault) {
+        continue;
+      }
+      throw reviewedInstanceChangedError(check.connectorInstanceId);
+    }
+  }
+}
+
+function requireSqliteParentPackageStillEligible(input: {
+  clientId: string;
+  parentPackageId: string | null;
+  subjectId: string;
+}): void {
+  if (!input.parentPackageId) {
+    return;
+  }
+  const row = getDb()
+    .prepare(
+      `SELECT package_id
+         FROM grant_packages
+        WHERE package_id = ?
+          AND client_id = ?
+          AND subject_id = ?
+          AND status = 'active'`
+    )
+    .get(input.parentPackageId, input.clientId, input.subjectId);
+  if (!row) {
+    throw parentPackageChangedError(input.parentPackageId);
+  }
+}
+
+async function requirePostgresParentPackageStillEligible(
+  client: PostgresTransactionClient,
+  input: {
+    clientId: string;
+    parentPackageId: string | null;
+    subjectId: string;
+  }
+): Promise<void> {
+  if (!input.parentPackageId) {
+    return;
+  }
+  const result = await client.query(
+    `SELECT package_id
+       FROM grant_packages
+      WHERE package_id = $1
+        AND client_id = $2
+        AND subject_id = $3
+        AND status = 'active'
+      FOR UPDATE`,
+    [input.parentPackageId, input.clientId, input.subjectId]
+  );
+  if (result.rowCount !== 1) {
+    throw parentPackageChangedError(input.parentPackageId);
+  }
+}
+
+function parentPackageChangedError(packageId: string): AuthError {
+  const err: AuthError = new Error(`parent_package_id ${packageId} is no longer eligible; review the request again`);
+  err.code = "invalid_request";
+  err.param = "parent_package_id";
+  return err;
+}
+
+async function persistApprovedSingleGrantAtomically({
+  accessMode,
+  aiTrainingConsented,
+  clientId,
+  consentApprovedEvent,
+  deviceCode,
+  expiresAt,
+  grantId,
+  grantIssuedEvent,
+  grantJson,
+  issuedAt,
+  persistedStorageBinding,
+  subjectId,
+  tokenIssuedEvent,
+  traceContext,
+  reviewedRevision,
+  reviewedInstanceChecks,
+}: {
+  accessMode: string;
+  aiTrainingConsented: boolean | null | undefined;
+  clientId: string;
+  consentApprovedEvent: AuthSpineEventInput;
+  deviceCode: string;
+  expiresAt: string | null;
+  grantId: string;
+  grantIssuedEvent: AuthSpineEventInput;
+  grantJson: string;
+  issuedAt: string;
+  persistedStorageBinding: StorageBinding | null;
+  subjectId: string;
+  tokenIssuedEvent: (tokenId: string) => AuthSpineEventInput;
+  traceContext: TraceContext;
+  reviewedRevision: string;
+  reviewedInstanceChecks: ReviewedInstanceCheck[];
+}): Promise<string> {
+  const storageBindingJson = serializeStorageBinding(persistedStorageBinding);
+
+  if (isPostgresStorageBackend()) {
+    return await withPostgresTransaction(async (client) => {
+      const claim = await client.query(
+        `UPDATE pending_consents
+            SET status = 'approving', subject_id = $2
+          WHERE device_code = $1
+            AND status = 'pending'
+            AND approval_review_revision = $3
+          RETURNING device_code`,
+        [deviceCode, subjectId, reviewedRevision]
+      );
+      if (claim.rowCount !== 1) {
+        const err: AuthError = new Error("Pending consent approval conflict");
+        err.code = "approval_conflict";
+        throw err;
+      }
+      await requirePostgresReviewedInstancesActive(client, reviewedInstanceChecks);
+
+      await client.query(
+        `INSERT INTO grants(
+           grant_id, subject_id, client_id, storage_binding_json, grant_json,
+           access_mode, issued_at, expires_at, trace_id, scenario_id
+         ) VALUES($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10)`,
+        [
+          grantId,
+          subjectId,
+          clientId,
+          storageBindingJson,
+          grantJson,
+          accessMode,
+          issuedAt,
+          expiresAt,
+          traceContext.trace_id,
+          traceContext.scenario_id ?? null,
+        ]
+      );
+      const { tokenId } = await insertPostgresGrantToken(client, { clientId, expiresAt, grantId, subjectId });
+      await postgresEmitSpineEventInTransaction(client, consentApprovedEvent as SpineEventInput);
+      await postgresEmitSpineEventInTransaction(client, grantIssuedEvent as SpineEventInput);
+      await postgresEmitSpineEventInTransaction(client, tokenIssuedEvent(tokenId) as SpineEventInput);
+      const finalApproval = await client.query(
+        `UPDATE pending_consents
+            SET status = 'approved',
+                subject_id = $2,
+                grant_id = $3,
+                token_id = $4,
+                ai_training_consented = $5,
+                approved_at = $6
+          WHERE device_code = $1
+            AND status = 'approving'`,
+        [deviceCode, subjectId, grantId, tokenId, aiTrainingConsented ?? null, nowIso()]
+      );
+      if (finalApproval.rowCount !== 1) {
+        const err: AuthError = new Error("Pending consent approval conflict");
+        err.code = "approval_conflict";
+        throw err;
+      }
+      return tokenId;
+    });
+  }
+
+  return transaction(() => {
+    const db = getDb();
+    const claim = db
+      .prepare(
+        `UPDATE pending_consents
+            SET status = 'approving', subject_id = ?
+          WHERE device_code = ?
+            AND status = 'pending'
+            AND approval_review_revision = ?`
+      )
+      .run(subjectId, deviceCode, reviewedRevision);
+    if (claim.changes !== 1) {
+      const err: AuthError = new Error("Pending consent approval conflict");
+      err.code = "approval_conflict";
+      throw err;
+    }
+    requireSqliteReviewedInstancesActive(reviewedInstanceChecks);
+    exec(referenceQueries.authGrantsInsert, [
+      grantId,
+      subjectId,
+      clientId,
+      storageBindingJson,
+      grantJson,
+      accessMode,
+      issuedAt,
+      expiresAt,
+      traceContext.trace_id,
+      traceContext.scenario_id ?? null,
+    ]);
+    const { tokenId } = insertSqliteGrantTokenInCurrentTransaction({ clientId, expiresAt, grantId, subjectId });
+    emitRawSpineEvent(consentApprovedEvent as SpineEventInput, db);
+    emitRawSpineEvent(grantIssuedEvent as SpineEventInput, db);
+    emitRawSpineEvent(tokenIssuedEvent(tokenId) as SpineEventInput, db);
+    const finalApproval = db
+      .prepare(
+        `UPDATE pending_consents
+          SET status = 'approved',
+              subject_id = ?,
+              grant_id = ?,
+              token_id = ?,
+              ai_training_consented = ?,
+              approved_at = ?
+        WHERE device_code = ?
+          AND status = 'approving'`
+      )
+      .run(
+        subjectId,
+        grantId,
+        tokenId,
+        aiTrainingConsented === undefined ? null : Number(aiTrainingConsented),
+        nowIso(),
+        deviceCode
+      );
+    if (finalApproval.changes !== 1) {
+      const err: AuthError = new Error("Pending consent approval conflict");
+      err.code = "approval_conflict";
+      throw err;
+    }
+    return tokenId;
   });
 }
 
@@ -3914,6 +4722,26 @@ function normalizeConnectorManifestForStorage(manifest: Record<string, unknown>)
       storedManifest.manifest_uri = originalConnectorId;
     }
   }
+  if (!isRecord(storedManifest.source_declaration) && isNonEmptyString(manifest.connector_id)) {
+    // `connector_id` is the local storage key after canonicalization. When a
+    // legacy manifest carried a URL-shaped identity in `manifest_uri`, retain
+    // that explicit URI as the SourceDeclaration identity instead of asking
+    // the projection to materialize a non-URI storage key (for example the
+    // local `codex` catalog entry).
+    const sourceId = isNonEmptyString(manifest.manifest_uri)
+      ? manifest.manifest_uri.trim()
+      : manifest.connector_id.trim();
+    storedManifest.source_declaration = snapshotContentAddressedSourceDeclarationFromLegacyConnectorManifest(
+      storedManifest,
+      {
+        connectorImplementationId: isNonEmptyString(storedManifest.manifest_uri)
+          ? storedManifest.manifest_uri
+          : sourceId,
+        publisherId: LEGACY_CONNECTOR_PROJECTION_PUBLISHER_ID,
+        sourceId,
+      }
+    );
+  }
   return { connectorId, storedManifest };
 }
 
@@ -4469,6 +5297,28 @@ function buildBatchConsentCards(request: StagedBatchRequest): Record<string, unk
   });
 }
 
+function buildBatchConsentCardsFromReviewArtifact(
+  artifact: Record<string, unknown> & { subject?: { id?: unknown } }
+): Record<string, unknown>[] {
+  requireBatchApprovalReviewArtifact(artifact);
+  return artifact.sources.map((source) => {
+    if (!isRecord(source)) {
+      throw bindingError("invalid_request", "Pending batch review has invalid source facts; review the request again");
+    }
+    return {
+      access_mode: source.access_mode || null,
+      client_claims: null,
+      index: source.index,
+      manifestStreamNames: null,
+      purpose_code: source.purpose_code || null,
+      resolvedStreams: source.resolved_streams,
+      retention: source.retention ?? null,
+      sensitivity: null,
+      source: source.source,
+    };
+  });
+}
+
 function summarizeBatchCumulativeRisk(cards: Record<string, unknown>[] = []): Record<string, unknown> {
   return {
     continuous_access_count: cards.filter((card) => card.access_mode === "continuous").length,
@@ -4736,14 +5586,56 @@ function narrowResolvedSelectionForSource(
   });
 }
 
+interface PendingConsentDisplayOptions extends Record<string, unknown> {
+  ai_training_consented?: unknown;
+  approvedSourceIndexes?: number[] | null;
+  confirmedApproveAll?: boolean;
+  finalizeReview?: boolean;
+  nativeManifest?: DbRow | null;
+  sourceNarrowing?: Record<string, unknown>;
+  subjectId?: string | null;
+}
+
 async function getPendingConsentBatch(
   request: StagedBatchRequest,
-  row: DbRow,
-  opts: { nativeManifest?: DbRow | null } = {}
+  row: PendingConsentRow,
+  opts: PendingConsentDisplayOptions = {}
 ): Promise<Record<string, unknown>> {
   try {
-    await requirePendingRequestClientRegistration(request, opts);
-    const cards = await buildBatchConsentCards(request);
+    let cards: Record<string, unknown>[];
+    let review: (Record<string, unknown> & { subject?: { id?: unknown } }) | null = null;
+    let reviewArtifact: string | null = null;
+    let reviewDigest: string | null = null;
+    let reviewRevision: string | null = null;
+    const hasFinalChoice =
+      opts.approvedSourceIndexes !== undefined ||
+      opts.sourceNarrowing !== undefined ||
+      opts.confirmedApproveAll === true;
+    if (opts.ai_training_consented !== undefined && hasFinalChoice) {
+      throw bindingError("invalid_request", "Batch approval review does not accept ai_training_consented");
+    }
+    if (opts.finalizeReview && opts.subjectId && hasFinalChoice) {
+      const batchState = await buildReviewedBatchApprovalState(request, row, opts.subjectId, {
+        ...opts,
+      });
+      await persistApprovalReviewArtifact({ deviceCode: row.device_code, ...batchState.review });
+      const persisted = await readValidatedPersistedApprovalReview(row.device_code);
+      review = persisted.artifact;
+      reviewArtifact = persisted.artifactJson;
+      reviewDigest = persisted.digest;
+      reviewRevision = persisted.revision;
+      cards = buildBatchConsentCardsFromReviewArtifact(review);
+    } else if (hasPersistedApprovalReview(row)) {
+      const persisted = await readValidatedPersistedApprovalReview(row.device_code);
+      review = persisted.artifact;
+      reviewArtifact = persisted.artifactJson;
+      reviewDigest = persisted.digest;
+      reviewRevision = persisted.revision;
+      cards = buildBatchConsentCardsFromReviewArtifact(review);
+    } else {
+      await requirePendingRequestClientRegistration(request, opts);
+      cards = await buildBatchConsentCards(request);
+    }
     return {
       approveAllGate: evaluateBatchApproveAllGate(cards),
       batch: true,
@@ -4754,6 +5646,10 @@ async function getPendingConsentBatch(
       overCapSources: Array.isArray(request.over_cap_sources) ? request.over_cap_sources : [],
       overSoftCap: Boolean(request.over_soft_cap),
       request,
+      review,
+      reviewArtifact,
+      reviewDigest,
+      reviewRevision,
       softCap: request.soft_cap,
       softCapWarning: Boolean(request.soft_cap_warning),
       userCode: row.user_code,
@@ -4807,12 +5703,28 @@ function resolveApprovedEntryIndexes(
 }
 
 interface ApproveStagedGrantBatchOptions {
-  ai_training_consented?: boolean | null;
+  approval_review_revision?: unknown;
   approvedSourceIndexes?: number[] | null;
   confirmedApproveAll?: boolean;
   narrowings?: Record<string, unknown>[] | null;
   nativeManifest?: DbRow | null;
+  reviewExpiresAt?: string | null;
   sourceNarrowing?: Record<string, unknown>;
+}
+
+interface ReviewedBatchApprovalState {
+  approvedIndexes: number[];
+  parentPackage: GrantPackageNormalized | null;
+  registeredClient: RegisteredClient;
+  resolvedEntries: {
+    entry: BatchEntry;
+    index: number;
+    resolvedStreams: ResolvedGrantStream[];
+    slice: PendingRequest;
+    sourceBinding: SourceBinding;
+    storageBinding: StorageBinding;
+  }[];
+  review: { artifactJson: string; digest: string; revision: string };
 }
 
 async function rejectStagedBatchApproval(
@@ -4928,19 +5840,45 @@ async function approveStagedGrantBatch(
   deviceCode: string,
   pending: DbRow,
   request: StagedBatchRequest,
-  subjectId: string,
   opts: ApproveStagedGrantBatchOptions = {}
 ): Promise<{ grant: DbRow; package: boolean; package_id: string; token: string }> {
   const traceContext = requirePersistedPendingTraceContext(pending);
   request.trace_context = traceContext;
+  const reviewed = requireMatchingApprovalReview(pending as PendingConsentRow, opts.approval_review_revision);
+  const { subjectId } = reviewed;
+  const persistedOptions = persistedBatchReviewOptions(pending as PendingConsentRow);
+  const batchState = await buildReviewedBatchApprovalState(request, pending, subjectId, persistedOptions);
+  if (
+    batchState.review.revision !== pending.approval_review_revision ||
+    batchState.review.digest !== pending.approval_review_digest
+  ) {
+    throw bindingError("invalid_request", "Pending consent review is stale");
+  }
+
+  return await persistApprovedBatchGrantAtomically({
+    deviceCode,
+    pending,
+    subjectId,
+    traceContext,
+    ...batchState,
+  });
+}
+
+async function buildReviewedBatchApprovalState(
+  request: StagedBatchRequest,
+  pending: DbRow,
+  subjectId: string,
+  opts: ApproveStagedGrantBatchOptions = {}
+): Promise<ReviewedBatchApprovalState> {
   const { approvedEntries, approvedIndexes } = await resolveApprovedBatchEntries(request, pending, subjectId, opts);
   const sourceNarrowing = opts.sourceNarrowing && typeof opts.sourceNarrowing === "object" ? opts.sourceNarrowing : {};
+  requireNumericObjectKeys(sourceNarrowing, "source_narrowing");
   requireApprovedSourceNarrowings(sourceNarrowing, approvedIndexes);
-
   let registeredClient: RegisteredClient;
   let parentPackage: GrantPackageNormalized | null = null;
   const resolvedEntries: {
     entry: BatchEntry;
+    index: number;
     resolvedStreams: ResolvedGrantStream[];
     slice: PendingRequest;
     sourceBinding: SourceBinding;
@@ -4986,7 +5924,7 @@ async function approveStagedGrantBatch(
         storageBinding,
         subjectId
       );
-      resolvedEntries.push({ entry, resolvedStreams, slice, sourceBinding, storageBinding });
+      resolvedEntries.push({ entry, index: stagedIndex, resolvedStreams, slice, sourceBinding, storageBinding });
     }
   } catch (err: unknown) {
     if (!isAuthError(err)) {
@@ -5010,7 +5948,52 @@ async function approveStagedGrantBatch(
     );
     throw err;
   }
+  const [firstResolvedEntry] = resolvedEntries;
+  if (!firstResolvedEntry) {
+    throw bindingError("invalid_request", "No approved batch entries are available");
+  }
+  const expiresAt =
+    firstResolvedEntry.entry.selection.access_mode === "single_use"
+      ? (opts.reviewExpiresAt ?? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString())
+      : null;
+  const review = buildBatchApprovalReviewArtifact({
+    approvedIndexes,
+    client: request.client,
+    entries: resolvedEntries.map((entry) => ({
+      index: entry.index,
+      request: entry.slice,
+      resolvedStreams: entry.resolvedStreams,
+    })),
+    expiresAt,
+    parentPackageId: parentPackage ? parentPackage.package_id : null,
+    sourceNarrowing,
+    subjectId,
+  });
+  return {
+    approvedIndexes,
+    parentPackage,
+    registeredClient,
+    resolvedEntries,
+    review,
+  };
+}
 
+async function persistApprovedBatchGrantAtomically({
+  approvedIndexes,
+  deviceCode,
+  parentPackage,
+  pending,
+  registeredClient,
+  resolvedEntries,
+  review,
+  subjectId,
+  traceContext,
+}: ReviewedBatchApprovalState & {
+  deviceCode: string;
+  pending: DbRow;
+  subjectId: string;
+  traceContext: TraceContext;
+}): Promise<{ grant: DbRow; package: boolean; package_id: string; token: string }> {
   const packageId = generateId("gpkg");
   const createdAt = nowIso();
   const packageEnvelope = {
@@ -5027,44 +6010,36 @@ async function approveStagedGrantBatch(
   };
 
   const parentPackageId = parentPackage ? parentPackage.package_id : null;
-  await getGrantPackageStore().insertPackage({
-    approvedAt: createdAt,
-    clientId: registeredClient.client_id,
-    createdAt,
-    packageId,
-    packageJson: JSON.stringify(packageEnvelope),
-    parentPackageId,
-    scenarioId: traceContext.scenario_id ?? null,
-    subjectId,
-    traceId: traceContext.trace_id,
-  });
-
+  const reviewPayload = JSON.parse(review.artifactJson) as { expires_at?: string | null };
   const childGrants: { grant: GrantEnvelope; source: Record<string, unknown> | null; token: string }[] = [];
-  await forEachSequential(resolvedEntries, async (resolved) => {
-    const { grant, token } = await persistChildGrantForPackage({
-      registeredClient,
-      request: resolved.slice,
+  for (const resolved of resolvedEntries) {
+    const grantId = generateId("grt");
+    const issuedAt = createdAt;
+    const expiresAt = resolved.entry.selection.access_mode === "single_use" ? (reviewPayload.expires_at ?? null) : null;
+    const grant = materializeCoreResolvedGrant({
+      accessMode: resolved.entry.selection.access_mode,
+      clientId: registeredClient.client_id,
+      expiresAt,
+      grantId,
+      issuedAt,
+      purposeCode: resolved.entry.selection.purpose_code,
+      purposeDescription: resolved.entry.selection.purpose_description,
       resolvedStreams: resolved.resolvedStreams,
-      storageBinding: resolved.storageBinding,
+      retention: resolved.entry.selection.retention,
+      selectionPreset: resolved.entry.selection.selection_preset,
+      snapshot: readRetainedSourceDeclarationSnapshot(
+        resolved.slice
+      ) as unknown as import("./core-source-authorization.ts").RetainedCoreConsentSnapshot,
       subjectId,
-      traceContext,
-    });
+    }) as unknown as GrantEnvelope;
     const source = describePackageMemberSource(grant);
     if (!isNonEmptyString(grant.grant_id)) {
       throw bindingError("grant_invalid", "Issued child grant is missing grant_id");
     }
-    const addedAt = nowIso();
-    await getGrantPackageStore().insertPackageMember({
-      addedAt,
-      grantId: grant.grant_id,
-      packageId,
-      sourceJson: JSON.stringify(source),
-      tokenId: token,
-    });
-    childGrants.push({ grant, source, token });
-  });
+    childGrants.push({ grant, source, token: "" });
+  }
 
-  await emitSpineEvent({
+  const consentApprovedEvent: AuthSpineEventInput = {
     actor_id: subjectId,
     actor_type: "subject",
     client_id: registeredClient.client_id,
@@ -5085,14 +6060,8 @@ async function approveStagedGrantBatch(
     subject_id: subjectId,
     subject_type: "subject",
     trace_id: traceContext.trace_id,
-  });
-
-  const packageToken = await issuePackageToken(packageId, subjectId, registeredClient.client_id, null, {
-    source: "batch_consent_package",
-    traceContext,
-  });
-
-  await emitSpineEvent({
+  };
+  const grantPackageIssuedEvent = (issuedPackageToken: string): AuthSpineEventInput => ({
     actor_id: "pdpp_as",
     actor_type: "authorization_server",
     client_id: registeredClient.client_id,
@@ -5108,15 +6077,25 @@ async function approveStagedGrantBatch(
     status: "succeeded",
     subject_id: subjectId,
     subject_type: "subject",
-    token_id: packageToken,
+    token_id: issuedPackageToken,
     trace_id: traceContext.trace_id,
   });
 
-  await markPendingConsentApproved(deviceCode, {
-    aiTrainingConsented: false,
-    grantId: packageId,
+  const packageToken = await persistApprovedBatchRowsAtomically({
+    childGrants,
+    clientId: registeredClient.client_id,
+    consentApprovedEvent,
+    createdAt,
+    deviceCode,
+    grantPackageIssuedEvent,
+    packageEnvelope,
+    packageId,
+    parentPackageId,
+    pending,
+    resolvedEntries,
+    reviewRevision: review.revision,
     subjectId,
-    tokenId: packageToken,
+    traceContext,
   });
 
   return {
@@ -5135,18 +6114,353 @@ async function approveStagedGrantBatch(
   };
 }
 
+async function persistApprovedBatchRowsAtomically(input: {
+  childGrants: { grant: GrantEnvelope; source: Record<string, unknown> | null; token: string }[];
+  clientId: string;
+  consentApprovedEvent: AuthSpineEventInput;
+  createdAt: string;
+  deviceCode: string;
+  grantPackageIssuedEvent: (packageToken: string) => AuthSpineEventInput;
+  packageEnvelope: Record<string, unknown>;
+  packageId: string;
+  parentPackageId: string | null;
+  pending: DbRow;
+  resolvedEntries: {
+    entry: BatchEntry;
+    resolvedStreams: ResolvedGrantStream[];
+    slice: PendingRequest;
+    storageBinding: StorageBinding;
+  }[];
+  reviewRevision: string;
+  subjectId: string;
+  traceContext: TraceContext;
+}): Promise<string> {
+  const packageJson = JSON.stringify(input.packageEnvelope);
+  if (isPostgresStorageBackend()) {
+    return await withPostgresTransaction(async (client) => {
+      const claim = await client.query(
+        `UPDATE pending_consents
+            SET status = 'approving', subject_id = $2
+          WHERE device_code = $1
+            AND status = 'pending'
+            AND approval_review_revision = $3
+          RETURNING device_code`,
+        [input.deviceCode, input.subjectId, input.reviewRevision]
+      );
+      if (claim.rowCount !== 1) {
+        const err: AuthError = new Error("Pending consent approval conflict");
+        err.code = "approval_conflict";
+        throw err;
+      }
+      await requirePostgresParentPackageStillEligible(client, {
+        clientId: input.clientId,
+        parentPackageId: input.parentPackageId,
+        subjectId: input.subjectId,
+      });
+      await requirePostgresReviewedInstancesActive(
+        client,
+        input.resolvedEntries.flatMap((entry) =>
+          reviewedInstanceChecksForGrant({
+            resolvedStreams: entry.resolvedStreams,
+            sourceBinding: entry.slice.source_binding as SourceBinding,
+            storageBinding: entry.storageBinding,
+            subjectId: input.subjectId,
+          })
+        )
+      );
+      await client.query(
+        `INSERT INTO grant_packages(
+           package_id, subject_id, client_id, status, package_json,
+           parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
+         ) VALUES($1, $2, $3, 'active', $4::jsonb, $5, $6, $7, $8, $9, NULL)`,
+        [
+          input.packageId,
+          input.subjectId,
+          input.clientId,
+          packageJson,
+          input.parentPackageId,
+          input.traceContext.trace_id,
+          input.traceContext.scenario_id ?? null,
+          input.createdAt,
+          input.createdAt,
+        ]
+      );
+      for (const [index, child] of input.childGrants.entries()) {
+        const resolved = input.resolvedEntries[index];
+        if (!resolved) {
+          throw bindingError("grant_invalid", `Missing resolved batch entry ${index}`);
+        }
+        // biome-ignore lint/performance/noAwaitInLoops: Child grant/package rows must be written in package member order inside one transaction.
+        await client.query(
+          `INSERT INTO grants(
+             grant_id, subject_id, client_id, storage_binding_json, grant_json,
+             access_mode, issued_at, expires_at, trace_id, scenario_id
+           ) VALUES($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10)`,
+          [
+            child.grant.grant_id,
+            input.subjectId,
+            input.clientId,
+            serializeStorageBinding(normalizeStorageBinding(resolved.storageBinding)),
+            JSON.stringify(child.grant),
+            resolved.entry.selection.access_mode,
+            child.grant.issued_at,
+            child.grant.expires_at ?? null,
+            input.traceContext.trace_id,
+            input.traceContext.scenario_id ?? null,
+          ]
+        );
+        const { tokenId } = await insertPostgresGrantToken(client, {
+          clientId: input.clientId,
+          expiresAt: child.grant.expires_at ?? null,
+          grantId: child.grant.grant_id as string,
+          subjectId: input.subjectId,
+        });
+        child.token = tokenId;
+        await client.query(
+          `INSERT INTO grant_package_members(
+             package_id, grant_id, token_id, source_json, status, added_at, revoked_at
+           ) VALUES($1, $2, $3, $4::jsonb, 'active', $5, NULL)`,
+          [input.packageId, child.grant.grant_id, tokenId, JSON.stringify(child.source), input.createdAt]
+        );
+        await postgresEmitSpineEventInTransaction(
+          client,
+          buildGrantIssuedEventInput({
+            grant: child.grant,
+            grantId: child.grant.grant_id as string,
+            registeredClient: {
+              client_id: input.clientId,
+              client_secret: null,
+              created_at: null,
+              metadata: { token_endpoint_auth_method: "none" },
+              registration_mode: "pre_registered_public",
+              token_endpoint_auth_method: "none",
+              updated_at: null,
+            },
+            request: resolved.slice,
+            resolvedStreams: resolved.resolvedStreams,
+            selection: resolved.entry.selection,
+            subjectId: input.subjectId,
+            traceContext: input.traceContext,
+          }) as SpineEventInput
+        );
+        await postgresEmitSpineEventInTransaction(
+          client,
+          buildTokenIssuedEventInput({
+            clientId: input.clientId,
+            grant: child.grant,
+            grantId: child.grant.grant_id as string,
+            subjectId: input.subjectId,
+            tokenId,
+            traceContext: input.traceContext,
+          }) as SpineEventInput
+        );
+      }
+      await postgresEmitSpineEventInTransaction(client, input.consentApprovedEvent as SpineEventInput);
+      const packageToken = generateToken();
+      await client.query(
+        `INSERT INTO tokens(token_id, grant_id, package_id, subject_id, client_id, token_kind, expires_at)
+         VALUES($1, NULL, $2, $3, $4, 'mcp_package', NULL)`,
+        [packageToken, input.packageId, input.subjectId, input.clientId]
+      );
+      await postgresEmitSpineEventInTransaction(client, input.grantPackageIssuedEvent(packageToken) as SpineEventInput);
+      const finalApproval = await client.query(
+        `UPDATE pending_consents
+            SET status = 'approved',
+                subject_id = $2,
+                grant_id = $3,
+                token_id = $4,
+                ai_training_consented = FALSE,
+                approved_at = $5
+          WHERE device_code = $1
+            AND status = 'approving'`,
+        [input.deviceCode, input.subjectId, input.packageId, packageToken, input.createdAt]
+      );
+      if (finalApproval.rowCount !== 1) {
+        const err: AuthError = new Error("Pending consent approval conflict");
+        err.code = "approval_conflict";
+        throw err;
+      }
+      return packageToken;
+    });
+  }
+
+  return transaction(() => {
+    const db = getDb();
+    const claim = db
+      .prepare(
+        `UPDATE pending_consents
+            SET status = 'approving', subject_id = ?
+          WHERE device_code = ?
+            AND status = 'pending'
+            AND approval_review_revision = ?`
+      )
+      .run(input.subjectId, input.deviceCode, input.reviewRevision);
+    if (claim.changes !== 1) {
+      const err: AuthError = new Error("Pending consent approval conflict");
+      err.code = "approval_conflict";
+      throw err;
+    }
+    requireSqliteParentPackageStillEligible({
+      clientId: input.clientId,
+      parentPackageId: input.parentPackageId,
+      subjectId: input.subjectId,
+    });
+    requireSqliteReviewedInstancesActive(
+      input.resolvedEntries.flatMap((entry) =>
+        reviewedInstanceChecksForGrant({
+          resolvedStreams: entry.resolvedStreams,
+          sourceBinding: entry.slice.source_binding as SourceBinding,
+          storageBinding: entry.storageBinding,
+          subjectId: input.subjectId,
+        })
+      )
+    );
+    exec(referenceQueries.authGrantPackagesInsert, [
+      input.packageId,
+      input.subjectId,
+      input.clientId,
+      packageJson,
+      input.parentPackageId,
+      input.traceContext.trace_id,
+      input.traceContext.scenario_id ?? null,
+      input.createdAt,
+      input.createdAt,
+    ]);
+    for (const [index, child] of input.childGrants.entries()) {
+      const resolved = input.resolvedEntries[index];
+      if (!resolved) {
+        throw bindingError("grant_invalid", `Missing resolved batch entry ${index}`);
+      }
+      exec(referenceQueries.authGrantsInsert, [
+        child.grant.grant_id,
+        input.subjectId,
+        input.clientId,
+        serializeStorageBinding(normalizeStorageBinding(resolved.storageBinding)),
+        JSON.stringify(child.grant),
+        resolved.entry.selection.access_mode,
+        child.grant.issued_at,
+        child.grant.expires_at ?? null,
+        input.traceContext.trace_id,
+        input.traceContext.scenario_id ?? null,
+      ]);
+      const { tokenId } = insertSqliteGrantTokenInCurrentTransaction({
+        clientId: input.clientId,
+        expiresAt: child.grant.expires_at ?? null,
+        grantId: child.grant.grant_id as string,
+        subjectId: input.subjectId,
+      });
+      child.token = tokenId;
+      exec(referenceQueries.authGrantPackageMembersInsert, [
+        input.packageId,
+        child.grant.grant_id,
+        tokenId,
+        JSON.stringify(child.source),
+        input.createdAt,
+      ]);
+      emitRawSpineEvent(
+        buildGrantIssuedEventInput({
+          grant: child.grant,
+          grantId: child.grant.grant_id as string,
+          registeredClient: {
+            client_id: input.clientId,
+            client_secret: null,
+            created_at: null,
+            metadata: { token_endpoint_auth_method: "none" },
+            registration_mode: "pre_registered_public",
+            token_endpoint_auth_method: "none",
+            updated_at: null,
+          },
+          request: resolved.slice,
+          resolvedStreams: resolved.resolvedStreams,
+          selection: resolved.entry.selection,
+          subjectId: input.subjectId,
+          traceContext: input.traceContext,
+        }) as SpineEventInput,
+        db
+      );
+      emitRawSpineEvent(
+        buildTokenIssuedEventInput({
+          clientId: input.clientId,
+          grant: child.grant,
+          grantId: child.grant.grant_id as string,
+          subjectId: input.subjectId,
+          tokenId,
+          traceContext: input.traceContext,
+        }) as SpineEventInput,
+        db
+      );
+    }
+    emitRawSpineEvent(input.consentApprovedEvent as SpineEventInput, db);
+    const packageToken = generateToken();
+    exec(referenceQueries.authTokensInsertMcpPackage, [
+      packageToken,
+      input.packageId,
+      input.subjectId,
+      input.clientId,
+      null,
+    ]);
+    emitRawSpineEvent(input.grantPackageIssuedEvent(packageToken) as SpineEventInput, db);
+    const finalApproval = db
+      .prepare(
+        `UPDATE pending_consents
+            SET status = 'approved',
+                subject_id = ?,
+                grant_id = ?,
+                token_id = ?,
+                ai_training_consented = 0,
+                approved_at = ?
+          WHERE device_code = ?
+            AND status = 'approving'`
+      )
+      .run(input.subjectId, input.packageId, packageToken, input.createdAt, input.deviceCode);
+    if (finalApproval.changes !== 1) {
+      const err: AuthError = new Error("Pending consent approval conflict");
+      err.code = "approval_conflict";
+      throw err;
+    }
+    return packageToken;
+  });
+}
+
+async function getReviewedPendingConsentProjection(
+  deviceCode: string,
+  row: PendingConsentRow,
+  request: Record<string, unknown>,
+  opts: PendingConsentDisplayOptions
+): Promise<Record<string, unknown>> {
+  const persisted = await readValidatedPersistedApprovalReview(deviceCode);
+  if (persisted.artifact.version === "reference.batch-approval-review.v1") {
+    if (!isStagedBatchRequest(request)) {
+      throw bindingError("invalid_request", "Pending consent review does not match the staged request");
+    }
+    return getPendingConsentBatch(request, row, opts);
+  }
+  const artifactStreams = Array.isArray(persisted.artifact.resolved_streams)
+    ? (persisted.artifact.resolved_streams as StreamSelection[])
+    : [];
+  return {
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    manifestStreamNames: null,
+    request,
+    resolvedStreams: artifactStreams,
+    review: persisted.artifact,
+    reviewArtifact: persisted.artifactJson,
+    reviewDigest: persisted.digest,
+    reviewRevision: persisted.revision,
+    userCode: row.user_code,
+  };
+}
+
 /**
  * Get pending consent request for display in consent UI
  */
 export async function getPendingConsent(
   deviceCode: string,
-  opts: { nativeManifest?: DbRow | null } = {}
+  opts: PendingConsentDisplayOptions = {}
 ): Promise<Record<string, unknown> | null> {
   const row = await getPendingConsentRow(deviceCode);
-  if (!row) {
-    return null;
-  }
-  if (row.status !== "pending") {
+  if (row?.status !== "pending") {
     return null;
   }
   if (isExpired(row)) {
@@ -5161,11 +6475,15 @@ export async function getPendingConsent(
     throw bindingError("invalid_request", "Pending consent request payload must be an object");
   }
   request.trace_context = requirePersistedPendingTraceContext(row);
+  if (hasPersistedApprovalReview(row)) {
+    return getReviewedPendingConsentProjection(deviceCode, row, request, opts);
+  }
   if (isStagedBatchRequest(request)) {
     return getPendingConsentBatch(request, row, opts);
   }
   let resolvedStreams: StreamSelection[] | null = null;
   let manifestStreamNames: string[] | null = null;
+  let review: (Record<string, unknown> & { subject?: { id?: unknown } }) | null = null;
   try {
     requireStructuredPendingRequestShape(request);
     await requirePendingRequestClientRegistration(request, opts);
@@ -5173,10 +6491,34 @@ export async function getPendingConsent(
     request.source_binding = describeSourceBinding(sourceBinding);
     request.storage_binding = normalizeStorageBinding(storageBinding);
     const snapshot = readRetainedSourceDeclarationSnapshot(request);
-    resolvedStreams = resolvePendingRequestAgainstSnapshot(request);
+    resolvedStreams =
+      opts.subjectId && storageBinding
+        ? await resolvePendingRequestForApproval(request, sourceBinding, storageBinding, opts.subjectId)
+        : resolvePendingRequestAgainstSnapshot(request);
     manifestStreamNames = Array.isArray(snapshot.declaration.streams)
       ? snapshot.declaration.streams.map((stream) => stream.name).filter((name) => typeof name === "string")
       : null;
+    if (opts.finalizeReview && opts.subjectId) {
+      const aiTrainingConsented = coerceAiTrainingConsent(opts.ai_training_consented);
+      requireReviewedAiTrainingConsent(request.selection, aiTrainingConsented);
+      const artifact = buildApprovalReviewArtifact({
+        aiTrainingConsented,
+        client: request.client,
+        expiresAt:
+          request.selection.access_mode === "single_use"
+            ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+            : null,
+        request,
+        resolvedStreams: resolvedStreams ?? [],
+        subjectId: opts.subjectId,
+      });
+      await persistApprovalReviewArtifact({ deviceCode, ...artifact });
+      const persisted = await readValidatedPersistedApprovalReview(deviceCode);
+      review = persisted.artifact;
+      row.approval_review_digest = persisted.digest;
+      row.approval_review_json = persisted.artifactJson;
+      row.approval_review_revision = persisted.revision;
+    }
   } catch (err: unknown) {
     if (!isAuthError(err)) {
       throw err;
@@ -5190,6 +6532,10 @@ export async function getPendingConsent(
     manifestStreamNames,
     request,
     resolvedStreams,
+    review,
+    reviewArtifact: row.approval_review_json ?? null,
+    reviewDigest: row.approval_review_digest ?? null,
+    reviewRevision: row.approval_review_revision ?? null,
     userCode: row.user_code,
   };
 }
@@ -5201,9 +6547,22 @@ export async function getPendingConsent(
  */
 export async function approveGrant(
   deviceCode: string,
-  subjectId = "owner_local",
-  opts: { ai_training_consented?: boolean | null; nativeManifest?: DbRow | null; baseUrl?: string } = {}
+  _legacySubjectId = "owner_local",
+  opts: {
+    ai_training_consented?: unknown;
+    approval_review_revision?: unknown;
+    approvedSourceIndexes?: number[] | null;
+    nativeManifest?: DbRow | null;
+    baseUrl?: string;
+    confirmedApproveAll?: boolean;
+    sourceNarrowing?: Record<string, unknown>;
+  } = {}
 ): Promise<{ grant: DbRow; token: string }> {
+  if (opts.ai_training_consented !== undefined) {
+    const err = bindingError("invalid_request", "ai_training_consented is only accepted during consent review");
+    err.param = "ai_training_consented";
+    throw err;
+  }
   const pending = await getPendingConsentRow(deviceCode);
   if (!pending) {
     const err: AuthError = new Error("Unknown device code");
@@ -5211,6 +6570,11 @@ export async function approveGrant(
     throw err;
   }
   if (pending.status !== "pending") {
+    if (opts.approval_review_revision && opts.approval_review_revision === pending.approval_review_revision) {
+      const err: AuthError = new Error("Pending consent approval conflict");
+      err.code = "approval_conflict";
+      throw err;
+    }
     const err: AuthError = new Error("Pending consent request is not available");
     err.code = "not_found";
     throw err;
@@ -5227,9 +6591,11 @@ export async function approveGrant(
   }
   const request: unknown = JSON.parse(pending.params_json);
   if (isStagedBatchRequest(request)) {
-    return approveStagedGrantBatch(deviceCode, pending, request, subjectId, opts);
+    return approveStagedGrantBatch(deviceCode, pending, request, opts);
   }
   requireStructuredPendingRequestShape(request);
+  const reviewed = requireMatchingApprovalReview(pending, opts.approval_review_revision);
+  const { aiTrainingConsented, subjectId } = reviewed;
   const traceContext = requirePersistedPendingTraceContext(pending);
   request.trace_context = traceContext;
   let registeredClient: RegisteredClient;
@@ -5257,22 +6623,27 @@ export async function approveGrant(
   // A missing affirmation is a consent-policy rejection, not an internal failure;
   // surface it as a typed PDPP error envelope (status 400, code `invalid_request`)
   // so callers do not see it as a generic 500.
-  const { ai_training_consented } = opts;
-  if (selection.purpose_code === "https://pdpp.dev/purpose/ai_training" && !ai_training_consented) {
-    const err: AuthError = new Error("Explicit affirmative consent required for ai_training purpose");
-    err.code = "invalid_request";
-    err.param = "ai_training_consented";
-    throw err;
-  }
+  requireReviewedAiTrainingConsent(selection, aiTrainingConsented);
 
   const grantId = generateId("grt");
   const issuedAt = nowIso();
-  const expiresAt =
-    selection.access_mode === "single_use"
-      ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24h reference default
-      : null;
+  const { expiresAt } = reviewed;
 
   const persistedStorageBinding = normalizeStorageBinding(storageBinding);
+  const approvalArtifact = buildApprovalReviewArtifact({
+    aiTrainingConsented,
+    client: request.client,
+    expiresAt,
+    request,
+    resolvedStreams,
+    subjectId,
+  });
+  if (
+    approvalArtifact.revision !== pending.approval_review_revision ||
+    approvalArtifact.digest !== pending.approval_review_digest
+  ) {
+    throw bindingError("invalid_request", "Pending consent review is stale");
+  }
 
   const grant = materializeCoreResolvedGrant({
     accessMode: selection.access_mode,
@@ -5291,79 +6662,55 @@ export async function approveGrant(
     subjectId,
   }) as unknown as GrantEnvelope;
 
-  // Same grants-row INSERT the grant-package child-grant flow uses; reuse the
-  // shared store method so the two call sites cannot drift.
-  await getGrantPackageStore().insertChildGrant({
+  const token = await persistApprovedSingleGrantAtomically({
     accessMode: selection.access_mode,
+    aiTrainingConsented,
     clientId: registeredClient.client_id,
+    consentApprovedEvent: buildConsentApprovedEventInput({
+      deviceCode,
+      grantId,
+      pending,
+      registeredClient,
+      request,
+      resolvedStreams,
+      sourceBinding,
+      subjectId,
+      traceContext,
+    }),
+    deviceCode,
     expiresAt,
     grantId,
+    grantIssuedEvent: buildGrantIssuedEventInput({
+      grant,
+      grantId,
+      registeredClient,
+      request,
+      resolvedStreams,
+      selection,
+      subjectId,
+      traceContext,
+    }),
     grantJson: JSON.stringify(grant),
     issuedAt,
-    scenarioId: traceContext.scenario_id ?? null,
-    storageBindingJson: serializeStorageBinding(persistedStorageBinding),
+    persistedStorageBinding,
+    reviewedInstanceChecks: reviewedInstanceChecksForGrant({
+      resolvedStreams,
+      sourceBinding,
+      storageBinding,
+      subjectId,
+    }),
+    reviewedRevision: approvalArtifact.revision,
     subjectId,
-    traceId: traceContext.trace_id,
-  });
-
-  await emitSpineEvent({
-    actor_id: subjectId,
-    actor_type: "subject",
-    client_id: registeredClient.client_id,
-    data: {
-      source: describeSourceBinding(sourceBinding),
-      ...buildResolvedSnapshotEvidence(request, resolvedStreams),
-      user_code: pending.user_code,
-    },
-    event_type: "consent.approved",
-    grant_id: grantId,
-    object_id: deviceCode,
-    object_type: "pending_consent",
-    request_id: traceContext.request_id,
-    scenario_id: traceContext.scenario_id,
-    status: "succeeded",
-    subject_id: subjectId,
-    subject_type: "subject",
-    trace_id: traceContext.trace_id,
-  });
-
-  const grantIssuedEventData = {
-    access_mode: selection.access_mode,
-    purpose_code: selection.purpose_code,
-    retention: selection.retention ?? null,
-    source: describeGrantSource(grant),
-    ...buildResolvedSnapshotEvidence(request, resolvedStreams),
-    stream_names: resolvedStreams.map((stream) => stream.name),
-  };
-
-  await emitSpineEvent({
-    actor_id: "pdpp_as",
-    actor_type: "authorization_server",
-    client_id: registeredClient.client_id,
-    data: grantIssuedEventData,
-    event_type: "grant.issued",
-    grant_id: grantId,
-    object_id: grantId,
-    object_type: "grant",
-    request_id: traceContext.request_id,
-    scenario_id: traceContext.scenario_id,
-    status: "succeeded",
-    subject_id: subjectId,
-    subject_type: "subject",
-    trace_id: traceContext.trace_id,
-  });
-
-  // Issue access token
-  const token = await issueToken(grantId, subjectId, registeredClient.client_id, expiresAt, {
-    source: "grant_approval",
+    tokenIssuedEvent: (tokenId) =>
+      buildTokenIssuedEventInput({
+        clientId: registeredClient.client_id,
+        grant,
+        grantId,
+        subjectId,
+        tokenId,
+        traceContext,
+      }),
     traceContext,
-  });
-
-  await markPendingConsentApproved(deviceCode, {
-    aiTrainingConsented: ai_training_consented,
-    grantId,
-    subjectId,
-    tokenId: token,
   });
 
   return { grant, token };
@@ -7983,6 +9330,50 @@ async function insertPostgresGrantToken(
   };
 }
 
+function insertSqliteGrantTokenInCurrentTransaction({
+  clientId,
+  expiresAt,
+  grantId,
+  subjectId,
+}: {
+  clientId: string;
+  expiresAt: string | null;
+  grantId: string;
+  subjectId: string;
+}): { grantRow: GrantIssuanceRow; persistedGrant: DbRow; tokenId: string } {
+  const grantRow = getOne<GrantIssuanceRow>(referenceQueries.authGrantsGetForIssuance, [grantId]);
+  if (!grantRow) {
+    const err: AuthError = new Error(`Unknown grant: ${grantId}`);
+    err.code = "grant_invalid";
+    throw err;
+  }
+  if (grantRow.status !== "active") {
+    const err: AuthError = new Error(
+      grantRow.status === "revoked" ? "Grant has been revoked" : `Grant is not active: ${grantRow.status}`
+    );
+    err.code = grantRow.status === "revoked" ? "grant_revoked" : "grant_invalid";
+    throw err;
+  }
+  const { grant: persistedGrant } = requirePersistedGrantState(grantRow);
+  requirePersistedGrantColumnBindings(persistedGrant, grantRow, "grant_invalid", {
+    clientId,
+    expiresAt,
+    grantId,
+    subjectId,
+  });
+  if (grantRow.access_mode === "single_use") {
+    if (grantRow.consumed) {
+      const err: AuthError = new Error("Grant has already been consumed");
+      err.code = "grant_consumed";
+      throw err;
+    }
+    exec(referenceQueries.authGrantsMarkConsumed, [grantId]);
+  }
+  const tokenId = generateToken();
+  exec(referenceQueries.authTokensInsertClient, [tokenId, grantId, subjectId, clientId, expiresAt]);
+  return { grantRow, persistedGrant, tokenId };
+}
+
 export async function issueToken(
   grantId: string,
   subjectId: string,
@@ -8024,41 +9415,12 @@ export async function issueToken(
   // synchronous function and wrap it; the public export stays `async` because
   // external callers `await issueToken(...)`.
   return transaction(() => {
-    const grantRow = getOne<GrantIssuanceRow>(referenceQueries.authGrantsGetForIssuance, [grantId]);
-
-    if (!grantRow) {
-      const err: AuthError = new Error(`Unknown grant: ${grantId}`);
-      err.code = "grant_invalid";
-      throw err;
-    }
-
-    if (grantRow.status !== "active") {
-      const err: AuthError = new Error(
-        grantRow.status === "revoked" ? "Grant has been revoked" : `Grant is not active: ${grantRow.status}`
-      );
-      err.code = grantRow.status === "revoked" ? "grant_revoked" : "grant_invalid";
-      throw err;
-    }
-
-    const { grant: persistedGrant } = requirePersistedGrantState(grantRow);
-    requirePersistedGrantColumnBindings(persistedGrant, grantRow, "grant_invalid", {
+    const { grantRow, persistedGrant, tokenId } = insertSqliteGrantTokenInCurrentTransaction({
       clientId,
       expiresAt,
       grantId,
       subjectId,
     });
-
-    if (grantRow.access_mode === "single_use") {
-      if (grantRow.consumed) {
-        const err: AuthError = new Error("Grant has already been consumed");
-        err.code = "grant_consumed";
-        throw err;
-      }
-      exec(referenceQueries.authGrantsMarkConsumed, [grantId]);
-    }
-
-    const tokenId = generateToken();
-    exec(referenceQueries.authTokensInsertClient, [tokenId, grantId, subjectId, clientId, expiresAt]);
 
     // emitSpineEvent is sync internally; calling without await is fine
     // because the INSERT it triggers has completed before this returns.

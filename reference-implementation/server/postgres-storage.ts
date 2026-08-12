@@ -1053,6 +1053,9 @@ export async function bootstrapPostgresSchema({
         denied_at TEXT,
         interval_seconds INTEGER NOT NULL DEFAULT 2,
         last_polled_at TEXT,
+        approval_review_revision TEXT,
+        approval_review_digest TEXT,
+        approval_review_json JSONB,
         approval_id TEXT UNIQUE
       );
       CREATE INDEX IF NOT EXISTS idx_pg_pending_consents_status_expires
@@ -1061,6 +1064,12 @@ export async function bootstrapPostgresSchema({
         ADD COLUMN IF NOT EXISTS interval_seconds INTEGER NOT NULL DEFAULT 2;
       ALTER TABLE pending_consents
         ADD COLUMN IF NOT EXISTS last_polled_at TEXT;
+      ALTER TABLE pending_consents
+        ADD COLUMN IF NOT EXISTS approval_review_revision TEXT;
+      ALTER TABLE pending_consents
+        ADD COLUMN IF NOT EXISTS approval_review_digest TEXT;
+      ALTER TABLE pending_consents
+        ADD COLUMN IF NOT EXISTS approval_review_json JSONB;
 
       ALTER TABLE tokens
         ADD COLUMN IF NOT EXISTS package_id TEXT;

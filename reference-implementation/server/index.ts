@@ -2564,10 +2564,6 @@ function buildFreshness(lastUpdated: string | null = null) {
   return deriveReferenceFreshness({ recordLastUpdatedAt: lastUpdated });
 }
 
-function getConnectorRunEvidenceSource(source: { kind?: string; id?: string } | null | undefined) {
-  return source?.kind === "connector" && typeof source.id === "string" && source.id ? source.id : null;
-}
-
 async function getLatestConnectorRunSummary(connectorId: string | null, status: string | null = null) {
   if (!connectorId) {
     return null;
@@ -2603,13 +2599,13 @@ function getMaximumStalenessSeconds(refreshPolicy: unknown) {
 }
 
 async function getConnectorFreshnessEvidence({
-  source,
+  storageBinding,
   manifest,
 }: {
-  source: { kind?: string; id?: string } | null | undefined;
+  storageBinding: StorageBinding;
   manifest: Record<string, unknown> | null | undefined;
 }) {
-  const connectorId = getConnectorRunEvidenceSource(source);
+  const connectorId = storageBinding.connector_id ?? null;
   const refreshPolicy = getManifestRefreshPolicy(manifest);
   const [lastRun, lastSuccessfulRun] = await Promise.all([
     getLatestConnectorRunSummary(connectorId),
@@ -2823,9 +2819,7 @@ function buildStreamMetadataEntry({
   grantedConnections?: unknown[] | null;
   manifestStreamNames?: Set<string> | null;
 }) {
-  const projectedManifestStream = streamGrant
-    ? projectManifestStreamForGrant(streamGrant)
-    : manifestStream;
+  const projectedManifestStream = streamGrant ? projectManifestStreamForGrant(streamGrant) : manifestStream;
   const expandStreamGrant = streamGrant ? { ...streamGrant, grantStreams } : null;
   const entry: Record<string, unknown> = {
     consent_time_field: projectedManifestStream.consent_time_field,
@@ -3129,7 +3123,7 @@ async function buildConnectorSchemaItem({
   // Streams the loaded manifest declares — lets the expand-capabilities builder
   // distinguish "target stream not granted" from "target stream unknown".
   const manifestStreamNames = new Set(manifestStreamsArr.map((stream) => stream.name as string));
-  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, source });
+  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, storageBinding });
 
   const streams = await Promise.all(
     visibleStreams.map(async (manifestStream) => {
@@ -3202,7 +3196,7 @@ async function buildConnectorDiscoveryItem({
         .map((streamGrant) => manifestStreamsArr.find((stream) => stream.name === streamGrant.name))
         .filter(Boolean) as Record<string, unknown>[])
     : manifestStreamsArr;
-  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, source });
+  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, storageBinding });
 
   const item: Record<string, unknown> = {
     object: "connector",
@@ -3544,7 +3538,7 @@ async function getVisibleStreamFreshness({
   stream: string;
   manifest: Record<string, unknown>;
 }) {
-  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, source });
+  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, storageBinding });
   const grant =
     tokenInfo?.pdpp_token_kind === "owner"
       ? null

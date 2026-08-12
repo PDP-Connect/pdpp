@@ -8,7 +8,8 @@
  *
  *   POST /oauth/register      (public-client self-registration)
  *   POST /oauth/par           (PAR request staging)
- *   POST /consent/approve     (reference-local inline approval shortcut)
+ *   POST /consent/review      (finalize and inspect the approval artifact)
+ *   POST /consent/approve     (approve the reviewed artifact)
  *   POST /consent/deny        (reference-local inline denial shortcut)
  *   POST /introspect          (RFC 7662-style introspection)
  *   GET  {rs}/v1/streams      (owner/client RS read)
@@ -214,10 +215,52 @@ export function buildHostedApprovalUrl({ asUrl, requestUri }: { asUrl: string; r
 }
 
 /**
- * Reference-local inline approval shortcut. This calls the hosted consent
- * endpoint directly with a JSON body and asks for a JSON response. Only usable
- * when owner-auth placeholder is disabled; when it is enabled, the AS will
- * respond with a redirect / 401 and this helper surfaces that honestly.
+ * Finalize the exact approval artifact before approval. The returned artifact
+ * is the server's reviewable projection. The revision binds the final approval
+ * to those facts, so the caller must not submit selection choices again.
+ */
+export async function reviewInline({
+  asUrl,
+  requestUri,
+  subjectId,
+}: {
+  asUrl: string;
+  requestUri: string;
+  subjectId: string;
+}): Promise<{ requestUri: string; review: unknown; revision: string }> {
+  const response = await fetch(`${asUrl}/consent/review`, {
+    body: JSON.stringify({ request_uri: requestUri, subject_id: subjectId }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const body = await readJsonOrText(response);
+  if (!response.ok || body.kind !== "json") {
+    const err = new RequestError(describeFailure(body.value, `approval review failed (${response.status})`));
+    err.status = response.status;
+    throw err;
+  }
+  const reviewBody = jsonObject(body.value, "approval review response");
+  const revision = reviewBody.approval_review_revision;
+  if (typeof revision !== "string" || !revision) {
+    throw new Error("approval review returned without approval_review_revision");
+  }
+  if (
+    !reviewBody.approval_review ||
+    typeof reviewBody.approval_review !== "object" ||
+    Array.isArray(reviewBody.approval_review)
+  ) {
+    throw new Error("approval review returned without the exact approval artifact");
+  }
+  const canonicalRequestUri = reviewBody.request_uri;
+  if (typeof canonicalRequestUri !== "string" || canonicalRequestUri !== requestUri) {
+    throw new Error("approval review returned a different canonical request_uri");
+  }
+  return { requestUri: canonicalRequestUri, review: reviewBody.approval_review, revision };
+}
+
+/**
+ * Reference-local JSON approval flow. It reviews the exact artifact first,
+ * then submits only its revision for final approval.
  */
 export async function approveInline({
   asUrl,
@@ -228,8 +271,9 @@ export async function approveInline({
   requestUri: string;
   subjectId: string;
 }): Promise<{ token: string; grantId: string | null; grant: unknown }> {
+  const reviewed = await reviewInline({ asUrl, requestUri, subjectId });
   const response = await fetch(`${asUrl}/consent/approve`, {
-    body: JSON.stringify({ request_uri: requestUri, subject_id: subjectId }),
+    body: JSON.stringify({ approval_review_revision: reviewed.revision, request_uri: reviewed.requestUri }),
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",

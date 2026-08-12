@@ -1,5 +1,6 @@
 const TOP_LEVEL_REGEX_1 = /cex_[0-9a-f]{64}/;
 const TOP_LEVEL_REGEX_2 = /cex_[0-9a-f]{64}/;
+const APPROVAL_REVIEW_REVISION_PATTERN = /name="approval_review_revision" value="([^"]+)"/;
 
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
@@ -188,9 +189,20 @@ test("security: harden consent token handoff", async (t) => {
       // First, get a token via the JSON branch (this is the established
       // programmatic contract used by the dashboard and every test).
       const initiateForJson = await initiateGrantRequest(asUrl, spotifyManifest);
-      const jsonResp = await fetch(`${asUrl}/consent/approve`, {
+      const reviewForJson = await fetch(`${asUrl}/consent/review`, {
         body: JSON.stringify({ request_uri: initiateForJson.request_uri, subject_id: "owner_local" }),
-        headers: { "Content-Type": "application/json" },
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const jsonReviewText = await reviewForJson.text();
+      assert.equal(reviewForJson.status, 200, jsonReviewText);
+      const jsonReview = JSON.parse(jsonReviewText) as { approval_review_revision: string };
+      const jsonResp = await fetch(`${asUrl}/consent/approve`, {
+        body: JSON.stringify({
+          approval_review_revision: jsonReview.approval_review_revision,
+          request_uri: initiateForJson.request_uri,
+        }),
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
         method: "POST",
       });
       assert.equal(jsonResp.status, 200);
@@ -203,10 +215,19 @@ test("security: harden consent token handoff", async (t) => {
 
       // Now drive a fresh approval through the HTML branch.
       const initiateForHtml = await initiateGrantRequest(asUrl, spotifyManifest);
+      const reviewForHtml = await fetch(`${asUrl}/consent/review`, {
+        body: new URLSearchParams({ request_uri: initiateForHtml.request_uri, subject_id: "owner_local" }).toString(),
+        headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+      const htmlReview = await reviewForHtml.text();
+      assert.equal(reviewForHtml.status, 200, htmlReview);
+      const revisionMatch = htmlReview.match(APPROVAL_REVIEW_REVISION_PATTERN);
+      assert.ok(revisionMatch?.[1], "review HTML SHALL carry the approval review revision");
       const htmlResp = await fetch(`${asUrl}/consent/approve`, {
         body: new URLSearchParams({
+          approval_review_revision: revisionMatch[1],
           request_uri: initiateForHtml.request_uri,
-          subject_id: "owner_local",
         }).toString(),
         headers: {
           // Negotiate HTML explicitly; the route uses
@@ -272,10 +293,19 @@ test("security: harden consent token handoff", async (t) => {
   await t.test("a consumed exchange code cannot be redeemed again", async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await initiateGrantRequest(asUrl, spotifyManifest);
+      const review = await fetch(`${asUrl}/consent/review`, {
+        body: new URLSearchParams({ request_uri: initiate.request_uri, subject_id: "owner_local" }).toString(),
+        headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+      const reviewHtml = await review.text();
+      assert.equal(review.status, 200, reviewHtml);
+      const revisionMatch = reviewHtml.match(APPROVAL_REVIEW_REVISION_PATTERN);
+      assert.ok(revisionMatch?.[1], "review HTML SHALL carry the approval review revision");
       const htmlResp = await fetch(`${asUrl}/consent/approve`, {
         body: new URLSearchParams({
+          approval_review_revision: revisionMatch[1],
           request_uri: initiate.request_uri,
-          subject_id: "owner_local",
         }).toString(),
         headers: {
           Accept: "text/html",

@@ -366,6 +366,7 @@ test("assistant smoke: in-memory fallback activates for stale DB cursor_field dr
       connector_id: "fallback-smoke",
       connector_key: "fallback-smoke",
       display_name: "Fallback smoke",
+      manifest_uri: "https://sources.example/connectors/fallback-smoke",
       // Custom (non-first-party) manifest: connector_id must be a bare slug
       // that matches connector_key. The registry URL belongs in manifest_uri,
       // not connector_id. See canonicalize-connector-keys (connector_id ==

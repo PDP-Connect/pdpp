@@ -87,7 +87,6 @@ const REGEXP_34 = /source_binding must include only kind and id/;
 const REGEXP_35 = /source_binding must include only kind and id/;
 const REGEXP_36 = /source_binding must include only kind and id/;
 const REGEXP_37 = /source_binding must include only kind and id/;
-const REGEXP_38 = /Unknown client_id/;
 const REGEXP_39 = /Unknown client_id/;
 const REGEXP_40 = /Unknown client_id/;
 const REGEXP_41 = /Access Denied/;
@@ -149,7 +148,7 @@ const REGEXP_103 = /Grant is malformed or no longer valid/;
 const REGEXP_104 = /Grant is malformed or no longer valid/;
 const REGEXP_105 = /Grant is malformed or no longer valid/;
 const REGEXP_106 = /source\/id must match format "uri"/;
-const REGEXP_107 = /source: \{ kind/;
+const REGEXP_107 = /source: \{ id, kind\?/;
 const REGEXP_108 = /source_binding is required/;
 const REGEXP_109 = /source_binding is required/;
 const REGEXP_110 = /source_binding must include only kind and id/;
@@ -206,6 +205,7 @@ const REGEXP_161 = /already been consumed/i;
 const REGEXP_162 = /missing_native_storage_connector/;
 const REGEXP_163 = /not addressable under this grant/;
 const REGEXP_164 = /Unknown source: https:\/\/northstar\.example\/pdpp/;
+const REGEXP_165 = /Transient Longview/;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -920,6 +920,9 @@ function parseResourceStreamMetadataResponse(value: unknown): ResourceStreamMeta
       required: (() => {
         // biome-ignore lint/style/useDestructuring: Indexed access expresses the protocol field position under test.
         const required = requireJsonRecord(body.schema, "resource stream-metadata response.schema").required;
+        if (required === undefined) {
+          return [];
+        }
         if (!Array.isArray(required)) {
           throw new TypeError("resource stream-metadata response.schema.required must be an array");
         }
@@ -1165,11 +1168,29 @@ async function startGrantRequestRejection(
   return { ...response, body: parseErrorResponse(response.body) };
 }
 
-// biome-ignore lint/suspicious/useAwait: Async callback preserves the dependency contract and rejection timing.
 async function approveGrantRequest(asUrl: string, requestUri: string, subjectId: string, extra: JsonRecord = {}) {
-  return fetchJson(`${asUrl}/consent/approve`, {
+  const review = await fetchJson(`${asUrl}/consent/review`, {
     body: JSON.stringify({ request_uri: requestUri, subject_id: subjectId, ...extra }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (review.status !== 200) {
+    return review;
+  }
+  const reviewBody = requireJsonRecord(review.body, "consent review response");
+  requireJsonRecord(reviewBody.approval_review, "consent review response.approval_review");
+  const reviewRevision = requireString(
+    reviewBody.approval_review_revision,
+    "consent review response.approval_review_revision"
+  );
+  const canonicalRequestUri = requireString(reviewBody.request_uri, "consent review response.request_uri");
+  if (canonicalRequestUri !== requestUri) {
+    throw new Error("consent review returned a different request_uri");
+  }
+  const finalOptions: JsonRecord = { approval_review_revision: reviewRevision };
+  return fetchJson(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({ request_uri: canonicalRequestUri, ...finalOptions }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
 }
@@ -1522,7 +1543,7 @@ test("PDPP reference implementation integration", async (t) => {
     try {
       await fetchJson(`${asUrl}/connectors`, {
         body: JSON.stringify(spotifyManifest),
-        headers: { "Content-Type": "application/json" },
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
         method: "POST",
       });
       await seedDefaultGrantInstance(spotifyManifest.connector_id, "u1", "Spotify");
@@ -1583,6 +1604,17 @@ test("PDPP reference implementation integration", async (t) => {
       });
 
       const deviceCode = parsePendingConsentRequestUri(initiate.request_uri);
+      const reviewResp = await fetch(`${asUrl}/consent/review`, {
+        body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: "u1" }),
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const reviewBody = requireJsonRecord(await reviewResp.json(), "consent review response");
+      requireJsonRecord(reviewBody.approval_review, "consent review response.approval_review");
+      const reviewRevision = requireString(
+        reviewBody.approval_review_revision,
+        "consent review response.approval_review_revision"
+      );
       getDb()
         .prepare(`
         UPDATE pending_consents
@@ -1595,11 +1627,11 @@ test("PDPP reference implementation integration", async (t) => {
       assert.equal(consentResp.status, 404);
 
       const approveResp = await fetch(`${asUrl}/consent/approve`, {
-        body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: "u1" }),
-        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approval_review_revision: reviewRevision, request_uri: initiate.request_uri }),
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
         method: "POST",
       });
-      assert.equal(approveResp.status, 404);
+      assert.equal(approveResp.status, 409);
     } finally {
       await closeServer(server);
       cleanup();
@@ -2333,7 +2365,7 @@ test("PDPP reference implementation integration", async (t) => {
             ],
             client_id: registration.body.client_id,
           }),
-          headers: { "Content-Type": "application/json" },
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
           method: "POST",
         });
 
@@ -2861,7 +2893,7 @@ test("PDPP reference implementation integration", async (t) => {
   );
 
   await t.test(
-    "consent display and approval reject staged requests whose registered client no longer exists",
+    "consent display preserves reviewed requests whose registered client no longer exists but approval rejects them",
     async () => {
       await withHarness(async ({ asUrl, spotifyManifest }) => {
         const registration = await registerDynamicClient(asUrl, {
@@ -2879,38 +2911,47 @@ test("PDPP reference implementation integration", async (t) => {
         });
         assert.equal(initiate.status, 201);
 
+        const reviewResp = await fetch(`${asUrl}/consent/review`, {
+          body: JSON.stringify({ request_uri: initiate.body.request_uri, subject_id: "u1" }),
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          method: "POST",
+        });
+        const reviewText = await reviewResp.text();
+        assert.equal(reviewResp.status, 200, reviewText);
+        const reviewBody = requireJsonRecord(JSON.parse(reviewText), "consent review response");
+        requireJsonRecord(reviewBody.approval_review, "consent review response.approval_review");
+        const reviewRevision = requireString(
+          reviewBody.approval_review_revision,
+          "consent review response.approval_review_revision"
+        );
+
         await deleteRegisteredClient(registration.body.client_id);
 
         const consentResp = await fetch(
           `${asUrl}/consent?request_uri=${encodeURIComponent(initiate.body.request_uri)}`
         );
-        assert.equal(consentResp.status, 400);
-        const consentRequestId = consentResp.headers.get("Request-Id");
-        const consentTraceId = consentResp.headers.get("PDPP-Reference-Trace-Id");
-        assert.ok(consentRequestId?.startsWith("req_"));
-        assert.ok(consentTraceId?.startsWith("trc_"));
-        const consentBody = parseErrorResponse(await consentResp.json());
-        assert.equal(consentBody.error.code, "invalid_client");
-        assert.match(consentBody.error.message, REGEXP_38);
+        assert.equal(consentResp.status, 200);
+        const consentHtml = await consentResp.text();
+        assert.match(consentHtml, REGEXP_165);
 
         const approveResp = await fetch(`${asUrl}/consent/approve`, {
-          body: JSON.stringify({ request_uri: initiate.body.request_uri, subject_id: "u1" }),
-          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ approval_review_revision: reviewRevision, request_uri: initiate.body.request_uri }),
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
           method: "POST",
         });
         assert.equal(approveResp.status, 400);
         const approveRequestId = approveResp.headers.get("Request-Id");
         const approveTraceId = approveResp.headers.get("PDPP-Reference-Trace-Id");
-        assert.equal(approveRequestId, consentRequestId);
-        assert.equal(approveTraceId, consentTraceId);
+        assert.ok(approveRequestId?.startsWith("req_"));
+        assert.ok(approveTraceId?.startsWith("trc_"));
         const approveBody = parseErrorResponse(await approveResp.json());
         assert.equal(approveBody.error.code, "invalid_client");
         assert.match(approveBody.error.message, REGEXP_39);
 
-        const { body: trace } = await fetchReferenceTrace(asUrl, consentTraceId);
+        const { body: trace } = await fetchReferenceTrace(asUrl, approveTraceId);
         // biome-ignore lint/suspicious/noUnnecessaryConditions: Runtime guard protects an untyped external/test boundary.
         const rejectedEvents = (trace.data || []).filter(
-          (event) => event.event_type === "request.rejected" && event.request_id === consentRequestId
+          (event) => event.event_type === "request.rejected" && event.request_id === approveRequestId
         );
         assert.ok(rejectedEvents.length >= 1, "trace should include request.rejected for consent-time client drift");
         const rejectedEvent = rejectedEvents.find((event) => event.data?.error?.code === "invalid_client");
@@ -4393,6 +4434,7 @@ test("PDPP reference implementation integration", async (t) => {
       const streamMetadataBody = parseResourceStreamMetadataResponse(await streamMetadataResp.json());
       assert.equal(streamMetadataBody.object, "stream_metadata");
       assert.equal(streamMetadataBody.name, "pay_statements");
+      assert.deepEqual(streamMetadataBody.schema.required, []);
 
       const recordsResp = await fetch(`${rsUrl}/v1/streams/pay_statements/records`, {
         headers: { Authorization: `Bearer ${approved.token}` },
@@ -7884,19 +7926,10 @@ test("PDPP reference implementation integration", async (t) => {
       assert.equal(metadataBody.object, "stream_metadata");
       // biome-ignore lint/suspicious/noUnnecessaryConditions: Runtime guard protects an untyped external/test boundary.
       const metadataFields = Object.keys(metadataBody.schema.properties || {}).sort();
-      assert.deepEqual(metadataFields, [
-        "followers",
-        "genres",
-        "id",
-        "image_url",
-        "name",
-        "popularity",
-        "source_updated_at",
-      ]);
+      assert.deepEqual(metadataFields, ["genres", "id", "name"]);
+      assert.deepEqual(metadataBody.schema.required, []);
       // biome-ignore lint/suspicious/noUnnecessaryConditions: Runtime guard protects an untyped external/test boundary.
-      assert.deepEqual((metadataBody.schema.required || []).sort(), ["id", "name"]);
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: Runtime guard protects an untyped external/test boundary.
-      assert.deepEqual((metadataBody.views || []).map((view) => view.id).sort(), ["basic", "full"]);
+      assert.deepEqual((metadataBody.views || []).map((view) => view.id).sort(), []);
       const fieldCapabilities = metadataBody.field_capabilities as Record<
         "genres" | "id" | "name" | "popularity",
         { exact_filter?: unknown; granted?: boolean }
@@ -7904,12 +7937,7 @@ test("PDPP reference implementation integration", async (t) => {
       assert.equal(fieldCapabilities.id.granted, true);
       assert.equal(fieldCapabilities.name.granted, true);
       assert.equal(fieldCapabilities.genres.granted, true);
-      assert.equal(fieldCapabilities.popularity.granted, false);
-      assert.deepEqual(fieldCapabilities.popularity.exact_filter, {
-        declared: true,
-        reason: "field_not_granted",
-        usable: false,
-      });
+      assert.equal(fieldCapabilities.popularity, undefined);
     });
   });
 

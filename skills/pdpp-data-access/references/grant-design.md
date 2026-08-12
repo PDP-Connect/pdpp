@@ -9,13 +9,13 @@ one `authorization_details[]` entry per PAR request, and remains the default
 agent workflow: one source, one request, one grant. The reference also ships a
 **reference-experimental** batch path that stages several source-bounded entries
 in one ceremony, plus parent-linked add-source ceremonies that may stage exactly
-one added source — see "Reference-experimental batch consent" below. Parentless
+one added source - see "Reference-experimental batch consent" below. Parentless
 single-entry requests still use the default path. One entry has:
 
 | Field | Meaning | Common values |
 | --- | --- | --- |
 | `type` | Grant family | `"https://pdpp.dev/data-access"` for read access |
-| `source` | Which source | `{ "kind": "connector", "id": "https://registry.pdpp.dev/connectors/github" }` or `{ "kind": "provider_native", "id": "northstar_hr" }` |
+| `source` | Which source | `{ "kind": "connector", "id": "https://registry.pdpp.dev/connectors/github" }` or `{ "kind": "provider_native", "id": "https://northstar.example/sources/hr" }` |
 | `purpose_code` | Coarse intent | `assist.summarize`, `assist.review`, `assist.search`, `assist.draft`, `assist.export` |
 | `purpose_description` | Owner-readable why | One sentence, plain English, scoped to the task |
 | `access_mode` | Access pattern | `single_use`, `continuous` |
@@ -28,7 +28,7 @@ Set exactly one source object. The reference will reject legacy top-level `conne
 
 ### Source
 
-- Use the *narrowest* source that contains the data. If both `gmail` and a generic `mail` connector exist, prefer the specific one — its manifest is usually tighter.
+- Use the *narrowest* source that contains the data. If both `gmail` and a generic `mail` connector exist, prefer the specific one - its manifest is usually tighter.
 - A "search across all my data" intent is almost never legitimate as one grant. Split the task by source.
 - Older docs may call connector sources `connector_id` and native sources `provider_id`; those names now map to `source.id` under the matching `source.kind`.
 
@@ -36,11 +36,11 @@ Set exactly one source object. The reference will reject legacy top-level `conne
 
 Stable, machine-readable. The reference accepts any string today, but you should pick from the assistant-task family so the consent UI can group them sensibly:
 
-- `assist.summarize` — produce a digest the user reads.
-- `assist.review` — flag/triage items for the user.
-- `assist.search` — find specific items the user named.
-- `assist.draft` — produce content the user will edit and send.
-- `assist.export` — copy data into a user-owned destination they will use elsewhere.
+- `assist.summarize` - produce a digest the user reads.
+- `assist.review` - flag/triage items for the user.
+- `assist.search` - find specific items the user named.
+- `assist.draft` - produce content the user will edit and send.
+- `assist.export` - copy data into a user-owned destination they will use elsewhere.
 
 Avoid `assist.train`, `assist.export.third_party`, `assist.improve_model` etc. They imply retention or third-party flow that this skill does not support and that the consent UI cannot honestly approve.
 
@@ -85,34 +85,41 @@ PAR=$(curl -sX POST $AS_URL/oauth/par \
   }')
 REQUEST_URI=$(echo $PAR | jq -r .request_uri)
 
-# 2. Owner approves — this creates the grant AND issues the first (and only) token.
-#    The grant is marked consumed atomically.
-APPROVED=$(curl -sX POST $AS_URL/consent/approve \
+# 2. Owner reviews the exact artifact to approve.
+REVIEW=$(curl -sX POST $AS_URL/consent/review \
   -H 'Content-Type: application/json' \
   -d "{\"request_uri\": \"$REQUEST_URI\", \"subject_id\": \"owner_local\"}")
+REVIEW_REVISION=$(echo $REVIEW | jq -r .approval_review_revision)
+
+# 3. Owner approves by revision only. This creates the grant AND issues the first
+#    (and only) token. The grant is marked consumed atomically.
+APPROVED=$(curl -sX POST $AS_URL/consent/approve \
+  -H 'Accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d "{\"request_uri\": \"$REQUEST_URI\", \"approval_review_revision\": \"$REVIEW_REVISION\"}")
 TOKEN=$(echo $APPROVED | jq -r .token)
 GRANT_ID=$(echo $APPROVED | jq -r .grant.grant_id)
 
-# 3. First RS query succeeds — the issued token is valid until expiry.
+# 4. First RS query succeeds - the issued token is valid until expiry.
 curl -s "$RS_URL/v1/streams/top_artists/records?limit=1" \
   -H "Authorization: Bearer $TOKEN"
 # → HTTP 200  { "data": [...], ... }
 
-# 4. The grant is now consumed. Introspection confirms active=true (token valid)
+# 5. The grant is now consumed. Introspection confirms active=true (token valid)
 #    but a second token issuance attempt for the same grant_id is rejected.
 #    The reference implementation enforces this at the AS layer: any call to
 #    issueToken() with a consumed grant_id throws { code: "grant_consumed" }.
 #    In the standard device-code or PKCE token exchange, the AS returns:
 #      HTTP 400  { "error": "invalid_grant", "error_description": "Grant has already been consumed" }
 
-# 5. Continuous grants are NOT consumed — repeated token issuances succeed.
+# 6. Continuous grants are NOT consumed - repeated token issuances succeed.
 #    Run the same flow with "access_mode": "continuous" and the second issuance
 #    returns a fresh token instead of 400.
 ```
 
-**What the enforcement looks like:** `POST /consent/approve` calls `issueToken()` internally.
+**What the enforcement looks like:** `POST /consent/review` returns the exact artifact and revision. `POST /consent/approve` accepts the revision, not stream or field choices, then calls `issueToken()` internally.
 `issueToken()` runs an atomic `SELECT … FOR UPDATE` / `UPDATE grants SET consumed = TRUE` in a
-single transaction — the check and the mark are one unit. A concurrent second call races on the
+single transaction - the check and the mark are one unit. A concurrent second call races on the
 same row and loses; it reads `consumed = 1` and throws `grant_consumed` before any token row is
 written. The HTTP boundary surfaces this as `invalid_grant` (RFC 6749 §5.2) with
 `error_description: "Grant has already been consumed"`.
@@ -129,8 +136,8 @@ If you need a relationship (e.g., Gmail messages with message bodies), prefer th
 
 ### What *not* to put in the grant
 
-- `client_secret` — you are using `token_endpoint_auth_method: "none"` for public clients; there is no secret.
-- Owner email, owner subject id, or any owner identifier — the AS resolves the owner from the session.
+- `client_secret` - you are using `token_endpoint_auth_method: "none"` for public clients; there is no secret.
+- Owner email, owner subject id, or any owner identifier - the AS resolves the owner from the session.
 - Free-form retention policies (`"keep_for_days": 90`). The reference does not honor them today; including them gives a false sense of control. If the user wants retention, that's a project-side rule, not a grant field.
 
 ## Patterns
@@ -167,7 +174,7 @@ Grant A: source={kind: connector, id: https://registry.pdpp.dev/connectors/gmail
 Grant B: source={kind: connector, id: https://registry.pdpp.dev/connectors/ical}, streams=[events], time_range=next 24h
 ```
 
-Don't try to bundle these into one `authorization_details[]` array entry — the reference treats one entry as one source binding. (If you genuinely need several sources set up in one owner sitting, see the reference-experimental batch path below; it still issues one independent grant per source.)
+Don't try to bundle these into one `authorization_details[]` array entry - the reference treats one entry as one source binding. (If you genuinely need several sources set up in one owner sitting, see the reference-experimental batch path below; it still issues one independent grant per source.)
 
 ### Reference-experimental batch consent
 
@@ -199,8 +206,9 @@ What the owner ceremony does, and what you get back:
 
 - **One ceremony, per-source review.** The owner sees one review card per source plus a cumulative-risk header (sensitive-source, continuous-access, no-time-bound, no-field-projection, and total-stream counts across the batch).
 - **Per-source decisions.** The owner can approve, deny, defer, or narrow each source independently. Approving a subset issues grants for only the approved sources. The owner can narrow a source (drop streams, reduce fields, tighten a time range); you cannot widen beyond what you staged.
+- **Reviewed artifact before approval.** `POST /consent/review` freezes the final batch decision and returns `approval_review_revision`. Final `POST /consent/approve` sends `request_uri`, that revision, and `confirm_reviewed_decision`; it must not submit source choices again.
 - **One access mode per batch.** Every entry in one batch request must declare the same `access_mode`. If you need different modes for different sources, run separate ceremonies.
-- **Independent grants.** Approval issues one independent, source-bounded, individually revocable grant per approved source — the same grant object the single-source path produces. There is no cross-source grant.
+- **Independent grants.** Approval issues one independent, source-bounded, individually revocable grant per approved source - the same grant object the single-source path produces. There is no cross-source grant.
 - **Package grouping.** The issued grants are grouped under a `package_id` for audit and timeline. `package_id` is grouping/audit metadata only; record access is still authorized solely by the active child grants. Per-grant revocation stays primary; a revoke-package convenience dispatches one revoke per child and reports partial failure honestly.
 
 #### Incremental add-source (`parent_package_id`)
@@ -219,7 +227,7 @@ and set a top-level `parent_package_id` to the prior package:
 ```
 
 - The new ceremony creates a new package linked to the prior one and issues independent grants **only for the added sources**. It never re-issues or mutates the prior package's grants.
-- `parent_package_id` is lineage/cumulative-view metadata, not a new authorization primitive — it grants nothing on its own.
+- `parent_package_id` is lineage/cumulative-view metadata, not a new authorization primitive - it grants nothing on its own.
 - Linkage must be to one of *your own* still-active packages for the same owner. A missing, cross-client, cross-owner, inactive, or malformed `parent_package_id` is rejected before any grant is issued.
 - The owner-facing dashboard can render the cumulative per-client view across linked packages (reference surface: `GET /_ref/grant-packages/:id/cumulative`).
 - `parent_package_id` is the signal for the staged add-source path, even when you are adding exactly one source. Without `parent_package_id`, a single-entry request remains the default one-grant path.
@@ -238,7 +246,7 @@ Two grants now exist, the user can revoke the upgrade alone, and the audit trail
 
 After `pdpp connect` or `POST /consent/approve`, you can inspect any live token
 against the AS to confirm it is active and read back the full grant it encodes.
-This is the authoritative check — it re-runs the grant-contract validation on
+This is the authoritative check - it re-runs the grant-contract validation on
 each call.
 
 ```bash
@@ -274,12 +282,12 @@ A healthy active client token returns:
 
 Key verification points:
 
-- `active: true` — token is valid and the underlying grant is still active.
-- `pdpp_token_kind` — `"client"` for grant-scoped tokens, `"owner"` for self-export tokens.
-- `grant_id` — confirms which grant backs this token.
-- `grant.streams[].resources` — present and populated only when the grant was
+- `active: true` - token is valid and the underlying grant is still active.
+- `pdpp_token_kind` - `"client"` for grant-scoped tokens, `"owner"` for self-export tokens.
+- `grant_id` - confirms which grant backs this token.
+- `grant.streams[].resources` - present and populated only when the grant was
   scoped to specific record keys (see "Record-scoped access with resources[]" below).
-- `grant_storage_binding` is **never present** in the public response — the AS
+- `grant_storage_binding` is **never present** in the public response - the AS
   redacts the internal storage connector id before returning the envelope.
 
 If a grant has been consumed (`single_use`) or revoked, the token will still exist
@@ -295,7 +303,7 @@ Possible `inactive_reason` values: `grant_revoked`, `grant_expired`, `token_revo
 
 ## Record-scoped access with `resources[]`
 
-`resources[]` on a stream entry restricts a grant to specific record keys — an
+`resources[]` on a stream entry restricts a grant to specific record keys - an
 RFC 8707-style audience binding at the record level. The RS enforces this as a
 SQL `WHERE record_key IN (...)` predicate; records outside the list are invisible
 to that token even if they exist in the store.
@@ -312,7 +320,7 @@ to that token even if they exist in the store.
 
 Use `resources[]` when the user explicitly named the items they want to share
 ("just those three invoices", "only the two pull requests I linked"). Do not use
-it for time-bounded or field-projected access — that is what `time_range` and
+it for time-bounded or field-projected access - that is what `time_range` and
 `fields` are for. An empty `resources[]` array is equivalent to omitting the
 field (all records visible within the other grant constraints).
 

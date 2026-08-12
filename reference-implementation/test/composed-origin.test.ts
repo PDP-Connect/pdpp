@@ -893,9 +893,25 @@ test("composed browser origin carries metadata, owner session, console, device f
     assert.match(consentHtml, TOP_REGEX_2);
     assert.ok(!consentHtml.includes(asUrl), "consent page should not leak the internal AS origin");
 
-    const approvedGrant = await fetchJson(`${webOrigin}/consent/approve`, {
+    const reviewedGrant = await fetchJson(`${webOrigin}/consent/review`, {
       body: JSON.stringify({ request_uri: stagedRequestBody.request_uri }),
       headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Cookie: ownerCookie,
+      },
+      method: "POST",
+    });
+    assert.equal(reviewedGrant.resp.status, 200);
+    const reviewRevision = (reviewedGrant.body as { approval_review_revision?: unknown }).approval_review_revision;
+    assert.equal(typeof reviewRevision, "string", "consent review returns a revision");
+    const approvedGrant = await fetchJson(`${webOrigin}/consent/approve`, {
+      body: JSON.stringify({
+        approval_review_revision: reviewRevision,
+        request_uri: stagedRequestBody.request_uri,
+      }),
+      headers: {
+        Accept: "application/json",
         "Content-Type": "application/json",
         Cookie: ownerCookie,
       },

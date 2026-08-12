@@ -236,16 +236,27 @@ async function issueClientGrant(
       ],
       client_id: params.client_id,
     }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   assert.ok(par, "PAR response should return a body");
+  const { body: review, status: reviewStatus } = await fetchJson<{ approval_review_revision?: unknown }>(
+    `${asUrl}/consent/review`,
+    {
+      body: JSON.stringify({ request_uri: par.request_uri, subject_id: subjectId }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    }
+  );
+  assert.equal(reviewStatus, 200, JSON.stringify(review));
+  assert.ok(review, "consent review returns a body");
+  assert.equal(typeof review.approval_review_revision, "string", "consent review returns a revision");
   const { body: approved } = await fetchJson<ApprovedGrant>(`${asUrl}/consent/approve`, {
     body: JSON.stringify({
+      approval_review_revision: review.approval_review_revision,
       request_uri: par.request_uri,
-      subject_id: subjectId,
     }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   assert.ok(approved, "consent/approve should return a body");

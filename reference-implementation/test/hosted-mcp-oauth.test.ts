@@ -53,6 +53,28 @@ async function fetchJson(url: string | URL, opts: RequestInit = {}): Promise<Jso
   return { body, resp, status: resp.status };
 }
 
+async function reviewConsent(
+  asUrl: string,
+  requestUri: string,
+  subjectId = "owner_local",
+  authorization?: string
+): Promise<string> {
+  const response = await fetch(`${asUrl}/consent/review`, {
+    body: JSON.stringify({ request_uri: requestUri, subject_id: subjectId }),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      ...(authorization ? { Authorization: authorization } : {}),
+    },
+    method: "POST",
+  });
+  const body = (await response.json()) as { approval_review?: unknown; approval_review_revision?: unknown };
+  assert.equal(response.status, 200, JSON.stringify(body));
+  assert.ok(body.approval_review && typeof body.approval_review === "object");
+  assert.equal(typeof body.approval_review_revision, "string");
+  return body.approval_review_revision as string;
+}
+
 function mustExist<T>(value: T | null | undefined, description: string): T {
   assert.ok(value, description);
   return value;
@@ -359,10 +381,9 @@ async function issueOwnerToken(asUrl: string): Promise<string> {
 
   const approveResp = await fetch(`${asUrl}/device/approve`, {
     body: new URLSearchParams({
-      subject_id: "owner_local",
       user_code: stringField(device, "user_code"),
     }).toString(),
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
     method: "POST",
   });
   assert.equal(approveResp.status, 200);
@@ -422,13 +443,14 @@ async function completeOauthCodeFlow({
     asUrl
   );
   const requestUri = mustExist(consentUrl.searchParams.get("request_uri"), "consent redirect must carry request_uri");
+  const reviewRevision = await reviewConsent(asUrl, requestUri);
 
   const approveResp = await fetch(`${asUrl}/consent/approve`, {
     body: new URLSearchParams({
+      approval_review_revision: reviewRevision,
       request_uri: requestUri,
-      subject_id: "owner_local",
     }).toString(),
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
     method: "POST",
     redirect: "manual",
   });
@@ -738,7 +760,7 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
         grant_type: "authorization_code",
         redirect_uri: "https://client.example/callback",
       }).toString(),
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
       method: "POST",
     });
     assert.equal(reused.status, 400);
@@ -750,7 +772,7 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
         grant_type: "refresh_token",
         refresh_token: refreshToken,
       }).toString(),
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
       method: "POST",
     });
     assert.equal(refreshed.status, 200);
@@ -1061,12 +1083,13 @@ test("grant-scoped MCP device authorization issues a client token usable at /mcp
     assert.equal(tooFast.status, 400);
     assert.equal(tooFast.body.error, "slow_down");
 
+    const reviewRevision = await reviewConsent(asUrl, buildPendingConsentRequestUri(deviceCode));
     const approveResp = await fetch(`${asUrl}/consent/approve`, {
       body: new URLSearchParams({
+        approval_review_revision: reviewRevision,
         request_uri: buildPendingConsentRequestUri(deviceCode),
-        subject_id: "owner_local",
       }).toString(),
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
       method: "POST",
       redirect: "manual",
     });
@@ -1397,13 +1420,14 @@ test("CIMD native loopback redirect matching ignores only runtime port", async (
     );
     const requestUri = consentUrl.searchParams.get("request_uri");
     assert.ok(requestUri);
+    const reviewRevision = await reviewConsent(asUrl, requestUri);
 
     const approveResp = await fetch(`${asUrl}/consent/approve`, {
       body: new URLSearchParams({
+        approval_review_revision: reviewRevision,
         request_uri: requestUri,
-        subject_id: "owner_local",
       }).toString(),
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
       method: "POST",
       redirect: "manual",
     });
@@ -2001,7 +2025,7 @@ async function exchangePackageCode({
 }): Promise<Response> {
   const approveResp = await fetch(`${asUrl}/oauth/authorize/mcp-package`, {
     body: params.toString(),
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
     method: "POST",
     redirect: "manual",
   });
@@ -2933,7 +2957,7 @@ test("GET /consent renders the consent page for a freshly staged pending grant",
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
   try {
-    await registerSpotify(asUrl);
+    await registerAuthorizedSpotify(asUrl);
     const client = await registerAuthCodeClient(asUrl);
     // Stage a pending grant via the canonical short key path.
     const authorizeResp = await fetch(buildAuthorizeGetUrl({ asUrl, client, extra: { connector_id: "spotify" } }), {
@@ -2948,8 +2972,8 @@ test("GET /consent renders the consent page for a freshly staged pending grant",
     assert.ok(requestUri?.startsWith("urn:pdpp:pending-consent:"));
 
     const consentResp = await fetch(consentUrl, { redirect: "manual" });
-    assert.equal(consentResp.status, 200, "a live pending-consent request_uri must render the consent page");
     const html = await consentResp.text();
+    assert.equal(consentResp.status, 200, "a live pending-consent request_uri must render the consent page");
     assert.ok(html.includes("<!DOCTYPE html>"), "consent page is a full hosted document");
     assert.ok(
       /action="\/consent\/approve"/.test(html),
@@ -3021,13 +3045,20 @@ test("GET /oauth/authorize?connector_id=<URL> stages pending consent with canoni
     const requestUri = mustExist(consentUrl.searchParams.get("request_uri"), "redirect must carry request_uri");
     const ownerToken = await issueOwnerToken(asUrl);
 
+    const authorization = `Bearer ${ownerToken}`;
+    const reviewRevision = await reviewConsent(asUrl, requestUri, "owner_local", authorization);
+
     // POST /consent/approve
     const approveParams = new URLSearchParams();
+    approveParams.set("approval_review_revision", reviewRevision);
     approveParams.set("request_uri", requestUri);
-    approveParams.set("approved", "true");
     const approveResp = await fetch(`${asUrl}/consent/approve`, {
       body: approveParams.toString(),
-      headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/x-www-form-urlencoded" },
+      headers: {
+        Accept: "text/html",
+        Authorization: authorization,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
       method: "POST",
       redirect: "manual",
     });
@@ -3105,11 +3136,13 @@ test("hosted MCP picker excludes internal/test/stub connectors", async () => {
     const stubManifest = {
       connector_id: "stream-test-stub-picker-regression",
       display_name: "Stream Test Stub",
+      manifest_uri: "https://registry.pdpp.org/connectors/stream-test-stub-picker-regression",
+      protocol_version: "0.1.0",
       streams: [
         {
           cursor_field: "ts",
           name: "events",
-          primary_key: "id",
+          primary_key: ["id"],
           schema: {
             properties: {
               id: { type: "string" },
@@ -3117,6 +3150,8 @@ test("hosted MCP picker excludes internal/test/stub connectors", async () => {
             },
             type: "object",
           },
+          selection: { fields: true, resources: false },
+          semantics: "append_only",
         },
       ],
       version: "0.1.0",

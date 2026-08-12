@@ -281,7 +281,7 @@ export interface MountRsReadContext {
   ensureRequestId: (res: unknown) => string;
   finalizeCanonicalEnvelope: (payload: unknown, req: unknown) => unknown;
   getConnectorFreshnessEvidence: (args: {
-    source: SourceDescriptorLike | null;
+    storageBinding: StorageBindingLike;
     manifest: ManifestLike;
   }) => Promise<unknown>;
   getOwnerTokenSubjectId: (req: unknown) => string | null;
@@ -1287,7 +1287,7 @@ async function buildStreamsListOwnerPlan(
   const ownerResolved = await ctx.resolveOwnerManifest(req, ctx.opts);
   const streamListFreshnessEvidence = await ctx.getConnectorFreshnessEvidence({
     manifest: ownerResolved.manifest,
-    source: ownerScope.source ?? null,
+    storageBinding: ownerResolved.storageBinding,
   });
   return {
     dependencies: {
@@ -1313,7 +1313,7 @@ async function buildStreamsListClientPlan(
   const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
   const streamListFreshnessEvidence = await ctx.getConnectorFreshnessEvidence({
     manifest: grantResolved.manifest,
-    source: grantResolved.source,
+    storageBinding: grantResolved.storageBinding,
   });
   const streamCountLimit = Array.isArray(grant?.streams) ? grant.streams.length : null;
   queryContext.sourceDescriptor = grantResolved.source;

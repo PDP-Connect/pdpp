@@ -166,11 +166,27 @@ async function approveClientGrant(
       })
     ).body
   );
+  assert.ok(par.request_uri);
+  const review = asRecord(
+    (
+      await fetchJson(`${asUrl}/consent/review`, {
+        body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        method: "POST",
+      })
+    ).body
+  );
+  assert.ok(review.approval_review);
+  assert.ok(review.approval_review_revision);
+  assert.equal(review.request_uri, par.request_uri);
   const approved = asRecord(
     (
       await fetchJson(`${asUrl}/consent/approve`, {
-        body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
-        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          approval_review_revision: review.approval_review_revision,
+          request_uri: review.request_uri,
+        }),
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
         method: "POST",
       })
     ).body

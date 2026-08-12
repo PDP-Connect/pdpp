@@ -504,11 +504,21 @@ function approveGrantRequest(
   subjectId: string,
   extra: Record<string, unknown> = {}
 ) {
-  return fetchJson<ApprovedGrant>(`${asUrl}/consent/approve`, {
-    body: JSON.stringify({ request_uri: requestUri, subject_id: subjectId, ...extra }),
-    headers: { "Content-Type": "application/json" },
-    method: "POST",
-  });
+  return (async () => {
+    const review = await fetchJson<Record<string, unknown>>(`${asUrl}/consent/review`, {
+      body: JSON.stringify({ request_uri: requestUri, subject_id: subjectId, ...extra }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(review.status, 200, JSON.stringify(review.body));
+    const reviewRevision = review.body.approval_review_revision;
+    assert.equal(typeof reviewRevision, "string", "consent review must return approval_review_revision");
+    return fetchJson<ApprovedGrant>(`${asUrl}/consent/approve`, {
+      body: JSON.stringify({ approval_review_revision: reviewRevision, request_uri: requestUri }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+  })();
 }
 
 async function denyGrantRequest(asUrl: string, requestUri: string) {

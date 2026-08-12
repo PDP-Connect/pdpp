@@ -162,10 +162,24 @@ async function approveClientGrant(
       method: "POST",
     })
   ).body as { request_uri?: string };
+  assert.ok(par.request_uri);
+  const review = (
+    await fetchJson(`${asUrl}/consent/review`, {
+      body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    })
+  ).body as { approval_review?: object; approval_review_revision?: string; request_uri?: string };
+  assert.ok(review.approval_review);
+  assert.ok(review.approval_review_revision);
+  assert.equal(review.request_uri, par.request_uri);
   const approved = (
     await fetchJson(`${asUrl}/consent/approve`, {
-      body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
-      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        approval_review_revision: review.approval_review_revision,
+        request_uri: review.request_uri,
+      }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
       method: "POST",
     })
   ).body as { token?: string };
@@ -266,14 +280,39 @@ function loadPackageManifest(name: string): PackageManifest {
   ) as PackageManifest;
 }
 
+function withExplicitTestSourceDeclaration(manifest: PackageManifest): PackageManifest {
+  if (manifest.source_declaration && typeof manifest.source_declaration === "object") {
+    return manifest;
+  }
+  const connectorKey = canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id;
+  const streams = Array.isArray(manifest.streams)
+    ? manifest.streams.map((stream) => ({
+        ...stream,
+        ...(stream.semantics === "append" ? { semantics: "append_only" } : {}),
+      }))
+    : [];
+  return {
+    ...manifest,
+    source_declaration: {
+      declaration_version: `owner-connection-intent-test:${connectorKey}:v1`,
+      display: { name: typeof manifest.display_name === "string" ? manifest.display_name : connectorKey },
+      protocol_version: manifest.protocol_version,
+      publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
+      source: { id: `https://sources.example/connectors/${encodeURIComponent(connectorKey)}`, kind: "connector" },
+      streams,
+    },
+  };
+}
+
 async function registerConnector(asUrl: string, manifest: PackageManifest): Promise<PackageManifest> {
+  const registeredManifest = withExplicitTestSourceDeclaration(manifest);
   const resp = await fetch(`${asUrl}/connectors`, {
-    body: JSON.stringify(manifest),
+    body: JSON.stringify(registeredManifest),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
   const text = await resp.text();
-  assert.equal(resp.status, 201, `register ${manifest.connector_id} failed: ${resp.status} ${text}`);
+  assert.equal(resp.status, 201, `register ${registeredManifest.connector_id} failed: ${resp.status} ${text}`);
   return manifest;
 }
 

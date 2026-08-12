@@ -208,8 +208,20 @@ test("hosted-ui: /device approval page uses the shared hosted-UI layer", async (
 test("hosted-ui: /consent/approve result page uses the shared hosted-UI layer", async () => {
   await withServer({}, async ({ asUrl }) => {
     const requestUri = await startPendingConsent(asUrl);
+    const reviewResp = await fetch(`${asUrl}/consent/review`, {
+      body: JSON.stringify({ request_uri: requestUri, subject_id: "owner_local" }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(reviewResp.status, 200);
+    const review = (await reviewResp.json()) as { approval_review_revision?: unknown };
+    assert.equal(typeof review.approval_review_revision, "string", "consent review returns a revision");
+    const reviewRevision = review.approval_review_revision as string;
     const resp = await fetch(`${asUrl}/consent/approve`, {
-      body: new URLSearchParams({ request_uri: requestUri, subject_id: "owner_local" }).toString(),
+      body: new URLSearchParams({
+        approval_review_revision: reviewRevision,
+        request_uri: requestUri,
+      }).toString(),
       headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
       method: "POST",
     });

@@ -90,6 +90,7 @@ export const codeToStatus: Readonly<Record<string, number>> = {
   ambiguous_connection: 409,
   ambiguous_connector_instance: 400,
   ambiguous_schema_detail: 409,
+  approval_conflict: 409,
   authentication_error: 401,
   blob_not_found: 404,
   browser_enrollment_shell_required: 400,

@@ -62,34 +62,44 @@ const STREAM = "messages";
 const INSTANCE_A = "cin_schema_account_a";
 const INSTANCE_B = "cin_schema_account_b";
 
+const baseStreams = [
+  {
+    consent_time_field: "received_at",
+    cursor_field: "received_at",
+    name: STREAM,
+    primary_key: ["id"],
+    query: {},
+    schema: {
+      $defs: {
+        subject: { type: "string" },
+      },
+      properties: {
+        id: { type: "string" },
+        received_at: { format: "date-time", type: "string" },
+        subject: { $ref: "#/$defs/subject" },
+      },
+      required: ["id", "subject", "received_at"],
+      type: "object",
+    },
+    selection: { fields: true, resources: false },
+    semantics: "mutable_state",
+  },
+];
+
 const baseManifest = {
   capabilities: { human_interaction: [] },
   connector_id: CONNECTOR_ID,
   display_name: "Schema Granted Connections Test Connector",
   protocol_version: "0.1.0",
-  streams: [
-    {
-      consent_time_field: "received_at",
-      cursor_field: "received_at",
-      name: STREAM,
-      primary_key: ["id"],
-      query: {},
-      schema: {
-        $defs: {
-          subject: { type: "string" },
-        },
-        properties: {
-          id: { type: "string" },
-          received_at: { format: "date-time", type: "string" },
-          subject: { $ref: "#/$defs/subject" },
-        },
-        required: ["id", "subject", "received_at"],
-        type: "object",
-      },
-      selection: { fields: true, resources: false },
-      semantics: "mutable_state",
-    },
-  ],
+  source_declaration: {
+    declaration_version: "schema-granted-connections.v1",
+    display: { name: "Schema Granted Connections Test Connector" },
+    protocol_version: "0.1.0",
+    publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
+    source: { id: SOURCE_ID, kind: "connector" },
+    streams: baseStreams,
+  },
+  streams: baseStreams,
   version: "1.0.0",
 };
 
@@ -457,9 +467,20 @@ async function approveGrant(
   if (!initiate.request_uri) {
     throw new Error(`startGrantRequest returned no request_uri: ${JSON.stringify(initiate)}`);
   }
-  const { body: approved } = await fetchJson(`${asUrl}/consent/approve`, {
+  const review = await fetchJson(`${asUrl}/consent/review`, {
     body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: subjectId }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(review.status, 200, JSON.stringify(review.body));
+  const reviewRevision = (review.body as Record<string, unknown>).approval_review_revision;
+  assert.equal(typeof reviewRevision, "string", "consent review must return approval_review_revision");
+  const { body: approved } = await fetchJson(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({
+      approval_review_revision: reviewRevision,
+      request_uri: initiate.request_uri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   return asRecord(approved);

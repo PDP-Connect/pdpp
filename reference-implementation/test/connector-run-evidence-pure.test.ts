@@ -3,13 +3,13 @@
 
 // Pure, no-DB unit tests for the pure exports of server/connector-run-evidence.ts.
 // No test imports this module by name. These extract the connector-run evidence
-// source id and the manifest refresh-policy / staleness bound used by schema +
+// storage connector id and the manifest refresh-policy / staleness bound used by schema +
 // freshness projection and scheduler admission. (getLatestConnectorRunSummary is
 // async spine-backed and out of scope here.)
 //
 // Mutation surface:
-//   getConnectorRunEvidenceSource -- connector-kind + non-empty string id -> id,
-//     else null (provider_native / empty id / missing -> null).
+//   getConnectorRunEvidenceConnectorId -- trusted storage connector id -> id,
+//     else null (empty / missing / non-string -> null).
 //   getManifestRefreshPolicy -- capabilities must be a plain object, else null;
 //     returns capabilities.refresh_policy ?? null.
 //   getMaximumStalenessSeconds -- a positive finite number -> value, else null
@@ -19,29 +19,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  getConnectorRunEvidenceSource,
+  getConnectorRunEvidenceConnectorId,
   getManifestRefreshPolicy,
   getMaximumStalenessSeconds,
 } from "../server/connector-run-evidence.ts";
 
 // ---------------------------------------------------------------------------
-// getConnectorRunEvidenceSource
+// getConnectorRunEvidenceConnectorId
 // ---------------------------------------------------------------------------
 
-test("getConnectorRunEvidenceSource: connector source with a non-empty id yields the id", () => {
-  assert.equal(getConnectorRunEvidenceSource({ id: "amazon", kind: "connector" }), "amazon");
+test("getConnectorRunEvidenceConnectorId: a storage binding with a non-empty connector_id yields the id", () => {
+  assert.equal(getConnectorRunEvidenceConnectorId({ connector_id: "amazon" }), "amazon");
 });
 
-test("getConnectorRunEvidenceSource: provider_native, empty id, or missing source -> null", () => {
-  assert.equal(
-    getConnectorRunEvidenceSource({ id: "gmail", kind: "provider_native" }),
-    null,
-    "native is not a connector run source"
-  );
-  assert.equal(getConnectorRunEvidenceSource({ id: "", kind: "connector" }), null, "empty id -> null");
-  assert.equal(getConnectorRunEvidenceSource({ kind: "connector" }), null, "missing id -> null");
-  assert.equal(getConnectorRunEvidenceSource(null), null);
-  assert.equal(getConnectorRunEvidenceSource({ id: 42, kind: "connector" }), null, "non-string id -> null");
+test("getConnectorRunEvidenceConnectorId: empty, missing, or non-string connector_id -> null", () => {
+  assert.equal(getConnectorRunEvidenceConnectorId({ connector_id: "" }), null, "empty id -> null");
+  assert.equal(getConnectorRunEvidenceConnectorId({}), null, "missing id -> null");
+  assert.equal(getConnectorRunEvidenceConnectorId(null), null);
+  assert.equal(getConnectorRunEvidenceConnectorId({ connector_id: 42 }), null, "non-string id -> null");
 });
 
 // ---------------------------------------------------------------------------

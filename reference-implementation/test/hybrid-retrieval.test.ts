@@ -218,9 +218,17 @@ async function approveClientGrant(asUrl: string, params: ApproveClientGrantParam
   });
   assert.equal(initiateStatus, 201, JSON.stringify(initiateBody));
   const initiate = initiateBody as ParInitiateBody;
-  const { body: approved, status: approvalStatus } = await fetchJson(`${asUrl}/consent/approve`, {
+  const review = await fetchJson(`${asUrl}/consent/review`, {
     body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: params.subject_id || "owner_local" }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(review.status, 200, JSON.stringify(review.body));
+  const reviewRevision = (review.body as Record<string, unknown>).approval_review_revision;
+  assert.equal(typeof reviewRevision, "string", "consent review must return approval_review_revision");
+  const { body: approved, status: approvalStatus } = await fetchJson(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({ approval_review_revision: reviewRevision, request_uri: initiate.request_uri }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   assert.equal(approvalStatus, 200, JSON.stringify(approved));

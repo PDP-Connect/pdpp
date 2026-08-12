@@ -397,11 +397,26 @@ async function approveClientGrant(asUrl: string, params: ApproveClientGrantParam
   });
   assert.equal(initiateStatus, 201, JSON.stringify(initiate));
   assert.ok(initiate, "PAR initiate response body");
+  const subjectId = params.subject_id || "owner_local";
+  const { body: review, status: reviewStatus } = await fetchJson<{ approval_review_revision?: unknown }>(
+    `${asUrl}/consent/review`,
+    {
+      body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: subjectId }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    }
+  );
+  assert.equal(reviewStatus, 200, JSON.stringify(review));
+  assert.ok(review, "consent review returns a body");
+  assert.equal(typeof review.approval_review_revision, "string", "consent review returns a revision");
   const { body: approved, status: approvalStatus } = await fetchJson<ApprovedGrantResponse>(
     `${asUrl}/consent/approve`,
     {
-      body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: params.subject_id || "owner_local" }),
-      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        approval_review_revision: review.approval_review_revision,
+        request_uri: initiate.request_uri,
+      }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
       method: "POST",
     }
   );
@@ -660,6 +675,7 @@ if (POSTGRES_URL) {
       capabilities: { human_interaction: ["credentials"] },
       connector_id: connectorId,
       display_name: "Postgres Lexical Recall",
+      manifest_uri: `https://sources.example/connectors/${connectorId}`,
       protocol_version: "0.1.0",
       streams: [
         {
@@ -1606,15 +1622,15 @@ test("pre-existing records become searchable after lexical_fields are declared (
     semantics: "append_only",
     ...overrides,
   });
-  const manifestV1 = {
+  const manifestV1 = withCoreSourceDeclaration({
     capabilities: { human_interaction: ["credentials"] },
     connector_id: CONNECTOR_ID,
     display_name: "Late Bloomer",
     protocol_version: "0.1.0",
     streams: [baseStream()],
     version: "1.0.0",
-  };
-  const manifestV2 = {
+  });
+  const manifestV2 = withCoreSourceDeclaration({
     ...manifestV1,
     streams: [
       baseStream({
@@ -1622,7 +1638,7 @@ test("pre-existing records become searchable after lexical_fields are declared (
       }),
     ],
     version: "2.0.0",
-  };
+  });
 
   try {
     // (1) Register without lexical_fields.
@@ -1776,19 +1792,19 @@ test("manifest update that swaps lexical_fields (same cardinality) rebuilds the 
 
   // v1: lexical_fields = ['title']. v2: lexical_fields = ['selftext'].
   // Same cardinality (1) — defeats the row-count heuristic on its own.
-  const manifestV1 = {
+  const manifestV1 = withCoreSourceDeclaration({
     capabilities: { human_interaction: ["credentials"] },
     connector_id: CONNECTOR_ID,
     display_name: "Field Swap",
     protocol_version: "0.1.0",
     streams: [baseStream({ query: { search: { lexical_fields: ["title"] } } })],
     version: "1.0.0",
-  };
-  const manifestV2 = {
+  });
+  const manifestV2 = withCoreSourceDeclaration({
     ...manifestV1,
     streams: [baseStream({ query: { search: { lexical_fields: ["selftext"] } } })],
     version: "2.0.0",
-  };
+  });
 
   try {
     // Register v1 (title-searchable).

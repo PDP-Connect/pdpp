@@ -458,9 +458,21 @@ async function approveGrant(asUrl: string, subjectId: string, params: ApproveGra
   if (!parBody.request_uri) {
     throw new Error(`PAR returned no request_uri: ${JSON.stringify(parBody)}`);
   }
-  const approveResp = await fetch(`${asUrl}/consent/approve`, {
+  const reviewResp = await fetch(`${asUrl}/consent/review`, {
     body: JSON.stringify({ request_uri: parBody.request_uri, subject_id: subjectId }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const review = (await reviewResp.json()) as { approval_review_revision?: unknown };
+  if (!reviewResp.ok || typeof review.approval_review_revision !== "string") {
+    throw new Error(`consent/review failed: ${JSON.stringify(review)}`);
+  }
+  const approveResp = await fetch(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({
+      approval_review_revision: review.approval_review_revision,
+      request_uri: parBody.request_uri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   const approved = (await approveResp.json()) as Partial<ApprovedGrant>;
