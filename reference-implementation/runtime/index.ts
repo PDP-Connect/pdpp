@@ -2043,6 +2043,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       approvedProxyConnectorIds: approvedProxyConnectorIds ?? [],
       connectionEnv: {
         allowedKeys: Object.keys(staticSecretLaunchEnv),
+        connectorId,
         kind: "connection",
         values: staticSecretLaunchEnv,
       } satisfies ConnectorConnectionEnvironment,

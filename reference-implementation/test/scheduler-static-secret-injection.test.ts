@@ -252,9 +252,11 @@ test("connector fragments reject platform and run controls in every casing", () 
       const env = composeConnectorChildEnvironment({
         connectionEnv: {
           allowedKeys: [variant, "CONNECTION_SECRET"],
+          connectorId: "test-connector",
           kind: "connection",
           values: { [variant]: "must-not-cross", CONNECTION_SECRET: "allowed" },
         } satisfies ConnectorConnectionEnvironment,
+        connectorId: "test-connector",
         explicitRunEnv: {},
         manifest: {},
         platform: "linux",
