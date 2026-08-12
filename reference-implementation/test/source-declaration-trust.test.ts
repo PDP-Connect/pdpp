@@ -18,7 +18,10 @@ import {
   createPostgresAcceptedSourceDeclarationRevisionStore,
   createSqliteAcceptedSourceDeclarationRevisionStore,
 } from "../server/source-declaration-trust/revision-store.ts";
-import { retrieveAndAcceptProviderNativeDeclaration } from "../server/source-declaration-trust/service.ts";
+import {
+  getAcceptedProviderNativeDeclarationRevision,
+  retrieveAndAcceptProviderNativeDeclaration,
+} from "../server/source-declaration-trust/service.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
@@ -584,15 +587,24 @@ function immutableRevisionCases(store: {
     parsedDeclaration: unknown;
     sourceId: string;
   }) => Promise<unknown>;
+  getByReference: (acceptedRevisionReference: string) => Promise<unknown>;
 }) {
   const key = { authorityBinding: POINTER, declarationVersion: "opaque:1", sourceId: RESOURCE };
   const expectedReference = acceptedRevisionEvidenceReference(key);
   const sameParsedContentDifferentTextOrder = JSON.parse('{"streams":["a"],"display":{"name":"First"}}');
   return Promise.resolve().then(async () => {
+    assert.equal(await store.getByReference(expectedReference), null);
     assert.deepEqual(await store.accept({ ...key, parsedDeclaration: sameParsedContentDifferentTextOrder }), {
       accepted: true,
       acceptedRevisionReference: expectedReference,
       existing: false,
+    });
+    assert.deepEqual(await store.getByReference(expectedReference), {
+      acceptedRevisionReference: expectedReference,
+      authorityBinding: key.authorityBinding,
+      declarationVersion: key.declarationVersion,
+      parsedDeclaration: { display: { name: "First" }, streams: ["a"] },
+      sourceId: key.sourceId,
     });
     assert.deepEqual(
       await store.accept({ ...key, parsedDeclaration: { display: { name: "First" }, streams: ["a"] } }),
@@ -630,6 +642,12 @@ function immutableRevisionCases(store: {
       acceptedRevisionEvidenceReference({ ...key, authorityBinding: "metadata:https://other.example.test" }),
       "accepted revision evidence references are bound to the accepted authority"
     );
+    assert.equal(
+      await store.getByReference(
+        acceptedRevisionEvidenceReference({ ...key, authorityBinding: "metadata:https://other.example.test" })
+      ),
+      null
+    );
   });
 }
 
@@ -637,6 +655,30 @@ test("SQLite accepted revisions preserve parsed-content identity and reject equi
   const database = new Database(":memory:");
   try {
     await immutableRevisionCases(createSqliteAcceptedSourceDeclarationRevisionStore(database));
+  } finally {
+    database.close();
+  }
+});
+
+test("SQLite accepted revision lookup fails closed when stored evidence is tampered", async () => {
+  const database = new Database(":memory:");
+  const key = { authorityBinding: POINTER, declarationVersion: "opaque:tamper", sourceId: RESOURCE };
+  const store = createSqliteAcceptedSourceDeclarationRevisionStore(database);
+  const expectedReference = acceptedRevisionEvidenceReference(key);
+  try {
+    await store.accept({ ...key, parsedDeclaration: { display: { name: "Original" }, streams: ["a"] } });
+    database
+      .prepare("UPDATE accepted_source_declaration_revisions SET source_id = ? WHERE accepted_revision_reference = ?")
+      .run("https://resource.example.test/owner/changed", expectedReference);
+    await assert.rejects(store.getByReference(expectedReference), /authority binding/);
+
+    database
+      .prepare("UPDATE accepted_source_declaration_revisions SET source_id = ? WHERE accepted_revision_reference = ?")
+      .run(key.sourceId, expectedReference);
+    database
+      .prepare("UPDATE accepted_source_declaration_revisions SET canonical_content = ? WHERE accepted_revision_reference = ?")
+      .run('{"display":{"name":"Changed"},"streams":["a"]}', expectedReference);
+    await assert.rejects(store.getByReference(expectedReference), /fingerprint mismatch/);
   } finally {
     database.close();
   }
@@ -711,6 +753,7 @@ test("SQLite accepted revision store migrates the prior table shape idempotently
 
 test("standalone trust service persists only a retrieved, source-matching declaration", async () => {
   const database = new Database(":memory:");
+  const revisionStore = createSqliteAcceptedSourceDeclarationRevisionStore(database);
   try {
     const result = await retrieveAndAcceptProviderNativeDeclaration(
       {
@@ -721,7 +764,7 @@ test("standalone trust service persists only a retrieved, source-matching declar
       {
         fetch: () => Promise.resolve({ body: streamBody(JSON.stringify(VALID_DECLARATION)), status: 200 }),
         resolveDns: () => Promise.resolve(["203.0.113.4"]),
-        revisionStore: createSqliteAcceptedSourceDeclarationRevisionStore(database),
+        revisionStore,
         validateAddress: () => Promise.resolve(true),
         validateDeclaration: validDeclaration,
       },
@@ -737,6 +780,20 @@ test("standalone trust service persists only a retrieved, source-matching declar
       finalUrl: POINTER,
       ok: true,
     });
+    assert.equal(result.ok, true);
+    assert.deepEqual(
+      await getAcceptedProviderNativeDeclarationRevision(
+        { acceptedRevisionReference: result.acceptedRevisionReference },
+        { revisionStore }
+      ),
+      {
+        acceptedRevisionReference: result.acceptedRevisionReference,
+        authorityBinding: "metadata:https://resource.example.test",
+        declarationVersion: "opaque:a",
+        parsedDeclaration: VALID_DECLARATION,
+        sourceId: RESOURCE,
+      }
+    );
   } finally {
     database.close();
   }
@@ -892,6 +949,55 @@ if (POSTGRES_URL) {
               existing: true,
             }
           );
+          assert.deepEqual(await idempotentStore.getByReference(expectedReference), {
+            acceptedRevisionReference: expectedReference,
+            authorityBinding: key.authorityBinding,
+            declarationVersion: key.declarationVersion,
+            parsedDeclaration: { display: { name: "Legacy" }, streams: ["a"] },
+            sourceId: key.sourceId,
+          });
+          assert.equal(
+            await idempotentStore.getByReference(
+              acceptedRevisionEvidenceReference({ ...key, sourceId: "https://resource.example.test/other" })
+            ),
+            null
+          );
+        } finally {
+          await pool.end();
+        }
+      }
+    );
+  });
+
+  test("PostgreSQL accepted revision lookup fails closed when stored evidence is tampered", async () => {
+    postgresCounter += 1;
+    await withTemporaryPostgresDatabase(
+      {
+        connectionString: POSTGRES_URL,
+        databaseName: `pdpp_source_declaration_trust_${process.pid}_${postgresCounter}`,
+      },
+      async (databaseUrl) => {
+        const pool = new Pool({ connectionString: databaseUrl });
+        const key = { authorityBinding: POINTER, declarationVersion: "opaque:tamper", sourceId: RESOURCE };
+        const expectedReference = acceptedRevisionEvidenceReference(key);
+        try {
+          const store = await createPostgresAcceptedSourceDeclarationRevisionStore(pool);
+          await store.accept({ ...key, parsedDeclaration: { display: { name: "Original" }, streams: ["a"] } });
+          await pool.query(
+            "UPDATE accepted_source_declaration_revisions SET source_id = $1 WHERE accepted_revision_reference = $2",
+            ["https://resource.example.test/owner/changed", expectedReference]
+          );
+          await assert.rejects(store.getByReference(expectedReference), /authority binding/);
+
+          await pool.query(
+            "UPDATE accepted_source_declaration_revisions SET source_id = $1 WHERE accepted_revision_reference = $2",
+            [key.sourceId, expectedReference]
+          );
+          await pool.query(
+            "UPDATE accepted_source_declaration_revisions SET canonical_content = $1 WHERE accepted_revision_reference = $2",
+            ['{"display":{"name":"Changed"},"streams":["a"]}', expectedReference]
+          );
+          await assert.rejects(store.getByReference(expectedReference), /fingerprint mismatch/);
         } finally {
           await pool.end();
         }

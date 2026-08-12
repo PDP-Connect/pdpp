@@ -14,6 +14,14 @@ import {
 } from "./retrieval.ts";
 import type { AcceptedSourceDeclarationRevisionStore } from "./revision-store.ts";
 
+export interface AcceptedProviderNativeDeclarationRevision {
+  readonly acceptedRevisionReference: string;
+  readonly authorityBinding: string;
+  readonly declarationVersion: string;
+  readonly parsedDeclaration: unknown;
+  readonly sourceId: string;
+}
+
 export type AcceptProviderNativeDeclarationResult =
   | {
       readonly ok: true;
@@ -60,4 +68,11 @@ export async function retrieveAndAcceptProviderNativeDeclaration(
     finalUrl: retrieved.value.finalUrl,
     ok: true,
   };
+}
+
+export async function getAcceptedProviderNativeDeclarationRevision(
+  input: { readonly acceptedRevisionReference: string },
+  dependencies: { readonly revisionStore: AcceptedSourceDeclarationRevisionStore }
+): Promise<AcceptedProviderNativeDeclarationRevision | null> {
+  return dependencies.revisionStore.getByReference(input.acceptedRevisionReference);
 }

@@ -19,14 +19,23 @@ export type AcceptedRevisionResult =
   | { readonly accepted: true; readonly acceptedRevisionReference: string; readonly existing: boolean }
   | { readonly accepted: false; readonly reason: "equivocation" };
 
+export interface AcceptedRevisionLookupResult extends AcceptedRevisionKey {
+  readonly acceptedRevisionReference: string;
+  readonly parsedDeclaration: unknown;
+}
+
 export interface AcceptedSourceDeclarationRevisionStore {
   accept: (input: AcceptedRevisionInput) => Promise<AcceptedRevisionResult>;
+  getByReference: (acceptedRevisionReference: string) => Promise<AcceptedRevisionLookupResult | null>;
 }
 
 interface StoredRevision {
+  readonly authority_binding: string;
   readonly accepted_revision_reference: string;
   readonly canonical_content: string;
   readonly content_fingerprint: string;
+  readonly declaration_version: string;
+  readonly source_id: string;
 }
 
 interface LegacyStoredRevision {
@@ -121,6 +130,28 @@ function assertKey(input: AcceptedRevisionKey): void {
 
 function isSameContent(stored: StoredRevision, canonicalContent: string, contentFingerprint: string): boolean {
   return stored.content_fingerprint === contentFingerprint && stored.canonical_content === canonicalContent;
+}
+
+function decodeStoredRevision(stored: StoredRevision): AcceptedRevisionLookupResult {
+  const recomputedFingerprint = fingerprint(stored.canonical_content);
+  if (stored.content_fingerprint !== recomputedFingerprint) {
+    throw new Error("Accepted revision content fingerprint mismatch.");
+  }
+  const expectedReference = acceptedRevisionEvidenceReference({
+    authorityBinding: stored.authority_binding,
+    declarationVersion: stored.declaration_version,
+    sourceId: stored.source_id,
+  });
+  if (stored.accepted_revision_reference !== expectedReference) {
+    throw new Error("Accepted revision reference does not match stored authority binding.");
+  }
+  return {
+    acceptedRevisionReference: stored.accepted_revision_reference,
+    authorityBinding: stored.authority_binding,
+    declarationVersion: stored.declaration_version,
+    parsedDeclaration: JSON.parse(stored.canonical_content) as unknown,
+    sourceId: stored.source_id,
+  };
 }
 
 function sqliteSchema(table: string): string {
@@ -226,8 +257,12 @@ export function createSqliteAcceptedSourceDeclarationRevisionStore(
      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(authority_binding, source_id, declaration_version) DO NOTHING`
   );
   const read = database.prepare<StoredRevision>(
-    `SELECT accepted_revision_reference, canonical_content, content_fingerprint FROM ${table}
+    `SELECT authority_binding, source_id, declaration_version, accepted_revision_reference, canonical_content, content_fingerprint FROM ${table}
      WHERE authority_binding = ? AND source_id = ? AND declaration_version = ?`
+  );
+  const readByReference = database.prepare<StoredRevision>(
+    `SELECT authority_binding, source_id, declaration_version, accepted_revision_reference, canonical_content, content_fingerprint FROM ${table}
+     WHERE accepted_revision_reference = ?`
   );
   return {
     accept(input) {
@@ -257,6 +292,10 @@ export function createSqliteAcceptedSourceDeclarationRevisionStore(
           ? { accepted: true, acceptedRevisionReference: stored.accepted_revision_reference, existing: true }
           : { accepted: false, reason: "equivocation" }
       );
+    },
+    async getByReference(acceptedRevisionReference) {
+      const stored = readByReference.get(...([acceptedRevisionReference] as never[]));
+      return stored ? decodeStoredRevision(stored) : null;
     },
   };
 }
@@ -324,7 +363,7 @@ export async function createPostgresAcceptedSourceDeclarationRevisionStore(
         return { accepted: true, acceptedRevisionReference, existing: false };
       }
       const existing = await database.query(
-        `SELECT accepted_revision_reference, canonical_content, content_fingerprint FROM ${table}
+        `SELECT authority_binding, source_id, declaration_version, accepted_revision_reference, canonical_content, content_fingerprint FROM ${table}
          WHERE authority_binding = $1 AND source_id = $2 AND declaration_version = $3`,
         [input.authorityBinding, input.sourceId, input.declarationVersion]
       );
@@ -335,6 +374,15 @@ export async function createPostgresAcceptedSourceDeclarationRevisionStore(
       return isSameContent(stored, canonicalContent, contentFingerprint)
         ? { accepted: true, acceptedRevisionReference: stored.accepted_revision_reference, existing: true }
         : { accepted: false, reason: "equivocation" };
+    },
+    async getByReference(acceptedRevisionReference) {
+      const existing = await database.query(
+        `SELECT authority_binding, source_id, declaration_version, accepted_revision_reference, canonical_content, content_fingerprint FROM ${table}
+         WHERE accepted_revision_reference = $1`,
+        [acceptedRevisionReference]
+      );
+      const stored = existing.rows.at(0);
+      return stored ? decodeStoredRevision(stored) : null;
     },
   };
 }
