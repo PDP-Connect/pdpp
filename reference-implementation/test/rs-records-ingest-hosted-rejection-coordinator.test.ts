@@ -550,10 +550,10 @@ async function seedRunningRun(args: {
     );
     await postgresQuery(
       `INSERT INTO run_history(connector_instance_id, connector_id, run_id, source_json, status, trace_id, started_at, known_gaps_json, scheduler_managed)
-       VALUES($1, $2, $3, '{}', 'running', $4, $5, '[]', 0)
+       VALUES($1, $2, $3, '{}', 'running', $4, $5, '[]', $6)
        ON CONFLICT(run_id, connector_instance_id) WHERE run_id IS NOT NULL
        DO UPDATE SET status = 'running', completed_at = NULL`,
-      [args.connectorInstanceId, args.connectorId, args.runId, `trc_${args.runId}`, now]
+      [args.connectorInstanceId, args.connectorId, args.runId, `trc_${args.runId}`, now, false]
     );
     return;
   }
