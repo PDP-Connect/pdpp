@@ -83,12 +83,14 @@ interface OwnerAuthForStreamHealth {
 }
 
 const OWNER_DOM_RESOLUTION_TIMEOUT_MS = 15_000;
+const OWNER_DOM_PAGE_BUDGET = 512;
 
 interface BrowserNavigationResponse {
   headers?: () => Record<string, string>;
 }
 
 interface OwnerSourcesBrowserPage {
+  close: () => Promise<void>;
   content: () => Promise<string>;
   goto: (url: string, options: { waitUntil: "domcontentloaded" }) => Promise<BrowserNavigationResponse | null>;
   waitForFunction: (predicate: () => boolean, options: { timeout: number }) => Promise<unknown>;
@@ -118,22 +120,14 @@ function ownerSessionCookies(cookie: string, base: string): { name: string; valu
     .filter((value): value is { name: string; value: string; url: string } => value !== null);
 }
 
-async function launchOwnerSourcesBrowser({
-  base,
-  cookie,
-}: {
-  base: string;
-  cookie: string;
-}): Promise<OwnerSourcesBrowser> {
+async function launchOwnerSourcesBrowser(): Promise<OwnerSourcesBrowser> {
   const { chromium } = await import("patchright");
   const browser = await chromium.launch({
     executablePath: process.env.CHROME_PATH || "/usr/bin/google-chrome",
     headless: true,
   });
-  const context = await browser.newContext();
-  await context.addCookies(ownerSessionCookies(cookie, base));
   return {
-    newContext: async () => context,
+    newContext: () => browser.newContext(),
     close: () => browser.close(),
   };
 }
@@ -261,6 +255,34 @@ interface OwnerSourcesDomFetchResult {
   revisions: (string | null)[];
 }
 
+async function closeOwnerSourcesResources({
+  browser,
+  context,
+  page,
+}: {
+  browser: OwnerSourcesBrowser | null;
+  context: OwnerSourcesBrowserContext | null;
+  page: OwnerSourcesBrowserPage | null;
+}): Promise<string | null> {
+  const failures: string[] = [];
+  for (const [name, resource] of [
+    ["page", page],
+    ["context", context],
+    ["browser", browser],
+  ] as const) {
+    if (!resource) {
+      continue;
+    }
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: cleanup is deliberately sequential so every later resource is attempted after an earlier cleanup failure.
+      await resource.close();
+    } catch (error) {
+      failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return failures.length > 0 ? failures.join("; ") : null;
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this is one bounded, fail-closed pagination state machine whose branches each preserve an evidence gate.
 async function fetchOwnerSourcesDom({
   base,
@@ -284,12 +306,24 @@ async function fetchOwnerSourcesDom({
   let suspense = false;
   let paginationComplete = true;
   let reason: string | null = null;
-
-  const browser = await browserFactory({ base, cookie });
-  const context = await browser.newContext();
-  const page = await context.newPage();
+  let pageCount = 0;
+  let terminalEvidence: OwnerSourcesDomEvidence | null = null;
+  let browser: OwnerSourcesBrowser | null = null;
+  let context: OwnerSourcesBrowserContext | null = null;
+  let page: OwnerSourcesBrowserPage | null = null;
   try {
-    while (pending.length > 0) {
+    browser = await browserFactory({ base, cookie });
+    context = await browser.newContext();
+    await context.addCookies(ownerSessionCookies(cookie, base));
+    page = await context.newPage();
+    while (pending.length > 0 && terminalEvidence === null) {
+      if (pageCount >= OWNER_DOM_PAGE_BUDGET) {
+        terminalEvidence = ownerDomFailure({
+          reason: `owner DOM traversal budget exceeded: maximum ${OWNER_DOM_PAGE_BUDGET} pages`,
+          suspense: true,
+        });
+        break;
+      }
       const href = pending.shift();
       if (!href) {
         break;
@@ -307,6 +341,7 @@ async function fetchOwnerSourcesDom({
         continue;
       }
       seen.add(absolute);
+      pageCount += 1;
 
       let navigation: BrowserNavigationResponse | null;
       try {
@@ -326,16 +361,14 @@ async function fetchOwnerSourcesDom({
       } catch {
         const html = await page.content();
         const observed = parseOwnerSourcesDom(html);
-        return {
-          evidence: ownerDomFailure({
-            authenticated: observed.authenticated,
-            reason: observed.authenticated
-              ? `owner DOM did not resolve within ${OWNER_DOM_RESOLUTION_TIMEOUT_MS}ms`
-              : "owner authentication was not resolved",
-            suspense: true,
-          }),
-          revisions,
-        };
+        terminalEvidence = ownerDomFailure({
+          authenticated: observed.authenticated,
+          reason: observed.authenticated
+            ? `owner DOM did not resolve within ${OWNER_DOM_RESOLUTION_TIMEOUT_MS}ms`
+            : "owner authentication was not resolved",
+          suspense: true,
+        });
+        break;
       }
       const html = await page.content();
       const responseRevision = navigation?.headers?.()?.[REVISION_HEADER.toLowerCase()] ?? null;
@@ -365,9 +398,21 @@ async function fetchOwnerSourcesDom({
         pending.push(new URL(next, absolute).toString());
       }
     }
-  } finally {
-    await context.close();
-    await browser.close();
+  } catch (error) {
+    terminalEvidence = ownerDomFailure({
+      reason: `owner DOM browser setup failed: ${error instanceof Error ? error.message : String(error)}`,
+      suspense: true,
+    });
+  }
+  const cleanupFailure = await closeOwnerSourcesResources({ browser, context, page });
+  if (cleanupFailure) {
+    terminalEvidence = ownerDomFailure({
+      reason: `owner DOM cleanup failed: ${cleanupFailure}`,
+      suspense: true,
+    });
+  }
+  if (terminalEvidence) {
+    return { evidence: terminalEvidence, revisions };
   }
 
   const streamKeyValues = [...streamKeys].map((value) => {

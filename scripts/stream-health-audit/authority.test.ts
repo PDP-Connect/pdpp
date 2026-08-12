@@ -113,39 +113,70 @@ function evaluate(connection: Json, connectorManifest = manifest()): StreamHealt
 
 function browserFactoryFromFetch(
   fetchImpl: FetchImpl,
-  options: { resolveHtml?: string; timeout?: boolean } = {}
+  options: {
+    cleanupFailures?: ReadonlySet<"browser" | "context" | "page">;
+    cleanupCalls?: string[];
+    resolveHtml?: string;
+    setupFailure?: "browser" | "context" | "cookies" | "page";
+    timeout?: boolean;
+  } = {}
 ): OwnerSourcesBrowserFactory {
+  const { setupFailure } = options;
   return () => {
     let html = "";
+    if (setupFailure === "browser") {
+      return Promise.reject(new Error("browser launch failed"));
+    }
     return Promise.resolve({
       newContext: () =>
-        Promise.resolve({
-          addCookies: () => Promise.resolve(),
-          newPage: () =>
-            Promise.resolve({
-              goto: async (url: string) => {
-                const fetched = await fetchImpl(url);
-                html = await fetched.text();
-                return {
-                  headers: () => ({
-                    "pdpp-reference-revision": fetched.headers.get?.("pdpp-reference-revision") ?? "",
-                  }),
-                };
+        setupFailure === "context"
+          ? Promise.reject(new Error("context setup failed"))
+          : Promise.resolve({
+              addCookies: () =>
+                setupFailure === "cookies" ? Promise.reject(new Error("cookies setup failed")) : Promise.resolve(),
+              newPage: () =>
+                setupFailure === "page"
+                  ? Promise.reject(new Error("page setup failed"))
+                  : Promise.resolve({
+                      goto: async (url: string) => {
+                        const fetched = await fetchImpl(url);
+                        html = await fetched.text();
+                        return {
+                          headers: () => ({
+                            "pdpp-reference-revision": fetched.headers.get?.("pdpp-reference-revision") ?? "",
+                          }),
+                        };
+                      },
+                      waitForFunction: () => {
+                        if (options.timeout) {
+                          return Promise.reject(new Error("Timeout 15000ms exceeded"));
+                        }
+                        if (options.resolveHtml !== undefined) {
+                          html = options.resolveHtml;
+                        }
+                        return Promise.resolve();
+                      },
+                      content: () => Promise.resolve(html),
+                      close: () => {
+                        options.cleanupCalls?.push("page");
+                        return options.cleanupFailures?.has("page")
+                          ? Promise.reject(new Error("page close failed"))
+                          : Promise.resolve();
+                      },
+                    }),
+              close: () => {
+                options.cleanupCalls?.push("context");
+                return options.cleanupFailures?.has("context")
+                  ? Promise.reject(new Error("context close failed"))
+                  : Promise.resolve();
               },
-              waitForFunction: () => {
-                if (options.timeout) {
-                  return Promise.reject(new Error("Timeout 15000ms exceeded"));
-                }
-                if (options.resolveHtml !== undefined) {
-                  html = options.resolveHtml;
-                }
-                return Promise.resolve();
-              },
-              content: () => Promise.resolve(html),
             }),
-          close: () => Promise.resolve(),
-        }),
-      close: () => Promise.resolve(),
+      close: () => {
+        options.cleanupCalls?.push("browser");
+        return options.cleanupFailures?.has("browser")
+          ? Promise.reject(new Error("browser close failed"))
+          : Promise.resolve();
+      },
     });
   };
 }
@@ -200,6 +231,92 @@ test("live DOM acquisition fails closed when a streamed page never resolves", as
   assert.equal(result.gates.dom, "inconclusive");
   assert.equal(result.status, "inconclusive");
   assert.equal(result.fetched, true);
+});
+
+test("live DOM traversal fails closed on unique-cursor exhaustion", async () => {
+  const pageCount = 513;
+  let calls = 0;
+  const fetchImpl: FetchImpl = (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === "/_ref/connectors") {
+      return Promise.resolve(response({ data: [], has_more: false, object: "list" }));
+    }
+    if (parsed.pathname === "/sources") {
+      calls += 1;
+      const cursor = parsed.searchParams.get("page_cursor");
+      const page = cursor ? Number(cursor.replace("page-", "")) : 1;
+      const next = page < pageCount ? `<a href="/sources?page_cursor=page-${page + 1}">Next</a>` : "";
+      return Promise.resolve(response(`<div data-testid="sources-empty">empty</div>${next}`));
+    }
+    throw new Error(`unexpected test URL ${url}`);
+  };
+  const result = await runLiveForTest({
+    env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
+    fetchImpl,
+    origin: "https://example.test",
+  });
+  assert.equal(calls, 512);
+  assert.equal(result.gates.pagination, "inconclusive");
+  assert.equal(result.status, "inconclusive");
+  assert.ok(
+    result.findings.some((finding) => finding.reason === "owner DOM traversal budget exceeded: maximum 512 pages")
+  );
+});
+
+test("live DOM browser setup failures fail closed at every setup stage", async () => {
+  const fetchImpl: FetchImpl = (url) => {
+    if (new URL(url).pathname === "/_ref/connectors") {
+      return Promise.resolve(response({ data: [], has_more: false, object: "list" }));
+    }
+    throw new Error(`unexpected test URL ${url}`);
+  };
+  for (const stage of ["browser", "context", "cookies", "page"] as const) {
+    // biome-ignore lint/performance/noAwaitInLoops: each stage is a distinct fail-closed lifecycle assertion.
+    const result = await runLiveForTest({
+      env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
+      fetchImpl,
+      browserFactory: browserFactoryFromFetch(fetchImpl, { setupFailure: stage }),
+      origin: "https://example.test",
+    });
+    assert.equal(result.gates.dom, "inconclusive", stage);
+    assert.ok(
+      result.findings.some(
+        (finding) =>
+          finding.reason ===
+          `owner DOM browser setup failed: ${stage === "browser" ? "browser launch failed" : `${stage} setup failed`}`
+      ),
+      stage
+    );
+  }
+});
+
+test("live DOM cleanup attempts every resource after cleanup failures", async () => {
+  const cleanupCalls: string[] = [];
+  const fetchImpl: FetchImpl = (url) => {
+    if (new URL(url).pathname === "/_ref/connectors") {
+      return Promise.resolve(response({ data: [], has_more: false, object: "list" }));
+    }
+    if (new URL(url).pathname === "/sources") {
+      return Promise.resolve(response('<div data-testid="sources-empty">No sources yet</div>'));
+    }
+    throw new Error(`unexpected test URL ${url}`);
+  };
+  const result = await runLiveForTest({
+    env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
+    fetchImpl,
+    browserFactory: browserFactoryFromFetch(fetchImpl, {
+      cleanupCalls,
+      cleanupFailures: new Set(["page", "context"]),
+    }),
+    origin: "https://example.test",
+  });
+  assert.deepEqual(cleanupCalls, ["page", "context", "browser"]);
+  assert.equal(result.gates.dom, "inconclusive");
+  assert.ok(
+    result.findings.some(
+      (finding) => finding.reason === "owner DOM cleanup failed: page: page close failed; context: context close failed"
+    )
+  );
 });
 
 function runLiveForTest(
