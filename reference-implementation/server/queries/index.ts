@@ -140,10 +140,12 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly approvalsListPendingConsents: SmallEnumerationQuery;
   readonly approvalsListPendingOwnerDevices: SmallEnumerationQuery;
   readonly authAgentConnectAttemptsDeleteById: MutationQuery;
+  readonly authAgentConnectAttemptsGetExpiredByRequestUri: ReadOneQuery;
   readonly authAgentConnectAttemptsGetById: ReadOneQuery;
   readonly authAgentConnectAttemptsInsert: MutationQuery;
   readonly authAgentConnectAttemptsListExpiredPending: ReadManyQuery;
   readonly authAgentConnectAttemptsMarkApproved: MutationQuery;
+  readonly authAgentConnectAttemptsMarkExpiredById: MutationQuery;
   readonly authAgentConnectAttemptsMarkFailed: MutationQuery;
   readonly authAgentConnectAttemptsPrune: MutationQuery;
   readonly authAgentConnectAttemptsRecoverApproved: ReadOneQuery;

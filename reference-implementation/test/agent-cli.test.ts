@@ -53,7 +53,10 @@ import { startServer } from "../server/index.ts";
 import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from "../server/reference-local-defaults.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
-import { __setAgentConnectCompleteFailureForTest } from "../server/routes/as-agent-connect.ts";
+import {
+  __setAgentConnectCleanupAfterMissForTest,
+  __setAgentConnectCompleteFailureForTest,
+} from "../server/routes/as-agent-connect.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { introspectionHeaders } from "./helpers/introspection.ts";
 import { TEST_INTROSPECTION_SERVER_OPTS } from "./helpers/introspection-test-credentials.ts";
@@ -248,6 +251,25 @@ async function tokenIsIntrospectionActive(asUrl: string, token: string): Promise
   });
   const body = (await resp.json()) as { active?: boolean };
   return body.active === true;
+}
+
+function createCleanupPause() {
+  let releaseCleanup!: () => void;
+  let observedMiss!: () => void;
+  const resume = new Promise<void>((resolve) => {
+    releaseCleanup = resolve;
+  });
+  const paused = new Promise<void>((resolve) => {
+    observedMiss = resolve;
+  });
+  return {
+    hook: async () => {
+      observedMiss();
+      await resume;
+    },
+    paused,
+    release: releaseCleanup,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -809,10 +831,43 @@ test("agent-connect: prune reconciles crash-completed expired approval before de
       pollingCode: start.polling_code,
       tokenUrl: start.token_url,
     });
-    assert.equal(prunedPoll.resp.status, 401);
-    assert.equal(errorCode(prunedPoll.body), "invalid_grant");
+    assert.equal(prunedPoll.resp.status, 400);
+    assert.equal(errorCode(prunedPoll.body), "expired_token");
   } finally {
     __setAgentConnectCompleteFailureForTest(null);
+    await closeServer(server);
+  }
+});
+
+test("agent-connect: cleanup miss racing approval commit revokes the committed token", async () => {
+  const { server, asUrl } = await spinUpServer({ agentConnectTtlMs: 1 });
+  try {
+    const { staged, start } = await createAgentConnectRequest({
+      asUrl,
+      clientName: "Agent Connect Cleanup Race SQLite",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const pause = createCleanupPause();
+    __setAgentConnectCleanupAfterMissForTest(pause.hook);
+    const pollPromise = pollAgentConnectToken({
+      pollingCode: start.polling_code,
+      tokenUrl: start.token_url,
+    });
+    await pause.paused;
+
+    const approval = await approveInline({
+      asUrl,
+      requestUri: staged.request_uri,
+      subjectId: "owner_local",
+    });
+    assert.equal(await tokenIsIntrospectionActive(asUrl, approval.token), true);
+    pause.release();
+    const expiredPoll = await pollPromise;
+    assert.equal(expiredPoll.resp.status, 400);
+    assert.equal(errorCode(expiredPoll.body), "expired_token");
+    assert.equal(await tokenIsIntrospectionActive(asUrl, approval.token), false);
+  } finally {
+    __setAgentConnectCleanupAfterMissForTest(null);
     await closeServer(server);
   }
 });
@@ -995,11 +1050,62 @@ test("agent-connect: live Postgres crash-completed expiry and prune revoke commi
           pollingCode: start.polling_code,
           tokenUrl: start.token_url,
         });
-        assert.equal(prunedPoll.resp.status, 401);
-        assert.equal(errorCode(prunedPoll.body), "invalid_grant");
+        assert.equal(prunedPoll.resp.status, 400);
+        assert.equal(errorCode(prunedPoll.body), "expired_token");
       } finally {
         __setAgentConnectCompleteFailureForTest(null);
         await closeServer(pruneServer.server);
+        await closePostgresStorage();
+      }
+    }
+  );
+});
+
+test("agent-connect: live Postgres cleanup miss racing approval commit revokes committed token", async (t) => {
+  const baseUrl = dedicatedPostgresTestUrl(
+    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
+  );
+  if (!baseUrl) {
+    t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
+    return;
+  }
+
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: baseUrl,
+      databaseName: "pdpp_test_agent_connect_cleanup_race",
+    },
+    async (databaseUrl) => {
+      const { server, asUrl } = await spinUpServer({ agentConnectTtlMs: 1, databaseUrl, storageBackend: "postgres" });
+      try {
+        const { staged, start } = await createAgentConnectRequest({
+          asUrl,
+          clientName: "Agent Connect PG Cleanup Race",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        const pause = createCleanupPause();
+        __setAgentConnectCleanupAfterMissForTest(pause.hook);
+        const pollPromise = pollAgentConnectToken({
+          pollingCode: start.polling_code,
+          tokenUrl: start.token_url,
+        });
+        await pause.paused;
+
+        const approval = await approveInline({
+          asUrl,
+          requestUri: staged.request_uri,
+          subjectId: "owner_local",
+        });
+        assert.equal(await tokenIsIntrospectionActive(asUrl, approval.token), true);
+        pause.release();
+        const expiredPoll = await pollPromise;
+        assert.equal(expiredPoll.resp.status, 400);
+        assert.equal(errorCode(expiredPoll.body), "expired_token");
+        assert.equal(await tokenIsIntrospectionActive(asUrl, approval.token), false);
+      } finally {
+        __setAgentConnectCleanupAfterMissForTest(null);
+        await closeServer(server);
         await closePostgresStorage();
       }
     }

@@ -296,10 +296,12 @@ export const CASE_DEFINITIONS = {
       "reference-implementation/server/db.ts",
       "reference-implementation/server/postgres-storage.ts",
       "reference-implementation/server/queries/auth/agent-connect-attempts/delete-by-id.sql",
+      "reference-implementation/server/queries/auth/agent-connect-attempts/get-expired-by-request-uri.sql",
       "reference-implementation/server/queries/auth/agent-connect-attempts/get-by-id.sql",
       "reference-implementation/server/queries/auth/agent-connect-attempts/insert.sql",
       "reference-implementation/server/queries/auth/agent-connect-attempts/list-expired-pending.sql",
       "reference-implementation/server/queries/auth/agent-connect-attempts/mark-approved.sql",
+      "reference-implementation/server/queries/auth/agent-connect-attempts/mark-expired-by-id.sql",
       "reference-implementation/server/queries/auth/agent-connect-attempts/mark-failed.sql",
       "reference-implementation/server/queries/auth/agent-connect-attempts/prune.sql",
       "reference-implementation/server/queries/auth/agent-connect-attempts/recover-approved.sql",
@@ -322,6 +324,7 @@ export const CASE_DEFINITIONS = {
     observations: [
       "approval_commit_handoff_resume",
       "approved_after_expiry_bearer_revoked",
+      "approved_cleanup_race_bearer_revoked",
       "approved_crash_expiry_reconciled",
       "approved_crash_prune_reconciled",
       "credential_response_no_store",
@@ -342,6 +345,7 @@ export const CASE_DEFINITIONS = {
     requiredTestNames: [
       "agent-cli: approved-after-expiry revokes bearer and expired bearer is refused",
       "agent-cli: cache headers reject invalid bearer without token disclosure",
+      "agent-cli: cleanup/approval race revokes committed token",
       "agent-cli: crash-completed expiry and prune revoke committed approvals",
       "agent-cli: crash recovery from committed pending approval",
       "agent-cli: live PostgreSQL crash expiry/prune and response-loss replay",
