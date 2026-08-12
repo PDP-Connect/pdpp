@@ -735,10 +735,19 @@ export async function publishConnectorListSummaryTerminalProjection(input: {
     throw new Error("Terminal connector summary projection identity does not match its evidence row.");
   }
   const encoded = JSON.stringify(projection);
+  // Historical terminal facts are an honest, attributable absence of a newer
+  // run, not an unfinished canonical read. They may back a current LIST
+  // projection; fold failures, dirty rows, and revision changes remain fenced.
   const currentEvidenceWhere = `dirty = 0
     AND state = 'fresh'
     AND record_snapshot_state = 'current'
-    AND terminal_facts_state = 'current'
+    AND (
+      terminal_facts_state = 'current'
+      OR (
+        terminal_facts_state = 'stale'
+        AND terminal_facts_reason_code = '${REASON_CODES.TERMINAL_FACTS_HISTORICAL}'
+      )
+    )
     AND manifest_declaration_state = 'current'`;
   const nowIso = new Date().toISOString();
   if (isPostgresStorageBackend()) {

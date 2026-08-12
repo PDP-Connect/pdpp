@@ -344,6 +344,7 @@ const AUTH_FAILURE_PATTERN = /(?:\/owner\/login|name=["']password["']|sign\s+in\
 const SUSPENSE_TESTID_PATTERN = /data-testid=["'][^"']*(?:loading|suspense)[^"']*["']/i;
 const SUSPENSE_BUSY_PATTERN = /aria-busy=["']true["']/i;
 const SUSPENSE_CLASS_PATTERN = /(?:skeleton|animate-pulse)/i;
+const DOM_REVISION_PATTERN = /\bdata-pdpp-reference-revision=(['"])(.*?)\1/i;
 const HREF_PATTERN = /\bhref=(['"])(.*?)\1/gi;
 const PAGE_CURSOR_PATTERN = /[?&]page_cursor=/;
 const EXPLICIT_EMPTY_PATTERN = /data-testid=["']sources-empty["']/i;
@@ -368,6 +369,7 @@ export interface OwnerSourcesDomEvidence {
   reason?: string | null;
   renderedRows: boolean;
   resolved: boolean;
+  revision?: string | null;
   selectedConnectionId?: string | null;
   streamKeys: readonly { connectionId: string; stream: string }[];
   suspense: boolean;
@@ -1632,6 +1634,7 @@ export function parseOwnerSourcesDom(html: string): OwnerSourcesDomEvidence {
   const nextPageHrefs = parsePageHrefs(renderedSource);
   const explicitEmpty = EXPLICIT_EMPTY_PATTERN.test(renderedSource);
   const renderedRows = rendered.renderedRows || explicitEmpty;
+  const revision = DOM_REVISION_PATTERN.exec(renderedSource)?.[2]?.trim() || null;
   const resolved =
     !(authFailure || suspense || rendered.malformedStreamRow || rendered.orphanedStreamRow) && renderedRows;
   let reason: string | null = null;
@@ -1652,6 +1655,7 @@ export function parseOwnerSourcesDom(html: string): OwnerSourcesDomEvidence {
     nextPageHrefs,
     paginationComplete: true,
     renderedRows,
+    revision,
     resolved,
     selectedConnectionId: rendered.selectedConnectionId,
     streamKeys: [

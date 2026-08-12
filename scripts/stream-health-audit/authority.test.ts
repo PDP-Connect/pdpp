@@ -775,6 +775,12 @@ test("the DOM parser recognizes source identities, pagination, empty state, and 
   );
   assert.equal(parseOwnerSourcesDom('<form><input name="password" /></form>').resolved, false);
   assert.equal(parseOwnerSourcesDom('<div aria-busy="true">Loading</div>').suspense, true);
+  assert.equal(
+    parseOwnerSourcesDom(
+      '<header data-pdpp-reference-revision="pdpp-reference@1.0.0+abcdef123456"><a data-pdpp-source-row="c1" href="/sources/c1">one</a></header>'
+    ).revision,
+    REVISION
+  );
   const hidden = parseOwnerSourcesDom(
     '<div data-pdpp-selected-source="c1"><a data-pdpp-source-row="c1"></a><a data-pdpp-stream-row="true" data-connection-id="c1" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages"></a></div>' +
       '<template><a data-pdpp-source-row="c2"></a></template><noscript><a data-pdpp-source-row="c3"></a></noscript>' +
@@ -925,6 +931,37 @@ test("live authority accepts a resolved authenticated empty owner surface with a
   assert.equal(result.gates.dom, "resolved");
   assert.equal(result.gates.revision, "exact");
   assert.equal(result.revisionReceipt.exact, true);
+});
+
+test("live authority accepts the authenticated DOM revision receipt when the HTML response header is absent", async () => {
+  const fetchImpl: FetchImpl = (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === "/_ref/connectors") {
+      return Promise.resolve(response({ data: [], has_more: false, object: "list" }));
+    }
+    if (parsed.pathname === "/sources") {
+      return Promise.resolve(
+        response(
+          `<header data-pdpp-reference-revision="${REVISION}"><div data-testid="sources-empty">No sources yet</div></header>`,
+          200,
+          null
+        )
+      );
+    }
+    throw new Error(`unexpected test URL ${url}`);
+  };
+
+  const result = await runLiveStreamHealthAuthority({
+    env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
+    expectedRevision: REVISION,
+    expectedSha: "abcdef123456",
+    fetchImpl,
+    origin: "https://example.test",
+  });
+
+  assert.equal(result.status, "pass");
+  assert.equal(result.gates.revision, "exact");
+  assert.equal(result.revisionReceipt.observedDom, REVISION);
 });
 
 test("live authority fails closed on a malformed/repeating summary cursor", async () => {

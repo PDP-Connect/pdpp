@@ -51,6 +51,7 @@ import {
 } from "./sources-view-model.ts";
 
 const SOURCES_PATH = "/sources";
+const REFERENCE_REVISION = process.env.PDPP_REFERENCE_REVISION?.trim() || undefined;
 
 export const dynamic = "force-dynamic";
 
@@ -168,7 +169,7 @@ export default async function RecordsIndexPage({
 
 function SourcesHeader({ error, message, notice }: { error?: string; message?: string; notice?: string }) {
   return (
-    <header style={{ marginBottom: 24, maxWidth: 760 }}>
+    <header data-pdpp-reference-revision={REFERENCE_REVISION} style={{ marginBottom: 24, maxWidth: 760 }}>
       <h1 className="pdpp-heading text-foreground" style={{ margin: "0 0 4px" }}>
         Sources
       </h1>

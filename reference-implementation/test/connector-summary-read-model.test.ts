@@ -463,6 +463,95 @@ test("terminal LIST projection is published only from current canonical evidence
     assert.equal(stale.reason_code, "canonical_evidence_dirty");
   }));
 
+test("terminal LIST projection publishes historical terminal facts without relabeling them current", () =>
+  withTempDb(async () => {
+    const connectorId = "terminal_historical_projection";
+    const connectorInstanceId = "cin_terminal_historical_projection";
+    seedInstanceSqlite({ connectorId, connectorInstanceId });
+    getDb()
+      .prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?")
+      .run(
+        JSON.stringify({ connector_id: connectorId, streams: [{ name: "messages", primary_key: ["id"] }] }),
+        connectorId
+      );
+    await rebuildConnectorSummaryEvidence();
+
+    getDb()
+      .prepare(
+        "UPDATE connector_summary_evidence SET terminal_facts_state = 'stale', terminal_facts_reason_code = 'terminal_facts_historical' WHERE connector_instance_id = ?"
+      )
+      .run(connectorInstanceId);
+    const historicalEvidence = await getConnectorSummaryEvidence(connectorInstanceId);
+    assert.ok(historicalEvidence);
+    const projection = {
+      runtime: null,
+      summary: { connection_id: connectorInstanceId, connector_id: connectorId, total_records: 0 },
+    };
+
+    assert.equal(
+      await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: historicalEvidence.canonical_evidence_revision,
+        computedAt: "2026-08-12T18:00:00.000Z",
+        connectorInstanceId,
+        projection,
+      }),
+      true
+    );
+    const afterHistoricalPublish = getDb()
+      .prepare(
+        "SELECT terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?"
+      )
+      .get<{ terminal_facts_state: string; terminal_facts_reason_code: string }>(connectorInstanceId);
+    assert.ok(afterHistoricalPublish);
+    assert.equal(afterHistoricalPublish.terminal_facts_state, "stale");
+    assert.equal(afterHistoricalPublish.terminal_facts_reason_code, "terminal_facts_historical");
+    assert.equal((await getConnectorListSummaryTerminalProjection(connectorInstanceId)).state, "current");
+
+    await rebuildConnectorSummaryEvidence();
+    const changedEvidence = await getConnectorSummaryEvidence(connectorInstanceId);
+    assert.ok(changedEvidence);
+    assert.notEqual(changedEvidence.canonical_evidence_revision, historicalEvidence.canonical_evidence_revision);
+    assert.equal(
+      await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: historicalEvidence.canonical_evidence_revision,
+        computedAt: "2026-08-12T18:00:30.000Z",
+        connectorInstanceId,
+        projection,
+      }),
+      false
+    );
+
+    await markConnectorSummaryEvidenceDirty({ connectorInstanceId, reason: "historical projection dirty" });
+    const dirtyEvidence = await getConnectorSummaryEvidence(connectorInstanceId);
+    assert.ok(dirtyEvidence);
+    assert.equal(
+      await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: dirtyEvidence.canonical_evidence_revision,
+        computedAt: "2026-08-12T18:01:00.000Z",
+        connectorInstanceId,
+        projection,
+      }),
+      false
+    );
+
+    getDb()
+      .prepare(
+        "UPDATE connector_summary_evidence SET dirty = 0, state = 'fresh', terminal_facts_state = 'failed', terminal_facts_reason_code = 'terminal_fold_failed' WHERE connector_instance_id = ?"
+      )
+      .run(connectorInstanceId);
+    const failedEvidence = await getConnectorSummaryEvidence(connectorInstanceId);
+    assert.ok(failedEvidence);
+    assert.equal(
+      await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: failedEvidence.canonical_evidence_revision,
+        computedAt: "2026-08-12T18:02:00.000Z",
+        connectorInstanceId,
+        projection,
+      }),
+      false
+    );
+  }));
+
 test("terminal LIST rejects a late canonical snapshot after rebuild or dirty", () =>
   withTempDb(async () => {
     const connectorId = "terminal_snapshot_fence";
@@ -975,6 +1064,35 @@ test("Postgres terminal LIST projection rejects late canonical snapshots", {
     await rebuildConnectorSummaryEvidence();
     const snapshotA = await getConnectorSummaryEvidence(connectorInstanceId);
     assert.ok(snapshotA, "A is one bounded canonical-evidence read");
+    await postgresQuery(
+      `UPDATE connector_summary_evidence
+          SET terminal_facts_state = 'stale', terminal_facts_reason_code = 'terminal_facts_historical'
+        WHERE connector_instance_id = $1`,
+      [connectorInstanceId]
+    );
+    const historical = await getConnectorSummaryEvidence(connectorInstanceId);
+    assert.ok(historical, "historical terminal evidence must remain readable");
+    assert.equal(
+      await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: historical.canonical_evidence_revision,
+        computedAt: "2026-08-12T18:00:00.000Z",
+        connectorInstanceId,
+        projection: {
+          runtime: null,
+          summary: { connection_id: connectorInstanceId, connector_id: connectorId, total_records: 0 },
+        },
+      }),
+      true,
+      "Postgres may publish an honest historical terminal-facts projection"
+    );
+    const historicalState = await postgresQuery<{ terminal_facts_state: string; terminal_facts_reason_code: string }>(
+      "SELECT terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.deepEqual(historicalState.rows[0], {
+      terminal_facts_reason_code: "terminal_facts_historical",
+      terminal_facts_state: "stale",
+    });
     assert.equal(
       await publishConnectorListSummaryTerminalProjection({
         canonicalEvidenceRevision: snapshotA.canonical_evidence_revision,

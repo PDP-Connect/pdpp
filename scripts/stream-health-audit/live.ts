@@ -258,7 +258,10 @@ async function fetchOwnerSourcesDom({
         revisions,
       };
     }
-    revisions.push(responseHeader(response, REVISION_HEADER));
+    const responseRevision = responseHeader(response, REVISION_HEADER);
+    if (responseRevision !== null) {
+      revisions.push(responseRevision);
+    }
     const html = await response.text();
     if (response.status < 200 || response.status >= 300) {
       return {
@@ -270,6 +273,9 @@ async function fetchOwnerSourcesDom({
       };
     }
     const pageEvidence = parseOwnerSourcesDom(html);
+    if (pageEvidence.revision !== null && pageEvidence.revision !== undefined) {
+      revisions.push(pageEvidence.revision);
+    }
     firstEvidence ??= pageEvidence;
     resolved = resolved && pageEvidence.resolved;
     authenticated = authenticated && pageEvidence.authenticated !== false;
