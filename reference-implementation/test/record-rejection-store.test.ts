@@ -30,6 +30,8 @@ import {
   insertOrReplayPostgresRecordRejectionWithClient,
   insertOrReplaySqliteRecordRejection,
   insertOrReplaySqliteRecordRejectionInTransaction,
+  markPostgresAcceptedRecordRejectionsStaleWithClient,
+  markSqliteAcceptedRecordRejectionsStale,
   RECORD_REJECTION_OWNER_QUOTA_ENV,
   RECORD_REJECTION_REPLAY_COUNT_MAX,
   RecordRejectionStoreError,
@@ -66,6 +68,14 @@ test("direct-prepare conformance fails for a record-rejection-store production c
     "export function forbiddenRecordRejectionStorePrepareCounterexample() {",
     '  return getDb().prepare("SELECT 1").get();',
     "}",
+    "export function forbiddenMultilinePrepareCounterexample(db) {",
+    "  return db",
+    '    .prepare("SELECT 1")',
+    "    .get();",
+    "}",
+    "export function allowedAdjacentNames(database, dbx) {",
+    '  return [database.prepare("SELECT 1"), dbx.prepare("SELECT 1")];',
+    "}",
     "",
   ].join("\n");
   const target = "reference-implementation/server/stores/record-rejection-store.ts";
@@ -74,6 +84,11 @@ test("direct-prepare conformance fails for a record-rejection-store production c
       line: 5,
       path: target,
       text: 'return getDb().prepare("SELECT 1").get();',
+    },
+    {
+      line: 8,
+      path: target,
+      text: "return db",
     },
   ]);
   assert.equal(existsSync(join(REPO_ROOT, target)), true);
@@ -348,6 +363,84 @@ test("SQLite record rejection store replays exact inputs and keeps payload metad
     assert.equal(data.payload_sha256, detail.payloadSha256);
     assert.equal(JSON.stringify(data).includes(input.rawLine), false);
   }
+});
+
+test("SQLite record rejection store tracks bounded run provenance and stale-after-acceptance facts", async () => {
+  initDb();
+  seedSqliteConnection({ runId: "run_first" });
+  getDb()
+    .prepare(
+      `INSERT INTO run_history(run_id, connector_instance_id, connector_id, source_json, status, started_at)
+       VALUES('run_latest', 'cin_test', 'test_connector', '{}', 'running', ?)`
+    )
+    .run(now());
+  const store = createRecordRejectionStore();
+  const rawLine = '{"key":"same","data":{"id":"same"}}';
+  const first = await store.insertOrReplay({
+    connectorId: "test_connector",
+    connectorInstanceId: "cin_test",
+    inputIndex: 0,
+    ownerSubjectId: "owner_a",
+    rawLine,
+    reasonCode: "invalid_record_identity",
+    runId: "run_first",
+    stream: "items",
+  });
+  await store.insertOrReplay({
+    connectorId: "test_connector",
+    connectorInstanceId: "cin_test",
+    inputIndex: 3,
+    ownerSubjectId: "owner_a",
+    rawLine,
+    reasonCode: "invalid_record_identity",
+    runId: "run_latest",
+    stream: "items",
+  });
+  let detail = await store.getDetail({
+    connectorInstanceId: "cin_test",
+    ownerSubjectId: "owner_a",
+    receiptId: first.receiptId,
+  });
+  assert.equal(detail?.status, "pending");
+  assert.equal(detail?.runId, "run_first");
+  assert.equal(detail?.firstRunId, "run_first");
+  assert.equal(detail?.latestRunId, "run_latest");
+  assert.equal(detail?.firstInputIndex, 0);
+  assert.equal(detail?.latestInputIndex, 3);
+
+  const changed = markSqliteAcceptedRecordRejectionsStale({
+    connectorId: "test_connector",
+    connectorInstanceId: "cin_test",
+    ownerSubjectId: "owner_a",
+    rawLine,
+    recordKey: "same",
+    runId: "run_accept",
+    stream: "items",
+  });
+  assert.equal(changed, 1);
+  detail = await store.getDetail({
+    connectorInstanceId: "cin_test",
+    ownerSubjectId: "owner_a",
+    receiptId: first.receiptId,
+  });
+  assert.equal(detail?.status, "stale_after_acceptance");
+  assert.equal(detail?.acceptedRunId, "run_accept");
+  assert.equal(detail?.acceptedRecordKey, "same");
+  assert.equal(typeof detail?.acceptedAt, "string");
+  assert.equal(
+    markSqliteAcceptedRecordRejectionsStale({
+      connectorId: "test_connector",
+      connectorInstanceId: "cin_test",
+      ownerSubjectId: "owner_a",
+      rawLine,
+      recordKey: "same",
+      runId: "run_accept_2",
+      stream: "items",
+    }),
+    0,
+    "a stale receipt is not repeatedly rewritten"
+  );
+  assertSqliteQuotaMatchesRows("owner_a");
 });
 
 test("SQLite record rejection receipt and audit fact roll back together", () => {
@@ -834,6 +927,99 @@ test("SQLite record rejection migration upgrades legacy DBs and retains rollback
   }
 });
 
+test("SQLite record rejection migration relaxes legacy pending-only status check", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-record-rejection-lifecycle-migration-"));
+  const dbPath = join(dir, "legacy.sqlite");
+  try {
+    const legacy = new Database(dbPath);
+    const createdAt = now();
+    legacy.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE connectors(connector_id TEXT PRIMARY KEY, manifest TEXT NOT NULL, created_at TEXT NOT NULL);
+      INSERT INTO connectors VALUES('test_connector', '{}', '${createdAt}');
+      CREATE TABLE connector_instances(
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        source_kind TEXT NOT NULL,
+        source_binding_key TEXT NOT NULL,
+        source_binding_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revoked_at TEXT,
+        manifest_generation INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO connector_instances VALUES('cin_test', 'owner_a', 'test_connector', 'Test', 'active', 'account', 'cin_test', '{}', '${createdAt}', '${createdAt}', NULL, 0);
+      CREATE TABLE record_rejection_quota(owner_subject_id TEXT PRIMARY KEY, pending_payload_bytes INTEGER NOT NULL DEFAULT 0, pending_receipt_count INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
+      INSERT INTO record_rejection_quota VALUES('owner_a', 0, 0, '${createdAt}');
+      CREATE TABLE record_rejections(
+        receipt_id TEXT PRIMARY KEY,
+        owner_subject_id TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        run_id TEXT,
+        first_input_index INTEGER NOT NULL CHECK (first_input_index >= 0),
+        latest_input_index INTEGER NOT NULL CHECK (latest_input_index >= 0),
+        reason_code TEXT NOT NULL,
+        payload BLOB NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
+        rejection_generation TEXT NOT NULL DEFAULT 'record-rejection-v2',
+        replay_key TEXT NOT NULL UNIQUE,
+        replay_count INTEGER NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status = 'pending'),
+        created_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL
+      );
+    `);
+    legacy.close();
+    initDb(dbPath);
+    const sql = getDb()
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'record_rejections'")
+      .get<{ sql: string }>()?.sql;
+    assert.ok(sql?.includes("stale_after_acceptance"));
+    getDb()
+      .prepare(
+        "INSERT INTO run_history(run_id, connector_instance_id, connector_id, source_json, status, started_at) VALUES('run_1', 'cin_test', 'test_connector', '{}', 'running', ?)"
+      )
+      .run(now());
+    const receipt = insertOrReplaySqliteRecordRejection({
+      connectorId: "test_connector",
+      connectorInstanceId: "cin_test",
+      inputIndex: 0,
+      ownerSubjectId: "owner_a",
+      rawLine: '{"key":"same","data":{"id":"same"}}',
+      reasonCode: "invalid_record_identity",
+      runId: "run_1",
+      stream: "items",
+    });
+    assert.equal(
+      markSqliteAcceptedRecordRejectionsStale({
+        connectorId: "test_connector",
+        connectorInstanceId: "cin_test",
+        ownerSubjectId: "owner_a",
+        rawLine: '{"key":"same","data":{"id":"same"}}',
+        recordKey: "same",
+        runId: "run_accept",
+        stream: "items",
+      }),
+      1
+    );
+    assert.equal(
+      getDb()
+        .prepare("SELECT status FROM record_rejections WHERE receipt_id = ?")
+        .get<{ status: string }>(receipt.receiptId)?.status,
+      "stale_after_acceptance"
+    );
+  } finally {
+    closeDb();
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("SQLite record rejection migration converts legacy text payloads, rekeys v2, is idempotent, and rolls back faults", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pdpp-record-rejections-v2-migration-"));
   const dbPath = join(dir, "legacy.sqlite");
@@ -1056,12 +1242,51 @@ test("Postgres record rejection store contract", {
       first.receiptId,
     ]);
     await store.insertOrReplay({ ...input, inputIndex: 20 });
-    await store.insertOrReplay({ ...input, inputIndex: 21 });
+    await store.insertOrReplay({ ...input, inputIndex: 21, runId: "run_1" });
     const saturated = await postgresQuery<{ replay_count: string }>(
       "SELECT replay_count FROM record_rejections WHERE receipt_id = $1",
       [first.receiptId]
     );
     assert.equal(Number(saturated.rows[0]?.replay_count), RECORD_REJECTION_REPLAY_COUNT_MAX);
+    const provenance = await store.getDetail({
+      connectorInstanceId: "cin_test",
+      ownerSubjectId: "owner_a",
+      receiptId: first.receiptId,
+    });
+    assert.equal(provenance?.status, "pending");
+    assert.equal(provenance?.firstRunId, "run_1");
+    assert.equal(provenance?.latestRunId, "run_1");
+    await withPostgresTransaction(
+      async (client) => {
+        const changed = await markPostgresAcceptedRecordRejectionsStaleWithClient(client, {
+          connectorId: "test_connector",
+          connectorInstanceId: "cin_test",
+          ownerSubjectId: "owner_a",
+          rawLine: input.rawLine,
+          recordKey: "accepted_pg",
+          runId: "run_pg_accept",
+          stream: "items",
+        });
+        assert.equal(changed, 2);
+      },
+      { lockConnectorInstanceId: "cin_test" }
+    );
+    const stale = await store.getDetail({
+      connectorInstanceId: "cin_test",
+      ownerSubjectId: "owner_a",
+      receiptId: first.receiptId,
+    });
+    assert.equal(stale?.status, "stale_after_acceptance");
+    assert.equal(stale?.acceptedRunId, "run_pg_accept");
+    assert.equal(stale?.acceptedRecordKey, "accepted_pg");
+    const staleChangedReason = await store.getDetail({
+      connectorInstanceId: "cin_test",
+      ownerSubjectId: "owner_a",
+      receiptId: changedReasonReplay.receiptId,
+    });
+    assert.equal(staleChangedReason?.status, "stale_after_acceptance");
+    assert.equal(staleChangedReason?.acceptedRunId, "run_pg_accept");
+    assert.equal(staleChangedReason?.acceptedRecordKey, "accepted_pg");
     const boundary = await store.insertOrReplay({
       ...input,
       inputIndex: 3,

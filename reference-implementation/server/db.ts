@@ -559,6 +559,8 @@ CREATE TABLE IF NOT EXISTS record_rejections (
   run_id                TEXT,
   first_input_index     INTEGER NOT NULL CHECK (first_input_index >= 0),
   latest_input_index    INTEGER NOT NULL CHECK (latest_input_index >= 0),
+  first_run_id          TEXT,
+  latest_run_id         TEXT,
   reason_code           TEXT NOT NULL,
   payload               BLOB NOT NULL,
   payload_sha256        TEXT NOT NULL,
@@ -566,7 +568,10 @@ CREATE TABLE IF NOT EXISTS record_rejections (
   rejection_generation  TEXT NOT NULL DEFAULT '${RECORD_REJECTION_GENERATION}',
   replay_key            TEXT NOT NULL UNIQUE,
   replay_count          INTEGER NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
-  status                TEXT NOT NULL DEFAULT 'pending' CHECK (status = 'pending'),
+  status                TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'stale_after_acceptance')),
+  accepted_run_id       TEXT,
+  accepted_record_key   TEXT,
+  accepted_at           TEXT,
   created_at            TEXT NOT NULL,
   last_seen_at          TEXT NOT NULL,
   FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
@@ -2137,6 +2142,17 @@ function migrateRecordRejectionBytePayload(raw: SqliteDatabase): void {
     const hasPayloadText = columns.some((column) => column.name === "payload_text");
     const hasPayload = columns.some((column) => column.name === "payload");
     const hasGeneration = columns.some((column) => column.name === "rejection_generation");
+    addColumnIfMissing(raw, "record_rejections", "first_run_id", "TEXT");
+    addColumnIfMissing(raw, "record_rejections", "latest_run_id", "TEXT");
+    addColumnIfMissing(raw, "record_rejections", "accepted_run_id", "TEXT");
+    addColumnIfMissing(raw, "record_rejections", "accepted_record_key", "TEXT");
+    addColumnIfMissing(raw, "record_rejections", "accepted_at", "TEXT");
+    raw.exec(`
+      UPDATE record_rejections
+         SET first_run_id = COALESCE(first_run_id, run_id),
+             latest_run_id = COALESCE(latest_run_id, run_id)
+       WHERE first_run_id IS NULL OR latest_run_id IS NULL
+    `);
     if (!hasGeneration) {
       addColumnIfMissing(
         raw,
@@ -2164,6 +2180,8 @@ function migrateRecordRejectionBytePayload(raw: SqliteDatabase): void {
       run_id                TEXT,
       first_input_index     INTEGER NOT NULL CHECK (first_input_index >= 0),
       latest_input_index    INTEGER NOT NULL CHECK (latest_input_index >= 0),
+      first_run_id          TEXT,
+      latest_run_id         TEXT,
       reason_code           TEXT NOT NULL,
       payload               BLOB NOT NULL,
       payload_sha256        TEXT NOT NULL,
@@ -2171,7 +2189,10 @@ function migrateRecordRejectionBytePayload(raw: SqliteDatabase): void {
       rejection_generation  TEXT NOT NULL DEFAULT 'record-rejection-v1',
       replay_key            TEXT NOT NULL UNIQUE,
       replay_count          INTEGER NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
-      status                TEXT NOT NULL DEFAULT 'pending' CHECK (status = 'pending'),
+      status                TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'stale_after_acceptance')),
+      accepted_run_id       TEXT,
+      accepted_record_key   TEXT,
+      accepted_at           TEXT,
       created_at            TEXT NOT NULL,
       last_seen_at          TEXT NOT NULL,
       FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
@@ -2184,18 +2205,73 @@ function migrateRecordRejectionBytePayload(raw: SqliteDatabase): void {
       raw.exec(`
     INSERT INTO record_rejections(
       receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
-      first_input_index, latest_input_index, reason_code, payload, payload_sha256,
-      payload_bytes, rejection_generation, replay_key, replay_count, status, created_at, last_seen_at
+      first_input_index, latest_input_index, first_run_id, latest_run_id, reason_code, payload, payload_sha256,
+      payload_bytes, rejection_generation, replay_key, replay_count, status, accepted_run_id, accepted_record_key,
+      accepted_at, created_at, last_seen_at
     )
     SELECT receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
-           first_input_index, latest_input_index, reason_code, ${payloadExpression}, payload_sha256,
-           payload_bytes, 'record-rejection-v1', replay_key, replay_count, status, created_at, last_seen_at
+           first_input_index, latest_input_index, run_id, run_id, reason_code, ${payloadExpression}, payload_sha256,
+           payload_bytes, 'record-rejection-v1', replay_key, replay_count, status, NULL, NULL,
+           NULL, created_at, last_seen_at
       FROM record_rejections_text_payload;
     DROP TABLE record_rejections_text_payload;
     CREATE INDEX IF NOT EXISTS idx_record_rejections_connection_page
       ON record_rejections(owner_subject_id, connector_instance_id, created_at, receipt_id);
     CREATE INDEX IF NOT EXISTS idx_record_rejections_connection_receipt
       ON record_rejections(owner_subject_id, connector_instance_id, receipt_id);
+      `);
+    }
+    const recordRejectionsSql =
+      raw
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'record_rejections'")
+        .get<{ sql?: string }>()?.sql ?? "";
+    if (recordRejectionsSql.includes("CHECK (status = 'pending')")) {
+      raw.exec("DROP TABLE IF EXISTS record_rejections_lifecycle_migration");
+      raw.exec(`
+        ALTER TABLE record_rejections RENAME TO record_rejections_lifecycle_migration;
+        CREATE TABLE record_rejections (
+          receipt_id            TEXT PRIMARY KEY,
+          owner_subject_id      TEXT NOT NULL,
+          connector_instance_id TEXT NOT NULL,
+          connector_id          TEXT NOT NULL,
+          stream                TEXT NOT NULL,
+          run_id                TEXT,
+          first_input_index     INTEGER NOT NULL CHECK (first_input_index >= 0),
+          latest_input_index    INTEGER NOT NULL CHECK (latest_input_index >= 0),
+          first_run_id          TEXT,
+          latest_run_id         TEXT,
+          reason_code           TEXT NOT NULL,
+          payload               BLOB NOT NULL,
+          payload_sha256        TEXT NOT NULL,
+          payload_bytes         INTEGER NOT NULL CHECK (payload_bytes >= 0),
+          rejection_generation  TEXT NOT NULL DEFAULT 'record-rejection-v1',
+          replay_key            TEXT NOT NULL UNIQUE,
+          replay_count          INTEGER NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
+          status                TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'stale_after_acceptance')),
+          accepted_run_id       TEXT,
+          accepted_record_key   TEXT,
+          accepted_at           TEXT,
+          created_at            TEXT NOT NULL,
+          last_seen_at          TEXT NOT NULL,
+          FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+          FOREIGN KEY(owner_subject_id) REFERENCES record_rejection_quota(owner_subject_id) ON DELETE RESTRICT
+        );
+        INSERT INTO record_rejections(
+          receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
+          first_input_index, latest_input_index, first_run_id, latest_run_id, reason_code, payload, payload_sha256,
+          payload_bytes, rejection_generation, replay_key, replay_count, status, accepted_run_id, accepted_record_key,
+          accepted_at, created_at, last_seen_at
+        )
+        SELECT receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
+               first_input_index, latest_input_index, first_run_id, latest_run_id, reason_code, payload, payload_sha256,
+               payload_bytes, rejection_generation, replay_key, replay_count, status, accepted_run_id, accepted_record_key,
+               accepted_at, created_at, last_seen_at
+          FROM record_rejections_lifecycle_migration;
+        DROP TABLE record_rejections_lifecycle_migration;
+        CREATE INDEX IF NOT EXISTS idx_record_rejections_connection_page
+          ON record_rejections(owner_subject_id, connector_instance_id, created_at, receipt_id);
+        CREATE INDEX IF NOT EXISTS idx_record_rejections_connection_receipt
+          ON record_rejections(owner_subject_id, connector_instance_id, receipt_id);
       `);
     }
     raw.exec(`

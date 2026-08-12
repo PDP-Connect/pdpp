@@ -26,10 +26,7 @@ import {
   connectorInstanceLockWaitMs,
 } from "./connector-instance-write-coordinator.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
-import {
-  RECORD_REJECTION_GENERATION,
-  recordRejectionReplayKey,
-} from "./record-rejection-replay-key.ts";
+import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "./record-rejection-replay-key.ts";
 import { bumpStorageGeneration } from "./storage-generation.ts";
 
 const VALID_BACKENDS = new Set(["sqlite", "postgres"]);
@@ -477,6 +474,18 @@ async function migratePostgresRecordRejectionBytePayload(client: PoolClient): Pr
     await client.query(
       "ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS rejection_generation TEXT NOT NULL DEFAULT 'record-rejection-v1'"
     );
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS first_run_id TEXT");
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS latest_run_id TEXT");
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS accepted_run_id TEXT");
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS accepted_record_key TEXT");
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS accepted_at TEXT");
+    await client.query(
+      "UPDATE record_rejections SET first_run_id = COALESCE(first_run_id, run_id), latest_run_id = COALESCE(latest_run_id, run_id)"
+    );
+    await client.query("ALTER TABLE record_rejections DROP CONSTRAINT IF EXISTS record_rejections_status_check");
+    await client.query(
+      "ALTER TABLE record_rejections ADD CONSTRAINT record_rejections_status_check CHECK (status IN ('pending', 'stale_after_acceptance'))"
+    );
     const legacyTextColumn = await client.query(
       `SELECT 1 FROM information_schema.columns
       WHERE table_schema = current_schema()
@@ -485,7 +494,9 @@ async function migratePostgresRecordRejectionBytePayload(client: PoolClient): Pr
       LIMIT 1`
     );
     if ((legacyTextColumn.rowCount ?? 0) > 0) {
-      await client.query("UPDATE record_rejections SET payload = convert_to(payload_text, 'UTF8') WHERE payload IS NULL");
+      await client.query(
+        "UPDATE record_rejections SET payload = convert_to(payload_text, 'UTF8') WHERE payload IS NULL"
+      );
     }
     await client.query(`
     UPDATE record_rejection_quota
@@ -517,22 +528,26 @@ async function migratePostgresRecordRejectionBytePayload(client: PoolClient): Pr
       stream: string;
     }>(
       `SELECT receipt_id, owner_subject_id, connector_instance_id, stream, payload, reason_code
-         FROM record_rejections`
-      + " WHERE rejection_generation <> $1",
+         FROM record_rejections
+        WHERE rejection_generation <> $1`,
       [RECORD_REJECTION_GENERATION]
     );
     for (const row of rows.rows) {
-      await client.query("UPDATE record_rejections SET replay_key = $1, rejection_generation = $2 WHERE receipt_id = $3", [
-        recordRejectionReplayKey({
-          connectorInstanceId: row.connector_instance_id,
-          ownerSubjectId: row.owner_subject_id,
-          payload: row.payload,
-          reasonCode: row.reason_code,
-          stream: row.stream,
-        }),
-        RECORD_REJECTION_GENERATION,
-        row.receipt_id,
-      ]);
+      // biome-ignore lint/performance/noAwaitInLoops: Migration updates stay ordered inside the explicit transaction.
+      await client.query(
+        "UPDATE record_rejections SET replay_key = $1, rejection_generation = $2 WHERE receipt_id = $3",
+        [
+          recordRejectionReplayKey({
+            connectorInstanceId: row.connector_instance_id,
+            ownerSubjectId: row.owner_subject_id,
+            payload: row.payload,
+            reasonCode: row.reason_code,
+            stream: row.stream,
+          }),
+          RECORD_REJECTION_GENERATION,
+          row.receipt_id,
+        ]
+      );
     }
     await client.query("COMMIT");
   } catch (error) {
@@ -914,6 +929,8 @@ export async function bootstrapPostgresSchema({
         run_id TEXT,
         first_input_index BIGINT NOT NULL CHECK (first_input_index >= 0),
         latest_input_index BIGINT NOT NULL CHECK (latest_input_index >= 0),
+        first_run_id TEXT,
+        latest_run_id TEXT,
         reason_code TEXT NOT NULL,
         payload BYTEA NOT NULL,
         payload_sha256 TEXT NOT NULL,
@@ -921,7 +938,10 @@ export async function bootstrapPostgresSchema({
         rejection_generation TEXT NOT NULL DEFAULT '${RECORD_REJECTION_GENERATION}',
         replay_key TEXT NOT NULL UNIQUE,
         replay_count BIGINT NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
-        status TEXT NOT NULL DEFAULT 'pending' CHECK (status = 'pending'),
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'stale_after_acceptance')),
+        accepted_run_id TEXT,
+        accepted_record_key TEXT,
+        accepted_at TEXT,
         created_at TEXT NOT NULL,
         last_seen_at TEXT NOT NULL
       );

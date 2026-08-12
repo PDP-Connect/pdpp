@@ -512,6 +512,7 @@ import {
   deleteSqliteRecordRejectionsForConnectionWithinTransaction,
   type InsertOrReplayRecordRejectionInput,
   insertOrReplayHostedRecordRejection,
+  markAcceptedRecordRejectionsStale,
   type RecordRejectionReceipt,
 } from "./stores/record-rejection-store.ts";
 import {
@@ -6237,6 +6238,18 @@ function buildRsApp(opts: ServerOpts = {}) {
     // after a first-ingest activation so the dashboard/Sources/Syncs summary
     // feed reflects draft -> active immediately.
     invalidateConnectorSummariesCache,
+    markAcceptedRecordRejectionsStale: async (input: {
+      auditActorId: string;
+      auditActorType: string;
+      auditTraceId: string | null;
+      connectorId: string;
+      connectorInstanceId: string;
+      ownerSubjectId: string;
+      rawLine: Buffer;
+      recordKey?: string | null;
+      runId?: string | null;
+      stream: string;
+    }) => await withConnectorInstanceWrite(input.connectorInstanceId, () => markAcceptedRecordRejectionsStale(input)),
     markAcquisitionBatchCommitted: (connectorInstanceId: string, counts: unknown) =>
       // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       (

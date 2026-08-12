@@ -50,6 +50,19 @@ export interface InsertOrReplayRecordRejectionInput {
   readonly stream: string;
 }
 
+export interface MarkAcceptedRecordRejectionsStaleInput {
+  readonly auditActorId?: string;
+  readonly auditActorType?: string;
+  readonly auditTraceId?: string | null;
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly ownerSubjectId: string;
+  readonly rawLine: Buffer | string;
+  readonly recordKey?: string | null;
+  readonly runId?: string | null;
+  readonly stream: string;
+}
+
 export interface RecordRejectionReceipt {
   readonly code: string;
   readonly inputIndex: number;
@@ -62,12 +75,17 @@ export interface HostedRecordRejectionCoordinatorHooks {
 }
 
 export interface RecordRejectionMetadata {
+  readonly acceptedAt: string | null;
+  readonly acceptedRecordKey: string | null;
+  readonly acceptedRunId: string | null;
   readonly connectorId: string;
   readonly connectorInstanceId: string;
   readonly createdAt: string;
   readonly firstInputIndex: number;
+  readonly firstRunId: string | null;
   readonly lastSeenAt: string;
   readonly latestInputIndex: number;
+  readonly latestRunId: string | null;
   readonly ownerSubjectId: string;
   readonly payloadBytes: number;
   readonly payloadSha256: string;
@@ -76,7 +94,7 @@ export interface RecordRejectionMetadata {
   readonly receiptId: string;
   readonly replayCount: number;
   readonly runId: string | null;
-  readonly status: "pending";
+  readonly status: "pending" | "stale_after_acceptance";
   readonly stream: string;
 }
 
@@ -92,13 +110,18 @@ export interface RecordRejectionPage {
 }
 
 interface RecordRejectionRow extends QueryResultRow {
+  accepted_at?: string | null;
+  accepted_record_key?: string | null;
+  accepted_run_id?: string | null;
   connection_receipt_count?: number | string;
   connector_id: string;
   connector_instance_id: string;
   created_at: string;
   first_input_index: number | string;
+  first_run_id?: string | null;
   last_seen_at: string;
   latest_input_index: number | string;
+  latest_run_id?: string | null;
   owner_subject_id: string;
   payload?: Buffer;
   payload_bytes: number | string;
@@ -345,12 +368,17 @@ function mapMetadata(
   policy: RecordRejectionQuotaPolicy = defaultQuotaPolicy()
 ): RecordRejectionMetadata {
   return {
+    acceptedAt: row.accepted_at ?? null,
+    acceptedRecordKey: row.accepted_record_key ?? null,
+    acceptedRunId: row.accepted_run_id ?? null,
     connectorId: row.connector_id,
     connectorInstanceId: row.connector_instance_id,
     createdAt: row.created_at,
     firstInputIndex: Number(row.first_input_index),
+    firstRunId: row.first_run_id ?? row.run_id,
     lastSeenAt: row.last_seen_at,
     latestInputIndex: Number(row.latest_input_index),
+    latestRunId: row.latest_run_id ?? row.run_id,
     ownerSubjectId: row.owner_subject_id,
     payloadBytes: Number(row.payload_bytes),
     payloadSha256: row.payload_sha256,
@@ -359,7 +387,7 @@ function mapMetadata(
     receiptId: row.receipt_id,
     replayCount: Number(row.replay_count),
     runId: row.run_id,
-    status: "pending",
+    status: row.status === "stale_after_acceptance" ? "stale_after_acceptance" : "pending",
     stream: row.stream,
   };
 }
@@ -498,12 +526,14 @@ function replaySqliteRecordRejection(
   db: SqliteRecordRejectionTransactionHandle,
   receiptId: string,
   reasonCode: string,
-  inputIndex: number
+  inputIndex: number,
+  runId?: string | null
 ): RecordRejectionReceipt {
   const lastSeenAt = nowIso();
   execOn(db, referenceQueries.recordRejectionsUpdateReplay, [
     RECORD_REJECTION_REPLAY_COUNT_MAX,
     inputIndex,
+    runId ?? null,
     lastSeenAt,
     receiptId,
   ]);
@@ -563,7 +593,7 @@ export function insertOrReplaySqliteRecordRejectionInTransaction(
     receipt_id: string;
   }>(db, referenceQueries.recordRejectionsGetByReplayKey, [prepared.key]);
   if (existing) {
-    return replaySqliteRecordRejection(db, existing.receipt_id, existing.reason_code, input.inputIndex);
+    return replaySqliteRecordRejection(db, existing.receipt_id, existing.reason_code, input.inputIndex, input.runId);
   }
   admitSqliteRecordRejectionQuota(db, input, prepared);
   const receiptId = newReceiptId();
@@ -577,6 +607,8 @@ export function insertOrReplaySqliteRecordRejectionInTransaction(
     input.runId ?? null,
     input.inputIndex,
     input.inputIndex,
+    input.runId ?? null,
+    input.runId ?? null,
     input.reasonCode,
     prepared.rawLine,
     prepared.digest,
@@ -696,6 +728,32 @@ export function deleteSqliteRecordRejectionsForConnection(args: {
   return writeTransaction(() => deleteSqliteRecordRejectionsForConnectionWithinTransaction(args));
 }
 
+export function markSqliteAcceptedRecordRejectionsStaleInTransaction(
+  db: SqliteRecordRejectionTransactionHandle,
+  input: MarkAcceptedRecordRejectionsStaleInput
+): number {
+  assertRequiredInputStrings({ ...input, inputIndex: 0, rawLine: input.rawLine, reasonCode: "accepted_record" });
+  if (!hasNonEmptyRawLine(input.rawLine)) {
+    throw new RecordRejectionStoreError("invalid_rejection_input", "rawLine is required.", { retryable: false });
+  }
+  const acceptedAt = nowIso();
+  return execOn(db, referenceQueries.recordRejectionsMarkAcceptedStale, [
+    input.runId ?? null,
+    input.recordKey ?? null,
+    acceptedAt,
+    acceptedAt,
+    input.ownerSubjectId,
+    input.connectorInstanceId,
+    input.connectorId,
+    input.stream,
+    sha256Hex(Buffer.isBuffer(input.rawLine) ? input.rawLine : Buffer.from(input.rawLine, "utf8")),
+  ]).changes;
+}
+
+export function markSqliteAcceptedRecordRejectionsStale(input: MarkAcceptedRecordRejectionsStaleInput): number {
+  return writeTransaction(() => markSqliteAcceptedRecordRejectionsStaleInTransaction(getDb(), input));
+}
+
 async function assertPostgresWritable(
   client: PoolClient,
   ownerSubjectId: string,
@@ -729,16 +787,18 @@ async function replayPostgresRecordRejection(
   client: PoolClient,
   receiptId: string,
   reasonCode: string,
-  inputIndex: number
+  inputIndex: number,
+  runId?: string | null
 ): Promise<RecordRejectionReceipt> {
   const lastSeenAt = nowIso();
   await client.query(
     `UPDATE record_rejections
       SET replay_count = LEAST(replay_count + 1, $1),
           latest_input_index = $2,
-          last_seen_at = $3
-    WHERE receipt_id = $4`,
-    [RECORD_REJECTION_REPLAY_COUNT_MAX, inputIndex, lastSeenAt, receiptId]
+          latest_run_id = $3,
+          last_seen_at = $4
+    WHERE receipt_id = $5`,
+    [RECORD_REJECTION_REPLAY_COUNT_MAX, inputIndex, runId ?? null, lastSeenAt, receiptId]
   );
   return { code: reasonCode, inputIndex, receiptId, replayed: true };
 }
@@ -807,7 +867,8 @@ export async function insertOrReplayPostgresRecordRejectionWithClient(
       client,
       existingRow.receipt_id,
       existingRow.reason_code,
-      input.inputIndex
+      input.inputIndex,
+      input.runId
     );
   }
   await admitPostgresRecordRejectionQuota(client, input, prepared);
@@ -816,9 +877,9 @@ export async function insertOrReplayPostgresRecordRejectionWithClient(
   await client.query(
     `INSERT INTO record_rejections(
     receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
-    first_input_index, latest_input_index, reason_code, payload, payload_sha256,
+    first_input_index, latest_input_index, first_run_id, latest_run_id, reason_code, payload, payload_sha256,
     payload_bytes, rejection_generation, replay_key, replay_count, status, created_at, last_seen_at
-  ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 0, 'pending', $15, $16)`,
+  ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 0, 'pending', $17, $18)`,
     [
       receiptId,
       input.ownerSubjectId,
@@ -828,6 +889,8 @@ export async function insertOrReplayPostgresRecordRejectionWithClient(
       input.runId ?? null,
       input.inputIndex,
       input.inputIndex,
+      input.runId ?? null,
+      input.runId ?? null,
       input.reasonCode,
       prepared.rawLine,
       prepared.digest,
@@ -884,6 +947,57 @@ export function insertOrReplayHostedRecordRejection(
     return insertOrReplayHostedPostgresRecordRejection(input, hooks);
   }
   return Promise.resolve(insertOrReplayHostedSqliteRecordRejection(input, hooks));
+}
+
+export async function markPostgresAcceptedRecordRejectionsStaleWithClient(
+  client: PoolClient,
+  input: MarkAcceptedRecordRejectionsStaleInput
+): Promise<number> {
+  assertRequiredInputStrings({ ...input, inputIndex: 0, rawLine: input.rawLine, reasonCode: "accepted_record" });
+  if (!hasNonEmptyRawLine(input.rawLine)) {
+    throw new RecordRejectionStoreError("invalid_rejection_input", "rawLine is required.", { retryable: false });
+  }
+  const acceptedAt = nowIso();
+  const result = await client.query(
+    `UPDATE record_rejections
+        SET status = 'stale_after_acceptance',
+            accepted_run_id = $1,
+            accepted_record_key = $2,
+            accepted_at = $3,
+            last_seen_at = $3
+      WHERE owner_subject_id = $4
+        AND connector_instance_id = $5
+        AND connector_id = $6
+        AND stream = $7
+        AND payload_sha256 = $8
+        AND status = 'pending'`,
+    [
+      input.runId ?? null,
+      input.recordKey ?? null,
+      acceptedAt,
+      input.ownerSubjectId,
+      input.connectorInstanceId,
+      input.connectorId,
+      input.stream,
+      sha256Hex(Buffer.isBuffer(input.rawLine) ? input.rawLine : Buffer.from(input.rawLine, "utf8")),
+    ]
+  );
+  return result.rowCount ?? 0;
+}
+
+export function markPostgresAcceptedRecordRejectionsStale(
+  input: MarkAcceptedRecordRejectionsStaleInput
+): Promise<number> {
+  return withPostgresTransaction((client) => markPostgresAcceptedRecordRejectionsStaleWithClient(client, input), {
+    lockConnectorInstanceId: input.connectorInstanceId,
+  });
+}
+
+export function markAcceptedRecordRejectionsStale(input: MarkAcceptedRecordRejectionsStaleInput): Promise<number> {
+  if (isPostgresStorageBackend()) {
+    return markPostgresAcceptedRecordRejectionsStale(input);
+  }
+  return Promise.resolve(markSqliteAcceptedRecordRejectionsStale(input));
 }
 
 export async function getPostgresRecordRejectionDetail(args: {
@@ -1010,6 +1124,7 @@ export function createRecordRejectionStore() {
       getDetail: getPostgresRecordRejectionDetail,
       insertOrReplay: insertOrReplayPostgresRecordRejection,
       list: listPostgresRecordRejections,
+      markAcceptedStale: markPostgresAcceptedRecordRejectionsStale,
     };
   }
   return {
@@ -1019,5 +1134,7 @@ export function createRecordRejectionStore() {
       Promise.resolve(getSqliteRecordRejectionDetail(args)),
     insertOrReplay: async (input: InsertOrReplayRecordRejectionInput) => insertOrReplaySqliteRecordRejection(input),
     list: (args: Parameters<typeof listSqliteRecordRejections>[0]) => Promise.resolve(listSqliteRecordRejections(args)),
+    markAcceptedStale: (input: MarkAcceptedRecordRejectionsStaleInput) =>
+      Promise.resolve(markSqliteAcceptedRecordRejectionsStale(input)),
   };
 }

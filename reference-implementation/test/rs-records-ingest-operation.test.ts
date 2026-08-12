@@ -860,3 +860,42 @@ test("rs.records.ingest does not halt on a failing line; subsequent lines still 
   );
   assert.equal(lateCalled, true, "second line must still be attempted before the operation throws for the first");
 });
+
+test("rs.records.ingest hosted mode marks accepted replay bytes stale with bounded provenance", async () => {
+  const acceptedMarks: unknown[] = [];
+  const out = await executeRecordsIngest(
+    defaultInput({
+      body: '{"key":"ok","data":{"id":"ok"}}\n{"key":"bad","data":{"id":"nope"}}',
+      connectorInstanceId: "cin_gmail_work",
+      hostedRejectionReceipts: true,
+      runId: "run_acceptance_probe",
+    }),
+    defaultDeps({
+      ingestRecord: (_cid, _cin, record) => {
+        if (record.key === "bad") {
+          throw permanentThrow("invalid record identity");
+        }
+      },
+      insertOrReplayRejection: receiptFor,
+      markAcceptedRecordRejectionsStale: (input) => {
+        acceptedMarks.push({
+          ...input,
+          rawLine: input.rawLine.toString("utf8"),
+        });
+      },
+    })
+  );
+
+  assert.equal(out.envelope.records_accepted, 1);
+  assert.equal(out.envelope.records_rejected, 1);
+  assert.deepEqual(acceptedMarks, [
+    {
+      connectorId: "gmail",
+      connectorInstanceId: "cin_gmail_work",
+      rawLine: '{"key":"ok","data":{"id":"ok"}}',
+      recordKey: "ok",
+      runId: "run_acceptance_probe",
+      stream: "messages",
+    },
+  ]);
+});

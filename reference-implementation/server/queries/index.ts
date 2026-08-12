@@ -321,15 +321,16 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly providerAppConfigListConfiguredKeysByIdentityGroup: SmallEnumerationQuery;
   readonly providerAppConfigUpsert: MutationQuery;
   readonly recordRejectionsAdmitQuota: MutationQuery;
+  readonly recordRejectionsCountForConnection: ReadOneQuery;
   readonly recordRejectionsDeleteForConnection: MutationQuery;
   readonly recordRejectionsEnsureQuotaOwner: MutationQuery;
   readonly recordRejectionsGetByReplayKey: ReadOneQuery;
   readonly recordRejectionsGetConnectionStatus: ReadOneQuery;
-  readonly recordRejectionsCountForConnection: ReadOneQuery;
   readonly recordRejectionsGetDetail: ReadOneQuery;
   readonly recordRejectionsInsert: MutationQuery;
   readonly recordRejectionsListAfterCursor: ReadManyQuery;
   readonly recordRejectionsListFirstPage: ReadManyQuery;
+  readonly recordRejectionsMarkAcceptedStale: MutationQuery;
   readonly recordRejectionsReleaseQuota: MutationQuery;
   readonly recordRejectionsSumPayloadBytesForConnection: ReadOneQuery;
   readonly recordRejectionsUpdateReplay: MutationQuery;

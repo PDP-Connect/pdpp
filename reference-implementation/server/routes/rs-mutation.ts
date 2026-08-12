@@ -476,6 +476,18 @@ export interface MountRsMutationContext {
   // above is the same kind of mutation (draft -> active) and must invalidate
   // too — see `maybeActivateDraftAfterIngest`.
   readonly invalidateConnectorSummariesCache?: () => void;
+  readonly markAcceptedRecordRejectionsStale?: (input: {
+    auditActorId: string;
+    auditActorType: string;
+    auditTraceId: string | null;
+    connectorId: string;
+    connectorInstanceId: string;
+    ownerSubjectId: string;
+    rawLine: Buffer;
+    recordKey?: string | null;
+    runId?: string | null;
+    stream: string;
+  }) => Promise<unknown> | unknown;
   readonly markAcquisitionBatchCommitted?: (
     connectorInstanceId: string,
     counts: { acceptedCount?: number; failedCount?: number; updatedAt?: string }
@@ -1261,6 +1273,24 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
           const namespace =
             storageNamespace ?? (await resolveAdmittedNamespace(input.connectorId, input.connectorInstanceId ?? null));
           return insertHostedRejectionReceipt(ctx, req, input, namespace, runId, mutationContext.traceId);
+        },
+        markAcceptedRecordRejectionsStale: async (input) => {
+          const ownerSubjectId = ctx.getOwnerTokenSubjectId?.(req) ?? req.tokenInfo?.subject_id;
+          if (!(ctx.markAcceptedRecordRejectionsStale && ownerSubjectId)) {
+            return;
+          }
+          await ctx.markAcceptedRecordRejectionsStale({
+            auditActorId: ownerSubjectId,
+            auditActorType: "subject",
+            auditTraceId: mutationContext.traceId,
+            connectorId: input.connectorId,
+            connectorInstanceId: input.connectorInstanceId,
+            ownerSubjectId,
+            rawLine: input.rawLine,
+            recordKey: input.recordKey ?? null,
+            runId: input.runId ?? runId,
+            stream: input.stream,
+          });
         },
         resolveAdmittedConnectorInstance: async (cid: string, requestedConnectorInstanceId: string | null) => {
           const namespace = await resolveAdmittedNamespace(cid, requestedConnectorInstanceId);

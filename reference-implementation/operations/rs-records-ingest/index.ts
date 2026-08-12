@@ -85,6 +85,15 @@ export interface InsertOrReplayRejectionInput {
   readonly stream: string;
 }
 
+export interface MarkAcceptedRecordRejectionStaleInput {
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly rawLine: Buffer;
+  readonly recordKey?: string | null;
+  readonly runId?: string | null;
+  readonly stream: string;
+}
+
 export interface RejectionReceipt {
   readonly code: string;
   readonly input_index: number;
@@ -120,6 +129,7 @@ export interface RecordsIngestDependencies {
     records: readonly Record<string, unknown>[]
   ) => readonly (IngestLineFailure | null)[] | Promise<readonly (IngestLineFailure | null)[]>;
   insertOrReplayRejection?: (input: InsertOrReplayRejectionInput) => RejectionReceipt | Promise<RejectionReceipt>;
+  markAcceptedRecordRejectionsStale?: (input: MarkAcceptedRecordRejectionStaleInput) => unknown | Promise<unknown>;
   resolveAdmittedConnectorInstance?: (
     connectorId: string,
     requestedConnectorInstanceId: string | null
@@ -322,16 +332,80 @@ async function ingestParsedRecords(
   connectorId: string,
   connectorInstanceId: string | null,
   parsedInputs: readonly ParsedRecordInput[],
-  dependencies: RecordsIngestDependencies
+  dependencies: RecordsIngestDependencies,
+  streamName: string,
+  runId?: string | null
 ): Promise<readonly (IngestLineFailure | null)[]> {
   if (parsedInputs.length === 0) {
     return [];
   }
   const parsedRecords = parsedInputs.map((input) => input.parsedRecord);
   if (dependencies.ingestRecords) {
-    return await ingestWithBatchCapability(connectorId, connectorInstanceId, parsedRecords, dependencies.ingestRecords);
+    const results = await ingestWithBatchCapability(
+      connectorId,
+      connectorInstanceId,
+      parsedRecords,
+      dependencies.ingestRecords
+    );
+    await markAcceptedRecordRejectionsStale(
+      connectorId,
+      connectorInstanceId,
+      streamName,
+      parsedInputs,
+      results,
+      dependencies,
+      runId
+    );
+    return results;
   }
-  return await ingestSequentially(connectorId, connectorInstanceId, parsedRecords, dependencies.ingestRecord);
+  const results = await ingestSequentially(connectorId, connectorInstanceId, parsedRecords, dependencies.ingestRecord);
+  await markAcceptedRecordRejectionsStale(
+    connectorId,
+    connectorInstanceId,
+    streamName,
+    parsedInputs,
+    results,
+    dependencies,
+    runId
+  );
+  return results;
+}
+
+function recordKeyFromParsedRecord(record: Record<string, unknown>): string | null {
+  const value = record.key ?? record.record_key;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+async function markAcceptedRecordRejectionsStale(
+  connectorId: string,
+  connectorInstanceId: string | null,
+  streamName: string,
+  parsedInputs: readonly ParsedRecordInput[],
+  results: readonly (IngestLineFailure | null)[],
+  dependencies: RecordsIngestDependencies,
+  runId?: string | null
+): Promise<void> {
+  if (!(connectorInstanceId && dependencies.markAcceptedRecordRejectionsStale)) {
+    return;
+  }
+  for (const [recordIndex, result] of results.entries()) {
+    if (result !== null) {
+      continue;
+    }
+    const input = parsedInputs[recordIndex];
+    if (!input) {
+      continue;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: Accepted-line stale markers must preserve ingest order with host-side effects.
+    await dependencies.markAcceptedRecordRejectionsStale({
+      connectorId,
+      connectorInstanceId,
+      rawLine: input.rawLine,
+      recordKey: recordKeyFromParsedRecord(input.parsedRecord),
+      runId: runId ?? null,
+      stream: streamName,
+    });
+  }
 }
 
 async function ingestWithBatchCapability(
@@ -582,7 +656,14 @@ export async function executeRecordsIngest(
     : (input.connectorInstanceId ?? null);
 
   const parsed = parseRecordLines(lines, input.streamName);
-  const ingestErrors = await ingestParsedRecords(connectorId, connectorInstanceId, parsed.parsedInputs, dependencies);
+  const ingestErrors = await ingestParsedRecords(
+    connectorId,
+    connectorInstanceId,
+    parsed.parsedInputs,
+    dependencies,
+    input.streamName,
+    input.runId ?? null
+  );
   applyIngestErrors(parsed.lineErrors, parsed.parsedInputs, ingestErrors);
 
   // Commit every permanent rejection receipt before deciding whether a
