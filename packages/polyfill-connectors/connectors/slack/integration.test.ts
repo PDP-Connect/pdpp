@@ -7,9 +7,9 @@
  * (`emitMessagesPass`) that shares a single co-traversal of the MESSAGE
  * table across three streams.
  *
- * These tests DON'T spawn slackdump or open sqlite. They construct a fake
- * `MessagesPassDeps` that captures every (stream, data) pair pushed
- * through `emitRecord`, then assert on the observable invariants: per-row
+ * These tests DON'T spawn slackdump. Most construct a fake `MessagesPassDeps`
+ * that captures every (stream, data) pair pushed through `emitRecord`, then
+ * assert on the observable invariants: per-row
  * emit order (message before reactions before attachments), cross-stream
  * scope gating (disabling one stream doesn't break the other two), null-
  * enrichment fallback (message with no reactions / no attachments still
@@ -29,11 +29,9 @@
  *
  * NOTE on workspace/channel ordering (invariant 1 from the task brief):
  * the workspace → channels → messages ordering is owned by
- * `runRequestedStreams` in index.ts, not by this seam. That orchestrator
- * is sqlite-bound (each runner reads from DatabaseSync) and isn't
- * factored into a testable seam today; see the last test below for the
- * narrower "parent-before-child within a single row" assertion that this
- * seam does own.
+ * `runRequestedStreams` in index.ts. The coverage regression below drives
+ * that sqlite-bound orchestrator directly; the remaining emit-order tests
+ * cover the narrower "parent-before-child within a single row" seam.
  */
 
 import assert from "node:assert/strict";
@@ -48,6 +46,7 @@ import {
   type MessagesPassDeps,
   parseIsoInstantToSlackTs,
   runChannelsStream,
+  runRequestedStreams,
   type StreamDeps,
 } from "./index.ts";
 import type { MessageRow, SlackDataBlob } from "./types.ts";
@@ -122,6 +121,20 @@ function makeChannelDb(): DatabaseSync {
     }),
     1
   );
+  return db;
+}
+
+function makeMessageDb(rows: MessageRow[]): DatabaseSync {
+  const db = new DatabaseSync(":memory:");
+  db.exec(
+    "CREATE TABLE MESSAGE (CHANNEL_ID TEXT, TS TEXT, THREAD_TS TEXT, IS_PARENT INTEGER, TXT TEXT, NUM_FILES INTEGER, DATA BLOB, CHUNK_ID INTEGER)"
+  );
+  const insert = db.prepare(
+    "INSERT INTO MESSAGE (CHANNEL_ID, TS, THREAD_TS, IS_PARENT, TXT, NUM_FILES, DATA, CHUNK_ID) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  );
+  for (const row of rows) {
+    insert.run(row.CHANNEL_ID, row.TS, row.THREAD_TS, row.IS_PARENT, row.TXT, row.NUM_FILES, row.DATA, 1);
+  }
   return db;
 }
 
@@ -220,6 +233,57 @@ test("runChannelsStream: archive enumeration failure emits no empty coverage cla
     close();
   }
   assert.deepEqual(coverage, []);
+});
+
+test("runRequestedStreams: archive message enumeration bounds both derived streams", async () => {
+  const rows = [
+    makeRow(
+      { TS: "1700000000.000100" },
+      {
+        reactions: [{ name: "tada", users: ["U1", "U2", "U3"] }],
+        attachments: [{ fallback: "preview" }, { fallback: "bot card" }],
+      }
+    ),
+    makeRow({ TS: "1700000001.000100" }, {}),
+  ];
+  const db = makeMessageDb(rows);
+  const harness = makeRecordingEmit();
+  const requested = new Map<string, StreamScope>(
+    ["messages", "reactions", "message_attachments"].map((name) => [name, { name }])
+  );
+  const deps: StreamDeps = {
+    db,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    emittedAt: "2026-06-03T12:00:00.000Z",
+    fingerprintCursors: new Map(),
+    progress: () => Promise.resolve(),
+    requested,
+  };
+
+  try {
+    await runRequestedStreams(deps, {}, {} as Parameters<typeof runRequestedStreams>[2], harness.emit);
+  } finally {
+    db.close();
+  }
+
+  const coverage = harness.protocolMessages
+    .filter((message) => message.type === "DETAIL_COVERAGE")
+    .map((message) => ({
+      stream: message.stream,
+      stateStream: message.state_stream,
+      considered: message.considered,
+      covered: message.covered,
+    }));
+  assert.deepEqual(
+    coverage,
+    [
+      { stream: "messages", stateStream: "messages", considered: 2, covered: 2 },
+      { stream: "reactions", stateStream: "messages", considered: 2, covered: 2 },
+      { stream: "message_attachments", stateStream: "messages", considered: 2, covered: 2 },
+    ],
+    "each derived stream uses the two retained MESSAGE rows as its measured boundary, not child counts"
+  );
 });
 
 // ─── Invariant 7a: parent-before-child within a single row ───────────────

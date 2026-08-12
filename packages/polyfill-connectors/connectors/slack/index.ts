@@ -1705,6 +1705,23 @@ async function declareListConsidered(
   );
 }
 
+async function declareMessageFamilyCoverage(deps: StreamDeps, considered: number): Promise<void> {
+  for (const stream of ["reactions", "message_attachments"] as const) {
+    if (deps.requested.has(stream)) {
+      await deps.emit(
+        buildDetailCoverageMessage({
+          stream,
+          stateStream: "messages",
+          requiredKeys: [],
+          hydratedKeys: [],
+          considered,
+          covered: considered,
+        })
+      );
+    }
+  }
+}
+
 /**
  * Streams that use the per-record fingerprint cursor. Workspace + users +
  * files were re-emitting on every slackdump pass even when source state
@@ -2548,7 +2565,7 @@ export async function runOptionalStream(
  * Run every requested record stream against the open sqlite DB in emit
  * order. Returns the max message TS for the post-loop STATE checkpoint.
  */
-async function runRequestedStreams(
+export async function runRequestedStreams(
   deps: StreamDeps,
   state: CollectContext["state"],
   credentials: SlackCredentials,
@@ -2602,6 +2619,11 @@ async function runRequestedStreams(
         covered: result.considered,
       })
     );
+    // Reactions and message attachments are derived from the same retained
+    // MESSAGE rows. Declare that archive enumeration as their measured
+    // checkpoint boundary too; never use the child-record counts, which are
+    // not the boundary this pass enumerates.
+    await declareMessageFamilyCoverage(deps, result.considered);
   }
   if (deps.requested.has("files")) {
     deps.progress("Slack: emitting files", { stream: "files" });
