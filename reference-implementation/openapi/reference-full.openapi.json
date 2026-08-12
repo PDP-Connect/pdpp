@@ -2652,22 +2652,134 @@
                               "type": "object"
                             },
                             "source_declaration": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "digest": {
-                                  "minLength": 1,
-                                  "type": "string"
+                              "oneOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "digest": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "version": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "digest",
+                                    "version"
+                                  ],
+                                  "type": "object"
                                 },
-                                "version": {
-                                  "minLength": 1,
-                                  "type": "string"
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "digest": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "publisher_attribution": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "id": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "status": {
+                                          "const": "unverified"
+                                        }
+                                      },
+                                      "required": [
+                                        "id",
+                                        "status"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "resource_authority": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "status": {
+                                          "const": "local_operator_provisioned"
+                                        }
+                                      },
+                                      "required": [
+                                        "status"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "version": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "digest",
+                                    "publisher_attribution",
+                                    "resource_authority",
+                                    "version"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "accepted_revision_reference": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "digest": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "publisher_attribution": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "id": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "status": {
+                                          "const": "unverified"
+                                        }
+                                      },
+                                      "required": [
+                                        "id",
+                                        "status"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "resource_authority": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "authority_binding": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "status": {
+                                          "const": "verified"
+                                        }
+                                      },
+                                      "required": [
+                                        "authority_binding",
+                                        "status"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "version": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "accepted_revision_reference",
+                                    "digest",
+                                    "publisher_attribution",
+                                    "resource_authority",
+                                    "version"
+                                  ],
+                                  "type": "object"
                                 }
-                              },
-                              "required": [
-                                "digest",
-                                "version"
-                              ],
-                              "type": "object"
+                              ]
                             },
                             "subject": {
                               "additionalProperties": false,
@@ -3052,22 +3164,134 @@
                                     "type": "object"
                                   },
                                   "source_declaration": {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "digest": {
-                                        "minLength": 1,
-                                        "type": "string"
+                                    "oneOf": [
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "digest": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "version": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "digest",
+                                          "version"
+                                        ],
+                                        "type": "object"
                                       },
-                                      "version": {
-                                        "minLength": 1,
-                                        "type": "string"
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "digest": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "publisher_attribution": {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "id": {
+                                                "minLength": 1,
+                                                "type": "string"
+                                              },
+                                              "status": {
+                                                "const": "unverified"
+                                              }
+                                            },
+                                            "required": [
+                                              "id",
+                                              "status"
+                                            ],
+                                            "type": "object"
+                                          },
+                                          "resource_authority": {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "status": {
+                                                "const": "local_operator_provisioned"
+                                              }
+                                            },
+                                            "required": [
+                                              "status"
+                                            ],
+                                            "type": "object"
+                                          },
+                                          "version": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "digest",
+                                          "publisher_attribution",
+                                          "resource_authority",
+                                          "version"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "accepted_revision_reference": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "digest": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "publisher_attribution": {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "id": {
+                                                "minLength": 1,
+                                                "type": "string"
+                                              },
+                                              "status": {
+                                                "const": "unverified"
+                                              }
+                                            },
+                                            "required": [
+                                              "id",
+                                              "status"
+                                            ],
+                                            "type": "object"
+                                          },
+                                          "resource_authority": {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "authority_binding": {
+                                                "minLength": 1,
+                                                "type": "string"
+                                              },
+                                              "status": {
+                                                "const": "verified"
+                                              }
+                                            },
+                                            "required": [
+                                              "authority_binding",
+                                              "status"
+                                            ],
+                                            "type": "object"
+                                          },
+                                          "version": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "accepted_revision_reference",
+                                          "digest",
+                                          "publisher_attribution",
+                                          "resource_authority",
+                                          "version"
+                                        ],
+                                        "type": "object"
                                       }
-                                    },
-                                    "required": [
-                                      "digest",
-                                      "version"
-                                    ],
-                                    "type": "object"
+                                    ]
                                   }
                                 },
                                 "required": [

@@ -34,7 +34,13 @@ interface PendingPayload {
       source: { id: string; kind: string };
       streams: Record<string, unknown>[];
     };
+    accepted_revision_reference?: string;
     declaration_version: string;
+    publisher_attribution?: { id: string; status: "unverified" };
+    resource_authority?: {
+      authority_binding?: string;
+      status: "local_operator_provisioned" | "verified";
+    };
     snapshot_version: string;
     source: { id: string; kind: string };
   };

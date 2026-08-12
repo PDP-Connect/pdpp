@@ -36,6 +36,11 @@ interface TestServerHandle {
   rsServer: { close: (callback: () => void) => void; closeAllConnections?: () => void };
 }
 
+interface ValidatedTestDeclaration extends Record<string, unknown> {
+  declaration_version: string;
+  source: { id: string; kind: string };
+}
+
 function streamBody(value: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
@@ -67,7 +72,7 @@ test("HTTP consent consumes one accepted provider-native revision without discov
   const nativeManifest = JSON.parse(
     readFileSync(new URL("../manifests/northstar-hr.json", import.meta.url), "utf8")
   ) as Record<string, unknown>;
-  const declarationA = structuredClone(nativeManifest.source_declaration) as Record<string, unknown>;
+  const declarationA = structuredClone(nativeManifest.source_declaration) as ValidatedTestDeclaration;
   declarationA.declaration_version = "accepted:northstar:a";
   const declarationB = structuredClone(declarationA);
   declarationB.declaration_version = "accepted:northstar:b";
@@ -119,10 +124,10 @@ test("HTTP consent consumes one accepted provider-native revision without discov
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           source: { id: sourceId, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CLIENT_ID,
@@ -208,10 +213,10 @@ test("HTTP consent consumes one accepted provider-native revision without discov
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
-          source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+          purpose_code: "https://pdpp.dev/purpose/personalization",
+          source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
           streams: [{ name: "top_artists" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CLIENT_ID,
@@ -222,10 +227,10 @@ test("HTTP consent consumes one accepted provider-native revision without discov
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/financial_planning",
+          purpose_code: "https://pdpp.dev/purpose/financial_planning",
           source: { id: sourceId, kind: "provider_native" },
           streams: [{ name: "pay_statements" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CLIENT_ID,
@@ -255,10 +260,10 @@ test("HTTP consent consumes one accepted provider-native revision without discov
           authorization_details: [
             {
               access_mode: "continuous",
-              purpose_code: "https://pdpp.org/purpose/financial_planning",
+              purpose_code: "https://pdpp.dev/purpose/financial_planning",
               source: { id: sourceId, kind: "provider_native" },
               streams: [{ name: "pay_statements" }],
-              type: "https://pdpp.org/data-access",
+              type: "https://pdpp.dev/data-access",
             },
           ],
           client_id: CLIENT_ID,
@@ -294,7 +299,7 @@ if (POSTGRES_URL) {
         const nativeManifest = JSON.parse(
           readFileSync(new URL("../manifests/northstar-hr.json", import.meta.url), "utf8")
         ) as Record<string, unknown>;
-        const declaration = structuredClone(nativeManifest.source_declaration) as Record<string, unknown>;
+        const declaration = structuredClone(nativeManifest.source_declaration) as ValidatedTestDeclaration;
         declaration.declaration_version = "accepted:northstar:postgres";
         const sourceId = (declaration.source as Record<string, unknown>).id as string;
         const accepted = await retrieveAndAcceptProviderNativeDeclaration(
@@ -341,10 +346,10 @@ if (POSTGRES_URL) {
             authorization_details: [
               {
                 access_mode: "continuous",
-                purpose_code: "https://pdpp.org/purpose/financial_planning",
+                purpose_code: "https://pdpp.dev/purpose/financial_planning",
                 source: { id: sourceId, kind: "provider_native" },
                 streams: [{ name: "pay_statements" }],
-                type: "https://pdpp.org/data-access",
+                type: "https://pdpp.dev/data-access",
               },
             ],
             client_id: CLIENT_ID,
