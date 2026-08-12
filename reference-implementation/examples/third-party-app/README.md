@@ -19,8 +19,7 @@ the reference AS currently advertises:
    - `POST /consent/review` returns the exact approval artifact and its revision
    - `POST /consent/approve` accepts only the request URI and that revision
    - `GET /consent?request_uri=...` provides the hosted approval page
-4. `POST /introspect` — RFC 7662-style introspection (optional)
-5. `GET {rs}/v1/streams` / `GET {rs}/v1/streams/:stream/records` — RS reads
+4. `GET {rs}/v1/streams` / `GET {rs}/v1/streams/:stream/records` — RS reads
 
 ## Run
 
@@ -71,4 +70,6 @@ review, owner approval, token, and RS query, works end to end against a local
 reference stack.
 
 It does **not** prove a full generic third-party authorization-code redirect
-profile. That remains out of scope for the current reference.
+profile. It also does not expose RFC 7662 token introspection: in the reference
+runtime, introspection is a confidential AS-to-RS boundary and requires
+operator-configured caller credentials.

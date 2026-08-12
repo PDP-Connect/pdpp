@@ -137,17 +137,17 @@ const REGEXP_89 = /Grant is malformed or no longer valid/;
 const REGEXP_91 = /Grant is malformed or no longer valid/;
 const REGEXP_92 = /Grant is malformed or no longer valid/;
 const REGEXP_93 = /Grant is malformed or no longer valid/;
-const REGEXP_94 = /Grant is malformed or no longer valid/;
-const REGEXP_95 = /Grant is malformed or no longer valid/;
+const REGEXP_94 = /Fresh consent is required/;
+const REGEXP_95 = /Invalid or expired token/;
 const REGEXP_96 = /Grant is malformed or no longer valid/;
 const REGEXP_97 = /Grant is malformed or no longer valid/;
-const REGEXP_98 = /Grant is malformed or no longer valid/;
+const REGEXP_98 = /Fresh consent is required/;
 const REGEXP_99 = /Grant is malformed or no longer valid/;
-const REGEXP_100 = /Grant is malformed or no longer valid/;
+const REGEXP_100 = /Fresh consent is required/;
 const REGEXP_101 = /Grant is malformed or no longer valid/;
-const REGEXP_102 = /Grant is malformed or no longer valid/;
+const REGEXP_102 = /Fresh consent is required/;
 const REGEXP_103 = /Grant is malformed or no longer valid/;
-const REGEXP_104 = /Grant is malformed or no longer valid/;
+const REGEXP_104 = /Fresh consent is required/;
 const REGEXP_105 = /Grant is malformed or no longer valid/;
 const REGEXP_106 = /source\/id must match format "uri"/;
 const REGEXP_107 = /Selection request is invalid: \/ must NOT have additional properties/;
@@ -4950,7 +4950,7 @@ test("PDPP reference implementation integration", async (t) => {
           assert.ok(rejectedRequestId?.startsWith("req_"));
           assert.ok(rejectedTraceId?.startsWith("trc_"));
           const rejectedBody = parseErrorResponse(await rejectedResp.json());
-          assert.equal(rejectedBody.error.code, "grant_invalid");
+          assert.equal(rejectedBody.error.code, "authorization_state.unsupported_legacy_shape");
           assert.match(rejectedBody.error.message, REGEXP_94);
 
           const { body: timeline } = await fetchGrantTimeline(asUrl, approved.grant.grant_id);
@@ -4980,7 +4980,7 @@ test("PDPP reference implementation integration", async (t) => {
           assert.equal(rejectedEvent.trace_id, rejectedTraceId);
           assert.equal(rejectedEvent.data.query_shape, queryShape);
           assert.equal(rejectedEvent.data.source, undefined);
-          assert.equal(rejectedEvent.data.error?.code, "grant_invalid");
+          assert.equal(rejectedEvent.data.error?.code, "authorization_state.unsupported_legacy_shape");
           assert.match(rejectedEvent.data.error?.message || "", REGEXP_95);
           if (streamId) {
             assert.equal(rejectedEvent.stream_id, streamId);
@@ -5268,7 +5268,7 @@ test("PDPP reference implementation integration", async (t) => {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
         assert.equal(streamsResp.status, 401);
-        assert.equal(streamsResp.body.error.code, "grant_invalid");
+        assert.equal(streamsResp.body.error.code, "authorization_state.unsupported_legacy_shape");
         assert.match(streamsResp.body.error.message, REGEXP_98);
 
         const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
@@ -5359,7 +5359,7 @@ test("PDPP reference implementation integration", async (t) => {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
         assert.equal(metadataResp.status, 401);
-        assert.equal(metadataResp.body.error.code, "grant_invalid");
+        assert.equal(metadataResp.body.error.code, "authorization_state.unsupported_legacy_shape");
         assert.match(metadataResp.body.error.message, REGEXP_100);
 
         const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
@@ -5429,7 +5429,7 @@ test("PDPP reference implementation integration", async (t) => {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
         assert.equal(metadataResp.status, 401);
-        assert.equal(metadataResp.body.error.code, "grant_invalid");
+        assert.equal(metadataResp.body.error.code, "authorization_state.unsupported_legacy_shape");
         assert.match(metadataResp.body.error.message, REGEXP_102);
 
         const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
@@ -5496,7 +5496,7 @@ test("PDPP reference implementation integration", async (t) => {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
         assert.equal(metadataResp.status, 401);
-        assert.equal(metadataResp.body.error.code, "grant_invalid");
+        assert.equal(metadataResp.body.error.code, "authorization_state.unsupported_legacy_shape");
         assert.match(metadataResp.body.error.message, REGEXP_104);
 
         const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
