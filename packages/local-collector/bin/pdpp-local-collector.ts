@@ -2483,13 +2483,13 @@ function resolveRecoveryOptions(options: CliOptions): {
 
 export function resolveInspectionOptions(options: CliOptions): CliOptions {
   const sourceInstanceId = options.sourceInstanceId?.trim();
-  if (!sourceInstanceId || hasExplicitQueuePath(options)) {
+  if (hasExplicitQueuePath(options)) {
     return options;
   }
 
   const lookup = findLocalCollectorProfiles({
     profileName: options.profile ?? null,
-    sourceInstanceId,
+    sourceInstanceId: sourceInstanceId ?? null,
   });
   if (lookup.matches.length > 1) {
     throw new CollectorUsageError(
@@ -2499,6 +2499,21 @@ export function resolveInspectionOptions(options: CliOptions): CliOptions {
   }
   if (lookup.matches.length === 1) {
     return applyProfileEnv(options, lookup.matches[0] as LocalCollectorProfile);
+  }
+
+  // An explicit profile is already an identity selector. Requiring the
+  // source-instance id as well makes the documented `doctor --profile NAME`
+  // path silently fall back to the unrelated default queue, which is unsafe
+  // for read-only health diagnosis and also loses the profile's base URL.
+  if (options.profile) {
+    throw new CollectorUsageError(
+      `${options.command} could not find local collector profile '${options.profile}'. ` +
+        "Check --profile <name> or pass --queue <path> explicitly."
+    );
+  }
+
+  if (!sourceInstanceId) {
+    return options;
   }
 
   const configuredQueue = hasExplicitQueuePath(options);

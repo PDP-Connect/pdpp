@@ -97,6 +97,7 @@ const REQUESTED_SCOPE_RECENT_7_PATTERN = /recent 7 day/;
 const REQUESTED_SCOPE_ALL_HISTORY_PATTERN = /all history/;
 const WIDENING_REJECTION_MESSAGE_PATTERN = /wider than the server-declared boundary|already declared a boundary/;
 const REQUIRES_FORCE_PATTERN = /--force/;
+const MISSING_PROFILE_PATTERN = /could not find local collector profile 'missing'/;
 
 test("runner exports the collector runtime capability profile with collector id", () => {
   assert.equal(COLLECTOR_RUNTIME_CAPABILITIES.id, "collector");
@@ -908,6 +909,57 @@ test("local collector status resolves the matching source-instance profile queue
     assert.equal(status.configured_device.device_id_configured, true);
     assert.equal(status.configured_device.device_token_configured, true);
     assert.equal(status.outbox.counts.pending, 1);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+    } else {
+      process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = previous;
+    }
+  }
+});
+
+test("local collector doctor resolves an explicitly named profile without a source id", async () => {
+  const profileDir = await tempDir();
+  const queuePath = await tempOutboxPath();
+  const previous = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+  await writeFile(
+    join(profileDir, "codex.env"),
+    [
+      "PDPP_REFERENCE_BASE_URL=http://127.0.0.1:3012",
+      "PDPP_COLLECTOR_CONNECTOR=codex",
+      "PDPP_LOCAL_DEVICE_ID=device-1",
+      "PDPP_LOCAL_DEVICE_TOKEN=token-1",
+      "PDPP_CONNECTION_ID=dsrc_codex",
+      `PDPP_COLLECTOR_QUEUE=${queuePath}`,
+      "",
+    ].join("\n")
+  );
+  process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDir;
+  try {
+    const options = resolveInspectionOptions(parseArgs(["doctor", "--profile", "codex"]));
+    assert.equal(options.sourceInstanceId, "dsrc_codex");
+    assert.equal(options.baseUrl, "http://127.0.0.1:3012");
+    assert.equal(options.queuePath, queuePath);
+    assert.equal(options.deviceId, "device-1");
+    assert.equal(options.deviceToken, "token-1");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+    } else {
+      process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = previous;
+    }
+  }
+});
+
+test("local collector inspection refuses a missing named profile instead of using the default queue", () => {
+  const profileDir = tempDirSync();
+  const previous = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+  process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDir;
+  try {
+    assert.throws(
+      () => resolveInspectionOptions(parseArgs(["status", "--profile", "missing"])),
+      MISSING_PROFILE_PATTERN
+    );
   } finally {
     if (previous === undefined) {
       delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
