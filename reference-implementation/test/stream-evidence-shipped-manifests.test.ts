@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -22,11 +22,34 @@ type ManifestStreamFixture = Parameters<typeof buildCollectionReport>[0]["manife
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MANIFESTS_DIR = join(HERE, "..", "..", "packages", "polyfill-connectors", "manifests");
 
+interface ShippedManifest {
+  file: string;
+  manifest: Record<string, unknown>;
+}
+
+function shippedPolyfillManifests(): ShippedManifest[] {
+  return readdirSync(MANIFESTS_DIR)
+    .filter((file) => file.endsWith(".json"))
+    .sort()
+    .map((file) => ({
+      file,
+      manifest: JSON.parse(readFileSync(join(MANIFESTS_DIR, file), "utf8")) as Record<string, unknown>,
+    }));
+}
+
+function manifestStreamsFromValue(manifest: Record<string, unknown>): ManifestStreamFixture[] {
+  const { streams } = manifest;
+  assert.ok(Array.isArray(streams) && streams.length > 0, "manifest declares streams");
+  return streams as ManifestStreamFixture[];
+}
+
 function manifestStreams(connectorId: string): ManifestStreamFixture[] {
   const manifest: unknown = JSON.parse(readFileSync(join(MANIFESTS_DIR, `${connectorId}.json`), "utf8"));
-  const streams = manifest && typeof manifest === "object" && "streams" in manifest ? manifest.streams : undefined;
-  assert.ok(Array.isArray(streams) && streams.length > 0, `${connectorId} declares streams`);
-  return streams;
+  assert.ok(
+    manifest && typeof manifest === "object" && !Array.isArray(manifest),
+    `${connectorId} manifest is an object`
+  );
+  return manifestStreamsFromValue(manifest as Record<string, unknown>);
 }
 
 /** A steady-state committed-checkpoint fact (STATE emitted, zero new records). */
@@ -140,6 +163,32 @@ for (const [connectorId, streams] of Object.entries(ACCOUNTED_PROOF_CASES)) {
     );
     for (const stream of streams) {
       assert.equal(condition(entries, stream), "complete", `${connectorId}/${stream}`);
+    }
+  });
+}
+
+for (const { file, manifest } of shippedPolyfillManifests()) {
+  const fullInventoryStreams = manifestStreamsFromValue(manifest).filter(
+    (stream) => stream.coverage_strategy === "full_inventory"
+  );
+  if (fullInventoryStreams.length === 0) {
+    continue;
+  }
+
+  test(`shipped ${file}: full-inventory evidence is required and record count is not evidence`, () => {
+    const streams = fullInventoryStreams.map((stream) => stream.name);
+    const measured = report(
+      file.slice(0, -5),
+      streams.map((stream) => accountedFact(stream, 6551))
+    );
+    const unmeasured = report(
+      file.slice(0, -5),
+      streams.map((stream) => ({ ...committedFact(stream), collected: 6551 }))
+    );
+
+    for (const stream of streams) {
+      assert.equal(condition(measured, stream), "complete", `${file}/${stream} measured boundary`);
+      assert.equal(condition(unmeasured, stream), "unknown", `${file}/${stream} record count without evidence`);
     }
   });
 }
