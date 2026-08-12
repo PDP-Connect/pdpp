@@ -32,12 +32,47 @@ import type { RunRecord } from "../runtime/scheduler-domain-types.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { closeDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceCredentialStore } from "../server/stores/connector-instance-credential-store.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 import type { ActiveRunRecord, SchedulerRunHistoryRecord } from "../server/stores/scheduler-store.ts";
 import { getDefaultSchedulerStore } from "../server/stores/scheduler-store.ts";
+import { resolveCredentialFreeFixtureRunEnv } from "./helpers/credential-free-run-fixture.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
+
+function readServerSchedulerFixtureManifest(): Record<string, unknown> & {
+  connector_id: string;
+  connector_key: string;
+  display_name: string;
+  manifest_uri: string;
+} {
+  const base = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")) as Record<
+    string,
+    unknown
+  > & { capabilities?: Record<string, unknown> };
+  return {
+    ...base,
+    capabilities: {
+      ...base.capabilities,
+      refresh_policy: {
+        background_safe: true,
+        bot_detection_sensitivity: "low",
+        interaction_posture: "none",
+        maximum_staleness_seconds: 3600,
+        minimum_interval_seconds: 1,
+        rate_limit_sensitivity: "low",
+        rationale: "Deterministic scheduler integration fixture.",
+        recommended_interval_seconds: 60,
+        recommended_mode: "automatic",
+      },
+    },
+    connector_id: "scheduler-fixture",
+    connector_key: "scheduler-fixture",
+    display_name: "Scheduler fixture",
+    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-fixture",
+  };
+}
 
 interface ClosableHttpServer {
   close: (cb: () => void) => void;
@@ -397,7 +432,7 @@ async function registerSchedulerFixtureConnectorInstance(options: {
 }
 
 test("server-owned scheduler starts persisted enabled schedules after startup", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = readServerSchedulerFixtureManifest();
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-server-scheduler-enabled-"));
   const dbPath = join(tmpDir, "pdpp.sqlite");
   const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
@@ -412,7 +447,7 @@ test("server-owned scheduler starts persisted enabled schedules after startup", 
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
-    assert.equal(registerResp.status, 201);
+    assert.equal(registerResp.status, 201, JSON.stringify(registerResp.body));
     // Admission requires an existing connector-instance row for this owner +
     // connector (require-new-run-connection-id): the production
     // admitRunConnection wiring in server/index.ts refuses to materialize one
@@ -442,6 +477,7 @@ test("server-owned scheduler starts persisted enabled schedules after startup", 
 
     server = await startServer({
       asPort: 0,
+      connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
       connectorPathResolver: () => connectorPath,
       dbPath,
       quiet: true,
@@ -499,11 +535,12 @@ test("scheduler enforces automation policy before starting an unsafe automatic r
 });
 
 test("server-owned scheduler refreshes after schedule route mutations", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  const spotifyManifest = readServerSchedulerFixtureManifest();
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-server-scheduler-route-refresh-"));
   const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
   const server = await startServer({
     asPort: 0,
+    connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
     connectorPathResolver: () => connectorPath,
     dbPath: ":memory:",
     quiet: true,
@@ -517,7 +554,7 @@ test("server-owned scheduler refreshes after schedule route mutations", async ()
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
-    assert.equal(registerResp.status, 201);
+    assert.equal(registerResp.status, 201, JSON.stringify(registerResp.body));
 
     const putResp = await fetch(
       `${asUrl}/_ref/connectors/${encodeURIComponent(spotifyManifest.connector_id)}/schedule`,
@@ -618,12 +655,15 @@ test("autonomous scheduler canonicalizes a legacy URL-shaped schedule connector_
   // under the non-canonical key — mismatching the canonical key the read and
   // admission paths key on. This test seeds the legacy row directly, ticks the
   // scheduler once, and asserts every persisted identity is the canonical key.
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
-  const canonicalKey = spotifyManifest.connector_key; // 'spotify'
-  const legacyConnectorId = spotifyManifest.connector_id; // URL-shaped, non-canonical
+  const schedulerManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "../packages/polyfill-connectors/manifests/ynab.json"), "utf8")
+  );
+  const canonicalKey = schedulerManifest.connector_key;
+  const legacyConnectorId = schedulerManifest.manifest_uri;
   assert.notEqual(legacyConnectorId, canonicalKey, "fixture precondition: ids differ");
 
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-legacy-canonical-"));
+  const dbPath = join(tmpDir, "pdpp.sqlite");
   const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
   // biome-ignore lint/suspicious/noEvolvingTypes: test fixture inference is intentionally widened
   let server = null;
@@ -631,52 +671,74 @@ test("autonomous scheduler canonicalizes a legacy URL-shaped schedule connector_
   try {
     server = await startServer({
       asPort: 0,
-      connectorPathResolver: () => connectorPath,
-      dbPath: ":memory:",
+      dbPath,
       quiet: true,
       rsPort: 0,
     });
     const asUrl = `http://localhost:${server.asPort}`;
 
     const registerResp = await fetchJson(`${asUrl}/connectors`, {
-      body: JSON.stringify(spotifyManifest),
+      body: JSON.stringify(schedulerManifest),
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
     assert.equal(registerResp.status, 201);
 
-    // Admission requires an existing connector-instance row (require-new-run-
-    // connection-id): buildConnectors canonicalizes connectorId to canonicalKey
-    // but forwards the legacy (non-canonical) connector_instance_id verbatim,
-    // so the store row must be keyed by the legacy id while pointing at the
-    // canonical connector.
+    // Admission requires an existing connector-instance row. The connection
+    // identity is already canonical; only the legacy schedule connector_id is
+    // under test here.
     await registerSchedulerFixtureConnectorInstance({
       connectorId: canonicalKey,
-      connectorInstanceId: legacyConnectorId,
-      displayName: spotifyManifest.display_name,
+      connectorInstanceId: canonicalKey,
+      displayName: schedulerManifest.display_name,
       ownerSubjectId: "owner_local",
       sourceBindingKey: "scheduler_legacy_canonical_fixture",
+    });
+    await createSqliteConnectorInstanceCredentialStore({
+      env: { PDPP_CREDENTIAL_ENCRYPTION_KEY: "11".repeat(32) },
+    }).capture({
+      connectorInstanceId: canonicalKey,
+      credentialKind: "personal_access_token",
+      now: new Date().toISOString(),
+      ownerSubjectId: "owner_local",
+      secret: "scheduler-fixture-token",
     });
 
     // Seed the schedule row directly — NOT via controller.upsertSchedule, which
     // would canonicalize — to faithfully model a legacy row written before the
     // canonicalization slice landed.
-    const store = getDefaultSchedulerStore();
-    const now = new Date().toISOString();
-    await store.createSchedule({
+    const seedStore = getDefaultSchedulerStore();
+    const now = new Date(Date.now() - 120_000).toISOString();
+    await seedStore.createSchedule({
       connector_id: legacyConnectorId,
-      connector_instance_id: legacyConnectorId,
+      connector_instance_id: canonicalKey,
       created_at: now,
       enabled: true,
-      interval_seconds: 60,
+      interval_seconds: 1,
       jitter_seconds: 0,
       updated_at: now,
     });
 
-    // Re-run buildConnectors over the freshly-seeded legacy row.
-    await server.schedulerManager.refresh();
+    await closeServer(server);
+    closeDb();
+    server = await startServer({
+      asPort: 0,
+      connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
+      connectorPathResolver: () => connectorPath,
+      dbPath,
+      quiet: true,
+      rsPort: 0,
+    });
+    const store = getDefaultSchedulerStore();
 
-    await waitFor(() => readAttempts(attemptsPath).length >= 1, 8000);
+    await waitForAsync(async () => {
+      const history = await store.listRunHistory(50);
+      return readAttempts(attemptsPath).length >= 1 || history.length >= 1;
+    }, 8000);
+    assert.ok(
+      readAttempts(attemptsPath).length >= 1,
+      `expected scheduled connector attempt; history=${JSON.stringify(await store.listRunHistory(50))}`
+    );
     // The run record is appended to history asynchronously after the run
     // completes; poll the durable store (SQLite listRunHistory is synchronous)
     // until the row lands so the assertion sees the persisted identity.

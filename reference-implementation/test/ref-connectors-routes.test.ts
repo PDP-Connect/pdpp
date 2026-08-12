@@ -25,6 +25,7 @@ import { startServer } from "../server/index.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
 import { createSqliteConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { resolveCredentialFreeFixtureRunEnv } from "./helpers/credential-free-run-fixture.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -124,7 +125,13 @@ async function fetchJson<T = unknown>(url: string, opts: RequestInit = {}): Prom
 }
 
 async function withServer(fn: (ctx: { asUrl: string; server: RefTestServer }) => Promise<void>): Promise<void> {
-  const server: RefTestServer = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const server: RefTestServer = await startServer({
+    asPort: 0,
+    connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
+    dbPath: ":memory:",
+    quiet: true,
+    rsPort: 0,
+  });
   const asUrl = `http://localhost:${server.asPort}`;
   try {
     await fn({ asUrl, server });

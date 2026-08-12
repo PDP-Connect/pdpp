@@ -37,6 +37,7 @@ import { closeDb, getDb, initDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { getDefaultConnectorAttentionStore } from "../server/stores/connector-attention-store.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { resolveCredentialFreeFixtureRunEnv } from "./helpers/credential-free-run-fixture.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -246,6 +247,7 @@ async function withHarness(
 ): Promise<void> {
   const server = (await startServer({
     asPort: 0,
+    connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
     dbPath: ":memory:",
     quiet: true,
     rsPort: 0,
@@ -972,6 +974,7 @@ test("controller startup reconciles abandoned controller-managed runs after rest
   try {
     server = (await startServer({
       asPort: 0,
+      connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
       dbPath,
       quiet: true,
       rsPort: 0,
@@ -1078,6 +1081,7 @@ test("controller startup reconciles abandoned controller-managed runs after rest
 
     server = (await startServer({
       asPort: 0,
+      connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
       dbPath,
       quiet: true,
       rsPort: 0,
@@ -1110,7 +1114,11 @@ test("controller startup reconciles abandoned controller-managed runs after rest
     const rerunResp = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/run`, {
       method: "POST",
     });
-    assert.equal(rerunResp.status, 202, "reconciled abandoned run should not leave the connector locked active");
+    assert.equal(
+      rerunResp.status,
+      202,
+      `reconciled abandoned run should not leave the connector locked active: ${await rerunResp.clone().text()}`
+    );
     const rerun = (await rerunResp.json()) as RunStartedBody;
     await waitForRunTerminal(asUrl, rerun.run_id);
   } finally {

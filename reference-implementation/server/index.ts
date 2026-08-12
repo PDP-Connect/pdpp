@@ -695,6 +695,7 @@ interface ServerOpts {
   clientEventSubscriptionsCapability?: unknown;
   clientEventSubscriptionsSupported?: boolean;
   configuredProviderAuthConnectorKeys?: readonly string[];
+  connectionScopedRunEnvResolver?: ReturnType<typeof buildConnectionScopedRunEnvResolver>;
   connectorInstanceId?: string;
   connectorPathResolver?: ((connectorId: string, manifest?: ConnectorManifest) => string | null) | null;
   controller?: Controller | null;
@@ -7206,6 +7207,7 @@ export async function startServer(opts: ServerOpts = {}) {
     invoke: ((args: unknown) => Promise<void>) | null;
     releaseLease: ((args: unknown) => Promise<void>) | null;
   } = { invoke: null, releaseLease: null };
+  const connectionScopedRunEnvResolver = opts.connectionScopedRunEnvResolver ?? buildConnectionScopedRunEnvResolver();
   const controller = createController({
     ...(configuredAsPublicUrl === null ? {} : { asPublicUrl: configuredAsPublicUrl }),
     admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId, runAdmission }) => {
@@ -7248,7 +7250,7 @@ export async function startServer(opts: ServerOpts = {}) {
     markStaticSecretCredentialRejected:
       buildControllerStaticSecretCredentialRejectionMarker() as import("../runtime/controller.ts").MarkStaticSecretCredentialRejected,
     resolveStaticSecretRunEnv:
-      buildConnectionScopedRunEnvResolver() as import("../runtime/controller.ts").StaticSecretRunEnvResolver,
+      connectionScopedRunEnvResolver as import("../runtime/controller.ts").StaticSecretRunEnvResolver,
     runtimeContext,
     streamingTargetNonceHooks: {
       clearNonce: (args) => runTargetRegistry.clearNonce(args),
@@ -7630,6 +7632,7 @@ export async function startServer(opts: ServerOpts = {}) {
   }
 
   schedulerManager = createReferenceSchedulerManager({
+    connectionScopedRunEnvResolver,
     connectorPathResolver: opts.connectorPathResolver || resolveDefaultConnectorPath,
     controller,
     logger,
@@ -8071,6 +8074,7 @@ export function isManagedNekoSurfaceApproved(
 }
 
 function createReferenceSchedulerManager({
+  connectionScopedRunEnvResolver = buildConnectionScopedRunEnvResolver(),
   controller,
   logger,
   runtimeContext,
@@ -8080,6 +8084,7 @@ function createReferenceSchedulerManager({
   webPushConfig = resolveWebPushConfig(),
   webPushSubscriptionStore = createWebPushSubscriptionStore(),
 }: {
+  connectionScopedRunEnvResolver?: ServerOpts["connectionScopedRunEnvResolver"];
   controller: Controller;
   logger: LoggerLike;
   runtimeContext: { rsUrl: string | null; referenceBaseUrl: string | null };
@@ -8121,7 +8126,6 @@ function createReferenceSchedulerManager({
   // runs MUST resolve credentials/import bindings identically: a connection row
   // satisfies both, and a scheduled launch never falls back to process-global
   // setup material when a connection-scoped binding exists.
-  const connectionScopedRunEnvResolver = buildConnectionScopedRunEnvResolver();
   const resolveScheduledConnectionScopedRunEnv = ({
     connectorId,
     connectorInstanceId,
