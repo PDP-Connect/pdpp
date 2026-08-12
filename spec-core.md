@@ -701,7 +701,7 @@ Per-stream, within the `streams` array. All are optional except `name`.
 | `fields` | string[] | Protocol-enforced | Field allowlist. Schema-required fields are always included regardless of this list. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
 | `resources` | string[] | Protocol-enforced | Specific record IDs to authorize. Values are canonical key strings: minified JSON array for compound keys, plain string for simple keys. The AS validates arity and type against the manifest `primary_key` at grant issuance. The RS filters by exact primary-key match. |
 
-**Note on `fields`:** Schema-required fields are always included in a selection, regardless of the requested field list, because a record missing its schema-required fields is not a valid record of that stream; the per-stream consent floor is its required fields.
+**Note on `fields`:** At consent resolution, schema-required fields are always included in the resolved field set, regardless of the requested field list, because a record missing its schema-required fields is not a valid record of that stream; the per-stream consent floor is its required fields.
 
 **Note on `time_range`:** `time_range` is only valid for streams that declare a `consent_time_field` in their manifest. The authorization server MUST reject selection requests that specify `time_range` on a stream without a `consent_time_field`. The presence of `consent_time_field` in the manifest is the authoritative signal that a stream is time-range-capable. (The `selection.time_range` boolean has been removed from the manifest (see [Section 5](#manifest-format)).)
 
