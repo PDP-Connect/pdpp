@@ -222,12 +222,16 @@ interface RegisteredClient {
   updated_at: string | null;
 }
 
-interface ConsentExchangeEntry {
-  consumed: boolean;
-  expiresAt: number;
-  grant: Record<string, unknown>;
-  grantId: string;
-  token: string;
+interface ConsentExchangeRow extends DbRow {
+  code_hash: string;
+  created_at: string;
+  expires_at: string;
+  grant_id: string | null;
+  package_id: string | null;
+  redeemed_at: string | null;
+  token_id: string;
+  token_expires_at: string | null;
+  token_revoked: boolean | number;
 }
 
 interface GrantPackageNormalized {
@@ -3324,7 +3328,12 @@ async function persistApprovalReviewArtifact(input: {
 function requireMatchingApprovalReview(
   row: PendingConsentRow,
   revision: unknown
-): { aiTrainingConsented: boolean | null; expiresAt: string | null; subjectId: string } {
+): {
+  aiTrainingConsented: boolean | null;
+  expiresAt: string | null;
+  resolvedStreams: ResolvedGrantStream[];
+  subjectId: string;
+} {
   if (!isNonEmptyString(revision)) {
     throw bindingError("invalid_request", "approval_review_revision is required");
   }
@@ -3341,6 +3350,7 @@ function requireMatchingApprovalReview(
   return {
     aiTrainingConsented: typeof parsed.ai_training_consented === "boolean" ? parsed.ai_training_consented : null,
     expiresAt: typeof parsed.expires_at === "string" ? parsed.expires_at : null,
+    resolvedStreams: parsed.resolved_streams as ResolvedGrantStream[],
     subjectId: parsed.subject.id,
   };
 }
@@ -6724,6 +6734,31 @@ async function getReviewedPendingConsentProjection(
   };
 }
 
+async function resolveSingleConsentReviewStreams(
+  request: PendingRequest,
+  sourceBinding: SourceBinding,
+  storageBinding: StorageBinding,
+  opts: PendingConsentDisplayOptions
+): Promise<ResolvedGrantStream[] | StreamSelection[]> {
+  const baselineStreams = resolvePendingRequestAgainstSnapshot(request);
+  const sourceNarrowing = opts.sourceNarrowing && typeof opts.sourceNarrowing === "object" ? opts.sourceNarrowing : {};
+  requireNumericObjectKeys(sourceNarrowing, "source_narrowing");
+  requireApprovedSourceNarrowings(sourceNarrowing, [0]);
+  const requiredStreamNames = (request.selection.streams ?? [])
+    .filter((stream) => stream.necessity !== "optional" && isNonEmptyString(stream.name) && stream.name !== "*")
+    .map((stream) => stream.name as string);
+  const narrowedStreams = narrowResolvedSelectionForSource(
+    baselineStreams,
+    isRecord(sourceNarrowing["0"]) ? sourceNarrowing["0"] : null,
+    sourceBinding.id,
+    readRetainedSourceDeclarationSnapshot(request).declaration,
+    requiredStreamNames
+  );
+  return opts.subjectId && storageBinding
+    ? resolveSnapshotStreamsForApproval(narrowedStreams, sourceBinding, storageBinding, opts.subjectId)
+    : narrowedStreams;
+}
+
 /**
  * Get pending consent request for display in consent UI
  */
@@ -6763,10 +6798,7 @@ export async function getPendingConsent(
     request.source_binding = describeSourceBinding(sourceBinding);
     request.storage_binding = normalizeStorageBinding(storageBinding);
     const snapshot = readRetainedSourceDeclarationSnapshot(request);
-    resolvedStreams =
-      opts.subjectId && storageBinding
-        ? await resolvePendingRequestForApproval(request, sourceBinding, storageBinding, opts.subjectId)
-        : resolvePendingRequestAgainstSnapshot(request);
+    resolvedStreams = await resolveSingleConsentReviewStreams(request, sourceBinding, storageBinding, opts);
     manifestStreamNames = Array.isArray(snapshot.declaration.streams)
       ? snapshot.declaration.streams.map((stream) => stream.name).filter((name) => typeof name === "string")
       : null;
@@ -6841,6 +6873,9 @@ export async function approveGrant(
     err.code = "not_found";
     throw err;
   }
+  if (pending.status === "approved") {
+    return resumeApprovedGrant(pending, _legacySubjectId);
+  }
   if (pending.status !== "pending") {
     if (opts.approval_review_revision && opts.approval_review_revision === pending.approval_review_revision) {
       const err: AuthError = new Error("Pending consent approval conflict");
@@ -6880,25 +6915,7 @@ export async function approveGrant(
     ({ sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(request));
     request.source_binding = describeSourceBinding(sourceBinding);
     request.storage_binding = normalizeStorageBinding(storageBinding);
-    const baselineStreams = resolvePendingRequestAgainstSnapshot(request);
-    const retainedDeclaration = readRetainedSourceDeclarationSnapshot(request).declaration;
-    const singleSourceNarrowing = isRecord(opts.sourceNarrowing?.["0"]) ? opts.sourceNarrowing["0"] : null;
-    const requiredStreamNames = (request.selection.streams ?? [])
-      .filter((stream) => stream.necessity !== "optional" && isNonEmptyString(stream.name) && stream.name !== "*")
-      .map((stream) => stream.name as string);
-    const narrowedStreams = narrowResolvedSelectionForSource(
-      baselineStreams,
-      singleSourceNarrowing,
-      sourceBinding.id,
-      retainedDeclaration,
-      requiredStreamNames
-    );
-    resolvedStreams = await resolveSnapshotStreamsForApproval(
-      narrowedStreams,
-      sourceBinding,
-      storageBinding,
-      subjectId
-    );
+    resolvedStreams = reviewed.resolvedStreams;
   } catch (err: unknown) {
     if (!isAuthError(err)) {
       throw err;
@@ -7003,6 +7020,63 @@ export async function approveGrant(
   });
 
   return { grant, token };
+}
+
+async function resumeApprovedGrant(
+  pending: PendingConsentRow,
+  subjectId: string
+): Promise<{ grant: DbRow; token: string }> {
+  if (
+    pending.subject_id !== subjectId ||
+    !isNonEmptyString(pending.grant_id) ||
+    !isNonEmptyString(pending.token_id)
+  ) {
+    const err: AuthError = new Error("Approved consent result is not available");
+    err.code = "not_found";
+    throw err;
+  }
+  const tokenInfo = await introspect(pending.token_id);
+  if (!tokenInfo.active) {
+    const err: AuthError = new Error("Approved consent result is not available");
+    err.code = "not_found";
+    throw err;
+  }
+  if (tokenInfo.pdpp_token_kind === "mcp_package" && tokenInfo.grant_package_id === pending.grant_id) {
+    const packageRow = normalizePackageRow(await getGrantPackageStore().getPackageById(pending.grant_id));
+    if (!(packageRow && packageRow.status === "active" && packageRow.subject_id === subjectId)) {
+      const err: AuthError = new Error("Approved consent package is not available");
+      err.code = "not_found";
+      throw err;
+    }
+    const members = await getGrantPackageStore().listAllMembers(pending.grant_id);
+    return {
+      grant: buildConsentPackageGrant(pending.grant_id, members),
+      token: pending.token_id,
+    };
+  }
+  if (tokenInfo.grant_id !== pending.grant_id) {
+    const err: AuthError = new Error("Approved consent token is not active");
+    err.code = "not_found";
+    throw err;
+  }
+  const row = isPostgresStorageBackend()
+    ? await pgOne<DbRow>(
+        `SELECT g.grant_id, g.grant_json::text AS grant_json
+           FROM grants g
+          WHERE g.grant_id = $1 AND g.subject_id = $2 AND g.status = 'active'`,
+        [pending.grant_id, subjectId]
+      )
+    : getOne<DbRow>(referenceQueries.authGrantsGetForRevocation, [pending.grant_id]);
+  if (!row || row.status === "revoked" || !isNonEmptyString(row.grant_json)) {
+    const err: AuthError = new Error("Approved consent result is not available");
+    err.code = "not_found";
+    throw err;
+  }
+  const grant: unknown = JSON.parse(row.grant_json);
+  if (!isRecord(grant) || grant.grant_id !== pending.grant_id) {
+    throw bindingError("grant_invalid", "Approved consent grant is malformed");
+  }
+  return { grant, token: pending.token_id };
 }
 
 function buildGrantScopedDeviceExchangeError(code: string, message: string, row: DbRow | null = null): AuthError {
@@ -9518,31 +9592,32 @@ export async function exchangeOAuthRefreshToken({
   };
 }
 
-/**
- * Consent exchange-code store.
- *
- * The HTML branch of `POST /consent/approve` SHALL NOT render the live client
- * bearer to the browser; instead it mints a single-use opaque exchange code,
- * stores `{ code -> { grantId, token, grant, expiresAt, consumed } }` here,
- * and tells the caller to redeem the code at `POST /consent/exchange`.
- *
- * In-memory by design: the reference is single-process, the codes are
- * short-lived, and a code that survives a process restart would weaken the
- * "short-lived single-use ticket" property. See
- * openspec/changes/harden-consent-token-handoff/design.md.
- */
-const consentExchangeCodes = new Map<string, ConsentExchangeEntry>();
 const CONSENT_EXCHANGE_CODE_TTL_MS = 5 * 60 * 1000;
 
-function pruneExpiredConsentExchangeCodes(now = Date.now()): void {
-  for (const [code, entry] of consentExchangeCodes) {
-    if (entry.consumed || entry.expiresAt <= now) {
-      consentExchangeCodes.delete(code);
-    }
-  }
+function buildConsentPackageGrant(
+  packageId: string,
+  memberRows: readonly GrantPackageMemberRow[]
+): Record<string, unknown> {
+  return {
+    child_grants: memberRows.map((row) => ({
+      grant_id: row.grant_id,
+      source: parsePackageJson(row.source_json),
+    })),
+    grant_id: packageId,
+    package: true,
+    package_id: packageId,
+  };
 }
 
-export function createConsentExchangeCode({
+function consentExchangeTokenIsActive(row: ConsentExchangeRow): boolean {
+  return (
+    !row.token_revoked &&
+    (!row.token_expires_at || new Date(row.token_expires_at).getTime() > Date.now()) &&
+    Boolean(row.grant_id) !== Boolean(row.package_id)
+  );
+}
+
+export async function createConsentExchangeCode({
   grantId,
   token,
   grant,
@@ -9552,56 +9627,188 @@ export function createConsentExchangeCode({
   token: string;
   grant: Record<string, unknown>;
   ttlMs?: number;
-}): string {
-  if (!(grantId && token && grant)) {
-    throw new Error("createConsentExchangeCode requires grantId, token, and grant");
+}): Promise<string> {
+  if (
+    !(
+      grantId &&
+      token &&
+      isRecord(grant) &&
+      (grant.grant_id === grantId || grant.package_id === grantId)
+    )
+  ) {
+    throw new Error("createConsentExchangeCode requires a matching grantId, token, and grant");
   }
-  pruneExpiredConsentExchangeCodes();
+  const tokenInfo = await introspect(token);
+  const isPackage = tokenInfo.pdpp_token_kind === "mcp_package";
+  if (
+    !tokenInfo.active ||
+    (isPackage ? tokenInfo.grant_package_id !== grantId : tokenInfo.grant_id !== grantId)
+  ) {
+    throw new Error("createConsentExchangeCode requires an active token bound to the approved result");
+  }
   const code = `cex_${randomBytes(32).toString("hex")}`;
-  consentExchangeCodes.set(code, {
-    consumed: false,
-    expiresAt: Date.now() + ttlMs,
-    grant,
-    grantId,
-    token,
-  });
+  const codeHash = base64UrlSha256(code);
+  const createdAt = nowIso();
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+  if (isPostgresStorageBackend()) {
+    await postgresQuery(
+      `INSERT INTO consent_exchange_codes(
+         code_hash, token_id, created_at, expires_at, redeemed_at
+       ) VALUES($1, $2, $3, $4, NULL)`,
+      [codeHash, token, createdAt, expiresAt]
+    );
+  } else {
+    exec(referenceQueries.authConsentExchangeCodesInsert, [codeHash, token, createdAt, expiresAt]);
+  }
   return code;
 }
 
-export function consumeConsentExchangeCode(code: unknown): {
+export async function consumeConsentExchangeCode(code: unknown): Promise<{
   ok: boolean;
   reason?: string;
   grantId?: string;
+  packageId?: string;
   token?: string;
   grant?: Record<string, unknown>;
-} {
+}> {
   if (typeof code !== "string" || code.length === 0) {
     return { ok: false, reason: "unknown" };
   }
-  const entry = consentExchangeCodes.get(code);
-  if (!entry) {
-    return { ok: false, reason: "unknown" };
-  }
-  if (entry.consumed) {
-    return { ok: false, reason: "consumed" };
-  }
-  if (entry.expiresAt <= Date.now()) {
-    consentExchangeCodes.delete(code);
-    return { ok: false, reason: "expired" };
-  }
-  entry.consumed = true;
-  consentExchangeCodes.delete(code);
-  return {
-    grant: entry.grant,
-    grantId: entry.grantId,
-    ok: true,
-    token: entry.token,
-  };
-}
-
-/** Test-only escape hatch: clear the in-memory exchange-code store. */
-export function _resetConsentExchangeCodes(): void {
-  consentExchangeCodes.clear();
+  const codeHash = base64UrlSha256(code);
+  const redeemedAt = nowIso();
+  const result = isPostgresStorageBackend()
+    ? await withPostgresTransaction(
+        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This transaction deliberately keeps row lock, active-authority validation, envelope reconstruction, and first-redemption transition in one auditable atomic unit.
+        async (client) => {
+        const selected = await client.query<ConsentExchangeRow>(
+          `SELECT c.code_hash, c.token_id, c.created_at, c.expires_at,
+                  c.redeemed_at, t.grant_id, t.package_id,
+                  t.revoked AS token_revoked, t.expires_at AS token_expires_at
+             FROM consent_exchange_codes c
+             JOIN tokens t ON t.token_id = c.token_id
+            WHERE c.code_hash = $1
+            FOR UPDATE OF c, t`,
+          [codeHash]
+        );
+        const row = selected.rows[0] || null;
+        if (!row) {
+          return { ok: false as const, reason: "unknown" };
+        }
+        if (new Date(row.expires_at).getTime() <= Date.now()) {
+          return { ok: false as const, reason: "expired" };
+        }
+        if (!consentExchangeTokenIsActive(row)) {
+          return { ok: false as const, reason: "revoked" };
+        }
+        let grant: Record<string, unknown>;
+        let grantId: string | undefined;
+        let packageId: string | undefined;
+        if (row.grant_id) {
+          const grantResult = await client.query<DbRow>(
+            `SELECT grant_id, grant_json::text AS grant_json
+               FROM grants
+              WHERE grant_id = $1 AND status = 'active'
+              FOR SHARE`,
+            [row.grant_id]
+          );
+          const grantRow = grantResult.rows[0] || null;
+          if (!(grantRow && isNonEmptyString(grantRow.grant_json))) {
+            return { ok: false as const, reason: "revoked" };
+          }
+          const parsed: unknown = JSON.parse(grantRow.grant_json);
+          if (!isRecord(parsed) || parsed.grant_id !== row.grant_id) {
+            return { ok: false as const, reason: "unknown" };
+          }
+          grant = parsed;
+          grantId = row.grant_id;
+        } else {
+          const packageResult = await client.query<DbRow>(
+            `SELECT package_id
+               FROM grant_packages
+              WHERE package_id = $1 AND status = 'active'
+              FOR SHARE`,
+            [row.package_id]
+          );
+          if (!packageResult.rows[0]) {
+            return { ok: false as const, reason: "revoked" };
+          }
+          const members = await client.query<GrantPackageMemberRow>(
+            `SELECT gm.grant_id, gm.source_json::text AS source_json
+               FROM grant_package_members gm
+              WHERE gm.package_id = $1
+              ORDER BY gm.added_at, gm.grant_id`,
+            [row.package_id]
+          );
+          packageId = row.package_id || undefined;
+          if (!packageId) {
+            return { ok: false as const, reason: "unknown" };
+          }
+          grant = buildConsentPackageGrant(packageId, members.rows);
+        }
+        if (!row.redeemed_at) {
+          await client.query(
+            "UPDATE consent_exchange_codes SET redeemed_at = $1 WHERE code_hash = $2 AND redeemed_at IS NULL",
+            [redeemedAt, codeHash]
+          );
+        }
+        return {
+          grant,
+          ok: true as const,
+          token: row.token_id,
+          ...(packageId ? { packageId } : { grantId: grantId as string }),
+        };
+        }
+      )
+    : transaction(
+        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: SQLite mirrors the PostgreSQL atomic unit so authority validation and first redemption cannot be split across transactions.
+        () => {
+        const row = getOne<ConsentExchangeRow>(referenceQueries.authConsentExchangeCodesGetForRedemption, [
+          codeHash,
+        ]);
+        if (!row) {
+          return { ok: false as const, reason: "unknown" };
+        }
+        if (new Date(row.expires_at).getTime() <= Date.now()) {
+          return { ok: false as const, reason: "expired" };
+        }
+        if (!consentExchangeTokenIsActive(row)) {
+          return { ok: false as const, reason: "revoked" };
+        }
+        let grant: Record<string, unknown>;
+        let grantId: string | undefined;
+        let packageId: string | undefined;
+        if (row.grant_id) {
+          const grantRow = getOne<DbRow>(referenceQueries.authGrantsGetForRevocation, [row.grant_id]);
+          if (!(grantRow && grantRow.status === "active" && isNonEmptyString(grantRow.grant_json))) {
+            return { ok: false as const, reason: "revoked" };
+          }
+          const parsed: unknown = JSON.parse(grantRow.grant_json);
+          if (!isRecord(parsed) || parsed.grant_id !== row.grant_id) {
+            return { ok: false as const, reason: "unknown" };
+          }
+          grant = parsed;
+          grantId = row.grant_id;
+        } else {
+          const packageRow = sqliteGrantPackageStore.getPackageById(row.package_id || "") as DbRow | null;
+          if (!(packageRow && packageRow.status === "active" && row.package_id)) {
+            return { ok: false as const, reason: "revoked" };
+          }
+          const members = sqliteGrantPackageStore.listAllMembers(row.package_id) as readonly GrantPackageMemberRow[];
+          packageId = row.package_id;
+          grant = buildConsentPackageGrant(packageId, members);
+        }
+        if (!row.redeemed_at) {
+          exec(referenceQueries.authConsentExchangeCodesMarkRedeemed, [redeemedAt, codeHash]);
+        }
+        return {
+          grant,
+          ok: true as const,
+          token: row.token_id,
+          ...(packageId ? { packageId } : { grantId: grantId as string }),
+        };
+        }
+      );
+  return result;
 }
 
 /**

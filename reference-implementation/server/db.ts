@@ -677,6 +677,18 @@ CREATE TABLE IF NOT EXISTS tokens (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS consent_exchange_codes (
+  code_hash      TEXT PRIMARY KEY,
+  token_id       TEXT NOT NULL,
+  created_at     TEXT NOT NULL,
+  expires_at     TEXT NOT NULL,
+  redeemed_at    TEXT,
+  FOREIGN KEY(token_id) REFERENCES tokens(token_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_consent_exchange_codes_expiry
+  ON consent_exchange_codes(expires_at);
+
 CREATE TABLE IF NOT EXISTS pending_consents (
   device_code              TEXT PRIMARY KEY,
   user_code                TEXT NOT NULL UNIQUE,

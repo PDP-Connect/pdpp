@@ -1,22 +1,23 @@
 const TOP_LEVEL_REGEX_1 = /cex_[0-9a-f]{64}/;
 const TOP_LEVEL_REGEX_2 = /cex_[0-9a-f]{64}/;
 const APPROVAL_REVIEW_REVISION_PATTERN = /name="approval_review_revision" value="([^"]+)"/;
+const GRANT_ID_RE = /grt_[a-zA-Z0-9]+/;
 
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 // Regression tests for the harden-consent-token-handoff change.
 //
 // Pins the invariants:
 //   1. The HTML branch of POST /consent/approve never embeds the bearer.
 //   2. The HTML branch DOES embed an opaque cex_… exchange code.
-//   3. POST /consent/exchange redeems the code once and returns
+//   3. POST /consent/exchange redeems the code and returns
 //      { grant_id, token, grant }.
-//   4. A second redemption attempt fails with a 4xx PDPP error envelope and
-//      does not leak the bearer.
+//   4. A repeated redemption returns the same result after response loss.
 //   5. An expired code fails with a 4xx PDPP error envelope.
 //   6. An unknown code fails with a 4xx PDPP error envelope.
 //   7. The JSON branch of POST /consent/approve still returns the bearer in
@@ -26,8 +27,16 @@ import { dirname, join } from "node:path";
 //       reference-implementation-architecture/spec.md
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { consumeConsentExchangeCode, createConsentExchangeCode } from "../server/auth.ts";
+import {
+  approveGrant,
+  consumeConsentExchangeCode,
+  createConsentExchangeCode,
+  getPendingConsent,
+  parsePendingConsentRequestUri,
+  revokeGrant,
+} from "../server/auth.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
+import { closeDb, getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
@@ -141,6 +150,36 @@ async function initiateGrantRequest(asUrl: string, spotifyManifest: SpotifyManif
     throw new Error(`PAR failed (${initResp.status}): ${await initResp.text()}`);
   }
   return initResp.json() as Promise<InitiateGrantResponse>;
+}
+
+async function reviewConsent(asUrl: string, requestUri: string): Promise<string> {
+  const response = await fetch(`${asUrl}/consent/review`, {
+    body: JSON.stringify({ request_uri: requestUri, subject_id: OWNER_SUBJECT_ID }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = (await response.json()) as { approval_review_revision?: unknown };
+  assert.equal(typeof body.approval_review_revision, "string");
+  return body.approval_review_revision as string;
+}
+
+async function approveReviewedHtml(asUrl: string, requestUri: string): Promise<Response> {
+  const revision = await reviewConsent(asUrl, requestUri);
+  return fetch(`${asUrl}/consent/approve`, {
+    body: new URLSearchParams({ approval_review_revision: revision, request_uri: requestUri }).toString(),
+    headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
+  });
+}
+
+async function approveReviewedJson(asUrl: string, requestUri: string): Promise<Response> {
+  const revision = await reviewConsent(asUrl, requestUri);
+  return fetch(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({ approval_review_revision: revision, request_uri: requestUri }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
 }
 
 interface HarnessContext {
@@ -298,7 +337,7 @@ test("security: harden consent token handoff", async (t) => {
     });
   });
 
-  await t.test("a consumed exchange code cannot be redeemed again", async () => {
+  await t.test("a repeated exchange redemption returns the same durable result", async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const initiate = await initiateGrantRequest(asUrl, spotifyManifest);
       const review = await fetch(`${asUrl}/consent/review`, {
@@ -337,15 +376,58 @@ test("security: harden consent token handoff", async (t) => {
       const firstBody = (await first.json()) as ExchangeResponse;
       assert.ok(firstBody.token.length > 0);
 
-      // Second redemption fails; bearer SHALL NOT appear in the failure body.
-      const second = await fetchJson(`${asUrl}/consent/exchange`, {
+      const second = await fetch(`${asUrl}/consent/exchange`, {
         body: JSON.stringify({ code }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
-      assert.ok(second.status >= 400 && second.status < 500, `expected 4xx, got ${second.status}`);
-      assert.equal(typeof second.body?.error?.code, "string", "failure SHALL be a PDPP error envelope");
-      assert.equal(JSON.stringify(second.body).includes(firstBody.token), false);
+      assert.equal(second.status, 200);
+      assert.deepEqual((await second.json()) as ExchangeResponse, firstBody);
+    });
+  });
+
+  await t.test("concurrent SQLite redemptions converge on one stored transition", async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const initiate = await initiateGrantRequest(asUrl, spotifyManifest);
+      const approval = await approveReviewedHtml(asUrl, initiate.request_uri);
+      const code = (await approval.text()).match(TOP_LEVEL_REGEX_1)?.[0];
+      assert.ok(code);
+      const responses = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          fetch(`${asUrl}/consent/exchange`, {
+            body: JSON.stringify({ code }),
+            headers: { "Content-Type": "application/json" },
+            method: "POST",
+          })
+        )
+      );
+      assert.ok(responses.every((response) => response.status === 200));
+      const bodies = (await Promise.all(responses.map((response) => response.json()))) as ExchangeResponse[];
+      assert.equal(new Set(bodies.map((body) => body.token)).size, 1);
+      const stored = getDb()
+        .prepare("SELECT COUNT(*) AS n, COUNT(redeemed_at) AS redeemed FROM consent_exchange_codes")
+        .get() as { n: number; redeemed: number };
+      assert.deepEqual(stored, { n: 1, redeemed: 1 });
+    });
+  });
+
+  await t.test("a revoked grant is not delivered by a stored exchange code", async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const initiate = await initiateGrantRequest(asUrl, spotifyManifest);
+      const approval = await approveReviewedHtml(asUrl, initiate.request_uri);
+      const html = await approval.text();
+      const code = html.match(TOP_LEVEL_REGEX_1)?.[0];
+      const grantId = html.match(GRANT_ID_RE)?.[0];
+      assert.ok(code);
+      assert.ok(grantId);
+      await revokeGrant(grantId);
+      const response = await fetch(`${asUrl}/consent/exchange`, {
+        body: JSON.stringify({ code }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(response.status, 404);
+      assert.equal((await response.text()).includes("tok_"), false);
     });
   });
 
@@ -373,24 +455,125 @@ test("security: harden consent token handoff", async (t) => {
     });
   });
 
-  // Direct unit-level coverage of the in-memory store: TTL expiry. We use the
-  // exported helpers so we do not need to mock time inside the HTTP route.
-  await t.test("expired exchange codes are not redeemable", () => {
-    const fakeGrant = { client: { client_id: "cli_test" }, grant_id: "grt_test" };
-    const code = createConsentExchangeCode({
-      grant: fakeGrant,
-      grantId: "grt_test",
-      token: "tok_for_expiry_test",
-      ttlMs: 1, // immediate expiry
+  await t.test("expired exchange codes are not redeemable", async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const initiate = await initiateGrantRequest(asUrl, spotifyManifest);
+      const response = await approveReviewedJson(asUrl, initiate.request_uri);
+      assert.equal(response.status, 200);
+      const approved = (await response.json()) as ApproveJsonResponse;
+      const code = await createConsentExchangeCode({
+        grant: approved.grant as Record<string, unknown>,
+        grantId: approved.grant_id,
+        token: approved.token,
+        ttlMs: 1,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const result = await consumeConsentExchangeCode(code);
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, "expired");
     });
-    // Wait one tick past TTL.
-    return new Promise((resolve) =>
-      setTimeout(() => {
-        const result = consumeConsentExchangeCode(code);
-        assert.equal(result.ok, false);
-        assert.equal(result.reason, "expired");
-        resolve();
-      }, 5)
-    );
+  });
+
+  await t.test("an already-committed approval can create a fresh HTML handoff", async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const initiate = await initiateGrantRequest(asUrl, spotifyManifest);
+      const deviceCode = parsePendingConsentRequestUri(initiate.request_uri);
+      assert.ok(deviceCode);
+      // Inject the failure boundary directly: commit approval, then do not call
+      // the HTML handoff creator or deliver a response.
+      const pending = await getPendingConsent(deviceCode, {
+        finalizeReview: true,
+        subjectId: OWNER_SUBJECT_ID,
+      });
+      assert.ok(pending);
+      assert.ok(pending.reviewRevision);
+      const committed = await approveGrant(deviceCode, OWNER_SUBJECT_ID, {
+        approval_review_revision: pending.reviewRevision,
+      });
+
+      const resumed = await fetch(`${asUrl}/consent/approve`, {
+        body: new URLSearchParams({
+          approval_review_revision: pending.reviewRevision as string,
+          request_uri: initiate.request_uri,
+        }).toString(),
+        headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+      assert.equal(resumed.status, 200);
+      const html = await resumed.text();
+      const code = html.match(TOP_LEVEL_REGEX_1)?.[0];
+      assert.ok(code);
+      const exchange = await fetch(`${asUrl}/consent/exchange`, {
+        body: JSON.stringify({ code }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(exchange.status, 200);
+      const resumedBody = (await exchange.json()) as ExchangeResponse;
+      assert.equal(resumedBody.grant_id, committed.grant.grant_id);
+      assert.equal(resumedBody.token, committed.token);
+    });
+  });
+
+  await t.test("an exchange code survives a SQLite-backed server restart", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pdpp-consent-handoff-restart-"));
+    const dbPath = join(directory, "pdpp.sqlite");
+    const spotifyManifest = JSON.parse(
+      readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
+    ) as SpotifyManifest;
+    let first: TestServerHandle | null = null;
+    let second: TestServerHandle | null = null;
+    try {
+      first = await startServer({
+        asPort: 0,
+        dbPath,
+        introspectionCallerCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
+        quiet: true,
+        rsPort: 0,
+      });
+      const firstUrl = `http://localhost:${first.asPort}`;
+      const registerResp = await fetch(`${firstUrl}/connectors`, {
+        body: JSON.stringify(spotifyManifest),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(registerResp.status, 201);
+      await seedSpotifyInstance(spotifyManifest);
+      const initiate = await initiateGrantRequest(firstUrl, spotifyManifest);
+      const approval = await approveReviewedHtml(firstUrl, initiate.request_uri);
+      assert.equal(approval.status, 200);
+      const code = (await approval.text()).match(TOP_LEVEL_REGEX_1)?.[0];
+      assert.ok(code);
+
+      await closeServer(first);
+      first = null;
+      closeDb();
+
+      second = await startServer({
+        asPort: 0,
+        dbPath,
+        introspectionCallerCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
+        quiet: true,
+        rsPort: 0,
+      });
+      const response = await fetch(`http://localhost:${second.asPort}/consent/exchange`, {
+        body: JSON.stringify({ code }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(response.status, 200);
+      const result = (await response.json()) as ExchangeResponse;
+      assert.ok(result.token);
+      assert.ok(result.grant_id);
+    } finally {
+      if (first) {
+        await closeServer(first);
+      }
+      if (second) {
+        await closeServer(second);
+      }
+      closeDb();
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 });

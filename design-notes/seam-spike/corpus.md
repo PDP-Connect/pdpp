@@ -317,6 +317,17 @@ for all superseded-generation reuse. Tests cover concurrent rotation, retry
 after lost response, family-wide revocation, and fresh authorization
 requirement. This follows RFC 9700.
 
+## Durable post-approval handoff
+
+The HTML consent surface stores a hash of its bounded exchange code and a
+reference to the existing `tokens.token_id` authority. It does not persist a
+second plaintext bearer. The code survives process restart. Redemption is
+atomic and response-loss idempotent while the referenced grant or package and
+token remain active. Revocation or expiry fails closed. Case 5's implementation
+inputs and the relevant-file tree cover the handoff schema, SQLite and
+PostgreSQL paths, route, and focused restart, concurrency, package, and
+revocation tests.
+
 ## Deferred questions
 
 Keyless recovery and a minimum security-profile floor are deferred questions,
@@ -408,7 +419,7 @@ Required schema:
 ```
 
 The CI job `pr89-seam-receipt` runs the receipt checker with no network access.
-The checker rebuilds the complete receipt from all seven canonical evidence
+The checker rebuilds the complete receipt from all eight canonical evidence
 files and current repository inputs. It requires the exact case keys, passing
 status, oracle codes, PostgreSQL assertion, three decision keys, and
 `undecided_common_schemas: true`. It recomputes every receipt, fixture,
@@ -432,15 +443,16 @@ pnpm --filter pdpp-reference-implementation test -- test/source-kind-resolution-
 git diff --check
 ```
 
-The shared three-change ownership and merge order is:
+The five-change ownership and merge order is:
 
 | Change | Owns | Merge order |
 | --- | --- | --- |
-| Source Declaration and resolved grant contract | neutral declaration, request, snapshot, and resolved grant contracts | 1 |
-| existing PR89 OAuth/RAR authorization carrier and seam | executable OAuth/RAR spike, breaking authorization-state gate, receipt checker, and consumption of the Source-defined resolved contract | 2 |
-| Source Declaration discovery and trust | long-term registration, retrieval, onboarding, and trust boundaries | 3 |
+| `define-source-declarations-and-resolved-grants` contract | neutral declaration, request, snapshot, and resolved grant contracts | 1 |
+| `define-source-declaration-discovery-and-trust` contract | discovery metadata, retrieval, revision, and trust contracts | 2 |
+| Source reference implementation | consent snapshots, closed resolved grants, and Source enforcement | 3 |
+| Discovery trust reference implementation | discovery storage and accepted-revision consent bridge | 4 |
+| `harden-pdpp-authorization-and-0-1-migration` | OAuth/RAR carrier, separated RS, lifecycle and migration gates, durable handoff, and receipts | 5 |
 
-PR89 consumes the Source-defined contract and must not define a second grant
-schema. Discovery consumes both the Source Declaration contract and the
-existing PR89 OAuth/RAR authorization carrier and seam. GNAP and DPoP future
-work is not a numbered PR in this program.
+The hardening change consumes the four preceding Source and discovery layers
+and must not define a second grant schema. GNAP and DPoP future work is outside
+this program.

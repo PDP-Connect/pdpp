@@ -741,7 +741,7 @@ test("as.consent.decision resolves approval_id to request_uri via build helper",
   assert.equal(resolvedUri, "urn:par:dev_1");
 });
 
-test("as.consent.decision returns 404 for non-pending approval_id", async () => {
+test("as.consent.decision returns 404 for a denied approval_id", async () => {
   const outcome = await executeAsConsentDecision(
     {
       action: "approve",
@@ -750,7 +750,7 @@ test("as.consent.decision returns 404 for non-pending approval_id", async () => 
       subjectId: "s",
     },
     makeConsentDeps({
-      getPendingConsentByApprovalId: () => ({ device_code: "d", status: "approved" }),
+      getPendingConsentByApprovalId: () => ({ device_code: "d", status: "denied" }),
     })
   );
   assert.equal(outcome.outcome, "failure");

@@ -157,11 +157,21 @@ async function issueToken(
   assert.ok(consentLocation);
   const requestUri = new URL(consentLocation, asUrl).searchParams.get("request_uri");
   assert.ok(requestUri);
-  const approval = await fetch(`${asUrl}/consent/approve`, {
+  const review = await fetchJson<{ approval_review_revision: string }>(`${asUrl}/consent/review`, {
     body: JSON.stringify({
       request_uri: requestUri,
       source_narrowing: { "0": { streams: ["top_artists"] } },
       subject_id: "owner_local",
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(review.response.status, 200, JSON.stringify(review.body));
+  assert.equal(typeof review.body.approval_review_revision, "string");
+  const approval = await fetch(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({
+      approval_review_revision: review.body.approval_review_revision,
+      request_uri: requestUri,
     }),
     headers: { "Content-Type": "application/json" },
     method: "POST",

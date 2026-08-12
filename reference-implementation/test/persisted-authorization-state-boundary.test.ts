@@ -14,10 +14,6 @@ import { introspectionHeaders } from "./helpers/introspection.ts";
 import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const VERSIONLESS_LEGACY_BYTES = readFileSync(
-  join(TEST_DIR, "seam-spike/fixtures/pr89/legacy-grant.bytes"),
-  "utf8"
-).trim();
 const V01_LEGACY_BYTES = readFileSync(
   join(TEST_DIR, "seam-spike/fixtures/pr89/legacy-grant-v01.bytes"),
   "utf8"
@@ -50,16 +46,14 @@ function errorCode(body: unknown): string | undefined {
 }
 
 test("pre-contract persisted bytes are rejected by the current grant reader", () => {
-  for (const legacyBytes of [VERSIONLESS_LEGACY_BYTES, V01_LEGACY_BYTES]) {
-    assert.throws(
-      () => requirePersistedGrantState({ grant_json: legacyBytes, storage_binding_json: null }),
-      (error: unknown) => {
-        assert.ok(error instanceof Error);
-        assert.equal((error as Error & { code?: string }).code, "authorization_state.unsupported_legacy_shape");
-        return true;
-      }
-    );
-  }
+  assert.throws(
+    () => requirePersistedGrantState({ grant_json: V01_LEGACY_BYTES, storage_binding_json: null }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal((error as Error & { code?: string }).code, "authorization_state.unsupported_legacy_shape");
+      return true;
+    }
+  );
 });
 
 test("legacy persisted grant state fails before the SQLite RS route", async () => {

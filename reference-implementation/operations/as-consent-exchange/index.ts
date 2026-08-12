@@ -23,7 +23,8 @@ export interface AsConsentExchangeInput {
 export type AsConsentExchangeConsumeResult =
   | {
       readonly ok: true;
-      readonly grantId: string;
+      readonly grantId?: string;
+      readonly packageId?: string;
       readonly token: string;
       readonly grant: Record<string, unknown>;
     }
@@ -37,7 +38,8 @@ export interface AsConsentExchangeDependencies {
 
 export interface AsConsentExchangeSuccessOutcome {
   readonly envelope: {
-    readonly grant_id: string;
+    readonly grant_id?: string;
+    readonly package_id?: string;
     readonly token: string;
     readonly grant: Record<string, unknown>;
   };
@@ -90,11 +92,17 @@ export async function executeAsConsentExchange(
       status: 404,
     };
   }
+  let resultIdentity: { package_id: string } | { grant_id: string } | Record<string, never> = {};
+  if (result.packageId) {
+    resultIdentity = { package_id: result.packageId };
+  } else if (result.grantId) {
+    resultIdentity = { grant_id: result.grantId };
+  }
   return {
     envelope: {
       grant: result.grant,
-      grant_id: result.grantId,
       token: result.token,
+      ...resultIdentity,
     },
     outcome: "success",
   };

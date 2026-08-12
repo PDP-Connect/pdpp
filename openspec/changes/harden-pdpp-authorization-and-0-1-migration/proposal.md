@@ -8,8 +8,8 @@ implementation.
 
 ## What Changes
 
-- Execute the seven-case OAuth/RAR seam spike, the implementation it exercises,
-  and its deterministic receipt checker.
+- Execute the seven-case OAuth/RAR seam spike plus one durable-handoff case,
+  the implementation they exercise, and the deterministic receipt checker.
 - Define `ApprovedAuthorization` as the Source contract: `source_id`,
   `access_mode`, and streams with unique nonempty `name`, `instance_ids`, and
   `fields`, optional frozen-field bounds, and optional canonical resources.
@@ -23,15 +23,19 @@ implementation.
 - Implement refresh rotation, superseded-generation reuse, family revocation,
   lost-response retry handling, and exact store state following RFC 9700.
   Report these controls separately from the seven-case seam result.
+- Replace the process-local HTML consent handoff with a durable exchange-code
+  record. A committed approval can be resumed after process failure, and
+  repeated redemption returns the same persisted token result until the
+  exchange code expires.
 - Treat pre-v0.1 persisted authorization state as disposable. Reject its bytes
   before introspection or route handling with
   `authorization_state.unsupported_legacy_shape` and require fresh consent.
 - Defer keyless recovery, the security-profile floor, DPoP implementation,
   timestamp and duration value canonicalization, and persisted-state inventory.
-- Keep the GNAP map non-gating and record the shared three-change ownership and
-  merge order: Source Declaration and resolved grant contract; existing PR89
-  OAuth/RAR authorization carrier and seam; Source Declaration discovery and
-  trust.
+- Keep the GNAP map non-gating and record the five-change ownership and merge
+  order across Source contract, discovery contract, Source implementation,
+  discovery implementation and accepted-revision bridge, then this OAuth/RAR
+  hardening change.
 
 ## Capabilities
 
@@ -53,9 +57,9 @@ implementation.
 
 ## Impact
 
-This PR executes the spike and implements the binding and lifecycle behavior
-needed to pass it. It updates root protocol text where the implemented OAuth
-contract requires it. It does not implement a GNAP binding, DPoP, long-term
-registration, or public discovery.
+This PR executes the spike and implements the binding, lifecycle, and durable
+post-approval handoff behavior needed to pass it. It updates root protocol text
+where the implemented OAuth contract requires it. It does not implement a GNAP
+binding, DPoP, long-term registration, or public discovery.
 The authoritative case, fixture, failure-code, receipt, PostgreSQL, and CI
 requirements are in `design-notes/seam-spike/corpus.md`.

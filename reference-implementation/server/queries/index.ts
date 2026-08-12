@@ -145,6 +145,9 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authConnectorsInsertIfAbsent: MutationQuery;
   readonly authConnectorsListIds: SmallEnumerationQuery;
   readonly authConnectorsUpsert: MutationQuery;
+  readonly authConsentExchangeCodesGetForRedemption: ReadOneQuery;
+  readonly authConsentExchangeCodesInsert: MutationQuery;
+  readonly authConsentExchangeCodesMarkRedeemed: MutationQuery;
   readonly authGrantPackageMembersGetPackageIdByGrant: ReadOneQuery;
   readonly authGrantPackageMembersInsert: MutationQuery;
   readonly authGrantPackageMembersListActiveByPackage: SmallEnumerationQuery;
@@ -722,6 +725,10 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "authConnectorsUpsert",
     "authConnectorsListIds",
     "authConnectorsGetManifestById",
+    // Auth — consent_exchange_codes
+    "authConsentExchangeCodesGetForRedemption",
+    "authConsentExchangeCodesInsert",
+    "authConsentExchangeCodesMarkRedeemed",
     // Auth — grants
     "authGrantsInsert",
     "authGrantsGetForIssuance",

@@ -169,10 +169,53 @@ discovery metadata, or sunset policy.
   `authorization_state.unsupported_legacy_shape`
 - **AND** it SHALL NOT obtain missing facts from current configuration
 
+### Requirement: Post-approval HTML handoff SHALL survive failure and response loss
+
+The HTML consent path SHALL store exchange-code state in the configured
+database, not in process memory. The store SHALL retain only a non-reversible
+code hash and a reference to `tokens.token_id`, the reference implementation's
+existing plaintext bearer authority. It SHALL NOT persist a second plaintext bearer. The first
+successful redemption SHALL record its transition atomically. A retry of the
+same unexpired code SHALL return the same grant and token result and SHALL NOT
+issue another token. An already-committed approval SHALL be resumable so a
+failure before handoff delivery can create a fresh bounded exchange code.
+Expired and unknown codes SHALL fail closed. JSON approval and OAuth
+authorization-code transport SHALL remain unchanged.
+
+**Change class:** repairs an existing durability and credential-delivery hole
+
+#### Scenario: Process failure does not lose an exchange result
+
+- **WHEN** the process restarts after the HTML exchange code is stored and
+  before the code is redeemed
+- **THEN** the client SHALL redeem the code from the reopened database and
+  receive the approved grant and existing token
+
+#### Scenario: A lost redemption response is safely retried
+
+- **WHEN** the first redemption commits but its response is lost
+- **THEN** a retry of the same unexpired code SHALL return the same grant and
+  token
+- **AND** it SHALL NOT issue or persist a second token
+
+#### Scenario: Approval-to-handoff failure is recoverable
+
+- **WHEN** approval is committed but the process fails before a handoff code is
+  delivered
+- **THEN** retrying that approval SHALL recover the committed grant and token
+  and create a new bounded exchange code
+
+#### Scenario: Concurrent redemption converges
+
+- **WHEN** two requests redeem the same valid exchange code concurrently
+- **THEN** both SHALL observe the same grant and token result
+- **AND** exactly one first-redemption transition SHALL be stored
+
 ### Requirement: The seam result SHALL remain bounded and receipt-verifiable
 
 The authoritative execution document is
-`design-notes/seam-spike/corpus.md`. It SHALL define exactly seven cases,
+`design-notes/seam-spike/corpus.md`. It SHALL define exactly seven seam cases
+and one durable-handoff case,
 fixture paths, stable failure codes, commands, receipt schema, and deterministic
 oracles. PostgreSQL SHALL be mandatory for code and `single_use` races. CI
 SHALL run the receipt checker. The receipt's relevant-file tree digest SHALL
@@ -181,10 +224,10 @@ undecided.
 
 **Change class:** repairs an existing interoperability and security hole
 
-#### Scenario: The seven cases produce a complete receipt
+#### Scenario: The eight cases produce a complete receipt
 
 - **WHEN** the strict target and receipt checker run
-- **THEN** all seven case results, the PostgreSQL assertion, the three decision
+- **THEN** all eight case results, the PostgreSQL assertion, the three decision
   keys, and the undecided common-schema result SHALL be present
 
 #### Scenario: Deferred controls are not seam passes

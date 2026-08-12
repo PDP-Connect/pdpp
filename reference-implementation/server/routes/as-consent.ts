@@ -122,7 +122,11 @@ export interface MountAsConsentContext {
   consumeConsentExchangeCode: (
     code: string
   ) => Promise<AsConsentExchangeConsumeResult> | AsConsentExchangeConsumeResult;
-  createConsentExchangeCode: (opts: { grantId: string; token: string; grant: unknown }) => string;
+  createConsentExchangeCode: (opts: {
+    grantId: string;
+    token: string;
+    grant: Record<string, unknown>;
+  }) => Promise<string> | string;
   handleError: (res: unknown, err: unknown) => void;
   issueOAuthAuthorizationCodeForDeviceCode: (
     deviceCode: string | null,
@@ -141,12 +145,12 @@ export interface MountAsConsentContext {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-function renderApproveHtml(
+async function renderApproveHtml(
   ctx: MountAsConsentContext,
   grant: { grant_id: string; [k: string]: unknown },
   token: string
-): string {
-  const exchangeCode = ctx.createConsentExchangeCode({ grant, grantId: grant.grant_id, token });
+): Promise<string> {
+  const exchangeCode = await ctx.createConsentExchangeCode({ grant, grantId: grant.grant_id, token });
   return ctx.consentUi.renderHostedDocument({
     body: [
       ctx.consentUi.renderPageIntro({
@@ -180,12 +184,14 @@ function renderApproveHtml(
   });
 }
 
-function renderPackageApproveHtml(
+async function renderPackageApproveHtml(
   ctx: MountAsConsentContext,
   grant: { grant_id: string; child_grants?: Array<{ grant_id?: string }>; [k: string]: unknown },
-  packageId: string
-): string {
+  packageId: string,
+  token: string
+): Promise<string> {
   const childGrants = Array.isArray(grant.child_grants) ? grant.child_grants : [];
+  const exchangeCode = await ctx.createConsentExchangeCode({ grant, grantId: packageId, token });
   return ctx.consentUi.renderHostedDocument({
     body: [
       ctx.consentUi.renderPageIntro({
@@ -211,6 +217,11 @@ function renderPackageApproveHtml(
               .join("<br>"),
             label: "Child grant IDs",
           },
+          {
+            html: `<code>${ctx.consentUi.escapeHtml(exchangeCode)}</code>`,
+            label: "Consent exchange code",
+          },
+          { html: "<code>POST /consent/exchange</code>", label: "Redeem at" },
         ]),
         surface: "protocol",
       }),
@@ -264,7 +275,7 @@ async function dispatchApproveResponse(
     return;
   }
   if (isPackage) {
-    res.send(renderPackageApproveHtml(ctx, grant, packageInfo?.package_id ?? grant.grant_id));
+    res.send(await renderPackageApproveHtml(ctx, grant, packageInfo?.package_id ?? grant.grant_id, token));
     return;
   }
   // The HTML approval surface is the human-hosted owner consent page. The
@@ -275,7 +286,7 @@ async function dispatchApproveResponse(
   // at POST /consent/exchange to receive the bearer in a JSON body.
   // Spec: openspec/changes/harden-consent-token-handoff/specs/
   //       reference-implementation-architecture/spec.md
-  res.send(renderApproveHtml(ctx, grant, token));
+  res.send(await renderApproveHtml(ctx, grant, token));
 }
 
 // Owner per-source narrowing keyed by staged source index. The narrowing
@@ -533,6 +544,13 @@ function hasBatchApproveSelection(selection: {
   );
 }
 
+function hasBatchOnlyApproveSelection(selection: {
+  approvedSourceIndexes?: readonly number[];
+  confirmedApproveAll?: boolean;
+}): boolean {
+  return selection.approvedSourceIndexes !== undefined || selection.confirmedApproveAll === true;
+}
+
 function isReviewedDecisionConfirmed(value: unknown): boolean {
   return value === true || value === "true" || value === "1" || value === "on";
 }
@@ -724,7 +742,7 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
           res.status(404).send(renderPendingConsentNotFoundHtml(ctx.providerName, ctx.consentUi));
           return;
         }
-        if (pending.batch !== true && hasBatchApproveSelection(batchSelection)) {
+        if (pending.batch !== true && hasBatchOnlyApproveSelection(batchSelection)) {
           ctx.pdppError(res, 400, "invalid_request", "Single approval review does not accept batch choices");
           return;
         }

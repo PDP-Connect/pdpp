@@ -975,6 +975,16 @@ export async function bootstrapPostgresSchema({
       CREATE INDEX IF NOT EXISTS idx_pg_tokens_client_id
         ON tokens(client_id);
 
+      CREATE TABLE IF NOT EXISTS consent_exchange_codes (
+        code_hash TEXT PRIMARY KEY,
+        token_id TEXT NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        redeemed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_consent_exchange_codes_expiry
+        ON consent_exchange_codes(expires_at);
+
       CREATE TABLE IF NOT EXISTS grant_packages (
         package_id TEXT PRIMARY KEY,
         subject_id TEXT NOT NULL,

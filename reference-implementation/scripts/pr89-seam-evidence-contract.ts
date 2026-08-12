@@ -16,6 +16,7 @@ export const FIXED_CLOCK = "2026-08-11T12:00:00Z";
 export type CaseOracle =
   | "authorization_state.unsupported_legacy_shape"
   | "context_resolved"
+  | "durable_handoff"
   | "equal"
   | "gnap_map"
   | "partial_approval"
@@ -99,10 +100,12 @@ export const CASE_DEFINITIONS = {
     ],
     implementationInputPaths: [
       "packages/reference-contract/src/public/source.ts",
+      "reference-implementation/operations/as-consent-decision/index.ts",
       "reference-implementation/server/auth.ts",
       "reference-implementation/server/source-approved-authorization.ts",
       "reference-implementation/server/core-source-authorization.ts",
       "reference-implementation/server/routes/as-authorize.ts",
+      "reference-implementation/server/routes/as-consent.ts",
       "reference-implementation/server/routes/as-oauth.ts",
       "reference-implementation/server/source-declaration.ts",
     ],
@@ -196,10 +199,15 @@ export const CASE_DEFINITIONS = {
     fixturePaths: ["reference-implementation/test/seam-spike/fixtures/pr89/legacy-grant-v01.bytes"],
     implementationInputPaths: [
       "reference-implementation/server/auth.ts",
+      "reference-implementation/server/db.ts",
       "reference-implementation/server/postgres-storage.ts",
       "reference-implementation/server/queries/auth/oauth-authorization-codes/consume-code.sql",
+      "reference-implementation/server/queries/auth/oauth-authorization-codes/get-by-code.sql",
+      "reference-implementation/server/queries/auth/oauth-refresh-tokens/get-by-token.sql",
+      "reference-implementation/server/queries/auth/oauth-refresh-tokens/insert.sql",
       "reference-implementation/server/queries/auth/oauth-refresh-tokens/revoke-family.sql",
       "reference-implementation/server/queries/auth/oauth-refresh-tokens/supersede-active.sql",
+      "reference-implementation/server/queries/index.ts",
       "reference-implementation/server/routes/as-oauth.ts",
     ],
     observations: [
@@ -261,6 +269,36 @@ export const CASE_DEFINITIONS = {
     responseEnvelopesRequired: false,
     testFile: "reference-implementation/test/seam-spike/pr89-gnap-map.test.ts",
   },
+  "case-8": {
+    fixturePaths: [],
+    implementationInputPaths: [
+      "reference-implementation/operations/as-consent-decision/index.ts",
+      "reference-implementation/operations/as-consent-exchange/index.ts",
+      "reference-implementation/server/auth.ts",
+      "reference-implementation/server/db.ts",
+      "reference-implementation/server/postgres-storage.ts",
+      "reference-implementation/server/queries/auth/consent-exchange-codes/get-for-redemption.sql",
+      "reference-implementation/server/queries/auth/consent-exchange-codes/insert.sql",
+      "reference-implementation/server/queries/auth/consent-exchange-codes/mark-redeemed.sql",
+      "reference-implementation/server/queries/auth/grants/get-for-revocation.sql",
+      "reference-implementation/server/queries/index.ts",
+      "reference-implementation/server/routes/as-consent.ts",
+      "reference-implementation/test/auth-consent-device-postgres-path.test.ts",
+      "reference-implementation/test/batch-consent-per-source-gate.test.ts",
+      "reference-implementation/test/security-consent-token-handoff.test.ts",
+    ],
+    observations: [
+      "approval_commit_handoff_resume",
+      "package_handoff_and_revocation",
+      "postgresql_concurrent_redemption",
+      "sqlite_restart_and_response_loss",
+    ],
+    oracleCode: "durable_handoff",
+    outputRequired: false,
+    requiredTestNames: ["durable consent handoff portfolio passes on SQLite and PostgreSQL"],
+    responseEnvelopesRequired: false,
+    testFile: "reference-implementation/test/seam-spike/pr89-case-8-durable-handoff.test.ts",
+  },
 } as const satisfies Record<string, CaseDefinition>;
 
 export type CaseId = keyof typeof CASE_DEFINITIONS;
@@ -270,6 +308,7 @@ export const CASE_EXECUTION_ORDER: readonly CaseId[] = [
   "case-5",
   "case-6",
   "case-7",
+  "case-8",
   "case-1",
   "case-2",
   "case-3",
@@ -278,6 +317,7 @@ export const CASE_EXECUTION_ORDER: readonly CaseId[] = [
 
 export const RECEIPT_ASSERTION_CASES = {
   authenticated_http_introspection: ["case-3"],
+  durable_post_approval_handoff: ["case-8"],
   fresh_authorization_required: ["case-5", "case-6"],
   no_in_process_fallback: ["case-3", "case-4"],
   postgresql_races: ["case-5"],
@@ -309,6 +349,9 @@ export const RECEIPT_STATIC_PATHS = [
   "reference-implementation/test/seam-spike/pr89-case-output.ts",
   "reference-implementation/test/seam-spike/artifacts/.gitignore",
   "reference-implementation/test/seam-spike/pr89-receipt.schema.json",
+  "reference-implementation/test/auth-consent-device-postgres-path.test.ts",
+  "reference-implementation/test/batch-consent-per-source-gate.test.ts",
+  "reference-implementation/test/security-consent-token-handoff.test.ts",
   "scripts/test-accounting/node-reporter.ts",
   "scripts/test-accounting/receipt.ts",
   "test-accounting.manifest.json",

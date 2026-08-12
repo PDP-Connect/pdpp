@@ -126,7 +126,7 @@ export async function executeAsConsentDecision(
   let requestUri = input.requestUri || null;
   if (!requestUri && input.approvalId) {
     const row = await deps.getPendingConsentByApprovalId(input.approvalId);
-    if (row?.status !== "pending") {
+    if (!(row && (row.status === "pending" || (input.action === "approve" && row.status === "approved")))) {
       return {
         errorCode: "not_found",
         errorMessage: "No pending consent for approval_id",

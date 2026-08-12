@@ -44,6 +44,8 @@ import {
   approveGrant,
   approveOwnerDeviceAuthorization,
   createHostedMcpGrantPackage,
+  consumeConsentExchangeCode,
+  createConsentExchangeCode,
   denyOwnerDeviceAuthorization,
   exchangeOwnerDeviceCode,
   getOwnerDeviceAuthorizationByUserCode,
@@ -54,6 +56,7 @@ import {
   issueToken,
   parsePendingConsentRequestUri,
   registerConnector,
+  revokeGrantPackage,
   seedPreRegisteredClients,
 } from "../server/auth.ts";
 import { closeDb, initDb } from "../server/db.ts";
@@ -380,6 +383,79 @@ if (POSTGRES_URL) {
     const tokenState = await introspect(result.token);
     assert.equal(tokenState.active, false);
     assert.equal(tokenState.inactive_reason, "package_invalid");
+  });
+
+  test("consent handoff: concurrent Postgres redemption converges on one persisted token", async () => {
+    const manifest = loadSpotifyManifest();
+    const initiated = await initiateGrant({
+      authorization_details: [
+        {
+          access_mode: "continuous",
+          purpose_code: "https://pdpp.org/purpose/personalization",
+          source: { id: manifest.connector_id, kind: "connector" },
+          streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
+          type: "https://pdpp.org/data-access",
+        },
+      ],
+      client_id: CONSOLE_CLIENT_ID,
+    });
+    const deviceCode = parsePendingConsentRequestUri(initiated.request_uri);
+    assert.ok(deviceCode);
+    const pending = await getPendingConsent(deviceCode, { finalizeReview: true, subjectId: "owner_local" });
+    assert.ok(pending);
+    assert.equal(typeof pending.reviewRevision, "string");
+    const approved = await approveGrant(deviceCode, "owner_local", {
+      approval_review_revision: pending.reviewRevision,
+    });
+    const code = await createConsentExchangeCode({
+      grant: approved.grant,
+      grantId: approved.grant.grant_id as string,
+      token: approved.token,
+    });
+    const attempts = await Promise.all(Array.from({ length: 8 }, () => consumeConsentExchangeCode(code)));
+    assert.ok(attempts.every((attempt) => attempt.ok));
+    assert.deepEqual(new Set(attempts.map((attempt) => attempt.token)), new Set([approved.token]));
+    assert.deepEqual(new Set(attempts.map((attempt) => attempt.grantId)), new Set([approved.grant.grant_id]));
+    const stored = await postgresQuery<{ count: string; redeemed_count: string }>(
+      `SELECT COUNT(*)::text AS count,
+              COUNT(redeemed_at)::text AS redeemed_count
+         FROM consent_exchange_codes
+        WHERE token_id = $1`,
+      [approved.token]
+    );
+    assert.deepEqual(stored.rows[0], { count: "1", redeemed_count: "1" });
+  });
+
+  test("consent handoff: Postgres package delivery works and revocation fails closed", async () => {
+    const manifest = loadSpotifyManifest();
+    const created = await createHostedMcpGrantPackage({
+      authorizationDetails: [
+        {
+          access_mode: "continuous",
+          purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+          source: { id: manifest.connector_id, kind: "connector" },
+          streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
+          type: "https://pdpp.org/data-access",
+        },
+      ],
+      clientId: CONSOLE_CLIENT_ID,
+      connectionIds: [POSTGRES_AUTH_INSTANCE_ID],
+      storageBindings: [{ connector_id: "spotify" }],
+    });
+    const packageId = created.package_id as string;
+    const grant = created.package as Record<string, unknown>;
+    const firstCode = await createConsentExchangeCode({ grant, grantId: packageId, token: created.token as string });
+    const delivered = await consumeConsentExchangeCode(firstCode);
+    assert.equal(delivered.ok, true);
+    assert.equal(delivered.packageId, packageId);
+    assert.equal(delivered.token, created.token);
+
+    const revokedCode = await createConsentExchangeCode({ grant, grantId: packageId, token: created.token as string });
+    await revokeGrantPackage(packageId);
+    const rejected = await consumeConsentExchangeCode(revokedCode);
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.reason, "revoked");
+    assert.equal(rejected.token, undefined);
   });
 } else {
   test("auth.js consent/owner-device-auth postgres-adapter path (skipped: PDPP_TEST_POSTGRES_URL unset)", {

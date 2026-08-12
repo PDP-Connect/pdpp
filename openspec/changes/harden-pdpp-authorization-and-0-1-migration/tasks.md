@@ -59,7 +59,8 @@
 
 ## 6. Receipt and CI
 
-- [x] 6.1 Generate the exact receipt JSON schema from the seven-case target.
+- [x] 6.1 Generate the exact receipt JSON schema from the seven seam cases and
+      the durable-handoff case.
 - [x] 6.2 Compute a relevant-file tree digest that excludes the receipt and
       generated artifacts. Do not use a self-referential commit or source
       revision field.
@@ -76,9 +77,9 @@
 
 ## 8. Ownership and validation
 
-- [x] 8.1 Record the shared three-change ownership and merge-order matrix:
-      Source Declaration and resolved grant contract; existing PR89 OAuth/RAR
-      authorization carrier and seam; Source Declaration discovery and trust.
+- [x] 8.1 Record the five-change ownership and merge-order matrix: Source
+      contract; discovery contract; Source implementation; discovery trust
+      implementation and accepted-revision bridge; OAuth/RAR hardening.
 - [x] 8.2 Make PR89 consume the Source-defined resolved contract without a
       second grant schema; discovery consumes both.
 - [x] 8.3 Run `openspec validate harden-pdpp-authorization-and-0-1-migration
@@ -88,3 +89,21 @@
       receipt checker, `git diff --check`, and stale sweeps.
 - [x] 8.6 Write the required Waspflow checkpoint to
       `/home/tnunamak/.tmp/pdpp-spec-program-0811.xkarws/research/pr89-wasp-checkpoint.md`.
+
+## 9. Durable post-approval handoff correction
+
+- [x] 9.1 Replace the process-local consent exchange map with hashed,
+      database-backed handoff rows for SQLite and PostgreSQL. Resolve the
+      bearer through the existing token authority rather than persisting a
+      second plaintext copy.
+- [x] 9.2 Make an already-committed approval resumable so failure before HTML
+      handoff delivery can create a fresh bounded exchange code without a
+      second grant or token.
+- [x] 9.3 Make redemption atomic and response-loss idempotent: concurrent or
+      repeated redemption of one unexpired code returns the same grant and
+      token and records one first-redemption transition.
+- [x] 9.4 Add SQLite restart and concurrency tests plus a live PostgreSQL
+      concurrency test. Preserve the JSON and OAuth authorization-code paths.
+- [x] 9.5 Run focused tests, TypeScript, strict OpenSpec validation, query
+      registry validation, `git diff --check`, and stale sweeps for the removed
+      process-local map.
