@@ -1623,10 +1623,10 @@ function startBrowserConnectionKeepalive(
   const browserConnectedAtStart = browser.isConnected();
   const removeDisconnectedListener = attachBrowserDisconnectedDiagnostic(browser, () => {
     disconnectEventCount += 1;
-    disconnectEventElapsedMs ??= Date.now() - startedAt;
-    process.stderr.write(
-      `[browser-keepalive] browser disconnected during interaction after ${disconnectEventElapsedMs}ms\n`
-    );
+    const elapsedMs = Date.now() - startedAt;
+    disconnectEventElapsedMs ??= elapsedMs;
+    firstObservedDisconnectedElapsedMs ??= elapsedMs;
+    process.stderr.write(`[browser-keepalive] browser disconnected during interaction after ${elapsedMs}ms\n`);
   });
   const sessionFor = (connectedBrowser: Browser): Promise<CDPSession> => {
     sessionPromise ??= connectedBrowser.newBrowserCDPSession();
