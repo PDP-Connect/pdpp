@@ -999,7 +999,13 @@ test("agent-connect: prune reconciles more than one expired SQLite batch", async
       ]);
     }
 
-    await createAgentConnectRequest({ asUrl, clientName: "Agent Connect 1001 Prune Trigger" });
+    await Promise.race([
+      createAgentConnectRequest({ asUrl, clientName: "Agent Connect 1001 Prune Trigger" }),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("agent-connect historic tombstone pruning timed out")), 2000);
+      }),
+    ]);
+    assert.equal(sqliteAgentConnectAttemptCountByStatus("expired"), 0);
   } finally {
     await closeServer(server);
   }

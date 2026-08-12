@@ -380,7 +380,12 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
   ): Promise<boolean> | boolean => {
     const deviceCode = parsePendingConsentRequestUri(attempt.requestUri);
     if (!deviceCode) {
-      return false;
+      if (isPostgresStorageBackend()) {
+        return postgresQuery("DELETE FROM agent_connect_attempts WHERE id = $1 AND status = 'expired'", [
+          attempt.id,
+        ]).then((deletedRow) => (deletedRow.rowCount ?? 0) > 0);
+      }
+      return exec(referenceQueries.authAgentConnectAttemptsDeleteExpiredById, [attempt.id]).changes > 0;
     }
     const nowIso = new Date(now).toISOString();
     if (isPostgresStorageBackend()) {
@@ -447,6 +452,36 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
       }
     }
   };
+  const pruneExpiredHistoricTombstones = async (now: number): Promise<void> => {
+    for (;;) {
+      let deleted: number;
+      if (isPostgresStorageBackend()) {
+        // biome-ignore lint/performance/noAwaitInLoops: each bounded delete must finish before observing whether another page remains.
+        const result = await postgresQuery(
+          `WITH historic AS (
+             SELECT id
+             FROM agent_connect_attempts
+             WHERE status = 'expired'
+               AND expires_at_ms <= $1
+               AND request_uri NOT LIKE 'urn:pdpp:pending-consent:%'
+               AND token IS NULL
+             ORDER BY id
+             LIMIT 1000
+           )
+           DELETE FROM agent_connect_attempts AS attempts
+           USING historic
+           WHERE attempts.id = historic.id`,
+          [now]
+        );
+        deleted = result.rowCount ?? 0;
+      } else {
+        deleted = exec(referenceQueries.authAgentConnectAttemptsDeleteExpiredHistoricPage, [now, 1000]).changes;
+      }
+      if (deleted < 1000) {
+        return;
+      }
+    }
+  };
   const pruneExpiredTombstones = async (now: number): Promise<void> => {
     for (;;) {
       let attempts: AgentConnectAttempt[];
@@ -480,16 +515,18 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
       if (attempts.length === 0) {
         return;
       }
+      let deleted = 0;
       for (const attempt of attempts) {
-        // The candidate query skips retained rows, avoiding head-of-line starvation.
-        // The delete still CAS-expires consent in the same durable state transition.
+        // The candidate query and delete accept the same canonical and historic
+        // request-URI shapes, so each full page must make durable progress.
         // biome-ignore lint/performance/noAwaitInLoops: each durable delete must complete before the next page is inspected.
         const tombstoneDeleted = await deleteExpiredTombstoneIfConsentTerminal(attempt, now);
         if (tombstoneDeleted) {
           await cleanupExpiredAttempt(attempt, now);
+          deleted += 1;
         }
       }
-      if (attempts.length < 1000) {
+      if (deleted === 0 || attempts.length < 1000) {
         return;
       }
     }
@@ -609,6 +646,7 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
 
     async prune(now = Date.now()): Promise<void> {
       await cleanupExpiredPendingAttempts(now);
+      await pruneExpiredHistoricTombstones(now);
       await pruneExpiredTombstones(now);
       if (isPostgresStorageBackend()) {
         await postgresQuery(

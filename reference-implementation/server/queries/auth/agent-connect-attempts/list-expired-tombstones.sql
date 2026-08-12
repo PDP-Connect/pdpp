@@ -7,6 +7,7 @@ LEFT JOIN pending_consents AS consent
   ON attempts.request_uri = 'urn:pdpp:pending-consent:' || consent.device_code
 WHERE attempts.status = 'expired'
   AND attempts.expires_at_ms <= ?
+  AND attempts.request_uri LIKE 'urn:pdpp:pending-consent:%'
   AND (
     consent.device_code IS NULL
     OR consent.status IN ('denied', 'expired')
