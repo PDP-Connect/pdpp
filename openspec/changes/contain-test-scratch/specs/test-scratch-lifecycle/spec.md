@@ -37,18 +37,26 @@ without `pnpm test:scratch -- <command> [args...]` or a routed canonical alias
 ### Requirement: Scratch ownership cleanup and recovery SHALL fail closed
 
 The owner SHALL record an exclusively-created 0600 marker containing its known
-schema state, nonce, parent/root identity, device, inode, creation time, owner
-PID, and running PGID when available. Normal cleanup and recovery SHALL act
-only through the allocation capability, quarantine-rename the exact root in
-the validated parent, revalidate non-symlink directory device/inode identity,
-and recursively remove that entry. Recursive removal SHALL unlink, not
-traverse, a symlink inside the owned root.
+schema state, a nonce of exactly 48 lowercase ASCII hexadecimal characters,
+parent/root identity, device, inode, creation time, owner PID, and running
+PGID when available. Normal cleanup and recovery SHALL act only through the
+allocation capability. Before a quarantine rename, they SHALL prove both the
+source and nonce-derived quarantine target are immediate children of the
+validated canonical parent: the target `dirname` SHALL equal that parent, its
+relative path SHALL be one non-empty non-traversal component, and its basename
+SHALL be the exact nonce-derived quarantine name. They SHALL refuse an existing
+quarantine target, revalidate non-symlink directory device/inode identity, and
+recursively remove only that entry. Recursive removal SHALL unlink, not
+traverse, a symlink inside the owned root. POSIX separators, Windows
+separators, drive/UNC-looking values, nested names, absolute-looking text,
+encoded separators, and Unicode slash variants in a marker nonce SHALL be
+malformed and retained.
 
 Startup recovery SHALL inspect only immediate `run-*` children of the dedicated
 parent. It SHALL remove a candidate only when it is past the grace interval,
-same-UID, non-symlink, 0700, has a parseable known marker agreeing on nonce and
-identity, and has a demonstrably absent owner; a same-boot running candidate
-also requires an absent process group. Recovery SHALL NOT signal marker PIDs
+same-UID, non-symlink, 0700, has a parseable known marker with a strict nonce
+agreeing on identity, and has a demonstrably absent owner; a same-boot running
+candidate also requires an absent process group. Recovery SHALL NOT signal marker PIDs
 or PGIDs. All unverifiable candidates SHALL remain with stable reason codes.
 
 #### Scenario: Cleanup receives a swapped root
@@ -105,24 +113,32 @@ needed, remove its root, and self-signal with SIGTERM
 
 ### Requirement: Canonical routing and host-write checks SHALL remain explicit
 
-The repository SHALL statically enumerate canonical root/package/workflow test
-and verification entrypoints. Each entrypoint SHALL be owner-routed, a reviewed
-delegate to an owner-routed command, or a documented reviewed exemption. A new
-raw CI `node --test`, `tsx` test, or test shell invocation that does not meet
-one of those conditions SHALL fail the static gate.
+The repository SHALL derive its inventory from repository package manifests and
+GitHub workflow YAML `run` blocks. Each covered test or verification entrypoint
+SHALL be owner-routed, a reviewed delegate to an owner-routed command, or a
+documented reviewed exemption. A new raw CI `node --test`, `tsx` test, or test
+shell invocation that does not meet one of those conditions SHALL fail the
+static gate without an inventory edit.
 
-The repository SHALL reject new executable host writes to literal `/tmp` on
-canonical paths. Its check SHALL distinguish live writes from fixtures and
-reads, and SHALL retain narrow reasons for reviewed container paths,
-parser/path fixtures, production/external roots, and the stable shared dynamic
-n.eko flock. The flock SHALL NOT be moved into per-invocation scratch or
-unlinked while waiters can exist.
+The repository SHALL derive executable source and shell host-writer candidates
+from the repository. Its check SHALL parse JavaScript/TypeScript write-call
+arguments and recognize shell write/redirection forms, distinguish live writes
+from fixtures and reads, and retain narrow exact-file/source-pattern reasons
+for reviewed container paths, parser/path fixtures, production/external roots,
+and the stable shared dynamic n.eko flock. The flock SHALL NOT be moved into
+per-invocation scratch or unlinked while waiters can exist.
 
 #### Scenario: A canonical workflow adds a raw Node test command
 
 **WHEN** a workflow adds a raw `node --test` invocation without owner routing
 or a reviewed exemption
 **THEN** the canonical-entrypoint gate SHALL fail.
+
+#### Scenario: A newly added package test front door bypasses the owner
+
+**WHEN** a newly discovered package manifest adds a direct test runner without
+owner routing or a reviewed exemption
+**THEN** the canonical-entrypoint gate SHALL fail without editing its inventory.
 
 #### Scenario: A reviewed container path remains literal `/tmp`
 
@@ -131,3 +147,9 @@ executable host scratch write
 **THEN** the host-write gate SHALL retain it only through its narrow documented
 exception
 **AND** it SHALL NOT use that exception to permit a new host writer.
+
+#### Scenario: A newly added executable host writer uses literal `/tmp`
+
+**WHEN** a newly discovered executable source or shell file writes to literal
+`/tmp` without an exact reviewed exception
+**THEN** the host-write gate SHALL fail without editing its inventory.

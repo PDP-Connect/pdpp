@@ -19,7 +19,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import test from "node:test";
 import {
   allocateScratchOwnership,
@@ -334,6 +334,68 @@ test("recovery removes only a verified old dead allocation and retains a live ow
   );
   await cleanupScratchOwnership(live);
   await rm(parent, { force: true, recursive: true });
+});
+
+test("recovery retains malformed nonce markers without renaming or deleting outside paths", async () => {
+  const base = await temporaryParent();
+  const parent = join(base, "parent");
+  const outside = join(base, "outside");
+  await mkdir(parent, { mode: 0o700 });
+  await mkdir(outside, { mode: 0o700 });
+  await writeFile(join(outside, "sentinel"), "outside remains");
+  const invalidNonces = [
+    "../outside",
+    "nested/child",
+    "/absolute-looking",
+    "../../../outside",
+    "C:\\absolute-looking",
+    "\\\\server\\share",
+    "..\\..\\outside",
+    "%2f",
+    "..%2f..%2foutside",
+    "..／..／outside",
+    posix.join("..", "outside"),
+    win32.join("..", "outside"),
+    win32.resolve("C:\\outside"),
+  ];
+  try {
+    for (const nonce of invalidNonces) {
+      // biome-ignore lint/performance/noAwaitInLoops: each candidate must retain its own invalid marker root.
+      const ownership = await allocateScratchOwnership({ parent });
+      await oldMarker(ownership, { nonce });
+      const result = await recoverStaleScratch({ parent });
+      assert.deepEqual(
+        result.find((candidate) => candidate.path === ownership.allocation.root),
+        { path: ownership.allocation.root, reason: "malformed-marker", removed: false }
+      );
+      await access(ownership.allocation.root);
+      assert.equal(await readFile(join(outside, "sentinel"), "utf8"), "outside remains");
+      assert.ok(!(await readdir(parent)).some((entry) => entry.startsWith(".quarantine-")));
+    }
+  } finally {
+    await rm(base, { force: true, recursive: true });
+  }
+});
+
+test("cleanup rejects a forged nonce before constructing a quarantine target", async () => {
+  const base = await temporaryParent();
+  const parent = join(base, "parent");
+  const outside = join(base, "outside");
+  await mkdir(parent, { mode: 0o700 });
+  await mkdir(outside, { mode: 0o700 });
+  await writeFile(join(outside, "sentinel"), "outside remains");
+  const ownership = await allocateScratchOwnership({ parent });
+  try {
+    const forged = { ...ownership, allocation: { ...ownership.allocation, nonce: "../../../outside" } };
+    await assert.rejects(cleanupScratchOwnership(forged), {
+      name: "ScratchOwnershipError",
+      reason: "invalid-nonce",
+    });
+    await access(ownership.allocation.root);
+    assert.equal(await readFile(join(outside, "sentinel"), "utf8"), "outside remains");
+  } finally {
+    await rm(base, { force: true, recursive: true });
+  }
 });
 
 test("CLI child signal remains a signal to its parent", async () => {

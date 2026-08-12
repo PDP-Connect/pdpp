@@ -16,13 +16,15 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { homedir, platform, userInfo } from "node:os";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 
 export const SCRATCH_SCHEMA = "pdpp.test-scratch/v1";
 const MARKER_NAME = ".pdpp-test-scratch.json";
 const REQUIRED_DIRECTORY_MODE = 0o700;
 const MARKER_MODE = 0o600;
 const RECOVERY_GRACE_MS = 60_000;
+const NONCE_LENGTH = 48;
+const NONCE = /^[a-f0-9]{48}$/;
 
 type MarkerState = "allocated" | "running";
 
@@ -218,6 +220,8 @@ async function readMarker(markerPath: string): Promise<Marker | null> {
       marker.schema !== SCRATCH_SCHEMA ||
       (marker.state !== "allocated" && marker.state !== "running") ||
       typeof marker.nonce !== "string" ||
+      marker.nonce.length !== NONCE_LENGTH ||
+      !NONCE.test(marker.nonce) ||
       typeof marker.root !== "string" ||
       typeof marker.parent !== "string" ||
       typeof marker.owner_pid !== "number" ||
@@ -243,18 +247,54 @@ async function matchesAllocation(allocation: Allocation): Promise<boolean> {
       isOwnedPrivateDirectory(rootStats) &&
       rootStats.dev === allocation.dev &&
       rootStats.ino === allocation.ino &&
-      dirname(allocation.root) === allocation.canonicalParent
+      isImmediateRunChild(allocation.canonicalParent, allocation.root)
     );
   } catch {
     return false;
   }
 }
 
+function isImmediateChild(parent: string, candidate: string): boolean {
+  const relativePath = relative(parent, candidate);
+  return (
+    relativePath !== "" && !isAbsolute(relativePath) && !relativePath.startsWith("..") && dirname(candidate) === parent
+  );
+}
+
+function isImmediateRunChild(parent: string, candidate: string): boolean {
+  return isImmediateChild(parent, candidate) && basename(candidate).startsWith("run-");
+}
+
+function quarantinePath(parent: string, nonce: string): string {
+  if (!NONCE.test(nonce)) {
+    throw new ScratchOwnershipError("invalid-nonce");
+  }
+  const name = `.quarantine-${nonce}`;
+  const path = join(parent, name);
+  if (!isImmediateChild(parent, path) || basename(path) !== name) {
+    throw new ScratchOwnershipError("invalid-quarantine-path");
+  }
+  return path;
+}
+
+async function requireAbsent(path: string): Promise<void> {
+  try {
+    await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  throw new ScratchOwnershipError("quarantine-exists");
+}
+
 async function quarantineAndRemove(allocation: Allocation): Promise<void> {
   if (!(await matchesAllocation(allocation))) {
     throw new ScratchOwnershipError("identity-mismatch");
   }
-  const quarantine = join(allocation.canonicalParent, `.quarantine-${allocation.nonce}`);
+  const quarantine = quarantinePath(allocation.canonicalParent, allocation.nonce);
+  await requireAbsent(quarantine);
   await rename(allocation.root, quarantine);
   const quarantined = await lstat(quarantine);
   if (
@@ -289,10 +329,6 @@ function groupAbsent(pgid: number): boolean {
   }
 }
 
-function isDirectChild(parent: string, candidate: string): boolean {
-  return dirname(candidate) === parent && basename(candidate).startsWith("run-") && relative(parent, candidate) !== "";
-}
-
 /** Recover only verified, dead roots from one dedicated parent. Never signals candidates. */
 export async function recoverStaleScratch(options: { now?: number; parent?: string } = {}): Promise<RecoveryResult[]> {
   const canonicalParent = await validatedParent(options.parent);
@@ -306,7 +342,7 @@ export async function recoverStaleScratch(options: { now?: number; parent?: stri
         return { path: join(canonicalParent, entry.name), reason: "foreign-entry", removed: false };
       }
       const candidate = join(canonicalParent, entry.name);
-      if (!isDirectChild(canonicalParent, candidate)) {
+      if (!isImmediateRunChild(canonicalParent, candidate)) {
         return { path: candidate, reason: "foreign-entry", removed: false };
       }
       let candidateStats: Awaited<ReturnType<typeof lstat>>;

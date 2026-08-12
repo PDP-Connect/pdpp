@@ -62,16 +62,24 @@ fails closed rather than authorizing a second owner or deletion.
 ## Allocation, cleanup, and recovery
 
 Allocation records a capability, not a caller-controlled path:
-`{ canonicalParent, root, dev, ino, nonce }`. The root is a same-UID,
+`{ canonicalParent, root, dev, ino, nonce }`. The nonce is exactly 48 lowercase
+ASCII hexadecimal characters, the sole representation produced by 24 random
+bytes, and is rejected at marker parsing otherwise. POSIX separators, Windows
+separators and drive/UNC-looking values, nested names, absolute-looking text,
+encoded separators, and Unicode slash variants are all malformed. The root is a same-UID,
 non-symlink 0700 `mkdtemp` child. Its marker is written exclusively with mode
 0600 and atomically transitions from `allocated` to `running` once the child
 PGID exists. It includes schema, nonce, creation time, optional Linux boot ID,
 owner PID, canonical parent/root identities, device, inode, and the running
 PGID when applicable.
 
-Normal cleanup first waits for the owned process group to quiesce. It renames
-the exact root to an opaque quarantine sibling in the already validated parent,
-then requires a non-symlink directory with the recorded device/inode before
+Normal cleanup first waits for the owned process group to quiesce. It proves
+both the source and nonce-derived opaque quarantine target are immediate
+children of the already validated canonical parent before rename: the target's
+`dirname` equals that parent, its relative path is one non-empty non-traversal
+component, and its basename is the exact nonce-derived opaque name. It refuses
+an existing quarantine target and renames the exact root only then.
+It then requires a non-symlink directory with the recorded device/inode before
 recursive removal. The rename gives concurrent cleaners one winner and the
 identity recheck refuses path swaps. Recursive removal must unlink a symlink
 inside the root without traversing it.
@@ -79,8 +87,9 @@ inside the root without traversing it.
 Owner startup performs opportunistic recovery only over immediate `run-*`
 children of the dedicated validated parent. A candidate is removable only when
 it is old enough to be past the allocation/handoff grace interval; is a
-same-UID non-symlink 0700 directory; has a parseable known-state marker whose
-nonce/path/device/inode agree; and has a demonstrably absent recorded owner.
+same-UID non-symlink 0700 directory; has a parseable known-state marker with a
+strict nonce whose path/device/inode agree; and has a demonstrably absent
+recorded owner.
 For a same-boot `running` marker, `kill(-pgid, 0)` must also prove the group is
 absent. Recovery never signals a recorded PID or PGID. Any ambiguity (fresh,
 live or reused identity, prior-platform ambiguity, malformed, wrong owner or
@@ -156,10 +165,13 @@ commands in `.github/workflows/reference-implementation.yml`,
 `reference-stack-project-safety.yml`. `packages/list-envelope` is
 authority-only and is not given a new package test front door.
 
-The routing ratchet enumerates canonical root/package/workflow entrypoints and
-requires every one to own, delegate to, or declare a reviewed exemption from
-the boundary. It rejects new raw CI `node --test`, `tsx *.test.ts`, and test
-shell invocations that bypass it.
+The routing ratchet derives its inventory from every repository package
+manifest and every GitHub workflow YAML `run` block, rather than maintaining a
+fixed alias or workflow list. It recognizes package test front doors and direct
+test runner commands, then requires each covered entrypoint to own, delegate
+to, or use a narrowly reviewed exception. It rejects a newly added raw CI
+`node --test`, `tsx *.test.ts`, or test-shell invocation without changing the
+ratchet inventory.
 
 Only confirmed executable host writers present in this worktree migrate: the RI
 browser ledger direct `/tmp` allocation and the listed n.eko
@@ -175,8 +187,11 @@ and `scripts/docker-neko-dynamic-allocator-smoke.test.mjs` path-contract
 tests. The arbiter's three Netflix files under
 `packages/polyfill-connectors/connectors/netflix_export/` are absent from this
 worktree (`rg --files` found no matching path), so this change makes no
-speculative migration. The host-write ratchet classifies executable writes rather than banning
-all `/tmp` strings. Parser fixtures, container-internal paths (including
+speculative migration. The host-write ratchet derives executable source and
+shell candidates from the repository, parses JavaScript/TypeScript write-call
+arguments, and recognizes shell write/redirection forms rather than banning
+all `/tmp` strings. Each reviewed exception is an exact file and source-pattern
+with a reason. Parser fixtures, container-internal paths (including
 `scripts/docker-smoke.sh`'s SQLite path), production/external roots, and the
 dynamic n.eko stable cross-run flock remain narrowly allowlisted with reasons.
 The flock is shared coordination state and must not move into an invocation
@@ -191,10 +206,12 @@ cleanup-failure result precedence; byte-exact stdout/stderr drainage;
 self-signal and forwarded SIGINT/SIGTERM semantics; TERM-ignoring child and
 grandchild escalation; parallel roots/nonces; nested participants and parallel
 workers; and crash recovery across allocated/running/prior-boot/live/reused,
-malformed, wrong-UID/mode, symlink, inode-swap, foreign, and concurrent cases.
+malformed, traversal/absolute/encoded nonce variants, wrong-UID/mode, symlink,
+inode-swap, foreign, and concurrent cases.
 
 Integration coverage runs the boundary through authority, RI, secondary
 runners, shell and Python leaves, representative affected package/smoke
 aliases, and the accounting command. Static routing and literal ratchets run
-after targeted migrations. Formatting/typecheck and affected suites provide
-the final accounting gate.
+after targeted migrations, including injected package, workflow, and host-write
+bypasses that the repository-derived inventory must catch. Formatting/typecheck
+and affected suites provide the final accounting gate.

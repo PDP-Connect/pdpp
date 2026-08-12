@@ -17,7 +17,7 @@ without rewriting hundreds of independently-owned test allocations.
 - Add marker-backed, fail-closed cleanup and conservative stale-root recovery
   below a dedicated same-user parent.
 - Route canonical root/package/CI test front doors through the boundary and
-  add static entrypoint and executable-host-write ratchets.
+  add repository-derived entrypoint and executable-host-write ratchets.
 - Migrate only the confirmed hard-coded host scratch writers. Keep reviewed
   container paths, fixtures, production contracts, and the shared dynamic
   n.eko flock as explicit exceptions.

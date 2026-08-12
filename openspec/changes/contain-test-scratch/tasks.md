@@ -22,9 +22,10 @@
       runners; do not add a `packages/list-envelope` front door.
 - [x] 2.3 Route raw test commands in exactly the five workflows named in
       `design.md` through `pnpm test:scratch -- ...`.
-- [x] 2.4 Add the static canonical-entrypoint ratchet that enumerates root,
-      package, and workflow test/verification front doors and permits only
-      owned routes, reviewed delegates, or explicit reviewed exemptions.
+- [x] 2.4 Add the repository-derived canonical-entrypoint ratchet over package
+      manifests and workflow YAML run blocks; permit only owned routes,
+      reviewed delegates, or explicit reviewed exemptions, and prove injected
+      package/workflow bypasses fail without an inventory edit.
 
 ## 3. Confirmed host writers
 
@@ -35,9 +36,15 @@
 - [x] 3.2 Migrate only the exact n.eko network/dynamic-allocator scripts and
       path-contract tests named in `design.md` to the invocation root after
       Docker teardown ownership is preserved.
-- [x] 3.3 Add the executable-host-write literal ratchet and narrow documented
+- [x] 3.3 Add the repository-derived executable-host-write ratchet with parsed
+      JavaScript/TypeScript and shell write detection, narrow documented
       exceptions for parser fixtures, container paths, production/external
-      roots, and the shared dynamic n.eko flock.
+      roots, and the shared dynamic n.eko flock, and prove an injected writer
+      fails without an inventory edit.
+
+- [x] 3.4 Reject malformed nonce syntax at marker parsing and prove traversal,
+      nested, absolute-looking, backslash, and encoded nonce variants retain
+      their roots and cannot rename or delete an outside sentinel.
 
 ## 4. Documentation and acceptance
 
