@@ -1191,7 +1191,101 @@ test("snapshotDashboardHtmlForCurrentActivity: unexpected route gets one fresh d
   assert.equal(snapshot.rowSurfaceReady, true);
   assert.equal(snapshot.diagnostic.read_count, 3);
   assert.equal(snapshot.diagnostic.route, "expected");
+  assert.equal(snapshot.diagnostic.wait_outcome, "unknown");
   assert.match(snapshot.html, /mds-activity-table__row/);
+});
+
+test("snapshotDashboardHtmlForCurrentActivity: parser-zero expected route gets one fresh dashboard navigation", async () => {
+  let navigated = false;
+  let rowWaits = 0;
+  const page = {
+    goto(url: string, options: { timeout: number; waitUntil: string }) {
+      assert.equal(url, "https://secure.chase.com/web/auth/dashboard#/dashboard/overview");
+      assert.equal(options.waitUntil, "domcontentloaded");
+      navigated = true;
+      return Promise.resolve();
+    },
+    locator(selector: string) {
+      return {
+        count: () => Promise.resolve(navigated ? 5 : 0),
+        first() {
+          return {
+            waitFor() {
+              if (selector === CHASE_CURRENT_ACTIVITY_ROW_SELECTOR) {
+                rowWaits += 1;
+                return Promise.reject(new Error("row locator did not prove readiness"));
+              }
+              return Promise.resolve();
+            },
+          };
+        },
+      };
+    },
+    content() {
+      return Promise.resolve(
+        readFileSync(
+          join(
+            FIXTURE_DIR,
+            navigated ? "current-activity-dashboard-overview-real.html" : "current-activity-download-form-no-rows.html"
+          ),
+          "utf8"
+        )
+      );
+    },
+    url() {
+      return "https://secure.chase.com/web/auth/dashboard#/dashboard/overview";
+    },
+  };
+
+  const snapshot = await snapshotDashboardHtmlForCurrentActivity(page, REFERENCE_DATE_ISO);
+
+  assert.equal(rowWaits, 1);
+  assert.equal(navigated, true);
+  assert.equal(snapshot.rowSurfaceReady, true);
+  assert.equal(snapshot.diagnostic.read_count, 3);
+  assert.equal(snapshot.diagnostic.route, "expected");
+  assert.equal(snapshot.diagnostic.wait_outcome, "unknown");
+  assert.match(snapshot.html, /mds-activity-table__row/);
+});
+
+test("snapshotDashboardHtmlForCurrentActivity: parser-zero expected route stays parser-zero when refresh remains empty", async () => {
+  let navigated = false;
+  const emptyHtml = readFileSync(join(FIXTURE_DIR, "current-activity-known-table-parser-zero.html"), "utf8");
+  const page = {
+    goto() {
+      navigated = true;
+      return Promise.resolve();
+    },
+    locator(selector: string) {
+      return {
+        count: () => Promise.resolve(0),
+        first() {
+          return {
+            waitFor() {
+              if (selector === CHASE_CURRENT_ACTIVITY_ROW_SELECTOR) {
+                return Promise.resolve();
+              }
+              return Promise.resolve();
+            },
+          };
+        },
+      };
+    },
+    content() {
+      return Promise.resolve(emptyHtml);
+    },
+    url() {
+      return "https://secure.chase.com/web/auth/dashboard#/dashboard/overview";
+    },
+  };
+
+  const snapshot = await snapshotDashboardHtmlForCurrentActivity(page, REFERENCE_DATE_ISO);
+
+  assert.equal(navigated, true);
+  assert.equal(snapshot.rowSurfaceReady, false);
+  assert.equal(snapshot.diagnostic.parser_count, 0);
+  assert.equal(snapshot.diagnostic.posture, "parser_zero");
+  assert.equal(snapshot.diagnostic.verified_empty_marker_count, 0);
 });
 
 test("snapshotDashboardHtmlForCurrentActivity: a known table with changed rows is parser_zero", async () => {

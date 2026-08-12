@@ -384,13 +384,14 @@ export async function snapshotDashboardHtmlForCurrentActivity(
   let activityTableMarkerCount = countStructuralMarker(finalHtml, CHASE_CURRENT_ACTIVITY_TABLE_MARKER_RE);
   let readCount = 2;
 
-  // A successful account discovery can still leave the SPA on an unexpected
-  // route after browser/session transitions. In that state the row wait is
-  // not selector evidence: it only waited on the wrong document. One bounded
-  // full dashboard navigation gives the connector a fresh, known surface to
-  // parse without teaching the RI anything about Chase's markup. A zero-row
-  // parse after this retry remains selectors_pending in the caller.
-  if (parserCount === 0 && classifyChaseCurrentActivityRoute(page.url()) !== "expected" && page.goto) {
+  // A successful account discovery can still leave the SPA with a parser-zero
+  // snapshot after browser/session transitions, including while the URL still
+  // claims the expected overview route. The row wait is only a retry trigger;
+  // one bounded full dashboard navigation gives the connector a fresh, known
+  // surface to parse without teaching the RI anything about Chase's markup.
+  // A zero-row parse after this retry remains selectors_pending in the caller.
+  if (parserCount === 0 && page.goto) {
+    waitOutcome = "unknown";
     await page
       .goto("https://secure.chase.com/web/auth/dashboard#/dashboard/overview", {
         waitUntil: "domcontentloaded",
