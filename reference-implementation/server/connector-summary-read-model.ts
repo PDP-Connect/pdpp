@@ -39,7 +39,6 @@ import type { EphemeralBrowserRuntimeProjection } from "../runtime/browser-surfa
 import type { RepairCandidateReason } from "./connector-summary-evidence-engine.ts";
 import {
   pruneOrphanedEvidenceComplete,
-  readAllInstanceIdsForPruning,
   readInstanceIdPage,
   reconcileConnectorSummaryEvidence,
 } from "./connector-summary-evidence-engine.ts";
@@ -3154,8 +3153,7 @@ async function runCursorWalk(args: {
  * does, using the same complete live-instance read and prune primitive.
  */
 async function pruneCompleteSetOrphans(): Promise<number> {
-  const liveInstanceRows = await readAllInstanceIdsForPruning();
-  return await pruneOrphanedEvidenceComplete(liveInstanceRows);
+  return await pruneOrphanedEvidenceComplete();
 }
 
 /**

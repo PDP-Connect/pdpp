@@ -185,7 +185,7 @@ test(
       "the resumed sweep covers exactly the 20 connections the first sweep did not reach"
     );
     // A resumed sweep that reaches the natural end of the id cursor DOES
-    // safely run complete-set pruning: `readAllInstanceIdsForPruning` reads
+    // safely run complete-set pruning through bounded keyset pages
     // the FULL live instance table independent of this call's own cursor
     // position, so pruning's live-id set is always complete once the sweep
     // itself confirms there is no more data past its cursor — regardless of
