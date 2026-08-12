@@ -103,6 +103,13 @@ function makeFallbackLoginPage(): {
     cookies: () => Promise.resolve(loggedIn ? [{ name: "UsaaMbWebMemberLoggedIn", value: "true" }] : []),
   } as BrowserContext;
   const page = Object.assign({} as Page, {
+    evaluate: () =>
+      Promise.resolve({
+        account_detail_marker_count: 0,
+        navigation_marker_count: 0,
+        target_count: 0,
+        transaction_marker_count: 0,
+      }),
     goto: (url: string) => {
       navigationCount += 1;
       currentUrl = navigationCount === 1 ? LOGON_URL : url;
@@ -123,6 +130,10 @@ function makeFallbackLoginPage(): {
     },
     locator: () =>
       Object.assign({} as Page, {
+        count: () => Promise.resolve(0),
+        filter() {
+          return this;
+        },
         waitFor: () => Promise.resolve(),
         innerText: () => Promise.resolve("Log Off"),
       }),
@@ -278,6 +289,62 @@ test("gotoOrRepairSession: default recovery uses the run-scoped Online ID, not t
     );
 
     assert.deepEqual(result, { ok: true });
+    assert.equal(
+      fixture.filled.find(({ selector }) => selector === 'input[name="memberId"]')?.value,
+      "saved-online-id"
+    );
+    assert.notEqual(fixture.filled.find(({ selector }) => selector === 'input[name="memberId"]')?.value, "usaa");
+    assert.equal(fixture.filled.find(({ selector }) => selector === 'input[name="password"]')?.value, "saved-password");
+  } finally {
+    if (priorUsername === undefined) {
+      delete process.env.USAA_USERNAME;
+    } else {
+      process.env.USAA_USERNAME = priorUsername;
+    }
+    if (priorPassword === undefined) {
+      delete process.env.USAA_PASSWORD;
+    } else {
+      process.env.USAA_PASSWORD = priorPassword;
+    }
+  }
+});
+
+test("transactions recovery: reauthAfterSessionLapse uses the run-scoped Online ID, not ambient env", async () => {
+  const priorUsername = process.env.USAA_USERNAME;
+  const priorPassword = process.env.USAA_PASSWORD;
+  process.env.USAA_USERNAME = "usaa";
+  process.env.USAA_PASSWORD = "ambient-password";
+  try {
+    const fixture = makeFallbackLoginPage();
+    const run = makeHarness();
+    run.deps.credentials = { USAA_PASSWORD: "saved-password", USAA_USERNAME: "saved-online-id" };
+    const streamState = freshRunState();
+    let sessionDead = false;
+
+    const outcome = await runSingleLadderAttempt({
+      a: makeTransactionsAccount(),
+      accountOrdinal: 1,
+      accountTotal: 1,
+      attemptOrdinal: 1,
+      attemptTotal: 1,
+      context: fixture.context,
+      deps: run.deps,
+      onDiagnostics() {
+        // This regression asserts credential selection, not export diagnostics.
+      },
+      onSessionDead() {
+        sessionDead = true;
+      },
+      page: fixture.page,
+      sendInteraction: NEVER_CALLED_SEND_INTERACTION,
+      settleDelayMs: 0,
+      sinceDate: "2026-01-01",
+      streamState,
+      todayIso: "2026-07-16",
+    });
+
+    assert.deepEqual(outcome, { kind: "retry" });
+    assert.equal(sessionDead, false, "stored-credential recovery succeeds before the ladder reports session death");
     assert.equal(
       fixture.filled.find(({ selector }) => selector === 'input[name="memberId"]')?.value,
       "saved-online-id"
