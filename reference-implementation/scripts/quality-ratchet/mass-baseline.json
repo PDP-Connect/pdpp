@@ -117,7 +117,7 @@
     "server/routes/_owner-connection-helpers.ts": 1,
     "server/routes/as-agent-connect.ts": 29,
     "server/routes/as-authorize.ts": 40,
-    "server/routes/as-consent-ui-helpers.ts": 61,
+    "server/routes/as-consent-ui-helpers.ts": 51,
     "server/routes/as-consent.ts": 57,
     "server/routes/as-dcr.ts": 6,
     "server/routes/as-device-ui.ts": 13,
@@ -202,7 +202,7 @@
     "server/version-disposition.ts": 6,
     "server/web-push-notifications.ts": 11
   },
-  "total": 7235,
+  "total": 7225,
   "meta": {
     "biomeVersion": "2.5.7",
     "maxAllowedComplexity": 5

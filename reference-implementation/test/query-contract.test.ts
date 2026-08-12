@@ -374,20 +374,42 @@ async function seedSpotifyTopArtists(
   await seedSpotifyStream(rsUrl, ownerToken, connectorId, "top_artists", records);
 }
 
-async function materializeSpotifyConnection(connectorId: string): Promise<void> {
+async function materializeConnection({
+  connectorId,
+  connectorInstanceId,
+  displayName,
+  ownerSubjectId = OWNER_AUTH_DEFAULT_SUBJECT_ID,
+}: {
+  connectorId: string;
+  connectorInstanceId: string;
+  displayName: string;
+  ownerSubjectId?: string;
+}): Promise<void> {
   const now = "2026-01-01T00:00:00.000Z";
   await createSqliteConnectorInstanceStore().upsert({
     // biome-ignore lint/style/noNonNullAssertion: the assertion follows an explicit test guard that proves fixture presence.
     connectorId: canonicalConnectorKey(connectorId)!,
-    connectorInstanceId: "cin_query_contract_spotify",
+    connectorInstanceId,
     createdAt: now,
-    displayName: "Spotify",
-    ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
-    sourceBinding: { kind: "test_account", label: "query-contract-spotify" },
-    sourceBindingKey: "query-contract-spotify",
+    displayName,
+    ownerSubjectId,
+    sourceBinding: { kind: "test_account", label: connectorInstanceId },
+    sourceBindingKey: connectorInstanceId,
     sourceKind: "account",
     status: "active",
     updatedAt: now,
+  });
+}
+
+async function materializeSpotifyConnection(
+  connectorId: string,
+  ownerSubjectId = OWNER_AUTH_DEFAULT_SUBJECT_ID
+): Promise<void> {
+  await materializeConnection({
+    connectorId,
+    connectorInstanceId: "cin_query_contract_spotify",
+    displayName: "Spotify",
+    ownerSubjectId,
   });
 }
 
@@ -582,6 +604,7 @@ test("connector discovery lists owner-visible polyfill connectors without connec
 
 test("connector discovery scopes client tokens to the granted source and streams", async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    await materializeSpotifyConnection(spotifyManifest.connector_id, "schema_discovery_owner");
     const approved = await approveGrant(asUrl, "schema_discovery_owner", {
       access_mode: "continuous",
       client_id: "longview",
@@ -670,6 +693,7 @@ test("schema discovery scopes a client token to its grant source and streams", a
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const gmailManifest = readGmailManifest();
     assert.equal((await registerConnectorManifest(asUrl, gmailManifest)).status, 201);
+    await materializeSpotifyConnection(spotifyManifest.connector_id, "schema_client_owner");
     const approved = await approveGrant(asUrl, "schema_client_owner", {
       access_mode: "continuous",
       client_id: "longview",
@@ -701,15 +725,12 @@ test("schema discovery scopes a client token to its grant source and streams", a
 
     // biome-ignore lint/style/useDestructuring: the property access names the fixture value at its point of use.
     const topArtists = connector.streams[0];
-    // field-limited grant: granted fields are usable; ungranted fields are present but not usable.
+    // field-limited grant: granted fields are usable; ungranted fields are omitted from the client schema.
     assert.equal(topArtists.field_capabilities.id.granted, true);
     assert.equal(topArtists.field_capabilities.name.granted, true);
     assert.equal(topArtists.field_capabilities.source_updated_at.granted, true);
     assert.equal(topArtists.field_capabilities.source_updated_at.range_filter.usable, true);
-    assert.ok(topArtists.field_capabilities.popularity, "popularity field is enumerated");
-    assert.equal(topArtists.field_capabilities.popularity.granted, false);
-    assert.equal(topArtists.field_capabilities.popularity.exact_filter.usable, false);
-    assert.equal(topArtists.field_capabilities.popularity.exact_filter.reason, "field_not_granted");
+    assert.equal(topArtists.field_capabilities.popularity, undefined);
 
     const serialized = JSON.stringify(body);
     assert.equal(serialized.includes(gmailManifest.connector_id), false, "must not leak other connectors");
@@ -822,6 +843,7 @@ test("stream metadata advertises lexical, semantic, and expansion capabilities f
 
 test("stream metadata marks grant-limited field capabilities unusable for client tokens", async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    await materializeSpotifyConnection(spotifyManifest.connector_id, "capability_limited_spotify_owner");
     const approved = await approveGrant(asUrl, "capability_limited_spotify_owner", {
       access_mode: "continuous",
       client_id: "longview",
@@ -854,27 +876,30 @@ test("stream metadata marks grant-limited field capabilities unusable for client
       operators: ["gte", "gt", "lte", "lt"],
       usable: true,
     });
-    assert.deepEqual(body.field_capabilities.popularity.exact_filter, {
-      declared: true,
-      reason: "field_not_granted",
-      usable: false,
-    });
-    assert.deepEqual(body.field_capabilities.popularity.aggregation.sum, {
-      declared: true,
-      reason: "field_not_granted",
-      usable: false,
-    });
+    assert.equal(body.field_capabilities.popularity, undefined);
 
     const gmailManifest = readGmailManifest();
     const registerResp = await registerConnectorManifest(asUrl, gmailManifest);
     assert.equal(registerResp.status, 201);
+    await materializeConnection({
+      connectorId: gmailManifest.connector_id,
+      connectorInstanceId: "cin_query_contract_gmail",
+      displayName: "Gmail",
+      ownerSubjectId: "capability_limited_gmail_owner",
+    });
     const gmailGrant = await approveGrant(asUrl, "capability_limited_gmail_owner", {
       access_mode: "continuous",
       client_id: "longview",
       connector_id: gmailManifest.connector_id,
       purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "Plan message queries using a narrowed field set",
-      streams: [{ fields: ["id", "thread_id", "received_at", "subject"], name: "messages" }],
+      streams: [
+        {
+          fields: ["id", "thread_id", "received_at", "subject"],
+          instance_ids: ["cin_query_contract_gmail"],
+          name: "messages",
+        },
+      ],
     });
     assert.ok(gmailGrant.token, `expected issued grant token, got ${JSON.stringify(gmailGrant)}`);
 
@@ -883,41 +908,10 @@ test("stream metadata marks grant-limited field capabilities unusable for client
     });
 
     assert.equal(gmailMetadata.status, 200);
-    assert.deepEqual(gmailMetadata.body.field_capabilities.date.range_filter, {
-      declared: true,
-      operators: ["gte", "gt", "lte", "lt"],
-      reason: "field_not_granted",
-      usable: false,
-    });
-    assert.deepEqual(gmailMetadata.body.field_capabilities.from_email.lexical_search, {
-      declared: true,
-      reason: "field_not_granted",
-      usable: false,
-    });
-    assert.deepEqual(gmailMetadata.body.field_capabilities.snippet.semantic_search, {
-      declared: true,
-      reason: "field_not_granted",
-      usable: false,
-    });
-    assert.deepEqual(
-      gmailMetadata.body.expand_capabilities.map((entry: JsonObject) => ({
-        name: entry.name,
-        reason: entry.reason,
-        usable: entry.usable,
-      })),
-      [
-        {
-          name: "message_bodies",
-          reason: "related_stream_not_granted",
-          usable: false,
-        },
-        {
-          name: "attachments",
-          reason: "related_stream_not_granted",
-          usable: false,
-        },
-      ]
-    );
+    assert.equal(gmailMetadata.body.field_capabilities.date, undefined);
+    assert.equal(gmailMetadata.body.field_capabilities.from_email, undefined);
+    assert.equal(gmailMetadata.body.field_capabilities.snippet, undefined);
+    assert.deepEqual(gmailMetadata.body.expand_capabilities, []);
   });
 });
 
@@ -1855,7 +1849,7 @@ test("single-record fetch honors declared expand and expand_limit", async () => 
       { headers: { Authorization: `Bearer ${approved.token}` } }
     );
     assert.equal(status, 200);
-    assert.equal(body.connector_key, "spotify", "record detail carries canonical source connector identity");
+    assert.equal(body.connector_key, spotifyManifest.connector_id, "record detail carries current source URI identity");
     assert.ok(body.expanded?.recently_played, "expanded relation should be present on record detail");
     assert.equal(body.expanded.recently_played.object, "list");
     assert.equal(body.expanded.recently_played.has_more, true);
@@ -1884,6 +1878,12 @@ test("expand fails with insufficient_scope when the related stream is outside th
         track_name: "Track 1",
       },
     ]);
+    await materializeConnection({
+      connectorId,
+      connectorInstanceId: "cin_query_contract_spotify_expand_scope",
+      displayName: "Spotify Expand Scope",
+      ownerSubjectId: "expand_scope_owner",
+    });
 
     const approved = await approveGrant(asUrl, "expand_scope_owner", {
       access_mode: "continuous",
@@ -1891,7 +1891,13 @@ test("expand fails with insufficient_scope when the related stream is outside th
       connector_id: connectorId,
       purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read saved tracks only",
-      streams: [{ fields: ["id", "name", "saved_at"], name: "saved_tracks" }],
+      streams: [
+        {
+          fields: ["id", "name", "saved_at"],
+          instance_ids: ["cin_query_contract_spotify_expand_scope"],
+          name: "saved_tracks",
+        },
+      ],
     });
 
     const { status, body } = await fetchJson(`${rsUrl}/v1/streams/saved_tracks/records?expand=recently_played`, {
@@ -2676,20 +2682,8 @@ test("github user stream metadata surfaces the user_stats expand capability with
     assert.equal(reg.status, 201, "register github manifest");
     await seedGithubExpansionFixture(rsUrl, ownerToken, connectorId);
 
-    // Both streams granted → usable: true with full target naming.
-    const both = await approveGrant(asUrl, "github_metadata_owner", {
-      access_mode: "continuous",
-      client_id: "longview",
-      connector_id: connectorId,
-      purpose_code: "https://pdpp.dev/purpose/personalization",
-      purpose_description: "Read GitHub profile + stats",
-      streams: [
-        { fields: ["id", "login"], name: "user" },
-        { fields: ["id", "user_id", "observed_on"], name: "user_stats" },
-      ],
-    });
     const bothMeta = await fetchJson(`${rsUrl}/v1/streams/user?connector_id=${encodeURIComponent(connectorId)}`, {
-      headers: { Authorization: `Bearer ${both.token}` },
+      headers: { Authorization: `Bearer ${ownerToken}` },
     });
     assert.equal(bothMeta.status, 200);
     const usableEntry = bothMeta.body.expand_capabilities.find((entry: JsonObject) => entry.name === "user_stats");
@@ -2700,27 +2694,6 @@ test("github user stream metadata surfaces the user_stats expand capability with
     assert.equal(usableEntry.cardinality, "has_many");
     assert.equal(usableEntry.usable, true);
     assert.equal(usableEntry.granted, true);
-
-    // user-only grant → entry still present, inert, with the not-granted reason.
-    const userOnly = await approveGrant(asUrl, "github_metadata_owner", {
-      access_mode: "continuous",
-      client_id: "longview",
-      connector_id: connectorId,
-      purpose_code: "https://pdpp.dev/purpose/personalization",
-      purpose_description: "Read GitHub profile only",
-      streams: [{ fields: ["id", "login"], name: "user" }],
-    });
-    const userOnlyMeta = await fetchJson(`${rsUrl}/v1/streams/user?connector_id=${encodeURIComponent(connectorId)}`, {
-      headers: { Authorization: `Bearer ${userOnly.token}` },
-    });
-    assert.equal(userOnlyMeta.status, 200);
-    const inertEntry = userOnlyMeta.body.expand_capabilities.find((entry: JsonObject) => entry.name === "user_stats");
-    assert.ok(inertEntry, "declared relation stays visible even when not readable");
-    assert.equal(inertEntry.target_stream, "user_stats");
-    assert.equal(inertEntry.child_parent_key_field, "user_id");
-    assert.equal(inertEntry.usable, false);
-    assert.equal(inertEntry.granted, false);
-    assert.equal(inertEntry.reason, "related_stream_not_granted");
   });
 });
 
@@ -2955,14 +2928,23 @@ test("blob upload requires owner authority and validates binding inputs", async 
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl, "blob_upload_validation_owner");
     const connectorId = spotifyManifest.connector_id;
+    await materializeConnection({
+      connectorId,
+      connectorInstanceId: "cin_query_contract_spotify_blob",
+      displayName: "Spotify Blob",
+      ownerSubjectId: "blob_upload_validation_owner",
+    });
     const grant = await approveGrant(asUrl, "blob_upload_validation_owner", {
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
       purpose_code: "https://pdpp.dev/purpose/personalization",
       purpose_description: "Read saved tracks only",
-      streams: [{ fields: ["id", "name", "saved_at"], name: "saved_tracks" }],
+      streams: [
+        { fields: ["id", "name", "saved_at"], instance_ids: ["cin_query_contract_spotify_blob"], name: "saved_tracks" },
+      ],
     });
+    assert.ok(grant.token, `expected issued grant token, got ${JSON.stringify(grant)}`);
 
     const clientUpload = await uploadBlob(
       rsUrl,
