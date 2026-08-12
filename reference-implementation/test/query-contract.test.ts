@@ -1749,7 +1749,7 @@ test("exact filter on declared scalar field works", async () => {
   });
 });
 
-test("expand hydrates declared has_many relations and respects child grant projection", async () => {
+test("owner expansion hydrates declared has_many relations", async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl, "expand_owner");
     const connectorId = spotifyManifest.connector_id;
@@ -1777,23 +1777,11 @@ test("expand hydrates declared has_many relations and respects child grant proje
       },
     ]);
 
-    const approved = await approveGrant(asUrl, "expand_owner", {
-      access_mode: "continuous",
-      client_id: "longview",
-      connector_id: connectorId,
-      purpose_code: "https://pdpp.dev/purpose/personalization",
-      purpose_description: "Read saved tracks with recent listening context",
-      streams: [
-        { fields: ["id", "name", "saved_at"], name: "saved_tracks" },
-        { fields: ["id", "track_id", "played_at"], name: "recently_played" },
-      ],
-    });
-
     const { status, body } = await fetchJson(
-      `${rsUrl}/v1/streams/saved_tracks/records?expand=recently_played&expand_limit[recently_played]=1`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      `${rsUrl}/v1/streams/saved_tracks/records?connector_id=${encodeURIComponent(connectorId)}&expand=recently_played&expand_limit[recently_played]=1`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
-    assert.equal(status, 200);
+    assert.equal(status, 200, JSON.stringify(body));
     const record = body.data?.[0];
     assert.ok(record, "expected one saved track");
     assert.ok(record.expanded?.recently_played, "expanded relation should be present");
@@ -1802,13 +1790,12 @@ test("expand hydrates declared has_many relations and respects child grant proje
     assert.equal(record.expanded.recently_played.data.length, 1);
     // biome-ignore lint/style/useDestructuring: the property access names the fixture value at its point of use.
     const child = record.expanded.recently_played.data[0];
-    assert.deepEqual(Object.keys(child.data || {}).sort(), ["id", "played_at", "track_id"]);
-    assert.ok(!("track_name" in (child.data || {})));
+    assert.deepEqual(Object.keys(child.data || {}).sort(), ["id", "played_at", "track_id", "track_name"]);
     assert.equal(child.id, "play_1");
   });
 });
 
-test("single-record fetch honors declared expand and expand_limit", async () => {
+test("owner single-record fetch honors declared expand and expand_limit", async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl, "record_expand_owner");
     const connectorId = spotifyManifest.connector_id;
@@ -1836,24 +1823,16 @@ test("single-record fetch honors declared expand and expand_limit", async () => 
       },
     ]);
 
-    const approved = await approveGrant(asUrl, "record_expand_owner", {
-      access_mode: "continuous",
-      client_id: "longview",
-      connector_id: connectorId,
-      purpose_code: "https://pdpp.dev/purpose/personalization",
-      purpose_description: "Read one saved track with recent listening context",
-      streams: [
-        { fields: ["id", "name", "saved_at"], name: "saved_tracks" },
-        { fields: ["id", "track_id", "played_at"], name: "recently_played" },
-      ],
-    });
-
     const { status, body } = await fetchJson(
-      `${rsUrl}/v1/streams/saved_tracks/records/track_1?expand=recently_played&expand_limit[recently_played]=1`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      `${rsUrl}/v1/streams/saved_tracks/records/track_1?connector_id=${encodeURIComponent(connectorId)}&expand=recently_played&expand_limit[recently_played]=1`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
-    assert.equal(status, 200);
-    assert.equal(body.connector_key, spotifyManifest.connector_id, "record detail carries current source URI identity");
+    assert.equal(status, 200, JSON.stringify(body));
+    assert.equal(
+      body.connector_key,
+      canonicalConnectorKey(spotifyManifest.connector_id),
+      "owner record detail carries current connector identity"
+    );
     assert.ok(body.expanded?.recently_played, "expanded relation should be present on record detail");
     assert.equal(body.expanded.recently_played.object, "list");
     assert.equal(body.expanded.recently_played.has_more, true);
@@ -1862,7 +1841,7 @@ test("single-record fetch honors declared expand and expand_limit", async () => 
   });
 });
 
-test("expand fails with insufficient_scope when the related stream is outside the grant", async () => {
+test("client expansion rejects before related-stream grant evaluation", async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl, "expand_scope_owner");
     const connectorId = spotifyManifest.connector_id;
@@ -1907,12 +1886,13 @@ test("expand fails with insufficient_scope when the related stream is outside th
     const { status, body } = await fetchJson(`${rsUrl}/v1/streams/saved_tracks/records?expand=recently_played`, {
       headers: { Authorization: `Bearer ${approved.token}` },
     });
-    assert.equal(status, 403);
-    assert.equal(body.error.code, "insufficient_scope");
+    assert.equal(status, 400);
+    assert.equal(body.error.code, "invalid_request");
+    assert.equal(body.error.param, "expand");
   });
 });
 
-test("gmail messages expand message_bodies on list and detail reads with child projection", async () => {
+test("owner Gmail message reads expand message_bodies on list and detail", async () => {
   await withHarness(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl, "gmail_expand_body_owner");
     const gmailManifest = readGmailManifest();
@@ -1930,43 +1910,35 @@ test("gmail messages expand message_bodies on list and detail reads with child p
       "message_bodies",
     ]);
 
-    const approved = await approveGrant(asUrl, "gmail_expand_body_owner", {
-      access_mode: "continuous",
-      client_id: "longview",
-      connector_id: connectorId,
-      purpose_code: "https://pdpp.dev/purpose/personalization",
-      purpose_description: "Read Gmail messages with body context",
-      streams: [
-        { fields: ["id", "thread_id", "subject", "received_at"], name: "messages" },
-        { fields: ["id", "message_id", "body_text"], name: "message_bodies" },
-      ],
-    });
-
     const list = await fetchJson(
       `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&order=asc&expand=message_bodies`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
-    assert.equal(list.status, 200);
+    assert.equal(list.status, 200, JSON.stringify(list.body));
     assert.equal(list.body.data.length, 2);
 
     const messageWithBody = list.body.data.find((record: JsonObject) => record.id === "msg-1");
     assert.ok(messageWithBody?.expanded?.message_bodies, "msg-1 should include body expansion");
     assert.equal(messageWithBody.expanded.message_bodies.stream, "message_bodies");
     assert.deepEqual(Object.keys(messageWithBody.expanded.message_bodies.data || {}).sort(), [
+      "body_html",
+      "body_html_bytes",
       "body_source",
       "body_text",
+      "body_text_bytes",
+      "charset",
+      "content_languages",
       "id",
       "message_id",
     ]);
     assert.equal(messageWithBody.expanded.message_bodies.data.body_text, "Here is your train receipt for Milan.");
-    assert.ok(!("body_html" in messageWithBody.expanded.message_bodies.data));
 
     const messageWithoutBody = list.body.data.find((record: JsonObject) => record.id === "msg-2");
     assert.equal(messageWithoutBody?.expanded?.message_bodies, null);
 
     const detail = await fetchJson(
       `${rsUrl}/v1/streams/messages/records/msg-1?connector_id=${encodeURIComponent(connectorId)}&expand=message_bodies`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
     assert.equal(detail.status, 200);
     assert.equal(detail.body.expanded.message_bodies.id, "body-msg-1");
@@ -1974,7 +1946,7 @@ test("gmail messages expand message_bodies on list and detail reads with child p
   });
 });
 
-test("gmail messages expand attachment metadata with limits and missing-child parity", async () => {
+test("owner Gmail message reads expand attachment metadata with limits and missing-child parity", async () => {
   await withHarness(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl, "gmail_expand_attachment_owner");
     const gmailManifest = readGmailManifest();
@@ -1983,26 +1955,11 @@ test("gmail messages expand attachment metadata with limits and missing-child pa
     assert.equal(reg.status, 201, "register gmail manifest");
     await seedGmailExpansionFixture(rsUrl, ownerToken, connectorId);
 
-    const approved = await approveGrant(asUrl, "gmail_expand_attachment_owner", {
-      access_mode: "continuous",
-      client_id: "longview",
-      connector_id: connectorId,
-      purpose_code: "https://pdpp.dev/purpose/personalization",
-      purpose_description: "Read Gmail messages with attachment metadata",
-      streams: [
-        { fields: ["id", "thread_id", "subject", "received_at", "has_attachments"], name: "messages" },
-        {
-          fields: ["id", "message_id", "filename", "content_type", "part_index", "message_received_at"],
-          name: "attachments",
-        },
-      ],
-    });
-
     const { status, body } = await fetchJson(
       `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&order=asc&expand=attachments&expand_limit[attachments]=2`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
-    assert.equal(status, 200);
+    assert.equal(status, 200, JSON.stringify(body));
 
     const messageWithAttachments = body.data.find((record: JsonObject) => record.id === "msg-1");
     assert.ok(messageWithAttachments?.expanded?.attachments, "msg-1 should include attachment expansion");
@@ -2013,19 +1970,21 @@ test("gmail messages expand attachment metadata with limits and missing-child pa
       ["att-1", "att-2"]
     );
     assert.deepEqual(Object.keys(messageWithAttachments.expanded.attachments.data[0].data || {}).sort(), [
+      "blob_ref",
+      "content_id",
+      "content_sha256",
       "content_type",
+      "encoding",
       "filename",
+      "hydration_error",
       "hydration_status",
       "id",
+      "is_inline",
       "message_id",
       "message_received_at",
       "part_index",
+      "size_bytes",
     ]);
-    assert.equal(
-      JSON.stringify(messageWithAttachments.expanded.attachments).includes("blob_ref"),
-      false,
-      "attachment expansion must not expose blob_ref unless the child grant includes it"
-    );
 
     const messageWithoutAttachments = body.data.find((record: JsonObject) => record.id === "msg-2");
     assert.equal(messageWithoutAttachments.expanded.attachments.object, "list");
@@ -2034,7 +1993,7 @@ test("gmail messages expand attachment metadata with limits and missing-child pa
   });
 });
 
-test("gmail messages expand hydrated attachments with grant-visible blob_ref fetch_url", async () => {
+test("owner Gmail message reads expand hydrated attachments with blob fetch_url", async () => {
   await withHarness(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl, "gmail_expand_attachment_blob_owner");
     const gmailManifest = readGmailManifest();
@@ -2124,9 +2083,9 @@ test("gmail messages expand hydrated attachments with grant-visible blob_ref fet
 
     const expanded = await fetchJson(
       `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=attachments`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
-    assert.equal(expanded.status, 200);
+    assert.equal(expanded.status, 200, JSON.stringify(expanded.body));
     const message = expanded.body.data.find((record: JsonObject) => record.id === "msg-blob");
     const attachment = message?.expanded?.attachments?.data?.[0];
     assert.ok(attachment, "expanded attachment should be present");
@@ -2164,12 +2123,13 @@ test("gmail message expansion rejects missing child grant and reverse thread rel
       `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=message_bodies`,
       { headers: { Authorization: `Bearer ${approved.token}` } }
     );
-    assert.equal(missingChildGrant.status, 403);
-    assert.equal(missingChildGrant.body.error.code, "insufficient_scope");
+    assert.equal(missingChildGrant.status, 400);
+    assert.equal(missingChildGrant.body.error.code, "invalid_request");
+    assert.equal(missingChildGrant.body.error.param, "expand");
 
     const reverseThread = await fetchJson(
       `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=thread`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
     assert.equal(reverseThread.status, 400);
     assert.equal(reverseThread.body.error.code, "invalid_expand");
@@ -2523,7 +2483,7 @@ test("repositories → issues shape fails the first-party manifest requiredness 
   );
 });
 
-test("github user expands user_stats filtered by user_id under a both-granted token", async () => {
+test("owner GitHub user reads expand user_stats by current user_id relation", async () => {
   await withHarness(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl, "github_expand_owner");
     const githubManifest = readGithubManifest();
@@ -2532,23 +2492,11 @@ test("github user expands user_stats filtered by user_id under a both-granted to
     assert.equal(reg.status, 201, "register github manifest");
     await seedGithubExpansionFixture(rsUrl, ownerToken, connectorId);
 
-    const approved = await approveGrant(asUrl, "github_expand_owner", {
-      access_mode: "continuous",
-      client_id: "longview",
-      connector_id: connectorId,
-      purpose_code: "https://pdpp.dev/purpose/personalization",
-      purpose_description: "Read GitHub profile with daily stats",
-      streams: [
-        { fields: ["id", "login", "name", "updated_at"], name: "user" },
-        { fields: ["id", "user_id", "observed_on", "followers"], name: "user_stats" },
-      ],
-    });
-
     const list = await fetchJson(
       `${rsUrl}/v1/streams/user/records?connector_id=${encodeURIComponent(connectorId)}&order=asc&expand=user_stats`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
-    assert.equal(list.status, 200);
+    assert.equal(list.status, 200, JSON.stringify(list.body));
 
     const octocat = list.body.data.find((record: JsonObject) => record.id === "101");
     assert.ok(octocat?.expanded?.user_stats, "octocat carries hydrated user_stats");
@@ -2568,7 +2516,7 @@ test("github user expands user_stats filtered by user_id under a both-granted to
   });
 });
 
-test("github user_stats expand_limit caps the child fan-out and reports has_more", async () => {
+test("owner GitHub user_stats expand_limit caps the child fan-out and reports has_more", async () => {
   await withHarness(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl, "github_expand_limit_owner");
     const githubManifest = readGithubManifest();
@@ -2577,23 +2525,11 @@ test("github user_stats expand_limit caps the child fan-out and reports has_more
     assert.equal(reg.status, 201, "register github manifest");
     await seedGithubExpansionFixture(rsUrl, ownerToken, connectorId);
 
-    const approved = await approveGrant(asUrl, "github_expand_limit_owner", {
-      access_mode: "continuous",
-      client_id: "longview",
-      connector_id: connectorId,
-      purpose_code: "https://pdpp.dev/purpose/personalization",
-      purpose_description: "Read GitHub profile with capped daily stats",
-      streams: [
-        { fields: ["id", "login"], name: "user" },
-        { fields: ["id", "user_id", "observed_on"], name: "user_stats" },
-      ],
-    });
-
     const detail = await fetchJson(
       `${rsUrl}/v1/streams/user/records/101?connector_id=${encodeURIComponent(connectorId)}&expand=user_stats&expand_limit[user_stats]=2`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
-    assert.equal(detail.status, 200);
+    assert.equal(detail.status, 200, JSON.stringify(detail.body));
     assert.equal(detail.body.expanded.user_stats.data.length, 2);
     assert.equal(detail.body.expanded.user_stats.has_more, true, "octocat has 3 stats rows, capped at 2");
   });
@@ -2608,7 +2544,7 @@ test("github user expansion rejects requests missing the user_stats grant", asyn
     assert.equal(reg.status, 201, "register github manifest");
     await seedGithubExpansionFixture(rsUrl, ownerToken, connectorId);
 
-    // user-only grant: expanding the ungranted child fails with insufficient_scope.
+    // Client expansion closes before evaluating the related-stream grant.
     const userOnly = await approveGrant(asUrl, "github_expand_reject_owner", {
       access_mode: "continuous",
       client_id: "longview",
@@ -2622,26 +2558,14 @@ test("github user expansion rejects requests missing the user_stats grant", asyn
       `${rsUrl}/v1/streams/user/records?connector_id=${encodeURIComponent(connectorId)}&expand=user_stats`,
       { headers: { Authorization: `Bearer ${userOnly.token}` } }
     );
-    assert.equal(missingStats.status, 403);
-    assert.equal(missingStats.body.error.code, "insufficient_scope");
+    assert.equal(missingStats.status, 400);
+    assert.equal(missingStats.body.error.code, "invalid_request");
+    assert.equal(missingStats.body.error.param, "expand");
 
-    // Reverse expansion is not declared on the manifest. Grant user_stats so the
-    // request reaches expand-validation (not the grant gate) and the rejection is
-    // genuinely about the undeclared reverse relation, not a missing scope.
-    const bothGranted = await approveGrant(asUrl, "github_expand_reject_owner", {
-      access_mode: "continuous",
-      client_id: "longview",
-      connector_id: connectorId,
-      purpose_code: "https://pdpp.dev/purpose/personalization",
-      purpose_description: "Read GitHub profile + stats",
-      streams: [
-        { fields: ["id", "login"], name: "user" },
-        { fields: ["id", "user_id", "observed_on"], name: "user_stats" },
-      ],
-    });
+    // Owner expansion reaches current declaration validation without a grant gate.
     const reverse = await fetchJson(
       `${rsUrl}/v1/streams/user_stats/records?connector_id=${encodeURIComponent(connectorId)}&expand=user`,
-      { headers: { Authorization: `Bearer ${bothGranted.token}` } }
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
     assert.equal(reverse.status, 400);
     assert.equal(reverse.body.error.code, "invalid_expand");
@@ -2659,18 +2583,9 @@ test("github repositories → issues expansion is not declared in this change", 
       { full_name: "octocat/hello-world", id: "r1", updated_at: "2026-04-01T10:00:00Z" },
     ]);
 
-    const approved = await approveGrant(asUrl, "github_repo_issues_owner", {
-      access_mode: "continuous",
-      client_id: "longview",
-      connector_id: connectorId,
-      purpose_code: "https://pdpp.dev/purpose/personalization",
-      purpose_description: "Read GitHub repositories only",
-      streams: [{ fields: ["id", "full_name"], name: "repositories" }],
-    });
-
     const resp = await fetchJson(
       `${rsUrl}/v1/streams/repositories/records?connector_id=${encodeURIComponent(connectorId)}&expand=issues`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
     assert.equal(resp.status, 400);
     assert.equal(resp.body.error.code, "invalid_expand");
@@ -2701,7 +2616,7 @@ test("github user stream metadata surfaces the user_stats expand capability with
   });
 });
 
-test("slack messages expand message_attachments and reactions on list and detail reads", async () => {
+test("owner Slack message reads expand attachments and reactions on list and detail", async () => {
   await withHarness(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl, "slack_expand_owner");
     const slackManifest = readSlackManifest();
@@ -2719,24 +2634,11 @@ test("slack messages expand message_attachments and reactions on list and detail
       "reactions",
     ]);
 
-    const approved = await approveGrant(asUrl, "slack_expand_owner", {
-      access_mode: "continuous",
-      client_id: "longview",
-      connector_id: connectorId,
-      purpose_code: "https://pdpp.dev/purpose/personalization",
-      purpose_description: "Read Slack messages with link previews and reactions",
-      streams: [
-        { fields: ["id", "channel_id", "sent_at", "text"], name: "messages" },
-        { fields: ["id", "message_id", "service_name", "title"], name: "message_attachments" },
-        { fields: ["id", "message_id", "emoji", "user_id"], name: "reactions" },
-      ],
-    });
-
     const list = await fetchJson(
       `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&order=asc&expand=message_attachments&expand=reactions`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
-    assert.equal(list.status, 200);
+    assert.equal(list.status, 200, JSON.stringify(list.body));
     assert.equal(list.body.data.length, 2);
 
     const messageWithChildren = list.body.data.find((record: JsonObject) => record.id === "C1:1700000001.000100");
@@ -2749,11 +2651,15 @@ test("slack messages expand message_attachments and reactions on list and detail
     );
     assert.deepEqual(Object.keys(messageWithChildren.expanded.message_attachments.data[0].data || {}).sort(), [
       "channel_id",
+      "fallback",
+      "from_url",
       "id",
       "index",
       "message_id",
       "service_name",
+      "text",
       "title",
+      "title_link",
     ]);
 
     assert.ok(messageWithChildren.expanded.reactions);
@@ -2773,14 +2679,14 @@ test("slack messages expand message_attachments and reactions on list and detail
 
     const detail = await fetchJson(
       `${rsUrl}/v1/streams/messages/records/${encodeURIComponent("C1:1700000001.000100")}?connector_id=${encodeURIComponent(connectorId)}&expand=message_attachments`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
     assert.equal(detail.status, 200);
     assert.equal(detail.body.expanded.message_attachments.data.length, 3);
   });
 });
 
-test("slack messages expand_limit caps message_attachments and reactions independently", async () => {
+test("owner Slack expand_limit caps attachments and reactions independently", async () => {
   await withHarness(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl, "slack_expand_limit_owner");
     const slackManifest = readSlackManifest();
@@ -2789,24 +2695,11 @@ test("slack messages expand_limit caps message_attachments and reactions indepen
     assert.equal(reg.status, 201, "register slack manifest");
     await seedSlackExpansionFixture(rsUrl, ownerToken, connectorId);
 
-    const approved = await approveGrant(asUrl, "slack_expand_limit_owner", {
-      access_mode: "continuous",
-      client_id: "longview",
-      connector_id: connectorId,
-      purpose_code: "https://pdpp.dev/purpose/personalization",
-      purpose_description: "Read Slack messages with capped child fan-out",
-      streams: [
-        { fields: ["id", "channel_id", "sent_at"], name: "messages" },
-        { fields: ["id", "message_id", "title"], name: "message_attachments" },
-        { fields: ["id", "message_id", "emoji"], name: "reactions" },
-      ],
-    });
-
     const { status, body } = await fetchJson(
       `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&order=asc&expand=message_attachments&expand=reactions&expand_limit[message_attachments]=2&expand_limit[reactions]=1`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
-    assert.equal(status, 200);
+    assert.equal(status, 200, JSON.stringify(body));
     const message = body.data.find((record: JsonObject) => record.id === "C1:1700000001.000100");
     assert.equal(message.expanded.message_attachments.has_more, true);
     assert.equal(message.expanded.message_attachments.data.length, 2);
@@ -2815,7 +2708,7 @@ test("slack messages expand_limit caps message_attachments and reactions indepen
 
     const overMax = await fetchJson(
       `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=reactions&expand_limit[reactions]=999`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
     assert.equal(overMax.status, 400);
     assert.equal(overMax.body.error.code, "invalid_expand");
@@ -2844,12 +2737,13 @@ test("slack message expansion rejects requests missing the child grant", async (
       `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=message_attachments`,
       { headers: { Authorization: `Bearer ${approved.token}` } }
     );
-    assert.equal(missingAttachments.status, 403);
-    assert.equal(missingAttachments.body.error.code, "insufficient_scope");
+    assert.equal(missingAttachments.status, 400);
+    assert.equal(missingAttachments.body.error.code, "invalid_request");
+    assert.equal(missingAttachments.body.error.param, "expand");
 
     const reverseChannel = await fetchJson(
       `${rsUrl}/v1/streams/messages/records?connector_id=${encodeURIComponent(connectorId)}&expand=channel`,
-      { headers: { Authorization: `Bearer ${approved.token}` } }
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
     );
     assert.equal(reverseChannel.status, 400);
     assert.equal(reverseChannel.body.error.code, "invalid_expand");

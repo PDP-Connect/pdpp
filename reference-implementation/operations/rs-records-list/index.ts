@@ -219,8 +219,8 @@ export class RecordsListVisibilityError extends Error {
   }
 }
 
-function buildOwnerReadGrant(streamName: string): RecordsListGrant {
-  return { streams: [{ name: streamName }] };
+function buildOwnerReadGrant(manifest: RecordsListManifest): RecordsListGrant {
+  return { streams: manifest.streams.map((stream) => ({ name: stream.name })) };
 }
 
 /**
@@ -245,7 +245,7 @@ export async function executeRecordsList(
     if (!mStream) {
       throw new RecordsListVisibilityError("not_found", `Stream '${input.streamName}' not found`);
     }
-    grant = buildOwnerReadGrant(input.streamName);
+    grant = buildOwnerReadGrant(manifest);
   } else if (!grant.streams.some((stream) => stream.name === input.streamName)) {
     throw new RecordsListVisibilityError("grant_stream_not_allowed", `Stream '${input.streamName}' not in grant`);
   }

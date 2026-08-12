@@ -77,20 +77,26 @@ export function invalidQueryError(message: string, code = "invalid_request"): Er
 }
 
 /**
- * v0.1 client grants do not expose request-time predicate filters. Keep this
- * guard independent from manifest parsing so a client request is rejected
- * before the RS consults current declaration metadata. Owner reads retain the
- * current-capability filter compiler below.
+ * v0.1 client grants do not expose request-time filters or retain relationship
+ * authorization. Keep this guard independent from manifest parsing so current
+ * declaration metadata cannot reinterpret an issued grant. Owner reads retain
+ * the current-capability query paths.
  */
-export function rejectClientTokenFilters(requestParams: unknown): void {
-  if (!requestParams || typeof requestParams !== "object" || Array.isArray(requestParams)) {
+export function rejectUnsupportedClientQuery(tokenKind: string | null | undefined, requestParams: unknown): void {
+  if (tokenKind !== "client" || !requestParams || typeof requestParams !== "object" || Array.isArray(requestParams)) {
     return;
   }
-  if (!Object.hasOwn(requestParams, "filter")) {
+  const params = requestParams as Record<string, unknown>;
+  const unsupported = [
+    { keys: ["expand", "expand[]"], message: "expand[]", param: "expand" },
+    { keys: ["expand_limit", "expand_limit[]"], message: "expand_limit[...]", param: "expand_limit" },
+    { keys: ["filter"], message: "filter[...]", param: "filter" },
+  ].find(({ keys }) => keys.some((key) => Object.hasOwn(params, key)));
+  if (!unsupported) {
     return;
   }
-  const error = invalidQueryError("filter[...] is not supported for client-token reads in PDPP v0.1");
-  Object.assign(error, { param: "filter" });
+  const error = invalidQueryError(`${unsupported.message} is not supported for client-token reads in PDPP v0.1`);
+  Object.assign(error, { param: unsupported.param });
   throw error;
 }
 

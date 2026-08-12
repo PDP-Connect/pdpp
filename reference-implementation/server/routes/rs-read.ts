@@ -77,7 +77,7 @@ import {
   type StreamsListDependencies,
   type StreamsListInput,
 } from "../../operations/rs-streams-list/index.ts";
-import { rejectClientTokenFilters } from "../record-filters.ts";
+import { rejectUnsupportedClientQuery } from "../record-filters.ts";
 import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -1670,9 +1670,7 @@ export function mountRsStreamAggregate(app: AppLike, ctx: MountRsReadContext): v
           traceId,
         };
 
-        if (tokenInfo.pdpp_token_kind === "client") {
-          rejectClientTokenFilters(requestParams);
-        }
+        rejectUnsupportedClientQuery(tokenInfo.pdpp_token_kind, requestParams);
 
         const scope = await resolveReadScope(ctx, req, tokenInfo, queryContext);
         const { storageBinding, manifest } = scope;
@@ -1819,9 +1817,7 @@ export function mountRsRecordsList(app: AppLike, ctx: MountRsReadContext): void 
           traceId,
         };
 
-        if (tokenInfo.pdpp_token_kind === "client") {
-          rejectClientTokenFilters(requestParams);
-        }
+        rejectUnsupportedClientQuery(tokenInfo.pdpp_token_kind, requestParams);
 
         // Self-export: owner can query without a client grant. `resolveReadScope`
         // sets `queryContext.sourceDescriptor` and returns the resolved trio.
@@ -1938,6 +1934,8 @@ export function mountRsRecordDetail(app: AppLike, ctx: MountRsReadContext): void
           tokenInfo,
           traceId,
         };
+
+        rejectUnsupportedClientQuery(tokenInfo.pdpp_token_kind, req.query);
 
         ({ storageBinding, manifest, sourceDescriptor } = await resolveReadScope(ctx, req, tokenInfo, queryContext));
         await ctx.emitQueryReceived(queryContext, req);
@@ -2273,9 +2271,7 @@ async function runSearchRouteHandler(
       tokenInfo,
       traceId,
     };
-    if (tokenInfo.pdpp_token_kind === "client") {
-      rejectClientTokenFilters(req.query);
-    }
+    rejectUnsupportedClientQuery(tokenInfo.pdpp_token_kind, req.query);
     await ctx.emitQueryReceived(queryContext, req);
 
     const { envelope, disclosureData } = await opts.runSearch({

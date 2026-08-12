@@ -181,8 +181,8 @@ export class RecordDetailVisibilityError extends Error {
   }
 }
 
-function buildOwnerReadGrant(streamName: string): RecordDetailGrant {
-  return { streams: [{ name: streamName }] };
+function buildOwnerReadGrant(manifest: RecordDetailManifest): RecordDetailGrant {
+  return { streams: manifest.streams.map((stream) => ({ name: stream.name })) };
 }
 
 /**
@@ -197,7 +197,7 @@ export async function executeRecordDetail(
   let grant = dependencies.getGrant();
 
   if (input.actor.kind === "owner") {
-    grant = buildOwnerReadGrant(input.streamName);
+    grant = buildOwnerReadGrant(manifest);
   } else if (!grant.streams.some((stream) => stream.name === input.streamName)) {
     throw new RecordDetailVisibilityError(`Stream '${input.streamName}' not in grant`, "grant_stream_not_allowed");
   }
