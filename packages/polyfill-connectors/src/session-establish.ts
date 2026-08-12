@@ -56,9 +56,9 @@ export interface EnsureSessionArgs {
     status: AssistanceCompletionStatus,
     extra?: { message?: string }
   ) => Promise<void>;
+  context: BrowserContext;
   /** Credentials resolved by the runtime's declared setup auth strategy. */
   credentials: Readonly<Record<string, string>>;
-  context: BrowserContext;
   /**
    * Call this at the exact line `ensureSession` submits a saved credential to
    * the provider's real sign-in form (the `.click()`/`.fill()` that sends the
@@ -87,6 +87,7 @@ export interface SessionEstablishArgs {
   checkpoint: SessionCheckpointFn;
   completeAssistance: EnsureSessionArgs["completeAssistance"];
   context: BrowserContext;
+  credentials?: EnsureSessionArgs["credentials"];
   name: string;
   page: Page;
   progress: EnsureSessionArgs["progress"];
@@ -153,6 +154,7 @@ export async function establishSession(
     checkpoint,
     completeAssistance,
     context,
+    credentials = {},
     page,
     name,
     retryablePattern,
@@ -177,6 +179,7 @@ export async function establishSession(
         checkpoint,
         completeAssistance,
         context,
+        credentials,
         onCredentialSubmit: () => {
           credentialSubmitted = true;
         },

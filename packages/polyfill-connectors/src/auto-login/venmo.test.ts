@@ -691,16 +691,23 @@ test("ensureVenmoSession: a transport fault in the post-submit probe throws a di
   await withVenmoCredentials(async () => {
     const { fillCalls, page } = makePageWhosePostSubmitProbeThrows();
     const { sendInteraction } = recordingSendInteraction();
-    await assert.rejects(ensureVenmoSession({ page, sendInteraction }), (err: unknown) => {
-      assert.ok(err instanceof Error);
-      assert.match(err.message, /venmo_post_submit_probe_transport_error/);
-      assert.doesNotMatch(
-        err.message,
-        /^venmo_probe_transport_error/,
-        "must not collide with the pre-submit probe's error name"
-      );
-      return true;
-    });
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page,
+        sendInteraction,
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /venmo_post_submit_probe_transport_error/);
+        assert.doesNotMatch(
+          err.message,
+          /^venmo_probe_transport_error/,
+          "must not collide with the pre-submit probe's error name"
+        );
+        return true;
+      }
+    );
     assert.equal(fillCalls.username, "test-user", "the automated form fill did happen — this IS the post-submit case");
     assert.equal(fillCalls.password, "test-password");
   });
@@ -710,15 +717,22 @@ test("B4 oracle: the post-submit probe's thrown error name does not match the co
   await withVenmoCredentials(async () => {
     const { page } = makePageWhosePostSubmitProbeThrows();
     const { sendInteraction } = recordingSendInteraction();
-    await assert.rejects(ensureVenmoSession({ page, sendInteraction }), (err: unknown) => {
-      assert.ok(err instanceof Error);
-      assert.equal(
-        VENMO_RETRYABLE_PATTERN.test(err.message),
-        false,
-        "a post-submit transport fault must terminal the run permanently, not retry it"
-      );
-      return true;
-    });
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page,
+        sendInteraction,
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.equal(
+          VENMO_RETRYABLE_PATTERN.test(err.message),
+          false,
+          "a post-submit transport fault must terminal the run permanently, not retry it"
+        );
+        return true;
+      }
+    );
   });
 });
 
@@ -731,7 +745,11 @@ test("B4 oracle: repeated-dispatch simulation — a retry-if-retryable caller su
       const { fillCalls, page } = makePageWhosePostSubmitProbeThrows();
       const { sendInteraction } = recordingSendInteraction();
       try {
-        await ensureVenmoSession({ page, sendInteraction });
+        await ensureVenmoSession({
+          credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+          page,
+          sendInteraction,
+        });
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         if (fillCalls.password) {

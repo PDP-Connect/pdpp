@@ -463,7 +463,14 @@ if (isMainModule(import.meta.url)) {
     retryablePattern: VENMO_RETRYABLE_PATTERN,
     auth: { kind: "env", required: ["VENMO_USERNAME", "VENMO_PASSWORD"] },
     browser: { profileName: "venmo" },
-    async ensureSession({ capture, checkpoint, credentials, onCredentialSubmit, page, sendInteraction }): Promise<void> {
+    async ensureSession({
+      capture,
+      checkpoint,
+      credentials,
+      onCredentialSubmit,
+      page,
+      sendInteraction,
+    }): Promise<void> {
       await ensureVenmoSession({
         ...(capture ? { capture } : {}),
         checkpoint,
