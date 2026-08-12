@@ -109,6 +109,15 @@ SQLite and PostgreSQL tests cover concurrent redemption. A file-backed SQLite
 test closes and reopens the database between code creation and redemption to
 prove that no process-local state is required.
 
+### Token responses prevent intermediary caching
+
+The `/oauth/token` route sets `Cache-Control: no-store` and
+`Pragma: no-cache` through one response helper on every successful
+token-bearing branch. The helper is used after authorization-code,
+refresh-token, and device-code success, so grant and package envelopes share
+the same invariant. OAuth errors and unsupported grant responses do not use
+the token-success helper.
+
 ### Deferred questions remain visible
 
 Keyless recovery and the security-profile floor remain in the deferred section

@@ -356,6 +356,7 @@ export const RECEIPT_STATIC_PATHS = [
   "reference-implementation/test/seam-spike/artifacts/.gitignore",
   "reference-implementation/test/seam-spike/pr89-receipt.schema.json",
   "reference-implementation/test/auth-consent-device-postgres-path.test.ts",
+  "reference-implementation/test/as-oauth-token-cache-headers.test.ts",
   "reference-implementation/test/batch-consent-per-source-gate.test.ts",
   "reference-implementation/test/security-consent-token-handoff.test.ts",
   "scripts/test-accounting/node-reporter.ts",

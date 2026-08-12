@@ -107,3 +107,16 @@
 - [x] 9.5 Run focused tests, TypeScript, strict OpenSpec validation, query
       registry validation, `git diff --check`, and stale sweeps for the removed
       process-local map.
+
+## 10. Token response cache controls
+
+- [x] 10.1 Set `Cache-Control: no-store` and `Pragma: no-cache` through one
+      shared response helper on every successful authorization-code,
+      refresh-token, and device-code token response, including package
+      variants.
+- [x] 10.2 Add a route-level response matrix for grant and package envelopes
+      and assert token errors and unsupported grants do not serialize a token
+      success envelope.
+- [x] 10.3 Update the Core token-security contract, Case 2 execution oracle,
+      and this change's requirement/design records without changing token
+      lifetime or grant-family semantics.

@@ -23,6 +23,9 @@ implementation.
 - Implement refresh rotation, superseded-generation reuse, family revocation,
   lost-response retry handling, and exact store state following RFC 9700.
   Report these controls separately from the seven-case seam result.
+- Prevent intermediary caching of every successful token-bearing response
+  with RFC 6749's `Cache-Control: no-store` and `Pragma: no-cache` headers,
+  including package variants and device-code responses.
 - Replace the process-local HTML consent handoff with a durable exchange-code
   record. A committed approval can be resumed after process failure, and
   repeated redemption returns the same persisted token result until the

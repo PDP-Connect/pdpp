@@ -140,6 +140,36 @@ same for all superseded-generation reuse. This follows RFC 9700.
 - **THEN** the superseded generation SHALL trigger family revocation and
   `invalid_grant`, not an idempotent replay response
 
+### Requirement: Successful token responses SHALL prevent intermediary caching
+
+Every successful `/oauth/token` response containing an access token or refresh
+token SHALL set `Cache-Control: no-store` and `Pragma: no-cache` before the
+response body is serialized. The requirement applies to authorization-code,
+refresh-token, and device-code exchanges, including grant and package variants.
+Token errors and unsupported grant responses are outside this successful
+token-response requirement.
+
+**Change class:** repairs an existing standards and credential-handling hole
+
+#### Scenario: Authorization-code and refresh responses prevent caching
+
+- **WHEN** an authorization-code or refresh-token exchange succeeds for a
+  grant or package
+- **THEN** the response SHALL include `Cache-Control: no-store` and
+  `Pragma: no-cache`
+
+#### Scenario: Device-code responses prevent caching
+
+- **WHEN** a device-code exchange succeeds for an owner or package token
+- **THEN** the response SHALL include `Cache-Control: no-store` and
+  `Pragma: no-cache`
+
+#### Scenario: Token errors do not masquerade as token successes
+
+- **WHEN** `/oauth/token` returns an OAuth error or unsupported-grant response
+- **THEN** the successful token-response requirement SHALL not apply and the
+  route SHALL not serialize a token envelope
+
 ### Requirement: Pre-v0.1 persisted authorization state SHALL fail closed
 
 The current persisted-grant reader SHALL treat pre-v0.1 authorization-state

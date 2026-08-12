@@ -279,6 +279,12 @@ function buildGrantIdPayload(token: {
   return token.grant_package_id ? { grant_package_id: token.grant_package_id } : { grant_id: token.grant_id };
 }
 
+function respondWithTokenJson(res: RouteResponse, body: unknown): unknown {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Pragma", "no-cache");
+  return res.json(body);
+}
+
 async function handleAuthCodeExchange(
   req: RouteRequest,
   body: Record<string, unknown>,
@@ -293,7 +299,7 @@ async function handleAuthCodeExchange(
       codeVerifier: body.code_verifier,
       redirectUri: body.redirect_uri,
     });
-    return res.json({
+    return respondWithTokenJson(res, {
       access_token: token.access_token,
       ...(token.authorization_details ? { authorization_details: token.authorization_details } : {}),
       expires_in: HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS,
@@ -317,7 +323,7 @@ async function handleRefreshTokenExchange(
       clientId: body.client_id,
       refreshToken: body.refresh_token,
     });
-    return res.json({
+    return respondWithTokenJson(res, {
       access_token: token.access_token,
       expires_in: HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS,
       refresh_token: token.refresh_token,
@@ -368,7 +374,7 @@ export function mountAsToken(app: AppLike, ctx: MountAsTokenContext): void {
       if (outcome.traceContext?.trace_id) {
         ctx.setReferenceTraceId(res, String(outcome.traceContext.trace_id));
       }
-      return res.status(outcome.status as number).json(outcome.publicResult);
+      return respondWithTokenJson(res.status(outcome.status as number), outcome.publicResult);
     }
     if (outcome.requestId) {
       res.setHeader("Request-Id", String(outcome.requestId));

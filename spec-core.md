@@ -1502,6 +1502,11 @@ Positive introspection results MUST NOT be cached longer than `min(token_exp, 60
 
 Implementations SHOULD use short-lived access tokens with refresh tokens for `continuous` grants.
 
+Every successful OAuth token response that contains an access token or refresh
+token MUST include `Cache-Control: no-store` and `Pragma: no-cache` before the
+response is serialized. This applies to authorization-code, refresh-token, and
+device-code exchanges, including package-scoped variants.
+
 An authorization code MUST be consumed atomically on its first successful
 redemption. A later redemption, including one with the same valid PKCE
 verifier, MUST return `invalid_grant` and MUST NOT issue another token.

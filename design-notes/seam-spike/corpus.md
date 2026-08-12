@@ -220,6 +220,12 @@ retention, and selection provenance. A missing or malformed approval returns
 OAuth response returns RFC 9396 `invalid_authorization_details`, recorded as
 `oauth.invalid_authorization_details`.
 
+Every successful token-bearing `/oauth/token` response MUST include
+`Cache-Control: no-store` and `Pragma: no-cache`. The route-level matrix covers
+authorization-code, refresh-token, and device-code exchanges, including grant
+and package variants; token errors and unsupported grants are not token-success
+responses.
+
 ### Case 3: Authenticated AS to RS context resolution
 
 Fixtures: `source.json`, `rar-request.json`, `introspection/valid.json`, and the
