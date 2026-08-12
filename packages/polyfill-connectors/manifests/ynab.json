@@ -376,6 +376,7 @@
     },
     {
       "name": "category_groups",
+      "required": true,
       "description": "Category groups within each budget.",
       "display": {
         "label": "Your budget category groups",
@@ -425,6 +426,7 @@
     },
     {
       "name": "categories",
+      "required": true,
       "description": "Categories within each budget, including budgeted/activity/balance snapshots and goal state.",
       "display": {
         "label": "Your budget categories",
@@ -557,6 +559,7 @@
     },
     {
       "name": "payees",
+      "required": true,
       "description": "Payees within each budget.",
       "display": {
         "label": "Your payees",
@@ -1021,6 +1024,7 @@
     },
     {
       "name": "months",
+      "required": true,
       "description": "Monthly budget aggregates (income, budgeted, activity, age of money).",
       "display": {
         "label": "Monthly budget summaries",
@@ -1096,6 +1100,7 @@
     },
     {
       "name": "month_categories",
+      "required": true,
       "description": "Per-month snapshot of every category's budgeted/activity/balance and goal progress. This is the real budget history matrix — historical months are frozen in YNAB, the current month mutates. Amounts in YNAB milliunits (1000 milliunits = 1 currency unit).",
       "display": {
         "label": "Monthly category history",
