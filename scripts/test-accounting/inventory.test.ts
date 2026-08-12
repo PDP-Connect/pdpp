@@ -598,6 +598,10 @@ test("keeps the source-revision projection-fault PostgreSQL skip title in the ex
     "PostgreSQL projection faults preserve canonical record, schedule, and lifecycle writes, then repair passes after recovery";
   assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
 });
+test("keeps the manifest-receipt PostgreSQL skip title in the exact receipt mapping", () => {
+  const name = "PostgreSQL manifest receipt changes once and BIGINT exhaustion remains canonical";
+  assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
+});
 test("keeps the source-revision stale-publication PostgreSQL skip title in the exact receipt mapping", () => {
   const name = "PostgreSQL stale failure publication cannot overwrite newer evidence";
   assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
