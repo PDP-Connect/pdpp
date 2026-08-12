@@ -112,9 +112,11 @@ function scheduledTxn(id: string, overrides: Record<string, unknown> = {}): Reco
  */
 function fakeRequest(budgets: readonly BudgetFixture[]): {
   knowledgeSeenFor: (path: string) => number | undefined;
+  requestsFor: (path: string) => Array<number | undefined>;
   request: <T>(path: string, token: string, options?: { knowledge?: number; sinceDate?: string }) => Promise<T>;
 } {
   const knowledgeSeen = new Map<string, number | undefined>();
+  const requestKnowledge = new Map<string, Array<number | undefined>>();
   const byId = new Map(budgets.map((b) => [b.id, b]));
 
   const request = <T>(
@@ -123,6 +125,7 @@ function fakeRequest(budgets: readonly BudgetFixture[]): {
     options?: { knowledge?: number; sinceDate?: string }
   ): Promise<T> => {
     knowledgeSeen.set(path, options?.knowledge);
+    requestKnowledge.set(path, [...(requestKnowledge.get(path) ?? []), options?.knowledge]);
 
     if (path === "/budgets") {
       return Promise.resolve({ data: { budgets: budgets.map((b) => budgetSummary(b.id)) } } as T);
@@ -144,10 +147,26 @@ function fakeRequest(budgets: readonly BudgetFixture[]): {
         data: { scheduled_transactions: fixture.scheduledTransactions ?? [], server_knowledge: 200 },
       } as T);
     }
+    if (resource === "categories") {
+      return Promise.resolve({ data: { category_groups: [], server_knowledge: 300 } } as T);
+    }
+    if (resource === "payees") {
+      return Promise.resolve({ data: { payees: [], server_knowledge: 400 } } as T);
+    }
+    if (resource === "transactions") {
+      return Promise.resolve({ data: { transactions: [], server_knowledge: 500 } } as T);
+    }
+    if (resource === "months") {
+      return Promise.resolve({ data: { months: [], server_knowledge: 600 } } as T);
+    }
     return Promise.reject(new Error(`ynab_http_404 [endpoint ${path}]: not_found`));
   };
 
-  return { request, knowledgeSeenFor: (path: string) => knowledgeSeen.get(path) };
+  return {
+    request,
+    knowledgeSeenFor: (path: string) => knowledgeSeen.get(path),
+    requestsFor: (path: string) => requestKnowledge.get(path) ?? [],
+  };
 }
 
 function makeCtx(
@@ -294,6 +313,64 @@ test("ynabCollect: zero-budget run emits no coverage for per-budget streams — 
     const verdict = coherenceFor(messages, stream, strategy);
     assert.equal(verdict.proven, false, `${stream}: zero budgets must not read as proven`);
   }
+});
+
+test("ynabCollect: established zero streams prove empty only after a fresh provider traversal", async () => {
+  const fixtures: BudgetFixture[] = [{ id: BUDGET_A }];
+  const { request, knowledgeSeenFor, requestsFor } = fakeRequest(fixtures);
+  const priorState = {
+    categories: { [BUDGET_A]: { server_knowledge: 10 } },
+    payees: { [BUDGET_A]: { server_knowledge: 20 } },
+    transactions: { [BUDGET_A]: { server_knowledge: 30, since_date: "2026-01-01" } },
+    months: { [BUDGET_A]: { server_knowledge: 40 } },
+    month_categories: { [BUDGET_A]: { last_fetched_month: "2026-07-01" } },
+    scheduled_transactions: { [BUDGET_A]: { server_knowledge: 50 } },
+  };
+  const streams = [
+    "category_groups",
+    "categories",
+    "payees",
+    "transactions",
+    "scheduled_transactions",
+    "months",
+    "month_categories",
+  ];
+  const { ctx, messages } = makeCtx(streams, priorState);
+
+  await ynabCollect(ctx, request);
+
+  for (const stream of streams) {
+    const coverage = coverageFor(messages, stream);
+    assert.ok(coverage, `${stream}: successful full traversal emits zero proof`);
+    assert.equal(coverage?.considered, 0, `${stream}: provider returned an empty inventory`);
+    assert.equal(coverage?.covered, 0, `${stream}: empty inventory is fully covered`);
+    assert.equal(coherenceFor(messages, stream, "full_inventory").proven, true, `${stream}: zero is proven`);
+  }
+  assert.equal(knowledgeSeenFor(`/budgets/${BUDGET_A}/categories`), undefined);
+  assert.equal(knowledgeSeenFor(`/budgets/${BUDGET_A}/payees`), undefined);
+  assert.equal(knowledgeSeenFor(`/budgets/${BUDGET_A}/transactions`), undefined);
+  assert.equal(knowledgeSeenFor(`/budgets/${BUDGET_A}/months`), undefined);
+  assert.equal(knowledgeSeenFor(`/budgets/${BUDGET_A}/scheduled_transactions`), undefined);
+  assert.deepEqual(requestsFor(`/budgets/${BUDGET_A}/categories`), [10, undefined]);
+  assert.deepEqual(requestsFor(`/budgets/${BUDGET_A}/payees`), [20, undefined]);
+  assert.deepEqual(requestsFor(`/budgets/${BUDGET_A}/transactions`), [30, undefined]);
+  assert.deepEqual(requestsFor(`/budgets/${BUDGET_A}/months`), [40, undefined]);
+  assert.deepEqual(requestsFor(`/budgets/${BUDGET_A}/scheduled_transactions`), [50, undefined]);
+});
+
+test("ynabCollect: a nonempty prior-cursor delta stays incremental", async () => {
+  const fixtures: BudgetFixture[] = [{ id: BUDGET_A, scheduledTransactions: [scheduledTxn(SCHEDULED_1)] }];
+  const { request, requestsFor } = fakeRequest(fixtures);
+  const { ctx, messages } = makeCtx(["scheduled_transactions"], {
+    scheduled_transactions: { [BUDGET_A]: { server_knowledge: 50 } },
+  });
+
+  await ynabCollect(ctx, request);
+
+  assert.deepEqual(requestsFor(`/budgets/${BUDGET_A}/scheduled_transactions`), [50]);
+  const coverage = coverageFor(messages, "scheduled_transactions");
+  assert.equal(coverage?.considered, 1);
+  assert.equal(coverage?.covered, 1);
 });
 
 // ─── Malformed row: covered must fall short of considered, never overclaim ─

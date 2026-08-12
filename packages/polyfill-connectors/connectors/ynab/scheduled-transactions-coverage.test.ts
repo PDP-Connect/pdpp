@@ -188,7 +188,7 @@ test("collectScheduledTransactions: a fresh call where one row fails shape-check
   }
 });
 
-test("collectScheduledTransactions: ignores prior cursor and always performs fresh enumeration", async () => {
+test("collectScheduledTransactions: delta-only zero triggers a fresh reconciliation", async () => {
   const restore = stubFetch({ data: { server_knowledge: 201, scheduled_transactions: [] } });
   try {
     const priorState = { scheduled_transactions: { [BUDGET_A]: { server_knowledge: 200 } } };
@@ -197,13 +197,9 @@ test("collectScheduledTransactions: ignores prior cursor and always performs fre
 
     assert.equal(fact.considered, 0);
     assert.equal(fact.covered, 0);
-    assert.equal(
-      fact.enumeratedFresh,
-      true,
-      "we always perform fresh enumeration (ignoring prior state) to guarantee boundary proof every run"
-    );
+    assert.equal(fact.enumeratedFresh, true, "a delta-only zero must be reconciled before it proves emptiness");
 
-    // State is still updated for compatibility, even though we ignore it.
+    // State is still updated with the fresh traversal's durable receipt.
     const stateMsgs = stateMessagesFor(messages, "scheduled_transactions");
     assert.equal(stateMsgs.length, 1);
     assert.deepEqual(stateMsgs[0]?.cursor, { [BUDGET_A]: { server_knowledge: 201 } });
@@ -264,9 +260,7 @@ test("aggregate: always succeeds when facts present (all budgets perform fresh e
   assert.deepEqual(result, { considered: 0, covered: 0 }, "both budget zeros summed");
 });
 
-test("collectScheduledTransactions: second-run with prior state still performs fresh enumeration", async () => {
-  // Key design: even with prior state/cursor, we perform fresh enumeration.
-  // This proves the boundary every run.
+test("collectScheduledTransactions: a nonempty prior-cursor run stays incremental", async () => {
   const priorState = { scheduled_transactions: { [BUDGET_A]: { server_knowledge: 100 } } };
   const restore = stubFetch({
     data: {
@@ -280,7 +274,7 @@ test("collectScheduledTransactions: second-run with prior state still performs f
 
     assert.equal(fact.considered, 1);
     assert.equal(fact.covered, 1);
-    assert.equal(fact.enumeratedFresh, true, "always fresh: we ignore prior cursor");
+    assert.equal(fact.enumeratedFresh, false, "nonempty delta response remains incremental");
     assert.equal(emitted.filter((r) => r.stream === "scheduled_transactions").length, 1);
   } finally {
     restore();
@@ -305,7 +299,7 @@ test("collectScheduledTransactions: second-run with shape-rejected item yields c
     const fact = await collectScheduledTransactions(ctx);
 
     assert.equal(emitted.filter((r) => r.stream === "scheduled_transactions").length, 1, "only valid row emits");
-    assert.equal(fact.enumeratedFresh, true, "always fresh");
+    assert.equal(fact.enumeratedFresh, false, "nonempty delta response remains incremental");
     assert.equal(fact.considered, 2, "full enumeration saw both");
     assert.equal(fact.covered, 1, "only valid row counted");
   } finally {
@@ -313,12 +307,10 @@ test("collectScheduledTransactions: second-run with shape-rejected item yields c
   }
 });
 
-test("aggregate: constructed enumeratedFresh:false fact is rejected (defensive)", () => {
-  // Defensive: even if a future caller accidentally constructs a non-fresh fact,
-  // aggregate rejects it to prevent proof of a partial view.
+test("aggregate: non-fresh nonzero facts remain usable, but cannot prove a zero", () => {
   const facts = [{ budgetId: BUDGET_A, considered: 5, covered: 5, enumeratedFresh: false }];
   const result = aggregateScheduledTransactionsCoverage(facts);
-  assert.equal(result, null, "non-fresh fact blocks proof");
+  assert.deepEqual(result, { considered: 5, covered: 5 });
 });
 
 test("aggregate: no facts (stream not requested / no budgets) -> not proven", () => {

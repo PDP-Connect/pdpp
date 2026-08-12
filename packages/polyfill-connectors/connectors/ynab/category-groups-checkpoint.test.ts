@@ -130,8 +130,8 @@ test("collectCategoriesAndGroups: succeeded run stages a category_groups checkpo
     // is valid. (An out-of-scope STATE would throw `STATE for undeclared
     // stream` in the runtime — see validateStateMessage.)
     assert.ok(ctx.requested.has("category_groups"));
-    assert.deepEqual(coverage.categoryGroups, { considered: 2, covered: 2 });
-    assert.deepEqual(coverage.categories, { considered: 1, covered: 1 });
+    assert.deepEqual(coverage.categoryGroups, { considered: 2, covered: 2, enumeratedFresh: true });
+    assert.deepEqual(coverage.categories, { considered: 1, covered: 1, enumeratedFresh: true });
   } finally {
     restore();
   }

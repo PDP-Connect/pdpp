@@ -11,10 +11,16 @@ interface Manifest {
 
 const manifest = JSON.parse(readFileSync(new URL("../../manifests/ynab.json", import.meta.url), "utf8")) as Manifest;
 
-test("YNAB server-knowledge streams advertise checkpoint-window coverage", () => {
-  for (const name of ["category_groups", "categories", "payees", "months", "month_categories"]) {
+test("YNAB delta streams preserve checkpoint-window coverage", () => {
+  for (const name of ["category_groups", "categories", "payees", "transactions", "months", "month_categories"]) {
     const stream = manifest.streams.find((candidate) => candidate.name === name);
     assert.ok(stream, `${name} must remain declared`);
-    assert.equal(stream.coverage_strategy, "checkpoint_window", `${name} is a delta/checkpoint walk`);
+    assert.equal(stream.coverage_strategy, "checkpoint_window", `${name} remains incremental`);
   }
+});
+
+test("YNAB scheduled transactions retains its existing full-inventory strategy", () => {
+  const stream = manifest.streams.find((candidate) => candidate.name === "scheduled_transactions");
+  assert.ok(stream);
+  assert.equal(stream.coverage_strategy, "full_inventory");
 });
