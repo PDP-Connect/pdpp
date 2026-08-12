@@ -65,11 +65,13 @@ export interface SourceWebhookDependencies {
       readonly reason?: string | null;
       readonly trigger_kind: "webhook";
     };
+    bodyHash: string;
     connectorId: string;
     connectorInstanceId: string;
     eventId: string;
     ownerSubjectId: string;
     receivedAt: string;
+    sourceId: string;
     triggerKind: "webhook";
   }) =>
     | Promise<{
@@ -216,8 +218,14 @@ export async function executeSourceWebhook(
   }
   const bodyHash = createHmac("sha256", secret).update(input.body).digest("hex");
   const receivedAt = new Date(deps.nowMs()).toISOString();
-  const claimed = await deps.claimEvent({ bodyHash, eventId, receivedAt, sourceId });
-  if (!claimed) {
+  const claimEvent = async (): Promise<boolean> => await deps.claimEvent({ bodyHash, eventId, receivedAt, sourceId });
+
+  // A controller-backed schedule_run has its own durable source-event receipt.
+  // Let that receipt own replay identity: claiming source_webhook_events first
+  // would turn a response-loss retry into a generic duplicate and discard the
+  // original run handle. Ingest and scheduler-fallback paths retain the
+  // existing claim-before-action boundary.
+  if ((payload.action !== "schedule_run" || !deps.requestRun) && !(await claimEvent())) {
     return { accepted: true, duplicate: true, event_id: eventId, source_id: sourceId };
   }
 
@@ -250,6 +258,9 @@ export async function executeSourceWebhook(
     const automationPolicy = deps.projectAutomationPolicy
       ? await deps.projectAutomationPolicy({ connectorId, triggerKind: "webhook" })
       : { trigger_kind: "webhook" as const };
+    if (automationPolicy.allowed_to_start === false && !(await claimEvent())) {
+      return { accepted: true, duplicate: true, event_id: eventId, source_id: sourceId };
+    }
     const run =
       automationPolicy.allowed_to_start === false
         ? null
@@ -257,15 +268,20 @@ export async function executeSourceWebhook(
           deps.requestRun
           ? await deps.requestRun({
               automationPolicy,
+              bodyHash,
               connectorId,
               connectorInstanceId,
               eventId,
               ownerSubjectId,
               receivedAt,
+              sourceId,
               triggerKind: "webhook",
             })
           : null;
     if (automationPolicy.allowed_to_start !== false && !run) {
+      if (!(await claimEvent())) {
+        return { accepted: true, duplicate: true, event_id: eventId, source_id: sourceId };
+      }
       await deps.signalScheduler({ connectorId, connectorInstanceId, eventId, ownerSubjectId, receivedAt });
     }
     return {

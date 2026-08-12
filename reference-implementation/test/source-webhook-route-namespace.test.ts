@@ -137,9 +137,12 @@ test("source webhook route ingests into the configured owner connection with adm
 test("source webhook route passes the configured owner connection to runNow", async () => {
   let captured:
     | {
+        bodyHash?: string;
         connectorId: string;
         connectorInstanceId?: string;
+        eventId?: string;
         ownerSubjectId?: string;
+        sourceId?: string;
         triggerKind?: string;
       }
     | undefined;
@@ -148,9 +151,12 @@ test("source webhook route passes the configured owner connection to runNow", as
       controller: {
         runNow: (connectorId, options) => {
           captured = {
+            bodyHash: options.sourceWebhookEvent?.bodyHash,
             connectorId,
             connectorInstanceId: options.connectorInstanceId,
+            eventId: options.sourceWebhookEvent?.eventId,
             ownerSubjectId: options.ownerSubjectId,
+            sourceId: options.sourceWebhookEvent?.sourceId,
             triggerKind: options.triggerKind,
           };
           return { run_id: "run_webhook", status: "started", trace_id: "trc_webhook", trigger_kind: "webhook" };
@@ -159,13 +165,17 @@ test("source webhook route passes the configured owner connection to runNow", as
     })
   );
 
-  const out = await post(handler, "source-second", "evt-run-second", '{"action":"schedule_run"}');
+  const body = '{"action":"schedule_run"}';
+  const out = await post(handler, "source-second", "evt-run-second", body);
 
   assert.equal(out.statusCode, 200);
   assert.deepEqual(captured, {
+    bodyHash: createHmac("sha256", SECRET).update(body).digest("hex"),
     connectorId: "gmail",
     connectorInstanceId: "cin_gmail_owner_custom_second",
+    eventId: "evt-run-second",
     ownerSubjectId: "owner_custom",
+    sourceId: "source-second",
     triggerKind: "webhook",
   });
 });
