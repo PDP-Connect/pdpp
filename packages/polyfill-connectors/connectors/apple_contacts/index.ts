@@ -334,6 +334,31 @@ async function emitContactGroupsIfRequested(args: {
   return groupsEmitted;
 }
 
+async function loadFullGroupSnapshot(args: {
+  authHeader: string;
+  bookUrl: string;
+  fetchImpl: DiscoveryFetch;
+  trustedOrigins: string[];
+}): Promise<{ cards: Array<{ card: ParsedVCard; uid: string }>; complete: boolean }> {
+  const { authHeader, bookUrl, fetchImpl, trustedOrigins } = args;
+  const resources = await addressbookQueryAll({ bookUrl, authHeader, fetchImpl, trustedOrigins }).catch(
+    (err: unknown) => {
+      throw classifyCardDavRequestFailure(err, { retryableByDefault: true });
+    }
+  );
+  const cards: Array<{ card: ParsedVCard; uid: string }> = [];
+  let complete = true;
+  for (const resource of resources) {
+    const [card] = parseVCards(resource.vcardText);
+    if (!card) {
+      complete = false;
+      continue;
+    }
+    cards.push({ card, uid: String(contactRecord(bookUrl, resource, card).id) });
+  }
+  return { cards, complete };
+}
+
 /**
  * Collect one address book: probe sync capability, fetch (sync-collection or
  * bounded full snapshot), emit the address-book entity record plus contact +
@@ -389,7 +414,7 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
   // An incremental sync reports only changes, so its empty resource list is
   // not an empty inventory. Only the initial sync (no prior token) or the
   // non-incremental fallback establishes the full contact boundary.
-  const groupsBoundaryEstablished = !supportsSync || fullBoundary;
+  let groupsBoundaryEstablished = !supportsSync || fullBoundary;
   const bookCovered = await emitAddressBookRecordIfRequested({ book, bookCursor, requested, emitRecord, supportsSync });
 
   const fingerprintState =
@@ -459,6 +484,24 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     });
   }
 
+  let groupCards = seenCards;
+  // A malformed contact means the derived group inventory is incomplete,
+  // even when the transport-level scan reached a full boundary.
+  groupsBoundaryEstablished = groupsBoundaryEstablished && unparseableResources === 0;
+  if (requested.has("contact_groups") && supportsSync && !fullBoundary) {
+    // sync-collection is an incremental contact boundary. It cannot prove
+    // the complete derived group inventory, so fetch a separate full
+    // snapshot for groups while keeping contacts incremental.
+    const groupSnapshot = await loadFullGroupSnapshot({
+      bookUrl: book.url,
+      authHeader,
+      fetchImpl,
+      trustedOrigins,
+    });
+    groupCards = groupSnapshot.cards;
+    groupsBoundaryEstablished = groupSnapshot.complete;
+  }
+
   // Group membership is a derived full snapshot. Stage its stream only
   // after the source enumeration and derivation complete successfully;
   // this lets a genuine zero-group result prove coverage without turning a
@@ -469,7 +512,7 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
     emit,
     emitRecord,
     requested,
-    seenCards,
+    seenCards: groupCards,
   });
 
   const contactsState =

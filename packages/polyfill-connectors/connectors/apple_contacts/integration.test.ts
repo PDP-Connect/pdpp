@@ -231,7 +231,7 @@ test("apple_contacts integration: a second run emits a tombstone for a server-si
   }
 });
 
-test("apple_contacts integration: an unchanged incremental sync does not prove an empty group inventory", async () => {
+test("apple_contacts integration: an unchanged incremental sync re-enumerates the group inventory", async () => {
   const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
   try {
     server.contacts.set("erin", {
@@ -259,16 +259,76 @@ test("apple_contacts integration: an unchanged incremental sync does not prove a
       env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
     });
 
-    assert.equal(recordsOf(second.messages, "contact_groups").length, 0);
+    assert.equal(recordsOf(second.messages, "contact_groups").length, 1);
     assert.equal(
       second.messages.some((m) => m.type === "STATE" && m.stream === "contact_groups"),
-      false
+      true
     );
-    assert.equal(
-      second.messages.some((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contact_groups"),
-      false,
-      "an unchanged delta is not a full group inventory"
+    const groupsCoverage = second.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contact_groups");
+    assert.ok(groupsCoverage && groupsCoverage.type === "DETAIL_COVERAGE");
+    assert.equal(groupsCoverage.considered, 1);
+    assert.equal(groupsCoverage.covered, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test("apple_contacts integration: incremental group requests re-enumerate a genuine empty inventory", async () => {
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    const href = "/addressbooks/owner/card/erin.vcf";
+    server.contacts.set("erin", {
+      uid: "erin",
+      href,
+      vcard: buildVCard({ uid: "erin", fn: "Erin Example", categories: ["Friends"] }),
+    });
+
+    const first = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+    const firstState = first.messages.findLast(
+      (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "contacts"
     );
+    assert.ok(firstState);
+    assert.equal(recordsOf(first.messages, "contact_groups").length, 1);
+
+    server.contacts.clear();
+    server.deletedHrefs.add(href);
+    server.markChanged();
+
+    const second = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage({ contacts: firstState.cursor }),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+
+    const done = second.messages.findLast((m) => m.type === "DONE");
+    assert.ok(done && done.type === "DONE");
+    assert.equal(done.status, "succeeded");
+    const contactRecords = second.messages.filter(
+      (m): m is Extract<EmittedMessage, { type: "RECORD" }> => m.type === "RECORD" && m.stream === "contacts"
+    );
+    assert.equal(contactRecords.filter((message) => message.op !== "delete").length, 0);
+    assert.equal(recordsOf(second.messages, "contact_groups").length, 0);
+
+    const contactsCoverage = second.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.ok(contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE");
+    assert.equal(contactsCoverage.considered, 0);
+    assert.equal(contactsCoverage.covered, 0);
+
+    // The incremental contact delta is not a group boundary. The connector
+    // must obtain a full snapshot before proving that the now-empty group
+    // inventory is complete.
+    const groupsState = second.messages.find((m) => m.type === "STATE" && m.stream === "contact_groups");
+    assert.ok(groupsState, "a successful full group re-enumeration must stage contact_groups state");
+    const groupsCoverage = second.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contact_groups");
+    assert.ok(groupsCoverage && groupsCoverage.type === "DETAIL_COVERAGE");
+    assert.equal(groupsCoverage.considered, 0);
+    assert.equal(groupsCoverage.covered, 0);
   } finally {
     await server.close();
   }

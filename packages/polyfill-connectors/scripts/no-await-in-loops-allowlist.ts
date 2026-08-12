@@ -1924,21 +1924,21 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/apple_contacts/index.ts",
-    line: 426,
+    line: 451,
     column: 7,
     category: "ordered_protocol_emission",
     note: "emitContactRecord(): Collection Profile protocol emission requiring in-order delivery",
   },
   {
     path: "connectors/apple_contacts/index.ts",
-    line: 430,
+    line: 455,
     column: 9,
     category: "ordered_protocol_emission",
     note: "emitRecord(): Collection Profile protocol emission requiring in-order delivery",
   },
   {
     path: "connectors/apple_contacts/index.ts",
-    line: 450,
+    line: 475,
     column: 7,
     category: "ordered_protocol_emission",
     note: "emitContactRecord(): Collection Profile protocol emission requiring in-order delivery",
@@ -1952,7 +1952,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/apple_contacts/index.ts",
-    line: 585,
+    line: 628,
     column: 13,
     category: "shared_mutable_accumulator",
     note: "collectAddressBook(): loop body mutates a shared bookCursor/newState accumulator the next iteration reads",
