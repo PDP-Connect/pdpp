@@ -14,7 +14,7 @@
 export interface RetrievedDeclaration {
   readonly declaration: {
     readonly declaration_version: string;
-    readonly source: { readonly id: string };
+    readonly source: { readonly id: string; readonly kind: string };
     readonly [member: string]: unknown;
   };
   readonly finalUrl: string;

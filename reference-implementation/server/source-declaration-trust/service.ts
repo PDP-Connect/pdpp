@@ -15,7 +15,12 @@ import {
 import type { AcceptedSourceDeclarationRevisionStore } from "./revision-store.ts";
 
 export type AcceptProviderNativeDeclarationResult =
-  | { readonly ok: true; readonly declarationVersion: string; readonly finalUrl: string }
+  | {
+      readonly ok: true;
+      readonly acceptedRevisionReference: string;
+      readonly declarationVersion: string;
+      readonly finalUrl: string;
+    }
   | { readonly ok: false; readonly reason: string };
 
 export async function retrieveAndAcceptProviderNativeDeclaration(
@@ -37,6 +42,9 @@ export async function retrieveAndAcceptProviderNativeDeclaration(
   if (!retrieved.ok) {
     return retrieved;
   }
+  if (retrieved.value.declaration.source.kind !== "provider_native") {
+    return { ok: false, reason: "source_kind_mismatch" };
+  }
   const persisted = await dependencies.revisionStore.accept({
     authorityBinding: input.authorityBinding,
     declarationVersion: retrieved.value.declaration.declaration_version,
@@ -47,6 +55,7 @@ export async function retrieveAndAcceptProviderNativeDeclaration(
     return { ok: false, reason: persisted.reason };
   }
   return {
+    acceptedRevisionReference: persisted.acceptedRevisionReference,
     declarationVersion: retrieved.value.declaration.declaration_version,
     finalUrl: retrieved.value.finalUrl,
     ok: true,

@@ -13,6 +13,7 @@ import {
 } from "../server/source-declaration-trust/live-retrieval.ts";
 import { retrieveSourceDeclaration } from "../server/source-declaration-trust/retrieval.ts";
 import {
+  acceptedRevisionEvidenceReference,
   createPostgresAcceptedSourceDeclarationRevisionStore,
   createSqliteAcceptedSourceDeclarationRevisionStore,
 } from "../server/source-declaration-trust/revision-store.ts";
@@ -579,16 +580,19 @@ function immutableRevisionCases(store: {
   }) => Promise<unknown>;
 }) {
   const key = { authorityBinding: POINTER, declarationVersion: "opaque:1", sourceId: RESOURCE };
+  const expectedReference = acceptedRevisionEvidenceReference(key);
   const sameParsedContentDifferentTextOrder = JSON.parse('{"streams":["a"],"display":{"name":"First"}}');
   return Promise.resolve().then(async () => {
     assert.deepEqual(await store.accept({ ...key, parsedDeclaration: sameParsedContentDifferentTextOrder }), {
       accepted: true,
+      acceptedRevisionReference: expectedReference,
       existing: false,
     });
     assert.deepEqual(
       await store.accept({ ...key, parsedDeclaration: { display: { name: "First" }, streams: ["a"] } }),
       {
         accepted: true,
+        acceptedRevisionReference: expectedReference,
         existing: true,
       }
     );
@@ -605,8 +609,20 @@ function immutableRevisionCases(store: {
         declarationVersion: "not-sortable:prior",
         parsedDeclaration: { display: { name: "Prior" } },
       }),
-      { accepted: true, existing: false },
+      {
+        accepted: true,
+        acceptedRevisionReference: acceptedRevisionEvidenceReference({
+          ...key,
+          declarationVersion: "not-sortable:prior",
+        }),
+        existing: false,
+      },
       "versions are opaque keys; storage performs no ordering inference"
+    );
+    assert.notEqual(
+      expectedReference,
+      acceptedRevisionEvidenceReference({ ...key, authorityBinding: "metadata:https://other.example.test" }),
+      "accepted revision evidence references are bound to the accepted authority"
     );
   });
 }
@@ -638,7 +654,49 @@ test("standalone trust service persists only a retrieved, source-matching declar
       },
       policy
     );
-    assert.deepEqual(result, { declarationVersion: "opaque:a", finalUrl: POINTER, ok: true });
+    assert.deepEqual(result, {
+      acceptedRevisionReference: acceptedRevisionEvidenceReference({
+        authorityBinding: "metadata:https://resource.example.test",
+        declarationVersion: "opaque:a",
+        sourceId: RESOURCE,
+      }),
+      declarationVersion: "opaque:a",
+      finalUrl: POINTER,
+      ok: true,
+    });
+  } finally {
+    database.close();
+  }
+});
+
+test("standalone trust service rejects provider-native discovery when the declaration kind is not provider_native", async () => {
+  const database = new Database(":memory:");
+  try {
+    const result = await retrieveAndAcceptProviderNativeDeclaration(
+      {
+        acceptedPointer: POINTER,
+        authorityBinding: "metadata:https://resource.example.test",
+        expectedSourceId: RESOURCE,
+      },
+      {
+        fetch: () =>
+          Promise.resolve({
+            body: streamBody(
+              JSON.stringify({
+                ...VALID_DECLARATION,
+                source: { ...VALID_DECLARATION.source, kind: "connector" },
+              })
+            ),
+            status: 200,
+          }),
+        resolveDns: () => Promise.resolve(["203.0.113.4"]),
+        revisionStore: createSqliteAcceptedSourceDeclarationRevisionStore(database),
+        validateAddress: () => Promise.resolve(true),
+        validateDeclaration: (value) => ({ declaration: value as typeof VALID_DECLARATION, ok: true }),
+      },
+      policy
+    );
+    assert.deepEqual(result, { ok: false, reason: "source_kind_mismatch" });
   } finally {
     database.close();
   }
