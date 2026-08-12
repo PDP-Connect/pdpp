@@ -2041,7 +2041,11 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     env: composeConnectorChildEnvironment({
       ...(approvedEnvironmentBindings ? { approvedBindings: approvedEnvironmentBindings } : {}),
       approvedProxyConnectorIds: approvedProxyConnectorIds ?? [],
-      connectionEnv: { kind: "connection", values: staticSecretLaunchEnv } satisfies ConnectorConnectionEnvironment,
+      connectionEnv: {
+        allowedKeys: Object.keys(staticSecretLaunchEnv),
+        kind: "connection",
+        values: staticSecretLaunchEnv,
+      } satisfies ConnectorConnectionEnvironment,
       connectorId,
       explicitRunEnv: {
         PDPP_CONNECTOR_ID: connectorId,
