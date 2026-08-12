@@ -6862,7 +6862,7 @@ export async function approveGrant(
     confirmedApproveAll?: boolean;
     sourceNarrowing?: Record<string, unknown>;
   } = {}
-): Promise<{ grant: DbRow; token: string }> {
+): Promise<{ grant: DbRow; package?: boolean; package_id?: string; token: string }> {
   if (opts.ai_training_consented !== undefined) {
     const err = bindingError("invalid_request", "ai_training_consented is only accepted during consent review");
     err.param = "ai_training_consented";
@@ -7028,7 +7028,7 @@ export async function approveGrant(
 async function resumeApprovedGrant(
   pending: PendingConsentRow,
   subjectId: string
-): Promise<{ grant: DbRow; token: string }> {
+): Promise<{ grant: DbRow; package?: boolean; package_id?: string; token: string }> {
   if (pending.subject_id !== subjectId || !isNonEmptyString(pending.grant_id) || !isNonEmptyString(pending.token_id)) {
     const err: AuthError = new Error("Approved consent result is not available");
     err.code = "not_found";
@@ -7050,6 +7050,8 @@ async function resumeApprovedGrant(
     const members = await getGrantPackageStore().listAllMembers(pending.grant_id);
     return {
       grant: buildConsentPackageGrant(pending.grant_id, members),
+      package: true,
+      package_id: pending.grant_id,
       token: pending.token_id,
     };
   }

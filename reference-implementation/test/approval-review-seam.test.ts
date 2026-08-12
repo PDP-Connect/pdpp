@@ -597,7 +597,7 @@ test("SQLite injected package trigger failure rolls back approval transaction", 
   assert.equal(await countRows("spine_events"), 1);
 });
 
-test("HTTP batch final review posts revision and duplicate approval returns one typed conflict", async () => {
+test("HTTP batch final review resumes the exact result without duplicate issuance", async () => {
   const manifest = loadSpotifyManifest();
   const server = (await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 })) as TestServerHandle;
   const asUrl = `http://localhost:${server.asPort}`;
@@ -767,6 +767,13 @@ test("HTTP batch final review posts revision and duplicate approval returns one 
       confirm_reviewed_decision: "1",
       request_uri: requestUri,
     });
+    const countsBeforeApproval = {
+      events: await countRows("spine_events"),
+      grants: await countRows("grants"),
+      members: await countRows("grant_package_members"),
+      packages: await countRows("grant_packages"),
+      tokens: await countRows("tokens"),
+    };
     const [first, second] = await Promise.all([
       fetch(`${asUrl}/consent/approve`, {
         body: approveBody,
@@ -779,17 +786,26 @@ test("HTTP batch final review posts revision and duplicate approval returns one 
         method: "POST",
       }),
     ]);
-    const statuses = [first.status, second.status].sort((a, b) => a - b);
-    assert.deepEqual(statuses, [200, 409]);
-    const winner = first.status === 200 ? first : second;
-    const winnerBody = await winner.json();
-    const winnerValidation = validateResponse("approveConsent", { body: winnerBody, status: 200 });
-    assert.equal(winnerValidation.ok, true, JSON.stringify(winnerValidation));
-    const loser = first.status === 409 ? first : second;
-    const errorBody = (await loser.json()) as { error?: { code?: string } };
-    assert.equal(errorBody.error?.code, "approval_conflict");
-    assert.equal(await countRows("grant_packages"), 1);
-    assert.equal(await countRows("grant_package_members"), 1);
+    assert.deepEqual([first.status, second.status], [200, 200]);
+    const firstBody = (await first.json()) as {
+      grant?: { grant_id?: unknown };
+      package_id?: unknown;
+      token?: unknown;
+    };
+    const secondBody = (await second.json()) as typeof firstBody;
+    for (const body of [firstBody, secondBody]) {
+      const validation = validateResponse("approveConsent", { body, status: 200 });
+      assert.equal(validation.ok, true, JSON.stringify(validation));
+    }
+    assert.deepEqual(secondBody, firstBody, "approval retry must return the persisted package and token result");
+    assert.equal(firstBody.grant?.grant_id, firstBody.package_id);
+    assert.equal(typeof firstBody.package_id, "string");
+    assert.equal(typeof firstBody.token, "string");
+    assert.equal(await countRows("grant_packages"), countsBeforeApproval.packages + 1);
+    assert.equal(await countRows("grants"), countsBeforeApproval.grants + 1);
+    assert.equal(await countRows("grant_package_members"), countsBeforeApproval.members + 1);
+    assert.equal(await countRows("tokens"), countsBeforeApproval.tokens + 2);
+    assert.equal(await countRows("spine_events"), countsBeforeApproval.events + 4);
   } finally {
     await closeServer(server);
   }
