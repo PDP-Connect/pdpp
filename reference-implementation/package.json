@@ -46,6 +46,7 @@
     "test:live-cdp": "PDPP_TEST_LIVE_CDP=1 node --test test/run-interaction-stream-cdp-live.test.ts",
     "test:live-neko": "PDPP_TEST_LIVE_NEKO=1 node --test --import tsx test/run-interaction-stream-neko-live.test.ts",
     "test:whatsapp-no-whole-file-read": "node --experimental-test-module-mocks --expose-gc --test --import tsx test/manual-upload-whatsapp-no-whole-file-read.test.ts",
+    "test:hosted-ingest-memory-cgroup": "node --import tsx scripts/hosted-ingest-memory-cgroup.ts",
     "test:run-generation-fencing-terminal-write-failure": "node --experimental-test-module-mocks --test --import tsx test/run-generation-fencing-terminal-write-failure.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "ultracite check",
