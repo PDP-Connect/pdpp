@@ -126,7 +126,12 @@ import {
   projectConnectorOutboxAxisFromHeartbeats,
   projectLocalDeviceProgress,
 } from "./connector-outbox-axis.ts";
-import { listConnectorSummaryEvidence } from "./connector-summary-read-model.ts";
+import {
+  type ConnectorListSummaryTerminalProjection,
+  listConnectorSummaryEvidence,
+  MAX_TERMINAL_PROJECTION_BATCH_IDS,
+  publishConnectorListSummaryTerminalProjection,
+} from "./connector-summary-read-model.ts";
 import { getSqliteStoreCacheIdentity } from "./db.ts";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { readStoredCollectionScope } from "./local-collection-scope.ts";
@@ -177,6 +182,7 @@ import {
   createSqliteConnectorInstanceStore,
   isOwnerVisibleConnectorInstance,
 } from "./stores/connector-instance-store.ts";
+import type { ConnectorMaintenanceCursorLease } from "./stores/connector-maintenance-cursor-store.ts";
 import {
   getDefaultDeviceExporterStore,
   listSourceInstanceHeartbeatsByConnectionIds,
@@ -612,7 +618,7 @@ interface ScheduleLike {
   getSchedule: (connectorId: string, options?: { readonly connectorInstanceId?: string }) => Promise<unknown>;
 }
 
-interface ControllerLike {
+export interface ControllerLike {
   getBrowserSurfaceRuntimeAllocatorScopeId?: () => string | null;
   getBrowserSurfaceRuntimeManagement?: (connectorId: string) => BrowserSurfaceRuntimeManagement;
   getSchedule?: (connectorId: string) => Promise<unknown>;
@@ -5606,6 +5612,7 @@ async function projectConnectorSummaryForInstance(
   deps: ConnectorSummaryProjectionDeps,
   options: {
     readonly activeVisibleConnectionCount?: number;
+    readonly onRuntimeProjected?: (runtime: EphemeralBrowserRuntimeProjection | null) => void;
   } = {}
 ): Promise<ConnectorSummary | null> {
   const {
@@ -5786,6 +5793,7 @@ async function projectConnectorSummaryForInstance(
         reader: sharedBrowserSurfaceReader,
         remoteSurface: remoteSurface.evidence,
       });
+  options.onRuntimeProjected?.(ephemeralBrowserRuntime);
   const refreshPolicy = extractRefreshPolicy(manifest);
   // Adaptive rate controller snapshot: read from the latest run's
   // already-loaded `run_history.facts_json` — no spine read, R9.2/G1.
@@ -6092,6 +6100,7 @@ type Row = Record<string, unknown>;
  * never re-derived from a live source here.
  */
 export interface ConnectorSummaryEvidenceRow {
+  readonly canonical_evidence_revision: string;
   readonly dirty: boolean;
   readonly last_error: string | null;
   readonly manifest_declaration: {
@@ -6597,10 +6606,16 @@ async function projectConnectorSummaryIdentityPage(
   controller: ControllerLike | null | undefined,
   {
     includeRunSummaries,
+    onProjectedSummary,
     ownerSubjectId,
     rows,
   }: {
     readonly includeRunSummaries: ConnectorRunSummaryInclusion;
+    readonly onProjectedSummary?: (input: {
+      readonly canonicalEvidenceRevision: string;
+      readonly runtime: EphemeralBrowserRuntimeProjection | null;
+      readonly summary: ConnectorSummary;
+    }) => Promise<void>;
     readonly ownerSubjectId: string;
     readonly rows: readonly ConnectorInstanceRow[];
   }
@@ -6643,12 +6658,95 @@ async function projectConnectorSummaryIdentityPage(
   // whose manifest is entirely absent — a projection that cannot be built at
   // all, not a visibility policy.
   return (
-    await runWithConcurrency(rows, LIST_CONNECTOR_SUMMARIES_CONCURRENCY, (instance) =>
-      projectConnectorSummaryForInstance(instance, pageDeps, {
+    await runWithConcurrency(rows, LIST_CONNECTOR_SUMMARIES_CONCURRENCY, async (instance) => {
+      let runtime: EphemeralBrowserRuntimeProjection | null = null;
+      const summary = await projectConnectorSummaryForInstance(instance, pageDeps, {
         activeVisibleConnectionCount: activeConnectionCounts.get(instance.connectorId) ?? 0,
-      })
-    )
+        onRuntimeProjected: (projectedRuntime) => {
+          runtime = projectedRuntime;
+        },
+      });
+      if (summary && onProjectedSummary) {
+        const evidence = pageDeps.evidenceByInstanceId.get(instance.connectorInstanceId);
+        if (!evidence) {
+          throw new Error(
+            `Cannot publish connector list summary without canonical evidence: ${instance.connectorInstanceId}`
+          );
+        }
+        await onProjectedSummary({
+          canonicalEvidenceRevision: evidence.canonical_evidence_revision,
+          runtime,
+          summary,
+        });
+      }
+      return summary;
+    })
   ).filter((summary): summary is ConnectorSummary => summary !== null);
+}
+
+/**
+ * Rebuild and publish the complete owner-list item for one bounded set of
+ * canonical connection ids. The existing summary synthesizer is the only
+ * health/verdict calculation; this helper only supplies its result to the
+ * revision-fenced terminal projection writer.
+ */
+export async function rebuildConnectorListSummaryTerminalProjectionPage(
+  controller: ControllerLike | null | undefined,
+  connectorInstanceIds: readonly string[],
+  options: {
+    readonly maintenanceLease?: ConnectorMaintenanceCursorLease;
+    readonly ownerSubjectId?: string;
+  } = {}
+): Promise<{ readonly attempted: number; readonly published: number }> {
+  const ids = [...new Set(connectorInstanceIds.filter((id) => id.length > 0))];
+  if (ids.length === 0) {
+    return { attempted: 0, published: 0 };
+  }
+  if (ids.length > MAX_TERMINAL_PROJECTION_BATCH_IDS) {
+    throw new RangeError(
+      `connector list-summary projection rebuild accepts at most ${MAX_TERMINAL_PROJECTION_BATCH_IDS} connection ids`
+    );
+  }
+  const ownerSubjectId = options.ownerSubjectId ?? REFERENCE_OWNER_SUBJECT_ID;
+  const store = getConnectorInstanceStore();
+  const rows = (await Promise.all(ids.map((id) => Promise.resolve(store.get(id)))))
+    .filter(
+      (instance): instance is NonNullable<typeof instance> =>
+        instance !== null && instance.ownerSubjectId === ownerSubjectId && isOwnerVisibleConnectorInstance(instance)
+    )
+    .map((instance) => instance as unknown as ConnectorInstanceRow);
+  let attempted = 0;
+  let published = 0;
+  await projectConnectorSummaryIdentityPage(controller, {
+    includeRunSummaries: "singleton-active",
+    onProjectedSummary: async ({ canonicalEvidenceRevision, runtime, summary }) => {
+      attempted += 1;
+      const computedAt = new Date().toISOString();
+      const projection: ConnectorListSummaryTerminalProjection = {
+        runtime: { observed_at: computedAt, projection: runtime },
+        summary: summary as unknown as Record<string, unknown>,
+      };
+      if (
+        await publishConnectorListSummaryTerminalProjection({
+          canonicalEvidenceRevision,
+          computedAt,
+          connectorInstanceId: summary.connector_instance_id,
+          ...(options.maintenanceLease ? { maintenanceLease: options.maintenanceLease } : {}),
+          projection,
+        })
+      ) {
+        published += 1;
+      }
+    },
+    ownerSubjectId,
+    rows,
+  });
+  if (published !== attempted) {
+    throw new Error(
+      `Connector list-summary projection publication lost a canonical or maintenance-lease race (${published}/${attempted}); retry the page.`
+    );
+  }
+  return { attempted, published };
 }
 
 /**

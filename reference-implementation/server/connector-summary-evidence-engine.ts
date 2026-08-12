@@ -1109,6 +1109,8 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
               dirty = 1,
               state = 'failed',
               last_error = ?,
+              list_summary_projection_state = 'stale',
+              list_summary_projection_reason_code = 'canonical_evidence_failed',
               canonical_evidence_revision = canonical_evidence_revision + 1
         WHERE connector_instance_id = ?`
     )
@@ -1156,6 +1158,8 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
        dirty = 1,
        state = 'failed',
        last_error = excluded.last_error,
+       list_summary_projection_state = 'stale',
+       list_summary_projection_reason_code = 'canonical_evidence_failed',
        canonical_evidence_revision = canonical_evidence_revision + 1`,
     [
       connectorInstanceId,
@@ -1222,6 +1226,8 @@ async function persistFailedEvidencePostgres(
             dirty = 1,
             state = 'failed',
             last_error = $11,
+            list_summary_projection_state = 'stale',
+            list_summary_projection_reason_code = 'canonical_evidence_failed',
             canonical_evidence_revision = canonical_evidence_revision + 1
       WHERE connector_instance_id = $1`,
     [
@@ -1265,6 +1271,8 @@ async function persistFailedEvidencePostgres(
        dirty = 1,
        state = 'failed',
        last_error = EXCLUDED.last_error,
+       list_summary_projection_state = 'stale',
+       list_summary_projection_reason_code = 'canonical_evidence_failed',
        canonical_evidence_revision = connector_summary_evidence.canonical_evidence_revision + 1`,
     [
       connectorInstanceId,

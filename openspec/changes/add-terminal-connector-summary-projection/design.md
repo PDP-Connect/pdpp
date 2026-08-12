@@ -24,10 +24,27 @@ It is supplied by the separately-owned scoped-runtime observation seam. This
 change never calls allocator APIs, scans runtime history, or manufactures a
 healthy runtime when that seam has not published evidence.
 
-## Deferred integration
+## Maintenance publisher
 
-The current `ref-control` LIST synthesizer still reads runtime and bounded run
-history directly. Routing GET through this payload before the scoped-runtime
-publisher exists would either retain that work or turn missing runtime evidence
-into a false-green default. Therefore GET integration is explicitly deferred;
-the safe slice here is the durable, invalidating handoff only.
+The existing connector maintenance sweep now owns the follow-on publication.
+After a bounded canonical observation unit converges, it passes that exact
+connection-id page to the existing `ref-control` LIST synthesizer. The
+synthesizer calculates health, verdict, runtime, and all other owner-list
+fields once through the existing page-scoped dependency path. The publisher
+captures each synthesized row's canonical evidence revision and calls the
+existing compare-and-set writer, fenced by the maintenance lease. A lost
+canonical or lease race, missing evidence, failed component, or removed
+connection publishes nothing and leaves the durable cursor before that page;
+no state is marked current optimistically.
+
+The sweep's existing durable keyset cursor and lease provide restart-safe
+progress, single-owner page work, and an atomic publication fence. Dirty
+acceleration and the cursor walk both use the same callback, so a dirty marker
+is only a latency hint and the full walk remains the correctness backstop. The
+callback is provider-neutral, bounded to the observed page, and never runs
+from an owner GET.
+
+Routing GET through the stored payload remains deferred. The ordinary LIST
+path continues to synthesize its read-time freshness and runtime-relative
+fields directly, while the durable payload is ready for a later cutover that
+can prove parity without duplicating health calculation.

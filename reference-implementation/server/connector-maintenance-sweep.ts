@@ -32,6 +32,7 @@ import { retireExpiredBrowserEnrollmentShellsForMaintenance } from "./ref-contro
 import { runSearchIndexDirtyReconcileRound } from "./search-index-reconcile.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.ts";
 import {
+  type ConnectorMaintenanceCursorLease,
   type ConnectorMaintenanceCursorStore,
   createConnectorMaintenanceCursorStore,
 } from "./stores/connector-maintenance-cursor-store.ts";
@@ -53,6 +54,7 @@ export interface ConnectorMaintenanceSweepOptions {
   readonly runEvidenceSweep: (args: {
     readonly afterId?: string | null;
     readonly firstTranche?: "walk" | "acceleration";
+    readonly lease?: ConnectorMaintenanceCursorLease;
     readonly maxDurationMs: number;
     readonly pageSize?: number;
   }) => Promise<unknown>;
@@ -171,7 +173,7 @@ export function createResumableConnectorMaintenanceSweep(
         return null;
       }
       const result = readResumableEvidenceSweepResult(
-        await options.runEvidenceSweep({ ...args, afterId: lease.resumeAfterId, firstTranche }),
+        await options.runEvidenceSweep({ ...args, afterId: lease.resumeAfterId, firstTranche, lease }),
         lease.resumeAfterId
       );
       if (!result) {

@@ -19,33 +19,17 @@
   never a write. Proven for N=0/1/25/100 and an over-bound rejection in
   `test/connector-summary-read-model.test.ts`.
 
-## 2. Deferred scoped-runtime integration
+## 2. Maintenance publication
 
-- [ ] 2.1 Authorize and implement the bounded scoped-runtime publisher.
-  BLOCKED (2026-07-30): investigated building this on the accepted scoped
-  browser-surface observation seam (`allocator-observation.ts`,
-  `browser-surface-lease-store.ts`, `health-summary-adapter.ts`, all landed
-  by cherry-pick from 333aaefdf). Confirmed by reading
-  `projectConnectorHealthSummaryRuntime`/`readConnectorRuntimeReceiptEvidence`
-  in `runtime/browser-surface/health-summary-adapter.ts`: for a
-  `management.managed` connection, the runtime projection's
-  `last_successful_runtime_receipt` requires `lastSuccessfulRun.run_id`,
-  which is resolved through unscoped, unbounded run-history synthesis (the
-  same `ConnectorRunSummary` machinery `ref-control.ts`'s legacy per-instance
-  projection uses) — there is no accepted bounded/scoped "last successful run
-  per connection id" primitive yet. A publisher cannot populate this field
-  without either (a) reintroducing the unbounded run-history read this
-  projection exists to avoid, or (b) omitting/nulling the field, which this
-  design explicitly forbids ("never... manufacture a healthy runtime when
-  that seam has not published evidence" — nulling a field the payload
-  contract declares present is the same false-green risk in the other
-  direction: a reader cannot distinguish "genuinely no receipt" from
-  "publisher skipped this field"). Non-managed connections (most static
-  secret/API-key connectors) do NOT need this join, but a publisher that
-  populates the payload only for a subset of connections, silently, is its
-  own correctness hazard for a payload whose whole contract is "current
-  means every axis was verified." Not attempted. Unblocks when a bounded,
-  accepted "last successful run" batch primitive lands as its own reviewed
-  change.
-- [ ] 2.2 Route owner LIST GET through terminal projection only after the
+- [x] 2.1 Publish the complete owner-list item from the existing bounded
+  maintenance observation unit. Reuse the existing `ref-control` synthesizer
+  and page-scoped dependency path once, capture the canonical evidence
+  revision, and publish only through the existing CAS writer fenced by the
+  durable maintenance lease. Publication failure leaves the page cursor
+  unchanged for retry; no new queue or connector-specific branch is added.
+- [x] 2.2 Add SQLite fail-before/pass-after coverage for invalidation,
+  restart-safe cursor progress, complete-payload publication, and eventual
+  automatic healing. Existing current/stale, late-snapshot CAS, and read-only
+  tests cover concurrent changes and no partial publish.
+- [ ] 2.3 Route owner LIST GET through terminal projection only after the
   publisher can prove complete payload parity without runtime/history reads.

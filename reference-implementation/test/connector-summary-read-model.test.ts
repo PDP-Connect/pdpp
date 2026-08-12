@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { createResumableConnectorMaintenanceSweep } from "../server/connector-maintenance-sweep.ts";
 import {
   getConnectorListSummaryTerminalProjection,
   getConnectorListSummaryTerminalProjectionBatch,
@@ -17,12 +18,16 @@ import {
   publishConnectorListSummaryTerminalProjection,
   rebuildConnectorSummaryEvidence,
   reconcileDirtyConnectorSummaryEvidence,
+  runBoundedSummaryEvidenceSweep,
 } from "../server/connector-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
+import { rebuildConnectorListSummaryTerminalProjectionPage } from "../server/ref-control.ts";
+import { createConnectorMaintenanceCursorStore } from "../server/stores/connector-maintenance-cursor-store.ts";
 
 const OWNER = "owner_local";
 const NOW = "2026-06-17T12:00:00.000Z";
+const SIMULATED_WORKER_RESTART = /simulated worker restart/;
 
 // `stream_records` on a shaped evidence row is parsed from durable JSON
 // (`parseEvidenceJson`), so `shapeEvidenceRow`'s inferred return type carries
@@ -1105,3 +1110,139 @@ async function cleanupPostgres(connectorId: string, instanceId: string) {
   await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = $1", [instanceId]);
   await postgresQuery("DELETE FROM connectors WHERE connector_id = $1", [connectorId]);
 }
+
+test("maintenance automatically heals invalidated list projections across restart", () =>
+  withTempDb(async () => {
+    const connectorId = "terminal_projection_rebuild_worker";
+    const instanceIds = ["cin_projection_worker_0", "cin_projection_worker_1"];
+    for (const connectorInstanceId of instanceIds) {
+      seedInstanceSqlite({ connectorId, connectorInstanceId });
+    }
+    getDb()
+      .prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?")
+      .run(
+        JSON.stringify({ connector_id: connectorId, streams: [{ name: "messages", primary_key: ["id"] }] }),
+        connectorId
+      );
+
+    await rebuildConnectorSummaryEvidence();
+    const initiallyPublished = await rebuildConnectorListSummaryTerminalProjectionPage(null, instanceIds);
+    assert.deepEqual(initiallyPublished, { attempted: 2, published: 2 });
+    const initialProjection = await getConnectorListSummaryTerminalProjection(instanceIds[0] as string);
+    assert.equal(initialProjection.state, "current");
+    assert.ok(initialProjection.projection);
+    assert.deepEqual(Object.keys(initialProjection.projection.summary).sort(), [
+      "acquisition_coverage",
+      "collection_report",
+      "connection_health",
+      "connection_id",
+      "connector_display_name",
+      "connector_id",
+      "connector_instance_id",
+      "display_name",
+      "freshness",
+      "last_run",
+      "last_successful_run",
+      "local_device_progress",
+      "manifest_declaration",
+      "manifest_version",
+      "next_action",
+      "owner_state",
+      "record_snapshot",
+      "refresh_policy",
+      "rendered_verdict",
+      "retained_bytes",
+      "retained_bytes_evidence",
+      "revoked_at",
+      "schedule",
+      "source_binding_kind",
+      "source_kind",
+      "source_work",
+      "status",
+      "stream_count",
+      "stream_records",
+      "streams",
+      "terminal_facts",
+      "terminal_setup_disposition",
+      "total_records",
+      "total_records_state",
+      "total_retained_bytes",
+    ]);
+
+    await rebuildConnectorSummaryEvidence();
+    const invalidated = await Promise.all(instanceIds.map((id) => getConnectorListSummaryTerminalProjection(id)));
+    assert.deepEqual(
+      invalidated.map((projection) => projection.state),
+      ["stale", "stale"],
+      "canonical reconciliation invalidates the old complete payload"
+    );
+
+    const cursorStore = createConnectorMaintenanceCursorStore();
+    const expiredLease = await cursorStore.acquire({
+      leaseDurationMs: 30_000,
+      nowIso: "2026-06-17T12:00:00.000Z",
+    });
+    assert.ok(expiredLease);
+    const expiredLeaseEvidence = await getConnectorSummaryEvidence(instanceIds[0] as string);
+    assert.ok(expiredLeaseEvidence);
+    assert.equal(
+      await publishConnectorListSummaryTerminalProjection({
+        canonicalEvidenceRevision: expiredLeaseEvidence.canonical_evidence_revision,
+        computedAt: "2026-06-17T12:00:01.000Z",
+        connectorInstanceId: instanceIds[0] as string,
+        maintenanceLease: expiredLease,
+        projection: {
+          runtime: null,
+          summary: { connection_id: instanceIds[0], connector_id: connectorId },
+        },
+      }),
+      false,
+      "an expired worker lease cannot publish even when canonical evidence did not change"
+    );
+    await cursorStore.release(expiredLease);
+
+    let failNextPublication = true;
+    const runOnePage = () =>
+      createResumableConnectorMaintenanceSweep(
+        {
+          evidenceSweepMaxDurationMs: 60_000,
+          evidenceSweepPageSize: 1,
+          runEvidenceSweep: (args) =>
+            runBoundedSummaryEvidenceSweep({
+              ...(args.afterId === undefined ? {} : { afterId: args.afterId }),
+              ...(args.lease ? { maintenanceLease: args.lease } : {}),
+              maxDurationMs: args.maxDurationMs,
+              maxPages: 1,
+              onPageConverged: async (ids, maintenanceLease) => {
+                if (failNextPublication) {
+                  failNextPublication = false;
+                  throw new Error("simulated worker restart before publication");
+                }
+                await rebuildConnectorListSummaryTerminalProjectionPage(
+                  null,
+                  ids,
+                  maintenanceLease ? { maintenanceLease } : {}
+                );
+              },
+              ...(args.pageSize === undefined ? {} : { pageSize: args.pageSize }),
+            }),
+        },
+        cursorStore
+      );
+
+    // The first process fails after canonical observation but before
+    // publication. The fenced sweep must release the lease without advancing
+    // the durable cursor, so a replacement process retries the same page.
+    await assert.rejects(
+      runOnePage().runEvidenceSweepRound({ maxDurationMs: 60_000, pageSize: 1 }),
+      SIMULATED_WORKER_RESTART
+    );
+    assert.equal((await getConnectorListSummaryTerminalProjection(instanceIds[0] as string)).state, "stale");
+
+    const restarted = runOnePage();
+    await restarted.runEvidenceSweepRound({ maxDurationMs: 60_000, pageSize: 1 });
+    assert.equal((await getConnectorListSummaryTerminalProjection(instanceIds[0] as string)).state, "current");
+
+    await restarted.runEvidenceSweepRound({ maxDurationMs: 60_000, pageSize: 1 });
+    assert.equal((await getConnectorListSummaryTerminalProjection(instanceIds[1] as string)).state, "current");
+  }));

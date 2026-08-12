@@ -46,6 +46,7 @@ import {
 import type { ConnectorSummaryReconcileObservation } from "./connector-summary-reconcile-observability.ts";
 import { getDb } from "./db.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
+import type { ConnectorMaintenanceCursorLease } from "./stores/connector-maintenance-cursor-store.ts";
 
 /** A raw database row (column-keyed) crossing the untyped storage boundary. */
 type Row = Record<string, unknown>;
@@ -725,9 +726,11 @@ export async function publishConnectorListSummaryTerminalProjection(input: {
   readonly canonicalEvidenceRevision: string;
   readonly connectorInstanceId: string;
   readonly computedAt: string;
+  /** Optional durable maintenance ownership fence; required by the worker path. */
+  readonly maintenanceLease?: ConnectorMaintenanceCursorLease;
   readonly projection: ConnectorListSummaryTerminalProjection;
 }): Promise<boolean> {
-  const { canonicalEvidenceRevision, connectorInstanceId, computedAt, projection } = input;
+  const { canonicalEvidenceRevision, connectorInstanceId, computedAt, maintenanceLease, projection } = input;
   const summaryConnectionId = projection.summary.connection_id ?? projection.summary.connector_instance_id;
   if (summaryConnectionId !== connectorInstanceId) {
     throw new Error("Terminal connector summary projection identity does not match its evidence row.");
@@ -738,7 +741,19 @@ export async function publishConnectorListSummaryTerminalProjection(input: {
     AND record_snapshot_state = 'current'
     AND terminal_facts_state = 'current'
     AND manifest_declaration_state = 'current'`;
+  const nowIso = new Date().toISOString();
   if (isPostgresStorageBackend()) {
+    const leaseWhere = maintenanceLease
+      ? `
+          AND EXISTS (
+            SELECT 1
+              FROM connector_maintenance_cursor
+             WHERE name = 'connector_summary_evidence'
+               AND generation = $5
+               AND lease_token = $6
+               AND lease_expires_at::timestamptz > clock_timestamp()
+          )`
+      : "";
     const result = await postgresQuery(
       `UPDATE connector_summary_evidence
           SET list_summary_projection_json = $2::jsonb,
@@ -747,11 +762,31 @@ export async function publishConnectorListSummaryTerminalProjection(input: {
               list_summary_projection_computed_at = $3
         WHERE connector_instance_id = $1
           AND canonical_evidence_revision = $4
-          AND ${currentEvidenceWhere}`,
-      [connectorInstanceId, encoded, computedAt, canonicalEvidenceRevision]
+          AND ${currentEvidenceWhere}${leaseWhere}`,
+      maintenanceLease
+        ? [
+            connectorInstanceId,
+            encoded,
+            computedAt,
+            canonicalEvidenceRevision,
+            maintenanceLease.generation,
+            maintenanceLease.token,
+          ]
+        : [connectorInstanceId, encoded, computedAt, canonicalEvidenceRevision]
     );
     return result.rowCount === 1;
   }
+  const leaseWhere = maintenanceLease
+    ? `
+        AND EXISTS (
+          SELECT 1
+            FROM connector_maintenance_cursor
+           WHERE name = 'connector_summary_evidence'
+             AND generation = ?
+             AND lease_token = ?
+             AND lease_expires_at > ?
+        )`
+    : "";
   const result = getDb()
     .prepare(
       `UPDATE connector_summary_evidence
@@ -761,35 +796,47 @@ export async function publishConnectorListSummaryTerminalProjection(input: {
               list_summary_projection_computed_at = ?
         WHERE connector_instance_id = ?
           AND canonical_evidence_revision = ?
-          AND ${currentEvidenceWhere}`
+          AND ${currentEvidenceWhere}${leaseWhere}`
     )
-    .run(encoded, computedAt, connectorInstanceId, canonicalEvidenceRevision);
+    .run(
+      encoded,
+      computedAt,
+      connectorInstanceId,
+      canonicalEvidenceRevision,
+      ...(maintenanceLease ? [maintenanceLease.generation, maintenanceLease.token, nowIso] : [])
+    );
   return result.changes === 1;
 }
 
 async function invalidateAllConnectorListSummaryTerminalProjections(reasonCode: string): Promise<void> {
   if (isPostgresStorageBackend()) {
     await postgresQuery(
-      "UPDATE connector_summary_evidence SET canonical_evidence_revision = canonical_evidence_revision + 1"
-    );
-    await postgresQuery(
       `UPDATE connector_summary_evidence
-          SET list_summary_projection_state = 'stale',
-              list_summary_projection_reason_code = $1
-        WHERE list_summary_projection_state = 'current'`,
+          SET canonical_evidence_revision = canonical_evidence_revision + 1,
+              list_summary_projection_state = CASE
+                WHEN list_summary_projection_state = 'current' THEN 'stale'
+                ELSE list_summary_projection_state
+              END,
+              list_summary_projection_reason_code = CASE
+                WHEN list_summary_projection_state = 'current' THEN $1
+                ELSE list_summary_projection_reason_code
+              END`,
       [reasonCode]
     );
     return;
   }
   getDb()
-    .prepare("UPDATE connector_summary_evidence SET canonical_evidence_revision = canonical_evidence_revision + 1")
-    .run();
-  getDb()
     .prepare(
       `UPDATE connector_summary_evidence
-          SET list_summary_projection_state = 'stale',
-              list_summary_projection_reason_code = ?
-        WHERE list_summary_projection_state = 'current'`
+          SET canonical_evidence_revision = canonical_evidence_revision + 1,
+              list_summary_projection_state = CASE
+                WHEN list_summary_projection_state = 'current' THEN 'stale'
+                ELSE list_summary_projection_state
+              END,
+              list_summary_projection_reason_code = CASE
+                WHEN list_summary_projection_state = 'current' THEN ?
+                ELSE list_summary_projection_reason_code
+              END`
     )
     .run(reasonCode);
 }
@@ -3010,6 +3057,11 @@ async function runCursorWalk(args: {
   readonly deadline: number;
   readonly foldEventCap: { maxEvents?: number };
   readonly maxPages: number;
+  readonly maintenanceLease?: ConnectorMaintenanceCursorLease;
+  readonly onPageConverged?: (
+    connectorInstanceIds: readonly string[],
+    maintenanceLease?: ConnectorMaintenanceCursorLease
+  ) => Promise<void>;
   readonly pageSize: number;
 }): Promise<{
   readonly anyFoldIncomplete: boolean;
@@ -3076,6 +3128,7 @@ async function runCursorWalk(args: {
       cursor = cursorBeforeCurrentPage;
       break;
     }
+    await args.onPageConverged?.(pageIds, args.maintenanceLease);
     cursor = pageIds.at(-1) ?? cursor;
     if (pageIds.length < pageSize) {
       // Short page: this was genuinely the last page of the complete set.
@@ -3167,6 +3220,11 @@ async function runDirtyPriorityAcceleration(args: {
   readonly deadline: number;
   readonly limit: number;
   readonly foldEventCap: { maxEvents?: number };
+  readonly maintenanceLease?: ConnectorMaintenanceCursorLease;
+  readonly onPageConverged?: (
+    connectorInstanceIds: readonly string[],
+    maintenanceLease?: ConnectorMaintenanceCursorLease
+  ) => Promise<void>;
 }): Promise<{
   readonly discovered: number;
   readonly incomplete: boolean;
@@ -3196,6 +3254,9 @@ async function runDirtyPriorityAcceleration(args: {
     ...args.foldEventCap,
   });
   emitScopedObservationUnit(result, dirtyIds.length, startedAt);
+  if (!result.incomplete) {
+    await args.onPageConverged?.(dirtyIds, args.maintenanceLease);
+  }
   return {
     discovered: dirtyIds.length,
     incomplete: result.incomplete,
@@ -3331,7 +3392,12 @@ export interface BoundedSweepResult {
  */
 export async function runBoundedSummaryEvidenceSweep(options: {
   readonly maxDurationMs: number;
+  readonly maintenanceLease?: ConnectorMaintenanceCursorLease;
   readonly maxPages?: number;
+  readonly onPageConverged?: (
+    connectorInstanceIds: readonly string[],
+    maintenanceLease?: ConnectorMaintenanceCursorLease
+  ) => Promise<void>;
   readonly pageSize?: number;
   readonly afterId?: string | null;
   readonly maxEventsPerFold?: number;
@@ -3431,6 +3497,8 @@ export async function runBoundedSummaryEvidenceSweep(options: {
       deadline,
       foldEventCap,
       maxPages,
+      ...(options.maintenanceLease ? { maintenanceLease: options.maintenanceLease } : {}),
+      ...(options.onPageConverged ? { onPageConverged: options.onPageConverged } : {}),
       pageSize,
     });
     discovered += walk.discovered;
@@ -3446,6 +3514,8 @@ export async function runBoundedSummaryEvidenceSweep(options: {
             deadline,
             foldEventCap,
             limit: pageSize,
+            ...(options.maintenanceLease ? { maintenanceLease: options.maintenanceLease } : {}),
+            ...(options.onPageConverged ? { onPageConverged: options.onPageConverged } : {}),
           })
         : { discovered: 0, incomplete: false, repaired: 0, skipped: 0 };
     discovered += acceleration.discovered;
