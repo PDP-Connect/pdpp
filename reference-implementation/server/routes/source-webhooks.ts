@@ -22,7 +22,7 @@ import {
   type SourceWebhookResult,
 } from "../../operations/ref-source-webhook-ingest/index.ts";
 import { executeRecordsIngest } from "../../operations/rs-records-ingest/index.ts";
-import type { RunNowResult } from "../../runtime/controller.ts";
+import type { RunNowResult, SourceWebhookRunEvent } from "../../runtime/controller.ts";
 
 interface RouteRequest {
   readonly body?: unknown;
@@ -84,6 +84,7 @@ export interface SourceWebhookController {
       readonly manifest: ConnectorManifestLike;
       readonly ownerSubjectId: string;
       readonly priorityClass: "background";
+      readonly sourceWebhookEvent: SourceWebhookRunEvent;
       readonly triggerKind: "webhook";
     }
   ) => RunNowResult | Promise<RunNowResult>;
@@ -185,7 +186,15 @@ export function mountRefSourceWebhooks(app: AppLike, ctx: MountRefSourceWebhooks
               triggerKind,
             });
           },
-          requestRun: async ({ connectorId, connectorInstanceId, ownerSubjectId, triggerKind }) => {
+          requestRun: async ({
+            bodyHash,
+            connectorId,
+            connectorInstanceId,
+            eventId,
+            ownerSubjectId,
+            sourceId,
+            triggerKind,
+          }) => {
             if (!ctx.controller) {
               return null;
             }
@@ -200,6 +209,7 @@ export function mountRefSourceWebhooks(app: AppLike, ctx: MountRefSourceWebhooks
               manifest,
               ownerSubjectId,
               priorityClass: "background",
+              sourceWebhookEvent: { action: "schedule_run", bodyHash, eventId, sourceId },
               triggerKind,
             });
           },

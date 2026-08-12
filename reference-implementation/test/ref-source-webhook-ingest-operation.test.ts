@@ -24,6 +24,10 @@ function sign(body: string, timestamp = String(Math.floor(NOW_MS / 1000)), event
   return `sha256=${createHmac("sha256", SECRET).update(`${eventId}.${timestamp}.${body}`).digest("hex")}`;
 }
 
+function bodyHash(body: string): string {
+  return createHmac("sha256", SECRET).update(body).digest("hex");
+}
+
 function deps(overrides: Partial<SourceWebhookDependencies> = {}): SourceWebhookDependencies {
   return {
     claimEvent: () => true,
@@ -233,6 +237,8 @@ test("ref.source-webhook starts webhook-classified run when run dependency is av
   assert.ok(capturedRunRequest && result.run);
   assert.equal(capturedRunRequest.connectorInstanceId, "cin_gmail_owner_custom_second");
   assert.equal(capturedRunRequest.ownerSubjectId, "owner_custom");
+  assert.equal(capturedRunRequest.sourceId, "gmail");
+  assert.equal(capturedRunRequest.bodyHash, bodyHash('{"action":"schedule_run"}'));
   assert.equal(capturedRunRequest.triggerKind, "webhook");
   assert.equal(capturedRunRequest.automationPolicy.trigger_kind, "webhook");
   assert.equal(result.run.run_id, "run_webhook");
@@ -314,6 +320,8 @@ test("ref.source-webhook canonicalizes a URL-shaped configured connector id for 
   assert.equal(capturedPolicy.connectorId, "slack");
   assert.equal(capturedRunRequest.connectorId, "slack");
   assert.equal(capturedRunRequest.connectorInstanceId, "cin_slack_webhook");
+  assert.equal(capturedRunRequest.sourceId, "gmail");
+  assert.equal(capturedRunRequest.bodyHash, bodyHash('{"action":"schedule_run"}'));
 });
 
 test("ref.source-webhook does not start webhook run when automation policy blocks it", async () => {

@@ -152,6 +152,7 @@ export const codeToStatus: Readonly<Record<string, number>> = {
   resource_limit: 413,
   run_already_active: 409,
   run_owner_mismatch: 403,
+  source_webhook_event_conflict: 409,
   static_secret_binding_invalid: 409,
   static_secret_draft_required: 409,
   static_secret_identity_ambiguous: 409,
