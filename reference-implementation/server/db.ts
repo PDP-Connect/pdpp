@@ -669,6 +669,7 @@ CREATE TABLE IF NOT EXISTS tokens (
   token_id      TEXT PRIMARY KEY,
   grant_id      TEXT,
   package_id    TEXT,
+  refresh_family_id TEXT,
   subject_id    TEXT NOT NULL,
   client_id     TEXT,
   token_kind    TEXT NOT NULL,
@@ -5034,16 +5035,56 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "pending_consents", "last_polled_at", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "owner_device_auth", "approval_id", "TEXT"));
   // Add the v0.1 refresh-family columns without reconstructing legacy token
-  // state. Rows lacking these facts remain unreadable by the current refresh
-  // lifecycle and require fresh authorization.
+  // state. The fail-closed migration below revokes families and bound bearers
+  // that lack the new linkage, so they require fresh authorization.
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "oauth_refresh_tokens", "family_id", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "oauth_refresh_tokens", "generation", "INTEGER"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "oauth_refresh_tokens", "parent_generation", "INTEGER"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "oauth_refresh_tokens", "superseded_at", "TEXT"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "tokens", "refresh_family_id", "TEXT"));
   runWithSqliteBusyRetrySync(() => {
     raw.exec(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_family_generation ON oauth_refresh_tokens(family_id, generation)"
     );
+  });
+  runWithSqliteBusyRetrySync(() => {
+    raw.exec("CREATE INDEX IF NOT EXISTS idx_tokens_refresh_family ON tokens(refresh_family_id, revoked)");
+  });
+  runWithSqliteBusyRetrySync(() => {
+    raw.transaction(() =>
+      raw.exec(`
+      UPDATE tokens
+         SET revoked = 1
+       WHERE revoked = 0
+         AND (
+           grant_id IN (
+             SELECT legacy.grant_id
+               FROM oauth_refresh_tokens legacy
+              WHERE legacy.grant_id IS NOT NULL
+                AND legacy.status <> 'revoked'
+                AND NOT EXISTS (
+                  SELECT 1 FROM tokens linked WHERE linked.refresh_family_id = legacy.family_id
+                )
+           )
+           OR package_id IN (
+             SELECT legacy.package_id
+               FROM oauth_refresh_tokens legacy
+              WHERE legacy.package_id IS NOT NULL
+                AND legacy.status <> 'revoked'
+                AND NOT EXISTS (
+                  SELECT 1 FROM tokens linked WHERE linked.refresh_family_id = legacy.family_id
+                )
+           )
+         );
+      UPDATE oauth_refresh_tokens
+         SET status = 'revoked',
+             revoked_at = COALESCE(revoked_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+       WHERE status <> 'revoked'
+         AND NOT EXISTS (
+           SELECT 1 FROM tokens linked WHERE linked.refresh_family_id = oauth_refresh_tokens.family_id
+         );
+      `)
+    )();
   });
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_exporters", "agent_version", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_exporters", "collector_protocol_version", "TEXT"));

@@ -73,9 +73,29 @@ Refresh state is a family row keyed by family and generation, with token hash,
 active or superseded status, parent generation, and timestamps. Rotation
 atomically supersedes the presented generation and creates one successor.
 Any superseded-generation reuse, including indistinguishable lost-response
-retry, revokes the family and returns `invalid_grant`; fresh authorization is
-required. These results have separate tests and receipt fields and do not
-expand the seven-case seam decision.
+retry, revokes the family and every access bearer linked to it in one
+transaction, then returns `invalid_grant`; fresh authorization is required.
+The initial authorization-code bearer and every refresh-derived bearer persist
+the family id. They expire ten minutes after issuance, capped by any earlier
+family expiry. Introspection also verifies that a linked family still has an
+active generation, so a family bearer fails closed even if its row was not
+individually marked revoked. Refresh is limited to `continuous` grants; a
+package is eligible only when every child grant is `continuous`.
+
+Token responses calculate `expires_in` from the persisted access-token expiry
+and omit it when no expiry exists. RFC 7662 responses likewise omit `exp` when
+the token has no expiration. SQLite and PostgreSQL fault tests prove that a
+failure while revoking family bearers rolls back the family and bearer changes
+together. PostgreSQL replay and race tests introspect every family bearer for
+grant and package flows. These results have separate tests and receipt fields
+and do not expand the seven-case seam decision.
+
+The new family link cannot be reconstructed honestly for bearer rows created
+before the column existed. Bootstrap therefore treats any non-revoked refresh
+family with no linked bearer as incompatible authorization state. It revokes
+the family and the bearer rows bound to its grant or package, in both SQLite
+and PostgreSQL, and requires fresh authorization. Migration tests prove this
+fail-closed boundary. They do not backfill a guessed relationship.
 
 ### Pre-v0.1 authorization state is disposable
 

@@ -283,8 +283,21 @@ The same case runs the refresh tests. It asserts one rotation winner, followed
 by `revoked` status for every family row when the losing request presents the
 now-superseded generation. No active successor remains after that detected
 reuse. Ordinary replay and lost-response retry return `invalid_grant` and the
-fresh-authorization-required marker. These results receive separate receipt
-fields and do not change any of the seven seam decisions.
+fresh-authorization-required marker. The initial bearer and every
+refresh-derived grant or package bearer persist the family id and a short
+token-specific expiry. After replay, every linked bearer row is revoked and
+authenticated introspection reports each bearer inactive. Race tests leave no
+active linked bearer. Fault injection proves refresh-family and bearer
+containment commit or roll back together in SQLite and PostgreSQL. The case
+also injects a failure after bearer insertion but before refresh supersession
+and proves that no orphan bearer commits. Its migration oracle loads a live
+legacy family with no bearer linkage and proves that bootstrap revokes the
+family and its grant- or package-bound bearers instead of guessing a backfill.
+The case also proves that `single_use` grants receive no refresh token, that
+packages are eligible only when every child is `continuous`, that `expires_in`
+reflects the persisted access expiry, and that absent `expires_in` and RFC 7662
+`exp` are omitted. These results receive separate receipt fields and do not
+change any of the seven seam decisions.
 
 ### Case 6: Breaking authorization-state boundary
 
@@ -317,11 +330,18 @@ refresh-family store row contains `family_id`, `generation`, `token_hash`,
 `superseded_at`. Rotation atomically marks the presented active generation
 superseded and inserts exactly one next generation. Any reuse of a superseded
 generation, including a retry after a successful rotation whose response was
-lost, atomically revokes every row in the family, returns `invalid_grant`, and
-requires fresh authorization. The response is intentionally indistinguishable
-for all superseded-generation reuse. Tests cover concurrent rotation, retry
-after lost response, family-wide revocation, and fresh authorization
-requirement. This follows RFC 9700.
+lost, atomically revokes every row in the family and every access token linked
+to that family, returns `invalid_grant`, and requires fresh authorization. The
+response is intentionally indistinguishable for all superseded-generation
+reuse. Every family bearer has a ten-minute token-specific expiry capped by
+the family expiry. Refresh is available only to continuous grants and packages
+whose children are all continuous. Tests cover concurrent rotation, retry
+after lost response, family-wide refresh and bearer revocation, grant and
+package introspection, atomic rollback, truthful lifetime fields, and fresh
+authorization requirement. Existing families without a persisted bearer link
+are incompatible state: migration revokes the family and its bound bearers and
+requires fresh authorization rather than reconstructing linkage. This follows
+RFC 9700, RFC 6749, and RFC 7662.
 
 ## Durable post-approval handoff
 
@@ -405,6 +425,8 @@ Required schema:
     "response_only_enforcement": true,
     "no_in_process_fallback": true,
     "postgresql_races": true,
+    "legacy_refresh_state_rejected": true,
+    "refresh_family_access_tokens_inactive_on_replay": true,
     "refresh_family_revoked_on_replay": true,
     "fresh_authorization_required": true
   },

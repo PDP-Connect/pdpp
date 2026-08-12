@@ -125,6 +125,8 @@ test("receipt is generated only from complete executed case evidence", async () 
   assert.equal(receipt.schema, "pdpp.pr89.receipt.v2");
   assert.deepEqual(Object.keys(receipt.cases), CASE_IDS);
   assert.equal(receipt.assertions.postgresql_races, true);
+  assert.equal(receipt.assertions.legacy_refresh_state_rejected, true);
+  assert.equal(receipt.assertions.refresh_family_access_tokens_inactive_on_replay, true);
 });
 
 test("receipt generation fails when any case evidence is absent", async () => {

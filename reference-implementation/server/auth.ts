@@ -372,6 +372,7 @@ interface RegisteredClientRow extends DbRow {
 
 interface GrantPackageMemberRow extends DbRow {
   added_at: string;
+  grant_access_mode?: string;
   grant_id: string;
   grant_status: string;
   member_revoked_at?: string | null;
@@ -515,6 +516,8 @@ interface TokenIntrospectionRow extends DbRow {
   package_scenario_id: string | null;
   package_status: string | null;
   package_trace_id: string | null;
+  refresh_family_active: boolean | number | null;
+  refresh_family_id: string | null;
   revoked: boolean | number;
   scenario_id: string | null;
   storage_binding_json: string | null;
@@ -526,7 +529,7 @@ interface TokenIntrospectionRow extends DbRow {
 interface TokenIntrospectionResult extends Record<string, unknown> {
   active: boolean;
   client_id?: string | null;
-  exp?: number | null;
+  exp?: number;
   grant_id?: string | null;
   grant_package_id?: string | null;
   pdpp_token_kind?: string;
@@ -779,6 +782,24 @@ function nowIso(): string {
 
 function expiresInIso(seconds: number): string {
   return new Date(Date.now() + seconds * 1000).toISOString();
+}
+
+const OAUTH_REFRESH_ACCESS_TOKEN_LIFETIME_SECONDS = 10 * 60;
+
+function refreshAccessTokenExpiresAt(issuedAt: string, refreshFamilyExpiresAt: string | null): string {
+  const issuedAtMs = Date.parse(issuedAt);
+  if (!Number.isFinite(issuedAtMs)) {
+    throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token issuance time is invalid");
+  }
+  const shortExpiryMs = issuedAtMs + OAUTH_REFRESH_ACCESS_TOKEN_LIFETIME_SECONDS * 1000;
+  if (!refreshFamilyExpiresAt) {
+    return new Date(shortExpiryMs).toISOString();
+  }
+  const familyExpiryMs = Date.parse(refreshFamilyExpiresAt);
+  if (!Number.isFinite(familyExpiryMs)) {
+    throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token family expiry is invalid");
+  }
+  return new Date(Math.min(shortExpiryMs, familyExpiryMs)).toISOString();
 }
 
 function isExpired(row: DbRow): boolean {
@@ -2359,12 +2380,19 @@ function requirePersistedGrantColumnBindings(
   ) {
     throw bindingError(code, "Resolved grant does not match its persisted grant binding");
   }
+  const tokenExpiresAt = tokenBinding?.expiresAt ?? null;
+  const tokenExpiryMillis = isNonEmptyString(tokenExpiresAt) ? Date.parse(tokenExpiresAt) : Number.NaN;
+  const grantExpiryMillis = isNonEmptyString(persistedExpiresAt) ? Date.parse(persistedExpiresAt) : Number.NaN;
+  const tokenExpiryViolatesGrant =
+    (tokenExpiresAt !== null && !Number.isFinite(tokenExpiryMillis)) ||
+    (persistedExpiresAt !== null &&
+      (tokenExpiresAt === null || !Number.isFinite(grantExpiryMillis) || tokenExpiryMillis > grantExpiryMillis));
   if (
     tokenBinding &&
     (tokenBinding.grantId !== persistedGrantId ||
       tokenBinding.subjectId !== persistedSubjectId ||
       tokenBinding.clientId !== persistedClientId ||
-      tokenBinding.expiresAt !== persistedExpiresAt)
+      tokenExpiryViolatesGrant)
   ) {
     throw bindingError(code, "Token binding does not match its persisted grant");
   }
@@ -7408,7 +7436,7 @@ const postgresGrantPackageStore: GrantPackageStore = {
       await postgresQuery<GrantPackageMemberRow>(
         `SELECT gm.package_id, gm.grant_id, gm.source_json::text AS source_json,
               gm.status AS member_status, gm.added_at, gm.revoked_at AS member_revoked_at,
-              g.status AS grant_status
+              g.status AS grant_status, g.access_mode AS grant_access_mode
          FROM grant_package_members gm
          JOIN grants g ON gm.grant_id = g.grant_id
          WHERE gm.package_id = $1
@@ -7710,7 +7738,18 @@ const sqliteRefreshTokenStore: RefreshTokenStore = {
 const postgresTokenStore: TokenStore = {
   getIntrospection: (token) =>
     pgOne<TokenIntrospectionRow>(
-      `SELECT t.token_id, t.grant_id, t.package_id, t.subject_id, t.client_id, t.token_kind, t.expires_at, t.revoked,
+      `SELECT t.token_id, t.grant_id, t.package_id, t.refresh_family_id,
+                CASE
+                  WHEN t.refresh_family_id IS NULL THEN NULL
+                  ELSE EXISTS(
+                    SELECT 1
+                    FROM oauth_refresh_tokens rt
+                    WHERE rt.family_id = t.refresh_family_id
+                      AND rt.status = 'active'
+                      AND rt.revoked_at IS NULL
+                  )
+                END AS refresh_family_active,
+                t.subject_id, t.client_id, t.token_kind, t.expires_at, t.revoked,
                 g.status AS grant_status,
                 g.grant_id AS persisted_grant_id,
                 g.subject_id AS grant_subject_id,
@@ -9020,14 +9059,30 @@ function prepareOAuthRefreshTokenForAuthorizationCode(
   });
 }
 
+async function authorizationCodeBindingSupportsRefresh(
+  row: OAuthIssuedCodeRow,
+  tokenInfo: TokenIntrospectionResult
+): Promise<boolean> {
+  if (isNonEmptyString(row.grant_id)) {
+    return isRecord(tokenInfo.grant) && tokenInfo.grant.access_mode === "continuous";
+  }
+  if (!isNonEmptyString(row.package_id)) {
+    return false;
+  }
+  const members = await getGrantPackageStore().listAllMembers(row.package_id);
+  return members.length > 0 && members.every((member) => member.grant_access_mode === "continuous");
+}
+
 async function consumeOAuthAuthorizationCodeAtomically({
   code,
   consumedAt,
   refresh,
+  tokenId,
 }: {
   code: string;
   consumedAt: string;
   refresh: PreparedInitialOAuthRefreshToken | null;
+  tokenId: string;
 }): Promise<void> {
   if (isPostgresStorageBackend()) {
     await withPostgresTransaction(async (client) => {
@@ -9043,6 +9098,7 @@ async function consumeOAuthAuthorizationCodeAtomically({
       if (!refresh) {
         return;
       }
+      const accessTokenExpiresAt = refreshAccessTokenExpiresAt(refresh.createdAt, refresh.expiresAt);
       await client.query(
         `INSERT INTO oauth_refresh_tokens(
            refresh_token_hash, family_id, generation, parent_generation, client_id,
@@ -9060,6 +9116,15 @@ async function consumeOAuthAuthorizationCodeAtomically({
           refresh.expiresAt,
         ]
       );
+      const linked = await client.query(
+        `UPDATE tokens
+            SET refresh_family_id = $1, expires_at = $2
+          WHERE token_id = $3 AND refresh_family_id IS NULL`,
+        [refresh.familyId, accessTokenExpiresAt, tokenId]
+      );
+      if (linked.rowCount !== 1) {
+        throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code access token linkage failed");
+      }
     });
     return;
   }
@@ -9072,6 +9137,7 @@ async function consumeOAuthAuthorizationCodeAtomically({
     if (!refresh) {
       return;
     }
+    const accessTokenExpiresAt = refreshAccessTokenExpiresAt(refresh.createdAt, refresh.expiresAt);
     if (refresh.packageId) {
       sqliteRefreshTokenStore.insertForPackage({
         clientId: refresh.clientId,
@@ -9084,6 +9150,14 @@ async function consumeOAuthAuthorizationCodeAtomically({
         refreshTokenHash: refresh.refreshTokenHash,
         subjectId: refresh.subjectId,
       });
+      const linked = exec(referenceQueries.authTokensLinkRefreshFamily, [
+        refresh.familyId,
+        accessTokenExpiresAt,
+        tokenId,
+      ]);
+      if (linked.changes !== 1) {
+        throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code access token linkage failed");
+      }
       return;
     }
     if (!refresh.grantId) {
@@ -9100,6 +9174,14 @@ async function consumeOAuthAuthorizationCodeAtomically({
       refreshTokenHash: refresh.refreshTokenHash,
       subjectId: refresh.subjectId,
     });
+    const linked = exec(referenceQueries.authTokensLinkRefreshFamily, [
+      refresh.familyId,
+      accessTokenExpiresAt,
+      tokenId,
+    ]);
+    if (linked.changes !== 1) {
+      throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code access token linkage failed");
+    }
   });
 }
 
@@ -9161,12 +9243,21 @@ export async function exchangeOAuthAuthorizationCode({
   if (row.grant_id) {
     response.authorization_details = [buildGrantedAuthorizationDetail(tokenInfo.grant)];
   }
-  const refresh = clientSupportsOAuthRefreshToken(registeredClient)
-    ? prepareOAuthRefreshTokenForAuthorizationCode(row, normalized.clientId, tokenInfo)
-    : null;
-  await consumeOAuthAuthorizationCodeAtomically({ code: normalized.code, consumedAt: nowIso(), refresh });
+  const refresh =
+    clientSupportsOAuthRefreshToken(registeredClient) && (await authorizationCodeBindingSupportsRefresh(row, tokenInfo))
+      ? prepareOAuthRefreshTokenForAuthorizationCode(row, normalized.clientId, tokenInfo)
+      : null;
+  await consumeOAuthAuthorizationCodeAtomically({
+    code: normalized.code,
+    consumedAt: nowIso(),
+    refresh,
+    tokenId: row.token_id,
+  });
   if (refresh) {
     response.refresh_token = refresh.refreshToken;
+    response.access_token_expires_at = refreshAccessTokenExpiresAt(refresh.createdAt, refresh.expiresAt);
+  } else if (typeof tokenInfo.exp === "number") {
+    response.access_token_expires_at = new Date(tokenInfo.exp * 1000).toISOString();
   }
 
   return response;
@@ -9175,7 +9266,7 @@ export async function exchangeOAuthAuthorizationCode({
 type RefreshRotationOutcome =
   | { kind: "invalid" }
   | { kind: "reused" }
-  | { accessToken: string; kind: "rotated"; row: RefreshTokenRow };
+  | { accessToken: string; accessTokenExpiresAt: string; kind: "rotated"; row: RefreshTokenRow };
 
 function isCurrentRefreshFamilyRow(row: RefreshTokenRow | null): row is RefreshTokenRow {
   return !!(
@@ -9230,6 +9321,7 @@ function refreshTokenIssuedEvent({
     client_id: row.client_id,
     data: {
       issuance_path: "oauth_refresh_token",
+      refresh_family_id: row.family_id,
       ...(packageId ? { grant_package_id: packageId } : {}),
       ...(persistedGrant ? { source: describeGrantSource(persistedGrant) } : {}),
       token_kind: packageId ? "mcp_package" : "client",
@@ -9298,7 +9390,8 @@ async function issuePostgresRefreshGrantAccessToken(
   client: PostgresTransactionClient,
   row: RefreshTokenRow,
   grantId: string,
-  tokenId: string
+  tokenId: string,
+  accessTokenExpiresAt: string
 ): Promise<string> {
   const grantResult = await client.query<GrantIssuanceRow>(
     `SELECT grant_id AS persisted_grant_id, subject_id AS grant_subject_id,
@@ -9319,9 +9412,10 @@ async function issuePostgresRefreshGrantAccessToken(
   }
   const persistedGrant = requirePersistedGrantState(grantRow).grant;
   await client.query(
-    `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
-     VALUES($1, $2, $3, $4, 'client', $5)`,
-    [tokenId, grantId, row.subject_id, row.client_id, row.expires_at]
+    `INSERT INTO tokens(
+       token_id, grant_id, refresh_family_id, subject_id, client_id, token_kind, expires_at
+     ) VALUES($1, $2, $3, $4, $5, 'client', $6)`,
+    [tokenId, grantId, row.family_id, row.subject_id, row.client_id, accessTokenExpiresAt]
   );
   await postgresEmitSpineEventInTransaction(
     client,
@@ -9341,7 +9435,8 @@ async function issuePostgresRefreshPackageAccessToken(
   client: PostgresTransactionClient,
   row: RefreshTokenRow,
   packageId: string,
-  tokenId: string
+  tokenId: string,
+  accessTokenExpiresAt: string
 ): Promise<string> {
   const packageResult = await client.query<GrantPackageListRow>(
     `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
@@ -9352,10 +9447,21 @@ async function issuePostgresRefreshPackageAccessToken(
     [packageId]
   );
   const packageRow = requireRefreshPackageRow(packageResult.rows[0], row);
+  const members = await client.query<{ access_mode: string }>(
+    `SELECT g.access_mode
+       FROM grant_package_members gm
+       JOIN grants g ON g.grant_id = gm.grant_id
+      WHERE gm.package_id = $1`,
+    [packageId]
+  );
+  if (members.rows.length === 0 || members.rows.some((member) => member.access_mode !== "continuous")) {
+    throw refreshGrantUnavailable("Refresh token package contains a non-continuous grant");
+  }
   await client.query(
-    `INSERT INTO tokens(token_id, grant_id, package_id, subject_id, client_id, token_kind, expires_at)
-     VALUES($1, NULL, $2, $3, $4, 'mcp_package', $5)`,
-    [tokenId, packageId, row.subject_id, row.client_id, row.expires_at]
+    `INSERT INTO tokens(
+       token_id, grant_id, package_id, refresh_family_id, subject_id, client_id, token_kind, expires_at
+     ) VALUES($1, NULL, $2, $3, $4, $5, 'mcp_package', $6)`,
+    [tokenId, packageId, row.family_id, row.subject_id, row.client_id, accessTokenExpiresAt]
   );
   await postgresEmitSpineEventInTransaction(
     client,
@@ -9372,19 +9478,25 @@ async function issuePostgresRefreshPackageAccessToken(
 
 async function issuePostgresOAuthRefreshAccessToken(
   client: PostgresTransactionClient,
-  row: RefreshTokenRow
+  row: RefreshTokenRow,
+  accessTokenExpiresAt: string
 ): Promise<string> {
   const tokenId = generateToken();
   if (isNonEmptyString(row.grant_id)) {
-    return await issuePostgresRefreshGrantAccessToken(client, row, row.grant_id, tokenId);
+    return await issuePostgresRefreshGrantAccessToken(client, row, row.grant_id, tokenId, accessTokenExpiresAt);
   }
   if (isNonEmptyString(row.package_id)) {
-    return await issuePostgresRefreshPackageAccessToken(client, row, row.package_id, tokenId);
+    return await issuePostgresRefreshPackageAccessToken(client, row, row.package_id, tokenId, accessTokenExpiresAt);
   }
   throw refreshGrantUnavailable("Refresh token has no authorization binding");
 }
 
-function issueSqliteRefreshGrantAccessToken(row: RefreshTokenRow, grantId: string, tokenId: string): string {
+function issueSqliteRefreshGrantAccessToken(
+  row: RefreshTokenRow,
+  grantId: string,
+  tokenId: string,
+  accessTokenExpiresAt: string
+): string {
   const grantRow = requireRefreshGrantRow(
     getOne<GrantIssuanceRow>(referenceQueries.authGrantsGetForIssuance, [grantId]),
     row
@@ -9394,7 +9506,14 @@ function issueSqliteRefreshGrantAccessToken(row: RefreshTokenRow, grantId: strin
     exec(referenceQueries.authGrantsMarkConsumed, [grantId]);
   }
   const persistedGrant = requirePersistedGrantState(grantRow).grant;
-  exec(referenceQueries.authTokensInsertClient, [tokenId, grantId, row.subject_id, row.client_id, row.expires_at]);
+  exec(referenceQueries.authTokensInsertRefreshClient, [
+    tokenId,
+    grantId,
+    row.family_id,
+    row.subject_id,
+    row.client_id,
+    accessTokenExpiresAt,
+  ]);
   emitRawSpineEvent(
     refreshTokenIssuedEvent({
       grantId,
@@ -9408,17 +9527,30 @@ function issueSqliteRefreshGrantAccessToken(row: RefreshTokenRow, grantId: strin
   return tokenId;
 }
 
-function issueSqliteRefreshPackageAccessToken(row: RefreshTokenRow, packageId: string, tokenId: string): string {
+function issueSqliteRefreshPackageAccessToken(
+  row: RefreshTokenRow,
+  packageId: string,
+  tokenId: string,
+  accessTokenExpiresAt: string
+): string {
   const packageRow = requireRefreshPackageRow(
     getOne<GrantPackageListRow>(referenceQueries.authGrantPackagesGetById, [packageId]),
     row
   );
-  exec(referenceQueries.authTokensInsertMcpPackage, [
+  const members = allowUnboundedReadAcknowledged<GrantPackageMemberRow>(
+    referenceQueries.authGrantPackageMembersListAllByPackage,
+    [packageId]
+  );
+  if (members.length === 0 || members.some((member) => member.grant_access_mode !== "continuous")) {
+    throw refreshGrantUnavailable("Refresh token package contains a non-continuous grant");
+  }
+  exec(referenceQueries.authTokensInsertRefreshMcpPackage, [
     tokenId,
     packageId,
+    row.family_id,
     row.subject_id,
     row.client_id,
-    row.expires_at,
+    accessTokenExpiresAt,
   ]);
   emitRawSpineEvent(
     refreshTokenIssuedEvent({
@@ -9432,13 +9564,13 @@ function issueSqliteRefreshPackageAccessToken(row: RefreshTokenRow, packageId: s
   return tokenId;
 }
 
-function issueSqliteOAuthRefreshAccessToken(row: RefreshTokenRow): string {
+function issueSqliteOAuthRefreshAccessToken(row: RefreshTokenRow, accessTokenExpiresAt: string): string {
   const tokenId = generateToken();
   if (isNonEmptyString(row.grant_id)) {
-    return issueSqliteRefreshGrantAccessToken(row, row.grant_id, tokenId);
+    return issueSqliteRefreshGrantAccessToken(row, row.grant_id, tokenId, accessTokenExpiresAt);
   }
   if (isNonEmptyString(row.package_id)) {
-    return issueSqliteRefreshPackageAccessToken(row, row.package_id, tokenId);
+    return issueSqliteRefreshPackageAccessToken(row, row.package_id, tokenId, accessTokenExpiresAt);
   }
   throw refreshGrantUnavailable("Refresh token has no authorization binding");
 }
@@ -9496,6 +9628,9 @@ async function rotatePostgresOAuthRefreshToken({
           WHERE family_id = $2 AND status <> 'revoked'`,
         [rotatedAt, row.family_id]
       );
+      await client.query("UPDATE tokens SET revoked = TRUE WHERE refresh_family_id = $1 AND revoked = FALSE", [
+        row.family_id,
+      ]);
       return { kind: "reused" };
     }
     if (row.status !== "active" || row.revoked_at) {
@@ -9503,8 +9638,9 @@ async function rotatePostgresOAuthRefreshToken({
     }
 
     let accessToken: string;
+    const accessTokenExpiresAt = refreshAccessTokenExpiresAt(rotatedAt, row.expires_at);
     try {
-      accessToken = await issuePostgresOAuthRefreshAccessToken(client, row);
+      accessToken = await issuePostgresOAuthRefreshAccessToken(client, row, accessTokenExpiresAt);
     } catch (error: unknown) {
       if (!(isAuthError(error) && error.code === "invalid_grant")) {
         throw error;
@@ -9515,6 +9651,9 @@ async function rotatePostgresOAuthRefreshToken({
           WHERE family_id = $2 AND status <> 'revoked'`,
         [rotatedAt, row.family_id]
       );
+      await client.query("UPDATE tokens SET revoked = TRUE WHERE refresh_family_id = $1 AND revoked = FALSE", [
+        row.family_id,
+      ]);
       return { kind: "invalid" };
     }
 
@@ -9525,7 +9664,7 @@ async function rotatePostgresOAuthRefreshToken({
       [rotatedAt, refreshTokenHash]
     );
     if (superseded.rowCount !== 1) {
-      return { kind: "invalid" };
+      throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token rotation lost its active generation");
     }
     await client.query(
       `INSERT INTO oauth_refresh_tokens(
@@ -9546,7 +9685,7 @@ async function rotatePostgresOAuthRefreshToken({
         row.expires_at,
       ]
     );
-    return { accessToken, kind: "rotated", row };
+    return { accessToken, accessTokenExpiresAt, kind: "rotated", row };
   });
 }
 
@@ -9575,6 +9714,7 @@ function rotateSqliteOAuthRefreshToken({
     }
     if (row.status === "superseded") {
       exec(referenceQueries.authOauthRefreshTokensRevokeFamily, [rotatedAt, row.family_id]);
+      exec(referenceQueries.authTokensRevokeByRefreshFamily, [row.family_id]);
       return { kind: "reused" };
     }
     if (row.status !== "active" || row.revoked_at) {
@@ -9582,13 +9722,15 @@ function rotateSqliteOAuthRefreshToken({
     }
 
     let accessToken: string;
+    const accessTokenExpiresAt = refreshAccessTokenExpiresAt(rotatedAt, row.expires_at);
     try {
-      accessToken = issueSqliteOAuthRefreshAccessToken(row);
+      accessToken = issueSqliteOAuthRefreshAccessToken(row, accessTokenExpiresAt);
     } catch (error: unknown) {
       if (!(isAuthError(error) && error.code === "invalid_grant")) {
         throw error;
       }
       exec(referenceQueries.authOauthRefreshTokensRevokeFamily, [rotatedAt, row.family_id]);
+      exec(referenceQueries.authTokensRevokeByRefreshFamily, [row.family_id]);
       return { kind: "invalid" };
     }
 
@@ -9598,7 +9740,7 @@ function rotateSqliteOAuthRefreshToken({
       refreshTokenHash,
     ]);
     if (superseded.changes !== 1) {
-      return { kind: "invalid" };
+      throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token rotation lost its active generation");
     }
     const successor = {
       clientId: row.client_id,
@@ -9615,9 +9757,9 @@ function rotateSqliteOAuthRefreshToken({
     } else if (isNonEmptyString(row.grant_id)) {
       sqliteRefreshTokenStore.insert({ ...successor, grantId: row.grant_id });
     } else {
-      return { kind: "invalid" };
+      throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token has no authorization binding");
     }
-    return { accessToken, kind: "rotated", row };
+    return { accessToken, accessTokenExpiresAt, kind: "rotated", row };
   });
 }
 
@@ -9678,6 +9820,7 @@ export async function exchangeOAuthRefreshToken({
 
   return {
     access_token: outcome.accessToken,
+    access_token_expires_at: outcome.accessTokenExpiresAt,
     refresh_token: successorToken,
     token_type: "Bearer",
     ...(outcome.row.package_id ? { grant_package_id: outcome.row.package_id } : { grant_id: outcome.row.grant_id }),
@@ -10672,6 +10815,14 @@ export async function introspect(token: unknown): Promise<TokenIntrospectionResu
     };
   }
 
+  if (row.refresh_family_id && !row.refresh_family_active) {
+    return {
+      active: false,
+      inactive_reason: "refresh_family_revoked",
+      ...getInactiveTokenBinding(row),
+    };
+  }
+
   // Check expiry
   if (row.expires_at && new Date(row.expires_at) < new Date()) {
     return {
@@ -10708,10 +10859,12 @@ export async function introspect(token: unknown): Promise<TokenIntrospectionResu
 
   const result: TokenIntrospectionResult = {
     active: true,
-    exp: row.expires_at ? Math.floor(new Date(row.expires_at).getTime() / 1000) : null,
     pdpp_token_kind: row.token_kind,
     subject_id: row.subject_id,
   };
+  if (row.expires_at) {
+    result.exp = Math.floor(new Date(row.expires_at).getTime() / 1000);
+  }
 
   if (row.token_kind === "owner" && row.client_id) {
     result.client_id = row.client_id;

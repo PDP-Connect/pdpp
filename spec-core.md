@@ -1082,7 +1082,7 @@ extension fields in the introspection response:
 | `subject_id` | string | The subject (user) identifier. |
 | `grant_id` | string | The associated grant identifier. Present for client tokens. |
 | `client_id` | string | The client identifier. Present for client tokens. |
-| `exp` | integer | Expiry timestamp (Unix epoch). |
+| `exp` | integer | Optional expiry timestamp (Unix epoch). Omitted when the token has no expiration. |
 | `authorization_details` | array | The approved RFC 9396 detail for a client token. It carries the resolved grant enforcement constraints defined in Section 7. |
 
 The introspection response MUST contain the complete context needed to enforce
@@ -1447,7 +1447,7 @@ A conformant authorization server:
 17. Returns 400 `unsupported_version` if `PDPP-Version` header specifies an unsupported version.
 18. For a separated AS and RS, authenticates the RS at the RFC 7662 introspection endpoint and returns the complete grant enforcement context in one response.
 19. Consumes each OAuth authorization code atomically on its first successful redemption. Rejects every later redemption with `invalid_grant` and does not issue another token.
-20. When it issues refresh tokens for a `continuous` grant, rotates them by family. Reuse of a superseded token revokes the family, returns `invalid_grant`, and requires fresh authorization.
+20. Issues refresh tokens only for `continuous` grants, or for a grant package only when every child grant is `continuous`. It rotates refresh tokens by family. Reuse of a superseded token revokes the family and every family-linked access token, returns `invalid_grant`, and requires fresh authorization.
 21. Rejects pre-v0.1 persisted authorization state before introspection or request handling. Does not reconstruct missing facts from current configuration and requires fresh consent.
 
 ### Resource Server conformance
@@ -1500,7 +1500,12 @@ For separated AS/RS deployments, the RS MUST authenticate to the AS introspectio
 
 Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. This bounds the propagation window for revocation.
 
-Implementations SHOULD use short-lived access tokens with refresh tokens for `continuous` grants.
+An access token issued with or from a refresh-token family MUST be linked to
+that family and MUST have a short, token-specific expiration no later than the
+family or grant expiration. A token response MUST derive `expires_in` from the
+access token's persisted expiration. It MUST omit `expires_in` when the access
+token has no expiration. An RFC 7662 response MUST likewise omit `exp` when no
+expiration exists.
 
 Every successful OAuth token response that contains an access token or refresh
 token MUST include `Cache-Control: no-store` and `Pragma: no-cache` before the
@@ -1515,8 +1520,15 @@ When an authorization server issues refresh tokens for a `continuous` grant,
 each token MUST belong to a family and MUST rotate after successful use. The
 AS MUST atomically supersede the presented token and issue one active
 successor. Reuse of any superseded token, including a retry after a lost
-successful response, MUST revoke the token family, return `invalid_grant`, and
-require fresh authorization. This behavior follows
+successful response, MUST revoke the token family and every access token linked
+to that family, return `invalid_grant`, and require fresh authorization.
+Introspection MUST report every family-linked access token inactive after the
+replay is detected. An AS MUST NOT issue refresh tokens for a `single_use`
+grant. It MUST NOT issue one for a grant package unless every child grant is
+`continuous`. On upgrade, an implementation MUST NOT infer family linkage for
+an existing bearer. Any live refresh family without persisted bearer linkage
+MUST be revoked together with its grant- or package-bound bearer tokens and
+MUST require fresh authorization. This behavior follows
 [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700), Section 4.14.2.
 
 **Sender-constrained tokens (non-normative):** Bearer tokens (RFC 6750) are the v0.1 baseline. Deployments handling sensitive standing access SHOULD consider sender-constrained tokens, which bind a token to a client-held key so that possession of the token alone is not sufficient to use it. DPoP (RFC 9449) and mutual-TLS certificate binding (RFC 8705) are both compatible with PDPP's introspection-based design. A formal optional hardening profile is a candidate for a future version.

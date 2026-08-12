@@ -64,7 +64,7 @@ import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { closeDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { basicIntrospectionAuthorization } from "../server/introspection-http.ts";
-import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
+import { bootstrapPostgresSchema, closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import { createPostgresConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
@@ -191,6 +191,7 @@ async function registerAuthCodeClient(asUrl: string, { refreshToken = true } = {
 interface OauthCodeFlowResult {
   accessToken: string;
   code: string;
+  expiresIn: number | undefined;
   grantId: string;
   refreshToken: string | null;
   verifier: string;
@@ -206,10 +207,12 @@ interface PreparedOauthCodeFlow {
 // INSERT. Returns the access token, the refresh token, the grant id, and the
 // code so callers can assert single-use replay.
 async function prepareOauthCodeFlow({
+  accessMode = "continuous",
   asUrl,
   client,
   manifest,
 }: {
+  accessMode?: "continuous" | "single_use";
   asUrl: string;
   client: RegisteredClient;
   manifest: ConnectorManifest;
@@ -217,7 +220,7 @@ async function prepareOauthCodeFlow({
   const verifier = randomBytes(32).toString("base64url");
   const authorizationDetails = [
     {
-      access_mode: "continuous",
+      access_mode: accessMode,
       purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
       purpose_description: "token-refresh postgres-path proof",
       source: { id: manifest.connector_id, kind: "connector" },
@@ -274,15 +277,17 @@ async function prepareOauthCodeFlow({
 }
 
 async function completeOauthCodeFlow({
+  accessMode = "continuous",
   asUrl,
   client,
   manifest,
 }: {
+  accessMode?: "continuous" | "single_use";
   asUrl: string;
   client: RegisteredClient;
   manifest: ConnectorManifest;
 }): Promise<OauthCodeFlowResult> {
-  const { code, verifier } = await prepareOauthCodeFlow({ asUrl, client, manifest });
+  const { code, verifier } = await prepareOauthCodeFlow({ accessMode, asUrl, client, manifest });
 
   // POST /oauth/token grant_type=authorization_code drives
   // exchangeOAuthAuthorizationCode (oauth_authorization_codes SELECT-by-code +
@@ -291,6 +296,7 @@ async function completeOauthCodeFlow({
   // INSERT).
   interface TokenResponseBody {
     access_token: string;
+    expires_in?: number;
     grant_id: string;
     refresh_token?: string;
     token_type: string;
@@ -312,6 +318,7 @@ async function completeOauthCodeFlow({
   return {
     accessToken: body.access_token,
     code,
+    expiresIn: body.expires_in,
     grantId: body.grant_id,
     refreshToken: body.refresh_token || null,
     verifier,
@@ -719,13 +726,145 @@ if (POSTGRES_URL) {
     assert.equal(route.body.error?.code, "authorization_state.unsupported_legacy_shape");
   });
 
+  test("PostgreSQL migration revokes unlinked legacy refresh families and bound bearers", async () => {
+    const suffix = randomBytes(8).toString("hex");
+    const grantId = `grt_legacy_family_${suffix}`;
+    const familyId = `rtf_legacy_family_${suffix}`;
+    const tokenId = `tok_legacy_family_${suffix}`;
+    await postgresQuery(
+      `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind)
+       VALUES($1, $2, 'owner_local', 'client_legacy', 'client')`,
+      [tokenId, grantId]
+    );
+    await postgresQuery(
+      `INSERT INTO oauth_refresh_tokens(
+         refresh_token_hash, family_id, generation, client_id, grant_id,
+         subject_id, status, created_at
+       ) VALUES($1, $2, 0, 'client_legacy', $3, 'owner_local', 'active', NOW())`,
+      [`hash_legacy_family_${suffix}`, familyId, grantId]
+    );
+
+    await bootstrapPostgresSchema();
+
+    const refresh = await postgresQuery<{ revoked_at: string | null; status: string }>(
+      "SELECT status, revoked_at FROM oauth_refresh_tokens WHERE family_id = $1",
+      [familyId]
+    );
+    const bearer = await postgresQuery<{ refresh_family_id: string | null; revoked: boolean }>(
+      "SELECT refresh_family_id, revoked FROM tokens WHERE token_id = $1",
+      [tokenId]
+    );
+    assert.equal(refresh.rows[0]?.status, "revoked", "unlinked pre-migration family requires fresh authorization");
+    assert.ok(refresh.rows[0]?.revoked_at);
+    assert.deepEqual(bearer.rows[0], { refresh_family_id: null, revoked: true });
+  });
+
+  test("PostgreSQL supersede failure rolls back the newly inserted family bearer", async () => {
+    assert.ok(client, "client must be registered in test.before");
+    assert.ok(spotify, "spotify manifest must be registered in test.before");
+    const issued = await completeOauthCodeFlow({ asUrl, client, manifest: spotify });
+    assert.ok(issued.refreshToken, "supersede-fault flow receives generation zero");
+    const generationZero = issued.refreshToken;
+
+    await postgresQuery(`
+      CREATE OR REPLACE FUNCTION pdpp_test_fail_refresh_supersede()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        IF OLD.status = 'active' AND NEW.status = 'superseded' THEN
+          RAISE EXCEPTION 'injected refresh supersede failure';
+        END IF;
+        RETURN NEW;
+      END
+      $function$
+    `);
+    await postgresQuery(`
+      CREATE TRIGGER fail_refresh_supersede
+      BEFORE UPDATE OF status ON oauth_refresh_tokens
+      FOR EACH ROW EXECUTE FUNCTION pdpp_test_fail_refresh_supersede()
+    `);
+    try {
+      const failure = await fetch(`${asUrl}/oauth/token`, {
+        body: new URLSearchParams({
+          client_id: client.client_id,
+          grant_type: "refresh_token",
+          refresh_token: generationZero,
+        }).toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+      assert.notEqual(failure.status, 200);
+    } finally {
+      await postgresQuery("DROP TRIGGER IF EXISTS fail_refresh_supersede ON oauth_refresh_tokens");
+      await postgresQuery("DROP FUNCTION IF EXISTS pdpp_test_fail_refresh_supersede() ");
+    }
+
+    const family = await postgresQuery<{ generation: number; status: string }>(
+      `SELECT generation, status
+         FROM oauth_refresh_tokens
+        WHERE family_id = (
+          SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = $1
+        )
+        ORDER BY generation`,
+      [refreshTokenHash(generationZero)]
+    );
+    assert.deepEqual(family.rows, [{ generation: 0, status: "active" }]);
+    const bearers = await postgresQuery<{ revoked: boolean }>(
+      `SELECT revoked
+         FROM tokens
+        WHERE refresh_family_id = (
+          SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = $1
+        )`,
+      [refreshTokenHash(generationZero)]
+    );
+    assert.deepEqual(bearers.rows, [{ revoked: false }], "failed supersede leaves no orphan bearer");
+
+    const retried = await fetchJson(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: generationZero,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(retried.status, 200, "generation zero remains usable after rollback");
+  });
+
+  test("PostgreSQL token lifetime and refresh eligibility follow the persisted grant contract", async () => {
+    assert.ok(client, "client must be registered in test.before");
+    assert.ok(spotify, "spotify manifest must be registered in test.before");
+    const noRefreshClient = await registerAuthCodeClient(asUrl, { refreshToken: false });
+    const indefinite = await completeOauthCodeFlow({ asUrl, client: noRefreshClient, manifest: spotify });
+    assert.equal(indefinite.refreshToken, null, "client without refresh capability receives no refresh token");
+    assert.equal(indefinite.expiresIn, undefined, "token response omits expires_in when storage has no expiry");
+    const indefiniteIntrospection = await fetchJson<{ active: boolean; exp?: number }>(`${asUrl}/introspect`, {
+      body: new URLSearchParams({ token: indefinite.accessToken }).toString(),
+      headers: INTROSPECTION_HEADERS,
+      method: "POST",
+    });
+    assert.equal(indefiniteIntrospection.body.active, true);
+    assert.equal(
+      Object.hasOwn(indefiniteIntrospection.body, "exp"),
+      false,
+      "RFC 7662 response omits exp when the token has no expiration"
+    );
+
+    const singleUse = await completeOauthCodeFlow({ accessMode: "single_use", asUrl, client, manifest: spotify });
+    assert.equal(singleUse.refreshToken, null, "single_use grant receives no refresh token");
+    assert.ok(singleUse.expiresIn && singleUse.expiresIn > 600, "single_use token keeps its persisted grant lifetime");
+  });
+
   test("authorization-code exchange + refresh rotation through real auth.js postgres adapters", async () => {
     interface IntrospectBody {
       active: boolean;
+      exp?: number;
     }
     interface TokenExchangeBody {
       access_token?: string;
       error?: string;
+      expires_in?: number;
       fresh_authorization_required?: boolean;
       refresh_token?: string;
     }
@@ -734,6 +873,7 @@ if (POSTGRES_URL) {
     assert.ok(spotify, "spotify manifest must be registered in test.before");
     const issued = await completeOauthCodeFlow({ asUrl, client, manifest: spotify });
     assert.ok(issued.refreshToken, "refresh-capable client receives a refresh token");
+    assert.ok(issued.expiresIn && issued.expiresIn <= 600, "family-linked access token has a short lifetime");
     const issuedRefreshToken = issued.refreshToken;
 
     // Introspect the access token: the tokens SELECT join (PG introspect adapter).
@@ -744,6 +884,7 @@ if (POSTGRES_URL) {
     });
     assert.equal(introspectResp.status, 200);
     assert.equal(introspectResp.body.active, true, "issued access token introspects as active");
+    assert.equal(typeof introspectResp.body.exp, "number", "persisted access expiry is exposed through introspection");
 
     // Replaying the consumed code must fail: the consume UPDATE flipped the
     // row to status=consumed and the SELECT-by-code adapter reads it back.
@@ -776,6 +917,10 @@ if (POSTGRES_URL) {
     assert.ok(refreshed.body.access_token, "refresh returns a new access token");
     assert.notEqual(refreshed.body.access_token, issued.accessToken, "refresh mints a distinct access token");
     assert.ok(refreshed.body.refresh_token, "refresh returns a successor refresh token");
+    assert.ok(
+      refreshed.body.expires_in && refreshed.body.expires_in <= 600,
+      "refresh-derived access token reports its actual short lifetime"
+    );
     assert.notEqual(refreshed.body.refresh_token, issuedRefreshToken, "refresh rotates the presented token");
 
     // The new access token introspects as active (tokens SELECT join again).
@@ -843,6 +988,34 @@ if (POSTGRES_URL) {
       ]
     );
 
+    const familyAccessTokens = await postgresQuery<{
+      expires_at: string | null;
+      refresh_family_id: string;
+      revoked: boolean;
+      token_id: string;
+    }>(
+      `SELECT token_id, refresh_family_id, expires_at, revoked
+         FROM tokens
+        WHERE refresh_family_id = $1
+        ORDER BY created_at, token_id`,
+      [family.rows[0]?.family_id]
+    );
+    assert.deepEqual(
+      familyAccessTokens.rows.map(({ revoked }) => revoked),
+      [true, true],
+      "replay revokes the initial and attacker-minted access tokens"
+    );
+    for (const bearer of familyAccessTokens.rows) {
+      assert.ok(bearer.expires_at, "every family-derived access token has an expiry");
+      // biome-ignore lint/performance/noAwaitInLoops: Each persisted family bearer is an independent security assertion.
+      const introspection = await fetchJson<IntrospectBody>(`${asUrl}/introspect`, {
+        body: new URLSearchParams({ token: bearer.token_id }).toString(),
+        headers: INTROSPECTION_HEADERS,
+        method: "POST",
+      });
+      assert.equal(introspection.body.active, false, "every family bearer introspects inactive after replay");
+    }
+
     const successorAfterReuse = await fetchJson<TokenExchangeBody>(`${asUrl}/oauth/token`, {
       body: new URLSearchParams({
         client_id: client.client_id,
@@ -896,6 +1069,15 @@ if (POSTGRES_URL) {
       ],
       "reuse detection leaves no active successor"
     );
+    const concurrentBearers = await postgresQuery<{ active_count: number }>(
+      `SELECT COUNT(*) FILTER (WHERE revoked = FALSE)::int AS active_count
+         FROM tokens
+        WHERE refresh_family_id = (
+          SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = $1
+        )`,
+      [refreshTokenHash(concurrentRefreshToken)]
+    );
+    assert.equal(concurrentBearers.rows[0]?.active_count, 0, "same-generation replay leaves no active family bearer");
 
     const crossGeneration = await completeOauthCodeFlow({ asUrl, client, manifest: spotify });
     assert.ok(crossGeneration.refreshToken, "cross-generation race receives generation zero");
@@ -954,6 +1136,104 @@ if (POSTGRES_URL) {
       crossGenerationFamily.rows.every(({ status }) => status === "revoked"),
       true
     );
+    const crossGenerationBearers = await postgresQuery<{ active_count: number }>(
+      `SELECT COUNT(*) FILTER (WHERE revoked = FALSE)::int AS active_count
+         FROM tokens
+        WHERE refresh_family_id = (
+          SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = $1
+        )`,
+      [refreshTokenHash(generationZero)]
+    );
+    assert.equal(crossGenerationBearers.rows[0]?.active_count, 0, "cross-generation replay leaves no active bearer");
+
+    const failedReplay = await completeOauthCodeFlow({ asUrl, client, manifest: spotify });
+    assert.ok(failedReplay.refreshToken, "replay-fault flow receives generation zero");
+    const failedReplayGenerationZero = failedReplay.refreshToken;
+    const failedReplayRotation = await fetchJson<TokenExchangeBody>(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: failedReplayGenerationZero,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(failedReplayRotation.status, 200);
+    assert.ok(failedReplayRotation.body.refresh_token, "replay-fault flow receives generation one");
+    await postgresQuery(`
+      CREATE OR REPLACE FUNCTION pdpp_test_fail_family_bearer_revoke()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        IF OLD.revoked = FALSE AND NEW.revoked = TRUE AND NEW.refresh_family_id IS NOT NULL THEN
+          RAISE EXCEPTION 'injected family bearer revoke failure';
+        END IF;
+        RETURN NEW;
+      END
+      $function$
+    `);
+    await postgresQuery(`
+      CREATE TRIGGER fail_family_bearer_revoke
+      BEFORE UPDATE ON tokens
+      FOR EACH ROW EXECUTE FUNCTION pdpp_test_fail_family_bearer_revoke()
+    `);
+    try {
+      const replayFailure = await fetch(`${asUrl}/oauth/token`, {
+        body: new URLSearchParams({
+          client_id: client.client_id,
+          grant_type: "refresh_token",
+          refresh_token: failedReplayGenerationZero,
+        }).toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+      assert.notEqual(replayFailure.status, 200, "failed bearer revoke cannot commit partial family revocation");
+    } finally {
+      await postgresQuery("DROP TRIGGER IF EXISTS fail_family_bearer_revoke ON tokens");
+      await postgresQuery("DROP FUNCTION IF EXISTS pdpp_test_fail_family_bearer_revoke() ");
+    }
+    const replayFailureFamily = await postgresQuery<{ generation: number; status: string }>(
+      `SELECT generation, status
+         FROM oauth_refresh_tokens
+        WHERE family_id = (
+          SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = $1
+        )
+        ORDER BY generation`,
+      [refreshTokenHash(failedReplayGenerationZero)]
+    );
+    assert.deepEqual(
+      replayFailureFamily.rows.map(({ generation, status }) => ({ generation, status })),
+      [
+        { generation: 0, status: "superseded" },
+        { generation: 1, status: "active" },
+      ],
+      "failed containment rolls the refresh-family revocation back atomically"
+    );
+    const replayFailureBearers = await postgresQuery<{ revoked: boolean }>(
+      `SELECT revoked
+         FROM tokens
+        WHERE refresh_family_id = (
+          SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = $1
+        )
+        ORDER BY created_at, token_id`,
+      [refreshTokenHash(failedReplayGenerationZero)]
+    );
+    assert.deepEqual(
+      replayFailureBearers.rows.map(({ revoked }) => revoked),
+      [false, false],
+      "failed containment rolls bearer revocation back atomically"
+    );
+    const successorAfterFailedReplay = await fetchJson<TokenExchangeBody>(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: failedReplayRotation.body.refresh_token,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(successorAfterFailedReplay.status, 200, "rolled-back successor remains usable");
 
     const failedIssuance = await completeOauthCodeFlow({ asUrl, client, manifest: spotify });
     assert.ok(failedIssuance.refreshToken, "fault flow receives a refresh token");

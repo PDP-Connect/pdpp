@@ -122,7 +122,13 @@ active successor. Family revocation SHALL mark every family row `revoked`.
 Reuse of any superseded generation, including a retry after a lost success
 response, SHALL revoke the whole family, return
 `invalid_grant`, and require fresh authorization. The response SHALL be the
-same for all superseded-generation reuse. This follows RFC 9700.
+same for all superseded-generation reuse. Every access token issued with or
+from the family SHALL persist the family linkage and a token-specific expiry no
+more than ten minutes after issuance and no later than the family expiry.
+Detected reuse SHALL atomically revoke every family-linked access-token row,
+and RFC 7662 introspection SHALL report each one inactive. Refresh tokens SHALL
+be issued only for `continuous` grants. A package is eligible only when every
+child grant is `continuous`. This follows RFC 9700.
 
 **Change class:** repairs an existing interoperability and security hole
 
@@ -132,6 +138,7 @@ same for all superseded-generation reuse. This follows RFC 9700.
 - **THEN** one rotates successfully and the other revokes the family and
   returns `invalid_grant`
 - **AND** no active successor SHALL remain after the detected reuse
+- **AND** every access token linked to the family SHALL introspect as inactive
 
 #### Scenario: A lost-response retry is not distinguishable
 
@@ -139,6 +146,40 @@ same for all superseded-generation reuse. This follows RFC 9700.
   lost
 - **THEN** the superseded generation SHALL trigger family revocation and
   `invalid_grant`, not an idempotent replay response
+
+#### Scenario: Token lifetime fields report persisted truth
+
+- **WHEN** a family-linked access token is issued
+- **THEN** `expires_in` SHALL report its actual persisted short lifetime
+- **AND** RFC 7662 `exp` SHALL report the same persisted expiration
+- **WHEN** an access token has no expiration
+- **THEN** the token response SHALL omit `expires_in` and introspection SHALL
+  omit `exp`
+
+#### Scenario: Single-use and mixed-mode packages receive no refresh token
+
+- **WHEN** an authorization-code exchange binds a `single_use` grant
+- **THEN** the response SHALL omit `refresh_token`
+- **WHEN** a package contains any child grant that is not `continuous`
+- **THEN** the response SHALL omit `refresh_token`
+
+#### Scenario: Containment failure rolls back atomically
+
+- **WHEN** revoking a family-linked bearer fails during replay containment
+- **THEN** neither the refresh-family revocation nor a partial bearer
+  revocation SHALL commit
+- **WHEN** superseding the active refresh generation fails after bearer
+  insertion
+- **THEN** the inserted bearer SHALL roll back and the active generation SHALL
+  remain usable
+
+#### Scenario: Unlinked legacy refresh state fails closed
+
+- **WHEN** storage migration finds an active or superseded refresh family with
+  no persisted family-linked bearer
+- **THEN** the migration SHALL NOT guess or reconstruct bearer linkage
+- **AND** it SHALL revoke that family and its grant- or package-bound bearer
+  rows and require fresh authorization
 
 ### Requirement: Successful token responses SHALL prevent intermediary caching
 

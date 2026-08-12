@@ -207,10 +207,14 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authTokensInsertClient: MutationQuery;
   readonly authTokensInsertMcpPackage: MutationQuery;
   readonly authTokensInsertOwner: MutationQuery;
+  readonly authTokensInsertRefreshClient: MutationQuery;
+  readonly authTokensInsertRefreshMcpPackage: MutationQuery;
+  readonly authTokensLinkRefreshFamily: MutationQuery;
   readonly authTokensListActiveByClientId: SmallEnumerationQuery;
   readonly authTokensRevokeByClientId: MutationQuery;
   readonly authTokensRevokeByGrant: MutationQuery;
   readonly authTokensRevokeByPackage: MutationQuery;
+  readonly authTokensRevokeByRefreshFamily: MutationQuery;
   readonly authTokensRevokeByTokenId: MutationQuery;
   readonly blobsGetRowById: ReadOneQuery;
   readonly blobsGetStoredById: ReadOneQuery;
@@ -738,11 +742,15 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "authGrantsListActiveIdsByClientId",
     // Auth — tokens
     "authTokensInsertClient",
+    "authTokensInsertRefreshClient",
+    "authTokensInsertRefreshMcpPackage",
+    "authTokensLinkRefreshFamily",
     "authTokensInsertOwner",
     "authTokensCountActiveByClientId",
     "authTokensGetIntrospection",
     "authTokensRevokeByGrant",
     "authTokensRevokeByClientId",
+    "authTokensRevokeByRefreshFamily",
     // Auth — grant_packages
     "authGrantPackagesListAll",
     "authGrantPackageMembersListAllByPackage",

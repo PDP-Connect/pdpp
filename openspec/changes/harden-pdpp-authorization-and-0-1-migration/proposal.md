@@ -22,7 +22,13 @@ implementation.
   exact token linkage is implemented and tested.
 - Implement refresh rotation, superseded-generation reuse, family revocation,
   lost-response retry handling, and exact store state following RFC 9700.
-  Report these controls separately from the seven-case seam result.
+  Link every family-derived bearer to its family, give it a short persisted
+  expiry, and atomically deactivate every linked bearer when replay is
+  detected. Limit refresh to continuous grants and all-continuous packages.
+  Report truthful token lifetimes and omit absent expiry fields. Report these
+  controls separately from the seven-case seam result. Revoke legacy refresh
+  families and their bound bearers when family linkage is absent rather than
+  reconstructing or guessing the relationship.
 - Prevent intermediary caching of every successful token-bearing response
   with RFC 6749's `Cache-Control: no-store` and `Pragma: no-cache` headers,
   including package variants and device-code responses.

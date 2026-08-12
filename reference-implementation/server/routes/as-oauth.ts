@@ -62,8 +62,6 @@ interface AppLike {
   post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
 
-const HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS = 365 * 24 * 60 * 60;
-
 // Narrows an unknown body field to `string | null | undefined` as required by
 // operation input types. Non-string values are treated as absent (undefined).
 function bodyString(value: unknown): string | null | undefined {
@@ -249,6 +247,7 @@ export interface MountAsTokenContext {
     codeVerifier: unknown;
   }) => Promise<{
     access_token: string;
+    access_token_expires_at?: string;
     authorization_details?: unknown[];
     token_type: string;
     refresh_token?: string | null;
@@ -261,6 +260,7 @@ export interface MountAsTokenContext {
    */
   exchangeOAuthRefreshToken: (args: { refreshToken: unknown; clientId: unknown }) => Promise<{
     access_token: string;
+    access_token_expires_at?: string;
     token_type: string;
     refresh_token: string;
     grant_id?: string | null;
@@ -285,6 +285,17 @@ function respondWithTokenJson(res: RouteResponse, body: unknown): unknown {
   return res.json(body);
 }
 
+function accessTokenLifetimePayload(expiresAt: string | undefined): { expires_in: number } | Record<string, never> {
+  if (!expiresAt) {
+    return {};
+  }
+  const expiresAtMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresAtMs)) {
+    return {};
+  }
+  return { expires_in: Math.max(Math.floor((expiresAtMs - Date.now()) / 1000), 0) };
+}
+
 async function handleAuthCodeExchange(
   req: RouteRequest,
   body: Record<string, unknown>,
@@ -302,7 +313,7 @@ async function handleAuthCodeExchange(
     return respondWithTokenJson(res, {
       access_token: token.access_token,
       ...(token.authorization_details ? { authorization_details: token.authorization_details } : {}),
-      expires_in: HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS,
+      ...accessTokenLifetimePayload(token.access_token_expires_at),
       token_type: token.token_type,
       ...(token.refresh_token ? { refresh_token: token.refresh_token } : {}),
       ...buildGrantIdPayload(token),
@@ -325,7 +336,7 @@ async function handleRefreshTokenExchange(
     });
     return respondWithTokenJson(res, {
       access_token: token.access_token,
-      expires_in: HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS,
+      ...accessTokenLifetimePayload(token.access_token_expires_at),
       refresh_token: token.refresh_token,
       token_type: token.token_type,
       ...buildGrantIdPayload(token),

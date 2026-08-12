@@ -963,6 +963,7 @@ export async function bootstrapPostgresSchema({
         token_id TEXT PRIMARY KEY,
         grant_id TEXT,
         package_id TEXT,
+        refresh_family_id TEXT,
         subject_id TEXT NOT NULL,
         client_id TEXT,
         token_kind TEXT NOT NULL,
@@ -974,7 +975,6 @@ export async function bootstrapPostgresSchema({
         ON tokens(grant_id);
       CREATE INDEX IF NOT EXISTS idx_pg_tokens_client_id
         ON tokens(client_id);
-
       CREATE TABLE IF NOT EXISTS consent_exchange_codes (
         code_hash TEXT PRIMARY KEY,
         token_id TEXT NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE,
@@ -1086,6 +1086,8 @@ export async function bootstrapPostgresSchema({
 
       ALTER TABLE tokens
         ADD COLUMN IF NOT EXISTS package_id TEXT;
+      ALTER TABLE tokens
+        ADD COLUMN IF NOT EXISTS refresh_family_id TEXT;
       ALTER TABLE oauth_authorization_codes
         ADD COLUMN IF NOT EXISTS package_id TEXT;
       ALTER TABLE oauth_refresh_tokens
@@ -1102,6 +1104,41 @@ export async function bootstrapPostgresSchema({
         ALTER COLUMN grant_id DROP NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_pg_tokens_package_id
         ON tokens(package_id);
+      CREATE INDEX IF NOT EXISTS idx_pg_tokens_refresh_family
+        ON tokens(refresh_family_id, revoked);
+      UPDATE tokens AS bearer
+         SET revoked = TRUE
+       WHERE bearer.revoked = FALSE
+         AND (
+           bearer.grant_id IN (
+             SELECT legacy.grant_id
+               FROM oauth_refresh_tokens AS legacy
+              WHERE legacy.grant_id IS NOT NULL
+                AND legacy.status <> 'revoked'
+                AND NOT EXISTS (
+                  SELECT 1 FROM tokens AS linked WHERE linked.refresh_family_id = legacy.family_id
+                )
+           )
+           OR bearer.package_id IN (
+             SELECT legacy.package_id
+               FROM oauth_refresh_tokens AS legacy
+              WHERE legacy.package_id IS NOT NULL
+                AND legacy.status <> 'revoked'
+                AND NOT EXISTS (
+                  SELECT 1 FROM tokens AS linked WHERE linked.refresh_family_id = legacy.family_id
+                )
+           )
+         );
+      UPDATE oauth_refresh_tokens AS legacy
+         SET status = 'revoked',
+             revoked_at = COALESCE(
+               legacy.revoked_at,
+               TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+             )
+       WHERE legacy.status <> 'revoked'
+         AND NOT EXISTS (
+           SELECT 1 FROM tokens AS linked WHERE linked.refresh_family_id = legacy.family_id
+         );
       CREATE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_package
         ON oauth_refresh_tokens(package_id, status);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_family_generation

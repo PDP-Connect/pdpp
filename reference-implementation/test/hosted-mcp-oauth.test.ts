@@ -20,7 +20,7 @@ import {
   revokeGrantPackage,
 } from "../server/auth.ts";
 import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
-import { closeDb, getDb } from "../server/db.ts";
+import { closeDb, getDb, initDb } from "../server/db.ts";
 import { encodeHostedMcpSelection, encodeHostedMcpStreamSelection } from "../server/hosted-mcp-selection.ts";
 import { startServer } from "../server/index.ts";
 import { basicIntrospectionAuthorization } from "../server/introspection-http.ts";
@@ -61,6 +61,19 @@ async function fetchJson(url: string | URL, opts: RequestInit = {}): Promise<Jso
   const resp = await fetch(url, opts);
   const body = (await resp.json()) as Record<string, unknown>;
   return { body, resp, status: resp.status };
+}
+
+async function introspectAccessToken(asUrl: string, token: string): Promise<Record<string, unknown>> {
+  const response = await fetchJson(`${asUrl}/introspect`, {
+    body: new URLSearchParams({ token }).toString(),
+    headers: {
+      Authorization: INTROSPECTION_AUTHORIZATION,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    method: "POST",
+  });
+  assert.equal(response.status, 200);
+  return response.body;
 }
 
 async function reviewConsent(
@@ -413,16 +426,19 @@ async function issueOwnerToken(asUrl: string): Promise<string> {
 interface OauthCodeFlowResult {
   accessToken: string;
   code: string;
+  expiresIn: number | null;
   grantId: string | undefined;
   refreshToken: string | null;
 }
 
 async function prepareOauthCodeFlow({
   asUrl,
+  accessMode = "continuous",
   client,
   manifest,
 }: {
   asUrl: string;
+  accessMode?: "continuous" | "single_use";
   client: RegisteredClient;
   manifest: ConnectorManifest;
 }): Promise<{ code: string; verifier: string }> {
@@ -434,7 +450,10 @@ async function prepareOauthCodeFlow({
   authorizeUrl.searchParams.set("state", "state-123");
   authorizeUrl.searchParams.set("code_challenge", pkceChallenge(verifier));
   authorizeUrl.searchParams.set("code_challenge_method", "S256");
-  authorizeUrl.searchParams.set("authorization_details", JSON.stringify(hostedMcpAuthorizationDetails(manifest)));
+  authorizeUrl.searchParams.set(
+    "authorization_details",
+    JSON.stringify(hostedMcpAuthorizationDetails(manifest, accessMode))
+  );
 
   const authorizeResp = await fetch(authorizeUrl, { redirect: "manual" });
   assert.equal(authorizeResp.status, 302);
@@ -466,14 +485,16 @@ async function prepareOauthCodeFlow({
 
 async function completeOauthCodeFlow({
   asUrl,
+  accessMode = "continuous",
   client,
   manifest,
 }: {
   asUrl: string;
+  accessMode?: "continuous" | "single_use";
   client: RegisteredClient;
   manifest: ConnectorManifest;
 }): Promise<OauthCodeFlowResult> {
-  const { code, verifier } = await prepareOauthCodeFlow({ asUrl, client, manifest });
+  const { code, verifier } = await prepareOauthCodeFlow({ accessMode, asUrl, client, manifest });
 
   const { status, body } = await fetchJson(`${asUrl}/oauth/token`, {
     body: new URLSearchParams({
@@ -488,21 +509,23 @@ async function completeOauthCodeFlow({
   });
   assert.equal(status, 200);
   assert.equal(body.token_type, "Bearer");
-  assert.equal(Number.isInteger(body.expires_in), true);
-  assert.ok((body.expires_in as number) > 0);
   assert.ok(body.access_token);
   return {
     accessToken: stringField(body, "access_token"),
     code,
+    expiresIn: typeof body.expires_in === "number" ? body.expires_in : null,
     grantId: body.grant_id as string | undefined,
     refreshToken: (body.refresh_token as string | undefined) || null,
   };
 }
 
-function hostedMcpAuthorizationDetails(manifest: ConnectorManifest): Record<string, unknown>[] {
+function hostedMcpAuthorizationDetails(
+  manifest: ConnectorManifest,
+  accessMode: "continuous" | "single_use" = "continuous"
+): Record<string, unknown>[] {
   return [
     {
-      access_mode: "continuous",
+      access_mode: accessMode,
       purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
       purpose_description: "Use PDPP data through hosted MCP.",
       source: { id: publicSourceIdForManifest(manifest), kind: "connector" },
@@ -652,6 +675,7 @@ async function completeMultiSourcePackageFlow({
   assert.equal(body.token_type, "Bearer");
   assert.equal(Number.isInteger(body.expires_in), true);
   assert.ok((body.expires_in as number) > 0);
+  assert.ok((body.expires_in as number) <= 600, "refresh-capable package access token is short-lived");
   assert.ok(body.access_token);
   assert.ok(body.grant_package_id, "multi-source approval issues a package-bound token");
   assert.equal(body.grant_id, undefined, "package tokens MUST NOT carry a child grant_id at the OAuth surface");
@@ -752,6 +776,7 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
     const client = await registerAuthCodeClient(asUrl);
     const {
       accessToken,
+      expiresIn,
       refreshToken: maybeRefreshToken,
       grantId: maybeGrantId,
       code,
@@ -763,6 +788,7 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
     const refreshToken = mustExist(maybeRefreshToken, "authorization code flow must issue a refresh token");
     const grantId = mustExist(maybeGrantId, "authorization code flow must issue a grant id");
     assert.equal(refreshToken.startsWith("rt_"), true);
+    assert.ok(expiresIn !== null && expiresIn > 0 && expiresIn <= 600, "code access token reports its short lifetime");
 
     const reused = await fetchJson(`${asUrl}/oauth/token`, {
       body: new URLSearchParams({
@@ -791,6 +817,7 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
     assert.equal(refreshed.body.token_type, "Bearer");
     assert.equal(Number.isInteger(refreshed.body.expires_in), true);
     assert.ok((refreshed.body.expires_in as number) > 0);
+    assert.ok((refreshed.body.expires_in as number) <= 600);
     assert.notEqual(refreshed.body.refresh_token, refreshToken);
     assert.equal(refreshed.body.grant_id, grantId);
     assert.ok(refreshed.body.access_token);
@@ -820,7 +847,7 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
         protocolVersion: "2025-06-18",
       },
     });
-    assert.equal(initialize.status, 200);
+    assert.equal(initialize.status, 200, JSON.stringify(initialize.body));
     const initializeServerInfo = resultOf(initialize).serverInfo as Record<string, unknown>;
     assert.equal(initializeServerInfo.name, "pdpp-reference-mcp");
     assert.deepEqual(initializeServerInfo.icons, [
@@ -915,6 +942,28 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
     assert.equal(replayed.body.error, "invalid_grant");
     assert.equal(replayed.body.fresh_authorization_required, true);
 
+    const replayFamilyId = (
+      getDb()
+        .prepare("SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = ?")
+        .get(createHash("sha256").update(replayedRefreshToken).digest("base64url")) as { family_id: string }
+    ).family_id;
+    const replayFamilyBearers = getDb()
+      .prepare(
+        `SELECT token_id, expires_at, revoked
+           FROM tokens
+          WHERE refresh_family_id = ?
+          ORDER BY created_at, token_id`
+      )
+      .all(replayFamilyId) as Array<{ expires_at: string; revoked: number; token_id: string }>;
+    assert.equal(replayFamilyBearers.length, 2, "the initial and attacker-minted bearer are linked to the family");
+    for (const bearer of replayFamilyBearers) {
+      assert.equal(bearer.revoked, 1, "replay revokes every family-linked bearer row");
+      const lifetimeSeconds = (Date.parse(bearer.expires_at) - Date.now()) / 1000;
+      assert.ok(lifetimeSeconds > 0 && lifetimeSeconds <= 600, "every family bearer has a short token-specific expiry");
+      // biome-ignore lint/performance/noAwaitInLoops: The attacker-first oracle introspects every family bearer.
+      assert.equal((await introspectAccessToken(asUrl, bearer.token_id)).active, false);
+    }
+
     const successorAfterReplay = await fetchJson(`${asUrl}/oauth/token`, {
       body: new URLSearchParams({
         client_id: client.client_id,
@@ -964,6 +1013,37 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
       { generation: 0, status: "revoked" },
       { generation: 1, status: "revoked" },
     ]);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("OAuth token lifetime and refresh eligibility follow the persisted grant contract", async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    const manifest = await registerAuthorizedSpotify(asUrl);
+
+    const noRefreshClient = await registerAuthCodeClient(asUrl, { refreshToken: false });
+    const continuous = await completeOauthCodeFlow({ asUrl, client: noRefreshClient, manifest });
+    assert.equal(continuous.refreshToken, null);
+    assert.equal(continuous.expiresIn, null, "expires_in is omitted when the persisted access token has no expiry");
+    const continuousIntrospection = await introspectAccessToken(asUrl, continuous.accessToken);
+    assert.equal(continuousIntrospection.active, true);
+    assert.equal(Object.hasOwn(continuousIntrospection, "exp"), false, "RFC 7662 exp is omitted when absent");
+
+    const refreshCapableClient = await registerAuthCodeClient(asUrl);
+    const singleUse = await completeOauthCodeFlow({
+      accessMode: "single_use",
+      asUrl,
+      client: refreshCapableClient,
+      manifest,
+    });
+    assert.equal(singleUse.refreshToken, null, "single_use grants never issue refresh tokens");
+    assert.ok(singleUse.expiresIn !== null && singleUse.expiresIn > 0, "single_use reports its actual token expiry");
+    assert.ok(singleUse.expiresIn <= 24 * 60 * 60);
+    const singleUseIntrospection = await introspectAccessToken(asUrl, singleUse.accessToken);
+    assert.equal(typeof singleUseIntrospection.exp, "number");
   } finally {
     await closeServer(server);
   }
@@ -1125,6 +1205,44 @@ test("pre-family SQLite refresh rows are rejected without reconstruction", async
   }
 });
 
+test("SQLite migration revokes unlinked legacy refresh families and their bound bearers", () => {
+  const tempDirectory = mkdtempSync(join(tmpdir(), "pdpp-refresh-family-migration-"));
+  const dbPath = join(tempDirectory, "legacy-family.sqlite");
+  try {
+    initDb(dbPath);
+    getDb()
+      .prepare(
+        `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind)
+         VALUES('tok_legacy_family', 'grt_legacy_family', 'owner_local', 'client_legacy', 'client')`
+      )
+      .run();
+    getDb()
+      .prepare(
+        `INSERT INTO oauth_refresh_tokens(
+           refresh_token_hash, family_id, generation, client_id, grant_id,
+           subject_id, status, created_at
+         ) VALUES('hash_legacy_family', 'rtf_legacy_family', 0, 'client_legacy',
+                  'grt_legacy_family', 'owner_local', 'active', ?)`
+      )
+      .run(new Date().toISOString());
+    closeDb();
+
+    initDb(dbPath);
+    const refresh = getDb()
+      .prepare("SELECT status, revoked_at FROM oauth_refresh_tokens WHERE family_id = 'rtf_legacy_family'")
+      .get() as { revoked_at: string | null; status: string };
+    const bearer = getDb()
+      .prepare("SELECT refresh_family_id, revoked FROM tokens WHERE token_id = 'tok_legacy_family'")
+      .get() as { refresh_family_id: string | null; revoked: number };
+    assert.equal(refresh.status, "revoked", "unlinked pre-migration family requires fresh authorization");
+    assert.ok(refresh.revoked_at);
+    assert.deepEqual(bearer, { refresh_family_id: null, revoked: 1 });
+  } finally {
+    closeDb();
+    rmSync(tempDirectory, { force: true, recursive: true });
+  }
+});
+
 test("SQLite refresh failure rolls back rotation and bearer issuance together", async () => {
   const tempDirectory = mkdtempSync(join(tmpdir(), "pdpp-refresh-fail-closed-"));
   const dbPath = join(tempDirectory, "refresh.sqlite");
@@ -1187,6 +1305,187 @@ test("SQLite refresh failure rolls back rotation and bearer issuance together", 
       .prepare("SELECT COUNT(*) AS count FROM tokens WHERE grant_id = ? AND revoked = 0")
       .get(grantId) as { count: number };
     assert.equal(activeAfter.count, activeBefore.count, "failed refresh does not add an active bearer");
+  } finally {
+    await closeServer(server);
+    closeDb();
+    rmSync(tempDirectory, { force: true, recursive: true });
+  }
+});
+
+test("SQLite refresh replay containment rolls back the family and bearers together on failure", async () => {
+  const tempDirectory = mkdtempSync(join(tmpdir(), "pdpp-refresh-replay-fail-closed-"));
+  const server = await startServer({
+    asPort: 0,
+    dbPath: join(tempDirectory, "refresh.sqlite"),
+    ownerAuthPassword: "",
+    quiet: true,
+    rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    const manifest = await registerSpotify(asUrl);
+    await seedDefaultHostedInstance(manifest);
+    const client = await registerAuthCodeClient(asUrl);
+    const issued = await completeOauthCodeFlow({ asUrl, client, manifest });
+    const generationZero = mustExist(issued.refreshToken, "replay-fault flow must issue generation zero");
+    const rotated = await fetchJson(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: generationZero,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(rotated.status, 200);
+    const generationOne = stringField(rotated.body, "refresh_token");
+
+    getDb().exec(`
+      CREATE TRIGGER fail_family_bearer_revoke
+      BEFORE UPDATE OF revoked ON tokens
+      WHEN OLD.revoked = 0 AND NEW.revoked = 1 AND NEW.refresh_family_id IS NOT NULL
+      BEGIN
+        SELECT RAISE(ABORT, 'injected family bearer revoke failure');
+      END
+    `);
+    try {
+      const failedReplay = await fetch(`${asUrl}/oauth/token`, {
+        body: new URLSearchParams({
+          client_id: client.client_id,
+          grant_type: "refresh_token",
+          refresh_token: generationZero,
+        }).toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+      assert.notEqual(failedReplay.status, 200, "failed bearer revoke cannot commit partial containment");
+    } finally {
+      getDb().exec("DROP TRIGGER IF EXISTS fail_family_bearer_revoke");
+    }
+
+    const refreshHash = createHash("sha256").update(generationZero).digest("base64url");
+    const family = getDb()
+      .prepare(
+        `SELECT generation, status
+           FROM oauth_refresh_tokens
+          WHERE family_id = (
+            SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = ?
+          )
+          ORDER BY generation`
+      )
+      .all(refreshHash) as Array<{ generation: number; status: string }>;
+    assert.deepEqual(family, [
+      { generation: 0, status: "superseded" },
+      { generation: 1, status: "active" },
+    ]);
+    const bearers = getDb()
+      .prepare(
+        `SELECT revoked
+           FROM tokens
+          WHERE refresh_family_id = (
+            SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = ?
+          )
+          ORDER BY created_at, token_id`
+      )
+      .all(refreshHash) as Array<{ revoked: number }>;
+    assert.deepEqual(
+      bearers.map(({ revoked }) => revoked),
+      [0, 0],
+      "failed containment rolls bearer revocation back atomically"
+    );
+
+    const successor = await fetchJson(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: generationOne,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(successor.status, 200, "rolled-back successor remains usable");
+  } finally {
+    await closeServer(server);
+    closeDb();
+    rmSync(tempDirectory, { force: true, recursive: true });
+  }
+});
+
+test("SQLite supersede failure rolls back the newly inserted family bearer", async () => {
+  const tempDirectory = mkdtempSync(join(tmpdir(), "pdpp-refresh-supersede-fail-"));
+  const server = await startServer({
+    asPort: 0,
+    dbPath: join(tempDirectory, "refresh.sqlite"),
+    ownerAuthPassword: "",
+    quiet: true,
+    rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    const manifest = await registerSpotify(asUrl);
+    await seedDefaultHostedInstance(manifest);
+    const client = await registerAuthCodeClient(asUrl);
+    const issued = await completeOauthCodeFlow({ asUrl, client, manifest });
+    const generationZero = mustExist(issued.refreshToken, "supersede-fault flow must issue generation zero");
+    const refreshHash = createHash("sha256").update(generationZero).digest("base64url");
+
+    getDb().exec(`
+      CREATE TRIGGER fail_refresh_supersede
+      BEFORE UPDATE OF status ON oauth_refresh_tokens
+      WHEN OLD.status = 'active' AND NEW.status = 'superseded'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected refresh supersede failure');
+      END
+    `);
+    try {
+      const failure = await fetch(`${asUrl}/oauth/token`, {
+        body: new URLSearchParams({
+          client_id: client.client_id,
+          grant_type: "refresh_token",
+          refresh_token: generationZero,
+        }).toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+      assert.notEqual(failure.status, 200);
+    } finally {
+      getDb().exec("DROP TRIGGER IF EXISTS fail_refresh_supersede");
+    }
+
+    const family = getDb()
+      .prepare(
+        `SELECT generation, status
+           FROM oauth_refresh_tokens
+          WHERE family_id = (
+            SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = ?
+          )
+          ORDER BY generation`
+      )
+      .all(refreshHash) as Array<{ generation: number; status: string }>;
+    assert.deepEqual(family, [{ generation: 0, status: "active" }]);
+    const bearers = getDb()
+      .prepare(
+        `SELECT revoked
+           FROM tokens
+          WHERE refresh_family_id = (
+            SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = ?
+          )`
+      )
+      .all(refreshHash) as Array<{ revoked: number }>;
+    assert.deepEqual(bearers, [{ revoked: 0 }], "failed supersede leaves no orphan refresh-derived bearer");
+
+    const retried = await fetchJson(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: generationZero,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(retried.status, 200, "generation zero remains usable after rollback");
   } finally {
     await closeServer(server);
     closeDb();
@@ -1915,6 +2214,69 @@ test("multi-source hosted MCP picker issues a package token usable at /mcp with 
       mustExist(schemaPackageMetadata(refreshedSchemaData), "schema response carries package metadata").member_count,
       2
     );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("package refresh replay deactivates every family-linked package bearer", async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    const spotify = await registerAuthorizedSpotify(asUrl);
+    const github = await registerAuthorizedGithub(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+    const issued = await completeMultiSourcePackageFlow({
+      asUrl,
+      client,
+      connectorIds: [spotify.connector_id, github.connector_id],
+    });
+    const initialRefreshToken = mustExist(issued.refreshToken, "continuous package issues refresh");
+    const attackerRotation = await fetchJson(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: initialRefreshToken,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(attackerRotation.status, 200);
+    const attackerAccessToken = stringField(attackerRotation.body, "access_token");
+
+    const legitimateReplay = await fetchJson(`${asUrl}/oauth/token`, {
+      body: new URLSearchParams({
+        client_id: client.client_id,
+        grant_type: "refresh_token",
+        refresh_token: initialRefreshToken,
+      }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(legitimateReplay.status, 400);
+    assert.equal(legitimateReplay.body.fresh_authorization_required, true);
+
+    const familyId = (
+      getDb()
+        .prepare("SELECT family_id FROM oauth_refresh_tokens WHERE refresh_token_hash = ?")
+        .get(createHash("sha256").update(initialRefreshToken).digest("base64url")) as { family_id: string }
+    ).family_id;
+    const familyBearers = getDb()
+      .prepare("SELECT token_id, token_kind, revoked FROM tokens WHERE refresh_family_id = ? ORDER BY token_id")
+      .all(familyId) as Array<{ revoked: number; token_id: string; token_kind: string }>;
+    assert.deepEqual(
+      new Set(familyBearers.map((bearer) => bearer.token_kind)),
+      new Set(["mcp_package"]),
+      "package refresh families contain package bearers only"
+    );
+    assert.equal(familyBearers.length, 2);
+    assert.ok(familyBearers.some((bearer) => bearer.token_id === issued.accessToken));
+    assert.ok(familyBearers.some((bearer) => bearer.token_id === attackerAccessToken));
+    for (const bearer of familyBearers) {
+      assert.equal(bearer.revoked, 1);
+      // biome-ignore lint/performance/noAwaitInLoops: The containment oracle introspects every package bearer.
+      assert.equal((await introspectAccessToken(asUrl, bearer.token_id)).active, false);
+    }
   } finally {
     await closeServer(server);
   }
@@ -2994,6 +3356,11 @@ test("POST /oauth/authorize/mcp-package narrows every child grant to single_use 
       method: "POST",
     });
     assert.equal(status, 200);
+    assert.equal(body.refresh_token, undefined, "a package containing single_use grants never issues refresh tokens");
+    assert.equal(body.expires_in, undefined, "the response omits expires_in when the package bearer has no expiry");
+    const introspection = await introspectAccessToken(asUrl, stringField(body, "access_token"));
+    assert.equal(introspection.active, true);
+    assert.equal(Object.hasOwn(introspection, "exp"), false, "introspection omits exp when storage has no expiry");
     const access = mustExist(
       await getGrantPackageAccess(body.grant_package_id),
       "package access must exist"

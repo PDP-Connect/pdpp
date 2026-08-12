@@ -46,8 +46,10 @@
         "authenticated_http_introspection": { "const": true },
         "durable_post_approval_handoff": { "const": true },
         "fresh_authorization_required": { "const": true },
+        "legacy_refresh_state_rejected": { "const": true },
         "no_in_process_fallback": { "const": true },
         "postgresql_races": { "const": true },
+        "refresh_family_access_tokens_inactive_on_replay": { "const": true },
         "refresh_family_revoked_on_replay": { "const": true },
         "response_only_enforcement": { "const": true }
       },
@@ -55,8 +57,10 @@
         "authenticated_http_introspection",
         "durable_post_approval_handoff",
         "fresh_authorization_required",
+        "legacy_refresh_state_rejected",
         "no_in_process_fallback",
         "postgresql_races",
+        "refresh_family_access_tokens_inactive_on_replay",
         "refresh_family_revoked_on_replay",
         "response_only_enforcement"
       ],

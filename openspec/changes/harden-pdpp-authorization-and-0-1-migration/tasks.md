@@ -36,6 +36,19 @@
       superseded-generation reuse, family revocation, lost-response retry,
       `invalid_grant`, and fresh authorization per RFC 9700. Record these
       results separately from the seven seam decisions.
+- [x] 3.4 Persist refresh-family linkage and a bounded token-specific expiry on
+      every initial and refresh-derived grant or package bearer. On replay,
+      atomically revoke the family and every linked bearer in SQLite and
+      PostgreSQL, and make introspection reject all of them.
+- [x] 3.5 Issue refresh tokens only for continuous grants and packages whose
+      children are all continuous. Derive `expires_in` from persisted access
+      expiry and omit `expires_in` or RFC 7662 `exp` when absent.
+- [x] 3.6 Add attacker-first grant and package replay tests, backend parity,
+      race coverage, and fault-injection rollback coverage.
+- [x] 3.7 Fail closed during SQLite and PostgreSQL migration when a live legacy
+      refresh family has no persisted bearer linkage. Revoke the family and
+      its bound bearers, require fresh authorization, and do not infer a
+      backfill.
 
 ## 4. Breaking persisted-state boundary
 
@@ -118,5 +131,5 @@
       and assert token errors and unsupported grants do not serialize a token
       success envelope.
 - [x] 10.3 Update the Core token-security contract, Case 2 execution oracle,
-      and this change's requirement/design records without changing token
-      lifetime or grant-family semantics.
+      and this change's requirement/design records. Token lifetime and
+      grant-family containment remain owned by lifecycle tasks 3.3-3.7.
