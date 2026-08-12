@@ -22,11 +22,6 @@ import { startServer as startServerUntyped } from "../server/index.ts";
 import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from "../server/reference-local-defaults.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
-import { introspectionHeaders } from "./helpers/introspection.ts";
-import {
-  TEST_INTROSPECTION_SERVER_OPTS,
-  type TEST_RS_INTROSPECTION_CREDENTIALS,
-} from "./helpers/introspection-test-credentials.ts";
 
 /**
  * Admission fixture for `runConnector`'s required `admitRunConnection`
@@ -80,11 +75,9 @@ interface ClosableServer {
 interface StartServerOptions {
   asPort?: number;
   dbPath?: string;
-  introspectionCallerCredentials?: typeof TEST_RS_INTROSPECTION_CREDENTIALS;
   ownerAuthPassword?: string;
   ownerAuthSubjectId?: string;
   quiet?: boolean;
-  rsIntrospectionCredentials?: typeof TEST_RS_INTROSPECTION_CREDENTIALS;
   rsPort?: number;
 }
 const startServer = startServerUntyped as unknown as (opts: StartServerOptions) => Promise<ClosableServer>;
@@ -224,7 +217,6 @@ test("example client completes the current reference flow on the inline-approval
     dbPath: ":memory:",
     quiet: true,
     rsPort: 0,
-    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -264,7 +256,7 @@ test("example client completes the current reference flow on the inline-approval
     assert.ok(approval.token.length > 0);
     assert.equal(typeof approval.grantId, "string");
 
-    const introspection = await introspectToken({ asUrl, headers: introspectionHeaders(), token: approval.token });
+    const introspection = await introspectToken({ asUrl, token: approval.token });
     assert.equal(introspection.active, true);
 
     const streams = await queryStreams({ rsUrl, token: approval.token });
@@ -281,7 +273,6 @@ test("example client denies a staged request on the inline path", async () => {
     dbPath: ":memory:",
     quiet: true,
     rsPort: 0,
-    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
 
@@ -325,7 +316,6 @@ test("example client surfaces owner-auth enabled as an honest failure instead of
     ownerAuthSubjectId: "owner_local",
     quiet: true,
     rsPort: 0,
-    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
 
@@ -374,7 +364,6 @@ test("example client shipped defaults stage a PAR request and reach records agai
     dbPath: ":memory:",
     quiet: true,
     rsPort: 0,
-    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;

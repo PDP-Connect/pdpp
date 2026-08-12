@@ -358,16 +358,14 @@ export async function denyInline({ asUrl, requestUri }: { asUrl: string; request
 
 export async function introspectToken({
   asUrl,
-  headers,
   token,
 }: {
   asUrl: string;
-  headers?: Record<string, string>;
   token: string;
 }): Promise<IntrospectionResponse> {
   const response = await fetch(`${asUrl}/introspect`, {
     body: JSON.stringify({ token }),
-    headers: { "Content-Type": "application/json", ...(headers ?? {}) },
+    headers: { "Content-Type": "application/json" },
     method: "POST",
   });
   const body = await readJsonOrText(response);
