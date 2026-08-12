@@ -16,7 +16,7 @@ export interface AcceptedRevisionInput extends AcceptedRevisionKey {
 }
 
 export type AcceptedRevisionResult =
-  | { readonly accepted: true; readonly existing: boolean }
+  | { readonly accepted: true; readonly acceptedRevisionReference: string; readonly existing: boolean }
   | { readonly accepted: false; readonly reason: "equivocation" };
 
 export interface AcceptedSourceDeclarationRevisionStore {
@@ -24,6 +24,7 @@ export interface AcceptedSourceDeclarationRevisionStore {
 }
 
 interface StoredRevision {
+  readonly accepted_revision_reference: string;
   readonly canonical_content: string;
   readonly content_fingerprint: string;
 }
@@ -91,6 +92,16 @@ function fingerprint(canonicalContent: string): string {
   return createHash("sha256").update(canonicalContent).digest("hex");
 }
 
+export function acceptedRevisionEvidenceReference(input: AcceptedRevisionKey): string {
+  assertKey(input);
+  const stableKey = canonicalJson({
+    authority_binding: input.authorityBinding,
+    declaration_version: input.declarationVersion,
+    source_id: input.sourceId,
+  });
+  return `as-local:accepted-source-declaration-revision:v1:${fingerprint(stableKey)}`;
+}
+
 function assertKey(input: AcceptedRevisionKey): void {
   for (const value of [input.authorityBinding, input.sourceId, input.declarationVersion]) {
     if (!value) {
@@ -109,8 +120,10 @@ function sqliteSchema(table: string): string {
       authority_binding TEXT NOT NULL,
       source_id TEXT NOT NULL,
       declaration_version TEXT NOT NULL,
+      accepted_revision_reference TEXT NOT NULL,
       canonical_content TEXT NOT NULL,
       content_fingerprint TEXT NOT NULL,
+      UNIQUE (accepted_revision_reference),
       PRIMARY KEY (authority_binding, source_id, declaration_version)
     );`;
 }
@@ -121,8 +134,10 @@ function postgresSchema(table: string): string {
       authority_binding TEXT NOT NULL,
       source_id TEXT NOT NULL,
       declaration_version TEXT NOT NULL,
+      accepted_revision_reference TEXT NOT NULL,
       canonical_content TEXT NOT NULL,
       content_fingerprint TEXT NOT NULL,
+      UNIQUE (accepted_revision_reference),
       PRIMARY KEY (authority_binding, source_id, declaration_version)
     );`;
 }
@@ -134,11 +149,11 @@ export function createSqliteAcceptedSourceDeclarationRevisionStore(
   const table = tableName(options);
   database.exec(sqliteSchema(table));
   const insert = database.prepare(
-    `INSERT INTO ${table} (authority_binding, source_id, declaration_version, canonical_content, content_fingerprint)
-     VALUES (?, ?, ?, ?, ?) ON CONFLICT(authority_binding, source_id, declaration_version) DO NOTHING`
+    `INSERT INTO ${table} (authority_binding, source_id, declaration_version, accepted_revision_reference, canonical_content, content_fingerprint)
+     VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(authority_binding, source_id, declaration_version) DO NOTHING`
   );
   const read = database.prepare(
-    `SELECT canonical_content, content_fingerprint FROM ${table}
+    `SELECT accepted_revision_reference, canonical_content, content_fingerprint FROM ${table}
      WHERE authority_binding = ? AND source_id = ? AND declaration_version = ?`
   );
   return {
@@ -146,17 +161,19 @@ export function createSqliteAcceptedSourceDeclarationRevisionStore(
       assertKey(input);
       const canonicalContent = canonicalJson(input.parsedDeclaration);
       const contentFingerprint = fingerprint(canonicalContent);
+      const acceptedRevisionReference = acceptedRevisionEvidenceReference(input);
       const inserted = insert.run(
         ...([
           input.authorityBinding,
           input.sourceId,
           input.declarationVersion,
+          acceptedRevisionReference,
           canonicalContent,
           contentFingerprint,
         ] as never[])
       );
       if (inserted.changes === 1) {
-        return Promise.resolve({ accepted: true, existing: false } as const);
+        return Promise.resolve({ accepted: true, acceptedRevisionReference, existing: false } as const);
       }
       const stored = read.get(...([input.authorityBinding, input.sourceId, input.declarationVersion] as never[]));
       if (!stored) {
@@ -164,7 +181,7 @@ export function createSqliteAcceptedSourceDeclarationRevisionStore(
       }
       return Promise.resolve(
         isSameContent(stored, canonicalContent, contentFingerprint)
-          ? { accepted: true, existing: true }
+          ? { accepted: true, acceptedRevisionReference: stored.accepted_revision_reference, existing: true }
           : { accepted: false, reason: "equivocation" }
       );
     },
@@ -182,18 +199,26 @@ export async function createPostgresAcceptedSourceDeclarationRevisionStore(
       assertKey(input);
       const canonicalContent = canonicalJson(input.parsedDeclaration);
       const contentFingerprint = fingerprint(canonicalContent);
+      const acceptedRevisionReference = acceptedRevisionEvidenceReference(input);
       const inserted = await database.query(
-        `INSERT INTO ${table} (authority_binding, source_id, declaration_version, canonical_content, content_fingerprint)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO ${table} (authority_binding, source_id, declaration_version, accepted_revision_reference, canonical_content, content_fingerprint)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT(authority_binding, source_id, declaration_version) DO NOTHING
-         RETURNING canonical_content, content_fingerprint`,
-        [input.authorityBinding, input.sourceId, input.declarationVersion, canonicalContent, contentFingerprint]
+         RETURNING accepted_revision_reference, canonical_content, content_fingerprint`,
+        [
+          input.authorityBinding,
+          input.sourceId,
+          input.declarationVersion,
+          acceptedRevisionReference,
+          canonicalContent,
+          contentFingerprint,
+        ]
       );
       if (inserted.rowCount === 1) {
-        return { accepted: true, existing: false };
+        return { accepted: true, acceptedRevisionReference, existing: false };
       }
       const existing = await database.query(
-        `SELECT canonical_content, content_fingerprint FROM ${table}
+        `SELECT accepted_revision_reference, canonical_content, content_fingerprint FROM ${table}
          WHERE authority_binding = $1 AND source_id = $2 AND declaration_version = $3`,
         [input.authorityBinding, input.sourceId, input.declarationVersion]
       );
@@ -202,7 +227,7 @@ export async function createPostgresAcceptedSourceDeclarationRevisionStore(
         throw new Error("Accepted revision disappeared after a conflicting insert.");
       }
       return isSameContent(stored, canonicalContent, contentFingerprint)
-        ? { accepted: true, existing: true }
+        ? { accepted: true, acceptedRevisionReference: stored.accepted_revision_reference, existing: true }
         : { accepted: false, reason: "equivocation" };
     },
   };
