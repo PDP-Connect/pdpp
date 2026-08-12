@@ -1588,6 +1588,59 @@ const DeviceSourceInstanceStateResponseSchema = {
   type: "object",
 };
 
+const DeviceTerminalRunFactSchema = {
+  additionalProperties: false,
+  properties: {
+    coverage_statuses: { items: { minLength: 1, type: "string" }, minItems: 1, type: "array" },
+    scoped: { type: "boolean" },
+    stream: { minLength: 1, type: "string" },
+  },
+  required: ["coverage_statuses", "stream"],
+  type: "object",
+};
+
+const DeviceTerminalRunCommitBodySchema = {
+  additionalProperties: false,
+  properties: {
+    collection_boundary: { minLength: 1, type: "string" },
+    commit_id: { minLength: 1, type: "string" },
+    connector_id: { minLength: 1, type: "string" },
+    connector_instance_id: { minLength: 1, type: "string" },
+    device_id: { minLength: 1, type: "string" },
+    run_id: { minLength: 1, type: "string" },
+    source_instance_id: { minLength: 1, type: "string" },
+    state_delta: { additionalProperties: true, type: "object" },
+    terminal_facts: { items: DeviceTerminalRunFactSchema, minItems: 1, type: "array" },
+    version: { const: 1 },
+  },
+  required: [
+    "version",
+    "commit_id",
+    "run_id",
+    "device_id",
+    "connector_id",
+    "connector_instance_id",
+    "source_instance_id",
+    "state_delta",
+    "terminal_facts",
+    "collection_boundary",
+  ],
+  type: "object",
+};
+
+const DeviceTerminalRunCommitResponseSchema = {
+  additionalProperties: false,
+  properties: {
+    commit_id: { minLength: 1, type: "string" },
+    envelope_hash: { pattern: "^[a-f0-9]{64}$", type: "string" },
+    object: { const: "device_terminal_run_commit" },
+    run_id: { minLength: 1, type: "string" },
+    terminal_event_id: { minLength: 1, type: "string" },
+  },
+  required: ["object", "commit_id", "run_id", "terminal_event_id", "envelope_hash"],
+  type: "object",
+};
+
 // Operator oversight for client event subscriptions. These /_ref routes never
 // return the subscription's signing secret. See:
 //   openspec/specs/reference-implementation-architecture/spec.md
@@ -2455,6 +2508,24 @@ export const referenceManifests = [
     },
     summary:
       "Persist device-scoped local collector state for a source instance. State is a stream-keyed map; existing streams are merged with last-write-wins semantics.",
+    surface: "reference",
+    tags: ["reference", "device-exporters"],
+  },
+  {
+    id: "refCommitDeviceExporterTerminalRun",
+    method: "POST",
+    path: "/_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/terminal-run-commits",
+    request: {
+      body: { schema: DeviceTerminalRunCommitBodySchema },
+      params: DeviceSourceInstanceStateParamSchema,
+    },
+    responses: {
+      200: { description: "Exact replay", schema: DeviceTerminalRunCommitResponseSchema },
+      201: { description: "Committed", schema: DeviceTerminalRunCommitResponseSchema },
+      ...DeviceExporterErrors,
+    },
+    summary:
+      "Atomically commit a local collector state delta, terminal evidence event, receipt, and run-history projection. Exact retries return the stored receipt; the same commit identity with a different authenticated binding or body returns a typed conflict.",
     surface: "reference",
     tags: ["reference", "device-exporters"],
   },

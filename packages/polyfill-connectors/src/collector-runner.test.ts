@@ -27,6 +27,7 @@ import {
   type IngestBatchRequest,
   type LocalDeviceClient,
   LocalDeviceHttpError,
+  LocalDeviceReceiptValidationError,
   type PutSourceInstanceStateRequest,
   type SourceInstanceStateResponse,
 } from "./local-device-client.ts";
@@ -1981,6 +1982,7 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
         }
         sendJson(res, 200, {
           object: "device_source_instance_state",
+          connector_instance_id: "cin_fake",
           device_id: "device-1",
           source_instance_id: "src-1",
           state: persistedState,
@@ -2594,6 +2596,7 @@ test("drainCollectorOutbox blocks checkpoint behind retry-delayed predecessors b
       putSourceInstanceState(request) {
         putCalls.push(request);
         return Promise.resolve({
+          connector_instance_id: "cin-order",
           device_id: "device-1",
           object: "device_source_instance_state",
           source_instance_id: request.sourceInstanceId,
@@ -4196,6 +4199,226 @@ test("runCollectorConnector surfaces the connector's own terminal DONE error mes
   }
 });
 
+test("drainCollectorOutbox retains an invalid-2xx terminal commit as an operator-actionable dead letter", async () => {
+  const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
+  try {
+    outbox.enqueue({
+      id: "terminal-commit-1",
+      kind: "terminal_run_commit",
+      payload: {
+        collection_boundary: "unscoped",
+        commit_id: "commit-1",
+        connector_id: "fixture-terminal",
+        connector_instance_id: "cin-1",
+        device_id: "device-1",
+        run_id: "run-1",
+        source_instance_id: "src-terminal",
+        state_delta: { messages: { cursor: "c1" } },
+        terminal_facts: [{ coverage_statuses: ["collected"], stream: "messages" }],
+        version: 1,
+      },
+      sourceInstanceId: "src-terminal",
+    });
+
+    const client: Pick<
+      LocalDeviceClient,
+      "ackLocalCollectorGap" | "commitTerminalRun" | "ingestBatch" | "putSourceInstanceState"
+    > = {
+      ackLocalCollectorGap: () => Promise.reject(new Error("must not acknowledge a gap")),
+      commitTerminalRun: () =>
+        Promise.reject(new LocalDeviceReceiptValidationError("terminal receipt did not match submitted envelope")),
+      ingestBatch: () => Promise.reject(new Error("must not ingest a batch")),
+      putSourceInstanceState: () => Promise.reject(new Error("must not write legacy state")),
+    };
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "fixture-terminal",
+      holderId: "holder-terminal",
+      outbox,
+      policy: { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, maxAttempts: 1, maxDrainIterations: 1, retryBackoffMs: 1 },
+      sourceInstanceId: "src-terminal",
+    });
+
+    assert.equal(result.failed, 0);
+    assert.equal(result.deadLettered, 1);
+    assert.deepEqual(
+      outbox
+        .list({ sourceInstanceId: "src-terminal" })
+        .map((item) => ({ attempts: item.attempt_count, status: item.status })),
+      [{ attempts: 1, status: "dead_letter" }]
+    );
+  } finally {
+    outbox.close();
+  }
+});
+
+test("response loss leaves one terminal item for exact replay after an outbox restart", async () => {
+  const path = await tempQueuePath();
+  const payload = {
+    collection_boundary: "unscoped",
+    commit_id: "commit-response-loss",
+    connector_id: "fixture-terminal",
+    connector_instance_id: "cin-1",
+    device_id: "device-1",
+    run_id: "run-response-loss",
+    source_instance_id: "src-response-loss",
+    state_delta: { messages: { cursor: "c1" } },
+    terminal_facts: [{ coverage_statuses: ["collected"], stream: "messages" }],
+    version: 1 as const,
+  };
+  const firstOutbox = new LocalDeviceOutbox({ path });
+  firstOutbox.enqueue({
+    id: "terminal-response-loss",
+    kind: "terminal_run_commit",
+    payload,
+    sourceInstanceId: payload.source_instance_id,
+  });
+  const transportCause = Object.assign(new Error("socket reset after server commit"), { code: "ECONNRESET" });
+  const transportError = new TypeError("fetch failed", { cause: transportCause });
+  const firstClient: Pick<
+    LocalDeviceClient,
+    "ackLocalCollectorGap" | "commitTerminalRun" | "ingestBatch" | "putSourceInstanceState"
+  > = {
+    ackLocalCollectorGap: () => Promise.reject(new Error("must not acknowledge a gap")),
+    commitTerminalRun: () => Promise.reject(transportError),
+    ingestBatch: () => Promise.reject(new Error("must not ingest a batch")),
+    putSourceInstanceState: () => Promise.reject(new Error("must not write legacy state")),
+  };
+  await drainCollectorOutbox({
+    client: firstClient,
+    connectorId: payload.connector_id,
+    holderId: "holder-before-restart",
+    outbox: firstOutbox,
+    policy: { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, maxDrainIterations: 1, retryBackoffMs: 0 },
+    sourceInstanceId: payload.source_instance_id,
+  });
+  assert.equal(firstOutbox.get("terminal-response-loss")?.status, "ready");
+  firstOutbox.close();
+
+  const replayedRequests: unknown[] = [];
+  const reopened = new LocalDeviceOutbox({ path });
+  try {
+    const replayClient: typeof firstClient = {
+      ...firstClient,
+      commitTerminalRun: (request) => {
+        replayedRequests.push(request);
+        return Promise.resolve({
+          commit_id: request.commit_id,
+          envelope_hash: "a".repeat(64),
+          object: "device_terminal_run_commit",
+          run_id: request.run_id,
+          terminal_event_id: "evt-stored-response",
+        });
+      },
+    };
+    const result = await drainCollectorOutbox({
+      client: replayClient,
+      connectorId: payload.connector_id,
+      holderId: "holder-after-restart",
+      outbox: reopened,
+      policy: { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, maxDrainIterations: 1, retryBackoffMs: 0 },
+      sourceInstanceId: payload.source_instance_id,
+    });
+    assert.equal(result.sentByKind.terminal_run_commit, 1);
+    assert.deepEqual(replayedRequests, [payload]);
+    assert.equal(reopened.get("terminal-response-loss")?.status, "succeeded");
+  } finally {
+    reopened.close();
+  }
+});
+
+test("multi-stream multi-batch drain retains the terminal vector when its request never reaches the server", async () => {
+  const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
+  try {
+    for (const batchSeq of [1, 2]) {
+      outbox.enqueue({
+        id: `batch-${batchSeq}`,
+        kind: "record_batch",
+        payload: {
+          batchId: `batch-${batchSeq}`,
+          batchSeq,
+          connectorId: "fixture-terminal",
+          deviceId: "device-1",
+          records: [
+            {
+              batch_id: `batch-${batchSeq}`,
+              batch_seq: batchSeq,
+              body_hash: `body-${batchSeq}`,
+              connector_id: "fixture-terminal",
+              data: { batchSeq },
+              device_id: "device-1",
+              emitted_at: "2026-08-12T12:00:00.000Z",
+              record_key: `record-${batchSeq}`,
+              source_instance_id: "src-never-reached",
+              stream: batchSeq === 1 ? "messages" : "sessions",
+            },
+          ],
+          sourceInstanceId: "src-never-reached",
+        },
+        sourceInstanceId: "src-never-reached",
+      });
+    }
+    outbox.enqueue({
+      id: "terminal-never-reached",
+      kind: "terminal_run_commit",
+      payload: {
+        collection_boundary: "unscoped",
+        commit_id: "commit-never-reached",
+        connector_id: "fixture-terminal",
+        connector_instance_id: "cin-1",
+        device_id: "device-1",
+        run_id: "run-never-reached",
+        source_instance_id: "src-never-reached",
+        state_delta: { messages: { cursor: "m1" }, sessions: { cursor: "s1" } },
+        terminal_facts: [
+          { coverage_statuses: ["collected"], stream: "messages" },
+          { coverage_statuses: ["collected"], stream: "sessions" },
+        ],
+        version: 1,
+      },
+      sourceInstanceId: "src-never-reached",
+    });
+    let ingested = 0;
+    let legacyStateWrites = 0;
+    const unreachableCause = Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" });
+    const client: Pick<
+      LocalDeviceClient,
+      "ackLocalCollectorGap" | "commitTerminalRun" | "ingestBatch" | "putSourceInstanceState"
+    > = {
+      ackLocalCollectorGap: () => Promise.reject(new Error("must not acknowledge a gap")),
+      commitTerminalRun: () => Promise.reject(new TypeError("fetch failed", { cause: unreachableCause })),
+      ingestBatch: () => {
+        ingested += 1;
+        return Promise.resolve({ ok: true });
+      },
+      putSourceInstanceState: () => {
+        legacyStateWrites += 1;
+        return Promise.reject(new Error("legacy state must not be written"));
+      },
+    };
+    await drainCollectorOutbox({
+      client,
+      connectorId: "fixture-terminal",
+      holderId: "holder-never-reached",
+      outbox,
+      policy: { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, maxDrainIterations: 2, retryBackoffMs: 30_000 },
+      sourceInstanceId: "src-never-reached",
+    });
+    assert.equal(ingested, 2);
+    assert.equal(legacyStateWrites, 0);
+    assert.deepEqual(
+      outbox.list({ sourceInstanceId: "src-never-reached" }).map((item) => ({ kind: item.kind, status: item.status })),
+      [
+        { kind: "record_batch", status: "succeeded" },
+        { kind: "record_batch", status: "succeeded" },
+        { kind: "terminal_run_commit", status: "ready" },
+      ]
+    );
+  } finally {
+    outbox.close();
+  }
+});
+
 test("drainCollectorOutbox delivers gap rows via ackLocalCollectorGap and acknowledges them", async () => {
   // The drain must deliver gap rows to the device-exporter
   // acknowledgement route, then mark the local row succeeded so the
@@ -4619,6 +4842,7 @@ function createTestClient(): Pick<
   return {
     ingestBatch: async (_request: IngestBatchRequest) => ({ ok: true }),
     putSourceInstanceState: async (request: PutSourceInstanceStateRequest): Promise<SourceInstanceStateResponse> => ({
+      connector_instance_id: "test-instance",
       device_id: "test-device",
       object: "device_source_instance_state" as const,
       source_instance_id: request.sourceInstanceId,

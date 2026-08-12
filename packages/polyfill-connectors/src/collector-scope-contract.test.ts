@@ -18,11 +18,13 @@
 // assuming it.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { canonicalTerminalRunCommitJson, type TerminalRunCommitEnvelopeInput } from "@pdpp/reference-contract/common";
 
 import {
   buildCollectorStartMessage,
@@ -55,9 +57,9 @@ async function startScopeHarness(priorState: Record<string, unknown>): Promise<S
     req.on("end", () => {
       const url = req.url ?? "";
       const raw = Buffer.concat(chunks).toString("utf8");
-      let parsed: Record<string, unknown> | null = null;
+      let parsed: (TerminalRunCommitEnvelopeInput & Record<string, unknown>) | null = null;
       try {
-        parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+        parsed = raw ? (JSON.parse(raw) as TerminalRunCommitEnvelopeInput & Record<string, unknown>) : null;
       } catch {
         parsed = null;
       }
@@ -66,9 +68,16 @@ async function startScopeHarness(priorState: Record<string, unknown>): Promise<S
         res.end(JSON.stringify(body));
       };
 
-      if (url.endsWith("/terminal-collection")) {
+      if (url.endsWith("/terminal-run-commits") && parsed) {
         terminalPosts.push(parsed ?? {});
-        send(200, { object: "device_terminal_collection", status: "accepted" });
+        persisted = { ...persisted, ...(parsed.state_delta as Record<string, unknown>) };
+        send(201, {
+          commit_id: parsed.commit_id,
+          envelope_hash: createHash("sha256").update(canonicalTerminalRunCommitJson(parsed)).digest("hex"),
+          object: "device_terminal_run_commit",
+          run_id: parsed.run_id,
+          terminal_event_id: `evt-${String(parsed.commit_id)}`,
+        });
         return;
       }
       if (url.endsWith("/state")) {
@@ -76,6 +85,7 @@ async function startScopeHarness(priorState: Record<string, unknown>): Promise<S
           persisted = { ...persisted, ...(parsed.state as Record<string, unknown>) };
         }
         send(200, {
+          connector_instance_id: "cin_fake",
           device_id: "device-1",
           object: "device_source_instance_state",
           source_instance_id: "src-1",
@@ -241,9 +251,9 @@ test("(b) a complete scoped pass commits coverage stamped with its boundary", as
   try {
     await runScoped({ harness });
     assert.equal(harness.terminalPosts.length, 1, "a complete scoped pass is a real commit, not a truncation");
-    const post = harness.terminalPosts[0] as { collection_scope?: string };
+    const post = harness.terminalPosts[0] as { collection_boundary?: string };
     assert.equal(
-      post.collection_scope,
+      post.collection_boundary,
       `since=${SINCE}`,
       "stored proof must state the region it covers, never leave it ambiguous"
     );
@@ -258,9 +268,9 @@ test("(c) a stream the bound could not be enforced on is not claimed as covering
   try {
     await runScoped({ harness });
     const post = harness.terminalPosts[0] as {
-      streams?: Array<{ scoped?: boolean; stream: string }>;
+      terminal_facts?: Array<{ scoped?: boolean; stream: string }>;
     };
-    const byStream = new Map((post.streams ?? []).map((s) => [s.stream, s]));
+    const byStream = new Map((post.terminal_facts ?? []).map((s) => [s.stream, s]));
 
     assert.equal(byStream.get("sessions")?.scoped, true, "a timed stream carried the bound and proves it");
     assert.equal(
@@ -279,7 +289,7 @@ test("(d) evidence measured under one boundary stops describing a changed one", 
   let measured: string;
   try {
     await runScoped({ harness: first });
-    measured = (first.terminalPosts[0] as { collection_scope: string }).collection_scope;
+    measured = (first.terminalPosts[0] as { collection_boundary: string }).collection_boundary;
   } finally {
     await first.close();
   }
@@ -288,7 +298,7 @@ test("(d) evidence measured under one boundary stops describing a changed one", 
   const second = await startScopeHarness(scopeState(widened));
   try {
     await runScoped({ harness: second });
-    const recomputed = (second.terminalPosts[0] as { collection_scope: string }).collection_scope;
+    const recomputed = (second.terminalPosts[0] as { collection_boundary: string }).collection_boundary;
     assert.notEqual(
       measured,
       recomputed,

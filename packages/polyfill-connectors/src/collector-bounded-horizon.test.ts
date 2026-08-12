@@ -20,11 +20,13 @@
 // branching logic.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { canonicalTerminalRunCommitJson, type TerminalRunCommitEnvelopeInput } from "@pdpp/reference-contract/common";
 
 import { COLLECTION_SCOPE_STATE_KEY, runCollectorConnector } from "./collector-runner.ts";
 
@@ -113,9 +115,9 @@ async function startRunHarness(initialState: Record<string, unknown> = {}): Prom
     req.on("end", () => {
       const url = req.url ?? "";
       const raw = Buffer.concat(chunks).toString("utf8");
-      let parsed: Record<string, unknown> | null = null;
+      let parsed: (TerminalRunCommitEnvelopeInput & Record<string, unknown>) | null = null;
       try {
-        parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+        parsed = raw ? (JSON.parse(raw) as TerminalRunCommitEnvelopeInput & Record<string, unknown>) : null;
       } catch {
         parsed = null;
       }
@@ -123,9 +125,16 @@ async function startRunHarness(initialState: Record<string, unknown> = {}): Prom
         res.writeHead(status, { "content-type": "application/json" });
         res.end(JSON.stringify(body));
       };
-      if (url.endsWith("/terminal-collection")) {
+      if (url.endsWith("/terminal-run-commits") && parsed) {
         terminalPosts.push(parsed ?? {});
-        send(200, { object: "device_terminal_collection", status: "accepted" });
+        persisted = { ...persisted, ...(parsed.state_delta as Record<string, unknown>) };
+        send(201, {
+          commit_id: parsed.commit_id,
+          envelope_hash: createHash("sha256").update(canonicalTerminalRunCommitJson(parsed)).digest("hex"),
+          object: "device_terminal_run_commit",
+          run_id: parsed.run_id,
+          terminal_event_id: `evt-${String(parsed.commit_id)}`,
+        });
         return;
       }
       if (url.endsWith("/state")) {
@@ -133,6 +142,7 @@ async function startRunHarness(initialState: Record<string, unknown> = {}): Prom
           persisted = { ...persisted, ...(parsed.state as Record<string, unknown>) };
         }
         send(200, {
+          connector_instance_id: "cin_fake",
           device_id: "device-1",
           object: "device_source_instance_state",
           source_instance_id: "src-1",
@@ -207,9 +217,9 @@ for (const connectorId of ["claude_code", "codex"] as const) {
         1,
         "an exhaustive pass within the declared boundary must commit exactly one terminal coverage claim"
       );
-      const post = harness.terminalPosts[0] as { collection_scope?: string };
+      const post = harness.terminalPosts[0] as { collection_boundary?: string };
       assert.equal(
-        post.collection_scope,
+        post.collection_boundary,
         `since=${SINCE}`,
         "committed evidence must name the exact boundary it was measured against, not a generic 'complete'"
       );
@@ -289,8 +299,8 @@ for (const connectorId of ["claude_code", "codex"] as const) {
         1,
         "resuming after an interruption must reach exactly one committed coverage claim, not a duplicate"
       );
-      const post = secondHarness.terminalPosts[0] as { collection_scope?: string };
-      assert.equal(post.collection_scope, `since=${SINCE}`);
+      const post = secondHarness.terminalPosts[0] as { collection_boundary?: string };
+      assert.equal(post.collection_boundary, `since=${SINCE}`);
 
       // Idempotency: running a THIRD time against the already-complete,
       // already-committed queue must not re-report or duplicate coverage —

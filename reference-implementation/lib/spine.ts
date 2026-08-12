@@ -7,7 +7,7 @@ import { isPostgresStorageBackend } from "../server/postgres-storage.ts";
 import {
   isRunHistoryRelevantEventType,
   type RunHistorySpineEvent,
-  writeSqliteRunHistoryForSpineEvent,
+  writeSqliteRunHistoryForSpineEventOn,
 } from "../server/stores/run-history-writer.ts";
 import {
   execNamedOn,
@@ -37,7 +37,7 @@ import {
 interface SpinePreparedStatement {
   all: (...params: unknown[]) => unknown[];
   get: (...params: unknown[]) => unknown;
-  run: (params: object) => void;
+  run: (...params: unknown[]) => unknown;
 }
 
 interface BetterSqliteDatabase {
@@ -480,6 +480,30 @@ export function getCurrentBootEpoch(): BootEpoch | null {
 export function clearCurrentBootEpoch(): void {
   currentBootEpoch = null;
 }
+
+export interface SqliteSpineTransactionHooks {
+  readonly afterEventInsert?: () => void;
+  readonly afterRunHistoryWrite?: () => void;
+}
+
+/** Append one event and its run-history projection on a caller-owned handle. */
+export function appendSqliteSpineEventInTransaction(
+  input: SpineEventInput,
+  db: SpineDatabase,
+  hooks: SqliteSpineTransactionHooks = {}
+): SpineEventRecord {
+  assertRunEventHasConnectorInstanceId(input);
+  assertRunStartedIsStamped(input);
+  const event = normalizeSpineEventInput(input);
+  execNamedOn(db, referenceQueries.spineInsertEvent, event);
+  hooks.afterEventInsert?.();
+  if (isRunHistoryRelevantEventType(event.event_type)) {
+    writeSqliteRunHistoryForSpineEventOn(toRunHistorySpineEvent(event, input.data), db);
+    hooks.afterRunHistoryWrite?.();
+  }
+  return hydrateNormalizedEvent(event);
+}
+
 export function emitSpineEvent(
   input: SpineEventInput = {},
   dbHandle: SpineDatabase | null = null
@@ -499,17 +523,7 @@ export function emitSpineEvent(
   if (!db) {
     return Promise.resolve(null);
   }
-  const event = normalizeSpineEventInput(input);
-
-  execNamedOn(db, referenceQueries.spineInsertEvent, event);
-
-  if (isRunHistoryRelevantEventType(event.event_type)) {
-    // Same synchronous single-connection handle as the insert above — no
-    // partial-commit window on SQLite. See run-history-writer.ts header.
-    writeSqliteRunHistoryForSpineEvent(toRunHistorySpineEvent(event, input.data));
-  }
-
-  return Promise.resolve(hydrateNormalizedEvent(event));
+  return Promise.resolve(appendSqliteSpineEventInTransaction(input, db));
 }
 
 function toRunHistorySpineEvent(event: NormalizedSpineEvent, rawData: unknown): RunHistorySpineEvent {
