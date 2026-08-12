@@ -57,39 +57,43 @@ test("ProviderPacing: inverted configuration enforces the floor through GCRA idl
     { burstToleranceMs: 20_000, expected: [10_000, 110_000, 120_000, 130_000] },
   ];
 
-  for (const { burstToleranceMs, expected } of cases) {
-    let nowMs = 0;
-    const admittedAtMs: number[] = [];
-    const pacing = new ProviderPacing({
-      initialIntervalMs: 1000,
-      minIntervalMs,
-      burstToleranceMs,
-      now: () => nowMs,
-      sleep: (ms) => {
-        nowMs += ms;
-        return Promise.resolve();
-      },
-    });
+  await Promise.all(
+    cases.map(async ({ burstToleranceMs, expected }) => {
+      let nowMs = 0;
+      const admittedAtMs: number[] = [];
+      const pacing = new ProviderPacing({
+        initialIntervalMs: 1000,
+        minIntervalMs,
+        burstToleranceMs,
+        now: () => nowMs,
+        sleep: (ms) => {
+          nowMs += ms;
+          return Promise.resolve();
+        },
+      });
 
-    async function admitAndRecord(): Promise<void> {
-      await pacing.admit();
-      admittedAtMs.push(nowMs);
-    }
+      async function admitAndRecord(): Promise<void> {
+        await pacing.admit();
+        admittedAtMs.push(nowMs);
+      }
 
-    await admitAndRecord();
-    nowMs += 100_000;
-    await admitAndRecord();
-    await admitAndRecord();
-    await admitAndRecord();
+      await admitAndRecord()
+        .then(() => {
+          nowMs += 100_000;
+          return admitAndRecord();
+        })
+        .then(admitAndRecord)
+        .then(admitAndRecord);
 
-    assert.deepEqual(admittedAtMs, expected, `long-idle sequence for burstToleranceMs=${burstToleranceMs}`);
-    for (let i = 2; i < admittedAtMs.length; i += 1) {
-      assert.ok(
-        (admittedAtMs[i] as number) - (admittedAtMs[i - 1] as number) >= minIntervalMs,
-        `admission ${i + 1} must be at least ${minIntervalMs}ms after admission ${i} for tolerance ${burstToleranceMs}`
-      );
-    }
-  }
+      assert.deepEqual(admittedAtMs, expected, `long-idle sequence for burstToleranceMs=${burstToleranceMs}`);
+      for (let i = 2; i < admittedAtMs.length; i += 1) {
+        assert.ok(
+          (admittedAtMs[i] as number) - (admittedAtMs[i - 1] as number) >= minIntervalMs,
+          `admission ${i + 1} must be at least ${minIntervalMs}ms after admission ${i} for tolerance ${burstToleranceMs}`
+        );
+      }
+    })
+  );
 });
 
 test("ProviderPacing: unset initialIntervalMs uses a conservative default", async () => {
