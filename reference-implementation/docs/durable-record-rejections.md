@@ -60,6 +60,8 @@ Pending entries do not expire automatically. Exact replay returns the existing r
 
 The list route never returns payload bytes. Runtime results, run accounting, and terminal evidence contain counts and receipt metadata only. Treat the detail route as personal-data access and protect owner sessions accordingly.
 
+Retained-size accounting includes rejected line payload bytes in the global, connection, and stream grains as `record_rejection_payload_bytes` and `record_rejection_count`. `total_retained_bytes` includes those payload bytes once. Audit events, quota rows, hashes, and receipt metadata are not counted as retained payload bytes.
+
 ## Deployment and rollback
 
 Deploy the schema and server before the new runtime. The server must persist rejection receipts before a runtime may rely on them for cursor progress.

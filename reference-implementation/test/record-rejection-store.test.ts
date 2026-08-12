@@ -23,6 +23,12 @@ import {
 } from "../server/postgres-storage.ts";
 import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "../server/record-rejection-replay-key.ts";
 import {
+  getRetainedSizeGlobal,
+  listRetainedSizeConnections,
+  listRetainedSizeStreams,
+  reconcileDirtyRetainedSize,
+} from "../server/retained-size-read-model.ts";
+import {
   createRecordRejectionStore,
   DEFAULT_RECORD_REJECTION_OWNER_QUOTA_BYTES,
   deletePostgresRecordRejectionsForConnectionWithClient,
@@ -441,6 +447,67 @@ test("SQLite record rejection store tracks bounded run provenance and stale-afte
     "a stale receipt is not repeatedly rewritten"
   );
   assertSqliteQuotaMatchesRows("owner_a");
+});
+
+test("SQLite record rejection retained-size accounting covers insert, replay, restart, and delete cleanup", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-record-rejection-retained-size-"));
+  const dbPath = join(dir, "pdpp.sqlite");
+  try {
+    initDb(dbPath);
+    seedSqliteConnection();
+    const store = createRecordRejectionStore();
+    const input = {
+      connectorId: "test_connector",
+      connectorInstanceId: "cin_test",
+      inputIndex: 2,
+      ownerSubjectId: "owner_a",
+      rawLine: '{"id":null}',
+      reasonCode: "invalid_record_identity",
+      runId: "run_1",
+      stream: "items",
+    };
+    const payloadBytes = Buffer.byteLength(input.rawLine);
+    const first = await store.insertOrReplay(input);
+    const replay = await store.insertOrReplay({ ...input, inputIndex: 3 });
+    assert.equal(replay.receiptId, first.receiptId);
+    assert.equal(replay.replayed, true);
+
+    let global = await getRetainedSizeGlobal();
+    assert.equal(global.record_rejection_payload_bytes, payloadBytes);
+    assert.equal(global.record_rejection_count, 1);
+    assert.equal(global.total_retained_bytes, payloadBytes);
+    let [connection] = await listRetainedSizeConnections({ connectorInstanceId: "cin_test" });
+    assert.ok(connection);
+    assert.equal(connection.record_rejection_payload_bytes, payloadBytes);
+    assert.equal(connection.record_rejection_count, 1);
+    const [stream] = await listRetainedSizeStreams({ connectorInstanceId: "cin_test", stream: "items" });
+    assert.ok(stream);
+    assert.equal(stream.record_rejection_payload_bytes, payloadBytes);
+    assert.equal(stream.record_rejection_count, 1);
+
+    closeDb();
+    initDb(dbPath);
+    global = await getRetainedSizeGlobal();
+    assert.equal(global.record_rejection_payload_bytes, payloadBytes);
+    assert.equal(global.record_rejection_count, 1);
+
+    const reopenedStore = createRecordRejectionStore();
+    assert.equal(
+      await reopenedStore.deleteForConnection({ connectorInstanceId: "cin_test", ownerSubjectId: "owner_a" }),
+      1
+    );
+    [connection] = await listRetainedSizeConnections({ connectorInstanceId: "cin_test" });
+    assert.ok(connection);
+    assert.equal(connection.dirty, true);
+    await reconcileDirtyRetainedSize();
+    global = await getRetainedSizeGlobal();
+    assert.equal(global.record_rejection_payload_bytes, 0);
+    assert.equal(global.record_rejection_count, 0);
+    assert.equal(global.total_retained_bytes, 0);
+  } finally {
+    closeDb();
+    rmSync(dir, { force: true, recursive: true });
+  }
 });
 
 test("SQLite record rejection receipt and audit fact roll back together", () => {
@@ -1049,6 +1116,29 @@ test("SQLite record rejection migration converts legacy text payloads, rekeys v2
         replay_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending',
         created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL
       );
+      CREATE TABLE retained_size_global(
+        projection_key TEXT PRIMARY KEY, current_record_json_bytes INTEGER NOT NULL DEFAULT 0,
+        record_history_json_bytes INTEGER NOT NULL DEFAULT 0, blob_bytes INTEGER NOT NULL DEFAULT 0,
+        record_count INTEGER NOT NULL DEFAULT 0, record_history_count INTEGER NOT NULL DEFAULT 0,
+        blob_count INTEGER NOT NULL DEFAULT 0, dirty INTEGER NOT NULL DEFAULT 0,
+        computed_at TEXT, metadata_json TEXT
+      );
+      INSERT INTO retained_size_global(projection_key, dirty) VALUES('global', 0);
+      CREATE TABLE retained_size_connection(
+        connector_instance_id TEXT PRIMARY KEY, connector_id TEXT NOT NULL,
+        current_record_json_bytes INTEGER NOT NULL DEFAULT 0, record_history_json_bytes INTEGER NOT NULL DEFAULT 0,
+        blob_bytes INTEGER NOT NULL DEFAULT 0, record_count INTEGER NOT NULL DEFAULT 0,
+        record_history_count INTEGER NOT NULL DEFAULT 0, blob_count INTEGER NOT NULL DEFAULT 0,
+        dirty INTEGER NOT NULL DEFAULT 0, computed_at TEXT
+      );
+      CREATE TABLE retained_size_stream(
+        connector_instance_id TEXT NOT NULL, connector_id TEXT NOT NULL, stream TEXT NOT NULL,
+        current_record_json_bytes INTEGER NOT NULL DEFAULT 0, record_history_json_bytes INTEGER NOT NULL DEFAULT 0,
+        blob_bytes INTEGER NOT NULL DEFAULT 0, record_count INTEGER NOT NULL DEFAULT 0,
+        record_history_count INTEGER NOT NULL DEFAULT 0, blob_count INTEGER NOT NULL DEFAULT 0,
+        dirty INTEGER NOT NULL DEFAULT 0, computed_at TEXT,
+        PRIMARY KEY(connector_instance_id, stream)
+      );
     `);
     legacy
       .prepare(
@@ -1098,6 +1188,10 @@ test("SQLite record rejection migration converts legacy text payloads, rekeys v2
       })
     );
     assertSqliteQuotaMatchesRows("owner_a");
+    await reconcileDirtyRetainedSize();
+    const migratedRetainedGlobal = await getRetainedSizeGlobal();
+    assert.equal(migratedRetainedGlobal.record_rejection_payload_bytes, 11);
+    assert.equal(migratedRetainedGlobal.record_rejection_count, 1);
     assert.equal(
       (
         await createRecordRejectionStore().getDetail({
@@ -1206,7 +1300,12 @@ test("Postgres record rejection store contract", {
   const admin = new Pool({ connectionString: POSTGRES_URL });
   try {
     await admin.query(
-      "TRUNCATE record_rejections, record_rejection_quota, controller_active_runs, run_history, connector_instances, connectors CASCADE"
+      `TRUNCATE
+         retained_size_top_rows, retained_size_record_family, retained_size_stream,
+         retained_size_connection, retained_size_global,
+         record_rejections, record_rejection_quota, controller_active_runs,
+         run_history, connector_instances, connectors
+       CASCADE`
     );
   } finally {
     await admin.end();
@@ -1237,6 +1336,16 @@ test("Postgres record rejection store contract", {
     });
     assert.notEqual(changedReasonReplay.receiptId, first.receiptId);
     assert.equal(changedReasonReplay.code, "malformed_ndjson");
+    const rejectionPayloadBytes = Buffer.byteLength(input.rawLine);
+    const retainedGlobal = await getRetainedSizeGlobal();
+    assert.equal(retainedGlobal.record_rejection_payload_bytes, rejectionPayloadBytes * 2);
+    assert.equal(retainedGlobal.record_rejection_count, 2);
+    const [retainedConnection] = await listRetainedSizeConnections({ connectorInstanceId: "cin_test" });
+    assert.equal(retainedConnection?.record_rejection_payload_bytes, rejectionPayloadBytes * 2);
+    assert.equal(retainedConnection?.record_rejection_count, 2);
+    const [retainedStream] = await listRetainedSizeStreams({ connectorInstanceId: "cin_test", stream: "items" });
+    assert.equal(retainedStream?.record_rejection_payload_bytes, rejectionPayloadBytes * 2);
+    assert.equal(retainedStream?.record_rejection_count, 2);
     await postgresQuery("UPDATE record_rejections SET replay_count = $1 WHERE receipt_id = $2", [
       RECORD_REJECTION_REPLAY_COUNT_MAX - 1,
       first.receiptId,
@@ -1473,6 +1582,32 @@ test("Postgres record rejection store contract", {
     await assertPostgresQuotaMatchesRows("owner_b");
     assert.equal(await store.deleteForConnection({ connectorInstanceId: "cin_test", ownerSubjectId: "owner_a" }), 7);
     await assertPostgresQuotaMatchesRows("owner_a");
+    const canonicalRetained = await postgresQuery<{ bytes: string; count: string }>(
+      "SELECT COALESCE(SUM(payload_bytes), 0)::bigint AS bytes, COUNT(*)::bigint AS count FROM record_rejections"
+    );
+    await closePostgresStorage();
+    const migrationAdmin = new Pool({ connectionString: POSTGRES_URL });
+    try {
+      await Promise.all(
+        [
+          "retained_size_global",
+          "retained_size_connection",
+          "retained_size_stream",
+          "retained_size_record_family",
+          "retained_size_top_rows",
+        ].flatMap((table) => [
+          migrationAdmin.query(`ALTER TABLE ${table} DROP COLUMN record_rejection_payload_bytes`),
+          migrationAdmin.query(`ALTER TABLE ${table} DROP COLUMN record_rejection_count`),
+        ])
+      );
+    } finally {
+      await migrationAdmin.end();
+    }
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    await reconcileDirtyRetainedSize();
+    const migratedGlobal = await getRetainedSizeGlobal();
+    assert.equal(migratedGlobal.record_rejection_payload_bytes, Number(canonicalRetained.rows[0]?.bytes));
+    assert.equal(migratedGlobal.record_rejection_count, Number(canonicalRetained.rows[0]?.count));
   } finally {
     await closePostgresStorage();
   }

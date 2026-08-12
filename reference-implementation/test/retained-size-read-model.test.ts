@@ -119,6 +119,51 @@ test("retained-size rebuild derives global, connection, stream, and top rows fro
     assert.equal(mustExist(topRecords[0], "record top row must exist").record_key, "two");
   }));
 
+test("SQLite retained-size top rows preserve rejection byte and count measures after reconcile", () =>
+  withTempDb(async () => {
+    const payloadBytes = 11;
+    getDb()
+      .prepare(
+        `INSERT INTO retained_size_connection(
+           connector_instance_id, connector_id, record_rejection_payload_bytes,
+           record_rejection_count, dirty
+         )
+         VALUES(?, ?, ?, ?, 0)`
+      )
+      .run("cin_rejection_top", "test.connector", payloadBytes, 1);
+    getDb()
+      .prepare(
+        `INSERT INTO retained_size_stream(
+           connector_instance_id, connector_id, stream, record_rejection_payload_bytes,
+           record_rejection_count, dirty
+         )
+         VALUES(?, ?, ?, ?, ?, 0)`
+      )
+      .run("cin_rejection_top", "test.connector", "items", payloadBytes, 1);
+
+    await reconcileDirtyRetainedSize();
+
+    const [topConnection] = await listRetainedSizeTop({
+      limit: 1,
+      measure: "record_rejection_payload_bytes",
+      scope: "connection",
+    });
+    const connectionTop = mustExist(topConnection, "connection rejection top row must exist");
+    assert.equal(connectionTop.record_rejection_payload_bytes, 11);
+    assert.equal(connectionTop.record_rejection_count, 1);
+    assert.equal(connectionTop.total_retained_bytes, 11);
+
+    const [topStream] = await listRetainedSizeTop({
+      limit: 1,
+      measure: "record_rejection_payload_bytes",
+      scope: "stream",
+    });
+    const streamTop = mustExist(topStream, "stream rejection top row must exist");
+    assert.equal(streamTop.record_rejection_payload_bytes, 11);
+    assert.equal(streamTop.record_rejection_count, 1);
+    assert.equal(streamTop.total_retained_bytes, 11);
+  }));
+
 test("retained-size record deltas update exact rows and mark top-N rows stale", () =>
   withTempDb(async () => {
     await ingestRecord(storage, {
@@ -980,6 +1025,61 @@ async function cleanupRetainedSizePostgres() {
   await postgresQuery("DELETE FROM retained_size_record_family WHERE connector_id = $1", [PG_CONNECTOR_ID]);
   await postgresQuery("DELETE FROM retained_size_top_rows WHERE connector_id = $1", [PG_CONNECTOR_ID]);
 }
+
+test("Postgres retained-size top rows preserve rejection byte and count measures after reconcile", {
+  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+}, async () => {
+  const payloadBytes = 17_000;
+  const databaseUrl = mustExist(
+    process.env.PDPP_TEST_POSTGRES_URL,
+    "Postgres test URL must be configured when test runs"
+  );
+  await initPostgresStorage({ backend: "postgres", databaseUrl });
+  try {
+    await cleanupRetainedSizePostgres();
+    await postgresQuery(
+      `INSERT INTO retained_size_connection(
+         connector_instance_id, connector_id, record_rejection_payload_bytes,
+         record_rejection_count, dirty
+       )
+       VALUES($1, $2, $3, $4, 0)`,
+      [PG_INSTANCE_ID, PG_CONNECTOR_ID, payloadBytes, 2]
+    );
+    await postgresQuery(
+      `INSERT INTO retained_size_stream(
+         connector_instance_id, connector_id, stream, record_rejection_payload_bytes,
+         record_rejection_count, dirty
+       )
+       VALUES($1, $2, $3, $4, $5, 0)`,
+      [PG_INSTANCE_ID, PG_CONNECTOR_ID, "items", payloadBytes, 2]
+    );
+
+    await reconcileDirtyRetainedSize();
+
+    const [topConnection] = await listRetainedSizeTop({
+      limit: 1,
+      measure: "record_rejection_payload_bytes",
+      scope: "connection",
+    });
+    const connectionTop = mustExist(topConnection, "connection rejection top row must exist");
+    assert.equal(connectionTop.record_rejection_payload_bytes, payloadBytes);
+    assert.equal(connectionTop.record_rejection_count, 2);
+    assert.equal(connectionTop.total_retained_bytes, payloadBytes);
+
+    const [topStream] = await listRetainedSizeTop({
+      limit: 1,
+      measure: "record_rejection_payload_bytes",
+      scope: "stream",
+    });
+    const streamTop = mustExist(topStream, "stream rejection top row must exist");
+    assert.equal(streamTop.record_rejection_payload_bytes, payloadBytes);
+    assert.equal(streamTop.record_rejection_count, 2);
+    assert.equal(streamTop.total_retained_bytes, payloadBytes);
+  } finally {
+    await cleanupRetainedSizePostgres();
+    await closePostgresStorage();
+  }
+});
 
 // Read every grain through the real production read functions. Backend is
 // selected by isPostgresStorageBackend() inside those functions, so calling

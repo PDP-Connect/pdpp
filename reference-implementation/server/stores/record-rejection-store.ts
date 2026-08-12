@@ -10,6 +10,7 @@ import { getDb } from "../db.ts";
 import { HOSTED_INGEST_MAX_LINE_BYTES } from "../hosted-ingest-limits.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
 import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "../record-rejection-replay-key.ts";
+import { applyRetainedSizeRecordRejectionDelta, markRetainedSizeConnectionDirty } from "../retained-size-read-model.ts";
 
 export const DEFAULT_RECORD_REJECTION_OWNER_QUOTA_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_RECORD_REJECTION_OWNER_QUOTA_COUNT = 1000;
@@ -147,6 +148,10 @@ interface RecordRejectionAuditFacts {
   readonly receiptId: string;
   readonly replayed: boolean;
   readonly stream: string;
+}
+
+function scheduleRetainedSizeProjectionUpdate(update: Promise<unknown>): void {
+  update.catch(() => undefined);
 }
 
 function nowIso(): string {
@@ -633,16 +638,28 @@ export function insertOrReplaySqliteRecordRejectionInTransaction(
 }
 
 export function insertOrReplaySqliteRecordRejection(input: InsertOrReplayRecordRejectionInput): RecordRejectionReceipt {
-  return writeTransaction(() => insertOrReplaySqliteRecordRejectionInTransaction(getDb(), input));
+  const receipt = writeTransaction(() => insertOrReplaySqliteRecordRejectionInTransaction(getDb(), input));
+  if (!receipt.replayed) {
+    scheduleRetainedSizeProjectionUpdate(
+      applyRetainedSizeRecordRejectionDelta({
+        connectorId: input.connectorId,
+        connectorInstanceId: input.connectorInstanceId,
+        recordRejectionCountDelta: 1,
+        recordRejectionPayloadBytesDelta: boundedPayloadBytes(input),
+        stream: input.stream,
+      })
+    );
+  }
+  return receipt;
 }
 
 export function insertOrReplayHostedSqliteRecordRejection(
   input: InsertOrReplayRecordRejectionInput,
   hooks: HostedRecordRejectionCoordinatorHooks = {}
 ): RecordRejectionReceipt {
-  return writeTransaction(() => {
-    const receipt = insertOrReplaySqliteRecordRejectionInTransaction(getDb(), input);
-    const hookResult = hooks.afterInsertOrReplayBeforeCommit?.(receipt);
+  const receipt = writeTransaction(() => {
+    const inserted = insertOrReplaySqliteRecordRejectionInTransaction(getDb(), input);
+    const hookResult = hooks.afterInsertOrReplayBeforeCommit?.(inserted);
     if (hookResult && typeof (hookResult as Promise<void>).then === "function") {
       throw new RecordRejectionStoreError(
         "invalid_hosted_rejection_hook",
@@ -650,8 +667,20 @@ export function insertOrReplayHostedSqliteRecordRejection(
         { retryable: false }
       );
     }
-    return receipt;
+    return inserted;
   });
+  if (!receipt.replayed) {
+    scheduleRetainedSizeProjectionUpdate(
+      applyRetainedSizeRecordRejectionDelta({
+        connectorId: input.connectorId,
+        connectorInstanceId: input.connectorInstanceId,
+        recordRejectionCountDelta: 1,
+        recordRejectionPayloadBytesDelta: boundedPayloadBytes(input),
+        stream: input.stream,
+      })
+    );
+  }
+  return receipt;
 }
 
 export function getSqliteRecordRejectionDetail(args: {
@@ -725,7 +754,15 @@ export function deleteSqliteRecordRejectionsForConnection(args: {
   connectorInstanceId: string;
   ownerSubjectId: string;
 }): number {
-  return writeTransaction(() => deleteSqliteRecordRejectionsForConnectionWithinTransaction(args));
+  const deleted = writeTransaction(() => deleteSqliteRecordRejectionsForConnectionWithinTransaction(args));
+  if (deleted > 0) {
+    scheduleRetainedSizeProjectionUpdate(
+      markRetainedSizeConnectionDirty({
+        connectorInstanceId: args.connectorInstanceId,
+      })
+    );
+  }
+  return deleted;
 }
 
 export function markSqliteAcceptedRecordRejectionsStaleInTransaction(
@@ -920,6 +957,17 @@ export function insertOrReplayPostgresRecordRejection(
 ): Promise<RecordRejectionReceipt> {
   return withPostgresTransaction((client) => insertOrReplayPostgresRecordRejectionWithClient(client, input), {
     lockConnectorInstanceId: input.connectorInstanceId,
+  }).then(async (receipt) => {
+    if (!receipt.replayed) {
+      await applyRetainedSizeRecordRejectionDelta({
+        connectorId: input.connectorId,
+        connectorInstanceId: input.connectorInstanceId,
+        recordRejectionCountDelta: 1,
+        recordRejectionPayloadBytesDelta: boundedPayloadBytes(input),
+        stream: input.stream,
+      });
+    }
+    return receipt;
   });
 }
 
@@ -936,7 +984,18 @@ export function insertOrReplayHostedPostgresRecordRejection(
     {
       lockConnectorInstanceId: input.connectorInstanceId,
     }
-  );
+  ).then(async (receipt) => {
+    if (!receipt.replayed) {
+      await applyRetainedSizeRecordRejectionDelta({
+        connectorId: input.connectorId,
+        connectorInstanceId: input.connectorInstanceId,
+        recordRejectionCountDelta: 1,
+        recordRejectionPayloadBytesDelta: boundedPayloadBytes(input),
+        stream: input.stream,
+      });
+    }
+    return receipt;
+  });
 }
 
 export function insertOrReplayHostedRecordRejection(
@@ -1114,6 +1173,11 @@ export function deletePostgresRecordRejectionsForConnection(args: {
 }): Promise<number> {
   return withPostgresTransaction((client) => deletePostgresRecordRejectionsForConnectionWithClient(client, args), {
     lockConnectorInstanceId: args.connectorInstanceId,
+  }).then(async (deleted) => {
+    if (deleted > 0) {
+      await markRetainedSizeConnectionDirty({ connectorInstanceId: args.connectorInstanceId });
+    }
+    return deleted;
   });
 }
 

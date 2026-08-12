@@ -57,6 +57,12 @@ The reference implementation SHALL expose hosted rejection receipts only through
 - **AND** it SHALL return metadata only
 - **AND** it SHALL NOT include rejected payload bytes, payload text, or parser/storage exception text
 
+#### Scenario: Retained-size accounting includes rejected payload bytes
+- **WHEN** a hosted rejection receipt is committed for a rejected input line
+- **THEN** owner-facing retained-size global, connection, and stream accounting SHALL include that receipt's rejected payload byte count exactly once
+- **AND** exact replay of the same rejected input SHALL NOT increase retained-size byte or count measures
+- **AND** audit events, quota rows, hashes, and receipt metadata SHALL NOT be double-counted as retained payload bytes
+
 #### Scenario: Owner fetches rejection receipt detail
 - **WHEN** an owner fetches a rejection receipt detail through its owning connection
 - **THEN** the response MAY include bounded payload retrieval data for that receipt

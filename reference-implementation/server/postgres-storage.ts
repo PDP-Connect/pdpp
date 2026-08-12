@@ -459,6 +459,48 @@ async function ensurePostgresBrowserSurfaceLeaseColumnsAndIndexes(client: PoolCl
   }
 }
 
+async function migratePostgresRetainedSizeRejectionColumns(client: PoolClient): Promise<void> {
+  const existingColumn = await client.query(
+    `SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'retained_size_global'
+        AND column_name = 'record_rejection_payload_bytes'`
+  );
+  for (const table of [
+    "retained_size_global",
+    "retained_size_connection",
+    "retained_size_stream",
+    "retained_size_record_family",
+    "retained_size_top_rows",
+  ]) {
+    // biome-ignore lint/performance/noAwaitInLoops: one PoolClient is already inside bootstrap transaction scope; pg warns on concurrent queries on the same client.
+    await client.query(
+      `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0`
+    );
+    await client.query(
+      `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS record_rejection_count BIGINT NOT NULL DEFAULT 0`
+    );
+  }
+  if ((existingColumn.rowCount ?? 0) > 0) {
+    return;
+  }
+  await client.query(`
+    INSERT INTO retained_size_stream(connector_instance_id, connector_id, stream, dirty)
+    SELECT connector_instance_id, MAX(connector_id), stream, 1
+      FROM record_rejections
+     GROUP BY connector_instance_id, stream
+    ON CONFLICT(connector_instance_id, stream) DO UPDATE SET dirty = 1;
+    INSERT INTO retained_size_connection(connector_instance_id, connector_id, dirty)
+    SELECT connector_instance_id, MAX(connector_id), 1
+      FROM record_rejections
+     GROUP BY connector_instance_id
+    ON CONFLICT(connector_instance_id) DO UPDATE SET dirty = 1;
+    UPDATE retained_size_global
+       SET dirty = 1
+     WHERE EXISTS (SELECT 1 FROM record_rejections)
+  `);
+}
+
 export function postgresQuery<Row extends QueryResultRow = QueryResultRow>(sql: string, params: unknown[] = []) {
   return getPostgresPool().query<Row>(sql, params);
 }
@@ -2105,9 +2147,11 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         metadata_json             JSONB
@@ -2119,9 +2163,11 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT
       );
@@ -2135,9 +2181,11 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         PRIMARY KEY(connector_instance_id, stream)
@@ -2151,9 +2199,11 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         PRIMARY KEY(connector_instance_id, stream, record_family)
@@ -2172,10 +2222,12 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         total_retained_bytes      BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         metadata_json             JSONB,
@@ -2509,6 +2561,7 @@ export async function bootstrapPostgresSchema({
     await migratePostgresBrowserSurfaceLeaseLifecycleChecks(client);
     await migratePostgresBrowserSurfaceLeasePriority(client);
     await migratePostgresRecordRejectionBytePayload(client);
+    await migratePostgresRetainedSizeRejectionColumns(client);
     await migratePostgresSpineSourceColumns(client);
     await migratePostgresDeviceExporterColumns(client);
     await migratePostgresManifestWriteViolations(client);

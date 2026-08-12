@@ -1810,9 +1810,11 @@ CREATE TABLE IF NOT EXISTS retained_size_global (
   current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
   record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
   blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_payload_bytes INTEGER NOT NULL DEFAULT 0,
   record_count                  INTEGER NOT NULL DEFAULT 0,
   record_history_count          INTEGER NOT NULL DEFAULT 0,
   blob_count                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_count       INTEGER NOT NULL DEFAULT 0,
   -- 1 means a write happened that the projection could not safely
   -- incrementally apply (e.g. a bulk delete). Hot reads must surface this
   -- as 'stale' rather than presenting the row as fresh truth.
@@ -1830,9 +1832,11 @@ CREATE TABLE IF NOT EXISTS retained_size_connection (
   current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
   record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
   blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_payload_bytes INTEGER NOT NULL DEFAULT 0,
   record_count                  INTEGER NOT NULL DEFAULT 0,
   record_history_count          INTEGER NOT NULL DEFAULT 0,
   blob_count                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_count       INTEGER NOT NULL DEFAULT 0,
   dirty                         INTEGER NOT NULL DEFAULT 1,
   computed_at                   TEXT,
   PRIMARY KEY(connector_instance_id)
@@ -1847,9 +1851,11 @@ CREATE TABLE IF NOT EXISTS retained_size_stream (
   current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
   record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
   blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_payload_bytes INTEGER NOT NULL DEFAULT 0,
   record_count                  INTEGER NOT NULL DEFAULT 0,
   record_history_count          INTEGER NOT NULL DEFAULT 0,
   blob_count                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_count       INTEGER NOT NULL DEFAULT 0,
   dirty                         INTEGER NOT NULL DEFAULT 1,
   computed_at                   TEXT,
   PRIMARY KEY(connector_instance_id, stream)
@@ -1863,9 +1869,11 @@ CREATE TABLE IF NOT EXISTS retained_size_record_family (
   current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
   record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
   blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_payload_bytes INTEGER NOT NULL DEFAULT 0,
   record_count                  INTEGER NOT NULL DEFAULT 0,
   record_history_count          INTEGER NOT NULL DEFAULT 0,
   blob_count                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_count       INTEGER NOT NULL DEFAULT 0,
   dirty                         INTEGER NOT NULL DEFAULT 1,
   computed_at                   TEXT,
   PRIMARY KEY(connector_instance_id, stream, record_family)
@@ -1884,10 +1892,12 @@ CREATE TABLE IF NOT EXISTS retained_size_top_rows (
   current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
   record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
   blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_payload_bytes INTEGER NOT NULL DEFAULT 0,
   total_retained_bytes          INTEGER NOT NULL DEFAULT 0,
   record_count                  INTEGER NOT NULL DEFAULT 0,
   record_history_count          INTEGER NOT NULL DEFAULT 0,
   blob_count                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_count       INTEGER NOT NULL DEFAULT 0,
   dirty                         INTEGER NOT NULL DEFAULT 1,
   computed_at                   TEXT,
   metadata_json                 TEXT,
@@ -2441,6 +2451,40 @@ function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
   );
   addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_reason_code", "TEXT");
   addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_computed_at", "TEXT");
+}
+
+function ensureRetainedSizeRejectionColumns(raw: SqliteDatabase): void {
+  const needsRepair = (raw.prepare("PRAGMA table_info(retained_size_global)").all() as { name: string }[]).every(
+    (column) => column.name !== "record_rejection_payload_bytes"
+  );
+  for (const table of [
+    "retained_size_global",
+    "retained_size_connection",
+    "retained_size_stream",
+    "retained_size_record_family",
+    "retained_size_top_rows",
+  ]) {
+    addColumnIfMissing(raw, table, "record_rejection_payload_bytes", "INTEGER NOT NULL DEFAULT 0");
+    addColumnIfMissing(raw, table, "record_rejection_count", "INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!needsRepair) {
+    return;
+  }
+  raw.exec(`
+    INSERT INTO retained_size_stream(connector_instance_id, connector_id, stream, dirty)
+    SELECT connector_instance_id, MAX(connector_id), stream, 1
+      FROM record_rejections
+     GROUP BY connector_instance_id, stream
+    ON CONFLICT(connector_instance_id, stream) DO UPDATE SET dirty = 1;
+    INSERT INTO retained_size_connection(connector_instance_id, connector_id, dirty)
+    SELECT connector_instance_id, MAX(connector_id), 1
+      FROM record_rejections
+     GROUP BY connector_instance_id
+    ON CONFLICT(connector_instance_id) DO UPDATE SET dirty = 1;
+    UPDATE retained_size_global
+       SET dirty = 1
+     WHERE EXISTS (SELECT 1 FROM record_rejections);
+  `);
 }
 
 function ensureConnectorMaintenanceCursorColumns(raw: SqliteDatabase): void {
@@ -5484,6 +5528,7 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   runWithSqliteBusyRetrySync(() => migrateBrowserSurfaceLeaseEnumChecks(raw));
   runWithSqliteBusyRetrySync(() => ensureBrowserSurfaceLeaseIndexes(raw));
   runWithSqliteBusyRetrySync(() => ensureConnectorSummaryEvidenceColumns(raw));
+  runWithSqliteBusyRetrySync(() => ensureRetainedSizeRejectionColumns(raw));
   runWithSqliteBusyRetrySync(() => ensureConnectorMaintenanceCursorColumns(raw));
   runWithSqliteBusyRetrySync(() => migrateManifestWriteViolations(raw));
   // Starvation-avoidance backoff columns for search_index_dirty (see the
