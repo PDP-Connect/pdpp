@@ -29,6 +29,7 @@ function validManifest(connectorId: string) {
   return {
     connector_id: connectorId,
     display_name: "Claude Code",
+    manifest_uri: "https://registry.pdpp.org/connectors/claude-code",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -46,7 +47,7 @@ function validManifest(connectorId: string) {
           type: "object",
         },
         selection: { fields: true, resources: true },
-        semantics: "event_log",
+        semantics: "append_only",
       },
     ],
     version: "0.3.0",

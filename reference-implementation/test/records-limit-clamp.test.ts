@@ -86,6 +86,7 @@ const manifest = {
   capabilities: { human_interaction: [] },
   connector_id: CONNECTOR_ID,
   display_name: "Limit-clamp Test Connector",
+  manifest_uri: `https://sources.example/${CONNECTOR_ID}`,
   protocol_version: "0.1.0",
   streams: [
     {
@@ -101,6 +102,8 @@ const manifest = {
         required: ["id", "subject", "received_at"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",

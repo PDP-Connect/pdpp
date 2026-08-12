@@ -16,6 +16,7 @@ test("SQLite expansion enforces the child grant's frozen time_constraint in SQL"
     capabilities: { human_interaction: [] },
     connector_id: connectorId,
     display_name: "Temporal Expand Test",
+    manifest_uri: `https://sources.example/${connectorId}`,
     protocol_version: "0.1.0",
     streams: [
       {
@@ -28,6 +29,8 @@ test("SQLite expansion enforces the child grant's frozen time_constraint in SQL"
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
+        semantics: "mutable_state",
       },
       {
         consent_time_field: "event-time",
@@ -45,6 +48,8 @@ test("SQLite expansion enforces the child grant's frozen time_constraint in SQL"
           required: ["id", "project_id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
+        semantics: "mutable_state",
       },
     ],
     version: "1.0.0",

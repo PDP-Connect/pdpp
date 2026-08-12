@@ -121,6 +121,7 @@ function fixture(suffix: string) {
     capabilities: { human_interaction: [] },
     connector_id: connectorId,
     display_name: "Field-name records parity",
+    manifest_uri: `https://sources.example/${connectorId}`,
     protocol_version: "0.1.0",
     streams: [
       {
@@ -145,6 +146,7 @@ function fixture(suffix: string) {
           type: "object",
         },
         selection: { fields: true, resources: false },
+        semantics: "mutable_state",
       },
       {
         consent_time_field: "時刻",
@@ -163,6 +165,7 @@ function fixture(suffix: string) {
           type: "object",
         },
         selection: { fields: true, resources: false },
+        semantics: "mutable_state",
       },
     ],
     version: "1.0.0",

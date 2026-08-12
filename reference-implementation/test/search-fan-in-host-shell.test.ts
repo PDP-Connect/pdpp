@@ -67,6 +67,7 @@ const baseManifest = {
   capabilities: { human_interaction: [] },
   connector_id: CONNECTOR_ID,
   display_name: "Search Fan-in Test Connector",
+  manifest_uri: `https://sources.example/${CONNECTOR_ID}`,
   protocol_version: "0.1.0",
   streams: [
     {
@@ -86,6 +87,8 @@ const baseManifest = {
         required: ["id", "subject", "received_at"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
     {
       consent_time_field: "received_at",
@@ -104,6 +107,8 @@ const baseManifest = {
         required: ["id", "subject", "received_at"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",

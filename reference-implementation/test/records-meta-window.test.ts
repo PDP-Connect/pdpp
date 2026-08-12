@@ -117,6 +117,7 @@ const baseManifest = {
   capabilities: { human_interaction: [] },
   connector_id: CONNECTOR_ID,
   display_name: "Meta-window Test Connector",
+  manifest_uri: `https://sources.example/${CONNECTOR_ID}`,
   protocol_version: "0.1.0",
   streams: [
     {
@@ -138,6 +139,8 @@ const baseManifest = {
         required: ["id", "subject", "received_at"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",
@@ -151,6 +154,7 @@ const noTimeManifest = {
   capabilities: { human_interaction: [] },
   connector_id: NO_TIME_CONNECTOR_ID,
   display_name: "No-time Test Connector",
+  manifest_uri: `https://sources.example/${NO_TIME_CONNECTOR_ID}`,
   protocol_version: "0.1.0",
   streams: [
     {
@@ -164,6 +168,8 @@ const noTimeManifest = {
         required: ["id", "subject"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",

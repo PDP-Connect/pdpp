@@ -62,6 +62,7 @@ function manifestFor(connectorId: string, includeNewRequiredFields: boolean): Ma
     capabilities: { human_interaction: [] },
     connector_id: connectorId,
     display_name: "Expansion Instance Authorization Test",
+    manifest_uri: `https://sources.example/${connectorId}`,
     protocol_version: "0.1.0",
     streams: [
       {
@@ -88,11 +89,14 @@ function manifestFor(connectorId: string, includeNewRequiredFields: boolean): Ma
           properties: {
             id: { type: "string" },
             newly_required_parent: { type: "string" },
+            parent_id: { type: "string" },
             title: { type: "string" },
           },
           required: includeNewRequiredFields ? ["id", "newly_required_parent"] : ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
+        semantics: "mutable_state",
       },
       {
         name: "children",
@@ -108,6 +112,8 @@ function manifestFor(connectorId: string, includeNewRequiredFields: boolean): Ma
           required: includeNewRequiredFields ? ["id", "parent_id", "newly_required_child"] : ["id", "parent_id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
+        semantics: "mutable_state",
       },
     ],
     version: includeNewRequiredFields ? "2.0.0" : "1.0.0",

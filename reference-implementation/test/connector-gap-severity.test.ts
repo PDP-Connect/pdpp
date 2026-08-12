@@ -121,6 +121,7 @@ function makeManifest(connectorId = "https://registry.pdpp.test/connectors/gap-s
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
       {
@@ -137,10 +138,26 @@ function makeManifest(connectorId = "https://registry.pdpp.test/connectors/gap-s
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "mutable_state",
       },
     ],
     version: "0.1.0",
+  };
+}
+
+type RuntimeManifest = Parameters<typeof runConnector>[0]["manifest"];
+
+function runtimeManifest(manifest: {
+  streams: ReadonlyArray<{ name: string; selection?: unknown; [key: string]: unknown }>;
+  [key: string]: unknown;
+}): RuntimeManifest {
+  return {
+    ...manifest,
+    streams: manifest.streams.map((stream) => {
+      const { selection: _selection, ...withoutSelection } = stream;
+      return withoutSelection;
+    }),
   };
 }
 
@@ -227,7 +244,7 @@ test("default START.scope excludes unsupported-in-mode streams", async () => {
         collectionMode: "incremental",
         connectorId: manifest.connector_id,
         connectorPath,
-        manifest,
+        manifest: runtimeManifest(manifest),
         onInteraction: async () => ({}),
         ownerToken,
         persistState: true,
@@ -259,7 +276,7 @@ test("explicit unsupported-in-mode stream skip is actionable", async () => {
         collectionMode: "incremental",
         connectorId: manifest.connector_id,
         connectorPath,
-        manifest,
+        manifest: runtimeManifest(manifest),
         onInteraction: async () => ({}),
         ownerToken,
         persistState: true,
@@ -293,7 +310,7 @@ test("default-selected supported stream not_available stays actionable", async (
         collectionMode: "incremental",
         connectorId: manifest.connector_id,
         connectorPath,
-        manifest,
+        manifest: runtimeManifest(manifest),
         onInteraction: async () => ({}),
         ownerToken,
         persistState: true,
@@ -326,7 +343,7 @@ test("transient skip reasons are persisted with transient severity", async () =>
         collectionMode: "incremental",
         connectorId: manifest.connector_id,
         connectorPath,
-        manifest,
+        manifest: runtimeManifest(manifest),
         onInteraction: async () => ({}),
         ownerToken,
         persistState: true,

@@ -82,6 +82,9 @@ const LONG_BODY = "The quick brown fox jumps over the lazy dog. ".repeat(300).tr
 
 const MANIFEST = {
   connector_id: CONNECTOR_ID,
+  display_name: "Record field-window substrate",
+  manifest_uri: `https://sources.example/${CONNECTOR_ID}`,
+  protocol_version: "0.1.0",
   streams: [
     {
       consent_time_field: "created_at",
@@ -100,7 +103,8 @@ const MANIFEST = {
         required: ["id"],
         type: "object",
       },
-      selection: { fields: true },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",
