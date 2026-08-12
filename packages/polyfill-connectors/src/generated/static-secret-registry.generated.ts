@@ -122,6 +122,10 @@ export const GENERATED_STATIC_SECRET_REGISTRY: Readonly<Record<string, Generated
         "slack_workspace": ["SLACK_WORKSPACE"],
       },
     },
+    "spotify": {
+      credentialKind: "access_token",
+      secretEnvVars: ["SPOTIFY_ACCESS_TOKEN"],
+    },
     "steam": {
       credentialKind: "api_key",
       secretEnvVars: ["STEAM_API_KEY"],

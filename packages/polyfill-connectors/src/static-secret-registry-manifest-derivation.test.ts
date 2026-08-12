@@ -161,6 +161,14 @@ test("counterweight: a brand-new static-secret manifest is picked up by the gene
   }
 });
 
+test("Spotify setup and runtime injection share the manifest-declared access-token mapping", () => {
+  assert.equal(isStaticSecretConnectorForInjection("spotify"), true);
+  assert.deepEqual(
+    buildConnectionScopedSecretEnv("spotify", { credentialKind: "access_token", secret: "synthetic-spotify-token" }),
+    { SPOTIFY_ACCESS_TOKEN: "synthetic-spotify-token" }
+  );
+});
+
 test("fail-closed: a manifest with credential_capture.fields but no secret:true field is not injectable (missing secret field)", () => {
   const scratchDir = mkdtempSync(join(tmpdir(), "static-secret-registry-missing-secret-"));
   try {
