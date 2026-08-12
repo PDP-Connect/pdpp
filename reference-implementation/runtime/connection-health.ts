@@ -169,6 +169,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   REMOTE_SURFACE_FAILED: "remote_surface_failed",
   REMOTE_SURFACE_NOT_REQUIRED: "remote_surface_not_required",
   REMOTE_SURFACE_UNKNOWN: "remote_surface_unknown",
+  RETRY_NOT_APPLICABLE: "retry_not_applicable",
   RUNTIME_AVAILABLE: "runtime_available",
   RUNTIME_BINDING_MISSING: "runtime_binding_missing",
   RUNTIME_NOT_MANAGED: "runtime_not_managed",
@@ -1389,7 +1390,9 @@ function classifyRetryPolicyExhausted(ctx: ClassificationContext): ReturnType<Cl
 function classifyCoolingOff(ctx: ClassificationContext): ReturnType<ClassificationStep> {
   // Backoff currently delaying retry -> cooling_off, but only when it is the
   // sole degrading evidence. Collection, coverage, freshness, and runtime
-  // failures are more informative than the scheduler's retry timing.
+  // failures are more informative than the scheduler's retry timing. Manual-
+  // only unscheduled connectors expose RetryPolicyClear as not_applicable, so
+  // they naturally fall through to healthy or the manual stale advisory.
   const retryPolicy = ctx.conditionSet.get("RetryPolicyClear");
   if (
     retryPolicy?.status !== "false" ||
@@ -1930,6 +1933,16 @@ function scheduleEligibleCondition(input: ComputeConnectionHealthInput): Connect
 }
 
 function retryPolicyClearCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
+  if (isManualRefreshOnly(input.refresh) && !isExplicitOwnerScheduledManual(input.refresh, input.schedule)) {
+    return condition({
+      message: "This connection refreshes only when the owner starts it, so scheduler retry timing does not apply.",
+      origin: "scheduler",
+      reason: CONDITION_REASON.RETRY_NOT_APPLICABLE,
+      severity: "info",
+      status: "not_applicable",
+      type: "RetryPolicyClear",
+    });
+  }
   if (!input.backoff || conditionExpired(input.backoff.nextRunAt, input.observedAt ?? null)) {
     return condition({
       message: input.backoff

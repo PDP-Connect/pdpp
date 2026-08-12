@@ -6,20 +6,33 @@ import test from "node:test";
 import {
   type ComputeConnectionHealthInput,
   type ConnectionHealthSnapshot,
+  type ConnectionRefreshEvidence,
   computeConnectionHealth,
 } from "../runtime/connection-health.ts";
 import { deriveOwnerState, type OwnerState, sourceWorkGroupFromOwnerState } from "../runtime/owner-state.ts";
-import { type RenderedVerdict, type StreamRollup, synthesizeRenderedVerdict } from "../runtime/rendered-verdict.ts";
+import {
+  type RenderedVerdict,
+  type ScheduleEvidence,
+  type StreamRollup,
+  synthesizeRenderedVerdict,
+} from "../runtime/rendered-verdict.ts";
 import { composeFleetHealthVerdict, type FleetSummary } from "../server/fleet-health.ts";
 
 const OBSERVED_AT = "2026-08-12T12:00:00.000Z";
 const SUCCESS_AT = "2026-08-12T11:55:00.000Z";
 const RETRY_AT = "2026-08-12T12:30:00.000Z";
+const REFRESH_TO_UPDATE_RE = /refresh to update/i;
 
 const AUTOMATIC_REFRESH = {
   backgroundSafe: true,
   interactionPosture: "none" as const,
   recommendedMode: "automatic" as const,
+};
+
+const MANUAL_REFRESH = {
+  backgroundSafe: false,
+  interactionPosture: "none" as const,
+  recommendedMode: "manual" as const,
 };
 
 const ACTIVE_SCHEDULE = { hasPriorSuccess: true, mode: "scheduled-active" as const };
@@ -63,21 +76,26 @@ function stream(overrides: Partial<StreamRollup> = {}): StreamRollup {
   };
 }
 
-function project(connectionInput: ComputeConnectionHealthInput, streams: readonly StreamRollup[] = []) {
+function project(
+  connectionInput: ComputeConnectionHealthInput,
+  streams: readonly StreamRollup[] = [],
+  refresh: ConnectionRefreshEvidence = AUTOMATIC_REFRESH,
+  scheduleEvidence: ScheduleEvidence | null = ACTIVE_SCHEDULE
+) {
   const snapshot = computeConnectionHealth(connectionInput);
   const verdict = synthesizeRenderedVerdict(
     snapshot,
     streams,
-    AUTOMATIC_REFRESH,
+    refresh,
     true,
     {
       last_refreshed_at: SUCCESS_AT,
-      mode: "scheduled",
+      mode: refresh.recommendedMode === "manual" ? "manual" : "scheduled",
       observed_at: OBSERVED_AT,
       records_committed_last_run: 1,
       retained_records: 1,
     },
-    ACTIVE_SCHEDULE,
+    scheduleEvidence,
     connectionInput.attention
   );
   const ownerState = deriveOwnerState(verdict, snapshot, {
@@ -217,4 +235,35 @@ test("one health authority discriminates failure, passive cooling, owner action,
     terminalFleet.dimensions.system.degraded_or_broken.map((ref) => ref.connection_id),
     ["terminal-work"]
   );
+});
+
+test("fresh manual success stays green across health, rendered, owner, and fleet surfaces", () => {
+  const projected = project(
+    input({
+      refresh: MANUAL_REFRESH,
+      schedule: null,
+    }),
+    [stream()],
+    MANUAL_REFRESH,
+    null
+  );
+
+  assert.equal(projected.snapshot.state, "healthy");
+  assert.equal(projected.snapshot.axes.freshness, "fresh");
+  assert.equal(
+    projected.snapshot.conditions.find((condition) => condition.type === "RetryPolicyClear")?.status,
+    "not_applicable"
+  );
+  assert.equal(projected.snapshot.forward_disposition, "complete");
+  assert.equal(projected.verdict.pill.tone, "green");
+  assert.equal(projected.verdict.pill.label, "Healthy");
+  assert.equal(projected.verdict.progress.mode, "manual");
+  assert.match(projected.verdict.progress.headline, REFRESH_TO_UPDATE_RE);
+  assert.equal(projected.ownerState.resolver, "healthy");
+  assert.equal(sourceWorkGroupFromOwnerState(projected.ownerState.resolver), "none");
+
+  const fleet = fleetFor("fresh-manual", projected);
+  assert.equal(fleet.state, "healthy");
+  assert.deepEqual(fleet.dimensions.system.degraded_or_broken, []);
+  assert.deepEqual(fleet.dimensions.attention.needs_owner, []);
 });
