@@ -253,6 +253,9 @@ async function steamApiRequest<T>(
 // A 64-bit SteamID is always a 17-digit number starting with 7656119. Anything
 // else (a vanity name from steamcommunity.com/id/<name>) needs ResolveVanityURL.
 const STEAM_ID64_PATTERN = /^7656119\d{10}$/;
+const STEAM_PROFILE_ID_URL_PATTERN = /^https?:\/\/steamcommunity\.com\/profiles\/(7656119\d{10})\/?$/i;
+const STEAM_VANITY_URL_PATTERN = /^https?:\/\/steamcommunity\.com\/id\/([^/?#]+)\/?$/i;
+const STEAM_HTTP_URL_PATTERN = /^https?:\/\//i;
 
 export function isSteamId64(value: string): boolean {
   return STEAM_ID64_PATTERN.test(value.trim());
@@ -266,17 +269,29 @@ export function isSteamId64(value: string): boolean {
  */
 async function resolveSteamId(apiKey: string, rawSteamId: string): Promise<string> {
   const trimmed = rawSteamId.trim();
+  if (!trimmed) {
+    throw new Error("steam_setup_invalid: enter a SteamID64 or custom Steam profile name");
+  }
+  const profileIdUrl = STEAM_PROFILE_ID_URL_PATTERN.exec(trimmed);
+  if (profileIdUrl?.[1]) {
+    return profileIdUrl[1];
+  }
   if (isSteamId64(trimmed)) {
     return trimmed;
   }
+  const vanityUrl = STEAM_VANITY_URL_PATTERN.exec(trimmed)?.[1] ?? trimmed;
+  if (STEAM_HTTP_URL_PATTERN.test(trimmed) && vanityUrl === trimmed) {
+    throw new Error("steam_setup_invalid: use a SteamID64 or a steamcommunity.com/id/<name> profile URL");
+  }
   const res = await steamApiRequest<ResolveVanityUrlResponse>("/ISteamUser/ResolveVanityURL/v0001", apiKey, {
-    vanityurl: trimmed,
+    url_type: 1,
+    vanityurl: vanityUrl,
   });
   const response = requireSteamResponse(res);
-  if (response.success === 1 && typeof response.steamid === "string" && response.steamid) {
+  if (response.success === 1 && typeof response.steamid === "string" && isSteamId64(response.steamid)) {
     return response.steamid;
   }
-  throw new Error(`steam_vanity_url_not_found: could not resolve "${trimmed}" to a SteamID`);
+  throw new Error(`steam_vanity_url_not_found: could not resolve "${vanityUrl}" to a SteamID64`);
 }
 
 // ─── Record builders ───────────────────────────────────────────────────────
@@ -647,12 +662,12 @@ export async function steamCollect({
     throw new Error("steam_auth_failed");
   }
 
-  const rawSteamId = resolveRawSteamIdFromCredentials(credentials, process.env);
+  const rawSteamId = resolveRawSteamIdFromCredentials(credentials, process.env)?.trim();
   if (!rawSteamId) {
     // Genuinely missing: no SteamID was ever captured for this connection. Name
     // the real state — the API key is fine, and setup simply never finished.
     throw new Error(
-      "steam_setup_incomplete: no SteamID is on file for this connection yet — finish setup by entering the SteamID to continue"
+      "steam_setup_incomplete: no Steam identity is on file for this connection yet — finish setup by entering a SteamID64 or custom profile name"
     );
   }
   const steamid = await resolveSteamId(apiKey, rawSteamId);

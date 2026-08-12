@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   classifySteamHttpResponse,
   isSteamId64,
   resolveRawSteamIdFromCredentials,
   STEAM_RETRYABLE_PATTERN,
+  steamCollect,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
@@ -384,14 +386,14 @@ test("STEAM_RETRYABLE_PATTERN - does not match generic bounded HTTP errors", () 
 
 test("STEAM_RETRYABLE_PATTERN - does not match unrelated application errors", () => {
   assert.doesNotMatch(
-    "steam_setup_incomplete: no SteamID is on file for this connection yet — finish setup by entering the SteamID to continue",
+    "steam_setup_incomplete: no Steam identity is on file for this connection yet — finish setup by entering a SteamID64 or custom profile name",
     STEAM_RETRYABLE_PATTERN
   );
 });
 
 test("STEAM_RETRYABLE_PATTERN - does not match a failed vanity URL resolution (terminal, not retried)", () => {
   assert.doesNotMatch(
-    'steam_vanity_url_not_found: could not resolve "nosuchvanity" to a SteamID',
+    'steam_vanity_url_not_found: could not resolve "nosuchvanity" to a SteamID64',
     STEAM_RETRYABLE_PATTERN
   );
 });
@@ -416,4 +418,96 @@ test("isSteamId64 - rejects a numeric-looking vanity name not starting with the 
 
 test("isSteamId64 - tolerates surrounding whitespace", () => {
   assert.equal(isSteamId64("  76561198012345678  "), true);
+});
+
+test("steamCollect - resolves a custom profile name before sending SteamID64 downstream", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSteamUserId = process.env.STEAM_USER_ID;
+  const requests: URL[] = [];
+  const vanityFixture = readFileSync(new URL("./__fixtures__/resolve-vanity-url.json", import.meta.url), "utf8");
+  const profileFixture = readFileSync(new URL("./__fixtures__/player-summaries.json", import.meta.url), "utf8");
+
+  globalThis.fetch = (input) => {
+    const url = new URL(String(input));
+    requests.push(url);
+    if (url.pathname.endsWith("/ResolveVanityURL/v0001")) {
+      return Promise.resolve(new Response(vanityFixture, { status: 200 }));
+    }
+    if (url.pathname.endsWith("/GetPlayerSummaries/v0002")) {
+      return Promise.resolve(new Response(profileFixture, { status: 200 }));
+    }
+    throw new Error(`unexpected Steam fixture request: ${url.pathname}`);
+  };
+  process.env.STEAM_USER_ID = "synthetic-profile";
+
+  const records: Array<{ stream: string; data: Record<string, unknown> }> = [];
+  try {
+    await steamCollect({
+      state: {},
+      requested: new Map([["profile", { name: "profile" }]]),
+      credentials: { STEAM_API_KEY: "synthetic-api-key" },
+      emit: async () => {
+        await Promise.resolve();
+      },
+      emitRecord: (stream, data) => {
+        records.push({ stream, data });
+        return Promise.resolve();
+      },
+      progress: async () => {
+        await Promise.resolve();
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalSteamUserId === undefined) {
+      delete process.env.STEAM_USER_ID;
+    } else {
+      process.env.STEAM_USER_ID = originalSteamUserId;
+    }
+  }
+
+  assert.equal(requests[0]?.searchParams.get("vanityurl"), "synthetic-profile");
+  assert.equal(requests[0]?.searchParams.get("url_type"), "1");
+  assert.equal(requests[1]?.searchParams.get("steamids"), "76561198012345678");
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.stream, "profile");
+  assert.equal(records[0]?.data.steamid, "76561198012345678");
+  assert.equal(records[0]?.data.personaname, "Synthetic Fixture");
+});
+
+test("steamCollect - rejects a vanity resolver response that is not a SteamID64", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSteamUserId = process.env.STEAM_USER_ID;
+  globalThis.fetch = () =>
+    Promise.resolve(
+      new Response(JSON.stringify({ response: { success: 1, steamid: "display-name" } }), { status: 200 })
+    );
+  process.env.STEAM_USER_ID = "synthetic-profile";
+
+  try {
+    await assert.rejects(
+      steamCollect({
+        state: {},
+        requested: new Map([["profile", { name: "profile" }]]),
+        credentials: { STEAM_API_KEY: "synthetic-api-key" },
+        emit: async () => {
+          await Promise.resolve();
+        },
+        emitRecord: async () => {
+          await Promise.resolve();
+        },
+        progress: async () => {
+          await Promise.resolve();
+        },
+      }),
+      /steam_vanity_url_not_found:.*SteamID64/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalSteamUserId === undefined) {
+      delete process.env.STEAM_USER_ID;
+    } else {
+      process.env.STEAM_USER_ID = originalSteamUserId;
+    }
+  }
 });
