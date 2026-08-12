@@ -22,7 +22,7 @@ import {
   type SourceWebhookResult,
 } from "../../operations/ref-source-webhook-ingest/index.ts";
 import { executeRecordsIngest } from "../../operations/rs-records-ingest/index.ts";
-import type { RunNowResult, SourceWebhookRunEvent } from "../../runtime/controller.ts";
+import { ControllerError, type RunNowResult, type SourceWebhookRunEvent } from "../../runtime/controller.ts";
 
 interface RouteRequest {
   readonly body?: unknown;
@@ -192,6 +192,7 @@ export function mountRefSourceWebhooks(app: AppLike, ctx: MountRefSourceWebhooks
             connectorInstanceId,
             eventId,
             ownerSubjectId,
+            receivedAt,
             sourceId,
             triggerKind,
           }) => {
@@ -204,14 +205,21 @@ export function mountRefSourceWebhooks(app: AppLike, ctx: MountRefSourceWebhooks
             // truthiness of the returned value to decide whether to fall
             // back to `signalScheduler`. We forward the raw controller
             // result unchanged to preserve that behaviour.
-            return ctx.controller.runNow(connectorId, {
-              connectorInstanceId,
-              manifest,
-              ownerSubjectId,
-              priorityClass: "background",
-              sourceWebhookEvent: { action: "schedule_run", bodyHash, eventId, sourceId },
-              triggerKind,
-            });
+            try {
+              return await ctx.controller.runNow(connectorId, {
+                connectorInstanceId,
+                manifest,
+                ownerSubjectId,
+                priorityClass: "background",
+                sourceWebhookEvent: { action: "schedule_run", bodyHash, eventId, receivedAt, sourceId },
+                triggerKind,
+              });
+            } catch (err) {
+              if (err instanceof ControllerError && err.code === "source_webhook_event_duplicate") {
+                return null;
+              }
+              throw err;
+            }
           },
           resolveSecret: (sourceId) => secrets.get(sourceId)?.secret,
           resolveTarget: (sourceId) => {

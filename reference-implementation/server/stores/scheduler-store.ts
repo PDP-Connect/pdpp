@@ -108,6 +108,7 @@ export interface SourceWebhookRunAdmissionInput {
     readonly body_hash: string;
     readonly event_id: string;
     readonly owner_subject_id: string;
+    readonly received_at: string;
     readonly source_id: string;
   };
 }
@@ -115,6 +116,7 @@ export interface SourceWebhookRunAdmissionInput {
 export type SourceWebhookRunAdmission =
   | { readonly kind: "admitted" }
   | { readonly kind: "active_run_exists" }
+  | { readonly kind: "generic_claim_exists" }
   | { readonly kind: "replay"; readonly receipt: SourceWebhookRunReceipt }
   | { readonly kind: "conflict"; readonly receipt: SourceWebhookRunReceipt };
 
@@ -529,6 +531,16 @@ export function createSqliteSchedulerStore(): SchedulerStore {
             return sourceWebhookReplayOutcome(existing, input);
           }
 
+          const genericClaim = exec(referenceQueries.sourceWebhooksClaimEvent, [
+            input.source_event.source_id,
+            input.source_event.event_id,
+            input.source_event.body_hash,
+            input.source_event.received_at,
+          ]);
+          if (genericClaim.changes === 0) {
+            return { kind: "generic_claim_exists" } as const;
+          }
+
           exec(referenceQueries.sourceWebhookRunsInsertReceipt, sourceWebhookReceiptInsertParameters(input));
           const activeRun = exec(
             referenceQueries.controllerUpsertActiveRun,
@@ -883,6 +895,29 @@ export function createPostgresSchedulerStore(): SchedulerStore {
     async admitSourceWebhookRun(input) {
       try {
         return await withPostgresTransaction(async (client) => {
+          const genericClaim = await client.query(
+            `INSERT INTO source_webhook_events(source_id, event_id, body_hash, received_at)
+             VALUES($1, $2, $3, $4)
+             ON CONFLICT(source_id, event_id) DO NOTHING`,
+            [
+              input.source_event.source_id,
+              input.source_event.event_id,
+              input.source_event.body_hash,
+              input.source_event.received_at,
+            ]
+          );
+          if ((genericClaim.rowCount ?? 0) === 0) {
+            const existing = await client.query(
+              `SELECT source_id, event_id, body_hash, connector_id, connector_instance_id, owner_subject_id,
+                      action, run_id, trace_id, automation_mode, automation_summary, started_at
+                 FROM source_webhook_run_receipts
+                WHERE source_id = $1
+                  AND event_id = $2`,
+              [input.source_event.source_id, input.source_event.event_id]
+            );
+            const receipt = existing.rows[0] as SourceWebhookRunReceipt | undefined;
+            return receipt ? sourceWebhookReplayOutcome(receipt, input) : ({ kind: "generic_claim_exists" } as const);
+          }
           const insertedReceipt = await client.query(
             `INSERT INTO source_webhook_run_receipts(
                source_id,

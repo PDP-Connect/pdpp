@@ -229,6 +229,16 @@
     "date": "2026-08-11",
     "reason": "Bounded source-webhook resources (2026-08-11): typeFor gains the explicit HTTP 413 branch required to map Fastify's route-local body-limit rejection to the repository's standard request_entity_too_large_error envelope. The source-webhook route and operation boundary tests prove oversized wire bodies and record arrays return the typed 413 response while bounded requests preserve existing behavior."
   },
+  "server/routes/source-webhooks.ts": {
+    "allowed_mass": 8,
+    "date": "2026-08-11",
+    "reason": "Reviewed source-webhook durability closes the controller-receipt boundary: the authenticated target is threaded into a durable schedule admission, and an identical controller receipt is translated into the existing scheduler fallback rather than a second dispatch. The route must retain the controller-error discriminator while preserving non-duplicate failures unchanged; route and receipt oracles cover replay and fallback behavior."
+  },
+  "server/stores/scheduler-store.ts": {
+    "allowed_mass": 25,
+    "date": "2026-08-11",
+    "reason": "Source-webhook controller receipt prerequisite: one source/event can be a matching durable replay, an identity conflict, a fresh admission, or a fresh admission blocked by an incumbent active run. Both backend transactions reserve the generic source-event identity before receipt and active-run admission, preserving replay/conflict/rollback outcomes while preventing generic fallback and receipt admission from diverging. The source-webhook receipt and event-store oracles cover replay, conflict, rollback, and concurrent claims."
+  },
   "server/stores/browser-surface-replacement-ledger-store.ts": {
     "allowed_mass": 48,
     "reason": "Reviewed replacement episode correction (2026-07-30): atomic correction must fail closed on a complete exact-scope immutable set, a named failed predecessor, unresolved membership, and no intervening competing starts, while retaining parity for SQLite and PostgreSQL transactions. The additional branches are the validation boundary and idempotent/reversible persistence checks; collapsing them into a generic override helper would weaken the intentionally stricter batch contract or hide backend transaction semantics. Proven by mutation-grade omission, mixed-scope, altered-fingerprint, resolved/unrelated member, partial-apply, retry, revoke, and non-target-isolation tests.",
