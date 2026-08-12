@@ -41,6 +41,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
+import { ynabPacingProfile } from "../../src/provider-profile.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   aggregateScheduledTransactionsCoverage,
@@ -86,9 +87,22 @@ function stubFetchFailure(): () => void {
   };
 }
 
+/**
+ * Fixture request seam: parse the stubbed response directly without entering
+ * `ynab()` and its production HTTP governor. The fixture tests still exercise
+ * the collector and record-validation path, while the production pacing floor
+ * remains covered by the profile assertion and the explicit `ynab` error-path
+ * test below.
+ */
+const fixtureRequest: BudgetCtx["request"] = async <T>() => {
+  const response = await globalThis.fetch("https://fixture.invalid");
+  return (await response.json()) as T;
+};
+
 function makeCtx(
   budgetId: string,
-  state: Record<string, unknown>
+  state: Record<string, unknown>,
+  request: BudgetCtx["request"] = fixtureRequest
 ): {
   ctx: BudgetCtx;
   emitted: EmittedRecord[];
@@ -100,7 +114,7 @@ function makeCtx(
     emit: harness.emit as BudgetCtx["emit"],
     newState: {},
     progress: (): Promise<void> => Promise.resolve(),
-    request: ynab,
+    request,
     requested: new Map([["scheduled_transactions", {}]]),
     state,
     token: "test-token",
@@ -108,6 +122,12 @@ function makeCtx(
   };
   return { ctx, emitted: harness.emitted, messages: harness.protocolMessages };
 }
+
+test("YNAB production pacing remains configured while fixture tests use the request seam", () => {
+  assert.equal(ynabPacingProfile().pacingMinIntervalMs, 20_000);
+  const { ctx } = makeCtx(BUDGET_A, {});
+  assert.notEqual(ctx.request, ynab, "fixture coverage must not route through production pacing");
+});
 
 function stateMessagesFor(messages: EmittedMessage[], stream: string): Extract<EmittedMessage, { type: "STATE" }>[] {
   return messages.filter(
@@ -322,7 +342,7 @@ test("aggregate: no facts (stream not requested / no budgets) -> not proven", ()
 test("collect(): failed fetch never reaches the coverage emit (no DETAIL_COVERAGE, no STATE for scheduled_transactions)", async () => {
   const restore = stubFetchFailure();
   try {
-    const { ctx, messages } = makeCtx(BUDGET_A, {});
+    const { ctx, messages } = makeCtx(BUDGET_A, {}, ynab);
     await assert.rejects(() => collectScheduledTransactions(ctx));
     // The top-level collect() loop only reaches the post-loop aggregate-and-emit
     // step if collectForBudget resolves for every budget; a thrown fetch error
