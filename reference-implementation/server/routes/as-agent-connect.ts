@@ -19,8 +19,11 @@
 // The in-progress attempt state lives in an `AgentConnectAttemptStore` created
 // by `createAgentConnectAttemptStore`. The store is instantiated once in
 // `buildAsApp` and passed to both route adapters AND to the consent
-// approve/deny handlers so all three share the same Map.
+// approve/deny handlers so all three share the same durable rows.
 
+import { createHash, timingSafeEqual } from "node:crypto";
+import { exec, getOne, referenceQueries } from "../../lib/db.ts";
+import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
 import type { PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // ─── Attempt store ───────────────────────────────────────────────────────────
@@ -36,7 +39,9 @@ export interface AgentConnectAttempt {
   readonly id: string;
   readonly interval: number;
   readonly pollingCode: string;
+  readonly pollingCodeHash?: string;
   readonly requestUri: string;
+  responseJson?: string | null;
   status: "pending" | "approved" | "denied" | "expired";
   token?: string;
   readonly tokenUrl: string;
@@ -49,11 +54,11 @@ export interface AgentConnectAttemptStore {
    * deny handler with `status: 'denied'`.
    */
   complete: (
-    requestUri: string,
+    requestUri: string | null | undefined,
     outcome:
       | { status: "approved"; token: string; grant: Record<string, unknown>; grantId?: string | null }
       | { status: "denied" | "expired" }
-  ) => void;
+  ) => Promise<void>;
   /** Create and register a new pending attempt. Returns the stored attempt. */
   create: (opts: {
     id: string;
@@ -63,79 +68,283 @@ export interface AgentConnectAttemptStore {
     expiresAt: number;
     approvalUrl: string;
     tokenUrl: string;
-  }) => AgentConnectAttempt;
+  }) => Promise<AgentConnectAttempt>;
   /** Remove an attempt by id. */
-  delete: (id: string) => void;
+  delete: (id: string) => Promise<void>;
   /**
    * Shorthand for `complete(requestUri, { status })` for non-approval outcomes.
    * Called by the consent deny handler.
    */
-  fail: (requestUri: string, status: "denied" | "expired") => void;
+  fail: (requestUri: string | null | undefined, status: "denied" | "expired") => Promise<void>;
   /** Look up an attempt by id. */
-  get: (id: string) => AgentConnectAttempt | undefined;
+  get: (id: string) => Promise<AgentConnectAttempt | undefined>;
   /** Evict expired/completed attempts (call before creating new ones). */
-  prune: (now?: number) => void;
+  prune: (now?: number) => Promise<void>;
+  redeem: (
+    id: string,
+    pollingCode: string,
+    now?: number
+  ) => Promise<
+    | { outcome: "missing" }
+    | { outcome: "pending"; interval: number }
+    | { outcome: "failed"; status: "denied" | "expired" }
+    | { outcome: "approved"; body: Record<string, unknown>; replay: boolean }
+  >;
 }
 
 export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
-  const attempts = new Map<string, AgentConnectAttempt>();
+  const hashPollingCode = (code: string) => createHash("sha256").update(code, "utf8").digest("base64url");
+  const pollingCodeMatches = (hash: string, code: string) => {
+    const expected = Buffer.from(hash);
+    const actual = Buffer.from(hashPollingCode(code));
+    return expected.length === actual.length && timingSafeEqual(expected, actual);
+  };
+  const rowToAttempt = (row: Record<string, unknown>): AgentConnectAttempt => {
+    const grantJson = row.grant_json;
+    const attempt: AgentConnectAttempt = {
+      approvalUrl: row.approval_url as string,
+      clientId: (row.client_id as string | null | undefined) ?? null,
+      createdAt: row.created_at as string,
+      expiresAt: Number(row.expires_at_ms),
+      grantId: (row.grant_id as string | null | undefined) ?? null,
+      id: row.id as string,
+      interval: Number(row.interval_seconds ?? 2),
+      pollingCode: "",
+      pollingCodeHash: row.polling_code_hash as string,
+      requestUri: row.request_uri as string,
+      responseJson: (row.response_json as string | null | undefined) ?? null,
+      status: row.status as AgentConnectAttempt["status"],
+      tokenUrl: row.token_url as string,
+    };
+    if (typeof row.completed_at === "string") {
+      attempt.completedAt = row.completed_at;
+    }
+    if (typeof grantJson === "string") {
+      attempt.grant = JSON.parse(grantJson) as Record<string, unknown>;
+    } else if (grantJson && typeof grantJson === "object") {
+      attempt.grant = grantJson as Record<string, unknown>;
+    }
+    if (typeof row.token === "string") {
+      attempt.token = row.token;
+    }
+    return attempt;
+  };
+  const getRow = async (id: string): Promise<AgentConnectAttempt | undefined> => {
+    if (isPostgresStorageBackend()) {
+      const result = await postgresQuery("SELECT * FROM agent_connect_attempts WHERE id = $1", [id]);
+      const [row] = result.rows;
+      return row ? rowToAttempt(row) : undefined;
+    }
+    const row = getOne<Record<string, unknown>>(referenceQueries.authAgentConnectAttemptsGetById, [id]);
+    return row ? rowToAttempt(row) : undefined;
+  };
+  const tokenIsActive = async (tokenId: string | undefined): Promise<boolean> => {
+    if (!tokenId) {
+      return false;
+    }
+    if (isPostgresStorageBackend()) {
+      const result = await postgresQuery<{ ok: boolean }>(
+        `SELECT EXISTS(
+           SELECT 1
+             FROM tokens
+            WHERE token_id = $1
+              AND revoked = FALSE
+              AND (expires_at IS NULL OR expires_at > $2)
+         ) AS ok`,
+        [tokenId, new Date().toISOString()]
+      );
+      return Boolean(result.rows[0]?.ok);
+    }
+    const row = getOne<{ ok: number }>(referenceQueries.authAgentConnectAttemptsTokenActive, [
+      tokenId,
+      new Date().toISOString(),
+    ]);
+    return Boolean(row?.ok);
+  };
 
   return {
-    complete(requestUri, outcome): void {
-      for (const attempt of attempts.values()) {
-        if (attempt.requestUri !== requestUri || attempt.status !== "pending") {
-          continue;
-        }
-        attempt.status = outcome.status;
-        attempt.completedAt = new Date().toISOString();
-        if (outcome.status === "approved") {
-          attempt.token = outcome.token;
-          attempt.grant = outcome.grant;
-          attempt.grantId = (outcome.grant.grant_id as string | null | undefined) ?? outcome.grantId ?? null;
-        }
+    async complete(requestUri, outcome): Promise<void> {
+      if (!requestUri) {
+        return;
       }
+      const completedAt = new Date().toISOString();
+      if (isPostgresStorageBackend()) {
+        if (outcome.status === "approved") {
+          await postgresQuery(
+            `UPDATE agent_connect_attempts
+                SET status = 'approved', completed_at = $2, token = $3, grant_json = $4::jsonb, grant_id = $5
+              WHERE request_uri = $1 AND status = 'pending'`,
+            [
+              requestUri,
+              completedAt,
+              outcome.token,
+              JSON.stringify(outcome.grant),
+              (outcome.grant.grant_id as string | null | undefined) ?? outcome.grantId ?? null,
+            ]
+          );
+          return;
+        }
+        await postgresQuery(
+          `UPDATE agent_connect_attempts
+              SET status = $2, completed_at = $3
+            WHERE request_uri = $1 AND status = 'pending'`,
+          [requestUri, outcome.status, completedAt]
+        );
+        return;
+      }
+      if (outcome.status === "approved") {
+        exec(referenceQueries.authAgentConnectAttemptsMarkApproved, [
+          completedAt,
+          outcome.token,
+          JSON.stringify(outcome.grant),
+          (outcome.grant.grant_id as string | null | undefined) ?? outcome.grantId ?? null,
+          requestUri,
+        ]);
+        return;
+      }
+      exec(referenceQueries.authAgentConnectAttemptsMarkFailed, [outcome.status, completedAt, requestUri]);
     },
-    create(opts): AgentConnectAttempt {
+    async create(opts): Promise<AgentConnectAttempt> {
+      const createdAt = new Date().toISOString();
+      const pollingCodeHash = hashPollingCode(opts.pollingCode);
       const attempt: AgentConnectAttempt = {
         approvalUrl: opts.approvalUrl,
         clientId: opts.clientId,
-        createdAt: new Date().toISOString(),
+        createdAt,
         expiresAt: opts.expiresAt,
         id: opts.id,
         interval: 2,
         pollingCode: opts.pollingCode,
+        pollingCodeHash,
         requestUri: opts.requestUri,
         status: "pending",
         tokenUrl: opts.tokenUrl,
       };
-      attempts.set(opts.id, attempt);
+      if (isPostgresStorageBackend()) {
+        await postgresQuery(
+          `INSERT INTO agent_connect_attempts(
+             id, request_uri, client_id, polling_code_hash, status, approval_url, token_url,
+             interval_seconds, created_at, expires_at_ms
+           ) VALUES($1, $2, $3, $4, 'pending', $5, $6, 2, $7, $8)`,
+          [
+            opts.id,
+            opts.requestUri,
+            opts.clientId,
+            pollingCodeHash,
+            opts.approvalUrl,
+            opts.tokenUrl,
+            createdAt,
+            opts.expiresAt,
+          ]
+        );
+      } else {
+        exec(referenceQueries.authAgentConnectAttemptsInsert, [
+          opts.id,
+          opts.requestUri,
+          opts.clientId,
+          pollingCodeHash,
+          opts.approvalUrl,
+          opts.tokenUrl,
+          createdAt,
+          opts.expiresAt,
+        ]);
+      }
       return attempt;
     },
 
-    delete(id): void {
-      attempts.delete(id);
-    },
-
-    fail(requestUri, status): void {
-      for (const attempt of attempts.values()) {
-        if (attempt.requestUri !== requestUri || attempt.status !== "pending") {
-          continue;
-        }
-        attempt.status = status;
-        attempt.completedAt = new Date().toISOString();
+    async delete(id): Promise<void> {
+      if (isPostgresStorageBackend()) {
+        await postgresQuery("DELETE FROM agent_connect_attempts WHERE id = $1", [id]);
+        return;
       }
+      exec(referenceQueries.authAgentConnectAttemptsDeleteById, [id]);
     },
 
-    get(id): AgentConnectAttempt | undefined {
-      return attempts.get(id);
+    async fail(requestUri, status): Promise<void> {
+      await this.complete(requestUri, { status });
     },
 
-    prune(now = Date.now()): void {
-      for (const [id, attempt] of attempts) {
-        if (attempt.status !== "pending" || attempt.expiresAt <= now) {
-          attempts.delete(id);
-        }
+    get(id): Promise<AgentConnectAttempt | undefined> {
+      return getRow(id);
+    },
+
+    async prune(now = Date.now()): Promise<void> {
+      if (isPostgresStorageBackend()) {
+        await postgresQuery(
+          `DELETE FROM agent_connect_attempts
+            WHERE status IN ('denied', 'expired')
+               OR (status = 'pending' AND expires_at_ms <= $1)
+               OR (status = 'approved' AND response_json IS NOT NULL)`,
+          [now]
+        );
+        return;
       }
+      exec(referenceQueries.authAgentConnectAttemptsPrune, [now]);
+    },
+
+    async redeem(id, pollingCode, now = Date.now()) {
+      const attempt = await getRow(id);
+      if (!(attempt?.pollingCodeHash && pollingCodeMatches(attempt.pollingCodeHash, pollingCode))) {
+        return { outcome: "missing" };
+      }
+      if (attempt.status === "pending" && attempt.expiresAt <= now) {
+        await this.complete(attempt.requestUri, { status: "expired" });
+        return { outcome: "failed", status: "expired" };
+      }
+      if (attempt.status === "pending") {
+        return { interval: attempt.interval, outcome: "pending" };
+      }
+      if (attempt.status !== "approved") {
+        await this.delete(attempt.id);
+        return { outcome: "failed", status: attempt.status };
+      }
+      if (!(await tokenIsActive(attempt.token))) {
+        await this.delete(attempt.id);
+        return { outcome: "missing" };
+      }
+      if (attempt.responseJson) {
+        return { body: JSON.parse(attempt.responseJson) as Record<string, unknown>, outcome: "approved", replay: true };
+      }
+      const body = {
+        access_token: attempt.token,
+        grant: attempt.grant,
+        grant_id: attempt.grantId,
+        token_type: "Bearer",
+      };
+      const responseJson = JSON.stringify(body);
+      if (isPostgresStorageBackend()) {
+        return withPostgresTransaction(async (client) => {
+          const update = await client.query(
+            `UPDATE agent_connect_attempts
+                SET response_json = $2
+              WHERE id = $1 AND status = 'approved' AND response_json IS NULL
+              RETURNING response_json`,
+            [id, responseJson]
+          );
+          if (update.rowCount === 1) {
+            return { body, outcome: "approved", replay: false };
+          }
+          const reread = await client.query("SELECT response_json FROM agent_connect_attempts WHERE id = $1", [id]);
+          const [row] = reread.rows;
+          if (typeof row?.response_json === "string") {
+            return {
+              body: JSON.parse(row.response_json) as Record<string, unknown>,
+              outcome: "approved",
+              replay: true,
+            };
+          }
+          return { outcome: "missing" };
+        });
+      }
+      const result = exec(referenceQueries.authAgentConnectAttemptsSetResponseJson, [responseJson, id]);
+      if (result.changes === 1) {
+        return { body, outcome: "approved", replay: false };
+      }
+      const replay = await getRow(id);
+      if (replay?.responseJson) {
+        return { body: JSON.parse(replay.responseJson) as Record<string, unknown>, outcome: "approved", replay: true };
+      }
+      return { outcome: "missing" };
     },
   };
 }
@@ -174,6 +383,7 @@ interface RouteRequest {
 
 interface RouteResponse {
   json: (body: unknown) => unknown;
+  setHeader?: (name: string, value: string) => unknown;
   status: (code: number) => RouteResponse;
 }
 
@@ -290,11 +500,11 @@ export function mountAsAgentConnect(app: AppLike, ctx: MountAsAgentConnectContex
       }
 
       const now = ctx.now();
-      ctx.agentConnectAttemptStore.prune(now);
+      await ctx.agentConnectAttemptStore.prune(now);
       const id = ctx.generateAttemptId();
       const pollingCode = ctx.generatePollingCode();
 
-      const attempt = ctx.agentConnectAttemptStore.create({
+      const attempt = await ctx.agentConnectAttemptStore.create({
         approvalUrl: ctx.buildApprovalUrl(baseUrl, requestUri),
         clientId: pendingClientId ?? clientId,
         expiresAt: now + ctx.agentConnectTtlMs,
@@ -324,37 +534,31 @@ export interface MountAsAgentConnectTokenContext {
 }
 
 export function mountAsAgentConnectToken(app: AppLike, ctx: MountAsAgentConnectTokenContext): void {
-  const handler: RouteHandler = (req, res) => {
+  const handler: RouteHandler = async (req, res) => {
     try {
       const attemptId = req.params.attemptId ?? "";
-      const attempt = ctx.agentConnectAttemptStore.get(attemptId);
       const pollingCode = typeof req.body?.polling_code === "string" ? req.body.polling_code : null;
-      if (!attempt || pollingCode !== attempt.pollingCode) {
+      if (!pollingCode) {
         return ctx.pdppError(res, 401, "invalid_grant", "Unknown agent-connect polling handle");
       }
-      if (attempt.status === "pending" && attempt.expiresAt <= Date.now()) {
-        attempt.status = "expired";
+      res.setHeader?.("Cache-Control", "no-store");
+      const result = await ctx.agentConnectAttemptStore.redeem(attemptId, pollingCode);
+      if (result.outcome === "missing") {
+        return ctx.pdppError(res, 401, "invalid_grant", "Unknown agent-connect polling handle");
       }
-      if (attempt.status === "pending") {
+      if (result.outcome === "pending") {
         return res.status(202).json({
           error: "authorization_pending",
           error_description: "Owner approval is still pending",
-          interval: attempt.interval,
+          interval: result.interval,
           status: "pending",
         });
       }
-      if (attempt.status !== "approved") {
-        const error = buildAgentConnectError(attempt.status);
-        ctx.agentConnectAttemptStore.delete(attempt.id);
-        return ctx.pdppError(res, attempt.status === "denied" ? 403 : 400, error.error, error.error_description);
+      if (result.outcome === "failed") {
+        const error = buildAgentConnectError(result.status);
+        return ctx.pdppError(res, result.status === "denied" ? 403 : 400, error.error, error.error_description);
       }
-      ctx.agentConnectAttemptStore.delete(attempt.id);
-      return res.json({
-        access_token: attempt.token,
-        grant: attempt.grant,
-        grant_id: attempt.grantId,
-        token_type: "Bearer",
-      });
+      return res.json(result.body);
     } catch (err) {
       return ctx.handleError(res, err);
     }

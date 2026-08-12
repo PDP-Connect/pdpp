@@ -108,8 +108,8 @@ interface ConsentStore {
 // ─── agentConnectAttemptStore surface used by this adapter ────────────────────
 
 interface AgentConnectAttemptStore {
-  complete: (requestUri: string | null | undefined, result: unknown) => void;
-  fail: (requestUri: string | null | undefined, reason: string) => void;
+  complete: (requestUri: string | null | undefined, result: unknown) => Promise<void>;
+  fail: (requestUri: string | null | undefined, reason: string) => Promise<void>;
 }
 
 // ─── Context injected by the composition root ─────────────────────────────────
@@ -264,7 +264,7 @@ async function dispatchApproveResponse(
     res.redirect(302, buildOAuthRedirectUrl(oauthCode));
     return;
   }
-  ctx.agentConnectAttemptStore.complete(approvedRequestUri, { grant, status: "approved", token });
+  await ctx.agentConnectAttemptStore.complete(approvedRequestUri, { grant, status: "approved", token });
   const wantsJson = req.is("application/json") || req.accepts(["html", "json"]) === "json";
   if (wantsJson) {
     if (isPackage) {
@@ -878,7 +878,7 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
         if (outcome.traceContext?.trace_id) {
           ctx.setReferenceTraceId(res, outcome.traceContext.trace_id);
         }
-        ctx.agentConnectAttemptStore.fail(
+        await ctx.agentConnectAttemptStore.fail(
           // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
           (req.body?.request_uri || req.query?.request_uri) as string | undefined,
           "denied"

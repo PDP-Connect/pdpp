@@ -139,6 +139,14 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Approvals — `/_ref/approvals` projection.
   readonly approvalsListPendingConsents: SmallEnumerationQuery;
   readonly approvalsListPendingOwnerDevices: SmallEnumerationQuery;
+  readonly authAgentConnectAttemptsDeleteById: MutationQuery;
+  readonly authAgentConnectAttemptsGetById: ReadOneQuery;
+  readonly authAgentConnectAttemptsInsert: MutationQuery;
+  readonly authAgentConnectAttemptsMarkApproved: MutationQuery;
+  readonly authAgentConnectAttemptsMarkFailed: MutationQuery;
+  readonly authAgentConnectAttemptsPrune: MutationQuery;
+  readonly authAgentConnectAttemptsSetResponseJson: MutationQuery;
+  readonly authAgentConnectAttemptsTokenActive: ReadOneQuery;
   readonly authConnectorInstancesGetReviewedActive: ReadOneQuery;
   readonly authConnectorsGetManifestById: ReadOneQuery;
   // Auth — connectors (manifest registry)

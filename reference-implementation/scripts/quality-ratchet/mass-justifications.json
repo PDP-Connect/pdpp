@@ -24,6 +24,11 @@
     "reason": "Discovery RI (2026-08-11): the protected-resource route must supply the configured declaration pointer only for provider-native metadata and omit it from the separate hosted-MCP resource. The two explicit route branches preserve resource-scoped advertisement rather than broadening the pointer to every metadata document. Focused native-route coverage proves the distinction.",
     "date": "2026-08-11"
   },
+  "server/routes/as-agent-connect.ts": {
+    "allowed_mass": 54,
+    "reason": "Agent-connect durable handoff (2026-08-12): replacing the process-local polling Map with restart-safe SQLite/PostgreSQL rows adds explicit backend branches for hashed polling-code lookup, approval/denial completion, delivered-response recovery, expiry cleanup, and active-token revalidation before returning a retained bearer. These branches are the credential handoff contract; extracting them into shallow helpers would hide backend transaction predicates without reducing the state space. Proven by agent-cli SQLite approval/retry/cleanup, restart, second-registration/concurrent-polling regressions, and live-PostgreSQL restart proof.",
+    "date": "2026-08-12"
+  },
   "server/routes/run-interaction.ts": {
     "allowed_mass": 29,
     "reason": "Direct-CDP terminal-barrier closure (2026-08-05): run-final cleanup must invoke the presentation terminal barrier for every run, including direct-CDP runs without a managed n.eko lease, before clearing the run nonce. The added hook is the single lifecycle seam that prevents a connector finalization path from skipping target purge; extracting it would obscure the required ordering.",

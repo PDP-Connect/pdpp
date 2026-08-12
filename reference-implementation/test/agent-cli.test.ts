@@ -46,10 +46,13 @@ import {
 } from "../examples/third-party-app/lib/flow.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { closePostgresStorage } from "../server/postgres-storage.ts";
 import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from "../server/reference-local-defaults.ts";
-import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { introspectionHeaders } from "./helpers/introspection.ts";
 import { TEST_INTROSPECTION_SERVER_OPTS } from "./helpers/introspection-test-credentials.ts";
+import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 import { makeTemporaryDir } from "./helpers/temp-dir.ts";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -109,6 +112,14 @@ async function spinUpServer(
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   return { asUrl, rsUrl, server };
+}
+
+function rewriteUrlOrigin(url: string, origin: string): string {
+  const rewritten = new URL(url);
+  const nextOrigin = new URL(origin);
+  rewritten.protocol = nextOrigin.protocol;
+  rewritten.host = nextOrigin.host;
+  return rewritten.toString();
 }
 
 interface SpotifyManifest {
@@ -246,7 +257,7 @@ async function seedSpotifyOwnerConnection(manifest: SpotifyManifest): Promise<st
   const connectorId = canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id;
   const connectorInstanceId = `cin_agent_${connectorId}`;
   const now = new Date().toISOString();
-  await createSqliteConnectorInstanceStore().upsert({
+  await createRequestConnectorInstanceStore().upsert({
     connectorId,
     connectorInstanceId,
     createdAt: now,
@@ -611,8 +622,131 @@ test("agent-connect: owner approval completes polling without exposing owner tok
       pollingCode: start.polling_code,
       tokenUrl: start.token_url,
     });
-    assert.equal(replayPoll.resp.status, 401);
-    assert.equal(errorCode(replayPoll.body), "invalid_grant");
+    assert.equal(replayPoll.resp.status, 200, "response-loss retry returns the retained token envelope");
+    assert.equal(replayPoll.body.access_token, completedPoll.body.access_token);
+
+    await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Prune Trigger" });
+    const afterPrunePoll = await pollAgentConnectToken({
+      pollingCode: start.polling_code,
+      tokenUrl: start.token_url,
+    });
+    assert.equal(afterPrunePoll.resp.status, 401);
+    assert.equal(errorCode(afterPrunePoll.body), "invalid_grant");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("agent-connect: approved handoff survives AS restart before polling", async () => {
+  const dbPath = join(makeTemporaryDir("pdpp-agent-connect-restart-"), "reference.sqlite");
+  const first = await spinUpServer({ dbPath });
+  let restarted: Awaited<ReturnType<typeof spinUpServer>> | null = null;
+  try {
+    const { staged, start } = await createAgentConnectRequest({
+      asUrl: first.asUrl,
+      clientName: "Agent Connect Restart Test",
+    });
+    await approveInline({
+      asUrl: first.asUrl,
+      requestUri: staged.request_uri,
+      subjectId: "owner_local",
+    });
+    await closeServer(first.server);
+
+    restarted = await spinUpServer({ dbPath });
+    const completedPoll = await pollAgentConnectToken({
+      pollingCode: start.polling_code,
+      tokenUrl: rewriteUrlOrigin(start.token_url, restarted.asUrl),
+    });
+    assert.equal(completedPoll.resp.status, 200);
+    assert.equal(completedPoll.body.token_type, "Bearer");
+    assert.equal(typeof completedPoll.body.access_token, "string");
+  } finally {
+    if (restarted) {
+      await closeServer(restarted.server);
+    }
+  }
+});
+
+test("agent-connect: live Postgres approved handoff survives AS restart before polling", async (t) => {
+  const baseUrl = dedicatedPostgresTestUrl(
+    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
+  );
+  if (!baseUrl) {
+    t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
+    return;
+  }
+
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: baseUrl,
+      databaseName: "pdpp_test_agent_connect_durable",
+    },
+    async (databaseUrl) => {
+      const opts = { databaseUrl, storageBackend: "postgres" as const };
+      const first = await spinUpServer(opts);
+      let firstClosed = false;
+      let restarted: Awaited<ReturnType<typeof spinUpServer>> | null = null;
+      try {
+        const { staged, start } = await createAgentConnectRequest({
+          asUrl: first.asUrl,
+          clientName: "Agent Connect Postgres Restart Test",
+        });
+        await approveInline({
+          asUrl: first.asUrl,
+          requestUri: staged.request_uri,
+          subjectId: "owner_local",
+        });
+        await closeServer(first.server);
+        firstClosed = true;
+        await closePostgresStorage();
+
+        restarted = await spinUpServer(opts);
+        const completedPoll = await pollAgentConnectToken({
+          pollingCode: start.polling_code,
+          tokenUrl: rewriteUrlOrigin(start.token_url, restarted.asUrl),
+        });
+        assert.equal(completedPoll.resp.status, 200);
+        assert.equal(completedPoll.body.token_type, "Bearer");
+        assert.equal(typeof completedPoll.body.access_token, "string");
+      } finally {
+        if (!firstClosed) {
+          await closeServer(first.server);
+        }
+        if (restarted) {
+          await closeServer(restarted.server);
+        }
+        await closePostgresStorage();
+      }
+    }
+  );
+});
+
+test("agent-connect: second registration and concurrent polling are idempotent", async () => {
+  const { server, asUrl } = await spinUpServer();
+  try {
+    const { staged, start } = await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Concurrent A" });
+    const secondResp = await fetch(`${asUrl}/agent-connect`, {
+      body: JSON.stringify({ request_uri: staged.request_uri }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    const second = (await secondResp.json()) as AgentConnectStart;
+    assert.equal(secondResp.status, 201);
+    assert.notEqual(second.polling_code, start.polling_code);
+
+    await approveInline({ asUrl, requestUri: staged.request_uri, subjectId: "owner_local" });
+    const [firstPoll, secondPoll] = await Promise.all([
+      pollAgentConnectToken({ pollingCode: start.polling_code, tokenUrl: start.token_url }),
+      pollAgentConnectToken({ pollingCode: second.polling_code, tokenUrl: second.token_url }),
+    ]);
+    assert.equal(firstPoll.resp.status, 200);
+    assert.equal(secondPoll.resp.status, 200);
+    const replayPoll = await pollAgentConnectToken({ pollingCode: start.polling_code, tokenUrl: start.token_url });
+    assert.equal(replayPoll.resp.status, 200);
+    assert.equal(replayPoll.body.access_token, firstPoll.body.access_token);
+    assert.equal(secondPoll.body.access_token, firstPoll.body.access_token);
   } finally {
     await closeServer(server);
   }

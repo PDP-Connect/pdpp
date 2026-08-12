@@ -723,6 +723,30 @@ CREATE TABLE IF NOT EXISTS pending_consents (
 CREATE INDEX IF NOT EXISTS idx_pending_consents_status_expires
   ON pending_consents(status, expires_at);
 
+CREATE TABLE IF NOT EXISTS agent_connect_attempts (
+  id                TEXT PRIMARY KEY,
+  request_uri       TEXT NOT NULL,
+  client_id         TEXT,
+  polling_code_hash TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'pending',
+  approval_url      TEXT NOT NULL,
+  token_url         TEXT NOT NULL,
+  interval_seconds  INTEGER NOT NULL DEFAULT 2,
+  created_at        TEXT NOT NULL,
+  expires_at_ms     INTEGER NOT NULL,
+  completed_at      TEXT,
+  grant_id          TEXT,
+  grant_json        TEXT,
+  token             TEXT,
+  response_json     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_connect_attempts_request_uri
+  ON agent_connect_attempts(request_uri, status);
+
+CREATE INDEX IF NOT EXISTS idx_agent_connect_attempts_status_expires
+  ON agent_connect_attempts(status, expires_at_ms);
+
 CREATE TABLE IF NOT EXISTS owner_device_auth (
   device_code        TEXT PRIMARY KEY,
   user_code          TEXT NOT NULL UNIQUE,
