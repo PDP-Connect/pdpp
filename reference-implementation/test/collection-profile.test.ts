@@ -42,6 +42,19 @@ import {
 
 type TestServer = Awaited<ReturnType<typeof startServer>>;
 
+// A setup assertion can fail before a subtest reaches its own `try/finally`
+// (for example, a registration response can be rejected before the connector
+// fixture is created). Keep every successfully-bound pair available to the
+// parent test's finalizer so an early failure cannot leave AS/RS listeners
+// referenced after the test has reported its result.
+const trackedTestServers = new Set<TestServer>();
+
+async function startTestServer(opts: Parameters<typeof startServer>[0] = {}): Promise<TestServer> {
+  const server = await startServer(opts);
+  trackedTestServers.add(server);
+  return server;
+}
+
 // `runtime/index.ts` predates its own JS->TS migration and is deliberately
 // narrower than the real runtime/index.ts in three ways this suite exercises:
 //   - `exit_code` is set on every terminal outcome (see the `exit_code: code`
@@ -367,6 +380,7 @@ interface CloseableHttpServer {
 }
 
 async function closeServer(server: TestServer) {
+  trackedTestServers.delete(server);
   // Force-close keep-alive connections to prevent hanging.
   // Clear fallback timers when close callbacks win so the harness does not
   // retain stray timer handles after an otherwise clean shutdown.
@@ -712,10 +726,14 @@ function buildCoEmittedStreamManifest(connectorId = "test-co-emitted-stream") {
 }
 
 test("Collection Profile conformance", async (t) => {
+  t.after(async () => {
+    await Promise.allSettled([...trackedTestServers].map((server) => closeServer(server)));
+  });
+
   // ── 1. RECORD processing ──
 
   await t.test("runtime sends spec-shaped START with non-empty scope and no legacy config", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
@@ -761,7 +779,7 @@ test("Collection Profile conformance", async (t) => {
   });
 
   await t.test("incremental runs pass prior state through START", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
@@ -798,7 +816,7 @@ test("Collection Profile conformance", async (t) => {
   });
 
   await t.test("single_use runs ignore provided prior state and pass null through START", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
@@ -1163,7 +1181,7 @@ test("Collection Profile conformance", async (t) => {
   await t.test(
     "runtime normalizes START.scope fields to include schema-required, primary_key, and time_range fields",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const manifest = {
         ...MINIMAL_MANIFEST,
@@ -1233,7 +1251,7 @@ test("Collection Profile conformance", async (t) => {
   );
 
   await t.test("connectors can branch on START.collection_mode", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const { connectorPath, cleanup } = createCollectionModeBranchConnector();
@@ -1280,7 +1298,7 @@ test("Collection Profile conformance", async (t) => {
   });
 
   await t.test("connectors can branch on START.scope resources and time_range selectors", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const manifest = {
       ...MINIMAL_MANIFEST,
@@ -1344,7 +1362,7 @@ test("Collection Profile conformance", async (t) => {
   });
 
   await t.test("connectors can branch on normalized START.scope fields selectors", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const manifest = {
       ...MINIMAL_MANIFEST,
@@ -1424,7 +1442,7 @@ test("Collection Profile conformance", async (t) => {
   });
 
   await t.test("runtime ingests RECORD messages to the RS", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
@@ -1480,7 +1498,7 @@ test("Collection Profile conformance", async (t) => {
   // ── 2. STATE gating on DONE ──
 
   await t.test("STATE is only committed when DONE status is succeeded", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
@@ -1549,7 +1567,7 @@ test("Collection Profile conformance", async (t) => {
   });
 
   await t.test("pre-progress ChatGPT failure persists actionable known gap metadata", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort, {
       ...MINIMAL_MANIFEST,
@@ -1610,7 +1628,7 @@ test("Collection Profile conformance", async (t) => {
   });
 
   await t.test("pre-progress browser profile attach race remains runtime-retryable", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort, {
       ...MINIMAL_MANIFEST,
@@ -1676,7 +1694,7 @@ test("Collection Profile conformance", async (t) => {
     // exercised in packages/polyfill-connectors); it only proves the
     // runtime's generic code passthrough, independent of any specific code
     // value.
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort, {
       ...MINIMAL_MANIFEST,
@@ -1858,7 +1876,7 @@ test("Collection Profile conformance", async (t) => {
   });
 
   await t.test("runtime rejects scalar STATE.cursor values as protocol violations", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
@@ -1892,7 +1910,7 @@ test("Collection Profile conformance", async (t) => {
   });
 
   await t.test("the last STATE for a stream wins when a run stages multiple checkpoints", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
@@ -1965,7 +1983,7 @@ test("Collection Profile conformance", async (t) => {
   await t.test(
     "STATE currently flushes and stages only the named stream when other streams still have buffered records",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const manifest = buildMultiStreamManifest("test-multi-stream-state-boundary");
       const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
@@ -2071,7 +2089,7 @@ rl.on('line', (line) => {
   await t.test(
     "multiple staged stream checkpoints commit successfully without requiring a cross-stream ordering guarantee",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const manifest = buildMultiStreamManifest("test-multi-stream-checkpoint-success");
       const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
@@ -2149,7 +2167,7 @@ rl.on('line', (line) => {
   );
 
   await t.test("multiple staged stream checkpoints still commit nothing when the run fails after staging", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const manifest = buildMultiStreamManifest("test-multi-stream-checkpoint-failure");
     const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
@@ -2254,7 +2272,7 @@ rl.on('line', (line) => {
   await t.test(
     "checkpoint persistence failures after DONE(succeeded) stay inspectable and expose partial commit counts",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const asUrl = `http://localhost:${server.asPort}`;
       const connectorId = "partial-checkpoint-commit";
       const manifest = {
@@ -2289,7 +2307,13 @@ rl.on('line', (line) => {
       };
 
       const registerResp = await fetchJson(`${asUrl}/connectors`, {
-        body: JSON.stringify(manifest),
+        body: JSON.stringify(
+          withTestSourceDeclaration({
+            ...manifest,
+            display_name: connectorId,
+            protocol_version: "0.1.0",
+          })
+        ),
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
@@ -2431,7 +2455,7 @@ rl.on('line', (line) => {
   // ── 3. single_use: null START.state and no STATE persistence ──
 
   await t.test("single_use runs do not persist STATE even on success", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
@@ -2478,7 +2502,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("grant-scoped STATE stays isolated from global state and other grants", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     t.after(() => closeServer(server));
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId, sourceId } = await setupConnector(server, asPort);
@@ -2566,7 +2590,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("single_use with grant-scoped STATE still persists nothing", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     t.after(() => closeServer(server));
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId, sourceId } = await setupConnector(server, asPort);
@@ -2608,7 +2632,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime rejects RECORD messages outside declared START.scope", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
@@ -2648,7 +2672,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime rejects RECORD messages outside declared START.scope resources", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
@@ -2688,7 +2712,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime accepts RECORD messages within manifest-declared resource field", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const manifest = {
       ...MINIMAL_MANIFEST,
@@ -2745,7 +2769,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime rejects RECORD messages with fields outside START.scope", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
@@ -2785,7 +2809,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime rejects RECORD messages outside declared START.scope time_range", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const manifest = {
       ...MINIMAL_MANIFEST,
@@ -2983,7 +3007,7 @@ rl.on('line', (line) => {
   // ── 5. SKIP_RESULT handling ──
 
   await t.test("runtime accepts SKIP_RESULT messages without error", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -3043,7 +3067,7 @@ rl.on('line', (line) => {
   // a bounded, redacted projection to the run.stream_skipped spine event and
   // to the known_gap so the owner can diagnose the failure offline.
   await t.test("runtime forwards bounded SKIP_RESULT.diagnostics into the spine event and known gap", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -3114,7 +3138,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime redacts secret-shaped strings inside SKIP_RESULT.diagnostics", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -3316,7 +3340,7 @@ rl.on('line', (line) => {
       },
     ]) {
       // biome-ignore lint/performance/noAwaitInLoops: localized test assertion preserves its explicit contract.
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -3375,7 +3399,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime replaces oversized SKIP_RESULT.diagnostics with a size_overflow sentinel", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -3430,7 +3454,7 @@ rl.on('line', (line) => {
   await t.test("runtime drops non-object SKIP_RESULT.diagnostics without rejecting the message", async () => {
     for (const diagnostics of ["oops", [1, 2, 3], 123]) {
       // biome-ignore lint/performance/noAwaitInLoops: localized test assertion preserves its explicit contract.
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -3492,7 +3516,7 @@ rl.on('line', (line) => {
 
   await t.test("runtime preserves a valid DETAIL_COVERAGE.considered count on the spine event", async () => {
     const manifest = buildMultiStreamManifest("considered-coverage");
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
     const asUrl = `http://localhost:${asPort}`;
@@ -3549,7 +3573,7 @@ rl.on('line', (line) => {
     for (const considered of [-1, 3.5, Number.NaN, Number.POSITIVE_INFINITY, "7", Number.MAX_SAFE_INTEGER + 1, null]) {
       const manifest = buildMultiStreamManifest("considered-coverage-bad");
       // biome-ignore lint/performance/noAwaitInLoops: localized test assertion preserves its explicit contract.
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
       const asUrl = `http://localhost:${asPort}`;
@@ -3606,7 +3630,7 @@ rl.on('line', (line) => {
     for (const considered of [0, Number.MAX_SAFE_INTEGER]) {
       const manifest = buildMultiStreamManifest("considered-coverage-edge");
       // biome-ignore lint/performance/noAwaitInLoops: localized test assertion preserves its explicit contract.
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
       const asUrl = `http://localhost:${asPort}`;
@@ -3655,7 +3679,7 @@ rl.on('line', (line) => {
 
   await t.test("existing DETAIL_COVERAGE with no considered stays unknown (no field) and unchanged", async () => {
     const manifest = buildMultiStreamManifest("considered-coverage-absent");
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
     const asUrl = `http://localhost:${asPort}`;
@@ -3707,7 +3731,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime preserves a valid SKIP_RESULT.diagnostics.considered count", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -3769,7 +3793,7 @@ rl.on('line', (line) => {
     async () => {
       for (const considered of [-5, 2.5, "900", Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
         // biome-ignore lint/performance/noAwaitInLoops: localized test assertion preserves its explicit contract.
-        const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+        const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
         const { asPort, rsPort } = server;
         const { ownerToken, connectorId } = await setupConnector(server, asPort);
         const asUrl = `http://localhost:${asPort}`;
@@ -3842,7 +3866,7 @@ rl.on('line', (line) => {
       // projection-derived `collection_report` key must remain absent on the
       // terminal event (that is Tranche C).
       const manifest = buildMultiStreamManifest("facts-block-layer-boundary");
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
       const asUrl = `http://localhost:${asPort}`;
@@ -3939,7 +3963,7 @@ rl.on('line', (line) => {
       // A two-stream success: each requested stream gets exactly one entry with a
       // raw collected count and a checkpoint fact, and NO coverage verdict.
       const manifest = buildMultiStreamManifest("facts-per-in-scope-stream");
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
       const asUrl = `http://localhost:${asPort}`;
@@ -4024,7 +4048,7 @@ rl.on('line', (line) => {
       // With the manifest `state_stream` declaration the child inherits the
       // parent's committed checkpoint.
       const manifest = buildCoEmittedStreamManifest("facts-co-emitted-checkpoint");
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
       const asUrl = `http://localhost:${asPort}`;
@@ -4102,7 +4126,7 @@ rl.on('line', (line) => {
       // missing entry; and with no declared considered, the considered key is
       // absent (reads unknown) — never inferred to equal collected.
       const manifest = buildMultiStreamManifest("facts-zero-record-stream");
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
       const asUrl = `http://localhost:${asPort}`;
@@ -4160,7 +4184,7 @@ rl.on('line', (line) => {
   await t.test("2.2a: a SKIP_RESULT stream carries the skip fact, no complete verdict", async () => {
     // The runtime states the skip fact; deciding unsupported/etc is the
     // projection's job (Tranche C). The entry must NOT carry a coverage verdict.
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -4215,7 +4239,7 @@ rl.on('line', (line) => {
 
   await t.test("2.2a: a pending DETAIL_GAP shows pending_detail_gaps>=1 by count, not restated locators", async () => {
     const manifest = buildMultiStreamManifest("facts-pending-detail-gap");
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
     const asUrl = `http://localhost:${asPort}`;
@@ -4281,7 +4305,7 @@ rl.on('line', (line) => {
     "2.2a: considered honesty — declared value carried, absence stays unknown, never set to collected",
     async () => {
       const manifest = buildMultiStreamManifest("facts-considered-honesty");
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
       const asUrl = `http://localhost:${asPort}`;
@@ -4362,7 +4386,7 @@ rl.on('line', (line) => {
 
   await t.test("2.2a: declared considered prefers DETAIL_COVERAGE.considered over required_keys.length", async () => {
     const manifest = buildMultiStreamManifest("facts-considered-priority");
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
     const asUrl = `http://localhost:${asPort}`;
@@ -4413,7 +4437,7 @@ rl.on('line', (line) => {
 
   await t.test("2.2a: required_keys.length is the considered fallback when no considered is declared", async () => {
     const manifest = buildMultiStreamManifest("facts-considered-fallback");
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
     const asUrl = `http://localhost:${asPort}`;
@@ -4472,7 +4496,7 @@ rl.on('line', (line) => {
       // gate has nothing to mark missing, so the committed STATE still commits, and
       // the terminal facts block carries the declared considered for that stream.
       const manifest = buildMultiStreamManifest("facts-list-considered");
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
       const asUrl = `http://localhost:${asPort}`;
@@ -4554,7 +4578,7 @@ rl.on('line', (line) => {
       // covered count through the spine event and onto the terminal facts block, so
       // the projection can read covered === considered → complete. `collected` is 0.
       const manifest = buildMultiStreamManifest("facts-list-covered");
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
       const asUrl = `http://localhost:${asPort}`;
@@ -4629,7 +4653,7 @@ rl.on('line', (line) => {
       for (const covered of [-1, 2.5, Number.NaN, Number.POSITIVE_INFINITY, "4", Number.MAX_SAFE_INTEGER + 1]) {
         const manifest = buildMultiStreamManifest("facts-covered-bad");
         // biome-ignore lint/performance/noAwaitInLoops: localized test assertion preserves its explicit contract.
-        const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+        const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
         const { asPort, rsPort } = server;
         const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
         const asUrl = `http://localhost:${asPort}`;
@@ -4688,7 +4712,7 @@ rl.on('line', (line) => {
       // The portability floor: a connector that emits only RECORD/STATE/DONE — no
       // DETAIL_COVERAGE, no SKIP_RESULT — still produces a valid per-stream facts
       // block. Its considered axis is just absent (unknown); no derived axes.
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -4748,7 +4772,7 @@ rl.on('line', (line) => {
     // pre-existing terminal field with its prior shape; the only addition is the
     // additive collection_facts block.
     const manifest = buildMultiStreamManifest("facts-2-7-invariant");
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
     const asUrl = `http://localhost:${asPort}`;
@@ -4811,7 +4835,7 @@ rl.on('line', (line) => {
     // buildRunTerminalData() composes the block for every terminal event; prove
     // it on a connector-reported failure too, with its collected/checkpoint facts
     // intact and still no derived axis.
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -4874,7 +4898,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime reports known gaps for partial flush then failed terminal state", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -4937,7 +4961,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime reports manual-action known gaps without persisting interaction responses", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -5012,7 +5036,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime rejects malformed SKIP_RESULT envelopes as protocol violations", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -5066,7 +5090,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime rejects SKIP_RESULT for undeclared streams as a protocol violation", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -5120,7 +5144,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime accepts PROGRESS messages without error", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -5200,7 +5224,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime persists collection_rate in spine events and terminal event", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -5380,7 +5404,7 @@ rl.on('line', (line) => {
       for (const invalidPair of invalidPairs) {
         // biome-ignore lint/performance/noAwaitInLoops: localized test assertion preserves its explicit contract.
         await subT.test(invalidPair.name, async () => {
-          const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+          const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
           const { asPort, rsPort } = server;
           const { ownerToken, connectorId } = await setupConnector(server, asPort);
           const asUrl = `http://localhost:${asPort}`;
@@ -5436,7 +5460,7 @@ rl.on('line', (line) => {
   );
 
   await t.test("connection_health.collection_rate is null when no rate event has been emitted", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -5498,14 +5522,18 @@ rl.on('line', (line) => {
       // real RECORD message, so a connector_instances row genuinely exists)
       // to restore that coverage, kept separate from the zero-record
       // unresolved tests above.
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const asUrl = `http://localhost:${asPort}`;
-      await fetchJson(`${asUrl}/connectors`, {
-        body: JSON.stringify(MINIMAL_MANIFEST),
+      const registration = await fetchJson(`${asUrl}/connectors`, {
+        body: JSON.stringify(withTestSourceDeclaration(MINIMAL_MANIFEST)),
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
+      assert.ok(
+        [200, 201].includes(registration.status),
+        `connector registration failed: ${JSON.stringify(registration.body)}`
+      );
       // The owner-dashboard read surface (`getConnectorDetail`) is hardcoded
       // to REFERENCE_OWNER_SUBJECT_ID/OWNER_AUTH_DEFAULT_SUBJECT_ID
       // ('owner_local') — a real single-owner security boundary. Unlike
@@ -5592,7 +5620,7 @@ rl.on('line', (line) => {
   );
 
   await t.test("runtime rejects malformed PROGRESS envelopes as protocol violations", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -5646,7 +5674,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime rejects malformed PROGRESS counters as protocol violations", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -5702,7 +5730,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime rejects malformed PROGRESS total counters as protocol violations", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -5758,7 +5786,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime rejects PROGRESS for undeclared streams as a protocol violation", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -5839,7 +5867,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime rejects unknown connector message types as protocol violations", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -5902,7 +5930,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime rejects invalid connector JSONL as a protocol violation", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -5980,7 +6008,7 @@ rl.on('line', (line) => {
   // ── 6. INTERACTION completes and connector continues ──
 
   await t.test("INTERACTION round-trip allows connector to continue collecting", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -6105,7 +6133,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("browser-surface-backed otp INTERACTION projects streamable assistance with secret input", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -6202,7 +6230,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("nonblocking ASSISTANCE records assistance without interaction-required behavior", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -6349,7 +6377,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime terminates timed-out nonblocking ASSISTANCE that never resolves", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -6427,7 +6455,7 @@ process.on('exit', () => clearInterval(keepalive));
   });
 
   await t.test("runtime rejects response-required ASSISTANCE without compatibility path", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -6491,7 +6519,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("nonblocking ASSISTANCE records retry/backoff and explicit escalation transitions", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -6574,7 +6602,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime rejects connector output emitted while waiting for INTERACTION_RESPONSE", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -6673,7 +6701,7 @@ rl.on('line', (line) => {
   await t.test(
     "runtime rejects STATE emitted while waiting for INTERACTION_RESPONSE and does not stage checkpoints",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -6773,7 +6801,7 @@ rl.on('line', (line) => {
   await t.test(
     "runtime rejects PROGRESS emitted while waiting for INTERACTION_RESPONSE and does not record progress artifacts",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -6869,7 +6897,7 @@ rl.on('line', (line) => {
   await t.test(
     "runtime rejects SKIP_RESULT emitted while waiting for INTERACTION_RESPONSE and does not record skip artifacts",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -6964,7 +6992,7 @@ rl.on('line', (line) => {
   );
 
   await t.test("runtime rejects a second INTERACTION emitted while waiting for INTERACTION_RESPONSE", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -7065,7 +7093,7 @@ rl.on('line', (line) => {
   await t.test(
     "runtime rejects DONE emitted while waiting for INTERACTION_RESPONSE and does not record terminal artifacts",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -7163,7 +7191,7 @@ rl.on('line', (line) => {
   await t.test(
     "runtime rejects invalid JSONL emitted while waiting for INTERACTION_RESPONSE and does not record completion artifacts",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -7256,7 +7284,7 @@ rl.on('line', (line) => {
   );
 
   await t.test("runtime returns INTERACTION timeout responses when the handler does not answer in time", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -7342,7 +7370,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("runtime returns INTERACTION cancelled responses when the handler aborts", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -7430,7 +7458,7 @@ rl.on('line', (line) => {
   await t.test(
     "invalid INTERACTION_RESPONSE envelopes fail the run and record an explicit runtime reason",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -7519,7 +7547,7 @@ rl.on('line', (line) => {
   await t.test(
     "malformed INTERACTION envelopes fail the run before the interaction enters the durable timeline",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -7607,7 +7635,7 @@ rl.on('line', (line) => {
   await t.test(
     "malformed INTERACTION timeout_seconds fail the run before the interaction enters the durable timeline",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -7678,7 +7706,7 @@ rl.on('line', (line) => {
   await t.test(
     "malformed INTERACTION schema values fail the run before the interaction enters the durable timeline",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -7748,7 +7776,7 @@ rl.on('line', (line) => {
   );
 
   await t.test("runtime rejects INTERACTION for undeclared streams as a protocol violation", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -7834,7 +7862,7 @@ rl.on('line', (line) => {
   await t.test(
     "runtime rejects INTERACTION when START.bindings omit interactive and records no interaction artifacts",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -7920,7 +7948,7 @@ rl.on('line', (line) => {
   // ── 8. Failed DONE does not ingest remaining buffered records ──
 
   await t.test("DONE(failed) does not flush remaining buffered records", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
@@ -7994,7 +8022,7 @@ rl.on('line', (line) => {
   });
 
   await t.test("DONE(failed) after staging multiple stream checkpoints still commits none of them", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const manifest = buildMultiStreamManifest("test-multi-stream-done-failed");
     const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
@@ -8074,7 +8102,7 @@ rl.on('line', (line) => {
   await t.test(
     "malformed DONE.error envelopes are rejected as protocol violations before terminal artifacts are recorded as connector failures",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -8138,7 +8166,7 @@ rl.on('line', (line) => {
   await t.test(
     "DONE.error with unsupported fields is rejected as a protocol violation before terminal artifacts are recorded as connector failures",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -8207,7 +8235,7 @@ rl.on('line', (line) => {
   await t.test(
     "DONE(succeeded) with terminal error details is rejected as a protocol violation before success artifacts are recorded",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -8280,7 +8308,7 @@ rl.on('line', (line) => {
   await t.test(
     "DONE(cancelled) after staging a checkpoint commits nothing and records a cancelled terminal run",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -8369,7 +8397,7 @@ rl.on('line', (line) => {
   await t.test(
     "DONE(cancelled) with an exit code of 0 is treated as a protocol violation and commits no checkpoints",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -8473,7 +8501,7 @@ rl.on('line', (line) => {
   await t.test(
     "DONE(cancelled) with mismatched records_emitted is treated as a protocol violation and still commits no checkpoints",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -8582,7 +8610,7 @@ rl.on('line', (line) => {
   );
 
   await t.test("messages after DONE are treated as protocol violations and prevent checkpoint commit", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -8698,7 +8726,7 @@ rl.on('line', (line) => {
   await t.test(
     "PROGRESS after DONE is treated as a protocol violation and never enters durable run artifacts",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -8785,7 +8813,7 @@ rl.on('line', (line) => {
   await t.test(
     "INTERACTION after DONE is treated as a protocol violation and never enters durable run artifacts",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -8878,7 +8906,7 @@ rl.on('line', (line) => {
   await t.test(
     "SKIP_RESULT after DONE is treated as a protocol violation and never enters durable run artifacts",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -8966,7 +8994,7 @@ rl.on('line', (line) => {
   await t.test(
     "STATE after DONE is treated as a protocol violation and never stages checkpoint artifacts",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -9058,7 +9086,7 @@ rl.on('line', (line) => {
   await t.test(
     "invalid JSONL after DONE is treated as a protocol violation and never records completion artifacts",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -9142,7 +9170,7 @@ rl.on('line', (line) => {
   await t.test(
     "DONE(succeeded) with a non-zero exit code is treated as a protocol violation and prevents checkpoint commit",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -9246,7 +9274,7 @@ rl.on('line', (line) => {
   await t.test(
     "DONE(failed) with an exit code of 0 is treated as a protocol violation and commits no checkpoints",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -9350,7 +9378,7 @@ rl.on('line', (line) => {
   await t.test(
     "DONE(succeeded) with mismatched records_emitted is treated as a protocol violation and prevents checkpoint commit",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -9461,7 +9489,7 @@ rl.on('line', (line) => {
   await t.test(
     "DONE(failed) with mismatched records_emitted is treated as a protocol violation and still commits no checkpoints",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -9572,7 +9600,7 @@ rl.on('line', (line) => {
   await t.test(
     "DONE with an invalid status is treated as a protocol violation and commits no checkpoints",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -9678,7 +9706,7 @@ rl.on('line', (line) => {
   await t.test(
     "unexpected connector exit before STATE fails the run, preserves no state, and leaves buffered records unflushed",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
 
@@ -9734,7 +9762,7 @@ rl.on('line', (line) => {
   await t.test(
     "unexpected connector exit after STATE fails the run, preserves no state, and records run.failed",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const asUrl = `http://localhost:${asPort}`;
@@ -9809,7 +9837,7 @@ rl.on('line', (line) => {
   );
 
   await t.test("graceful connector exit without DONE still fails the run and records run.failed", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort);
     const asUrl = `http://localhost:${asPort}`;
@@ -9877,7 +9905,7 @@ rl.on('line', (line) => {
   await t.test(
     "invalid ingest response at STATE fails specifically and preserves dropped-tail accounting",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort } = server;
       const asUrl = `http://localhost:${asPort}`;
       const connectorId = "invalid-ingest-response";
@@ -10001,7 +10029,7 @@ rl.on('line', (line) => {
         const rsPort = serverPort(rsServer);
 
         const registerResp = await fetchJson(`${asUrl}/connectors`, {
-          body: JSON.stringify(manifest),
+          body: JSON.stringify(withTestSourceDeclaration(manifest)),
           headers: { "Content-Type": "application/json" },
           method: "POST",
         });
@@ -10077,7 +10105,7 @@ rl.on('line', (line) => {
   await t.test(
     "unexpected connector exit after a batch flush preserves flushed records but drops the remaining buffered tail",
     async () => {
-      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);
       const previousBatchSize = process.env.PDPP_RUNTIME_BATCH_SIZE;
@@ -10175,7 +10203,7 @@ rl.on('line', (line) => {
   // ── 9. STATE remains connector-scoped across different connectors ──
 
   await t.test("STATE from one connector does not affect another connectors state", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startTestServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
     const { asPort, rsPort } = server;
 
     // Register two different connectors
@@ -10183,16 +10211,24 @@ rl.on('line', (line) => {
     const manifest1 = { ...MINIMAL_MANIFEST, connector_id: "connector-a" };
     const manifest2 = { ...MINIMAL_MANIFEST, connector_id: "connector-b" };
 
-    await fetchJson(`${asUrl}/connectors`, {
-      body: JSON.stringify(manifest1),
+    const registerA = await fetchJson(`${asUrl}/connectors`, {
+      body: JSON.stringify(withTestSourceDeclaration(manifest1)),
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
-    await fetchJson(`${asUrl}/connectors`, {
-      body: JSON.stringify(manifest2),
+    const registerB = await fetchJson(`${asUrl}/connectors`, {
+      body: JSON.stringify(withTestSourceDeclaration(manifest2)),
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
+    assert.ok(
+      [200, 201].includes(registerA.status),
+      `connector-a registration failed: ${JSON.stringify(registerA.body)}`
+    );
+    assert.ok(
+      [200, 201].includes(registerB.status),
+      `connector-b registration failed: ${JSON.stringify(registerB.body)}`
+    );
     const ownerToken = await issueOwnerToken(asUrl, "test_user");
 
     // Run connector A — emits STATE
@@ -10339,11 +10375,15 @@ async function setupConnector(_server: TestServer, asPort: number, manifest: Con
   const registeredManifest = withTestSourceDeclaration(manifest);
 
   // Register connector manifest
-  await fetchJson(`${asUrl}/connectors`, {
+  const registration = await fetchJson(`${asUrl}/connectors`, {
     body: JSON.stringify(registeredManifest),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
+  assert.ok(
+    [200, 201].includes(registration.status),
+    `connector registration failed: ${JSON.stringify(registration.body)}`
+  );
 
   const connectorId = canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id;
   const now = new Date().toISOString();
