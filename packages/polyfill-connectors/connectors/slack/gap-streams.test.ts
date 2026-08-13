@@ -241,7 +241,7 @@ test("runOptionalStream: a non-retryable failure (auth) is flagged non-retryable
   assert.equal(hint?.retryable, false);
 });
 
-test("runOptionalStream: an auth failure omits action:retry_by_runtime so the coverage rollup does not read it as self-healing", async () => {
+test("runOptionalStream: an auth failure requests credential refresh instead of a runtime retry", async () => {
   // reference-implementation/server/connector-coverage-policy.ts's
   // mapSkipCoverageCondition checks `recovery_hint.action === "retry_by_runtime"`
   // BEFORE inspecting the skip reason text at all — so an unconditional
@@ -255,7 +255,7 @@ test("runOptionalStream: an auth failure omits action:retry_by_runtime so the co
 
   const [msg] = messages;
   const hint = (msg as { recovery_hint?: { action?: string } }).recovery_hint;
-  assert.notEqual(hint?.action, "retry_by_runtime");
+  assert.equal(hint?.action, "refresh_credentials");
 });
 
 test("runOptionalStream: the recovery_hint diagnostics carries the specific Slack-reported error code", async () => {

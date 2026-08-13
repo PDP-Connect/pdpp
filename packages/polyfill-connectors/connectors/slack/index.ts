@@ -2554,7 +2554,7 @@ export async function runOptionalStream(
       reason: OPTIONAL_STREAM_FAILED_REASON,
       message: `Slack: ${stream} failed and was skipped (optional stream): ${message}`,
       recovery_hint: isAuthFailure
-        ? { retryable: false }
+        ? { action: "refresh_credentials", retryable: false }
         : { action: "retry_by_runtime", retryable: SLACK_API_RETRYABLE_FAILURE_RE.test(message) },
       ...(isAuthFailure && e.slackApiErrorCode ? { diagnostics: { slack_api_error_code: e.slackApiErrorCode } } : {}),
     });
