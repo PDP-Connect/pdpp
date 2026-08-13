@@ -1,0 +1,38 @@
+{
+  "account": {
+    "id": 41001,
+    "username": "fixture-owner",
+    "email": "fixture@example.invalid",
+    "type": "users",
+    "user_id": 41002,
+    "created_at": "2026-01-01T00:00:00.000Z"
+  },
+  "user": {
+    "id": 41002,
+    "first_name": "Fixture",
+    "last_name": "Owner",
+    "country": "AU",
+    "city": null
+  },
+  "profile": {
+    "user_id": 41002,
+    "height": 1.75,
+    "weight": 70.5,
+    "gender": null,
+    "unit_system": "metric",
+    "birthday": "1990-01-01",
+    "timezone_offset": "+10:00",
+    "fitness_level": "recreational",
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "updated_at": "2026-07-10T00:00:00.000Z"
+  },
+  "bio_data": {
+    "max_heart_rate": 190,
+    "min_heart_rate": 42,
+    "resting_heart_rate": 55
+  },
+  "membership": {
+    "status": "active",
+    "in_effect": true
+  }
+}

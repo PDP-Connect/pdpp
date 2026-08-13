@@ -287,6 +287,17 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | orders | checkpoint_window | manual_as_of | — | true | — | — |
 | order_items | parent_detail_accounting | manual_as_of | — | true | — | — |
 
+## polyfill/whoop
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| profile | full_inventory | manual_as_of | — | true | — | — |
+| body | full_inventory | manual_as_of | — | true | — | — |
+| cycles | checkpoint_window | manual_as_of | — | true | — | — |
+| recoveries | checkpoint_window | manual_as_of | — | true | — | — |
+| sleeps | checkpoint_window | manual_as_of | — | true | — | — |
+| workouts | checkpoint_window | manual_as_of | — | true | — | — |
+
 ## polyfill/ynab
 
 | stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |

@@ -56,6 +56,7 @@ const CONNECTORS = [
   "strava",
   "notion",
   "reddit",
+  "whoop",
   "claude_code",
   "codex",
   "apple_health",

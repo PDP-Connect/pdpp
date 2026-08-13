@@ -1,0 +1,326 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/whoop",
+  "connector_key": "whoop",
+  "manifest_uri": "https://registry.pdpp.org/connectors/whoop",
+  "version": "0.1.0",
+  "display_name": "WHOOP",
+  "runtime_requirements": {
+    "bindings": {
+      "network": { "required": true },
+      "browser": { "required": true }
+    }
+  },
+  "capabilities": {
+    "human_interaction": ["manual_action"],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "minimum_interval_seconds": 7200,
+      "maximum_staleness_seconds": 86400,
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "medium",
+      "background_safe": true,
+      "assisted_after_owner_auth": true,
+      "rationale": "The owner signs in through an isolated WHOOP browser profile. A live owner run proved the full backfill and a second checkpointed run reused the saved session without prompting, so the owner can opt into background scheduling after authenticating the connection."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "needs_human_auth",
+      "rationale": "Live owner testing proved all six streams and checkpointed session reuse; first connection still requires the owner to sign in through the isolated WHOOP browser profile."
+    }
+  },
+  "streams": [
+    {
+      "name": "profile",
+      "required": true,
+      "description": "WHOOP account, owner profile, and membership identity fields.",
+      "display": {
+        "label": "Your WHOOP profile",
+        "detail": "Account identity, location, profile preferences, and membership status."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "user_id": { "type": "integer" },
+          "username": { "type": "string", "x_pdpp_role": "primary-title" },
+          "email": { "type": "string" },
+          "account_type": { "type": "string" },
+          "first_name": { "type": "string" },
+          "last_name": { "type": "string" },
+          "country": { "type": ["string", "null"] },
+          "city": { "type": ["string", "null"] },
+          "gender": { "type": ["string", "null"] },
+          "unit_system": { "type": ["string", "null"] },
+          "fitness_level": { "type": ["string", "null"] },
+          "birthday": { "type": ["string", "null"] },
+          "timezone_offset": { "type": ["string", "null"] },
+          "membership_status": { "type": "string" },
+          "membership_in_effect": { "type": "boolean" },
+          "observed_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "username",
+          "email",
+          "first_name",
+          "last_name"
+        ]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "observed_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "username",
+            "email",
+            "first_name",
+            "last_name",
+            "city",
+            "country"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "body",
+      "required": true,
+      "description": "WHOOP body measurements and heart-rate bounds.",
+      "display": {
+        "label": "Your WHOOP body measurements",
+        "detail": "Height, weight, maximum, minimum, and resting heart rate."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "user_id": { "type": "integer" },
+          "height_m": { "type": ["number", "null"] },
+          "weight_kg": { "type": ["number", "null"] },
+          "max_heart_rate": { "type": ["number", "null"] },
+          "min_heart_rate": { "type": ["number", "null"] },
+          "resting_heart_rate": { "type": ["number", "null"] },
+          "observed_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": ["id", "user_id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "observed_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "height_m": ["gte", "gt", "lte", "lt"],
+          "weight_kg": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": { "count": true }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "cycles",
+      "required": true,
+      "description": "WHOOP physiological cycles and day strain summaries.",
+      "display": {
+        "label": "Your WHOOP cycles",
+        "detail": "Cycle interval, strain, energy, and day heart-rate summary."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "cycle_id": { "type": "integer" },
+          "days": { "type": ["string", "null"] },
+          "start_date": {
+            "type": ["string", "null"],
+            "format": "date",
+            "x_pdpp_role": "event-time"
+          },
+          "end_date": { "type": ["string", "null"], "format": "date" },
+          "scaled_strain": { "type": ["number", "null"] },
+          "day_kilojoules": { "type": ["number", "null"] },
+          "day_avg_heart_rate": { "type": ["number", "null"] },
+          "day_max_heart_rate": { "type": ["number", "null"] }
+        },
+        "required": ["id", "cycle_id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "start_date",
+      "consent_time_field": "start_date",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "start_date": ["gte", "gt", "lte", "lt"],
+          "end_date": ["gte", "gt", "lte", "lt"],
+          "scaled_strain": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": { "count": true, "group_by_time": ["start_date"] }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "recoveries",
+      "required": true,
+      "description": "WHOOP cycle recovery measurements.",
+      "display": {
+        "label": "Your WHOOP recoveries",
+        "detail": "Recovery score, HRV, resting heart rate, blood oxygen, and skin temperature."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "cycle_id": { "type": "integer" },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "hrv_rmssd": { "type": "number" },
+          "recovery_score": { "type": "number" },
+          "resting_heart_rate": { "type": ["number", "null"] },
+          "spo2": { "type": ["number", "null"] },
+          "skin_temp_celsius": { "type": ["number", "null"] }
+        },
+        "required": [
+          "id",
+          "cycle_id",
+          "created_at",
+          "hrv_rmssd",
+          "recovery_score"
+        ]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "created_at",
+      "consent_time_field": "created_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "created_at": ["gte", "gt", "lte", "lt"],
+          "recovery_score": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": { "count": true, "group_by_time": ["created_at"] }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "sleeps",
+      "required": true,
+      "description": "WHOOP sleep activities and stage durations.",
+      "display": {
+        "label": "Your WHOOP sleeps",
+        "detail": "Sleep interval, score, respiratory rate, and sleep-stage durations in milliseconds."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "cycle_id": { "type": "integer" },
+          "during": { "type": "string" },
+          "start_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "end_at": { "type": ["string", "null"], "format": "date-time" },
+          "time_in_bed": { "type": "number" },
+          "light_sleep_duration": { "type": "number" },
+          "slow_wave_sleep_duration": { "type": "number" },
+          "rem_sleep_duration": { "type": "number" },
+          "wake_duration": { "type": "number" },
+          "respiratory_rate": { "type": ["number", "null"] },
+          "score": { "type": ["number", "null"] }
+        },
+        "required": ["id", "cycle_id", "during"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "start_at",
+      "consent_time_field": "start_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "start_at": ["gte", "gt", "lte", "lt"],
+          "end_at": ["gte", "gt", "lte", "lt"],
+          "score": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": { "count": true, "group_by_time": ["start_at"] }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "workouts",
+      "required": true,
+      "description": "WHOOP workout activities.",
+      "display": {
+        "label": "Your WHOOP workouts",
+        "detail": "Workout interval, sport ID, energy, timezone, and heart-rate summary."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "cycle_id": { "type": "integer" },
+          "during": { "type": ["string", "null"] },
+          "start_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "end_at": { "type": ["string", "null"], "format": "date-time" },
+          "timezone_offset": { "type": ["string", "null"] },
+          "sport_id": { "type": ["number", "null"] },
+          "kilojoules": { "type": ["number", "null"] },
+          "average_heart_rate": { "type": ["number", "null"] },
+          "max_heart_rate": { "type": ["number", "null"] }
+        },
+        "required": ["id", "cycle_id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "start_at",
+      "consent_time_field": "start_at",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "start_at": ["gte", "gt", "lte", "lt"],
+          "end_at": ["gte", "gt", "lte", "lt"],
+          "kilojoules": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": ["start_at"],
+          "group_by": ["sport_id"]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}
