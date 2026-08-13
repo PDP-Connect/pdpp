@@ -52,6 +52,7 @@ import { resolveConnectorArtifactDir } from "../../src/connector-artifact-root.t
 import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
+  buildDetailGap,
   buildFullScanCoverageMessage,
   type DetailGapMessage,
   type EmittedMessage,
@@ -1718,7 +1719,9 @@ export async function emitStatementIndexOnly(
   return carried;
 }
 
-export type StatementDetailOutcome = { kind: "hydrated"; id: string } | { kind: "index_only"; id: string };
+export type StatementDetailOutcome =
+  | { kind: "hydrated"; id: string }
+  | { kind: "gap"; id: string; reason: DetailGapMessage["reason"]; errorClass: string };
 
 /**
  * Emit the per-run `statements` DETAIL_COVERAGE. `outcomes` is built from
@@ -1741,16 +1744,32 @@ export async function emitStatementDetailCoverage(
   }
   const requiredKeys = outcomes.map((outcome) => outcome.id);
   const hydratedKeys = outcomes.filter((outcome) => outcome.kind === "hydrated").map((outcome) => outcome.id);
-  const optionalSkipKeys = outcomes.filter((outcome) => outcome.kind === "index_only").map((outcome) => outcome.id);
+  const gapKeys = outcomes.filter((outcome) => outcome.kind === "gap").map((outcome) => outcome.id);
+
+  for (const outcome of outcomes) {
+    if (outcome.kind === "gap") {
+      await deps.emit(
+        buildDetailGap({
+          stream: "statements",
+          parentStream: "statements",
+          recordKey: outcome.id,
+          reason: outcome.reason,
+          locator: { kind: "chase.statement", statement_id: outcome.id },
+          error: { class: outcome.errorClass },
+        })
+      );
+    }
+  }
+
   await deps.emit(
     buildDetailCoverageMessage({
       stream: "statements",
       stateStream: "statements",
       requiredKeys,
       hydratedKeys,
-      optionalSkipKeys,
+      gapKeys,
       considered: outcomes.length,
-      covered: outcomes.length,
+      covered: hydratedKeys.length,
     })
   );
 }
@@ -2101,6 +2120,7 @@ export function buildAccountDetailGap(outcome: {
   };
 }
 
+
 /**
  * Emit the per-run DETAIL_COVERAGE for the account -> transactions detail
  * fan-out. `accounts` is Chase's enumerated inventory (a known denominator),
@@ -2432,7 +2452,15 @@ async function processStatementRow(
         fingerprintCursor,
         hydrationCursor
       );
-      return { kind: isHydrated(carried) ? "hydrated" : "index_only", id };
+      // Distinguish genuinely new statements (first-time, no prior PDF pointers) from
+      // transient failures of previously hydrated statements:
+      // - Carried durable hydration (prior PDF) → count as hydrated coverage.
+      // - No carried hydration (first-time or prior failure) → emit retryable DETAIL_GAP.
+      // Per spec: transport failures are not terminal provider unavailability and must
+      // remain retryable, not optional_skip.
+      return isHydrated(carried)
+        ? { kind: "hydrated", id }
+        : { kind: "gap", id, reason: "temporary_unavailable", errorClass: "pdf_download_failed" };
     }
 
     const record = {

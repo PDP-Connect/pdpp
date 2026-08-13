@@ -748,11 +748,11 @@ function findDetailGaps(messages: EmittedMessage[]): DetailGap[] {
   return messages.filter((m): m is DetailGap => m.type === "DETAIL_GAP");
 }
 
-test("classifyDetailOutcome: skip → skipped, null detail → gap, parsed detail → hydrated", () => {
-  assert.equal(classifyDetailOutcome(true, null), "skipped", "policy skip wins regardless of detail");
-  assert.equal(classifyDetailOutcome(true, makeDetail()), "skipped", "skip never reads as hydrated");
-  assert.equal(classifyDetailOutcome(false, null), "gap", "attempted-but-null is a degraded gap");
-  assert.equal(classifyDetailOutcome(false, makeDetail()), "hydrated", "a parsed detail is hydrated");
+test("classifyDetailOutcome: skipDetail→unaccounted, null→gap, detail→hydrated", () => {
+  assert.equal(classifyDetailOutcome(true, null), "unaccounted", "policy-skip unaccounted");
+  assert.equal(classifyDetailOutcome(true, makeDetail()), "unaccounted", "policy-skip unaccounted even with detail");
+  assert.equal(classifyDetailOutcome(false, null), "gap", "null/failed is gap");
+  assert.equal(classifyDetailOutcome(false, makeDetail()), "hydrated", "parsed detail hydrates");
 });
 
 test("reasonForDetailFailure: maps precise Amazon detail failures to redacted retry reasons", () => {
@@ -800,25 +800,22 @@ test("readPageContentWithin fails bounded when the renderer stops answering", as
   await assert.rejects(() => readPageContentWithin(page, 5), /page_content_timeout after 5ms/);
 });
 
-test("recordDetailOutcome: every recorded order joins required; outcome picks the numerator/skip set", () => {
+test("recordDetailOutcome: every recorded order joins required; outcome picks hydrated or gap", () => {
   const coverage = newOrderItemsCoverage();
   recordDetailOutcome(coverage, "ord-hydrated", "hydrated");
   recordDetailOutcome(coverage, "ord-gap", "gap");
-  recordDetailOutcome(coverage, "ord-skipped", "skipped");
 
-  assert.deepEqual(coverage.required, ["ord-hydrated", "ord-gap", "ord-skipped"], "required is the denominator");
+  assert.deepEqual(coverage.required, ["ord-hydrated", "ord-gap"], "required is the denominator");
   assert.deepEqual(coverage.hydrated, ["ord-hydrated"]);
   assert.deepEqual(coverage.gap, ["ord-gap"]);
-  assert.deepEqual(coverage.optionalSkip, ["ord-skipped"]);
 });
 
-test("emitOrderItemsCoverage: a fully hydrated run emits required=hydrated, no gap/skip fields", async () => {
+test("emitOrderItemsCoverage: a fully hydrated run emits required=hydrated, no gap_keys", async () => {
   const { deps, protocolMessages } = makeRecordingDeps();
   const coverage: OrderItemsCoverage = {
     required: ["a", "b"],
     hydrated: ["a", "b"],
     gap: [],
-    optionalSkip: [],
   };
   await emitOrderItemsCoverage(deps, coverage);
 
@@ -844,7 +841,6 @@ test("emitOrderItemsCoverage: a partial run reports gap_keys distinct from hydra
     required: ["a", "b", "c"],
     hydrated: ["a"],
     gap: ["b", "c"],
-    optionalSkip: [],
   };
   await emitOrderItemsCoverage(deps, coverage);
 
@@ -854,22 +850,6 @@ test("emitOrderItemsCoverage: a partial run reports gap_keys distinct from hydra
   assert.deepEqual(msg.hydrated_keys, ["a"]);
   assert.deepEqual(msg.gap_keys, ["b", "c"], "degraded detail fetches surface as a real gap");
   assert.equal(msg.optional_skip_keys, undefined);
-});
-
-test("emitOrderItemsCoverage: policy-skipped detail reports optional_skip_keys, not gap", async () => {
-  const { deps, protocolMessages } = makeRecordingDeps();
-  const coverage: OrderItemsCoverage = {
-    required: ["a", "b"],
-    hydrated: [],
-    gap: [],
-    optionalSkip: ["a", "b"],
-  };
-  await emitOrderItemsCoverage(deps, coverage);
-
-  const msg = findDetailCoverage(protocolMessages);
-  assert.ok(msg);
-  assert.deepEqual(msg.optional_skip_keys, ["a", "b"], "PDPP_AMAZON_SKIP_DETAIL is a scope choice, not a gap");
-  assert.equal(msg.gap_keys, undefined, "a deliberate skip must never read as a degraded gap");
 });
 
 test("emitOrderItemsCoverage: a steady-state run with zero required orders still emits considered 0 / covered 0", async () => {
@@ -1858,18 +1838,15 @@ test("recoverPendingOrderItemDetailGapsBeforeForwardRun: recovery-only suppresse
   assert.ok(protocolMessages.some((message) => message.type === "DETAIL_GAP_RECOVERED"));
 });
 
-test("processListOrder: skipDetail records an optional_skip, never touching the page", async () => {
+test("processListOrder: skipDetail records as unaccounted (required but no outcome), never touches page", async () => {
   const coverage = newOrderItemsCoverage();
-  const { deps, protocolMessages } = makeRecordingDeps({ orderItemsCoverage: coverage, skipDetail: true });
+  const { deps } = makeRecordingDeps({ orderItemsCoverage: coverage, skipDetail: true });
   await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), makeListOrder({ orderId: "ord-3" }));
 
-  assert.deepEqual(coverage.required, ["ord-3"]);
-  assert.deepEqual(coverage.optionalSkip, ["ord-3"], "PDPP_AMAZON_SKIP_DETAIL is a policy skip");
-  assert.deepEqual(coverage.gap, []);
-  assert.deepEqual(coverage.hydrated, []);
-  // A policy skip is a scope choice, not a degraded fetch — it must NOT emit a
-  // DETAIL_GAP (an optional_skip_key satisfies coverage on its own).
-  assert.equal(findDetailGaps(protocolMessages).length, 0, "a policy skip emits no DETAIL_GAP");
+  // Unaccounted: required but absent from hydrated and gap (per spec: required key w/o outcome defers checkpoint)
+  assert.deepEqual(coverage.required, ["ord-3"], "PDPP_AMAZON_SKIP_DETAIL: required");
+  assert.deepEqual(coverage.gap, [], "no gap (no retry evidence)");
+  assert.deepEqual(coverage.hydrated, [], "not hydrated");
 });
 
 test("processListOrder: an unparseable order date is never counted toward order-item coverage", async () => {
@@ -2007,20 +1984,40 @@ test("a fully hydrated run emits zero DETAIL_GAP messages", async () => {
   assert.equal(cov.gap_keys, undefined, "a clean run carries no gap_keys either");
 });
 
-test("a policy-skipped run (PDPP_AMAZON_SKIP_DETAIL) emits optional skips and zero DETAIL_GAP", async () => {
+test("discriminator: policy-deferred (unaccounted) vs attempted-failed (gap) differ in outcome set", async () => {
+  // Policy-deferred: required but not in gap (unaccounted: checkpoint withheld)
+  const deferred = newOrderItemsCoverage();
+  const { deps: deferredDeps } = makeRecordingDeps({ orderItemsCoverage: deferred, skipDetail: true });
+  await processListOrder(NEVER_CALLED_PAGE, deferredDeps, makeRunFlags(), makeListOrder({ orderId: "deferred-1" }));
+  assert.deepEqual(deferred.required, ["deferred-1"], "policy-deferred: required");
+  assert.deepEqual(deferred.gap, [], "policy-deferred: not in gap");
+
+  // Attempted-but-failed: required + gap, backed by DETAIL_GAP for recovery
+  const failed = newOrderItemsCoverage();
+  const { deps: failedDeps, protocolMessages: failedMsgs } = makeRecordingDeps({ orderItemsCoverage: failed });
+  const failedPage = makeDetailPageStub(NO_DETAIL_HTML); // detail page will fail
+  await processListOrder(failedPage, failedDeps, makeRunFlags(), makeListOrder({ orderId: "failed-1" }));
+  assert.deepEqual(failed.required, ["failed-1"], "attempted: required");
+  assert.deepEqual(failed.gap, ["failed-1"], "attempted-failed: in gap");
+  assert.ok(findDetailGaps(failedMsgs).some((g) => g.record_key === "failed-1"), "gap backed by DETAIL_GAP");
+});
+
+test("policy-skipped run (PDPP_AMAZON_SKIP_DETAIL): unaccounted required defers checkpoint", async () => {
   const coverage = newOrderItemsCoverage();
   const { deps, protocolMessages } = makeRecordingDeps({ orderItemsCoverage: coverage, skipDetail: true });
   await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), makeListOrder({ orderId: "ord-skip-a" }));
   await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), makeListOrder({ orderId: "ord-skip-b" }));
   await emitOrderItemsCoverage(deps, coverage);
 
-  assert.equal(findDetailGaps(protocolMessages).length, 0, "a deliberate skip is not a degraded gap");
+  assert.equal(findDetailGaps(protocolMessages).length, 0, "unaccounted emit no DETAIL_GAP");
   const cov = findDetailCoverage(protocolMessages);
   assert.ok(cov);
-  assert.deepEqual(cov.optional_skip_keys, ["ord-skip-a", "ord-skip-b"], "skips ride optional_skip_keys, not gap_keys");
-  assert.equal(cov.gap_keys, undefined, "a skip-only run carries no gap_keys");
-  assert.equal(cov.considered, 2, "both skipped orders were still considered");
-  assert.equal(cov.covered, 2, "policy skips are covered, not counted as gaps");
+  // Per spec: unaccounted required keys (in required but absent from hydrated/gap/optional) defer the checkpoint
+  assert.deepEqual(cov.required_keys, ["ord-skip-a", "ord-skip-b"], "policy-deferred: required");
+  assert.equal(cov.gap_keys, undefined, "no gap_keys (unaccounted, not attempted)");
+  assert.equal(cov.optional_skip_keys, undefined);
+  assert.equal(cov.considered, 2, "both orders considered");
+  assert.equal(cov.covered, 0, "zero covered (unaccounted required defers checkpoint)");
 });
 
 test("a run with zero considered orders still emits a zero-required DETAIL_COVERAGE, but no DETAIL_GAP", async () => {

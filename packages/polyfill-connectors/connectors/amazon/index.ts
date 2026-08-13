@@ -504,19 +504,16 @@ export interface RunFlags {
  * spans every scraped year and is reported once after the year loop:
  *   - `required`  — every order considered for detail hydration (denominator).
  *   - `hydrated`  — orders whose detail page fetched and parsed (numerator).
- *   - `gap`       — orders whose detail fetch was attempted but degraded (null).
- *   - `optionalSkip` — orders whose detail was skipped by explicit policy
- *                      (`PDPP_AMAZON_SKIP_DETAIL=1`), a scope choice, not a gap.
+ *   - `gap`       — orders whose detail fetch was attempted but degraded (null, or deferred by policy).
  */
 export interface OrderItemsCoverage {
   gap: string[];
   hydrated: string[];
-  optionalSkip: string[];
   required: string[];
 }
 
 export function newOrderItemsCoverage(): OrderItemsCoverage {
-  return { gap: [], hydrated: [], optionalSkip: [], required: [] };
+  return { gap: [], hydrated: [], required: [] };
 }
 
 /**
@@ -547,17 +544,17 @@ export function newOrdersCoverage(): OrdersCoverage {
 }
 
 /** The detail-hydration outcome for one considered order. */
-export type DetailOutcome = "hydrated" | "gap" | "skipped";
+export type DetailOutcome = "hydrated" | "gap" | "unaccounted";
 
 /**
- * Classify one order's detail outcome. Detail skipped by explicit policy is an
- * `optional_skip` (a scope choice); an attempted detail that came back null is
- * a degraded `gap`; a parsed detail is `hydrated`. Pure so the branch is unit
- * testable without driving the browser detail stack.
+ * Classify one order's detail outcome. Policy-deferred orders
+ * (PDPP_AMAZON_SKIP_DETAIL=1) are "unaccounted": required but not in any
+ * outcome set. Per spec, required_keys absent from outcomes defer the
+ * checkpoint. Attempted-but-failed is gap (backed by DETAIL_GAP).
  */
 export function classifyDetailOutcome(skipDetail: boolean, detail: OrderDetail | null): DetailOutcome {
   if (skipDetail) {
-    return "skipped";
+    return "unaccounted";
   }
   return detail ? "hydrated" : "gap";
 }
@@ -576,9 +573,8 @@ export function recordDetailOutcome(coverage: OrderItemsCoverage, orderId: strin
     coverage.hydrated.push(orderId);
   } else if (outcome === "gap") {
     coverage.gap.push(orderId);
-  } else {
-    coverage.optionalSkip.push(orderId);
   }
+  // "unaccounted" orders: required but not in hydrated or gap, per spec
 }
 
 /**
@@ -911,9 +907,8 @@ export async function emitOrderItemsCoverage(deps: EmitDeps, coverage: OrderItem
     requiredKeys: coverage.required,
     hydratedKeys: coverage.hydrated,
     gapKeys: coverage.gap,
-    optionalSkipKeys: coverage.optionalSkip,
     considered: coverage.required.length,
-    covered: coverage.hydrated.length + coverage.optionalSkip.length,
+    covered: coverage.hydrated.length,
   });
 }
 
@@ -1362,16 +1357,10 @@ export async function processListOrder(
     deps.hydratedOrders?.set(listOrder.orderId, currentListFingerprint);
   }
   if (deps.orderItemsCoverage) {
-    // The list-page items still emit in every case; this only records whether
-    // the order's detail enrichment was hydrated, degraded, or policy-skipped.
     const outcome = classifyDetailOutcome(deps.skipDetail, detail);
     recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, outcome);
-    // A degraded (attempted-but-null) detail must back its coverage `gap_key`
-    // with a durable pending DETAIL_GAP, or the run fails at state-commit (see
-    // buildOrderDetailGap). One gap per gap order — processListOrder runs once
-    // per order, and these emit during the year loop, strictly before the
-    // run-level DETAIL_COVERAGE. A policy skip (`optional_skip`) and a hydration
-    // emit no gap.
+    // Attempted-but-failed detail emits a durable DETAIL_GAP so the gap_key is
+    // backed and the checkpoint is satisfiable on recovery.
     if (outcome === "gap") {
       await deps.emit(
         buildOrderDetailGap(listOrder.orderId, detailGapReason, detailFailureKind ?? undefined, orderDate)
