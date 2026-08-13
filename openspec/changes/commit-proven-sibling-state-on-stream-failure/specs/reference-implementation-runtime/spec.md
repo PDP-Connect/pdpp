@@ -58,4 +58,3 @@ The reference runtime SHALL stream records to the resource server in batches, fl
 - **WHEN** a record-batch ingest is rejected with any status other than a 404 `not_found`, or with a `not_found` for a stream not present in the run's START scope
 - **THEN** the reference runtime SHALL fail the run as it does today
 - **AND** it SHALL NOT reclassify the rejection as a transient per-stream gap
-

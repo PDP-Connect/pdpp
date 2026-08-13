@@ -9,9 +9,9 @@
  */
 import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
+import { validateRuntimeContinuationFact } from "../../packages/polyfill-connectors/src/connector-runtime-protocol.ts";
 import { emitControllerBootedAndStashEpoch } from "../lib/controller-boot.ts";
 import type { SpineEventInput, SpineEventRecord } from "../lib/spine.ts";
-import { validateRuntimeContinuationFact } from "../../packages/polyfill-connectors/src/connector-runtime-protocol.ts";
 import { createTraceContext, emitSpineEvent, getCurrentBootEpoch } from "../lib/spine.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { readStoredCollectionScope } from "../server/local-collection-scope.ts";
@@ -2632,6 +2632,14 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // the next run re-collects them once the RS manifest row re-heals. See OpenSpec
   // change harden-ingest-against-transient-manifest-drift.
   const driftSkippedStreams = new Set<string>();
+  // Streams that reported their own terminal failure via
+  // SKIP_RESULT{reason:"stream_collection_failed", stream}. Populated only
+  // when `stream` is present (in-scope, proven by validateSkipResultMessage)
+  // — an untargeted SKIP_RESULT never certifies any specific stream as
+  // failed. Read by handleDoneClose: a failed DONE is trusted as a
+  // stream-scoped (rather than whole-run) failure only when this set is
+  // non-empty, and only the streams named here are excluded from commit.
+  const streamCollectionFailedStreams = new Set<string>();
   const durableDetailGaps: DurableDetailGap[] = [];
   // First-sighting idempotency for run.detail_gap_recorded: gap_ids already
   // emitted as `recorded` THIS run. Closes the resumed-run-stdout-replay edge
@@ -2640,6 +2648,9 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // attention-writer's open/byRequestId Maps) — no schema change on the hot spine
   // append path. The cross-run re-defer suppression is the discovered_run_id gate.
   const detailGapRecordedThisRun = new Set<string>();
+  // A connector's DETAIL_COVERAGE evidence may override the static manifest
+  // mapping, but one data stream must not acquire two runtime parents.
+  const detailCoverageStateStreamByStream = new Map<string, string>();
   const detailCoverageByStateStream = new Map<string, DetailCoverageEntry[]>();
   // Latest `collection_rate` progress payload seen this run. Updated on each
   // rate-change PROGRESS event so the terminal event can carry the final
@@ -3006,6 +3017,14 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     // `validateDetailCoverageMessage` ran first: state_stream/stream are
     // non-empty strings and the three key arrays are string/number arrays.
     const stateStream = msg.state_stream as string;
+    const stream = msg.stream as string;
+    const previousStateStream = detailCoverageStateStreamByStream.get(stream);
+    if (previousStateStream && previousStateStream !== stateStream) {
+      throw new Error(
+        `Connector emitted invalid DETAIL_COVERAGE.stream: stream '${stream}' maps to multiple state_stream parents ('${previousStateStream}', '${stateStream}')`
+      );
+    }
+    detailCoverageStateStreamByStream.set(stream, stateStream);
     const entries = detailCoverageByStateStream.get(stateStream) || [];
     entries.push({
       // Optional connector-declared considered denominator (task 2.1). Retained
@@ -3028,9 +3047,27 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         ((msg.optional_skip_keys as (string | number)[] | null) || []).map(normalizeCoverageKey)
       ),
       requiredKeys: (msg.required_keys as (string | number)[]).map(normalizeCoverageKey),
-      stream: msg.stream as string,
+      stream,
     });
     detailCoverageByStateStream.set(stateStream, entries);
+  }
+
+  // Resolves the STATE_STREAM checkpoint key (the `newState`/`commitState`
+  // key) that a given DATA stream's cursor is actually staged under. A data
+  // stream and its state_stream are not always the same name: a manifest may
+  // declare several data streams sharing one parent state_stream
+  // (`stream.state_stream`, see buildManifestStateStreamMap), and a
+  // connector's own DETAIL_COVERAGE{state_stream, stream} messages are an
+  // independent, connector-self-reported association that is not required to
+  // agree with the manifest. Preference order: DETAIL_COVERAGE observed THIS
+  // run (the connector's own live claim, and the only source with no static
+  // fallback if it disagrees with the manifest) — then the manifest's static
+  // declaration — then the data stream name itself (no distinct state_stream
+  // declared or observed anywhere).
+  function resolveStateStreamForDataStream(dataStream: string): string {
+    return (
+      detailCoverageStateStreamByStream.get(dataStream) || manifestStateStreamByStream.get(dataStream) || dataStream
+    );
   }
 
   // A DETAIL_COVERAGE shortfall is a coverage GAP, not a protocol violation.
@@ -4227,13 +4264,16 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       // proved it is a non-empty, in-scope stream name.
       const skipStream = (msg.stream as string | undefined) || null;
       const skippedManifestStream = skipStream ? manifestByStream.get(skipStream) : null;
+      if (skipStream && msg.reason === "stream_collection_failed") {
+        streamCollectionFailedStreams.add(skipStream);
+      }
       const continuation = msg.continuation ?? null;
       if (continuation !== null) {
         validateRuntimeContinuationFact(continuation);
       }
       const gap = buildKnownGap({
-        diagnostics: msg.diagnostics ?? null,
         continuation,
+        diagnostics: msg.diagnostics ?? null,
         explicitSelection: Boolean(skipStream && explicitlyRequestedStreams?.has(skipStream)),
         kind: "skip_result",
         message: (msg.message as string | undefined) || null,
@@ -4771,14 +4811,66 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       cleanupChildHandles();
       await awaitLeaseAccounting();
 
-      if (done.status === "succeeded" && persistState) {
-        // Unproven coverage withholds only its own state_stream's cursor; every
-        // other stream still commits, and the run stays successful with the
-        // shortfall reported as a known gap.
+      const isCertifiedStreamCollectionFailure =
+        done.status === "failed" &&
+        done.error?.code === "stream_collection_failed" &&
+        streamCollectionFailedStreams.size > 0;
+      if (persistState && (done.status === "succeeded" || isCertifiedStreamCollectionFailure)) {
         const coverageShortfallStateStreams = await recordDetailCoverageShortfalls();
-        await Object.entries(newState)
-          .filter(([stream]) => !coverageShortfallStateStreams.has(stream))
-          .reduce((previous, [stream, cursor]) => previous.then(() => commitState(stream, cursor)), Promise.resolve());
+        if (done.status === "succeeded") {
+          // Unproven coverage withholds only its own state_stream's cursor; every
+          // other stream still commits, and the run stays successful with the
+          // shortfall reported as a known gap.
+          await Object.entries(newState)
+            .filter(([stream]) => !coverageShortfallStateStreams.has(stream))
+            .reduce(
+              (previous, [stream, cursor]) => previous.then(() => commitState(stream, cursor)),
+              Promise.resolve()
+            );
+        } else {
+          // A failed DONE is normally a global failure: the run's state map is
+          // unproven and nothing commits (the else-branch this replaces for
+          // every other failed/cancelled/crashed/protocol-mismatched close).
+          // The one exception the runtime can verify structurally: the
+          // connector certified the failure as stream-scoped by (a) declaring
+          // DONE.error.code === "stream_collection_failed" AND (b) emitting at
+          // least one in-scope SKIP_RESULT{reason:"stream_collection_failed"}
+          // naming the specific stream(s) that failed. Only those named
+          // streams' cursors are withheld; every other staged stream reached
+          // its own terminal STATE with no reported failure and is provably
+          // safe to commit. A DONE claiming this code with zero matching
+          // SKIP_RESULT (streamCollectionFailedStreams.size === 0) is not
+          // structurally certified and falls through to the fail-closed
+          // default — never trust the code string alone.
+          //
+          // SKIP_RESULT.stream names a DATA stream, but `newState`/`commitState`
+          // are keyed by STATE_STREAM (the checkpoint's own key), which a
+          // manifest may declare as a distinct parent key shared by several
+          // data streams (`stream.state_stream`, see buildManifestStateStreamMap)
+          // — and a connector's own DETAIL_COVERAGE messages independently
+          // assert a stream->state_stream association that is not required to
+          // match the manifest's declaration. Mapping the failed DATA stream
+          // straight through as if it were the STATE_STREAM key would filter
+          // nothing (no match in newState) and falsely commit the parent
+          // checkpoint a failed CHILD stream shares with untouched siblings.
+          // resolveStateStreamForDataStream consults whichever mapping this run
+          // actually observed (DETAIL_COVERAGE first, since it is the
+          // connector's own live self-report; the static manifest declaration
+          // as fallback; the data stream name itself when neither applies) so
+          // the exclusion always targets the real checkpoint key.
+          const failedStateStreams = new Set(
+            Array.from(streamCollectionFailedStreams, (stream) => resolveStateStreamForDataStream(stream))
+          );
+          await Object.entries(newState)
+            .filter(
+              ([stateStream]) =>
+                !(failedStateStreams.has(stateStream) || coverageShortfallStateStreams.has(stateStream))
+            )
+            .reduce(
+              (previous, [stateStream, cursor]) => previous.then(() => commitState(stateStream, cursor)),
+              Promise.resolve()
+            );
+        }
       }
       const assistanceStatus = done.status === "succeeded" ? "resolved" : "cancelled";
       const assistanceReason = done.status === "succeeded" ? "run_completed" : "connector_reported_failed";
