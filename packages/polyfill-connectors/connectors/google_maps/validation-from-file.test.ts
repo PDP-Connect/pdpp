@@ -455,7 +455,7 @@ test("validateGoogleMapsTimelineArtifactFromFile: a large sparse export never ca
   }
 });
 
-test("outcome proof: a 60 MiB sparse Timeline export validates cleanly under a bounded heap that a whole-buffer regression cannot survive", async () => {
+test("outcome proof: a 110 MiB sparse Timeline export separates streaming from whole-buffer parsing at one heap limit", async () => {
   // Deterministic child-process oracle, not an in-process memory-delta
   // measurement (the prior in-process external-memory-delta test here was
   // proven decorative by mutation testing -- it passed even when reverted
@@ -464,7 +464,7 @@ test("outcome proof: a 60 MiB sparse Timeline export validates cleanly under a b
   // multi-year export. Fixture construction happens in this (unconstrained)
   // process; the child only receives the finished file's path and size, so
   // its heap budget is spent solely on validation.
-  const TARGET_BYTES = 60 * 1024 * 1024;
+  const TARGET_BYTES = 110 * 1024 * 1024;
   const template = { accuracy: 5, latitudeE7: 377_749_000, longitudeE7: -1_224_194_000, timestampMs: "1717595122000" };
   const perElementBytes = Buffer.byteLength(JSON.stringify(template), "utf8") + 1;
   const elementCount = Math.ceil(TARGET_BYTES / perElementBytes);
@@ -490,9 +490,19 @@ test("outcome proof: a 60 MiB sparse Timeline export validates cleanly under a b
 
     const { spawnSync } = await import("node:child_process");
     const childPath = new URL("./oversized-element-oracle-child.ts", import.meta.url);
+    const wholeBuffer = spawnSync(
+      process.execPath,
+      ["--max-old-space-size=220", "--import", "tsx", childPath.pathname, path, String(fileSize), "whole-buffer"],
+      { encoding: "utf8", timeout: 30_000 }
+    );
+    assert.notEqual(
+      wholeBuffer.status,
+      0,
+      `whole-buffer mutation unexpectedly survived the heap discriminator: status=${wholeBuffer.status} signal=${wholeBuffer.signal}`
+    );
     const result = spawnSync(
       process.execPath,
-      ["--max-old-space-size=150", "--import", "tsx", childPath.pathname, path, String(fileSize)],
+      ["--max-old-space-size=220", "--import", "tsx", childPath.pathname, path, String(fileSize)],
       { encoding: "utf8", timeout: 30_000 }
     );
 
@@ -511,7 +521,7 @@ test("outcome proof: a 60 MiB sparse Timeline export validates cleanly under a b
 
 test("outcome proof: large wrapped locations and semanticSegments arrays stay below a hard heap limit", async () => {
   // This complementary shape probe uses a still-large 20 MiB array. The
-  // separate 60 MiB sparse oracle above is the whole-buffer discriminator;
+  // separate 110 MiB sparse oracle above is the whole-buffer discriminator;
   // this test keeps both wrapped shapes covered without making parser/runtime
   // allocation overhead the false failure signal on CI Node versions.
   const TARGET_BYTES = 20 * 1024 * 1024;

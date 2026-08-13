@@ -10,6 +10,7 @@
  * spent exclusively on the validation call itself.
  */
 
+import { readFileSync } from "node:fs";
 import { streamGoogleMapsExport } from "./archive-stream.ts";
 import { validateGoogleMapsTimelineArtifactFromFile } from "./validation.ts";
 
@@ -21,7 +22,11 @@ if (!(path && fileSizeArg)) {
 
 const fileSize = Number(fileSizeArg);
 
-if (mode === "stream") {
+if (mode === "whole-buffer") {
+  const json = JSON.parse(readFileSync(path, "utf8"));
+  process.stdout.write(`${JSON.stringify({ status: Array.isArray(json.locations) ? "valid" : "unsupported" })}\n`);
+  process.exit(0);
+} else if (mode === "stream") {
   let elements = 0;
   streamGoogleMapsExport(path, (event) => {
     if (event.kind === "element") {

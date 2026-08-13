@@ -113,6 +113,7 @@ class SemanticSegmentKeyTracker {
     kind: "object" | "array";
     pendingKey: string | undefined;
     segmentIndex: number | undefined;
+    format: GoogleMapsSourceFormat | undefined;
   }> = [];
   private readonly onUnknownKey: (index: number, key: string) => void;
   private nextSegmentIndex = 0;
@@ -146,14 +147,24 @@ class SemanticSegmentKeyTracker {
     }
     const key = typeof value === "string" ? value : undefined;
     frame.pendingKey = key;
-    if (key && this.stack.length === 3 && !SEMANTIC_SEGMENT_KNOWN_KEYS.has(key) && frame.segmentIndex !== undefined) {
+    if (
+      key &&
+      this.stack.length === 3 &&
+      this.stack[1]?.format === "semantic_segments" &&
+      !SEMANTIC_SEGMENT_KNOWN_KEYS.has(key) &&
+      frame.segmentIndex !== undefined
+    ) {
       this.onUnknownKey(frame.segmentIndex, key);
     }
   }
 
   private handleOpen(token: TokenType.LEFT_BRACE | TokenType.LEFT_BRACKET): void {
     const parent = this.stack.at(-1);
-    const isSegment = token === TokenType.LEFT_BRACE && parent?.kind === "array" && parent.segmentIndex === undefined;
+    const isSegment =
+      token === TokenType.LEFT_BRACE &&
+      parent?.kind === "array" &&
+      parent.format === "semantic_segments" &&
+      parent.segmentIndex === undefined;
     let segmentIndex = parent?.segmentIndex;
     if (isSegment) {
       segmentIndex = this.nextSegmentIndex;
@@ -163,6 +174,11 @@ class SemanticSegmentKeyTracker {
       kind: token === TokenType.LEFT_BRACE ? "object" : "array",
       pendingKey: undefined,
       segmentIndex,
+      format:
+        token === TokenType.LEFT_BRACKET &&
+        (parent?.format === "semantic_segments" || parent?.pendingKey === "semanticSegments")
+          ? "semantic_segments"
+          : undefined,
     });
   }
 

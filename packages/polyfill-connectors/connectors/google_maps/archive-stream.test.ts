@@ -33,6 +33,31 @@ function writeTmpFile(content: string): { dir: string; path: string } {
   return { dir, path };
 }
 
+test("semantic unknown-key tracking stays indexed to semanticSegments after another root array", async () => {
+  const content = JSON.stringify({
+    locations: [{ latitudeE7: 377_749_000, longitudeE7: -1_224_194_000, timestampMs: "1717595122000" }],
+    semanticSegments: [
+      {
+        duration: { startTimestamp: "2024-06-05T13:45:22Z" },
+        providerFutureField: { preserved: true },
+      },
+    ],
+  });
+  const { dir, path } = writeTmpFile(content);
+  try {
+    const semanticValues: unknown[] = [];
+    await streamGoogleMapsExport(path, (event) => {
+      if (event.kind === "element" && event.format === "semantic_segments") {
+        semanticValues.push(event.value);
+      }
+    });
+    assert.equal(semanticValues.length, 1);
+    assert.deepEqual((semanticValues[0] as Record<string, unknown>).providerFutureField, {});
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("an oversized UNRELATED trailing root field after the last recognized element does not throw too-large", async () => {
   const segments = Array.from({ length: 200 }, () => ({
     activity: { activityType: "WALKING" },
