@@ -493,7 +493,16 @@ async function fetchCatalogManifests({
     }
   }
   const manifests = await Promise.all(
-    [...connectorIds].map((connectorId) => fetchCatalogManifest({ base, connectorId, fetchImpl, headers, onRevision }))
+    [...connectorIds].map(async (connectorId) => {
+      try {
+        return await fetchCatalogManifest({ base, connectorId, fetchImpl, headers, onRevision });
+      } catch {
+        // A malformed persisted manifest belongs to one connection. Preserve
+        // that connection as manifest-unavailable without discarding evidence
+        // for every other owner connection in the fleet.
+        return { connector_id: connectorId, streams: [] };
+      }
+    })
   );
   return manifests;
 }

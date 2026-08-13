@@ -966,6 +966,31 @@ export function shouldAutoReconcilePolyfillManifests({
   return looksLikePolyfillDeploymentDbPath(dbPath);
 }
 
+export async function collectValidRegisteredConnectorManifests({
+  logger,
+  listConnectorIds = listRegisteredConnectorIds,
+  loadManifest = getConnectorManifest,
+}: {
+  logger: LoggerLike;
+  listConnectorIds?: () => Promise<string[]>;
+  loadManifest?: (connectorId: string) => Promise<ConnectorManifest | null>;
+}) {
+  const manifests: { connectorId: string; manifest: ConnectorManifest }[] = [];
+  const connectorIds = await listConnectorIds();
+  for (const connectorId of connectorIds) {
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+      const manifest = await loadManifest(connectorId);
+      if (manifest) {
+        manifests.push({ connectorId, manifest });
+      }
+    } catch (err) {
+      logger.warn({ connectorId, err }, "skipping retrieval startup backfill for connector with invalid manifest");
+    }
+  }
+  return manifests;
+}
+
 async function collectRetrievalStartupBackfillManifests({
   nativeManifest,
   logger,
@@ -976,22 +1001,8 @@ async function collectRetrievalStartupBackfillManifests({
   if (nativeManifest) {
     return [nativeManifest];
   }
-
-  // biome-ignore lint/suspicious/noEvolvingTypes: This runtime-untyped boundary requires staged type narrowing.
-  const manifests = [];
-  const connectorIds = await listRegisteredConnectorIds();
-  for (const connectorId of connectorIds) {
-    try {
-      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-      const manifest = await getConnectorManifest(connectorId);
-      if (manifest) {
-        manifests.push(manifest);
-      }
-    } catch (err) {
-      logger.warn({ connectorId, err }, "skipping retrieval startup backfill for connector with invalid manifest");
-    }
-  }
-  return manifests;
+  const registered = await collectValidRegisteredConnectorManifests({ logger });
+  return registered.map(({ manifest }) => manifest);
 }
 
 async function runRetrievalStartupBackfill({
@@ -7615,14 +7626,8 @@ export async function startServer(opts: ServerOpts = {}) {
         return false;
       },
       listConnectors: async () => {
-        const ids = await listRegisteredConnectorIds();
-        const rows = await Promise.all(
-          (ids as string[]).map(async (connectorId: string) => ({
-            connector_id: connectorId,
-            manifest: await getConnectorManifest(connectorId),
-          }))
-        );
-        return rows;
+        const manifests = await collectValidRegisteredConnectorManifests({ logger });
+        return manifests.map(({ connectorId, manifest }) => ({ connector_id: connectorId, manifest }));
       },
       log: (msg) => logger.info(msg),
     });

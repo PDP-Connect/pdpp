@@ -251,10 +251,12 @@ const KNOWN_CONDITION_REASONS = new Set([
   "runtime_not_managed",
   "runtime_state_unknown",
   "runtime_unavailable",
+  "retry_not_applicable",
   "schedule_enabled",
   "schedule_not_configured",
   "schedule_paused",
   "scheduler_backoff_active",
+  "scheduler_error",
   "stale",
   "stale_assisted_refresh",
   "stale_manual_refresh",
@@ -1189,9 +1191,11 @@ function projectionAgreement(connection: JsonObject, manifest: ResolvedManifest 
   if (unexpectedReport) {
     return `collection_report contains undeclared stream ${unexpectedReport}`;
   }
-  const unexpectedRecord = [...records.map.keys()].find((name) => !manifestNames.has(name));
+  const unexpectedRecord = [...records.map.entries()].find(
+    ([name, record]) => !manifestNames.has(name) && record.declaration_state !== "dormant"
+  );
   if (unexpectedRecord) {
-    return `stream_records contains undeclared stream ${unexpectedRecord}`;
+    return `stream_records contains undeclared stream ${unexpectedRecord[0]}`;
   }
   const manifestByName = new Map(manifest.streams.map((stream) => [stream.name, stream]));
   const mismatchedRequired = [...report.map.values()].find((entry) => {
@@ -1200,6 +1204,21 @@ function projectionAgreement(connection: JsonObject, manifest: ResolvedManifest 
   });
   if (mismatchedRequired) {
     return `collection_report requiredness disagrees for ${String(mismatchedRequired.stream)}`;
+  }
+  const mismatchedStrategy = [...report.map.values()].find((entry) => {
+    const declared = manifestByName.get(String(entry.stream));
+    if (!declared) {
+      return false;
+    }
+    const coverageStrategy = asNonEmptyString(declared.raw.coverage_strategy);
+    const freshnessStrategy = asNonEmptyString(declared.raw.freshness_strategy);
+    return (
+      (coverageStrategy !== null && entry.coverage_strategy !== coverageStrategy) ||
+      (freshnessStrategy !== null && entry.freshness_strategy !== freshnessStrategy)
+    );
+  });
+  if (mismatchedStrategy) {
+    return `collection_report strategy disagrees for ${String(mismatchedStrategy.stream)}`;
   }
 
   const health = nestedObject(connection, "connection_health");
@@ -1221,6 +1240,7 @@ function projectionAgreement(connection: JsonObject, manifest: ResolvedManifest 
   }
   const axes = nestedObject(health, "axes");
   const reportConditions = [...report.map.values()]
+    .filter((entry) => entry.required !== false)
     .map((entry) => asNonEmptyString(entry.coverage_condition))
     .filter((condition): condition is string => Boolean(condition));
   if (axes?.coverage === "complete" && reportConditions.some((condition) => condition !== "complete")) {
@@ -1249,7 +1269,6 @@ function hasActiveBoundedWork(connection: JsonObject): boolean {
     badges?.syncing === true ||
     axes?.outbox === "active" ||
     health?.forward_disposition === "checking" ||
-    health?.forward_disposition === "resumable" ||
     report.some((entry) => asObject(entry)?.forward_disposition === "checking") ||
     (lastRun?.status !== "waiting_for_browser_surface" &&
       typeof lastRun?.status === "string" &&
@@ -1359,6 +1378,40 @@ function successfulRuntimeEvidence(connection: JsonObject, report: JsonObject): 
   return successfulTimes.includes(evidenceAsOf);
 }
 
+function successfulLocalDeviceEvidence(connection: JsonObject, report: JsonObject): boolean {
+  if (report.freshness_strategy !== "device_heartbeat") {
+    return false;
+  }
+  const progress = nestedObject(connection, "local_device_progress");
+  const outbox = nestedObject(progress, "outbox_counts");
+  const evidenceAt = Date.parse(asNonEmptyString(report.evidence_as_of) ?? "");
+  const lastHeartbeatAt = Date.parse(asNonEmptyString(progress?.last_heartbeat_at) ?? "");
+  const lastIngestAt = Date.parse(asNonEmptyString(progress?.last_ingest_at) ?? "");
+  const noOutstandingWork = ["backlog_open", "dead_letter", "leased", "pending", "retrying", "stale_leases"].every(
+    (key) => outbox?.[key] === 0
+  );
+  const accountedTotal = ["dead_letter", "leased", "pending", "retrying", "succeeded"].reduce(
+    (total, key) => total + (isNonNegativeInteger(outbox?.[key]) ? outbox[key] : Number.NaN),
+    0
+  );
+  return (
+    progress?.last_heartbeat_status === "healthy" &&
+    progress.records_pending === 0 &&
+    isNonNegativeInteger(progress.source_count) &&
+    progress.source_count > 0 &&
+    isNonNegativeInteger(outbox?.succeeded) &&
+    outbox.succeeded > 0 &&
+    isNonNegativeInteger(outbox.total) &&
+    outbox.total === accountedTotal &&
+    noOutstandingWork &&
+    Number.isFinite(evidenceAt) &&
+    Number.isFinite(lastHeartbeatAt) &&
+    Number.isFinite(lastIngestAt) &&
+    lastIngestAt <= evidenceAt &&
+    evidenceAt <= lastHeartbeatAt
+  );
+}
+
 function latestRunFailed(connection: JsonObject): boolean {
   const lastRun = asObject(connection.last_run);
   return typeof lastRun?.status === "string" && FAILED_RUN_STATUSES.has(lastRun.status);
@@ -1448,6 +1501,32 @@ function committedCoverageProof(report: JsonObject): boolean {
   );
 }
 
+function localDeviceCoverageProof(connection: JsonObject, report: JsonObject, stream: ManifestStream): boolean {
+  return (
+    report.coverage_condition === "complete" &&
+    report.forward_disposition === "complete" &&
+    typeof report.coverage_strategy === "string" &&
+    KNOWN_COVERAGE_STRATEGIES.has(report.coverage_strategy) &&
+    report.coverage_strategy === stream.raw.coverage_strategy &&
+    report.freshness_strategy === stream.raw.freshness_strategy &&
+    successfulLocalDeviceEvidence(connection, report)
+  );
+}
+
+function retainedRecordProjectionFailure(record: JsonObject | undefined): string | null {
+  const count = record?.record_count;
+  if (typeof count !== "number" || !Number.isFinite(count) || !Number.isInteger(count) || count < 0) {
+    return "records are present without a usable retained-record projection";
+  }
+  if (record?.count_state === "stale" || record?.count_state === "unobserved" || record?.count_state === "unknown") {
+    return "retained-record projection is not authoritative";
+  }
+  if (record?.declaration_state !== undefined && record.declaration_state !== "declared") {
+    return "retained-record declaration is not current";
+  }
+  return null;
+}
+
 function isGreenStream(
   connection: JsonObject,
   stream: ManifestStream,
@@ -1457,7 +1536,8 @@ function isGreenStream(
   if (!report) {
     return { green: false, reason: "no collection report for the manifest-declared stream" };
   }
-  if (!successfulRuntimeEvidence(connection, report)) {
+  const localDeviceProof = localDeviceCoverageProof(connection, report, stream);
+  if (!(successfulRuntimeEvidence(connection, report) || localDeviceProof)) {
     return { green: false, reason: "no current successful runtime evidence" };
   }
   if (!currentProjectionEvidence(connection)) {
@@ -1466,32 +1546,31 @@ function isGreenStream(
   const considered = report.considered as number;
   const covered = report.covered as number;
   const verifiedEmpty = considered === 0 && covered === 0 && explicitVerifiedEmpty(connection, report);
-  if (!(committedCoverageProof(report) || verifiedEmpty)) {
+  if (!(committedCoverageProof(report) || verifiedEmpty || localDeviceProof)) {
     return { green: false, reason: "committed coverage or explicit verified-empty proof is incomplete" };
   }
-  if (verifiedEmpty) {
-    return { green: true, reason: "successful runtime evidence plus explicit verified-empty proof" };
+  if (localDeviceProof) {
+    return { green: true, reason: "healthy local-device receipt completed this stream with no queued work" };
+  }
+  const recordFailure = retainedRecordProjectionFailure(record);
+  if (recordFailure) {
+    return { green: false, reason: recordFailure };
+  }
+  const recordCount = record?.record_count as number;
+  if (considered === 0 && covered === 0) {
+    return {
+      green: true,
+      reason:
+        recordCount === 0
+          ? "successful runtime evidence plus strategy-proven empty coverage"
+          : "successful runtime evidence plus strategy-proven zero-delta coverage",
+    };
   }
   if (considered === 0 || covered === 0) {
-    return { green: false, reason: "zero evidence is not explicitly verified empty" };
+    return { green: false, reason: "coverage denominator and covered count disagree" };
   }
-  const recordCount = record?.record_count;
-  if (
-    typeof recordCount !== "number" ||
-    !Number.isFinite(recordCount) ||
-    !Number.isInteger(recordCount) ||
-    recordCount < 0
-  ) {
-    return { green: false, reason: "records are present without a usable retained-record projection" };
-  }
-  if (record?.count_state === "stale" || record?.count_state === "unobserved" || record?.count_state === "unknown") {
-    return { green: false, reason: "retained-record projection is not authoritative" };
-  }
-  if (record?.declaration_state !== undefined && record.declaration_state !== "declared") {
-    return { green: false, reason: "retained-record declaration is not current" };
-  }
-  if (recordCount === 0 && !explicitVerifiedEmpty(connection, report)) {
-    return { green: false, reason: "record count zero has no explicit verified-empty proof" };
+  if (recordCount === 0) {
+    return { green: false, reason: "positive coverage disagrees with an empty retained-record projection" };
   }
   return { green: true, reason: `successful runtime evidence covers ${stream.name}` };
 }

@@ -27,7 +27,14 @@ function manifest(overrides: Json = {}): Json {
   return {
     connector_id: "mail",
     version: "manifest-1",
-    streams: [{ name: "messages", required: true }],
+    streams: [
+      {
+        name: "messages",
+        required: true,
+        coverage_strategy: "full_inventory",
+        freshness_strategy: "manual_as_of",
+      },
+    ],
     ...overrides,
   };
 }
@@ -458,7 +465,7 @@ test("accepts canonical RI producer reasons but rejects unknown reasons", () => 
   assert.match(streamResult(unknown).reason, FUTURE_PROVIDER_REASON_PATTERN);
 });
 
-test("a healthy empty stream requires explicit verified-empty proof", () => {
+test("strategy-specific coverage proves both an empty source and a zero-delta refresh", () => {
   const connection = healthyConnection();
   const [report] = connection.collection_report as Json[];
   const [record] = connection.stream_records as Json[];
@@ -466,14 +473,70 @@ test("a healthy empty stream requires explicit verified-empty proof", () => {
   assert.ok(record);
   report.considered = 0;
   report.covered = 0;
-  report.verified_empty = true;
   record.record_count = 0;
   record.count_state = "known_zero";
 
   const result = evaluate(connection);
   assert.equal(result.status, "pass");
   assert.deepEqual(result.score, { denominator: 1, numerator: 1, percentage: 100, ratio: "1/1" });
-  assert.equal(streamResult(result).reason, "successful runtime evidence plus explicit verified-empty proof");
+  assert.equal(streamResult(result).reason, "successful runtime evidence plus strategy-proven empty coverage");
+
+  record.record_count = 7;
+  record.count_state = "known";
+  const zeroDelta = evaluate(connection);
+  assert.equal(zeroDelta.status, "pass");
+  assert.equal(streamResult(zeroDelta).reason, "successful runtime evidence plus strategy-proven zero-delta coverage");
+});
+
+test("healthy local-device receipts prove stream completion only after durable work drains", () => {
+  const connection = healthyConnection({
+    last_run: null,
+    last_successful_run: null,
+    local_device_progress: {
+      last_heartbeat_at: "2026-08-11T12:00:02.000Z",
+      last_heartbeat_status: "healthy",
+      last_ingest_at: "2026-08-11T12:00:00.000Z",
+      outbox_counts: {
+        backlog_open: 0,
+        dead_letter: 0,
+        leased: 0,
+        pending: 0,
+        retrying: 0,
+        stale_leases: 0,
+        succeeded: 2,
+        total: 2,
+      },
+      records_pending: 0,
+      source_count: 1,
+    },
+  });
+  const [report] = connection.collection_report as Json[];
+  assert.ok(report);
+  report.checkpoint = "unknown";
+  report.considered = "unknown";
+  report.covered = "unknown";
+  report.coverage_strategy = "snapshot_import_receipt";
+  report.forward_disposition = "complete";
+  report.freshness_strategy = "device_heartbeat";
+
+  const localManifest = manifest({
+    streams: [
+      {
+        name: "messages",
+        required: true,
+        coverage_strategy: "snapshot_import_receipt",
+        freshness_strategy: "device_heartbeat",
+      },
+    ],
+  });
+  const complete = evaluate(connection, localManifest);
+  assert.equal(complete.status, "pass");
+  assert.equal(streamResult(complete).reason, "healthy local-device receipt completed this stream with no queued work");
+
+  ((connection.local_device_progress as Json).outbox_counts as Json).pending = 1;
+  const pending = evaluate(connection, localManifest);
+  assert.equal(pending.status, "fail");
+  assert.match(streamResult(pending).reason, SUCCESSFUL_RUNTIME_EVIDENCE_PATTERN);
 });
 
 test("false-known-zero is unobserved, while records/checkpoints without a successful run never turn green", () => {
@@ -484,6 +547,7 @@ test("false-known-zero is unobserved, while records/checkpoints without a succes
   assert.ok(falseZeroRecord);
   falseZeroReport.considered = 0;
   falseZeroReport.covered = 0;
+  falseZeroReport.checkpoint = "unknown";
   falseZeroRecord.record_count = 0;
   falseZeroRecord.count_state = "known_zero";
   const falseZeroResult = evaluate(falseZero);
@@ -653,6 +717,16 @@ test("uses the collection-report forward disposition and fails closed on manifes
   assert.ok(activeReport);
   activeReport.forward_disposition = "checking";
   assert.equal(streamResult(evaluate(active)).class, "active_bounded_work");
+
+  const resumableFailure = healthyConnection();
+  (resumableFailure.connection_health as Json).forward_disposition = "resumable";
+  resumableFailure.last_run = { status: "failed" };
+  (resumableFailure.rendered_verdict as Json).pill = { tone: "red" };
+  assert.equal(
+    streamResult(evaluate(resumableFailure)).class,
+    "failed",
+    "resumable means work may resume later, not that work is active now"
+  );
 
   const ownerRefresh = healthyConnection();
   (ownerRefresh.connection_health as Json).forward_disposition = "awaiting_owner";
@@ -1131,6 +1205,48 @@ test("live authority does not score a connection when its production manifest is
   assert.deepEqual(result.score, { denominator: 0, numerator: 0, percentage: null, ratio: "0/0" });
   assert.equal(result.perClass.manifest_unavailable, 1);
   assert.equal(result.status, "inconclusive");
+});
+
+test("live authority isolates a malformed manifest to its revoked connection", async () => {
+  const revoked = healthyConnection({
+    connection_id: "c-revoked",
+    connector_id: "retired-fixture",
+    revoked_at: "2026-08-11T00:00:00.000Z",
+    status: "revoked",
+  });
+  const fetchImpl: FetchImpl = (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === "/_ref/connectors") {
+      return Promise.resolve(response({ data: [healthyConnection(), revoked], has_more: false, object: "list" }));
+    }
+    if (parsed.pathname === "/connectors/mail") {
+      return Promise.resolve(response(manifest()));
+    }
+    if (parsed.pathname === "/connectors/retired-fixture") {
+      return Promise.resolve(response({ error: "connector_invalid" }, 400));
+    }
+    if (parsed.pathname === "/sources") {
+      return Promise.resolve(
+        response(
+          `<header data-pdpp-reference-revision="${REVISION}"><a data-pdpp-source-row="c1" href="/sources/c1">one</a><a data-pdpp-source-row="c-revoked" href="/sources/c-revoked">revoked</a><a data-pdpp-stream-row="true" data-connection-id="c1" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages"></a></header>`
+        )
+      );
+    }
+    throw new Error(`unexpected test URL ${url}`);
+  };
+
+  const result = await runLiveForTest({
+    env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
+    expectedRevision: REVISION,
+    expectedSha: "abcdef123456",
+    fetchImpl,
+    origin: "https://example.test",
+  });
+
+  assert.equal(result.fetched, true);
+  assert.deepEqual(result.score, { denominator: 1, numerator: 1, percentage: 100, ratio: "1/1" });
+  assert.equal(result.perClass.manifest_unavailable, 0);
+  assert.equal(result.status, "pass");
 });
 
 test("live authority accepts a resolved authenticated empty owner surface with an exact revision receipt", async () => {
