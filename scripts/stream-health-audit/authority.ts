@@ -151,6 +151,7 @@ const FAILED_RUN_STATUSES = new Set([
   "rejected",
   "surface_failed",
 ]);
+const OWNER_CANCEL_TERMINAL_REASONS = new Set(["owner_cancel_forced", "owner_cancelled"]);
 const ACTIVE_RUN_STATUSES = new Set(["active", "in_progress", "leased", "started", "starting_surface"]);
 const ACCEPTED_ABSENCE_POLICIES = new Set(["deferred", "inventory_only", "unavailable", "unsupported"]);
 const KNOWN_CONDITION_TYPES = new Set([
@@ -1313,12 +1314,11 @@ function isProviderConfigBlocked(connection: JsonObject): boolean {
 }
 
 function isFailed(connection: JsonObject): boolean {
-  const lastRun = asObject(connection.last_run);
   const health = nestedObject(connection, "connection_health");
   const axes = nestedObject(health, "axes");
   const pill = nestedObject(nestedObject(connection, "rendered_verdict"), "pill");
   return (
-    (typeof lastRun?.status === "string" && FAILED_RUN_STATUSES.has(lastRun.status)) ||
+    latestRunFailed(connection) ||
     axes?.coverage === "terminal_gap" ||
     health?.forward_disposition === "terminal" ||
     (pill?.tone === "red" && health?.state !== "blocked")
@@ -1355,14 +1355,15 @@ function successfulRuntimeEvidence(connection: JsonObject, report: JsonObject): 
     !(lastSuccess && lastRun) ||
     typeof lastSuccess.status !== "string" ||
     typeof lastRun.status !== "string" ||
-    !SUCCESSFUL_RUN_STATUSES.has(lastSuccess.status) ||
-    !SUCCESSFUL_RUN_STATUSES.has(lastRun.status)
+    !SUCCESSFUL_RUN_STATUSES.has(lastSuccess.status)
   ) {
     return false;
   }
   const lastSuccessId = asNonEmptyString(lastSuccess.run_id);
   const lastRunId = asNonEmptyString(lastRun.run_id);
-  if (!(lastSuccessId && lastRunId) || lastSuccessId !== lastRunId) {
+  const latestIsSuccess = SUCCESSFUL_RUN_STATUSES.has(lastRun.status);
+  const latestIsNeutralCancellation = isOwnerCancelledRun(lastRun);
+  if (!(lastSuccessId && ((latestIsSuccess && lastRunId === lastSuccessId) || latestIsNeutralCancellation))) {
     return false;
   }
   const evidenceAsOf = asNonEmptyString(report.evidence_as_of) ?? asNonEmptyString(report.as_of);
@@ -1372,8 +1373,7 @@ function successfulRuntimeEvidence(connection: JsonObject, report: JsonObject): 
   const successfulTimes = [
     asNonEmptyString(lastSuccess.finished_at),
     asNonEmptyString(lastSuccess.last_at),
-    asNonEmptyString(lastRun.finished_at),
-    asNonEmptyString(lastRun.last_at),
+    ...(latestIsSuccess ? [asNonEmptyString(lastRun.finished_at), asNonEmptyString(lastRun.last_at)] : []),
   ].filter((value): value is string => value !== null);
   return successfulTimes.includes(evidenceAsOf);
 }
@@ -1414,7 +1414,14 @@ function successfulLocalDeviceEvidence(connection: JsonObject, report: JsonObjec
 
 function latestRunFailed(connection: JsonObject): boolean {
   const lastRun = asObject(connection.last_run);
-  return typeof lastRun?.status === "string" && FAILED_RUN_STATUSES.has(lastRun.status);
+  return (
+    typeof lastRun?.status === "string" && FAILED_RUN_STATUSES.has(lastRun.status) && !isOwnerCancelledRun(lastRun)
+  );
+}
+
+function isOwnerCancelledRun(lastRun: JsonObject | null): boolean {
+  const reason = asNonEmptyString(lastRun?.terminal_reason) ?? asNonEmptyString(lastRun?.failure_reason);
+  return lastRun?.status === "cancelled" && reason !== null && OWNER_CANCEL_TERMINAL_REASONS.has(reason);
 }
 
 function committedCheckpoint(value: unknown): boolean {

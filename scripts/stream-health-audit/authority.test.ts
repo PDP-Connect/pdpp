@@ -654,6 +654,21 @@ test("cancelled latest runs, duplicate declarations, and fractional counts are r
   assert.equal(fractionalCoverageResult.status, "fail");
 });
 
+test("owner cancellation keeps the prior successful runtime proof authoritative", () => {
+  const cancelled = evaluate(
+    healthyConnection({
+      last_run: {
+        finished_at: "2026-05-19T12:05:00.000Z",
+        run_id: "run-owner-cancelled",
+        status: "cancelled",
+        terminal_reason: "owner_cancelled",
+      },
+    })
+  );
+
+  assert.equal(streamResult(cancelled).class, "green");
+});
+
 test("stale projection is distinct from unobserved and cannot be laundered by a green pill", () => {
   const connection = healthyConnection();
   (connection.record_snapshot as Json).state = "stale";
