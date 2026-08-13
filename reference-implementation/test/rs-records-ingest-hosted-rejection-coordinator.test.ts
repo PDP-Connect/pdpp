@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -643,7 +643,7 @@ async function cancelRun(asUrl: string, runId: string): Promise<{ body: Record<s
 }
 
 test("SQLite hosted ingest rejection coordinator rolls back joined rejection, quota, and audit effects", async () => {
-  const dbPath = join(mkdtempSync(join(homedir(), ".tmp", "pdpp-hosted-rejection-sqlite-")), "pdpp.sqlite");
+  const dbPath = join(mkdtempSync(join(tmpdir(), "pdpp-hosted-rejection-sqlite-")), "pdpp.sqlite");
   const connectorId = `hosted-rejection-sqlite-rollback-${RUN_ID}`;
   const ownerSubjectId = `owner_sqlite_rejection_rollback_${RUN_ID}`;
   let hookCalls = 0;
@@ -667,7 +667,7 @@ test("SQLite hosted ingest rejection coordinator rolls back joined rejection, qu
 });
 
 test("SQLite hosted ingest quota exhaustion is non-2xx and records no receipt, quota, or audit mutation", async () => {
-  const dbPath = join(mkdtempSync(join(homedir(), ".tmp", "pdpp-hosted-rejection-sqlite-quota-")), "pdpp.sqlite");
+  const dbPath = join(mkdtempSync(join(tmpdir(), "pdpp-hosted-rejection-sqlite-quota-")), "pdpp.sqlite");
   const connectorId = `hosted-rejection-sqlite-quota-${RUN_ID}`;
   const ownerSubjectId = `owner_sqlite_rejection_quota_${RUN_ID}`;
   const previousQuota = process.env[OWNER_QUOTA_ENV];
@@ -691,7 +691,7 @@ test("SQLite hosted ingest quota exhaustion is non-2xx and records no receipt, q
 });
 
 test("SQLite hosted ingest replays response-loss retry with the exact receipt handle", async () => {
-  const dbPath = join(mkdtempSync(join(homedir(), ".tmp", "pdpp-hosted-rejection-sqlite-replay-")), "pdpp.sqlite");
+  const dbPath = join(mkdtempSync(join(tmpdir(), "pdpp-hosted-rejection-sqlite-replay-")), "pdpp.sqlite");
   const connectorId = `hosted-rejection-sqlite-replay-${RUN_ID}`;
   const ownerSubjectId = `owner_sqlite_rejection_replay_${RUN_ID}`;
   await withHarness({ dbPath }, async ({ asUrl, rsUrl }) => {
@@ -870,7 +870,7 @@ async function runHostedRejectionRevokeRace(args: {
 }
 
 test("SQLite hosted rejection insert loses cleanly when revoke wins before the writable check", async () => {
-  const dbPath = join(mkdtempSync(join(homedir(), ".tmp", "pdpp-hosted-rejection-sqlite-revoke-race-")), "pdpp.sqlite");
+  const dbPath = join(mkdtempSync(join(tmpdir(), "pdpp-hosted-rejection-sqlite-revoke-race-")), "pdpp.sqlite");
   await runHostedRejectionRevokeRace({
     backend: "sqlite",
     connectorId: `hosted-rejection-sqlite-revoke-race-${RUN_ID}`,
@@ -959,7 +959,7 @@ async function runHostedRejectionDeleteRace(args: {
 }
 
 test("SQLite hosted rejection insert loses cleanly after serialized delete winner cleanup", async () => {
-  const dbPath = join(mkdtempSync(join(homedir(), ".tmp", "pdpp-hosted-rejection-sqlite-delete-race-")), "pdpp.sqlite");
+  const dbPath = join(mkdtempSync(join(tmpdir(), "pdpp-hosted-rejection-sqlite-delete-race-")), "pdpp.sqlite");
   await runHostedRejectionDeleteRace({
     backend: "sqlite",
     connectorId: `hosted-rejection-sqlite-delete-race-${RUN_ID}`,
@@ -1065,10 +1065,7 @@ async function runHostedRejectionTerminalRunRace(args: {
 }
 
 test("SQLite hosted rejection insert loses cleanly when its run terminalizes before the writable check", async () => {
-  const dbPath = join(
-    mkdtempSync(join(homedir(), ".tmp", "pdpp-hosted-rejection-sqlite-terminal-race-")),
-    "pdpp.sqlite"
-  );
+  const dbPath = join(mkdtempSync(join(tmpdir(), "pdpp-hosted-rejection-sqlite-terminal-race-")), "pdpp.sqlite");
   await runHostedRejectionTerminalRunRace({
     backend: "sqlite",
     connectorId: `hosted-rejection-sqlite-terminal-race-${RUN_ID}`,
@@ -1313,7 +1310,7 @@ async function inspectAndDeleteOwnerRejections(args: {
 }
 
 test("SQLite owner rejection inspection is authorized, paged, non-disclosing, fresh-process durable, and delete-cleaned", async () => {
-  const dbPath = join(mkdtempSync(join(homedir(), ".tmp", "pdpp-hosted-rejection-sqlite-owner-")), "pdpp.sqlite");
+  const dbPath = join(mkdtempSync(join(tmpdir(), "pdpp-hosted-rejection-sqlite-owner-")), "pdpp.sqlite");
   const ownerSubjectId = `owner_sqlite_rejection_owner_${RUN_ID}`;
   const connectorId = `hosted-rejection-sqlite-owner-${RUN_ID}`;
   const created = await runOwnerInspectionJourney({

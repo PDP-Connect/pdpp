@@ -1341,7 +1341,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
         recordsRejected: output.envelope.records_rejected,
       });
       await ctx.emitMutationEvent(req, mutationContext, "mutation.completed", "succeeded", {
-        error_count: output.envelope.errors.length,
+        error_count: output.envelope.records_rejected,
         records_accepted: output.envelope.records_accepted,
         records_rejected: output.envelope.records_rejected,
       });
