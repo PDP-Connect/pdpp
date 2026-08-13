@@ -681,7 +681,7 @@ test("emitNoActivityProgress: reports checked/no-activity without advancing curs
       INTACC123: { max_seen_date: "2026-04-10", last_activity: "since_last_statement" },
     },
   });
-  await emitNoActivityProgress(deps, makeAccount(), "date_range");
+  await emitNoActivityProgress(deps, "date_range");
 
   assert.equal(emitted.length, 0, "no transaction records emit for a Chase no-activity confirmation");
   assert.equal(deps.maxSeenByAccount.INTACC123?.max_seen_date, "2026-04-10", "no-activity must not advance max_seen");

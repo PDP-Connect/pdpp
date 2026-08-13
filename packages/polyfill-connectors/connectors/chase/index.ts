@@ -1850,15 +1850,14 @@ export async function emitBalancesDetailCoverage(
   );
 }
 
-export async function emitNoActivityProgress(
-  deps: Pick<EmitDeps, "emit">,
-  _account: ChaseAccount,
-  activity: ActivityKind
-): Promise<void> {
+export async function emitNoActivityProgress(deps: Pick<EmitDeps, "emit">, activity: ActivityKind): Promise<void> {
   await deps.emit({
     type: "PROGRESS",
     stream: "transactions",
-    message: `QFX download complete: no activity found (activity=${activity})`,
+    message:
+      activity === "all"
+        ? "Chase returned no activity for an unbounded request; treating the result as unverified"
+        : `QFX request complete: no activity found (activity=${activity})`,
   });
 }
 
@@ -1941,10 +1940,8 @@ function accountProgressDiagnostic(accountProgress?: { index: number; total: num
  *   - `hydrated`: QFX downloaded and parsed for this account. Includes the
  *     0-transaction parse — the account WAS reached; an empty ledger is
  *     real coverage, not a failure.
- *   - `no_activity`: Chase reported no activity for the requested window.
- *     This is source-limited completeness ("won't backfill"), NOT a gap —
- *     the account was reached and the source had nothing to return. Counts
- *     as hydrated coverage so it is never projected as broken.
+ *   - `no_activity`: Chase reported no activity for an explicit bounded
+ *     window. This is source-limited completeness, not a gap.
  *   - `gap`: the QFX download or parse failed transiently. A retryable
  *     DETAIL_GAP is emitted so the next run retries this account, and the
  *     key lands in `gap_keys` — partial, not complete, and not silently
@@ -1954,6 +1951,18 @@ export type AccountDetailOutcome =
   | { kind: "hydrated"; accountId: string; balanceEmitted?: boolean }
   | { kind: "no_activity"; accountId: string; balanceEmitted?: boolean }
   | { kind: "gap"; accountId: string; reason: DetailGapMessage["reason"]; errorClass: string };
+
+export function classifyNoActivityOutcome(accountId: string, activity: ActivityKind): AccountDetailOutcome {
+  if (activity === "all") {
+    return {
+      kind: "gap",
+      accountId,
+      reason: "temporary_unavailable",
+      errorClass: "unbounded_no_activity_unverified",
+    };
+  }
+  return { kind: "no_activity", accountId };
+}
 
 async function processAccountDownload(
   deps: EmitDeps,
@@ -1965,7 +1974,8 @@ async function processAccountDownload(
     deps.requested,
     deps.txState,
     deps.wantsTransactions ? "transactions" : "balances",
-    account.internal_id
+    account.internal_id,
+    deps.emittedAt
   );
   const progressLabel = accountProgressLabel(accountProgress);
   const progressMsg = {
@@ -1981,10 +1991,8 @@ async function processAccountDownload(
     : { activity: activityChoice.activity };
   const result = await downloadQfx(page, account, deps.tmpDir, deps.capture, downloadOpts);
   if ("noActivity" in result) {
-    await emitNoActivityProgress(deps, account, result.activity);
-    // Source-limited completeness: the account was reached, the source had
-    // no activity in the requested window. Coverage, not a gap.
-    return { kind: "no_activity", accountId: account.internal_id };
+    await emitNoActivityProgress(deps, result.activity);
+    return classifyNoActivityOutcome(account.internal_id, result.activity);
   }
   if (!result.downloaded) {
     await deps.emit({
