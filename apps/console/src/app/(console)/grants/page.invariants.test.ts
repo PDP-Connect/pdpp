@@ -16,10 +16,18 @@ import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PAGE_FILE = `${HERE}page.tsx`;
+const PENDING_APPROVAL_ROW_FILE = `${HERE}pending-approval-row.tsx`;
+// The caption helpers moved to a shared module so grant-packages pages could
+// reuse them instead of re-inlining the same raw-client_id-avoidance logic.
+const CLIENT_CAPTION_FILE = `${HERE}client-caption.ts`;
 
-const CLIENT_CAPTION_HELPER_RE = /function grantClientCaption\(/;
-const CLIENT_ORIGIN_CAPTION_HELPER_RE = /function clientOriginCaption\(/;
+const PAGE_USES_CLIENT_CAPTION_RE = /clientCaption\(grant\)/;
+const PAGE_USES_TECHNICAL_CLIENT_CAPTION_RE = /technicalClientCaption\(approval\.client_id\)/;
+const CLIENT_CAPTION_HELPER_RE = /export function clientCaption\(/;
+const TECHNICAL_CLIENT_CAPTION_HELPER_RE = /export function technicalClientCaption\(/;
+const CLIENT_ORIGIN_CAPTION_HELPER_RE = /export function clientOriginCaption\(/;
 const RAW_CLIENT_CAPTION_RE = /client\s+\{grant\.client_id\}/;
+const RAW_APPROVAL_CLIENT_ID_RE = /client\s+\{approval\.client_id/;
 
 // C6: the Pending approvals section collapses entirely at zero — it must be
 // gated on a non-empty length, never rendered unconditionally with an
@@ -28,10 +36,16 @@ const PENDING_SECTION_GATED_RE = /approvals\.data\.length > 0 \? \(\s*<Section/;
 const PENDING_EMPTY_STATE_IMPORT_RE = /EmptyState/;
 
 test("grants list formats visible client captions instead of rendering raw client ids", async () => {
-  const src = await readFile(PAGE_FILE, "utf8");
-  assert.match(src, CLIENT_CAPTION_HELPER_RE);
-  assert.match(src, CLIENT_ORIGIN_CAPTION_HELPER_RE);
-  assert.doesNotMatch(src, RAW_CLIENT_CAPTION_RE);
+  const pageSrc = await readFile(PAGE_FILE, "utf8");
+  const pendingApprovalRowSrc = await readFile(PENDING_APPROVAL_ROW_FILE, "utf8");
+  const captionSrc = await readFile(CLIENT_CAPTION_FILE, "utf8");
+  assert.match(pageSrc, PAGE_USES_CLIENT_CAPTION_RE);
+  assert.match(pendingApprovalRowSrc, PAGE_USES_TECHNICAL_CLIENT_CAPTION_RE);
+  assert.match(captionSrc, CLIENT_CAPTION_HELPER_RE);
+  assert.match(captionSrc, TECHNICAL_CLIENT_CAPTION_HELPER_RE);
+  assert.match(captionSrc, CLIENT_ORIGIN_CAPTION_HELPER_RE);
+  assert.doesNotMatch(pageSrc, RAW_CLIENT_CAPTION_RE);
+  assert.doesNotMatch(pendingApprovalRowSrc, RAW_APPROVAL_CLIENT_ID_RE);
 });
 
 test("grants page collapses the Pending approvals section when there are zero pending", async () => {

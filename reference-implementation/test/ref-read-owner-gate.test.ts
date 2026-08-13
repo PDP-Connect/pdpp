@@ -47,6 +47,7 @@ const REF_READ_ROUTES = [
   "/_ref/connectors",
   "/_ref/connectors/connector_does_not_exist",
   "/_ref/approvals",
+  "/_ref/approvals/apr_does_not_exist",
   "/_ref/records/timeline",
   "/_ref/schedules",
   "/_ref/connectors/connector_does_not_exist/schedule",

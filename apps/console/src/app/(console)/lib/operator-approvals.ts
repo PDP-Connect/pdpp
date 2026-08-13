@@ -128,6 +128,8 @@ export async function denyConsentRequest(requestUri: string) {
 export async function approvePendingApproval(input: {
   kind: "consent" | "owner_device";
   approvalId: string;
+  approvalReviewRevision?: string;
+  requestUri?: string;
   userCode?: string | null;
   subjectId?: string;
 }) {
@@ -137,24 +139,13 @@ export async function approvePendingApproval(input: {
   const subjectId = input.subjectId || "owner_local";
 
   if (input.kind === "consent") {
-    const reviewResponse = await fetchAs("/consent/review", {
-      body: JSON.stringify({
-        approval_id: input.approvalId,
-        subject_id: subjectId,
-      }),
-      headers: { Accept: "application/json", "Content-Type": "application/json" },
-      method: "POST",
-    });
-    const reviewBody = await readBody(reviewResponse);
-    if (!reviewResponse.ok) {
-      throw new Error(describeError(reviewBody, `consent review failed (${reviewResponse.status})`));
+    if (!(input.requestUri && input.approvalReviewRevision)) {
+      throw new Error("consent approval requires reviewed request_uri and approval_review_revision");
     }
-    const review = readConsentReview(reviewBody);
-    requireOneClickConsentApproval(review);
     const response = await fetchAs("/consent/approve", {
       body: JSON.stringify({
-        approval_review_revision: review.revision,
-        request_uri: review.requestUri,
+        approval_review_revision: input.approvalReviewRevision,
+        request_uri: input.requestUri,
       }),
       headers: { Accept: "application/json", "Content-Type": "application/json" },
       method: "POST",

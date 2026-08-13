@@ -253,6 +253,7 @@ import {
   getConnectorDetail,
   getConnectorSummaryForRoute,
   getOwnerConnectionDiagnostics,
+  getPendingApprovalDetail,
   invalidateConnectorSummariesCache,
   listConnectorSummaries,
   listConnectorSummaryPage,
@@ -4553,6 +4554,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
       (deleteCimdDocument as (d: string, o: unknown) => unknown)(documentId, options),
     getCimdDocument: (documentId: string) => getCimdDocument(documentId),
     getOwnerSubjectId,
+    getPendingApprovalDetail: (approvalId: string) => getPendingApprovalDetail(approvalId),
     handleError,
     listActiveTokensForOwnerClient: (clientId: string, subjectId: string) =>
       listActiveTokensForOwnerClient(clientId, subjectId),

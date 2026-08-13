@@ -24,6 +24,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { canonicalConnectorKey } from "../server/connector-key.ts";
+import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
@@ -218,6 +219,73 @@ async function startOwnerDeviceFlow(asUrl: string, clientId = "cli_longview"): P
   assert.equal(resp.status, 200);
   return resp.json() as Promise<DeviceAuthorization>;
 }
+
+test("GET /_ref/approvals/:approval_id projects a live consent without device-flow credentials", async () => {
+  await withHarness(async ({ asUrl, spotifyManifest }) => {
+    const consentPar = await startConsentPar(asUrl, spotifyManifest);
+    const consentDeviceCode = consentPar.request_uri.replace(REGEXP_1, "");
+    const { body: rawApprovals } = await fetchJson(`${asUrl}/_ref/approvals`);
+    const approvals = rawApprovals as ApprovalsList;
+    const consentEntry = approvals.data.find((entry) => entry.kind === "consent");
+    assert.ok(consentEntry, "expected a pending consent approval");
+    if (!consentEntry) {
+      throw new Error("unreachable: assert.ok would have thrown");
+    }
+
+    const detailResp = await fetch(`${asUrl}/_ref/approvals/${encodeURIComponent(consentEntry.approval_id)}`);
+    const detailRaw = await detailResp.text();
+    assert.equal(detailResp.status, 200, detailRaw);
+    const detail = JSON.parse(detailRaw) as { approval_id: string; kind: string; purpose: { description: string } };
+    assert.equal(detail.approval_id, consentEntry.approval_id);
+    assert.equal(detail.kind, "consent");
+    assert.equal(detail.purpose.description, "Device-code-exposure regression smoke");
+    assert.ok(!detailRaw.includes(consentDeviceCode), "detail leaked device_code");
+    assert.ok(!detailRaw.includes(consentPar.request_uri), "detail leaked request_uri");
+    assert.ok(!detailRaw.includes("params_json"), "detail leaked raw pending payload");
+
+    const reviewResp = await fetch(`${asUrl}/consent/review`, {
+      body: JSON.stringify({ approval_id: consentEntry.approval_id, subject_id: "owner_local" }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    const reviewText = await reviewResp.text();
+    assert.equal(reviewResp.status, 200, reviewText);
+    const review = JSON.parse(reviewText) as { approval_review_revision: string; request_uri: string };
+    assert.equal(review.request_uri, consentPar.request_uri);
+
+    const approveResp = await fetch(`${asUrl}/consent/approve`, {
+      body: JSON.stringify({
+        approval_review_revision: review.approval_review_revision,
+        request_uri: review.request_uri,
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(approveResp.status, 200);
+    const terminalResp = await fetch(`${asUrl}/_ref/approvals/${encodeURIComponent(consentEntry.approval_id)}`);
+    assert.equal(terminalResp.status, 404, "terminal approvals must not render a review projection");
+  });
+});
+
+test("GET /_ref/approvals/:approval_id does not project expired consent approvals", async () => {
+  await withHarness(async ({ asUrl, spotifyManifest }) => {
+    await startConsentPar(asUrl, spotifyManifest);
+    const { body: rawApprovals } = await fetchJson(`${asUrl}/_ref/approvals`);
+    const approvals = rawApprovals as ApprovalsList;
+    const consentEntry = approvals.data.find((entry) => entry.kind === "consent");
+    assert.ok(consentEntry, "expected a pending consent approval");
+    if (!consentEntry) {
+      throw new Error("unreachable: assert.ok would have thrown");
+    }
+
+    getDb()
+      .prepare("UPDATE pending_consents SET expires_at = ? WHERE approval_id = ?")
+      .run("2026-08-11T00:00:00.000Z", consentEntry.approval_id);
+
+    const expiredResp = await fetch(`${asUrl}/_ref/approvals/${encodeURIComponent(consentEntry.approval_id)}`);
+    assert.equal(expiredResp.status, 404, "expired approvals must not render a review projection");
+  });
+});
 
 test("security: device-code exposure on _ref read surfaces", async (t) => {
   await t.test("/_ref/approvals never echoes device_code, request_uri, or user_code", async () => {

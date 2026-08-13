@@ -274,6 +274,145 @@ test("listRecords response validator accepts runtime warning parameters", () => 
   assert.deepEqual(result, { ok: true, skipped: false });
 });
 
+test("ref approval review contract enforces consent and owner-device shapes", () => {
+  const consent = validateResponse("refGetApproval", {
+    body: {
+      approval_id: "apr_review",
+      client: {
+        client_id: "concert_finder",
+        display: {
+          name: "Concert Finder",
+          policy_uri: "https://concert.example/policy",
+          tos_uri: null,
+          uri: "https://concert.example",
+        },
+        registration_mode: "pre_registered_public",
+      },
+      created_at: "2026-08-11T12:00:00.000Z",
+      expires_at: "2026-08-11T12:10:00.000Z",
+      grant_outcome: {
+        access_mode: "continuous",
+        description: "Ongoing access; this reference implementation sets no grant expiry.",
+      },
+      kind: "consent",
+      object: "approval_review",
+      purpose: { code: null, description: "Suggest concerts." },
+      retention: { period: "P30D" },
+      source: { id: "spotify", kind: "connector" },
+      streams: [
+        {
+          client_claims: { commitment: "delete after use" },
+          connection_id: "cin_music",
+          fields: null,
+          name: "top_artists",
+          necessity: null,
+          resources: null,
+          time_range: null,
+          view: "basic",
+        },
+      ],
+      trust: "unverified",
+    },
+    status: 200,
+  });
+  assert.deepEqual(consent, { ok: true, skipped: false });
+
+  const ownerDevice = validateResponse("refGetApproval", {
+    body: {
+      approval_id: "apr_owner",
+      client_id: "owner_cli",
+      created_at: "2026-08-11T12:00:00.000Z",
+      expires_at: "2026-08-11T12:10:00.000Z",
+      kind: "owner_device",
+      object: "approval_review",
+    },
+    status: 200,
+  });
+  assert.deepEqual(ownerDevice, { ok: true, skipped: false });
+
+  const leakedNestedField = validateResponse("refGetApproval", {
+    body: {
+      approval_id: "apr_review",
+      client: {
+        client_id: "concert_finder",
+        display: {
+          logo_uri: "https://concert.example/logo.png",
+          name: "Concert Finder",
+          policy_uri: null,
+          tos_uri: null,
+          uri: null,
+        },
+        registration_mode: "pre_registered_public",
+      },
+      created_at: "2026-08-11T12:00:00.000Z",
+      expires_at: "2026-08-11T12:10:00.000Z",
+      grant_outcome: { access_mode: "continuous", description: "Ongoing access." },
+      kind: "consent",
+      object: "approval_review",
+      purpose: { code: null, description: null },
+      retention: null,
+      source: null,
+      streams: [],
+      trust: "unverified",
+    },
+    status: 200,
+  });
+  assert.equal(leakedNestedField.ok, false);
+
+  const leakedSecretJson = validateResponse("refGetApproval", {
+    body: {
+      approval_id: "apr_review",
+      client: {
+        client_id: "concert_finder",
+        display: {
+          name: "Concert Finder",
+          policy_uri: null,
+          tos_uri: null,
+          uri: null,
+        },
+        registration_mode: "pre_registered_public",
+      },
+      created_at: "2026-08-11T12:00:00.000Z",
+      expires_at: "2026-08-11T12:10:00.000Z",
+      grant_outcome: { access_mode: "continuous", description: "Ongoing access." },
+      kind: "consent",
+      object: "approval_review",
+      purpose: { code: null, description: null },
+      retention: { nested: { Authorization: "Bearer token-value" } },
+      source: null,
+      streams: [
+        {
+          client_claims: { clientSecret: "secret-value" },
+          connection_id: null,
+          fields: null,
+          name: "top_artists",
+          necessity: null,
+          resources: [{ "api-key": "secret-value" }],
+          time_range: null,
+          view: null,
+        },
+      ],
+      trust: "unverified",
+    },
+    status: 200,
+  });
+  assert.equal(leakedSecretJson.ok, false);
+
+  const mixedVariant = validateResponse("refGetApproval", {
+    body: {
+      approval_id: "apr_owner",
+      client_id: "owner_cli",
+      client: { client_id: "should_not_be_here" },
+      created_at: "2026-08-11T12:00:00.000Z",
+      expires_at: "2026-08-11T12:10:00.000Z",
+      kind: "owner_device",
+      object: "approval_review",
+    },
+    status: 200,
+  });
+  assert.equal(mixedVariant.ok, false);
+});
+
 test("registerDynamicClient response omits unset optional URI metadata", () => {
   const minimal = validateResponse("registerDynamicClient", {
     body: {

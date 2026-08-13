@@ -12,6 +12,7 @@
 // posture, contract metadata, response envelopes, status codes, error
 // mapping, and query-string parsing are unchanged.
 
+import { executeRefApprovalDetail, type RefApprovalDetail } from "../../operations/ref-approval-detail/index.ts";
 import { executeRefApprovalsList, type RefApproval } from "../../operations/ref-approvals-list/index.ts";
 import {
   executeRefClientTokenRevoke,
@@ -100,6 +101,7 @@ export interface MountRefAdminContext {
   readonly getCimdDocument: (documentId: string) => Promise<RefCimdDocument | null>;
   // Subject resolution — mirrors `getOwnerSubjectId` closure in index.js.
   readonly getOwnerSubjectId: (req: RouteRequest) => string;
+  readonly getPendingApprovalDetail: (approvalId: string) => Promise<RefApprovalDetail | null>;
   readonly handleError: (res: unknown, err: unknown) => void;
   readonly listActiveTokensForOwnerClient: (
     clientId: string,
@@ -319,6 +321,25 @@ export function mountRefApprovals(app: AppLike, ctx: MountRefAdminContext): void
           listPendingApprovals: () => ctx.listPendingApprovals(),
         });
         res.json(envelope);
+      } catch (err) {
+        ctx.handleError(res, err);
+      }
+    }
+  );
+  app.get(
+    "/_ref/approvals/:approvalId",
+    { contract: "refGetApproval" },
+    ctx.requireOwnerSession,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const detail = await executeRefApprovalDetail({
+          getPendingApprovalDetail: () => ctx.getPendingApprovalDetail(req.params.approvalId || ""),
+        });
+        if (!detail) {
+          ctx.pdppError(res, 404, "not_found", "Pending approval not found");
+          return;
+        }
+        res.json(detail);
       } catch (err) {
         ctx.handleError(res, err);
       }

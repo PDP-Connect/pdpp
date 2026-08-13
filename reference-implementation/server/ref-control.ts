@@ -17,6 +17,11 @@ import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-s
 import { allowUnboundedReadAcknowledged, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { isNullish } from "../lib/nullish.ts";
 import type { SpineSummary } from "../lib/spine.ts";
+import type { RefApprovalDetail } from "../operations/ref-approval-detail/index.ts";
+import {
+  buildLiveConsentApprovalDetail,
+  buildOwnerDeviceApprovalDetail,
+} from "../operations/ref-approval-detail/index.ts";
 import {
   CONNECTOR_SUMMARY_PAGE_LIMIT_MAX,
   type ConnectorIdentityPageBoundary,
@@ -83,7 +88,12 @@ import {
 import type { RenderedVerdict, ScheduleEvidence } from "../runtime/rendered-verdict.ts";
 import { SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
 import { pickMostUrgentAttention } from "./attention-urgency.ts";
-import { getConnectorManifest } from "./auth.ts";
+import {
+  getConnectorManifest,
+  getOwnerDeviceAuthRowByApprovalId,
+  getPendingConsent,
+  getPendingConsentRowByApprovalId,
+} from "./auth.ts";
 import {
   type EnrollmentShellLike,
   retireExpiredBrowserEnrollmentShells,
@@ -6896,6 +6906,19 @@ export function listPendingApprovals(): Promise<Approval[]> {
     return left.created_at < right.created_at ? 1 : -1;
   });
   return Promise.resolve(approvals);
+}
+
+/**
+ * Reads one live approval through its opaque public handle. This projection is
+ * deliberately allowlisted: no caller receives the persisted request blob or
+ * the device-flow credentials it contains.
+ */
+export async function getPendingApprovalDetail(approvalId: string): Promise<RefApprovalDetail | null> {
+  const consent = await getPendingConsentRowByApprovalId(approvalId);
+  if (consent) {
+    return buildLiveConsentApprovalDetail(consent, await getPendingConsent(consent.device_code));
+  }
+  return buildOwnerDeviceApprovalDetail(await getOwnerDeviceAuthRowByApprovalId(approvalId));
 }
 
 // ─── Records timeline ───────────────────────────────────────────────────────
