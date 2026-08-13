@@ -191,6 +191,20 @@ function resolveReporterArgument(command: string[], root: string): string[] {
   }
   return resolved;
 }
+export function applyLocalNodeTestConcurrency(command: string[], isCi = Boolean(process.env.CI)): string[] {
+  if (
+    isCi ||
+    command[0] !== "node" ||
+    !command.includes("--test") ||
+    command.some((argument) => argument === "--test-concurrency" || argument.startsWith("--test-concurrency="))
+  ) {
+    return command;
+  }
+  const testIndex = command.indexOf("--test");
+  const bounded = [...command];
+  bounded.splice(testIndex + 1, 0, "--test-concurrency=2");
+  return bounded;
+}
 interface Run {
   files: string[];
   profile: Profile;
@@ -203,11 +217,11 @@ export function suiteEnvironment(inherited: NodeJS.ProcessEnv, profile: string, 
   }
   return environment;
 }
-function leafCommand(run: Run, authorityPath: string, root: string): string[] | null {
+function leafCommand(run: Run, authorityPath: string, issuedArgv: string[]): string[] | null {
   if (run.suite.zero_tests) {
     return null;
   }
-  const command = resolveReporterArgument(run.suite.command ?? [], root);
+  const command = [...issuedArgv];
   if (run.suite.authority_argument) {
     command.push(run.suite.authority_argument, authorityPath);
   }
@@ -215,6 +229,11 @@ function leafCommand(run: Run, authorityPath: string, root: string): string[] | 
     command.push(...run.files);
   }
   return command;
+}
+export function assertIssuedArgvMatchesCommand(issuedArgv: string[], command: string[] | null): void {
+  if (command && JSON.stringify(command.slice(0, issuedArgv.length)) !== JSON.stringify(issuedArgv)) {
+    fail("executed command differs from the argv bound into its authority and receipt");
+  }
 }
 function observedCounts(
   run: Run,
@@ -343,6 +362,10 @@ export async function runAuthority({
     const issuedAt = instant(Date.now());
     const expiresAt = instant(Date.now() + AUTHORITY_TTL_MS);
     const profileId = run.profile.id ?? "";
+    const effectiveCommand = applyLocalNodeTestConcurrency(
+      resolveReporterArgument(run.suite.command ?? [], root),
+      Boolean(process.env.CI)
+    );
     const issued = {
       schema: RUN_AUTHORITY_SCHEMA,
       run_id: runId,
@@ -353,7 +376,7 @@ export async function runAuthority({
       profile: profileId,
       files: run.files,
       cwd: run.suite.cwd,
-      argv: run.suite.command ?? [],
+      argv: effectiveCommand,
       base_sha: manifest.inventory_base_sha,
       head_sha: head,
       source_tree_sha256: sourceTree,
@@ -369,7 +392,10 @@ export async function runAuthority({
     await transcript.write(
       `${JSON.stringify({ event: "start", run_id: runId, nonce, started_at: startedAt, suite: issued.suite, profile: issued.profile, files: issued.files, cwd: issued.cwd, argv: issued.argv })}\n`
     );
-    const command = leafCommand(run, authorityPath, root);
+    const command = leafCommand(run, authorityPath, issued.argv);
+    assertIssuedArgvMatchesCommand(issued.argv, command);
+    // Keep the effective environment and cwd explicit so the issued command,
+    // transcript, and child process all describe the same execution context.
     let observed: CaptureResult;
     try {
       observed = command

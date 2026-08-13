@@ -13,7 +13,7 @@
   "scripts": {
     "check": "ultracite check",
     "fix": "ultracite fix",
-    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- bash -c 'node --test --import tsx --import ./css-stub-register.ts \"src/**/*.test.ts\"'",
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- node ../../scripts/run-node-tests.mjs --test --import tsx --import ./css-stub-register.ts \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "verify": "pnpm typecheck && pnpm check && pnpm test"
   },

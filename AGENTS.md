@@ -12,3 +12,4 @@ Policy: [CONTRIBUTING.md](./CONTRIBUTING.md).
 - Reject verbose summaries. Concise unless the change is a refactor, break, or architecture.
 - Claims about the code need a file path or a reason.
 - One change per PR. Run the repo's checks first.
+- Before adding, changing, consolidating, or deleting tests, read [the testing policy](./docs/reference/testing-policy.md); executable suite ownership lives in [test-accounting.manifest.json](./test-accounting.manifest.json).

@@ -10,12 +10,10 @@
     "build": "next build --webpack",
     "start": "next start",
     "types:check": "next typegen && tsc --noEmit",
-    "test:view-models": "TSX_TSCONFIG_PATH=tsconfig.json node --import tsx ../../scripts/test-scratch/run-command.ts -- bash -c 'node --test --import tsx --import ../../packages/operator-ui/css-stub-register.ts \"**/*.test.ts\" \"**/*.test.mjs\"'",
-    "//test-stream": "The accounting authority owns console discovery and execution, including the stream route's bracketed path segments.",
-    "test:stream": "TSX_TSCONFIG_PATH=tsconfig.json node --import tsx ../../scripts/test-scratch/run-command.ts -- bash -c 'node --test --import tsx --import ../../packages/operator-ui/css-stub-register.ts \"**/*.test.ts\" \"**/*.test.mjs\"'",
+    "test": "TSX_TSCONFIG_PATH=tsconfig.json node --import tsx ../../scripts/test-scratch/run-command.ts -- node ../../scripts/run-node-tests.mjs --test --import tsx --import ../../packages/operator-ui/css-stub-register.ts \"**/*.test.ts\" \"**/*.test.mjs\"",
     "check": "ultracite check && pnpm --dir ../.. generated-artifacts:check",
     "fix": "ultracite fix",
-    "verify": "pnpm types:check && pnpm test:view-models && pnpm test:stream && pnpm check && pnpm build"
+    "verify": "pnpm types:check && pnpm test && pnpm check && pnpm build"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

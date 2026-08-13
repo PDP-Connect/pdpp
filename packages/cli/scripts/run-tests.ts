@@ -15,6 +15,9 @@ if (testFiles.length === 0) {
 }
 
 const args: string[] = ["--test"];
+if (!process.env.CI) {
+  args.push("--test-concurrency=2");
+}
 if (needsTsx(testFiles)) {
   args.push("--import", "tsx");
 }

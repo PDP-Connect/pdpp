@@ -141,13 +141,20 @@ jobs:
         if: steps.changes.outputs.reference_impacting == 'true'
         run: pnpm --dir reference-implementation run typecheck
 
-      - name: Test console view models
+      # reference-implementation's own typecheck (above) checks it under ITS
+      # OWN tsconfig (target ES2023). apps/console consumes RI as TS source
+      # via transpilePackages, so Next's build type-checks any RI file
+      # reachable from console under console's tsconfig (target ES2017) in
+      # a single tsc program — a stricter, different check that RI's own
+      # typecheck cannot substitute for (e.g. TS2737 on a BigInt literal
+      # that is valid under RI's own target but not console's).
+      - name: Typecheck console (RI transitive sources included)
         if: steps.changes.outputs.reference_impacting == 'true'
-        run: pnpm --dir apps/console run test:view-models
+        run: pnpm --dir apps/console run types:check
 
-      - name: Test console stream route
+      - name: Test console full suite
         if: steps.changes.outputs.reference_impacting == 'true'
-        run: pnpm --dir apps/console run test:stream
+        run: pnpm --dir apps/console run test
 
       - name: Test owner journey acceptance harness
         if: steps.changes.outputs.reference_impacting == 'true'

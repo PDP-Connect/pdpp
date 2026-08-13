@@ -200,17 +200,10 @@ See the [self-host quickstart](docs/operator/selfhost-quickstart.md) and the
 [reference implementation README](reference-implementation/README.md) for the
 full local, Docker, and connector workflows.
 
-Test expectations:
-
-- The reference implementation is validated with black-box, integration, and
-  conformance-style tests. New behavior should come with tests that exercise
-  the observable contract, not just internal helpers.
-- Some conformance proofs are env-gated (for example the Postgres runtime and
-  scheduler proofs). Run the relevant gated tests when you touch the code they
-  cover; the README documents how to bring up the profile-gated Postgres
-  service and run those proofs.
-- Prefer captured fixtures over live credential/probe cycles when reproducing
-  connector behavior.
+The [testing policy](docs/reference/testing-policy.md) defines oracle selection,
+fixture and live-service rules, profile-gated evidence, test changes, and the
+coverage/mutation/selection strategy. `test-accounting.manifest.json`, runners,
+and CI remain the executable suite authority.
 
 ## Pull request conventions
 
@@ -227,9 +220,10 @@ Test expectations:
 - **Keep specs and code in lockstep.** If your PR implements an OpenSpec
   change, the change artifacts and the code should land together and stay
   consistent.
-- **CI and merge gate.** Every pull request must pass the CI checks before it
-  can merge. Run the reference-implementation tests and `pnpm spec:check`
-  locally before pushing so CI is a confirmation, not a surprise.
+- **CI and merge gate.** Every pull request must pass the required CI checks.
+  Before pushing, run the focused tests and signoff gates required for the
+  changed behavior; run `pnpm spec:check` when root or public spec parity is in
+  scope. See the testing policy and `docs/reference/ci-mode.md`.
 
 ## Developer Certificate of Origin (DCO)
 

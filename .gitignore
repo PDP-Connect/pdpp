@@ -36,6 +36,7 @@ reference-implementation/report.*.json
 perf-results/
 .agents/
 .claude/
+!/CLAUDE.md
 .playwright-mcp/
 .impeccable.md
 skills-lock.json

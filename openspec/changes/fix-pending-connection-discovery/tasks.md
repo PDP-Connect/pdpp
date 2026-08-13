@@ -33,11 +33,11 @@
   - pre-first-record: draft discoverable on `/_ref/connectors` as `setup_in_progress`, still hidden from `/_ref/connections`.
   - waiting owner action: credential captured, no ingest yet — still `setup_in_progress`, never `healthy`/`system_degraded`.
   - success promotion: first successful ingest flips `owner_state` off `setup_in_progress` via the REAL production cache-invalidation path (no test-only cache surgery), connection stays visible on both feeds.
-- [x] Console `test:view-models` suite (158 pre-existing tests) passes unchanged with the new `pending` status kind, `PendingSetupCard`, and `detailHref` routing added.
+- [x] Console `test` suite (158 pre-existing tests) passes unchanged with the new `pending` status kind, `PendingSetupCard`, and `detailHref` routing added.
 
 ## 6. Validation
 
 - [x] `node --test test/*.test.js` (reference-implementation): 6765 tests, 6698 pass, 5 pre-existing unrelated failures (H-E-B manifest/display-message/interaction-posture, browser-surface-hoist), 0 new failures.
-- [x] `pnpm test:view-models` (console): 158/158 pass.
+- [x] `pnpm test` (console): 158/158 pass.
 - [x] `pnpm exec tsc --noEmit` (console): clean.
 - [x] `openspec validate fix-pending-connection-discovery --strict`.
