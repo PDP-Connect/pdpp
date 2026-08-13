@@ -394,8 +394,8 @@ export async function runAuthority({
     );
     const command = leafCommand(run, authorityPath, issued.argv);
     assertIssuedArgvMatchesCommand(issued.argv, command);
-    // One environment and cwd for both the prepare step and the children, so a
-    // prerequisite is always built under the same resolver config that will load it.
+    // Keep the effective environment and cwd explicit so the issued command,
+    // transcript, and child process all describe the same execution context.
     let observed: CaptureResult;
     try {
       observed = command
