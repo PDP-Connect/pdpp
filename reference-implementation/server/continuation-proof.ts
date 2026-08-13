@@ -38,11 +38,32 @@ export function filterRunGapsProvenCompleteByReport(
       .filter((entry) => entry.coverage_condition === "complete" && entry.skipped?.continuation)
       .map((entry) => [entry.stream, entry] as const)
   );
-  if (completeByStream.size === 0) {
+  const requiredEntries = report.filter((entry) => entry.required);
+  const allRequiredComplete =
+    requiredEntries.length > 0 && requiredEntries.every((entry) => entry.coverage_condition === "complete");
+  if (completeByStream.size === 0 && !allRequiredComplete) {
     return run;
   }
-  const knownGaps = run.known_gaps.filter((gap) => !knownGapMatchesCompleteContinuation(gap, completeByStream));
+  const knownGaps = run.known_gaps.filter(
+    (gap) =>
+      !(
+        knownGapMatchesCompleteContinuation(gap, completeByStream) ||
+        (allRequiredComplete && isUnscopedCheckpointCommitGap(gap))
+      )
+  );
   return knownGaps.length === run.known_gaps.length ? run : { ...run, known_gaps: knownGaps };
+}
+
+/**
+ * A run-level checkpoint warning does not identify which staged stream failed
+ * to commit. Once the per-stream report proves every required stream complete,
+ * that warning can only describe optional or undeclared work and must not
+ * downgrade the connection. The warning remains on the run itself; this filter
+ * only scopes the connection-health projection.
+ */
+function isUnscopedCheckpointCommitGap(gap: unknown): boolean {
+  const candidate = new Object(gap) as { kind?: unknown; stream?: unknown };
+  return candidate.kind === "checkpoint_commit" && (candidate.stream === null || candidate.stream === undefined);
 }
 
 function knownGapMatchesCompleteContinuation(
