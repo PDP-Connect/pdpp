@@ -4031,13 +4031,13 @@ function authorityRevisionSha(revision: string | null): string | null {
   return revision.split("+").at(-1) ?? null;
 }
 
-async function evaluateOwnerStreamHealthAuthority({
+async function evaluateOwnerStreamCoverageAuthority({
   referenceRevision,
   summaries,
 }: {
   referenceRevision: string;
   summaries: readonly unknown[];
-}): Promise<StreamHealthAuthorityResult> {
+}): Promise<Pick<StreamHealthAuthorityResult, "status">> {
   const connectorIds = new Set<string>();
   for (const summary of summaries) {
     if (summary && typeof summary === "object" && !Array.isArray(summary)) {
@@ -4060,7 +4060,7 @@ async function evaluateOwnerStreamHealthAuthority({
   // all source markers render, but stream rows render only for the selected
   // source. Do not fabricate DOM rows from the summary projection.
   const dom: OwnerSourcesDomEvidence | null = null;
-  return evaluateStreamHealthAuthority({
+  const authority = evaluateStreamHealthAuthority({
     auth: { authenticated: true, mode: "owner-session", resolved: true },
     connections: summaries,
     dom,
@@ -4073,6 +4073,7 @@ async function evaluateOwnerStreamHealthAuthority({
       summaries: referenceRevision,
     },
   });
+  return { status: authority.coverageStatus };
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
@@ -5325,7 +5326,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
         ownerSubjectId,
         visibleConnections: inventory,
       });
-      const streamHealth = await evaluateOwnerStreamHealthAuthority({ referenceRevision, summaries });
+      const streamHealth = await evaluateOwnerStreamCoverageAuthority({ referenceRevision, summaries });
       return composeFleetHealthVerdict({
         inventory,
         runtime: getRuntimeStatus(),
@@ -5417,7 +5418,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
         fleet_health: composeFleetHealthVerdict({
           inventory: fleetInventory,
           runtime: getRuntimeStatus(),
-          streamHealth: await evaluateOwnerStreamHealthAuthority({ referenceRevision, summaries: fullSummaries }),
+          streamHealth: await evaluateOwnerStreamCoverageAuthority({ referenceRevision, summaries: fullSummaries }),
           summaries: fullSummaries as unknown as Parameters<typeof composeFleetHealthVerdict>[0]["summaries"],
         }),
       };

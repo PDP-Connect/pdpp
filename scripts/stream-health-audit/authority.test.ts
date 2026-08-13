@@ -118,6 +118,35 @@ function evaluate(connection: Json, connectorManifest = manifest()): StreamHealt
   return evaluateStreamHealthAuthority(fullyEvidencedInput(connection, connectorManifest));
 }
 
+test("structured coverage remains authoritative when rendered DOM evidence is unavailable", () => {
+  const healthyInput = fullyEvidencedInput(healthyConnection());
+  const healthy = evaluateStreamHealthAuthority({ ...healthyInput, dom: null });
+  assert.equal(healthy.coverageStatus, "pass");
+  assert.equal(healthy.status, "inconclusive");
+  assert.equal(healthy.gates.dom, "inconclusive");
+
+  const incomplete = healthyConnection({
+    collection_report: [
+      {
+        checkpoint: "checkpoint-1",
+        considered: 2,
+        coverage_condition: "partial",
+        coverage_strategy: "full_inventory",
+        covered: 1,
+        evidence_as_of: EVIDENCE_AT,
+        freshness_strategy: "manual_as_of",
+        stream: "messages",
+      },
+    ],
+  });
+  const incompleteResult = evaluateStreamHealthAuthority({
+    ...fullyEvidencedInput(incomplete),
+    dom: null,
+  });
+  assert.equal(incompleteResult.coverageStatus, "fail");
+  assert.equal(incompleteResult.status, "fail");
+});
+
 function browserFactoryFromFetch(
   fetchImpl: FetchImpl,
   options: {

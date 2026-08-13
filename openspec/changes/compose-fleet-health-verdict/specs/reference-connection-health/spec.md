@@ -99,11 +99,20 @@ shall not be silently counted as assessed healthy.
 ### Requirement: Stream-health authority SHALL remain coverage evidence
 
 The shared stream-health authority SHALL remain an explicit required-stream
-coverage evidence check. Its result SHALL NOT be presented as a fleet-health
-verdict. The fleet composer MAY consume its typed result as one dimension but
-SHALL NOT change its settled-connection or coverage predicates. The production
-owner API, rendered Sources acceptance, and acceptance CLI SHALL use this same
-contract.
+coverage evidence check. It SHALL expose structured manifest/summary coverage
+separately from authenticated rendered-surface gates. Neither result SHALL be
+presented as a fleet-health verdict. The fleet composer MAY consume the typed
+structured-coverage result as one dimension but SHALL NOT change its
+settled-connection or coverage predicates. Rendered Sources acceptance and the
+acceptance CLI SHALL additionally require the authority's authenticated-DOM,
+pagination, and revision gates.
+
+#### Scenario: Missing DOM does not erase structured coverage
+
+- **WHEN** the server evaluates complete structured stream evidence without a
+  rendered owner DOM
+- **THEN** structured coverage SHALL remain settled
+- **AND** the full rendered-surface authority SHALL remain inconclusive.
 
 #### Scenario: Stream coverage passes while fleet is unhealthy
 

@@ -79,10 +79,13 @@ type. This preserves distinct ChatGPT, Slack, and financial-source bindings.
 ### One shared stream-health contract is the integration seam
 
 The reference owner route, rendered Sources acceptance, and acceptance CLI use
-the same stream-health authority contract. The console emits explicit source
-and stream row evidence for that contract; it does not re-derive health from
-copy or connector names. The fleet composer consumes the authority result for
-aggregate state while retaining its compatibility output field.
+the same stream-health authority contract. The contract reports structured
+manifest/summary coverage separately from its authenticated-DOM transport
+gates. The console emits explicit source and stream row evidence for the full
+end-to-end result; it does not re-derive health from copy or connector names.
+The server fleet composer consumes the structured coverage result because no
+rendered DOM exists at that boundary. It does not treat a missing DOM as
+missing source evidence or weaken the full acceptance result.
 
 ## Risks / Trade-offs
 

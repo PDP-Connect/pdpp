@@ -413,6 +413,8 @@ export interface StreamHealthAuthorityResult {
   activeConnectionCount: number;
   classCounts: Record<StreamHealthClass, number>;
   connectionCount: number;
+  /** Structured manifest/summary coverage, independent of transport and rendered-DOM gates. */
+  coverageStatus: "fail" | "inconclusive" | "pass";
   domAgreement: {
     extraConnectionIds: string[];
     extraStreamKeys: string[];
@@ -2390,6 +2392,18 @@ export function evaluateStreamHealthAuthority(input: StreamHealthAuthorityInput)
     vocabularyUnknown = vocabularyUnknown || contribution.vocabularyUnknown;
   }
 
+  // Fleet health consumes the same stream classification as the end-to-end
+  // authority, but DOM/auth/revision transport gates answer a separate
+  // question: whether the rendered owner surface agrees. Compute coverage
+  // before those surface findings are added so absence of DOM is not mistaken
+  // for absence of source evidence.
+  const coverageStatus = resultStatus(findings, {
+    auth: "resolved",
+    dom: "resolved",
+    pagination: "complete",
+    revision: "exact",
+    vocabulary: vocabularyUnknown ? "inconclusive" : "known",
+  });
   const domAgreement = compareDom(dom, connections, input, findings, counts);
   const gates = gateFindings(input, dom, revision.gate, vocabularyUnknown, findings, counts);
   const numerator = findings.filter((finding) => finding.class === "green" && finding.denominator).length;
@@ -2401,6 +2415,7 @@ export function evaluateStreamHealthAuthority(input: StreamHealthAuthorityInput)
     activeConnectionCount,
     classCounts: counts,
     connectionCount: rawConnections.length,
+    coverageStatus,
     domAgreement,
     findings,
     gates,
