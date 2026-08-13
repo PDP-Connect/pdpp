@@ -2609,6 +2609,18 @@ function buildAmbiguousConnectionError(
 // warning header (P3 — the raw-bytes response has no JSON envelope to carry
 // `meta.warnings[]`), and the bytes. Behaviour-identical to the previous inline
 // tail.
+const INLINE_BLOB_MEDIA_TYPES = new Set([
+  "application/pdf",
+  "image/avif",
+  "image/bmp",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/tiff",
+  "image/webp",
+  "image/x-icon",
+]);
+
 async function serveResolvedBlob(
   res: RouteResponse,
   args: {
@@ -2645,6 +2657,11 @@ async function serveResolvedBlob(
   res.setHeader("Content-Type", blob.mime_type);
   res.setHeader("Content-Length", String(blob.size_bytes));
   res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  const mediaType = blob.mime_type.split(";", 1)[0]?.trim().toLowerCase();
+  if (!INLINE_BLOB_MEDIA_TYPES.has(mediaType ?? "")) {
+    res.setHeader("Content-Disposition", "attachment");
+  }
   // P3: when the resolver observed deprecated alias use, surface it as a
   // structured response header so callers see migration signal.
   if (Array.isArray(resolverWarnings) && resolverWarnings.some((w) => w?.code === "deprecated_alias_used")) {

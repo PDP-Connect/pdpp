@@ -195,7 +195,7 @@ interface RuntimeRunError extends Error {
 interface ConnectorDoneError {
   code?: string;
   message?: string;
-  recovery_hint?: string | { action?: string; retryable?: boolean } | null;
+  recovery_hint?: string | { action: string; retryable?: boolean } | null;
   retryable?: boolean | null;
   [key: string]: unknown;
 }
