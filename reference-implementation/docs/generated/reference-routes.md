@@ -7,7 +7,7 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **GET** | `/` | `getRsDiscoveryIndex` | Unauthenticated cold-start pointer at the resource server root. Names the well-known endpoint, the `/v1/schema` capability discovery surface, the core query base, and the running reference revision so a probe learns the next hop without trial-and-error. |
 | **GET** | `/` | `getAsDiscoveryIndex` | Unauthenticated cold-start pointer at the authorization server root. Names the AS well-known endpoint and the running reference revision so a probe learns the next hop without trial-and-error. |
 | **GET** | `/.well-known/oauth-authorization-server` | `getAuthorizationServerMetadata` | Return RFC 8414 authorization-server metadata with the reference provider-connect capability extensions. |
-| **GET** | `/.well-known/oauth-protected-resource` | `getProtectedResourceMetadata` | Return RFC 9728 protected-resource metadata advertising the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`. |
+| **GET** | `/.well-known/oauth-protected-resource` | `getProtectedResourceMetadata` | Return RFC 9728 protected-resource metadata advertising the optional provider-native `pdpp_source_declaration_uri`, the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`. |
 | **GET** | `/.well-known/oauth-protected-resource/mcp` | `getMcpProtectedResourceMetadata` | Return RFC 9728 protected-resource metadata for the hosted MCP endpoint. |
 | **POST** | `/oauth/register` | `registerDynamicClient` | Register a public client through the reference dynamic client registration profile. |
 | **POST** | `/oauth/par` | `createPushedAuthorizationRequest` | Stage a PDPP data-access request and receive a pending-consent request_uri plus authorization URL. |
@@ -70,7 +70,7 @@ Return RFC 8414 authorization-server metadata with the reference provider-connec
 
 `GET /.well-known/oauth-protected-resource`
 
-Return RFC 9728 protected-resource metadata advertising the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`.
+Return RFC 9728 protected-resource metadata advertising the optional provider-native `pdpp_source_declaration_uri`, the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`.
 
 ### Responses
 
