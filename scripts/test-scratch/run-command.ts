@@ -213,6 +213,20 @@ function stopTrackedGroup(
   return shutdown ?? stopGroup(pgid, control.receivedAt(), control.signal());
 }
 
+async function stopTrackedGroupSafely(
+  control: SignalControl,
+  stopGroup: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>
+): Promise<boolean> {
+  try {
+    return await stopTrackedGroup(control, stopGroup);
+  } catch {
+    // A rejected shutdown proof is the same fail-closed outcome as a live group:
+    // retain the root, but preserve the child's already-observed result.
+    process.stderr.write("test scratch cleanup failed: group-shutdown-failed\n");
+    return false;
+  }
+}
+
 async function runLaunchedCommand(
   command: string[],
   ownership: ScratchOwnership,
@@ -221,6 +235,7 @@ async function runLaunchedCommand(
   stopGroup: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>
 ): Promise<CommandResult> {
   let runningRecorded = false;
+  let result: CommandResult | undefined;
   try {
     const [file, ...args] = command;
     if (!file) {
@@ -245,18 +260,18 @@ async function runLaunchedCommand(
     await markScratchRunning(ownership, child.pid);
     runningRecorded = true;
     control.activateRunningGroup(child.pid);
-    const result = await observed.close;
+    result = await observed.close;
     if (observed.launchError()) {
       throw observed.launchError();
     }
-    const groupStopped = await stopTrackedGroup(control, stopGroup);
+    const groupStopped = await stopTrackedGroupSafely(control, stopGroup);
     const signalResult = latchedSignalResult(control);
     return cleanupWithResult(ownership, signalResult ?? result, groupStopped);
   } catch (error) {
     const reason = error instanceof ScratchOwnershipError ? error.reason : "spawn-failed";
     process.stderr.write(`test scratch command failed: ${reason}\n`);
     const pgid = control.pgid();
-    const groupStopped = await stopTrackedGroup(control, stopGroup);
+    const groupStopped = await stopTrackedGroupSafely(control, stopGroup);
     const signalResult = latchedSignalResult(control);
     if (!runningRecorded) {
       process.stderr.write("test scratch cleanup failed: launch-unknown\n");
@@ -267,7 +282,11 @@ async function runLaunchedCommand(
         ? cleanupWithResult(ownership, { code: INFRASTRUCTURE_EXIT_CODE, signal: null })
         : { code: INFRASTRUCTURE_EXIT_CODE, signal: null };
     }
-    return cleanupWithResult(ownership, signalResult ?? { code: INFRASTRUCTURE_EXIT_CODE, signal: null }, groupStopped);
+    return cleanupWithResult(
+      ownership,
+      signalResult ?? result ?? { code: INFRASTRUCTURE_EXIT_CODE, signal: null },
+      groupStopped
+    );
   }
 }
 
@@ -298,7 +317,7 @@ async function runAllocatedCommand(
       await markScratchUnlaunched(ownership);
       return cleanupWithResult(ownership, signalAfterLaunching);
     }
-    return runLaunchedCommand(command, ownership, control, options, stopGroup);
+    return await runLaunchedCommand(command, ownership, control, options, stopGroup);
   } catch (error) {
     const reason = error instanceof ScratchOwnershipError ? error.reason : "launch-failed";
     process.stderr.write(`test scratch launch failed: ${reason}\n`);

@@ -34,6 +34,10 @@
       every host-writer source extension it inventories and run the honest
       scoped strict TypeScript project for lifecycle/canonical sources and
       fixtures.
+- [x] 2.7 Keep lifecycle and canonical-entrypoint oracle tests out of the
+      inherited-owner accounting batch. Add a dedicated, exact-one-owner suite
+      with a manifest-validated complete capability scrub and prove both the
+      spawned environment boundary and bounded outer-owner completion.
 - [x] 2.4 Add the repository-derived canonical-entrypoint ratchet over package
       manifests and workflow YAML run blocks; permit only owned routes,
       reviewed delegates, or explicit reviewed exemptions, and prove injected

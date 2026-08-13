@@ -22,6 +22,7 @@ on:
       - "package.json"
       - "**/package.json"
       - "pnpm-lock.yaml"
+      - "test-accounting.manifest.json"
   pull_request:
     paths:
       - ".github/workflows/test-scratch-lifecycle.yml"
@@ -40,6 +41,7 @@ on:
       - "package.json"
       - "**/package.json"
       - "pnpm-lock.yaml"
+      - "test-accounting.manifest.json"
   workflow_dispatch: {}
 
 concurrency:

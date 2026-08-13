@@ -183,6 +183,17 @@ delegates to the RI package front door and therefore creates no second owner.
 Existing authority and secondary runners keep their proven environment
 propagation; they are not wrapped per leaf.
 
+Test accounting keeps the lifecycle and canonical-entrypoint oracle out of its
+inherited-owner `root-node` batch. A dedicated direct `scratch-lifecycle`
+suite owns those two files exactly once and removes every
+`PDPP_TEST_SCRATCH_*` capability variable before spawning its leaf. The
+manifest accepts this boundary only when it lists the complete known capability
+set exactly once; omission, a partial scrub, or a duplicate is malformed. The
+boundary is portable Node
+environment construction, not a shell-specific `env -u` convention. This lets
+the oracle allocate and test its own outer owner while the accounting authority
+continues to run under one owner.
+
 The initial routing set is deliberately explicit: root aliases
 `docker:first-boot:test`, `docker:core:headed-oracle:test`,
 `railway:template:test`, `railway:ghcr-public:test`, `railway:env-check:test`,
@@ -274,3 +285,9 @@ aliases, and the accounting command. Static routing and literal ratchets run
 after targeted migrations, including injected package, workflow, and host-write
 bypasses that the repository-derived inventory must catch. Formatting/typecheck
 and affected suites provide the final accounting gate.
+
+Accounting tests prove both that the dedicated suite is the sole manifest owner
+of both oracle files and that every inherited capability variable is absent in a
+synthetic spawned leaf. The real two-file lifecycle oracle remains covered by
+the dedicated lifecycle workflow and the clean-worktree accounting gate; the
+unit test does not claim to execute that full receipt-producing run.

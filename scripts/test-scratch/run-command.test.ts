@@ -318,6 +318,36 @@ test("an unproven group shutdown retains scratch and makes a successful command 
   }
 });
 
+test("a rejected group proof retains scratch but preserves the child result", async () => {
+  const runnerTemp = await temporaryParent();
+  const parent = join(runnerTemp, "pdpp-test-scratch");
+  const previousRunnerTemp = process.env.RUNNER_TEMP;
+  process.env.RUNNER_TEMP = runnerTemp;
+  try {
+    for (const exitCode of [0, 42]) {
+      // biome-ignore lint/performance/noAwaitInLoops: each case must retain and reap its own live group before the next case.
+      const result = await runScratchCommand(["--", "sh", "-c", `sleep 30 & exit ${exitCode}`], {
+        stopGroup: (pgid) => {
+          process.kill(-pgid, "SIGKILL");
+          throw new Error("simulate rejected group proof");
+        },
+      });
+      assert.deepEqual(result, { code: exitCode === 0 ? 74 : exitCode, signal: null });
+      const roots = (await readdir(parent)).filter((entry) => entry.startsWith("run-"));
+      assert.equal(roots.length, 1);
+      const root = join(parent, roots[0] as string);
+      await rm(root, { force: true, recursive: true });
+    }
+  } finally {
+    if (previousRunnerTemp === undefined) {
+      delete process.env.RUNNER_TEMP;
+    } else {
+      process.env.RUNNER_TEMP = previousRunnerTemp;
+    }
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
 test("recovery retains fresh and malformed roots", async () => {
   const parent = await temporaryParent();
   const root = join(parent, "run-malformed");

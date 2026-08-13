@@ -222,6 +222,13 @@ every `scripts/test-scratch/*.ts` lifecycle/canonical-gate source and fixture.
 That scoped result SHALL NOT claim the unrelated repository-wide TypeScript
 baseline is green.
 
+When test accounting runs under an outer scratch owner, its inherited-owner
+batch SHALL NOT include the lifecycle or canonical-entrypoint oracle files.
+Those files SHALL have exactly one dedicated direct accounting-suite owner. The
+suite SHALL remove every known `PDPP_TEST_SCRATCH_*` capability variable through
+portable Node environment construction before its leaf starts. A manifest that
+declares only a partial capability removal list SHALL fail validation.
+
 #### Scenario: A canonical workflow adds a raw Node test command
 
 **WHEN** a workflow adds a raw `node --test` invocation without owner routing
@@ -253,3 +260,19 @@ exception
 **WHEN** an executable source or shell file under any repository location uses
 an extension scanned by the host-write ratchet
 **THEN** the lifecycle CI workflow SHALL run the canonical-entrypoint gate.
+
+#### Scenario: Test accounting runs the lifecycle oracle below an outer owner
+
+**WHEN** an accounting authority receives inherited scratch capability metadata
+and schedules the lifecycle or canonical-entrypoint oracle
+**THEN** the dedicated suite SHALL remove every capability variable before its
+leaf starts
+**AND** the oracle SHALL allocate its own outer owner rather than participate
+in the authority root
+**AND** the manifest inventory SHALL assign each oracle file exactly one owner.
+
+#### Scenario: The lifecycle suite omits the capability scrub
+
+**WHEN** a manifest owns either lifecycle oracle file but omits
+`environment_unset`
+**THEN** manifest validation SHALL fail before any leaf starts.

@@ -66,7 +66,43 @@
         "--test-reporter",
         "scripts/test-accounting/node-reporter.ts"
       ],
-      "include": ["scripts/**/*.test.mjs", "scripts/**/*.test.ts"]
+      "include": [
+        "scripts/*.test.mjs",
+        "scripts/*.test.ts",
+        "scripts/hermetic/*.test.ts",
+        "scripts/lib/*.test.ts",
+        "scripts/perf/*.test.ts",
+        "scripts/ri-suite/*.test.ts",
+        "scripts/test-accounting/*.test.ts",
+        "scripts/test-migration/*.test.ts"
+      ]
+    },
+    {
+      "id": "scratch-lifecycle",
+      "cwd": ".",
+      "loader": "node-test",
+      "authority_argument": null,
+      "execution": "direct",
+      "profiles": [{ "id": "default", "required": true, "skip_reasons": {} }],
+      "environment_unset": [
+        "PDPP_TEST_SCRATCH_ROOT",
+        "PDPP_TEST_SCRATCH_SCHEMA",
+        "PDPP_TEST_SCRATCH_MARKER",
+        "PDPP_TEST_SCRATCH_NONCE",
+        "PDPP_TEST_SCRATCH_OWNER_PID"
+      ],
+      "command": [
+        "node",
+        "--test",
+        "--import",
+        "tsx",
+        "--test-reporter",
+        "scripts/test-accounting/node-reporter.ts"
+      ],
+      "include": [
+        "scripts/test-scratch/canonical-entrypoints.test.ts",
+        "scripts/test-scratch/run-command.test.ts"
+      ]
     },
     {
       "id": "root-shell",

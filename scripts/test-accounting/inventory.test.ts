@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { storageProfileEnvironment } from "../../reference-implementation/scripts/test-profile-env.ts";
-import { runAuthority } from "./authority.ts";
+import { runAuthority, suiteEnvironment } from "./authority.ts";
 import {
   checkInventory,
   classifyTrackedPath,
@@ -24,6 +24,7 @@ import {
   readManifest,
   receiptBinding,
   selectedRuns,
+  TEST_SCRATCH_CAPABILITY_ENVIRONMENT,
   trackedFiles,
   treeDigest,
   verifyReceipts,
@@ -65,6 +66,8 @@ const TEST_SCRIPT_NAME_PATTERN = /^test(?::|$)/;
 const OPTIONAL_ENVIRONMENT_PREDICATE_PATTERN = /optional environment predicate/;
 const AUTHORITY_OR_ADAPTER_PATTERN = /authority|adapter/;
 const UNRECOGNIZED_RI_DEFAULT_PROFILE_PATTERN = /unrecognized ri-default profile/;
+const COMPLETE_SCRATCH_CAPABILITY_BOUNDARY_PATTERN =
+  /environment_unset must list every scratch capability exactly once/;
 
 const digest = async (path: string) => contentDigest(await readFile(path));
 const files = [
@@ -891,12 +894,90 @@ test("the current inventory has exact one-owner coverage and site is a real acco
   const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
   const tracked = trackedFiles(root);
   const result = checkInventory(manifestValue, tracked, [], { failOnUnknown: true, failOnEmpty: true });
-  const excluded = manifestValue.exclusions.length;
+  const excluded = manifestValue.exclusions?.length ?? 0;
   const planned = Object.values(result.plans).reduce((sum, paths) => sum + paths.length, 0);
   assert.equal(result.executable.length, planned + excluded);
   const site = manifestValue.suites.find((suite) => suite.id === "site");
   assert.equal(site?.zero_tests, undefined);
   assert.ok((result.plans.site?.length ?? 0) > 0);
+});
+test("the dedicated scratch lifecycle suite owns both oracles exactly once", async () => {
+  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
+  const result = checkInventory(manifestValue, trackedFiles(root), [], { failOnUnknown: true, failOnEmpty: true });
+  assert.deepEqual(result.plans["scratch-lifecycle"], [
+    "scripts/test-scratch/canonical-entrypoints.test.ts",
+    "scripts/test-scratch/run-command.test.ts",
+  ]);
+  assert.ok(
+    !result.plans["root-node"]?.some((path) => path.startsWith("scripts/test-scratch/")),
+    "root-node must not inherit lifecycle-oracle ownership"
+  );
+});
+test("the dedicated scratch lifecycle leaf removes every inherited capability variable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pdpp-authority-scratch-boundary-"));
+  await mkdir(join(root, "test"));
+  await writeFile(join(root, "test", "lifecycle.test.js"), "module.exports = {};\n");
+  await writeFile(
+    join(root, "boundary.mjs"),
+    `const names = ${JSON.stringify(TEST_SCRATCH_CAPABILITY_ENVIRONMENT)}; const present = names.filter((name) => process.env[name] !== undefined); if (present.length) { console.error(present.join(",")); process.exitCode = 1; }\n`
+  );
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "fixture@example.test"], { cwd: root });
+  execFileSync("git", ["config", "user.name", "fixture"], { cwd: root });
+  const localManifest: Manifest = {
+    schema: "pdpp.test-accounting/v3",
+    inventory_base_sha: "0000000000000000000000000000000000000000",
+    suites: [
+      {
+        id: "scratch-lifecycle",
+        cwd: ".",
+        loader: "shell",
+        authority_argument: null,
+        command: [process.execPath, "boundary.mjs"],
+        environment_unset: [...TEST_SCRATCH_CAPABILITY_ENVIRONMENT],
+        profiles: [{ id: "default", required: true, skip_reasons: {} }],
+        include: ["test/lifecycle.test.js"],
+      },
+    ],
+    exclusions: [],
+  };
+  await writeFile(join(root, "test-accounting.manifest.json"), `${JSON.stringify(localManifest)}\n`);
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync("git", ["commit", "-qm", "fixture"], { cwd: root });
+  localManifest.inventory_base_sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  await writeFile(join(root, "test-accounting.manifest.json"), `${JSON.stringify(localManifest)}\n`);
+  execFileSync("git", ["add", "test-accounting.manifest.json"], { cwd: root });
+  execFileSync("git", ["commit", "-qm", "base"], { cwd: root });
+  const partialBoundary = structuredClone(localManifest);
+  const [partialSuite] = partialBoundary.suites;
+  assert.ok(partialSuite);
+  partialSuite.environment_unset = [TEST_SCRATCH_CAPABILITY_ENVIRONMENT[0]];
+  await writeFile(join(root, "test-accounting.manifest.json"), `${JSON.stringify(partialBoundary)}\n`);
+  await assert.rejects(
+    readManifest(join(root, "test-accounting.manifest.json"), { root }),
+    COMPLETE_SCRATCH_CAPABILITY_BOUNDARY_PATTERN
+  );
+  const missingBoundary = structuredClone(localManifest);
+  const [missingSuite] = missingBoundary.suites;
+  assert.ok(missingSuite);
+  missingSuite.environment_unset = undefined;
+  await writeFile(join(root, "test-accounting.manifest.json"), `${JSON.stringify(missingBoundary)}\n`);
+  await assert.rejects(
+    readManifest(join(root, "test-accounting.manifest.json"), { root }),
+    COMPLETE_SCRATCH_CAPABILITY_BOUNDARY_PATTERN
+  );
+  await writeFile(join(root, "test-accounting.manifest.json"), `${JSON.stringify(localManifest)}\n`);
+  const inherited = Object.fromEntries(TEST_SCRATCH_CAPABILITY_ENVIRONMENT.map((name) => [name, "outer-capability"]));
+  const [suite] = localManifest.suites;
+  assert.ok(suite);
+  const environment = suiteEnvironment(inherited, "default", suite);
+  for (const name of TEST_SCRATCH_CAPABILITY_ENVIRONMENT) {
+    assert.equal(environment[name], undefined);
+  }
+  assert.deepEqual((await runAuthority({ root, suites: ["scratch-lifecycle"], env: inherited })).result.verified, [
+    "scratch-lifecycle/default",
+  ]);
 });
 test("the PostgreSQL profile declares its exact live-gate skip baseline", async () => {
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
