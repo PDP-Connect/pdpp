@@ -1527,6 +1527,14 @@ function retainedRecordProjectionFailure(record: JsonObject | undefined): string
   return null;
 }
 
+function hasAcceptedRuntimeAbsence(stream: ManifestStream, report: JsonObject): boolean {
+  if (stream.raw.required !== false || !asObject(report.skipped)) {
+    return false;
+  }
+  const condition = asNonEmptyString(report.coverage_condition)?.toLowerCase() ?? "";
+  return ACCEPTED_ABSENCE_POLICIES.has(condition);
+}
+
 function isGreenStream(
   connection: JsonObject,
   stream: ManifestStream,
@@ -1542,6 +1550,12 @@ function isGreenStream(
   }
   if (!currentProjectionEvidence(connection)) {
     return { green: false, reason: "record or manifest projection is not current" };
+  }
+  if (hasAcceptedRuntimeAbsence(stream, report)) {
+    return {
+      green: true,
+      reason: `successful runtime evidence accepts ${report.coverage_condition} for this optional stream`,
+    };
   }
   const considered = report.considered as number;
   const covered = report.covered as number;

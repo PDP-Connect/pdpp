@@ -711,6 +711,46 @@ test("distinguishes active work, owner interaction, provider/config blocked, fai
   }
 });
 
+test("accepts a successful runtime-proven absence only for an optional stream", () => {
+  const optionalUnavailable = healthyConnection();
+  const [optionalReport] = optionalUnavailable.collection_report as Json[];
+  assert.ok(optionalReport);
+  optionalReport.coverage_condition = "unavailable";
+  optionalReport.forward_disposition = "terminal";
+  optionalReport.required = false;
+  optionalReport.checkpoint = "not_staged";
+  optionalReport.considered = null;
+  optionalReport.covered = null;
+  optionalReport.skipped = { reason: "provider_resource_unavailable", recovery_action: "upstream_unblock" };
+  optionalUnavailable.stream_records = [
+    { stream: "messages", record_count: 0, count_state: "unobserved", declaration_state: "declared" },
+  ];
+
+  const optionalManifest = manifest({
+    streams: [
+      {
+        name: "messages",
+        required: false,
+        coverage_strategy: "full_inventory",
+        freshness_strategy: "manual_as_of",
+      },
+    ],
+  });
+  assert.equal(streamResult(evaluate(optionalUnavailable, optionalManifest)).class, "green");
+
+  const requiredUnavailable = structuredClone(optionalUnavailable);
+  const [requiredReport] = requiredUnavailable.collection_report as Json[];
+  assert.ok(requiredReport);
+  requiredReport.required = true;
+  assert.notEqual(streamResult(evaluate(requiredUnavailable)).class, "green");
+
+  const optionalWithoutSkip = structuredClone(optionalUnavailable);
+  const [reportWithoutSkip] = optionalWithoutSkip.collection_report as Json[];
+  assert.ok(reportWithoutSkip);
+  reportWithoutSkip.skipped = null;
+  assert.equal(streamResult(evaluate(optionalWithoutSkip, optionalManifest)).class, "unobserved");
+});
+
 test("uses the collection-report forward disposition and fails closed on manifest vocabulary/contradictions", () => {
   const active = healthyConnection();
   const [activeReport] = active.collection_report as Json[];
