@@ -22,6 +22,30 @@ const PUBLIC_MESSAGE = "Ingest failed due to a transient storage error; retry la
 const INTERNAL_DETAIL_RE = /internal_secret_storage_detail|already terminal|refusing to commit/;
 const SYSTEMIC_CODE_RE = /ingest_batch_storage_error/;
 
+test("ingest classifier keeps admission refusals permanent and run fences systemic", () => {
+  for (const code of ["connector_instance_not_found", "connector_instance_not_writable"]) {
+    const error = Object.assign(new Error(`typed ${code}`), { code });
+    assert.deepEqual(classifyIngestFailure(error), {
+      code,
+      message: `typed ${code}`,
+      retryable: false,
+    });
+  }
+
+  const runFence = Object.assign(new Error("run fence detail"), { code: "run_terminal" });
+  assert.deepEqual(classifyIngestFailure(runFence), {
+    code: "run_terminal",
+    message: "run fence detail",
+    retryable: true,
+  });
+
+  assert.deepEqual(classifyIngestFailure(new Error("unknown driver fault")), {
+    code: "ingest_storage_error",
+    message: "unknown driver fault",
+    retryable: true,
+  });
+});
+
 interface RouteResponse {
   json: (body: unknown) => unknown;
   setHeader: (name: string, value: string) => unknown;

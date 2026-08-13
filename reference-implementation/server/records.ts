@@ -785,7 +785,11 @@ export class RecordIndexAdmissionError extends Error {
   }
 }
 
-const PERMANENT_INGEST_FAILURE_CODES: ReadonlySet<string> = new Set(["invalid_record_identity"]);
+const PERMANENT_INGEST_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "connector_instance_not_found",
+  "connector_instance_not_writable",
+  "invalid_record_identity",
+]);
 
 export function classifyIngestFailure(err: unknown): ClassifiedIngestFailure {
   const message = err instanceof Error ? err.message : String(err);
