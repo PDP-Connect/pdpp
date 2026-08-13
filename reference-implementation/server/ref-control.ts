@@ -116,6 +116,7 @@ import {
 } from "./connector-coverage-policy.ts";
 import {
   firstDegradingKnownGapReason,
+  filterRunCoverageEvidence,
   firstPendingDetailGapReason,
   hasDegradingKnownGap,
   hasTerminalKnownGap,
@@ -2441,9 +2442,20 @@ function mapCoverageAxis(
   pendingDetailGaps: readonly PendingDetailGapSummary[] = [],
   manifestStreams: readonly ManifestStream[] = []
 ): CoverageAxis {
-  const hasDetailGap = hasPendingDetailGap(pendingDetailGaps);
-  const hasTerminal = hasTerminalKnownGap(lastRun, pendingDetailGaps);
-  const hasRetryable = lastRun ? lastRun.known_gaps.some((gap) => isRetryableKnownGap(gap)) : false;
+  const manifestByStream = firstManifestStreamsByName(manifestStreams);
+  const requiredStreamEvidence = (stream: unknown): boolean => {
+    if (typeof stream !== "string") {
+      return true;
+    }
+    const manifestStream = manifestByStream.get(stream);
+    return manifestStream ? isRequiredStream(manifestStream) : true;
+  };
+  const relevantEvidence = filterRunCoverageEvidence(lastRun, pendingDetailGaps, requiredStreamEvidence);
+  const relevantPendingDetailGaps = relevantEvidence.pendingDetailGaps;
+  const relevantRun = relevantEvidence.run;
+  const hasDetailGap = hasPendingDetailGap(relevantPendingDetailGaps);
+  const hasTerminal = hasTerminalKnownGap(relevantRun, relevantPendingDetailGaps);
+  const hasRetryable = relevantRun ? relevantRun.known_gaps.some((gap) => isRetryableKnownGap(gap)) : false;
   // Contradictory manifest (required AND accepted-absent) takes precedence
   // over the success path so a misconfigured manifest can never paint
   // green. The label still names the declared accepted-coverage policy

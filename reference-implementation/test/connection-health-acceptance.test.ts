@@ -1530,6 +1530,67 @@ function baselineHealthyRefineInputs(nowIso: string) {
   return { healthInput, initialConnectionHealth };
 }
 
+test("optional terminal report cannot preserve an optional terminal initial axis", () => {
+  const optionalStream = { name: "optional_stream", required: false };
+  const run = succeededRun({
+    known_gaps: [
+      {
+        kind: "skip_result",
+        reason: "optional_resource_unavailable",
+        severity: "actionable",
+        stream: "optional_stream",
+      },
+    ],
+  });
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [optionalStream],
+    nowIso: NOW,
+    refreshPolicy: STALENESS_REFRESH_POLICY,
+    schedule: { enabled: true },
+  };
+  const initial = projectConnectorSummaryConnectionHealth(healthInput);
+  assert.equal(initial.axes.coverage, "complete", "the earlier authority must ignore an optional stream gap");
+
+  const report: CollectionReportEntry[] = [
+    collectionReportEntry({
+      coverage_condition: "terminal_gap",
+      forward_disposition: "terminal",
+      required: false,
+      skipped: { reason: "optional_resource_unavailable" },
+      stream: "optional_stream",
+    }),
+  ];
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initial, report);
+  assert.equal(refined.axes.coverage, "complete");
+  assert.equal(refined.state, "healthy");
+});
+
+test("unscoped terminal evidence still blocks alongside an optional terminal report", () => {
+  const optionalStream = { name: "optional_stream", required: false };
+  const run = succeededRun({
+    known_gaps: [{ kind: "independent_error", reason: "connector_failure", severity: "actionable", stream: null }],
+  });
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [optionalStream],
+    nowIso: NOW,
+    refreshPolicy: STALENESS_REFRESH_POLICY,
+    schedule: { enabled: true },
+  };
+  const initial = projectConnectorSummaryConnectionHealth(healthInput);
+  assert.equal(initial.axes.coverage, "terminal_gap");
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initial, [
+    collectionReportEntry({ coverage_condition: "terminal_gap", required: false, stream: "optional_stream" }),
+  ]);
+  assert.equal(refined.axes.coverage, "terminal_gap");
+  assert.equal(refined.state, "degraded");
+});
+
 test("proof-age anchor: an old omitted-stream proof anchors freshness to stale even under a brand-new scoped run", () => {
   const { healthInput, initialConnectionHealth } = baselineHealthyRefineInputs(NOW);
   assert.equal(initialConnectionHealth.state, "healthy", "premise: the run-only projection is healthy/fresh");

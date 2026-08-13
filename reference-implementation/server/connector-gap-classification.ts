@@ -144,6 +144,34 @@ export function pendingDetailGapStreams(gaps: readonly PendingDetailGapSummary[]
   return streams;
 }
 
+export function filterRequiredStreamEvidence<T>(
+  evidence: readonly T[],
+  streamOf: (item: T) => unknown,
+  isRequired: (stream: unknown) => boolean
+): T[] {
+  return evidence.filter((item) => {
+    const stream = streamOf(item);
+    return typeof stream !== "string" || isRequired(stream);
+  });
+}
+
+export function filterRunCoverageEvidence(
+  run: ConnectorRunSummary | null,
+  pendingDetailGaps: readonly PendingDetailGapSummary[],
+  isRequired: (stream: unknown) => boolean
+): { readonly run: ConnectorRunSummary | null; readonly pendingDetailGaps: PendingDetailGapSummary[] } {
+  const filteredPending = filterRequiredStreamEvidence(pendingDetailGaps, (gap) => gap.stream, isRequired);
+  if (!run) {
+    return { run: null, pendingDetailGaps: filteredPending };
+  }
+  const filteredGaps = filterRequiredStreamEvidence(
+    run.known_gaps,
+    (gap) => (gap && typeof gap === "object" && !Array.isArray(gap) ? (gap as { stream?: unknown }).stream : null),
+    isRequired
+  );
+  return { run: { ...run, known_gaps: filteredGaps }, pendingDetailGaps: filteredPending };
+}
+
 export function isKnownSkipShadowedByPendingDetailGap(gap: unknown, pendingStreams: ReadonlySet<string>): boolean {
   if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
     return false;
