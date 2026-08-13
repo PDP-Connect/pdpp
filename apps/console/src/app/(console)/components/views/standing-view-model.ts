@@ -285,7 +285,7 @@ export interface StandingInputs {
    */
   overviewLoadIssues: string[];
   pendingApprovals: PendingApproval[];
-  /** Exact number of configured sources in the complete overview page. */
+  /** Exact number of operational, assessed sources in the complete overview page. */
   sourceCount?: number;
   /**
    * Connections with material source issues that do NOT ask the owner to do

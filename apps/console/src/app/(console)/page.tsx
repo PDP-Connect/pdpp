@@ -206,7 +206,11 @@ async function loadStandingInputs(params: Record<string, string | string[] | und
     overviewLoadIssues,
     pendingApprovals: pendingRes.value.data,
     sourceIssues: sourceIssueConnectionsFromConnectors(connectors),
-    sourceCount: connectorsResult.value.complete && !sourcePageState.cursor ? connectors.length : undefined,
+    sourceCount:
+      connectorsResult.value.complete && !sourcePageState.cursor
+        ? (fleetHealthRes.value?.scope.assessed.length ??
+          connectors.filter((connector) => connector.revoked_at === null).length)
+        : undefined,
     sourcePage: connectorsResult.value.sourcePage,
     sourceWork: sourceWorkFromConnectors(connectors),
     summary: summary.value,
