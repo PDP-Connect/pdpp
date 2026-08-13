@@ -240,6 +240,37 @@ discovery metadata, or sunset policy.
   `authorization_state.unsupported_legacy_shape`
 - **AND** it SHALL NOT obtain missing facts from current configuration
 
+### Requirement: Approval and denial SHALL have one terminal outcome
+
+For ordinary, batch, and owner-device consent, approval and denial SHALL use a
+guarded transition from the same pending authorization. Exactly one decision
+SHALL win. The winning terminal state, its events, and any issued credentials
+SHALL commit in one SQLite or PostgreSQL transaction. A competing decision that
+observed `pending` but loses the compare-and-set SHALL fail with
+`approval_conflict` and SHALL NOT emit contradictory terminal events or return
+a success response. A later lookup of an already-hidden terminal row MAY retain
+the existing unavailable response.
+
+#### Scenario: Approval wins the terminal decision
+
+- **WHEN** approval commits before a competing denial claims the pending row
+- **THEN** the authorization and its credentials SHALL remain active
+- **AND** denial SHALL fail with `approval_conflict`
+- **AND** no denial event SHALL be stored
+
+#### Scenario: Denial wins the terminal decision
+
+- **WHEN** denial commits before a competing approval claims the pending row
+- **THEN** approval SHALL fail with `approval_conflict`
+- **AND** no grant, package, or owner bearer SHALL be issued
+- **AND** exactly one denial event SHALL be stored
+
+#### Scenario: A terminal event write fails
+
+- **WHEN** a terminal event cannot be stored before transaction commit
+- **THEN** the decision state and every credential write SHALL roll back
+- **AND** the authorization SHALL remain pending
+
 ### Requirement: Post-approval handoff SHALL be durable and use explicit recovery modes
 
 The consent exchange path SHALL store exchange-code state in the configured

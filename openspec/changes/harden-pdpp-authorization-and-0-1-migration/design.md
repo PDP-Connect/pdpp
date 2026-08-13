@@ -108,6 +108,17 @@ alternate context kind. Users must complete fresh consent.
 
 ### The post-approval handoff is durable with explicit recovery modes
 
+Approval and denial are competing terminal decisions over the same pending
+authorization. Each backend uses its existing transaction boundary and a
+guarded pending-state compare-and-set. The winning decision commits its state,
+events, and any credentials together. A competing decision that observed the
+row as pending but loses that compare-and-set returns the typed
+`approval_conflict` result and cannot emit contradictory terminal evidence.
+Later requests for an already-hidden terminal row keep the existing bounded
+unavailable response.
+This applies to ordinary, batch, and owner-device consent; it does not add a
+second decision engine or an intermediate durable status.
+
 The existing HTML approval path commits the grant and token, then stores its
 exchange code in a process-local map. A restart loses that map. If the approval
 or exchange response is lost after commit, the client cannot recover the

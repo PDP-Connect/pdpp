@@ -10331,6 +10331,34 @@ export async function consumeConsentExchangeCode(
 /**
  * Deny and clear a pending grant request
  */
+function buildPendingConsentDeniedEventContext(
+  request: unknown,
+  userCode: string | null | undefined
+): { clientId: string; data: Record<string, unknown> } {
+  if (isStagedBatchRequest(request)) {
+    if (!isNonEmptyString(request.client.client_id) || request.entries.length === 0) {
+      throw bindingError("invalid_request", "Batch pending request is malformed");
+    }
+    const sources = request.entries.map((entry) => {
+      const slice = asSingleEntryRequestSlice(request, entry);
+      requireStructuredPendingRequestShape(slice);
+      return describeSourceBinding(requireStructuredPendingRequestBindings(slice).sourceBinding);
+    });
+    return {
+      clientId: request.client.client_id,
+      data: { sources, user_code: userCode },
+    };
+  }
+  requireStructuredPendingRequestShape(request);
+  return {
+    clientId: request.client.client_id,
+    data: {
+      source: describeSourceBinding(requireStructuredPendingRequestBindings(request).sourceBinding),
+      user_code: userCode,
+    },
+  };
+}
+
 export async function denyGrant(
   deviceCode: string,
   opts: { beforeCasHook?: () => void | Promise<void>; faultHook?: AuthorizationDecisionFaultHook } = {}
@@ -10344,18 +10372,13 @@ export async function denyGrant(
     return false;
   }
   const request: unknown = JSON.parse(pending.params_json);
-  requireStructuredPendingRequestShape(request);
   const traceContext = requirePersistedPendingTraceContext(pending);
-  request.trace_context = traceContext;
-  const { sourceBinding } = requireStructuredPendingRequestBindings(request);
+  const deniedContext = buildPendingConsentDeniedEventContext(request, pending.user_code);
   const deniedEvent: AuthSpineEventInput = {
     actor_id: pending.subject_id || "owner_local",
     actor_type: "subject",
-    client_id: request.client?.client_id || null,
-    data: {
-      source: describeSourceBinding(sourceBinding),
-      user_code: pending.user_code,
-    },
+    client_id: deniedContext.clientId,
+    data: deniedContext.data,
     event_type: "consent.denied",
     object_id: deviceCode,
     object_type: "pending_consent",

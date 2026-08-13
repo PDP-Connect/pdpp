@@ -138,3 +138,15 @@
 - [x] 10.3 Update the Core token-security contract, Case 2 execution oracle,
       and this change's requirement/design records. Token lifetime and
       grant-family containment remain owned by lifecycle tasks 3.3-3.7.
+
+## 11. Terminal decision arbitration
+
+- [x] 11.1 Make ordinary and owner-device denial use a pending-state
+      compare-and-set and commit the denial event in the same SQLite or
+      PostgreSQL transaction.
+- [x] 11.2 Return `approval_conflict` when approval or denial loses the
+      terminal decision. Never return denial success or emit denial evidence
+      after approval wins.
+- [x] 11.3 Prove both orderings, transaction rollback, mixed contention, and
+      persisted terminal state. Bind ordinary, batch, owner-device, HTTP 409,
+      SQLite, and live PostgreSQL evidence into Case 8.

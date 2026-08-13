@@ -36,6 +36,9 @@ implementation.
   record. HTML carries a proofless, single-use code; a separate out-of-band
   proof-bound code supports response-loss retry by the same proof holder until
   expiry, returning the same persisted token result.
+- Make approval and denial one terminal-decision authority. Exactly one
+  compare-and-set wins, and the winning state, events, and credentials commit
+  atomically on SQLite and PostgreSQL.
 - Treat pre-v0.1 persisted authorization state as disposable. Reject its bytes
   before introspection or route handling with
   `authorization_state.unsupported_legacy_shape` and require fresh consent.
