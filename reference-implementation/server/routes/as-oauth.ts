@@ -38,6 +38,7 @@ import type { AsDeviceTokenExchangeStoreResult } from "../../operations/as-devic
 import { executeAsDeviceTokenExchange } from "../../operations/as-device-token-exchange/index.ts";
 import type { AsIntrospectInfo } from "../../operations/as-introspect/index.ts";
 import { executeAsIntrospect } from "../../operations/as-introspect/index.ts";
+import { applyCredentialResponseNoStoreHeaders } from "../credential-response-cache.ts";
 import type { PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -61,8 +62,6 @@ type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<unknown>;
 interface AppLike {
   post: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
 }
-
-const HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS = 365 * 24 * 60 * 60;
 
 // Narrows an unknown body field to `string | null | undefined` as required by
 // operation input types. Non-string values are treated as absent (undefined).
@@ -249,6 +248,8 @@ export interface MountAsTokenContext {
     codeVerifier: unknown;
   }) => Promise<{
     access_token: string;
+    access_token_expires_at?: string;
+    authorization_details?: unknown[];
     token_type: string;
     refresh_token?: string | null;
     grant_id?: string | null;
@@ -260,6 +261,7 @@ export interface MountAsTokenContext {
    */
   exchangeOAuthRefreshToken: (args: { refreshToken: unknown; clientId: unknown }) => Promise<{
     access_token: string;
+    access_token_expires_at?: string;
     token_type: string;
     refresh_token: string;
     grant_id?: string | null;
@@ -278,6 +280,22 @@ function buildGrantIdPayload(token: {
   return token.grant_package_id ? { grant_package_id: token.grant_package_id } : { grant_id: token.grant_id };
 }
 
+function respondWithTokenJson(res: RouteResponse, body: unknown): unknown {
+  applyCredentialResponseNoStoreHeaders(res);
+  return res.json(body);
+}
+
+function accessTokenLifetimePayload(expiresAt: string | undefined): { expires_in: number } | Record<string, never> {
+  if (!expiresAt) {
+    return {};
+  }
+  const expiresAtMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresAtMs)) {
+    return {};
+  }
+  return { expires_in: Math.max(Math.floor((expiresAtMs - Date.now()) / 1000), 0) };
+}
+
 async function handleAuthCodeExchange(
   req: RouteRequest,
   body: Record<string, unknown>,
@@ -292,9 +310,10 @@ async function handleAuthCodeExchange(
       codeVerifier: body.code_verifier,
       redirectUri: body.redirect_uri,
     });
-    return res.json({
+    return respondWithTokenJson(res, {
       access_token: token.access_token,
-      expires_in: HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS,
+      ...(token.authorization_details ? { authorization_details: token.authorization_details } : {}),
+      ...accessTokenLifetimePayload(token.access_token_expires_at),
       token_type: token.token_type,
       ...(token.refresh_token ? { refresh_token: token.refresh_token } : {}),
       ...buildGrantIdPayload(token),
@@ -315,16 +334,23 @@ async function handleRefreshTokenExchange(
       clientId: body.client_id,
       refreshToken: body.refresh_token,
     });
-    return res.json({
+    return respondWithTokenJson(res, {
       access_token: token.access_token,
-      expires_in: HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS,
+      ...accessTokenLifetimePayload(token.access_token_expires_at),
       refresh_token: token.refresh_token,
       token_type: token.token_type,
       ...buildGrantIdPayload(token),
     });
   } catch (err) {
-    const e = err as { code?: string; message?: string };
-    return ctx.oauthError(res, 400, e.code ?? "invalid_grant", e.message ?? "Refresh token exchange failed");
+    const e = err as { code?: string; fresh_authorization_required?: boolean; message?: string };
+    return ctx.oauthError(
+      res,
+      400,
+      e.code ?? "invalid_grant",
+      e.message ?? "Refresh token exchange failed",
+      null,
+      e.fresh_authorization_required ? { fresh_authorization_required: true } : null
+    );
   }
 }
 
@@ -359,7 +385,7 @@ export function mountAsToken(app: AppLike, ctx: MountAsTokenContext): void {
       if (outcome.traceContext?.trace_id) {
         ctx.setReferenceTraceId(res, String(outcome.traceContext.trace_id));
       }
-      return res.status(outcome.status as number).json(outcome.publicResult);
+      return respondWithTokenJson(res.status(outcome.status as number), outcome.publicResult);
     }
     if (outcome.requestId) {
       res.setHeader("Request-Id", String(outcome.requestId));
@@ -380,12 +406,57 @@ export function mountAsToken(app: AppLike, ctx: MountAsTokenContext): void {
 // POST /introspect
 
 export interface MountAsIntrospectContext {
+  authenticateCaller: (authorization: string | undefined) => boolean;
   /**
    * Resolves a token's grant/introspection payload.
    * Delegated to `auth.js#introspect` via context.
    */
   introspect: (token: string) => Promise<AsIntrospectInfo> | AsIntrospectInfo;
   pdppError: PdppErrorFn;
+  resolveAudience: () => string | null;
+  resolveIssuer: () => string | null;
+}
+
+function authenticateIntrospectionRequest(
+  req: RouteRequest,
+  res: RouteResponse,
+  ctx: MountAsIntrospectContext
+): boolean {
+  if (ctx.authenticateCaller(req.get("Authorization"))) {
+    return true;
+  }
+  res.setHeader("WWW-Authenticate", 'Basic realm="introspection"');
+  ctx.pdppError(res, 401, "context.authentication_failed", "Introspection client authentication failed");
+  return false;
+}
+
+function projectIntrospectionResponse(
+  info: Record<string, unknown>,
+  ctx: MountAsIntrospectContext
+): Record<string, unknown> {
+  const issuer = ctx.resolveIssuer();
+  const audience = ctx.resolveAudience();
+  return {
+    ...info,
+    ...(audience ? { aud: audience } : {}),
+    ...(issuer ? { iss: issuer } : {}),
+  };
+}
+
+function respondToIntrospectionOutcome(
+  res: RouteResponse,
+  ctx: MountAsIntrospectContext,
+  outcome: Awaited<ReturnType<typeof executeAsIntrospect>>
+): unknown {
+  if (outcome.outcome === "success") {
+    return res.json(projectIntrospectionResponse(outcome.publicInfo as Record<string, unknown>, ctx));
+  }
+  return ctx.pdppError(
+    res,
+    outcome.status as number,
+    outcome.errorCode as string,
+    outcome.errorMessage as string | undefined
+  );
 }
 
 export function mountAsIntrospect(app: AppLike, ctx: MountAsIntrospectContext): void {
@@ -393,16 +464,14 @@ export function mountAsIntrospect(app: AppLike, ctx: MountAsIntrospectContext): 
   // validation and the AS-internal `grant_storage_binding` redaction live
   // in the canonical `as.introspect` operation (operations/as-introspect).
   const handler: RouteHandler = async (req, res) => {
-    const outcome = await executeAsIntrospect({ token: bodyString(req.body?.token) }, { introspect: ctx.introspect });
-    if (outcome.outcome === "success") {
-      return res.json(outcome.publicInfo);
+    if (!authenticateIntrospectionRequest(req, res, ctx)) {
+      return;
     }
-    return ctx.pdppError(
-      res,
-      outcome.status as number,
-      outcome.errorCode as string,
-      outcome.errorMessage as string | undefined
+    const outcome = await executeAsIntrospect(
+      { token: bodyString(req.body?.token) },
+      { includeStorageBinding: true, introspect: ctx.introspect }
     );
+    return respondToIntrospectionOutcome(res, ctx, outcome);
   };
   app.post("/introspect", { contract: "introspectToken" } as RouteArg<RouteHandler>, handler);
 }

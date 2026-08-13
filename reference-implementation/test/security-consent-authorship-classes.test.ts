@@ -336,7 +336,7 @@ test("security: hosted consent renders the three authorship classes distinctly",
       });
       assert.equal(resp.status, 400);
       const body = (await resp.json()) as { error?: { code?: string; message?: string } };
-      assert.equal(body.error?.code, "invalid_request");
+      assert.equal(body.error?.code, "invalid_authorization_details");
       assert.match(body.error?.message ?? "", PER_STREAM_CLIENT_CLAIMS_ERROR_RE);
     });
   });

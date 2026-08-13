@@ -35,6 +35,7 @@ import { startServer } from "../server/index.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
 import { ingestRecord } from "../server/records.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { TEST_INTROSPECTION_SERVER_OPTS } from "./helpers/introspection-test-credentials.ts";
 
 interface GrantedConnection {
   connection_id: string;
@@ -56,7 +57,7 @@ function at<T>(items: T[], index: number): T {
 }
 
 const CONNECTOR_ID = "spotify";
-const SOURCE_ID = "https://registry.pdpp.org/connectors/spotify";
+const SOURCE_ID = "https://registry.pdpp.dev/connectors/spotify";
 const STREAM = "messages";
 
 const INSTANCE_A = "cin_schema_account_a";
@@ -496,6 +497,7 @@ async function withHttpHarness(
     dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -673,7 +675,7 @@ test("client metadata uses the approving subject's granted instance and never ow
       const approved = await approveGrant(asUrl, hostedSubject, {
         access_mode: "continuous",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/analytics",
+        purpose_code: "https://pdpp.dev/purpose/analytics",
         purpose_description: "hosted subject metadata isolation",
         source: { id: SOURCE_ID, kind: "connector" },
         streams: [
@@ -732,7 +734,7 @@ test("client schema and stream metadata remain a closed resolved-grant projectio
       const approved = await approveGrant(asUrl, "owner_local", {
         access_mode: "continuous",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/analytics",
+        purpose_code: "https://pdpp.dev/purpose/analytics",
         purpose_description: "frozen client metadata projection",
         source: { id: SOURCE_ID, kind: "connector" },
         streams: [
@@ -863,7 +865,7 @@ test("client relationship metadata checks has_many foreign keys against the rela
         approveGrant(asUrl, "owner_local", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/analytics",
+          purpose_code: "https://pdpp.dev/purpose/analytics",
           purpose_description: purposeDescription,
           source: { id: SOURCE_ID, kind: "connector" },
           streams: [

@@ -16,7 +16,6 @@ import {
   BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
   BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
   ResolvedGrantSchema,
-  SelectionRequestSchema,
   validateResponse,
 } from "@pdpp/reference-contract";
 import {
@@ -28,6 +27,7 @@ import {
   type RegisteredQuery,
   referenceQueries,
   transaction,
+  writeTransaction,
 } from "../lib/db.ts";
 import { postgresEmitSpineEventInTransaction } from "../lib/postgres-spine.ts";
 import { createTraceContext, emitSpineEvent as emitRawSpineEvent, type SpineEventInput } from "../lib/spine.ts";
@@ -46,6 +46,7 @@ import {
   materializeCoreResolvedGrant,
   readRetainedCoreConsentSnapshot,
   resolveCoreEligibleInstanceIds,
+  validateCoreSelectionRequest,
 } from "./core-source-authorization.ts";
 import { getDb, runWithSqliteBusyRetry } from "./db.ts";
 import {
@@ -57,6 +58,7 @@ import {
   SUPPORTED_AUTHORIZATION_CODE_CHALLENGE_METHODS,
 } from "./oauth-substrate/primitives.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "./postgres-storage.ts";
+import { buildGrantedAuthorizationDetail } from "./source-approved-authorization.ts";
 import { snapshotSourceDeclaration } from "./source-declaration.ts";
 import { snapshotContentAddressedSourceDeclarationFromLegacyConnectorManifest } from "./source-declaration-legacy-collection.ts";
 import {
@@ -75,6 +77,7 @@ import {
 
 interface AuthError extends Error {
   code?: string;
+  fresh_authorization_required?: boolean;
   param?: string;
   request_id?: string;
   result?: unknown;
@@ -219,12 +222,17 @@ interface RegisteredClient {
   updated_at: string | null;
 }
 
-interface ConsentExchangeEntry {
-  consumed: boolean;
-  expiresAt: number;
-  grant: Record<string, unknown>;
-  grantId: string;
-  token: string;
+interface ConsentExchangeRow extends DbRow {
+  code_hash: string;
+  created_at: string;
+  expires_at: string;
+  grant_id: string | null;
+  package_id: string | null;
+  proof_hash: string | null;
+  redeemed_at: string | null;
+  token_expires_at: string | null;
+  token_id: string;
+  token_revoked: boolean | number;
 }
 
 interface GrantPackageNormalized {
@@ -365,6 +373,7 @@ interface RegisteredClientRow extends DbRow {
 
 interface GrantPackageMemberRow extends DbRow {
   added_at: string;
+  grant_access_mode?: string;
   grant_id: string;
   grant_status: string;
   member_revoked_at?: string | null;
@@ -381,8 +390,10 @@ interface GrantPackageListRow extends DbRow {
   created_at: string;
   member_count?: number | string;
   package_id: string;
+  scenario_id: string | null;
   status: string;
   subject_id: string;
+  trace_id: string | null;
 }
 
 interface GrantPackageCursor {
@@ -426,13 +437,36 @@ interface OwnerDeviceAuthRow extends DbRow {
   user_code: string;
 }
 
+export type OwnerDeviceApprovalFaultHook = (stage: "before_token_insert" | "after_token_insert") => void;
+
+export type AuthorizationDecisionFaultStage = "after_cas_before_event" | "after_event_before_commit";
+export type AuthorizationDecisionFaultHook = (stage: AuthorizationDecisionFaultStage) => void;
+
+interface OwnerDeviceApprovalInput {
+  clientId: string;
+  consentApprovedEvent: AuthSpineEventInput;
+  deviceCode: string;
+  expiresAt: string;
+  faultHook?: OwnerDeviceApprovalFaultHook | undefined;
+  pendingSnapshot: OwnerDeviceAuthRow;
+  subjectId: string;
+  tokenId: string;
+  tokenIssuedEvent: AuthSpineEventInput;
+}
+
 interface OAuthPendingCodeRow extends DbRow {
   client_id: string;
+  consumed_at: string | null;
   device_code: string;
   expires_at: string;
+  grant_id: string | null;
+  issued_at: string | null;
+  issued_code: string | null;
+  package_id: string | null;
   redirect_uri: string;
   state: string | null;
   status: string;
+  token_id: string | null;
 }
 
 interface OAuthIssuedCodeRow extends DbRow {
@@ -452,11 +486,15 @@ interface OAuthIssuedCodeRow extends DbRow {
 interface RefreshTokenRow extends DbRow {
   client_id: string;
   expires_at: string | null;
+  family_id: string;
+  generation: number;
   grant_id: string | null;
   package_id: string | null;
+  parent_generation: number | null;
   revoked_at: string | null;
   status: string;
   subject_id: string;
+  superseded_at: string | null;
 }
 
 interface GrantIssuanceRow extends DbRow {
@@ -496,6 +534,8 @@ interface TokenIntrospectionRow extends DbRow {
   package_scenario_id: string | null;
   package_status: string | null;
   package_trace_id: string | null;
+  refresh_family_active: boolean | number | null;
+  refresh_family_id: string | null;
   revoked: boolean | number;
   scenario_id: string | null;
   storage_binding_json: string | null;
@@ -507,7 +547,7 @@ interface TokenIntrospectionRow extends DbRow {
 interface TokenIntrospectionResult extends Record<string, unknown> {
   active: boolean;
   client_id?: string | null;
-  exp?: number | null;
+  exp?: number;
   grant_id?: string | null;
   grant_package_id?: string | null;
   pdpp_token_kind?: string;
@@ -553,12 +593,18 @@ interface PendingConsentStore {
     aiTrainingConsented: boolean | null | undefined;
     approvedAt: string;
   }) => MaybePromise<StoreWriteResult>;
-  markDenied: (input: { deviceCode: string; deniedAt: string }) => MaybePromise<StoreWriteResult>;
+  markDeniedAtomically: (input: {
+    deviceCode: string;
+    deniedAt: string;
+    event: AuthSpineEventInput;
+    faultHook?: AuthorizationDecisionFaultHook;
+  }) => MaybePromise<StoreWriteResult>;
   markExpired: (input: { deviceCode: string }) => MaybePromise<StoreWriteResult>;
   updateLastPolled: (input: { deviceCode: string; polledAt: string }) => MaybePromise<StoreWriteResult>;
 }
 
 interface OwnerDeviceAuthStore {
+  approveAtomically: (input: OwnerDeviceApprovalInput) => MaybePromise<OwnerDeviceAuthRow>;
   getByApprovalId: (approvalId: string) => MaybePromise<OwnerDeviceAuthRow | null>;
   getByDeviceCode: (deviceCode: string) => MaybePromise<OwnerDeviceAuthRow | null>;
   getByUserCode: (userCode: string) => MaybePromise<OwnerDeviceAuthRow | null>;
@@ -580,7 +626,12 @@ interface OwnerDeviceAuthStore {
     tokenId: string;
     approvedAt: string;
   }) => MaybePromise<StoreWriteResult>;
-  markDenied: (input: { deviceCode: string; deniedAt: string }) => MaybePromise<StoreWriteResult>;
+  markDeniedAtomically: (input: {
+    deviceCode: string;
+    deniedAt: string;
+    event: AuthSpineEventInput;
+    faultHook?: AuthorizationDecisionFaultHook;
+  }) => MaybePromise<StoreWriteResult>;
   markExpired: (input: { deviceCode: string }) => MaybePromise<StoreWriteResult>;
   updateLastPolled: (input: { deviceCode: string; polledAt: string }) => MaybePromise<StoreWriteResult>;
 }
@@ -713,9 +764,11 @@ interface OAuthCodeStore {
 }
 
 interface RefreshTokenStore {
-  getByTokenHash: (refreshTokenHash: string) => MaybePromise<RefreshTokenRow | null>;
   insert: (input: {
     refreshTokenHash: string;
+    familyId: string;
+    generation: number;
+    parentGeneration: number | null;
     clientId: string;
     grantId: string;
     subjectId: string;
@@ -724,13 +777,15 @@ interface RefreshTokenStore {
   }) => MaybePromise<StoreWriteResult>;
   insertForPackage: (input: {
     refreshTokenHash: string;
+    familyId: string;
+    generation: number;
+    parentGeneration: number | null;
     clientId: string;
     packageId: string;
     subjectId: string;
     createdAt: string;
     expiresAt: string | null;
   }) => MaybePromise<StoreWriteResult>;
-  markUsed: (input: { usedAt: string; refreshTokenHash: string }) => MaybePromise<StoreWriteResult>;
 }
 
 interface TokenStore {
@@ -756,6 +811,24 @@ function nowIso(): string {
 
 function expiresInIso(seconds: number): string {
   return new Date(Date.now() + seconds * 1000).toISOString();
+}
+
+const OAUTH_REFRESH_ACCESS_TOKEN_LIFETIME_SECONDS = 10 * 60;
+
+function refreshAccessTokenExpiresAt(issuedAt: string, refreshFamilyExpiresAt: string | null): string {
+  const issuedAtMs = Date.parse(issuedAt);
+  if (!Number.isFinite(issuedAtMs)) {
+    throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token issuance time is invalid");
+  }
+  const shortExpiryMs = issuedAtMs + OAUTH_REFRESH_ACCESS_TOKEN_LIFETIME_SECONDS * 1000;
+  if (!refreshFamilyExpiresAt) {
+    return new Date(shortExpiryMs).toISOString();
+  }
+  const familyExpiryMs = Date.parse(refreshFamilyExpiresAt);
+  if (!Number.isFinite(familyExpiryMs)) {
+    throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token family expiry is invalid");
+  }
+  return new Date(Math.min(shortExpiryMs, familyExpiryMs)).toISOString();
 }
 
 function isExpired(row: DbRow): boolean {
@@ -808,17 +881,6 @@ const SUPPORTED_PENDING_REQUEST_FIELDS = new Set([
   "parent_package_id",
   "scenario_id",
 ]);
-const SUPPORTED_AUTHORIZATION_DETAIL_FIELDS = new Set([
-  "access_mode",
-  "client_claims",
-  "purpose_code",
-  "purpose_description",
-  "retention",
-  "selection_preset",
-  "source",
-  "streams",
-  "type",
-]);
 const SUPPORTED_STREAM_SELECTION_FIELDS = new Set([
   "fields",
   "instance_ids",
@@ -840,7 +902,6 @@ const SUPPORTED_NORMALIZED_PENDING_REQUEST_FIELDS = new Set([
   "trace_context",
 ]);
 const SUPPORTED_PENDING_CLIENT_FIELDS = new Set(["client_display", "client_id", "registration_mode"]);
-const SUPPORTED_ACCESS_MODES = new Set(["single_use", "continuous"]);
 const SUPPORTED_PENDING_SELECTION_FIELDS = new Set([
   "access_mode",
   "client_claims",
@@ -876,7 +937,6 @@ const ContractAjv2020 = requireFromReferenceContract("ajv/dist/2020.js") as new 
 const addContractFormats = requireFromReferenceContract("ajv-formats") as (ajv: ContractAjv) => void;
 const contractAjv = new ContractAjv2020({ allErrors: true, strict: false });
 addContractFormats(contractAjv);
-const validateSelectionRequestContract = contractAjv.compile(SelectionRequestSchema);
 const validateResolvedGrantContract = contractAjv.compile(ResolvedGrantSchema);
 
 function contractValidationMessage(validator: ContractSchemaValidator): string {
@@ -1474,7 +1534,7 @@ function applyRegisteredClientToPendingRequestClient(
   });
 }
 
-function normalizeStreamSelection(stream: Record<string, unknown>): RawStreamSelection {
+function normalizeStreamSelection(stream: RawStreamSelection): RawStreamSelection {
   return {
     fields: Array.isArray(stream.fields) ? stream.fields : undefined,
     instance_ids: Array.isArray(stream.instance_ids) ? stream.instance_ids : undefined,
@@ -1545,63 +1605,18 @@ function isAbsoluteUriPurposeCode(value: unknown): boolean {
 interface AuthorizationDetailInput extends Record<string, unknown> {
   access_mode: string;
   selection_preset?: string;
-  streams?: Record<string, unknown>[];
+  streams?: RawStreamSelection[];
 }
 
-function requireAuthorizationDetailInput(detail: unknown, index: number): AuthorizationDetailInput {
-  const at = `authorization_details[${index}]`;
-  if (!isRecord(detail)) {
-    throw bindingError("invalid_request", "Unsupported authorization_details type");
-  }
-  if (detail.type !== "https://pdpp.dev/data-access") {
-    invalidGrantInitiationRequest("Unsupported authorization_details type");
-  }
-  if ("connector_id" in detail || "provider_id" in detail) {
-    invalidGrantInitiationRequest(
-      "authorization_details must use source: { id, kind?: 'connector' | 'provider_native' }"
-    );
-  }
-  const unsupportedDetailFields = Object.keys(detail).filter(
-    (field) => !SUPPORTED_AUTHORIZATION_DETAIL_FIELDS.has(field)
-  );
-  if (unsupportedDetailFields.length) {
-    invalidGrantInitiationRequest(`Unsupported authorization_details fields: ${unsupportedDetailFields.join(", ")}`);
-  }
-  if (!validateSelectionRequestContract(detail)) {
-    invalidGrantInitiationRequest(`${at} is invalid: ${contractValidationMessage(validateSelectionRequestContract)}`);
-  }
-  const hasStreams = Array.isArray(detail.streams) && detail.streams.length > 0;
-  const hasPreset = isNonEmptyString(detail.selection_preset);
-  if (hasStreams === hasPreset) {
-    throw bindingError("invalid_request", `${at} must include exactly one of streams or selection_preset`);
-  }
-  if (typeof detail.access_mode !== "string" || !SUPPORTED_ACCESS_MODES.has(detail.access_mode)) {
-    throw bindingError("invalid_request", `${at}.access_mode must be "single_use" or "continuous"`);
-  }
-  // The schema requires an absolute URI but does not restrict it to a registry.
-  if (!isAbsoluteUriPurposeCode(detail.purpose_code)) {
-    invalidGrantInitiationRequest(`${at}.purpose_code must be a syntactically valid absolute URI`);
-  }
-  const streams: Record<string, unknown>[] = [];
-  const requestedStreams = Array.isArray(detail.streams) ? detail.streams : [];
-  for (const stream of requestedStreams) {
-    if (!isRecord(stream)) {
-      invalidGrantInitiationRequest(`${at}.streams entries must be objects`);
-    }
-    const unsupportedStreamFields = Object.keys(stream).filter(
-      (field) => !SUPPORTED_STREAM_SELECTION_FIELDS.has(field)
-    );
-    if (unsupportedStreamFields.length) {
-      invalidGrantInitiationRequest(
-        `Unsupported stream selection fields on '${stream.name || "unknown"}': ${unsupportedStreamFields.join(", ")}`
-      );
-    }
-    streams.push(stream);
-  }
+function requireAuthorizationDetailInput(detail: unknown, _index: number): AuthorizationDetailInput {
+  const validated = validateCoreSelectionRequest(detail);
+  const hasPreset = isNonEmptyString(validated.selection_preset);
   return {
-    ...detail,
-    access_mode: detail.access_mode,
-    ...(hasPreset ? { selection_preset: detail.selection_preset as string } : { streams }),
+    ...validated,
+    access_mode: validated.access_mode,
+    ...(hasPreset
+      ? { selection_preset: validated.selection_preset as string }
+      : { streams: (validated.streams ?? []).map((stream) => ({ ...stream })) }),
   };
 }
 
@@ -2323,6 +2338,21 @@ function buildGrantInvalidError(context: { request_id?: string | null; trace_id?
   return err;
 }
 
+function buildUnsupportedLegacyAuthorizationStateError(): AuthError {
+  const err: AuthError = new Error("Persisted authorization state predates PDPP 0.1.0; fresh consent is required");
+  err.code = "authorization_state.unsupported_legacy_shape";
+  return err;
+}
+
+function isUnsupportedLegacyGrantShape(grant: DbRow): boolean {
+  if (grant.version !== "0.1.0" || !isRecord(grant.source_declaration) || !Array.isArray(grant.streams)) {
+    return true;
+  }
+  return grant.streams.some(
+    (stream) => !(isRecord(stream) && Array.isArray(stream.instance_ids) && Array.isArray(stream.fields))
+  );
+}
+
 function requireClosedResolvedGrant(grant: unknown, code: "grant_invalid" | "invalid_request"): DbRow {
   const candidate = cloneJson(grant);
   if (!validateResolvedGrantContract(candidate)) {
@@ -2379,12 +2409,19 @@ function requirePersistedGrantColumnBindings(
   ) {
     throw bindingError(code, "Resolved grant does not match its persisted grant binding");
   }
+  const tokenExpiresAt = tokenBinding?.expiresAt ?? null;
+  const tokenExpiryMillis = isNonEmptyString(tokenExpiresAt) ? Date.parse(tokenExpiresAt) : Number.NaN;
+  const grantExpiryMillis = isNonEmptyString(persistedExpiresAt) ? Date.parse(persistedExpiresAt) : Number.NaN;
+  const tokenExpiryViolatesGrant =
+    (tokenExpiresAt !== null && !Number.isFinite(tokenExpiryMillis)) ||
+    (persistedExpiresAt !== null &&
+      (tokenExpiresAt === null || !Number.isFinite(grantExpiryMillis) || tokenExpiryMillis > grantExpiryMillis));
   if (
     tokenBinding &&
     (tokenBinding.grantId !== persistedGrantId ||
       tokenBinding.subjectId !== persistedSubjectId ||
       tokenBinding.clientId !== persistedClientId ||
-      tokenBinding.expiresAt !== persistedExpiresAt)
+      tokenExpiryViolatesGrant)
   ) {
     throw bindingError(code, "Token binding does not match its persisted grant");
   }
@@ -2465,6 +2502,9 @@ export function requirePersistedGrantState(row: DbRow = {}): {
     if (!isRecord(parsedGrant)) {
       throw buildGrantInvalidError();
     }
+    if (isUnsupportedLegacyGrantShape(parsedGrant)) {
+      throw buildUnsupportedLegacyAuthorizationStateError();
+    }
     const grant = requireClosedResolvedGrant(parsedGrant, "grant_invalid");
     let tokenBinding: { clientId: unknown; expiresAt: unknown; grantId: unknown; subjectId: unknown } | undefined;
     if (row.token_kind === "client") {
@@ -2491,6 +2531,9 @@ export function requirePersistedGrantState(row: DbRow = {}): {
       storageBinding: bindings.storageBinding,
     };
   } catch (cause: unknown) {
+    if (isAuthError(cause) && cause.code === "authorization_state.unsupported_legacy_shape") {
+      throw cause;
+    }
     const err = buildGrantInvalidError();
     err.cause = cause;
     throw err;
@@ -2585,13 +2628,25 @@ const postgresPendingConsentStore: PendingConsentStore = {
        WHERE device_code = $6`,
       [subjectId, grantId, tokenId, aiTrainingConsented ? true : null, approvedAt, deviceCode]
     ),
-  markDenied: ({ deviceCode, deniedAt }) =>
-    pgExec(
-      `UPDATE pending_consents
-       SET status = 'denied', denied_at = $1
-       WHERE device_code = $2 AND status = 'pending'`,
-      [deniedAt, deviceCode]
-    ),
+  markDeniedAtomically: ({ deviceCode, deniedAt, event, faultHook }) =>
+    withPostgresTransaction(async (client) => {
+      const result = await client.query(
+        `UPDATE pending_consents
+         SET status = 'denied', denied_at = $1
+         WHERE device_code = $2 AND status = 'pending'
+         RETURNING device_code`,
+        [deniedAt, deviceCode]
+      );
+      if (result.rowCount !== 1) {
+        const err: AuthError = new Error("Pending consent approval conflict");
+        err.code = "approval_conflict";
+        throw err;
+      }
+      await faultHook?.("after_cas_before_event");
+      await postgresEmitSpineEventInTransaction(client, event as SpineEventInput);
+      await faultHook?.("after_event_before_commit");
+      return { changes: 1 };
+    }),
   markExpired: ({ deviceCode }) =>
     pgExec("UPDATE pending_consents SET status = 'expired' WHERE device_code = $1 AND status = 'pending'", [
       deviceCode,
@@ -2626,8 +2681,19 @@ const sqlitePendingConsentStore: PendingConsentStore = {
       approvedAt,
       deviceCode,
     ]),
-  markDenied: ({ deviceCode, deniedAt }) =>
-    exec(referenceQueries.authPendingConsentsMarkDenied, [deniedAt, deviceCode]),
+  markDeniedAtomically: ({ deviceCode, deniedAt, event, faultHook }) =>
+    writeTransaction(() => {
+      const result = exec(referenceQueries.authPendingConsentsMarkDenied, [deniedAt, deviceCode]);
+      if (result.changes !== 1) {
+        const err: AuthError = new Error("Pending consent approval conflict");
+        err.code = "approval_conflict";
+        throw err;
+      }
+      faultHook?.("after_cas_before_event");
+      emitRawSpineEvent(event as SpineEventInput, getDb());
+      faultHook?.("after_event_before_commit");
+      return result;
+    }),
   markExpired: ({ deviceCode }) => exec(referenceQueries.authPendingConsentsMarkExpired, [deviceCode]),
   updateLastPolled: ({ deviceCode, polledAt }) => {
     const query = requireMutationQuery(
@@ -2642,7 +2708,145 @@ function getPendingConsentStore() {
   return isPostgresStorageBackend() ? postgresPendingConsentStore : sqlitePendingConsentStore;
 }
 
+function buildOwnerDeviceUnavailableError(row: OwnerDeviceAuthRow): AuthError {
+  return attachOwnerDeviceTraceContext(
+    Object.assign(new Error("Owner device authorization is not available"), {
+      code: "not_found",
+    }),
+    row
+  );
+}
+
+function buildOwnerDeviceApprovalConflictError(row: OwnerDeviceAuthRow): AuthError {
+  return attachOwnerDeviceTraceContext(
+    Object.assign(new Error("Pending consent approval conflict"), {
+      code: "approval_conflict",
+    }),
+    row
+  );
+}
+
+function requireOwnerDeviceApprovedSubject(row: OwnerDeviceAuthRow, subjectId: string): void {
+  if (row.subject_id === subjectId) {
+    return;
+  }
+  throw buildOwnerDeviceUnavailableError(row);
+}
+
+function requireOwnerDevicePendingForApproval(row: OwnerDeviceAuthRow, input: OwnerDeviceApprovalInput): void {
+  if (
+    row.client_id !== input.clientId ||
+    input.clientId !== input.pendingSnapshot.client_id ||
+    row.user_code !== input.pendingSnapshot.user_code ||
+    row.approval_id !== input.pendingSnapshot.approval_id
+  ) {
+    throw buildOwnerDeviceUnavailableError(row);
+  }
+}
+
+function buildOwnerDeviceExpiredError(row: OwnerDeviceAuthRow): AuthError {
+  return attachOwnerDeviceTraceContext(
+    Object.assign(new Error("Owner device authorization has expired"), {
+      code: "not_found",
+    }),
+    row
+  );
+}
+
+function isOwnerDeviceExpiredError(err: unknown): err is AuthError {
+  return isAuthError(err) && err.code === "not_found" && err.message === "Owner device authorization has expired";
+}
+
+function requireDynamicClientSubject(registeredClient: RegisteredClient, subjectId: string): RegisteredClient {
+  const existingSubject =
+    registeredClient.registration_mode === "dynamic" ? registeredClient.metadata.issuer_subject_id || null : null;
+  if (existingSubject && existingSubject !== subjectId) {
+    const err: AuthError = new Error("Dynamic client is bound to a different owner subject");
+    err.code = "forbidden";
+    throw err;
+  }
+  return registeredClient;
+}
+
 const postgresOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
+  approveAtomically: (input) =>
+    withPostgresTransaction(async (client) => {
+      const existing = await client.query<OwnerDeviceAuthRow>(
+        `SELECT *
+         FROM owner_device_auth
+         WHERE device_code = $1
+         FOR UPDATE`,
+        [input.deviceCode]
+      );
+      const [row] = existing.rows;
+      if (!row) {
+        const err: AuthError = new Error("Unknown user code");
+        err.code = "not_found";
+        throw err;
+      }
+      if (row.status === "approved" && row.token_id) {
+        requireOwnerDeviceApprovedSubject(row, input.subjectId);
+        return row;
+      }
+      if (row.status === "denied") {
+        throw buildOwnerDeviceApprovalConflictError(row);
+      }
+      if (row.status !== "pending") {
+        throw buildOwnerDeviceUnavailableError(row);
+      }
+      requireOwnerDevicePendingForApproval(row, input);
+      if (isExpired(row)) {
+        throw buildOwnerDeviceExpiredError(row);
+      }
+      const clientRowResult = await client.query<RegisteredClientRow>(
+        `SELECT client_id, registration_mode, token_endpoint_auth_method,
+                client_secret, metadata_json::text AS metadata_json, created_at, updated_at
+         FROM oauth_clients
+         WHERE client_id = $1
+         FOR UPDATE`,
+        [input.clientId]
+      );
+      const registeredClient = mapRegisteredClientRow(clientRowResult.rows[0] ?? null);
+      if (!registeredClient) {
+        throw ownerDeviceExchangeError(row, "invalid_client", `Unknown client_id: ${input.clientId}`);
+      }
+      requireDynamicClientSubject(registeredClient, input.subjectId);
+      if (registeredClient.registration_mode === "dynamic" && !registeredClient.metadata.issuer_subject_id) {
+        await client.query(
+          `UPDATE oauth_clients
+           SET metadata_json = $2::jsonb,
+               updated_at = $3
+           WHERE client_id = $1`,
+          [
+            registeredClient.client_id,
+            JSON.stringify({ ...registeredClient.metadata, issuer_subject_id: input.subjectId }),
+            nowIso(),
+          ]
+        );
+      }
+      input.faultHook?.("before_token_insert");
+      await client.query(
+        `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
+         VALUES($1, NULL, $2, $3, 'owner', $4)`,
+        [input.tokenId, input.subjectId, input.clientId, input.expiresAt]
+      );
+      input.faultHook?.("after_token_insert");
+      await postgresEmitSpineEventInTransaction(client, input.consentApprovedEvent as SpineEventInput);
+      await postgresEmitSpineEventInTransaction(client, input.tokenIssuedEvent as SpineEventInput);
+      const approved = await client.query<OwnerDeviceAuthRow>(
+        `UPDATE owner_device_auth
+         SET status = 'approved',
+             subject_id = $2,
+             token_id = $3,
+             approved_at = $4
+         WHERE device_code = $1
+           AND status = 'pending'
+        RETURNING *`,
+        [input.deviceCode, input.subjectId, input.tokenId, nowIso()]
+      );
+      const [approvedRow] = approved.rows;
+      return approvedRow as OwnerDeviceAuthRow;
+    }),
   getByApprovalId: (approvalId) =>
     pgOne<OwnerDeviceAuthRow>(
       `SELECT *
@@ -2704,13 +2908,25 @@ const postgresOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
        WHERE device_code = $4`,
       [subjectId, tokenId, approvedAt, deviceCode]
     ),
-  markDenied: ({ deviceCode, deniedAt }) =>
-    pgExec(
-      `UPDATE owner_device_auth
-       SET status = 'denied', denied_at = $1
-       WHERE device_code = $2 AND status = 'pending'`,
-      [deniedAt, deviceCode]
-    ),
+  markDeniedAtomically: ({ deviceCode, deniedAt, event, faultHook }) =>
+    withPostgresTransaction(async (client) => {
+      const result = await client.query(
+        `UPDATE owner_device_auth
+         SET status = 'denied', denied_at = $1
+         WHERE device_code = $2 AND status = 'pending'
+         RETURNING device_code`,
+        [deniedAt, deviceCode]
+      );
+      if (result.rowCount !== 1) {
+        const err: AuthError = new Error("Pending consent approval conflict");
+        err.code = "approval_conflict";
+        throw err;
+      }
+      await faultHook?.("after_cas_before_event");
+      await postgresEmitSpineEventInTransaction(client, event as SpineEventInput);
+      await faultHook?.("after_event_before_commit");
+      return { changes: 1 };
+    }),
   markExpired: ({ deviceCode }) =>
     pgExec("UPDATE owner_device_auth SET status = 'expired' WHERE device_code = $1 AND status = 'pending'", [
       deviceCode,
@@ -2720,6 +2936,64 @@ const postgresOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
 };
 
 const sqliteOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
+  approveAtomically: (input) =>
+    transaction(() => {
+      const row = getOne<OwnerDeviceAuthRow>(referenceQueries.authOwnerDeviceAuthGetByDeviceCode, [input.deviceCode]);
+      if (!row) {
+        const err: AuthError = new Error("Unknown user code");
+        err.code = "not_found";
+        throw err;
+      }
+      if (row.status === "approved" && row.token_id) {
+        requireOwnerDeviceApprovedSubject(row, input.subjectId);
+        return row;
+      }
+      if (row.status === "denied") {
+        throw buildOwnerDeviceApprovalConflictError(row);
+      }
+      if (row.status !== "pending") {
+        throw buildOwnerDeviceUnavailableError(row);
+      }
+      requireOwnerDevicePendingForApproval(row, input);
+      if (isExpired(row)) {
+        throw buildOwnerDeviceExpiredError(row);
+      }
+      const registeredClient = mapRegisteredClientRow(
+        getOne<RegisteredClientRow>(referenceQueries.authOauthClientsGetByClientId, [input.clientId])
+      );
+      if (!registeredClient) {
+        throw ownerDeviceExchangeError(row, "invalid_client", `Unknown client_id: ${input.clientId}`);
+      }
+      requireDynamicClientSubject(registeredClient, input.subjectId);
+      if (registeredClient.registration_mode === "dynamic" && !registeredClient.metadata.issuer_subject_id) {
+        exec(referenceQueries.authOauthClientsUpsert, [
+          registeredClient.client_id,
+          registeredClient.registration_mode,
+          registeredClient.token_endpoint_auth_method,
+          registeredClient.client_secret,
+          JSON.stringify({ ...registeredClient.metadata, issuer_subject_id: input.subjectId }),
+          registeredClient.created_at || nowIso(),
+          nowIso(),
+        ]);
+      }
+      input.faultHook?.("before_token_insert");
+      exec(referenceQueries.authTokensInsertOwner, [input.tokenId, input.subjectId, input.clientId, input.expiresAt]);
+      input.faultHook?.("after_token_insert");
+      emitRawSpineEvent(input.consentApprovedEvent as SpineEventInput, getDb());
+      emitRawSpineEvent(input.tokenIssuedEvent as SpineEventInput, getDb());
+      exec(referenceQueries.authOwnerDeviceAuthMarkApproved, [
+        input.subjectId,
+        input.tokenId,
+        nowIso(),
+        input.deviceCode,
+      ]);
+      return {
+        ...row,
+        status: "approved",
+        subject_id: input.subjectId,
+        token_id: input.tokenId,
+      };
+    }),
   getByApprovalId: (approvalId) =>
     getOne<OwnerDeviceAuthRow>(referenceQueries.authOwnerDeviceAuthGetByApprovalId, [approvalId]),
   getByDeviceCode: (deviceCode) =>
@@ -2752,8 +3026,19 @@ const sqliteOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
     ]),
   markApproved: ({ deviceCode, subjectId, tokenId, approvedAt }) =>
     exec(referenceQueries.authOwnerDeviceAuthMarkApproved, [subjectId, tokenId, approvedAt, deviceCode]),
-  markDenied: ({ deviceCode, deniedAt }) =>
-    exec(referenceQueries.authOwnerDeviceAuthMarkDenied, [deniedAt, deviceCode]),
+  markDeniedAtomically: ({ deviceCode, deniedAt, event, faultHook }) =>
+    writeTransaction(() => {
+      const result = exec(referenceQueries.authOwnerDeviceAuthMarkDenied, [deniedAt, deviceCode]);
+      if (result.changes !== 1) {
+        const err: AuthError = new Error("Pending consent approval conflict");
+        err.code = "approval_conflict";
+        throw err;
+      }
+      faultHook?.("after_cas_before_event");
+      emitRawSpineEvent(event as SpineEventInput, getDb());
+      faultHook?.("after_event_before_commit");
+      return result;
+    }),
   markExpired: ({ deviceCode }) => exec(referenceQueries.authOwnerDeviceAuthMarkExpired, [deviceCode]),
   updateLastPolled: ({ deviceCode, polledAt }) =>
     exec(referenceQueries.authOwnerDeviceAuthUpdateLastPolled, [polledAt, deviceCode]),
@@ -3349,7 +3634,12 @@ async function persistApprovalReviewArtifact(input: {
 function requireMatchingApprovalReview(
   row: PendingConsentRow,
   revision: unknown
-): { aiTrainingConsented: boolean | null; expiresAt: string | null; subjectId: string } {
+): {
+  aiTrainingConsented: boolean | null;
+  expiresAt: string | null;
+  resolvedStreams: ResolvedGrantStream[];
+  subjectId: string;
+} {
   if (!isNonEmptyString(revision)) {
     throw bindingError("invalid_request", "approval_review_revision is required");
   }
@@ -3366,6 +3656,7 @@ function requireMatchingApprovalReview(
   return {
     aiTrainingConsented: typeof parsed.ai_training_consented === "boolean" ? parsed.ai_training_consented : null,
     expiresAt: typeof parsed.expires_at === "string" ? parsed.expires_at : null,
+    resolvedStreams: parsed.resolved_streams as ResolvedGrantStream[],
     subjectId: parsed.subject.id,
   };
 }
@@ -3888,10 +4179,6 @@ async function persistApprovedSingleGrantAtomically({
   });
 }
 
-async function markPendingConsentDenied(deviceCode: string): Promise<void> {
-  await getPendingConsentStore().markDenied({ deniedAt: nowIso(), deviceCode });
-}
-
 async function markPendingConsentExpired(deviceCode: string): Promise<void> {
   await getPendingConsentStore().markExpired({ deviceCode });
 }
@@ -3956,22 +4243,6 @@ export async function getOwnerDeviceAuthRowByApprovalId(approvalId: unknown): Pr
     return null;
   }
   return await getOwnerDeviceAuthStore().getByApprovalId(approvalId);
-}
-
-async function markOwnerDeviceAuthApproved(
-  deviceCode: string,
-  { subjectId, tokenId }: { subjectId: string; tokenId: string }
-): Promise<void> {
-  await getOwnerDeviceAuthStore().markApproved({
-    approvedAt: nowIso(),
-    deviceCode,
-    subjectId,
-    tokenId,
-  });
-}
-
-async function markOwnerDeviceAuthDenied(deviceCode: string): Promise<void> {
-  await getOwnerDeviceAuthStore().markDenied({ deniedAt: nowIso(), deviceCode });
 }
 
 async function markOwnerDeviceAuthExpired(deviceCode: string): Promise<void> {
@@ -4280,38 +4551,6 @@ export async function deleteCimdDocument(
     // Best effort for callers that only know the document id.
     invalidateCimdCache(documentId);
   }
-}
-
-async function bindDynamicClientToApprovingOwner(
-  registeredClient: RegisteredClient,
-  subjectId: string
-): Promise<RegisteredClient> {
-  if (!(registeredClient.client_id && subjectId)) {
-    return registeredClient;
-  }
-  if (registeredClient.registration_mode !== "dynamic") {
-    return registeredClient;
-  }
-  const existingSubject = registeredClient.metadata.issuer_subject_id || null;
-  if (existingSubject) {
-    if (existingSubject !== subjectId) {
-      const err: AuthError = new Error("Dynamic client is bound to a different owner subject");
-      err.code = "forbidden";
-      throw err;
-    }
-    return registeredClient;
-  }
-
-  await upsertRegisteredClient({
-    clientId: registeredClient.client_id,
-    clientSecret: registeredClient.client_secret || null,
-    metadata: {
-      ...registeredClient.metadata,
-      issuer_subject_id: subjectId,
-    },
-    registrationMode: registeredClient.registration_mode,
-  });
-  return (await getRegisteredClient(registeredClient.client_id)) || registeredClient;
 }
 
 /**
@@ -5837,7 +6076,8 @@ function narrowResolvedSelectionForSource(
   baselineResolved: StreamSelection[],
   narrowing: Record<string, unknown> | null | undefined,
   sourceLabel: string,
-  declaration: DbRow
+  declaration: DbRow,
+  requiredStreamNames: readonly string[] = []
 ): StreamSelection[] {
   const baseline = Array.isArray(baselineResolved) ? baselineResolved : [];
   if (!narrowingHasAnyDirective(narrowing)) {
@@ -5845,6 +6085,13 @@ function narrowResolvedSelectionForSource(
   }
   const baselineByName = new Map(baseline.map((stream) => [stream.name, stream]));
   const keptNames = resolveKeptStreamNames(baseline, narrowing.streams, baselineByName, sourceLabel);
+  const droppedRequired = requiredStreamNames.filter((name) => !keptNames.includes(name));
+  if (droppedRequired.length > 0) {
+    throw bindingError(
+      "invalid_request",
+      `Cannot drop required streams for '${sourceLabel}': ${droppedRequired.join(", ")}`
+    );
+  }
   const fieldsNarrowing = isRecord(narrowing.fields) ? narrowing.fields : {};
   const sinceNarrowing = isRecord(narrowing.since) ? narrowing.since : {};
   requireNarrowingTargetsKept(keptNames, [fieldsNarrowing, sinceNarrowing], sourceLabel);
@@ -6741,6 +6988,31 @@ async function getReviewedPendingConsentProjection(
   };
 }
 
+async function resolveSingleConsentReviewStreams(
+  request: PendingRequest,
+  sourceBinding: SourceBinding,
+  storageBinding: StorageBinding,
+  opts: PendingConsentDisplayOptions
+): Promise<ResolvedGrantStream[] | StreamSelection[]> {
+  const baselineStreams = resolvePendingRequestAgainstSnapshot(request);
+  const sourceNarrowing = opts.sourceNarrowing && typeof opts.sourceNarrowing === "object" ? opts.sourceNarrowing : {};
+  requireNumericObjectKeys(sourceNarrowing, "source_narrowing");
+  requireApprovedSourceNarrowings(sourceNarrowing, [0]);
+  const requiredStreamNames = (request.selection.streams ?? [])
+    .filter((stream) => stream.necessity !== "optional" && isNonEmptyString(stream.name) && stream.name !== "*")
+    .map((stream) => stream.name as string);
+  const narrowedStreams = narrowResolvedSelectionForSource(
+    baselineStreams,
+    isRecord(sourceNarrowing["0"]) ? sourceNarrowing["0"] : null,
+    sourceBinding.id,
+    readRetainedSourceDeclarationSnapshot(request).declaration,
+    requiredStreamNames
+  );
+  return opts.subjectId && storageBinding
+    ? await resolveSnapshotStreamsForApproval(narrowedStreams, sourceBinding, storageBinding, opts.subjectId)
+    : narrowedStreams;
+}
+
 /**
  * Get pending consent request for display in consent UI
  */
@@ -6780,10 +7052,7 @@ export async function getPendingConsent(
     request.source_binding = describeSourceBinding(sourceBinding);
     request.storage_binding = normalizeStorageBinding(storageBinding);
     const snapshot = readRetainedSourceDeclarationSnapshot(request);
-    resolvedStreams =
-      opts.subjectId && storageBinding
-        ? await resolvePendingRequestForApproval(request, sourceBinding, storageBinding, opts.subjectId)
-        : resolvePendingRequestAgainstSnapshot(request);
+    resolvedStreams = await resolveSingleConsentReviewStreams(request, sourceBinding, storageBinding, opts);
     manifestStreamNames = Array.isArray(snapshot.declaration.streams)
       ? snapshot.declaration.streams.map((stream) => stream.name).filter((name) => typeof name === "string")
       : null;
@@ -6846,7 +7115,7 @@ export async function approveGrant(
     confirmedApproveAll?: boolean;
     sourceNarrowing?: Record<string, unknown>;
   } = {}
-): Promise<{ grant: DbRow; token: string }> {
+): Promise<{ grant: DbRow; package?: boolean; package_id?: string; token: string }> {
   if (opts.ai_training_consented !== undefined) {
     const err = bindingError("invalid_request", "ai_training_consented is only accepted during consent review");
     err.param = "ai_training_consented";
@@ -6857,6 +7126,9 @@ export async function approveGrant(
     const err: AuthError = new Error("Unknown device code");
     err.code = "not_found";
     throw err;
+  }
+  if (pending.status === "approved") {
+    return resumeApprovedGrant(pending, _legacySubjectId);
   }
   if (pending.status !== "pending") {
     if (opts.approval_review_revision && opts.approval_review_revision === pending.approval_review_revision) {
@@ -6897,7 +7169,7 @@ export async function approveGrant(
     ({ sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(request));
     request.source_binding = describeSourceBinding(sourceBinding);
     request.storage_binding = normalizeStorageBinding(storageBinding);
-    resolvedStreams = await resolvePendingRequestForApproval(request, sourceBinding, storageBinding, subjectId);
+    ({ resolvedStreams } = reviewed);
   } catch (err: unknown) {
     if (!isAuthError(err)) {
       throw err;
@@ -7006,6 +7278,61 @@ export async function approveGrant(
   return { grant, token };
 }
 
+async function resumeApprovedGrant(
+  pending: PendingConsentRow,
+  subjectId: string
+): Promise<{ grant: DbRow; package?: boolean; package_id?: string; token: string }> {
+  if (pending.subject_id !== subjectId || !isNonEmptyString(pending.grant_id) || !isNonEmptyString(pending.token_id)) {
+    const err: AuthError = new Error("Approved consent result is not available");
+    err.code = "not_found";
+    throw err;
+  }
+  const tokenInfo = await introspect(pending.token_id);
+  if (!tokenInfo.active) {
+    const err: AuthError = new Error("Approved consent result is not available");
+    err.code = "not_found";
+    throw err;
+  }
+  if (tokenInfo.pdpp_token_kind === "mcp_package" && tokenInfo.grant_package_id === pending.grant_id) {
+    const packageRow = normalizePackageRow(await getGrantPackageStore().getPackageById(pending.grant_id));
+    if (!(packageRow && packageRow.status === "active" && packageRow.subject_id === subjectId)) {
+      const err: AuthError = new Error("Approved consent package is not available");
+      err.code = "not_found";
+      throw err;
+    }
+    const members = await getGrantPackageStore().listAllMembers(pending.grant_id);
+    return {
+      grant: buildConsentPackageGrant(pending.grant_id, members),
+      package: true,
+      package_id: pending.grant_id,
+      token: pending.token_id,
+    };
+  }
+  if (tokenInfo.grant_id !== pending.grant_id) {
+    const err: AuthError = new Error("Approved consent token is not active");
+    err.code = "not_found";
+    throw err;
+  }
+  const row = isPostgresStorageBackend()
+    ? await pgOne<DbRow>(
+        `SELECT g.grant_id, g.grant_json::text AS grant_json
+           FROM grants g
+          WHERE g.grant_id = $1 AND g.subject_id = $2 AND g.status = 'active'`,
+        [pending.grant_id, subjectId]
+      )
+    : getOne<DbRow>(referenceQueries.authGrantsGetForRevocation, [pending.grant_id]);
+  if (!row || row.status === "revoked" || !isNonEmptyString(row.grant_json)) {
+    const err: AuthError = new Error("Approved consent result is not available");
+    err.code = "not_found";
+    throw err;
+  }
+  const grant: unknown = JSON.parse(row.grant_json);
+  if (!isRecord(grant) || grant.grant_id !== pending.grant_id) {
+    throw bindingError("grant_invalid", "Approved consent grant is malformed");
+  }
+  return { grant, token: pending.token_id };
+}
+
 function buildGrantScopedDeviceExchangeError(code: string, message: string, row: DbRow | null = null): AuthError {
   const err: AuthError = new Error(message);
   err.code = code;
@@ -7077,16 +7404,14 @@ async function buildGrantScopedDeviceTokenPayload(row: DbRow, clientId: string):
   if (tokenInfo.client_id !== clientId) {
     throw buildGrantScopedDeviceExchangeError("invalid_client", "Client token is not bound to this client_id", row);
   }
-  const exp =
-    typeof tokenInfo.exp === "number" && Number.isFinite(tokenInfo.exp) && tokenInfo.exp
-      ? tokenInfo.exp
-      : Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
   const payload: Record<string, unknown> = {
     access_token: row.token_id,
-    expires_in: Math.max(exp - Math.floor(Date.now() / 1000), 0),
     token_type: "Bearer",
     trace_context: getPersistedPendingTraceContext(row),
   };
+  if (typeof tokenInfo.exp === "number" && Number.isFinite(tokenInfo.exp)) {
+    payload.expires_in = Math.max(tokenInfo.exp - Math.floor(Date.now() / 1000), 0);
+  }
   if (tokenInfo.pdpp_token_kind === "mcp_package") {
     payload.grant_package_id = tokenInfo.grant_package_id || row.grant_id || null;
   } else {
@@ -7155,7 +7480,19 @@ function buildOAuthRefreshTokenError(code: string, message: string): AuthError {
   return err;
 }
 
-async function issueOAuthRefreshToken({
+interface PreparedInitialOAuthRefreshToken {
+  readonly clientId: string;
+  readonly createdAt: string;
+  readonly expiresAt: string | null;
+  readonly familyId: string;
+  readonly grantId?: string;
+  readonly packageId?: string;
+  readonly refreshToken: string;
+  readonly refreshTokenHash: string;
+  readonly subjectId: string;
+}
+
+function prepareInitialOAuthRefreshToken({
   clientId,
   grantId,
   subjectId,
@@ -7165,15 +7502,21 @@ async function issueOAuthRefreshToken({
   grantId: string;
   subjectId: string;
   expiresAt?: string | null;
-}): Promise<string> {
+}): PreparedInitialOAuthRefreshToken {
   const refreshToken = generateOAuthRefreshToken();
-  const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
-  const createdAt = nowIso();
-  await getRefreshTokenStore().insert({ clientId, createdAt, expiresAt, grantId, refreshTokenHash, subjectId });
-  return refreshToken;
+  return {
+    clientId,
+    createdAt: nowIso(),
+    expiresAt,
+    familyId: generateId("rtf"),
+    grantId,
+    refreshToken,
+    refreshTokenHash: hashOAuthRefreshToken(refreshToken),
+    subjectId,
+  };
 }
 
-async function issueOAuthRefreshTokenForPackage({
+function prepareInitialOAuthRefreshTokenForPackage({
   clientId,
   packageId,
   subjectId,
@@ -7183,19 +7526,18 @@ async function issueOAuthRefreshTokenForPackage({
   packageId: string;
   subjectId: string;
   expiresAt?: string | null;
-}): Promise<string> {
+}): PreparedInitialOAuthRefreshToken {
   const refreshToken = generateOAuthRefreshToken();
-  const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
-  const createdAt = nowIso();
-  await getRefreshTokenStore().insertForPackage({
+  return {
     clientId,
-    createdAt,
+    createdAt: nowIso(),
     expiresAt,
+    familyId: generateId("rtf"),
     packageId,
-    refreshTokenHash,
+    refreshToken,
+    refreshTokenHash: hashOAuthRefreshToken(refreshToken),
     subjectId,
-  });
-  return refreshToken;
+  };
 }
 
 // Grant-package row operations. One adapter per backend; the dialect SQL
@@ -7311,7 +7653,7 @@ const postgresGrantPackageStore: GrantPackageStore = {
       await postgresQuery<GrantPackageMemberRow>(
         `SELECT gm.package_id, gm.grant_id, gm.source_json::text AS source_json,
               gm.status AS member_status, gm.added_at, gm.revoked_at AS member_revoked_at,
-              g.status AS grant_status
+              g.status AS grant_status, g.access_mode AS grant_access_mode
          FROM grant_package_members gm
          JOIN grants g ON gm.grant_id = g.grant_id
          WHERE gm.package_id = $1
@@ -7456,7 +7798,8 @@ const postgresOAuthCodeStore: OAuthCodeStore = {
     ),
   getByDeviceCode: (deviceCode) =>
     pgOne<OAuthPendingCodeRow>(
-      `SELECT id, device_code, client_id, redirect_uri, state, status, expires_at
+      `SELECT id, device_code, client_id, redirect_uri, state, status, expires_at,
+              code AS issued_code, grant_id, package_id, token_id, issued_at, consumed_at
          FROM oauth_authorization_codes
          WHERE device_code = $1`,
       [deviceCode]
@@ -7506,6 +7849,7 @@ const postgresOAuthCodeStore: OAuthCodeStore = {
          status = 'pending',
          code = NULL,
          grant_id = NULL,
+         package_id = NULL,
          token_id = NULL,
          created_at = excluded.created_at,
          expires_at = excluded.expires_at,
@@ -7568,69 +7912,61 @@ function getOAuthCodeStore() {
   return isPostgresStorageBackend() ? postgresOAuthCodeStore : sqliteOAuthCodeStore;
 }
 
-const postgresRefreshTokenStore: RefreshTokenStore = {
-  getByTokenHash: (refreshTokenHash) =>
-    pgOne<RefreshTokenRow>(
-      `SELECT refresh_token_hash, client_id, grant_id, package_id, subject_id, status,
-                created_at, expires_at, last_used_at, revoked_at
-         FROM oauth_refresh_tokens
-         WHERE refresh_token_hash = $1`,
-      [refreshTokenHash]
-    ),
-  insert: ({ refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt }) =>
-    pgExec(
-      `INSERT INTO oauth_refresh_tokens(
-         refresh_token_hash, client_id, grant_id, subject_id, status,
-         created_at, expires_at, last_used_at, revoked_at
-       ) VALUES($1, $2, $3, $4, 'active', $5, $6, NULL, NULL)`,
-      [refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt]
-    ),
-  insertForPackage: ({ refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt }) =>
-    pgExec(
-      `INSERT INTO oauth_refresh_tokens(
-         refresh_token_hash, client_id, grant_id, package_id, subject_id, status,
-         created_at, expires_at, last_used_at, revoked_at
-       ) VALUES($1, $2, NULL, $3, $4, 'active', $5, $6, NULL, NULL)`,
-      [refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt]
-    ),
-  markUsed: ({ usedAt, refreshTokenHash }) =>
-    pgExec(
-      `UPDATE oauth_refresh_tokens
-       SET last_used_at = $1
-       WHERE refresh_token_hash = $2 AND status = 'active'`,
-      [usedAt, refreshTokenHash]
-    ),
-};
-
 const sqliteRefreshTokenStore: RefreshTokenStore = {
-  getByTokenHash: (refreshTokenHash) =>
-    getOne<RefreshTokenRow>(referenceQueries.authOauthRefreshTokensGetByToken, [refreshTokenHash]),
-  insert: ({ refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt }) =>
+  insert: ({
+    refreshTokenHash,
+    familyId,
+    generation,
+    parentGeneration,
+    clientId,
+    grantId,
+    subjectId,
+    createdAt,
+    expiresAt,
+  }) =>
     exec(referenceQueries.authOauthRefreshTokensInsert, [
       refreshTokenHash,
+      familyId,
+      generation,
+      parentGeneration,
       clientId,
       grantId,
       subjectId,
       createdAt,
       expiresAt,
     ]),
-  insertForPackage: ({ refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt }) =>
+  insertForPackage: ({
+    refreshTokenHash,
+    familyId,
+    generation,
+    parentGeneration,
+    clientId,
+    packageId,
+    subjectId,
+    createdAt,
+    expiresAt,
+  }) =>
     exec(
       requireMutationQuery(referenceQueries.authOauthRefreshTokensInsertPackage, "authOauthRefreshTokensInsertPackage"),
-      [refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt]
+      [refreshTokenHash, familyId, generation, parentGeneration, clientId, packageId, subjectId, createdAt, expiresAt]
     ),
-  markUsed: ({ usedAt, refreshTokenHash }) =>
-    exec(referenceQueries.authOauthRefreshTokensMarkUsed, [usedAt, refreshTokenHash]),
 };
-
-function getRefreshTokenStore() {
-  return isPostgresStorageBackend() ? postgresRefreshTokenStore : sqliteRefreshTokenStore;
-}
 
 const postgresTokenStore: TokenStore = {
   getIntrospection: (token) =>
     pgOne<TokenIntrospectionRow>(
-      `SELECT t.token_id, t.grant_id, t.package_id, t.subject_id, t.client_id, t.token_kind, t.expires_at, t.revoked,
+      `SELECT t.token_id, t.grant_id, t.package_id, t.refresh_family_id,
+                CASE
+                  WHEN t.refresh_family_id IS NULL THEN NULL
+                  ELSE EXISTS(
+                    SELECT 1
+                    FROM oauth_refresh_tokens rt
+                    WHERE rt.family_id = t.refresh_family_id
+                      AND rt.status = 'active'
+                      AND rt.revoked_at IS NULL
+                  )
+                END AS refresh_family_active,
+                t.subject_id, t.client_id, t.token_kind, t.expires_at, t.revoked,
                 g.status AS grant_status,
                 g.grant_id AS persisted_grant_id,
                 g.subject_id AS grant_subject_id,
@@ -8689,18 +9025,59 @@ export async function revokeGrantPackage(
   };
 }
 
-export async function issueOAuthAuthorizationCodeForPackageDeviceCode(
+type OAuthAuthorizationCodeBinding =
+  | { grantId: string; kind: "grant"; token: string }
+  | { kind: "package"; packageId: string; token: string };
+
+function authorizationCodeDelivery(row: OAuthPendingCodeRow): Record<string, unknown> {
+  return {
+    client_id: row.client_id,
+    code: row.issued_code,
+    expires_at: row.expires_at,
+    redirect_uri: row.redirect_uri,
+    state: row.state || null,
+  };
+}
+
+function issuedCodeMatchesBinding(row: OAuthPendingCodeRow, binding: OAuthAuthorizationCodeBinding): boolean {
+  if (row.token_id !== binding.token) {
+    return false;
+  }
+  return binding.kind === "package"
+    ? row.package_id === binding.packageId && row.grant_id === null
+    : row.grant_id === binding.grantId && row.package_id === null;
+}
+
+function recoverIssuedOAuthAuthorizationCode(
+  row: OAuthPendingCodeRow | null,
+  binding: OAuthAuthorizationCodeBinding
+): Record<string, unknown> | null {
+  if (!row) {
+    return null;
+  }
+  if (
+    row.status !== "issued" ||
+    row.consumed_at ||
+    isExpired(row) ||
+    !isNonEmptyString(row.issued_code) ||
+    !issuedCodeMatchesBinding(row, binding)
+  ) {
+    throw buildOAuthAuthorizationCodeError("invalid_grant", "OAuth authorization code delivery is not recoverable");
+  }
+  return authorizationCodeDelivery(row);
+}
+
+async function issueOrRecoverOAuthAuthorizationCode(
   deviceCode: unknown,
-  { packageId, token }: { packageId: string; token: string }
+  binding: OAuthAuthorizationCodeBinding
 ): Promise<Record<string, unknown> | null> {
   if (!isNonEmptyString(deviceCode)) {
     return null;
   }
   const oauthCodeStore = getOAuthCodeStore();
   const row = await oauthCodeStore.getByDeviceCode(deviceCode);
-
   if (row?.status !== "pending") {
-    return null;
+    return recoverIssuedOAuthAuthorizationCode(row, binding);
   }
   if (isExpired(row)) {
     await oauthCodeStore.markExpiredByDeviceCode(deviceCode);
@@ -8710,15 +9087,45 @@ export async function issueOAuthAuthorizationCodeForPackageDeviceCode(
   const code = generateId("oacode");
   const issuedAt = nowIso();
   const expiresAt = expiresInIso(300);
-  await oauthCodeStore.issueForPackageDeviceCode({ code, deviceCode, expiresAt, issuedAt, packageId, token });
-
-  return {
-    client_id: row.client_id,
-    code,
+  const updated =
+    binding.kind === "package"
+      ? await oauthCodeStore.issueForPackageDeviceCode({
+          code,
+          deviceCode,
+          expiresAt,
+          issuedAt,
+          packageId: binding.packageId,
+          token: binding.token,
+        })
+      : await oauthCodeStore.issueForDeviceCode({
+          code,
+          deviceCode,
+          expiresAt,
+          grantId: binding.grantId,
+          issuedAt,
+          token: binding.token,
+        });
+  if (!updated.changes) {
+    return recoverIssuedOAuthAuthorizationCode(await oauthCodeStore.getByDeviceCode(deviceCode), binding);
+  }
+  return authorizationCodeDelivery({
+    ...row,
+    consumed_at: null,
     expires_at: expiresAt,
-    redirect_uri: row.redirect_uri,
-    state: row.state || null,
-  };
+    grant_id: binding.kind === "grant" ? binding.grantId : null,
+    issued_at: issuedAt,
+    issued_code: code,
+    package_id: binding.kind === "package" ? binding.packageId : null,
+    status: "issued",
+    token_id: binding.token,
+  });
+}
+
+export async function issueOAuthAuthorizationCodeForPackageDeviceCode(
+  deviceCode: unknown,
+  { packageId, token }: { packageId: string; token: string }
+): Promise<Record<string, unknown> | null> {
+  return await issueOrRecoverOAuthAuthorizationCode(deviceCode, { kind: "package", packageId, token });
 }
 
 export async function stageOAuthAuthorizationCodeRequest({
@@ -8788,32 +9195,7 @@ export async function issueOAuthAuthorizationCodeForDeviceCode(
   deviceCode: unknown,
   { grantId, token }: { grantId: string; token: string }
 ): Promise<Record<string, unknown> | null> {
-  if (!isNonEmptyString(deviceCode)) {
-    return null;
-  }
-  const oauthCodeStore = getOAuthCodeStore();
-  const row = await oauthCodeStore.getByDeviceCode(deviceCode);
-
-  if (row?.status !== "pending") {
-    return null;
-  }
-  if (isExpired(row)) {
-    await oauthCodeStore.markExpiredByDeviceCode(deviceCode);
-    throw buildOAuthAuthorizationCodeError("invalid_request", "OAuth authorization request has expired");
-  }
-
-  const code = generateId("oacode");
-  const issuedAt = nowIso();
-  const expiresAt = expiresInIso(300);
-  await oauthCodeStore.issueForDeviceCode({ code, deviceCode, expiresAt, grantId, issuedAt, token });
-
-  return {
-    client_id: row.client_id,
-    code,
-    expires_at: expiresAt,
-    redirect_uri: row.redirect_uri,
-    state: row.state || null,
-  };
+  return await issueOrRecoverOAuthAuthorizationCode(deviceCode, { grantId, kind: "grant", token });
 }
 
 function requireOAuthAuthorizationCodeExchangeInput(input: {
@@ -8869,11 +9251,161 @@ function requireRedeemableOAuthAuthorizationCode(
   return row;
 }
 
-async function addOAuthRefreshTokenToAuthorizationResponse(
-  response: Record<string, unknown>,
+function prepareOAuthRefreshTokenForAuthorizationCode(
+  row: OAuthIssuedCodeRow,
+  clientId: string,
+  tokenInfo: TokenIntrospectionResult & { subject_id: string }
+): PreparedInitialOAuthRefreshToken {
+  const expiresAt = typeof tokenInfo.exp === "number" ? new Date(tokenInfo.exp * 1000).toISOString() : null;
+  if (isNonEmptyString(row.package_id)) {
+    return prepareInitialOAuthRefreshTokenForPackage({
+      clientId,
+      expiresAt,
+      packageId: row.package_id,
+      subjectId: tokenInfo.subject_id,
+    });
+  }
+  if (!isNonEmptyString(row.grant_id)) {
+    throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code is missing its grant binding");
+  }
+  return prepareInitialOAuthRefreshToken({
+    clientId,
+    expiresAt,
+    grantId: row.grant_id,
+    subjectId: tokenInfo.subject_id,
+  });
+}
+
+async function authorizationCodeBindingSupportsRefresh(
+  row: OAuthIssuedCodeRow,
+  tokenInfo: TokenIntrospectionResult
+): Promise<boolean> {
+  if (isNonEmptyString(row.grant_id)) {
+    return isRecord(tokenInfo.grant) && tokenInfo.grant.access_mode === "continuous";
+  }
+  if (!isNonEmptyString(row.package_id)) {
+    return false;
+  }
+  const members = await getGrantPackageStore().listAllMembers(row.package_id);
+  return members.length > 0 && members.every((member) => member.grant_access_mode === "continuous");
+}
+
+async function consumeOAuthAuthorizationCodeAtomically({
+  code,
+  consumedAt,
+  refresh,
+  tokenId,
+}: {
+  code: string;
+  consumedAt: string;
+  refresh: PreparedInitialOAuthRefreshToken | null;
+  tokenId: string;
+}): Promise<void> {
+  if (isPostgresStorageBackend()) {
+    await withPostgresTransaction(async (client) => {
+      const consumed = await client.query(
+        `UPDATE oauth_authorization_codes
+            SET status = 'consumed', consumed_at = $1
+          WHERE code = $2 AND status = 'issued' AND consumed_at IS NULL`,
+        [consumedAt, code]
+      );
+      if (consumed.rowCount !== 1) {
+        throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code is invalid or already used");
+      }
+      if (!refresh) {
+        return;
+      }
+      const accessTokenExpiresAt = refreshAccessTokenExpiresAt(refresh.createdAt, refresh.expiresAt);
+      await client.query(
+        `INSERT INTO oauth_refresh_tokens(
+           refresh_token_hash, family_id, generation, parent_generation, client_id,
+           grant_id, package_id, subject_id, status, created_at, expires_at,
+           last_used_at, superseded_at, revoked_at
+         ) VALUES($1, $2, 0, NULL, $3, $4, $5, $6, 'active', $7, $8, NULL, NULL, NULL)`,
+        [
+          refresh.refreshTokenHash,
+          refresh.familyId,
+          refresh.clientId,
+          refresh.grantId ?? null,
+          refresh.packageId ?? null,
+          refresh.subjectId,
+          refresh.createdAt,
+          refresh.expiresAt,
+        ]
+      );
+      const linked = await client.query(
+        `UPDATE tokens
+            SET refresh_family_id = $1, expires_at = $2
+          WHERE token_id = $3 AND refresh_family_id IS NULL`,
+        [refresh.familyId, accessTokenExpiresAt, tokenId]
+      );
+      if (linked.rowCount !== 1) {
+        throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code access token linkage failed");
+      }
+    });
+    return;
+  }
+
+  writeTransaction(() => {
+    const consumed = exec(referenceQueries.authOauthAuthorizationCodesConsumeCode, [consumedAt, code]);
+    if (!consumed.changes) {
+      throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code is invalid or already used");
+    }
+    if (!refresh) {
+      return;
+    }
+    const accessTokenExpiresAt = refreshAccessTokenExpiresAt(refresh.createdAt, refresh.expiresAt);
+    if (refresh.packageId) {
+      sqliteRefreshTokenStore.insertForPackage({
+        clientId: refresh.clientId,
+        createdAt: refresh.createdAt,
+        expiresAt: refresh.expiresAt,
+        familyId: refresh.familyId,
+        generation: 0,
+        packageId: refresh.packageId,
+        parentGeneration: null,
+        refreshTokenHash: refresh.refreshTokenHash,
+        subjectId: refresh.subjectId,
+      });
+      const linked = exec(referenceQueries.authTokensLinkRefreshFamily, [
+        refresh.familyId,
+        accessTokenExpiresAt,
+        tokenId,
+      ]);
+      if (linked.changes !== 1) {
+        throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code access token linkage failed");
+      }
+      return;
+    }
+    if (!refresh.grantId) {
+      throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code is missing its grant binding");
+    }
+    sqliteRefreshTokenStore.insert({
+      clientId: refresh.clientId,
+      createdAt: refresh.createdAt,
+      expiresAt: refresh.expiresAt,
+      familyId: refresh.familyId,
+      generation: 0,
+      grantId: refresh.grantId,
+      parentGeneration: null,
+      refreshTokenHash: refresh.refreshTokenHash,
+      subjectId: refresh.subjectId,
+    });
+    const linked = exec(referenceQueries.authTokensLinkRefreshFamily, [
+      refresh.familyId,
+      accessTokenExpiresAt,
+      tokenId,
+    ]);
+    if (linked.changes !== 1) {
+      throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code access token linkage failed");
+    }
+  });
+}
+
+async function requireOAuthAuthorizationCodeTokenInfo(
   row: OAuthIssuedCodeRow,
   clientId: string
-): Promise<void> {
+): Promise<TokenIntrospectionResult & { subject_id: string }> {
   const tokenInfo = await introspect(row.token_id);
   const tokenMatches = row.package_id
     ? tokenInfo.grant_package_id === row.package_id && tokenInfo.pdpp_token_kind === "mcp_package"
@@ -8884,25 +9416,7 @@ async function addOAuthRefreshTokenToAuthorizationResponse(
   if (!isNonEmptyString(tokenInfo.subject_id)) {
     throw buildOAuthAuthorizationCodeError("invalid_grant", "Issued grant token is missing its subject binding");
   }
-  const expiresAt = typeof tokenInfo.exp === "number" ? new Date(tokenInfo.exp * 1000).toISOString() : null;
-  if (isNonEmptyString(row.package_id)) {
-    response.refresh_token = await issueOAuthRefreshTokenForPackage({
-      clientId,
-      expiresAt,
-      packageId: row.package_id,
-      subjectId: tokenInfo.subject_id,
-    });
-    return;
-  }
-  if (!isNonEmptyString(row.grant_id)) {
-    throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code is missing its grant binding");
-  }
-  response.refresh_token = await issueOAuthRefreshToken({
-    clientId,
-    expiresAt,
-    grantId: row.grant_id,
-    subjectId: tokenInfo.subject_id,
-  });
+  return tokenInfo as TokenIntrospectionResult & { subject_id: string };
 }
 
 export async function exchangeOAuthAuthorizationCode({
@@ -8936,69 +9450,554 @@ export async function exchangeOAuthAuthorizationCode({
     throw buildOAuthAuthorizationCodeError("invalid_client", "Unknown client_id");
   }
 
-  const consumedAt = nowIso();
-  const updated = await oauthCodeStore.consumeCode({ code: normalized.code, consumedAt });
-
-  if (!updated.changes) {
-    throw buildOAuthAuthorizationCodeError("invalid_grant", "Authorization code is invalid or already used");
-  }
-
   const response: Record<string, unknown> = {
     access_token: row.token_id,
     token_type: "Bearer",
     ...(row.package_id ? { grant_package_id: row.package_id } : { grant_id: row.grant_id }),
   };
 
-  if (clientSupportsOAuthRefreshToken(registeredClient)) {
-    await addOAuthRefreshTokenToAuthorizationResponse(response, row, normalized.clientId);
+  const tokenInfo = await requireOAuthAuthorizationCodeTokenInfo(row, normalized.clientId);
+  if (row.grant_id) {
+    response.authorization_details = [buildGrantedAuthorizationDetail(tokenInfo.grant)];
+  }
+  const refresh =
+    clientSupportsOAuthRefreshToken(registeredClient) && (await authorizationCodeBindingSupportsRefresh(row, tokenInfo))
+      ? prepareOAuthRefreshTokenForAuthorizationCode(row, normalized.clientId, tokenInfo)
+      : null;
+  await consumeOAuthAuthorizationCodeAtomically({
+    code: normalized.code,
+    consumedAt: nowIso(),
+    refresh,
+    tokenId: row.token_id,
+  });
+  if (refresh) {
+    response.refresh_token = refresh.refreshToken;
+    response.access_token_expires_at = refreshAccessTokenExpiresAt(refresh.createdAt, refresh.expiresAt);
+  } else if (typeof tokenInfo.exp === "number") {
+    response.access_token_expires_at = new Date(tokenInfo.exp * 1000).toISOString();
   }
 
   return response;
 }
 
-function requireActiveOAuthRefreshToken(row: RefreshTokenRow | null, clientId: string): RefreshTokenRow {
-  if (row?.status !== "active" || row.revoked_at) {
-    throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token is invalid");
-  }
-  if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) {
-    throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token has expired");
-  }
-  if (row.client_id !== clientId) {
-    throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token client_id mismatch");
-  }
-  return row;
+type RefreshRotationOutcome =
+  | { kind: "invalid" }
+  | { kind: "reused" }
+  | { accessToken: string; accessTokenExpiresAt: string; kind: "rotated"; row: RefreshTokenRow };
+
+function isCurrentRefreshFamilyRow(row: RefreshTokenRow | null): row is RefreshTokenRow {
+  return !!(
+    row &&
+    isNonEmptyString(row.family_id) &&
+    Number.isInteger(row.generation) &&
+    row.generation >= 0 &&
+    ((row.generation === 0 && row.parent_generation === null) ||
+      (row.generation > 0 && row.parent_generation === row.generation - 1))
+  );
 }
 
-async function issueAccessTokenForOAuthRefresh(row: RefreshTokenRow): Promise<string> {
-  try {
-    if (isNonEmptyString(row.package_id)) {
-      const grantPackage = await getGrantPackageAccess(row.package_id);
-      if (!grantPackage) {
-        const err: AuthError = new Error("Grant package is no longer active");
-        err.code = "package_revoked";
-        throw err;
-      }
-      return issuePackageToken(row.package_id, row.subject_id, row.client_id, row.expires_at || null, {
-        source: "oauth_refresh_token",
-      });
-    }
-    if (isNonEmptyString(row.grant_id)) {
-      return issueToken(row.grant_id, row.subject_id, row.client_id, row.expires_at || null, {
-        source: "oauth_refresh_token",
-      });
-    }
-    throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token has no grant binding");
-  } catch (err: unknown) {
-    if (!isAuthError(err)) {
-      throw err;
-    }
-    const code =
-      isNonEmptyString(err.code) &&
-      ["grant_revoked", "grant_invalid", "grant_consumed", "package_revoked", "not_found"].includes(err.code)
-        ? "invalid_grant"
-        : err.code || "invalid_grant";
-    throw buildOAuthRefreshTokenError(code, err.message || "Refresh token grant is no longer valid");
+function refreshRowMatchesClientAndLifetime(row: RefreshTokenRow, clientId: string): boolean {
+  if (row.client_id !== clientId) {
+    return false;
   }
+  if (!row.expires_at) {
+    return true;
+  }
+  const expiresAt = Date.parse(row.expires_at);
+  return Number.isFinite(expiresAt) && expiresAt > Date.now();
+}
+
+function hasRefreshAuthorizationBinding(row: RefreshTokenRow): boolean {
+  return isNonEmptyString(row.package_id) !== isNonEmptyString(row.grant_id);
+}
+
+function refreshGrantUnavailable(message: string): AuthError {
+  return buildOAuthRefreshTokenError("invalid_grant", message);
+}
+
+function refreshTokenIssuedEvent({
+  grantId,
+  packageId,
+  persistedGrant,
+  row,
+  scenarioId,
+  tokenId,
+  traceId,
+}: {
+  grantId?: string;
+  packageId?: string;
+  persistedGrant?: DbRow;
+  row: RefreshTokenRow;
+  scenarioId?: string | null;
+  tokenId: string;
+  traceId?: string | null;
+}): SpineEventInput {
+  return {
+    actor_id: "pdpp_as",
+    actor_type: "authorization_server",
+    client_id: row.client_id,
+    data: {
+      issuance_path: "oauth_refresh_token",
+      refresh_family_id: row.family_id,
+      ...(packageId ? { grant_package_id: packageId } : {}),
+      ...(persistedGrant ? { source: describeGrantSource(persistedGrant) } : {}),
+      token_kind: packageId ? "mcp_package" : "client",
+    },
+    event_type: "token.issued",
+    ...(grantId ? { grant_id: grantId } : {}),
+    object_id: tokenId,
+    object_type: "token",
+    ...(scenarioId ? { scenario_id: scenarioId } : {}),
+    status: "succeeded",
+    subject_id: row.subject_id,
+    subject_type: "subject",
+    token_id: tokenId,
+    ...(traceId ? { trace_id: traceId } : {}),
+  };
+}
+
+interface RefreshAuthorizationRow {
+  client_id: string;
+  status: string;
+  subject_id: string;
+}
+
+function refreshAuthorizationRowMatches(
+  candidate: RefreshAuthorizationRow | null | undefined,
+  refreshRow: RefreshTokenRow
+): candidate is RefreshAuthorizationRow {
+  return !!(
+    candidate &&
+    candidate.status === "active" &&
+    candidate.client_id === refreshRow.client_id &&
+    candidate.subject_id === refreshRow.subject_id
+  );
+}
+
+function requireRefreshGrantRow(
+  candidate: GrantIssuanceRow | null | undefined,
+  refreshRow: RefreshTokenRow
+): GrantIssuanceRow {
+  if (!refreshAuthorizationRowMatches(candidate, refreshRow)) {
+    throw refreshGrantUnavailable("Refresh token grant is no longer active");
+  }
+  return candidate;
+}
+
+function requireRefreshPackageRow(
+  candidate: GrantPackageListRow | null | undefined,
+  refreshRow: RefreshTokenRow
+): GrantPackageListRow {
+  if (!refreshAuthorizationRowMatches(candidate, refreshRow)) {
+    throw refreshGrantUnavailable("Refresh token grant package is no longer active");
+  }
+  return candidate;
+}
+
+function requireRefreshGrantAvailableForConsumption(grantRow: GrantIssuanceRow): void {
+  if (grantRow.access_mode !== "single_use") {
+    return;
+  }
+  if (grantRow.consumed) {
+    throw refreshGrantUnavailable("Refresh token grant has already been consumed");
+  }
+}
+
+async function issuePostgresRefreshGrantAccessToken(
+  client: PostgresTransactionClient,
+  row: RefreshTokenRow,
+  grantId: string,
+  tokenId: string,
+  accessTokenExpiresAt: string
+): Promise<string> {
+  const grantResult = await client.query<GrantIssuanceRow>(
+    `SELECT grant_id AS persisted_grant_id, subject_id AS grant_subject_id,
+            client_id AS grant_client_id, access_mode AS grant_access_mode,
+            expires_at AS grant_expires_at,
+            access_mode, client_id, consumed, status, subject_id, trace_id, scenario_id,
+            grant_json::text AS grant_json,
+            storage_binding_json::text AS storage_binding_json
+       FROM grants
+      WHERE grant_id = $1
+      FOR UPDATE`,
+    [grantId]
+  );
+  const grantRow = requireRefreshGrantRow(grantResult.rows[0], row);
+  requireRefreshGrantAvailableForConsumption(grantRow);
+  if (grantRow.access_mode === "single_use") {
+    await client.query("UPDATE grants SET consumed = TRUE WHERE grant_id = $1", [grantId]);
+  }
+  const persistedGrant = requirePersistedGrantState(grantRow).grant;
+  await client.query(
+    `INSERT INTO tokens(
+       token_id, grant_id, refresh_family_id, subject_id, client_id, token_kind, expires_at
+     ) VALUES($1, $2, $3, $4, $5, 'client', $6)`,
+    [tokenId, grantId, row.family_id, row.subject_id, row.client_id, accessTokenExpiresAt]
+  );
+  await postgresEmitSpineEventInTransaction(
+    client,
+    refreshTokenIssuedEvent({
+      grantId,
+      persistedGrant,
+      row,
+      scenarioId: grantRow.scenario_id,
+      tokenId,
+      traceId: grantRow.trace_id,
+    })
+  );
+  return tokenId;
+}
+
+async function issuePostgresRefreshPackageAccessToken(
+  client: PostgresTransactionClient,
+  row: RefreshTokenRow,
+  packageId: string,
+  tokenId: string,
+  accessTokenExpiresAt: string
+): Promise<string> {
+  const packageResult = await client.query<GrantPackageListRow>(
+    `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
+            parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
+       FROM grant_packages
+      WHERE package_id = $1
+      FOR UPDATE`,
+    [packageId]
+  );
+  const packageRow = requireRefreshPackageRow(packageResult.rows[0], row);
+  const members = await client.query<{ access_mode: string }>(
+    `SELECT g.access_mode
+       FROM grant_package_members gm
+       JOIN grants g ON g.grant_id = gm.grant_id
+      WHERE gm.package_id = $1`,
+    [packageId]
+  );
+  if (members.rows.length === 0 || members.rows.some((member) => member.access_mode !== "continuous")) {
+    throw refreshGrantUnavailable("Refresh token package contains a non-continuous grant");
+  }
+  await client.query(
+    `INSERT INTO tokens(
+       token_id, grant_id, package_id, refresh_family_id, subject_id, client_id, token_kind, expires_at
+     ) VALUES($1, NULL, $2, $3, $4, $5, 'mcp_package', $6)`,
+    [tokenId, packageId, row.family_id, row.subject_id, row.client_id, accessTokenExpiresAt]
+  );
+  await postgresEmitSpineEventInTransaction(
+    client,
+    refreshTokenIssuedEvent({
+      packageId,
+      row,
+      scenarioId: packageRow.scenario_id,
+      tokenId,
+      traceId: packageRow.trace_id,
+    })
+  );
+  return tokenId;
+}
+
+async function issuePostgresOAuthRefreshAccessToken(
+  client: PostgresTransactionClient,
+  row: RefreshTokenRow,
+  accessTokenExpiresAt: string
+): Promise<string> {
+  const tokenId = generateToken();
+  if (isNonEmptyString(row.grant_id)) {
+    return await issuePostgresRefreshGrantAccessToken(client, row, row.grant_id, tokenId, accessTokenExpiresAt);
+  }
+  if (isNonEmptyString(row.package_id)) {
+    return await issuePostgresRefreshPackageAccessToken(client, row, row.package_id, tokenId, accessTokenExpiresAt);
+  }
+  throw refreshGrantUnavailable("Refresh token has no authorization binding");
+}
+
+function issueSqliteRefreshGrantAccessToken(
+  row: RefreshTokenRow,
+  grantId: string,
+  tokenId: string,
+  accessTokenExpiresAt: string
+): string {
+  const grantRow = requireRefreshGrantRow(
+    getOne<GrantIssuanceRow>(referenceQueries.authGrantsGetForIssuance, [grantId]),
+    row
+  );
+  requireRefreshGrantAvailableForConsumption(grantRow);
+  if (grantRow.access_mode === "single_use") {
+    exec(referenceQueries.authGrantsMarkConsumed, [grantId]);
+  }
+  const persistedGrant = requirePersistedGrantState(grantRow).grant;
+  exec(referenceQueries.authTokensInsertRefreshClient, [
+    tokenId,
+    grantId,
+    row.family_id,
+    row.subject_id,
+    row.client_id,
+    accessTokenExpiresAt,
+  ]);
+  emitRawSpineEvent(
+    refreshTokenIssuedEvent({
+      grantId,
+      persistedGrant,
+      row,
+      scenarioId: grantRow.scenario_id,
+      tokenId,
+      traceId: grantRow.trace_id,
+    })
+  );
+  return tokenId;
+}
+
+function issueSqliteRefreshPackageAccessToken(
+  row: RefreshTokenRow,
+  packageId: string,
+  tokenId: string,
+  accessTokenExpiresAt: string
+): string {
+  const packageRow = requireRefreshPackageRow(
+    getOne<GrantPackageListRow>(referenceQueries.authGrantPackagesGetById, [packageId]),
+    row
+  );
+  const members = allowUnboundedReadAcknowledged<GrantPackageMemberRow>(
+    referenceQueries.authGrantPackageMembersListAllByPackage,
+    [packageId]
+  );
+  if (members.length === 0 || members.some((member) => member.grant_access_mode !== "continuous")) {
+    throw refreshGrantUnavailable("Refresh token package contains a non-continuous grant");
+  }
+  exec(referenceQueries.authTokensInsertRefreshMcpPackage, [
+    tokenId,
+    packageId,
+    row.family_id,
+    row.subject_id,
+    row.client_id,
+    accessTokenExpiresAt,
+  ]);
+  emitRawSpineEvent(
+    refreshTokenIssuedEvent({
+      packageId,
+      row,
+      scenarioId: packageRow.scenario_id,
+      tokenId,
+      traceId: packageRow.trace_id,
+    })
+  );
+  return tokenId;
+}
+
+function issueSqliteOAuthRefreshAccessToken(row: RefreshTokenRow, accessTokenExpiresAt: string): string {
+  const tokenId = generateToken();
+  if (isNonEmptyString(row.grant_id)) {
+    return issueSqliteRefreshGrantAccessToken(row, row.grant_id, tokenId, accessTokenExpiresAt);
+  }
+  if (isNonEmptyString(row.package_id)) {
+    return issueSqliteRefreshPackageAccessToken(row, row.package_id, tokenId, accessTokenExpiresAt);
+  }
+  throw refreshGrantUnavailable("Refresh token has no authorization binding");
+}
+
+async function rotatePostgresOAuthRefreshToken({
+  clientId,
+  refreshTokenHash,
+  rotatedAt,
+  successorTokenHash,
+}: {
+  clientId: string;
+  refreshTokenHash: string;
+  rotatedAt: string;
+  successorTokenHash: string;
+}): Promise<RefreshRotationOutcome> {
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The transaction keeps family validation, bearer issuance, event persistence, and rotation in one rollback boundary.
+  return await withPostgresTransaction(async (client) => {
+    const familyResult = await client.query<{ family_id: string | null }>(
+      `SELECT family_id
+         FROM oauth_refresh_tokens
+        WHERE refresh_token_hash = $1`,
+      [refreshTokenHash]
+    );
+    const familyId = familyResult.rows[0]?.family_id;
+    if (!isNonEmptyString(familyId)) {
+      return { kind: "invalid" };
+    }
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [familyId]);
+    const result = await client.query<RefreshTokenRow>(
+      `SELECT refresh_token_hash, family_id, generation, parent_generation, client_id,
+              grant_id, package_id, subject_id, status, created_at, expires_at,
+              last_used_at, superseded_at, revoked_at
+         FROM oauth_refresh_tokens
+         WHERE refresh_token_hash = $1
+         FOR UPDATE`,
+      [refreshTokenHash]
+    );
+    const row = result.rows[0] ?? null;
+    if (
+      !(
+        isCurrentRefreshFamilyRow(row) &&
+        refreshRowMatchesClientAndLifetime(row, clientId) &&
+        hasRefreshAuthorizationBinding(row)
+      )
+    ) {
+      return { kind: "invalid" };
+    }
+    if (row.family_id !== familyId) {
+      return { kind: "invalid" };
+    }
+    if (row.status === "superseded") {
+      await client.query(
+        `UPDATE oauth_refresh_tokens
+            SET status = 'revoked', revoked_at = $1
+          WHERE family_id = $2 AND status <> 'revoked'`,
+        [rotatedAt, row.family_id]
+      );
+      await client.query("UPDATE tokens SET revoked = TRUE WHERE refresh_family_id = $1 AND revoked = FALSE", [
+        row.family_id,
+      ]);
+      return { kind: "reused" };
+    }
+    if (row.status !== "active" || row.revoked_at) {
+      return { kind: "invalid" };
+    }
+
+    let accessToken: string;
+    const accessTokenExpiresAt = refreshAccessTokenExpiresAt(rotatedAt, row.expires_at);
+    try {
+      accessToken = await issuePostgresOAuthRefreshAccessToken(client, row, accessTokenExpiresAt);
+    } catch (error: unknown) {
+      if (!(isAuthError(error) && error.code === "invalid_grant")) {
+        throw error;
+      }
+      await client.query(
+        `UPDATE oauth_refresh_tokens
+            SET status = 'revoked', revoked_at = $1
+          WHERE family_id = $2 AND status <> 'revoked'`,
+        [rotatedAt, row.family_id]
+      );
+      await client.query("UPDATE tokens SET revoked = TRUE WHERE refresh_family_id = $1 AND revoked = FALSE", [
+        row.family_id,
+      ]);
+      return { kind: "invalid" };
+    }
+
+    const superseded = await client.query(
+      `UPDATE oauth_refresh_tokens
+          SET status = 'superseded', last_used_at = $1, superseded_at = $1
+        WHERE refresh_token_hash = $2 AND status = 'active'`,
+      [rotatedAt, refreshTokenHash]
+    );
+    if (superseded.rowCount !== 1) {
+      throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token rotation lost its active generation");
+    }
+    await client.query(
+      `INSERT INTO oauth_refresh_tokens(
+         refresh_token_hash, family_id, generation, parent_generation, client_id,
+         grant_id, package_id, subject_id, status, created_at, expires_at,
+         last_used_at, superseded_at, revoked_at
+       ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, NULL, NULL, NULL)`,
+      [
+        successorTokenHash,
+        row.family_id,
+        row.generation + 1,
+        row.generation,
+        row.client_id,
+        row.grant_id,
+        row.package_id,
+        row.subject_id,
+        rotatedAt,
+        row.expires_at,
+      ]
+    );
+    return { accessToken, accessTokenExpiresAt, kind: "rotated", row };
+  });
+}
+
+function rotateSqliteOAuthRefreshToken({
+  clientId,
+  refreshTokenHash,
+  rotatedAt,
+  successorTokenHash,
+}: {
+  clientId: string;
+  refreshTokenHash: string;
+  rotatedAt: string;
+  successorTokenHash: string;
+}): RefreshRotationOutcome {
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The transaction keeps family validation, bearer issuance, event persistence, and rotation in one rollback boundary.
+  return writeTransaction(() => {
+    const row = getOne<RefreshTokenRow>(referenceQueries.authOauthRefreshTokensGetByToken, [refreshTokenHash]);
+    if (
+      !(
+        isCurrentRefreshFamilyRow(row) &&
+        refreshRowMatchesClientAndLifetime(row, clientId) &&
+        hasRefreshAuthorizationBinding(row)
+      )
+    ) {
+      return { kind: "invalid" };
+    }
+    if (row.status === "superseded") {
+      exec(referenceQueries.authOauthRefreshTokensRevokeFamily, [rotatedAt, row.family_id]);
+      exec(referenceQueries.authTokensRevokeByRefreshFamily, [row.family_id]);
+      return { kind: "reused" };
+    }
+    if (row.status !== "active" || row.revoked_at) {
+      return { kind: "invalid" };
+    }
+
+    let accessToken: string;
+    const accessTokenExpiresAt = refreshAccessTokenExpiresAt(rotatedAt, row.expires_at);
+    try {
+      accessToken = issueSqliteOAuthRefreshAccessToken(row, accessTokenExpiresAt);
+    } catch (error: unknown) {
+      if (!(isAuthError(error) && error.code === "invalid_grant")) {
+        throw error;
+      }
+      exec(referenceQueries.authOauthRefreshTokensRevokeFamily, [rotatedAt, row.family_id]);
+      exec(referenceQueries.authTokensRevokeByRefreshFamily, [row.family_id]);
+      return { kind: "invalid" };
+    }
+
+    const superseded = exec(referenceQueries.authOauthRefreshTokensSupersedeActive, [
+      rotatedAt,
+      rotatedAt,
+      refreshTokenHash,
+    ]);
+    if (superseded.changes !== 1) {
+      throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token rotation lost its active generation");
+    }
+    const successor = {
+      clientId: row.client_id,
+      createdAt: rotatedAt,
+      expiresAt: row.expires_at,
+      familyId: row.family_id,
+      generation: row.generation + 1,
+      parentGeneration: row.generation,
+      refreshTokenHash: successorTokenHash,
+      subjectId: row.subject_id,
+    };
+    if (isNonEmptyString(row.package_id)) {
+      sqliteRefreshTokenStore.insertForPackage({ ...successor, packageId: row.package_id });
+    } else if (isNonEmptyString(row.grant_id)) {
+      sqliteRefreshTokenStore.insert({ ...successor, grantId: row.grant_id });
+    } else {
+      throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token has no authorization binding");
+    }
+    return { accessToken, accessTokenExpiresAt, kind: "rotated", row };
+  });
+}
+
+async function rotateOAuthRefreshToken(input: {
+  clientId: string;
+  refreshTokenHash: string;
+  rotatedAt: string;
+  successorTokenHash: string;
+}): Promise<RefreshRotationOutcome> {
+  return await (isPostgresStorageBackend()
+    ? rotatePostgresOAuthRefreshToken(input)
+    : Promise.resolve(rotateSqliteOAuthRefreshToken(input)));
+}
+
+function reusedOAuthRefreshTokenError(): AuthError {
+  const error = buildOAuthRefreshTokenError(
+    "invalid_grant",
+    "Refresh token reuse revoked its family; fresh authorization is required"
+  );
+  error.fresh_authorization_required = true;
+  return error;
 }
 
 export async function exchangeOAuthRefreshToken({
@@ -9015,118 +10014,355 @@ export async function exchangeOAuthRefreshToken({
     throw buildOAuthRefreshTokenError("invalid_request", "client_id is required");
   }
 
-  const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
-  const refreshTokenStore = getRefreshTokenStore();
-  const row = requireActiveOAuthRefreshToken(await refreshTokenStore.getByTokenHash(refreshTokenHash), clientId);
-
   const registeredClient = await getRegisteredClient(clientId);
   if (!(registeredClient && clientSupportsOAuthRefreshToken(registeredClient))) {
     throw buildOAuthRefreshTokenError("invalid_grant", "Client is not registered for refresh_token");
   }
 
-  const accessToken = await issueAccessTokenForOAuthRefresh(row);
-
-  const usedAt = nowIso();
-  await refreshTokenStore.markUsed({ refreshTokenHash, usedAt });
+  const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
+  const successorToken = generateOAuthRefreshToken();
+  const rotatedAt = nowIso();
+  const outcome = await rotateOAuthRefreshToken({
+    clientId,
+    refreshTokenHash,
+    rotatedAt,
+    successorTokenHash: hashOAuthRefreshToken(successorToken),
+  });
+  if (outcome.kind === "reused") {
+    throw reusedOAuthRefreshTokenError();
+  }
+  if (outcome.kind !== "rotated") {
+    throw buildOAuthRefreshTokenError("invalid_grant", "Refresh token is invalid");
+  }
 
   return {
-    access_token: accessToken,
-    refresh_token: refreshToken,
+    access_token: outcome.accessToken,
+    access_token_expires_at: outcome.accessTokenExpiresAt,
+    refresh_token: successorToken,
     token_type: "Bearer",
-    ...(row.package_id ? { grant_package_id: row.package_id } : { grant_id: row.grant_id }),
+    ...(outcome.row.package_id ? { grant_package_id: outcome.row.package_id } : { grant_id: outcome.row.grant_id }),
   };
 }
 
-/**
- * Consent exchange-code store.
- *
- * The HTML branch of `POST /consent/approve` SHALL NOT render the live client
- * bearer to the browser; instead it mints a single-use opaque exchange code,
- * stores `{ code -> { grantId, token, grant, expiresAt, consumed } }` here,
- * and tells the caller to redeem the code at `POST /consent/exchange`.
- *
- * In-memory by design: the reference is single-process, the codes are
- * short-lived, and a code that survives a process restart would weaken the
- * "short-lived single-use ticket" property. See
- * openspec/changes/harden-consent-token-handoff/design.md.
- */
-const consentExchangeCodes = new Map<string, ConsentExchangeEntry>();
 const CONSENT_EXCHANGE_CODE_TTL_MS = 5 * 60 * 1000;
+const CONSENT_EXCHANGE_CODE_RE = /^cex_[0-9a-f]{64}$/;
 
-function pruneExpiredConsentExchangeCodes(now = Date.now()): void {
-  for (const [code, entry] of consentExchangeCodes) {
-    if (entry.consumed || entry.expiresAt <= now) {
-      consentExchangeCodes.delete(code);
-    }
-  }
+function buildConsentPackageGrant(
+  packageId: string,
+  memberRows: readonly GrantPackageMemberRow[]
+): Record<string, unknown> {
+  return {
+    child_grants: memberRows.map((row) => ({
+      grant_id: row.grant_id,
+      source: parsePackageJson(row.source_json),
+    })),
+    grant_id: packageId,
+    package: true,
+    package_id: packageId,
+  };
 }
 
-export function createConsentExchangeCode({
+function consentExchangeTokenIsActive(row: ConsentExchangeRow): boolean {
+  return (
+    !row.token_revoked &&
+    (!row.token_expires_at || new Date(row.token_expires_at).getTime() > Date.now()) &&
+    Boolean(row.grant_id) !== Boolean(row.package_id)
+  );
+}
+
+function parseConsentExchangeCodeCredential(code: string): { codeHash: string } | null {
+  if (!CONSENT_EXCHANGE_CODE_RE.test(code)) {
+    return null;
+  }
+  return { codeHash: base64UrlSha256(code) };
+}
+
+export async function createConsentExchangeCode({
   grantId,
   token,
   grant,
   ttlMs = CONSENT_EXCHANGE_CODE_TTL_MS,
+  recoveryProof,
 }: {
   grantId: string;
   token: string;
   grant: Record<string, unknown>;
+  recoveryProof?: string;
   ttlMs?: number;
-}): string {
-  if (!(grantId && token && grant)) {
-    throw new Error("createConsentExchangeCode requires grantId, token, and grant");
+}): Promise<string> {
+  if (!(grantId && token && isRecord(grant) && (grant.grant_id === grantId || grant.package_id === grantId))) {
+    throw new Error("createConsentExchangeCode requires a matching grantId, token, and grant");
   }
-  pruneExpiredConsentExchangeCodes();
-  const code = `cex_${randomBytes(32).toString("hex")}`;
-  consentExchangeCodes.set(code, {
-    consumed: false,
-    expiresAt: Date.now() + ttlMs,
-    grant,
-    grantId,
-    token,
-  });
-  return code;
+  const tokenInfo = await introspect(token);
+  const isPackage = tokenInfo.pdpp_token_kind === "mcp_package";
+  if (!tokenInfo.active || (isPackage ? tokenInfo.grant_package_id !== grantId : tokenInfo.grant_id !== grantId)) {
+    throw new Error("createConsentExchangeCode requires an active token bound to the approved result");
+  }
+  const codeSecret = `cex_${randomBytes(32).toString("hex")}`;
+  const codeHash = base64UrlSha256(codeSecret);
+  const proofHash =
+    typeof recoveryProof === "string" && recoveryProof.length > 0 ? base64UrlSha256(recoveryProof) : null;
+  const createdAt = nowIso();
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+  if (isPostgresStorageBackend()) {
+    await withPostgresTransaction(async (client) => {
+      await client.query(
+        `UPDATE consent_exchange_codes
+            SET redeemed_at = $1,
+                expires_at = $1
+          WHERE token_id = $2
+            AND redeemed_at IS NULL`,
+        [createdAt, token]
+      );
+      await client.query(
+        `INSERT INTO consent_exchange_codes(
+           code_hash, proof_hash, token_id, created_at, expires_at, redeemed_at
+         ) VALUES($1, $2, $3, $4, $5, NULL)`,
+        [codeHash, proofHash, token, createdAt, expiresAt]
+      );
+    });
+  } else {
+    transaction(() => {
+      exec(referenceQueries.authConsentExchangeCodesInvalidateOutstandingByToken as MutationQuery, [
+        createdAt,
+        createdAt,
+        token,
+      ]);
+      exec(referenceQueries.authConsentExchangeCodesInsert, [codeHash, proofHash, token, createdAt, expiresAt]);
+    });
+  }
+  return codeSecret;
 }
 
-export function consumeConsentExchangeCode(code: unknown): {
-  ok: boolean;
-  reason?: string;
-  grantId?: string;
-  token?: string;
-  grant?: Record<string, unknown>;
-} {
-  if (typeof code !== "string" || code.length === 0) {
+function consentExchangeProofMatches(row: ConsentExchangeRow, proofHash: string | null): boolean {
+  if (!row.proof_hash) {
+    return true;
+  }
+  return proofHash === row.proof_hash;
+}
+
+function consentExchangeRedeemedReason(row: ConsentExchangeRow, proofHash: string | null): "consumed" | null {
+  if (!row.redeemed_at) {
+    return null;
+  }
+  return row.proof_hash && consentExchangeProofMatches(row, proofHash) ? null : "consumed";
+}
+
+async function loadPostgresConsentExchangeGrant(
+  client: PostgresTransactionClient,
+  row: ConsentExchangeRow
+): Promise<
+  | { ok: false; reason: "revoked" | "unknown" }
+  | { grant: Record<string, unknown>; grantId?: string; ok: true; packageId?: string }
+> {
+  if (row.grant_id) {
+    const grantResult = await client.query<DbRow>(
+      `SELECT grant_id, grant_json::text AS grant_json
+       FROM grants
+      WHERE grant_id = $1 AND status = 'active'
+      FOR SHARE`,
+      [row.grant_id]
+    );
+    const grantRow = grantResult.rows[0] || null;
+    if (!(grantRow && isNonEmptyString(grantRow.grant_json))) {
+      return { ok: false, reason: "revoked" };
+    }
+    const parsed: unknown = JSON.parse(grantRow.grant_json);
+    if (!isRecord(parsed) || parsed.grant_id !== row.grant_id) {
+      return { ok: false, reason: "unknown" };
+    }
+    return { grant: parsed, grantId: row.grant_id, ok: true };
+  }
+  const packageResult = await client.query<DbRow>(
+    `SELECT package_id
+     FROM grant_packages
+    WHERE package_id = $1 AND status = 'active'
+    FOR SHARE`,
+    [row.package_id]
+  );
+  if (!packageResult.rows[0]) {
+    return { ok: false, reason: "revoked" };
+  }
+  const members = await client.query<GrantPackageMemberRow>(
+    `SELECT gm.grant_id, gm.source_json::text AS source_json
+     FROM grant_package_members gm
+    WHERE gm.package_id = $1
+    ORDER BY gm.added_at, gm.grant_id`,
+    [row.package_id]
+  );
+  if (!row.package_id) {
     return { ok: false, reason: "unknown" };
   }
-  const entry = consentExchangeCodes.get(code);
-  if (!entry) {
-    return { ok: false, reason: "unknown" };
-  }
-  if (entry.consumed) {
-    return { ok: false, reason: "consumed" };
-  }
-  if (entry.expiresAt <= Date.now()) {
-    consentExchangeCodes.delete(code);
-    return { ok: false, reason: "expired" };
-  }
-  entry.consumed = true;
-  consentExchangeCodes.delete(code);
   return {
-    grant: entry.grant,
-    grantId: entry.grantId,
+    grant: buildConsentPackageGrant(row.package_id, members.rows),
     ok: true,
-    token: entry.token,
+    packageId: row.package_id,
   };
 }
 
-/** Test-only escape hatch: clear the in-memory exchange-code store. */
-export function _resetConsentExchangeCodes(): void {
-  consentExchangeCodes.clear();
+export async function consumeConsentExchangeCode(
+  code: unknown,
+  recoveryProof?: unknown
+): Promise<{
+  ok: boolean;
+  reason?: string;
+  grantId?: string;
+  packageId?: string;
+  token?: string;
+  grant?: Record<string, unknown>;
+}> {
+  if (typeof code !== "string" || code.length === 0) {
+    return { ok: false, reason: "unknown" };
+  }
+  const parsedCredential = parseConsentExchangeCodeCredential(code);
+  if (!parsedCredential) {
+    return { ok: false, reason: "unknown" };
+  }
+  const { codeHash } = parsedCredential;
+  const proofHash =
+    typeof recoveryProof === "string" && recoveryProof.length > 0 ? base64UrlSha256(recoveryProof) : null;
+  const redeemedAt = nowIso();
+  const result = isPostgresStorageBackend()
+    ? await withPostgresTransaction(
+        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This transaction deliberately keeps row lock, active-authority validation, envelope reconstruction, and first-redemption transition in one auditable atomic unit.
+        async (client) => {
+          const selected = await client.query<ConsentExchangeRow>(
+            `SELECT c.code_hash, c.proof_hash, c.token_id, c.created_at, c.expires_at,
+                  c.redeemed_at, t.grant_id, t.package_id,
+                  t.revoked AS token_revoked, t.expires_at AS token_expires_at
+             FROM consent_exchange_codes c
+             JOIN tokens t ON t.token_id = c.token_id
+            WHERE c.code_hash = $1
+            FOR UPDATE OF c, t`,
+            [codeHash]
+          );
+          const row = selected.rows[0] || null;
+          if (!row) {
+            return { ok: false as const, reason: "unknown" };
+          }
+          if (!consentExchangeProofMatches(row, proofHash)) {
+            return { ok: false as const, reason: row.redeemed_at ? "consumed" : "unknown" };
+          }
+          if (new Date(row.expires_at).getTime() <= Date.now()) {
+            return { ok: false as const, reason: "expired" };
+          }
+          if (!consentExchangeTokenIsActive(row)) {
+            return { ok: false as const, reason: "revoked" };
+          }
+          const redeemedReason = consentExchangeRedeemedReason(row, proofHash);
+          if (redeemedReason) {
+            return { ok: false as const, reason: redeemedReason };
+          }
+          const loaded = await loadPostgresConsentExchangeGrant(client, row);
+          if (!loaded.ok) {
+            return { ok: false as const, reason: loaded.reason };
+          }
+          if (!row.redeemed_at) {
+            await client.query(
+              "UPDATE consent_exchange_codes SET redeemed_at = $1 WHERE code_hash = $2 AND redeemed_at IS NULL",
+              [redeemedAt, codeHash]
+            );
+          }
+          return {
+            grant: loaded.grant,
+            ok: true as const,
+            token: row.token_id,
+            ...(loaded.packageId ? { packageId: loaded.packageId } : { grantId: loaded.grantId as string }),
+          };
+        }
+      )
+    : transaction(
+        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: SQLite mirrors the PostgreSQL atomic unit so authority validation and first redemption cannot be split across transactions.
+        () => {
+          const row = getOne<ConsentExchangeRow>(referenceQueries.authConsentExchangeCodesGetForRedemption, [codeHash]);
+          if (!row) {
+            return { ok: false as const, reason: "unknown" };
+          }
+          if (!consentExchangeProofMatches(row, proofHash)) {
+            return { ok: false as const, reason: row.redeemed_at ? "consumed" : "unknown" };
+          }
+          if (new Date(row.expires_at).getTime() <= Date.now()) {
+            return { ok: false as const, reason: "expired" };
+          }
+          if (!consentExchangeTokenIsActive(row)) {
+            return { ok: false as const, reason: "revoked" };
+          }
+          const redeemedReason = consentExchangeRedeemedReason(row, proofHash);
+          if (redeemedReason) {
+            return { ok: false as const, reason: redeemedReason };
+          }
+          let grant: Record<string, unknown>;
+          let grantId: string | undefined;
+          let packageId: string | undefined;
+          if (row.grant_id) {
+            const grantRow = getOne<DbRow>(referenceQueries.authGrantsGetForRevocation, [row.grant_id]);
+            if (!(grantRow && grantRow.status === "active" && isNonEmptyString(grantRow.grant_json))) {
+              return { ok: false as const, reason: "revoked" };
+            }
+            const parsed: unknown = JSON.parse(grantRow.grant_json);
+            if (!isRecord(parsed) || parsed.grant_id !== row.grant_id) {
+              return { ok: false as const, reason: "unknown" };
+            }
+            grant = parsed;
+            grantId = row.grant_id;
+          } else {
+            const packageRow = sqliteGrantPackageStore.getPackageById(row.package_id || "") as DbRow | null;
+            if (!(packageRow && packageRow.status === "active" && row.package_id)) {
+              return { ok: false as const, reason: "revoked" };
+            }
+            const members = sqliteGrantPackageStore.listAllMembers(row.package_id) as readonly GrantPackageMemberRow[];
+            packageId = row.package_id;
+            grant = buildConsentPackageGrant(packageId, members);
+          }
+          if (!row.redeemed_at) {
+            exec(referenceQueries.authConsentExchangeCodesMarkRedeemed, [redeemedAt, codeHash]);
+          }
+          return {
+            grant,
+            ok: true as const,
+            token: row.token_id,
+            ...(packageId ? { packageId } : { grantId: grantId as string }),
+          };
+        }
+      );
+  return result;
 }
 
 /**
  * Deny and clear a pending grant request
  */
-export async function denyGrant(deviceCode: string): Promise<boolean> {
+function buildPendingConsentDeniedEventContext(
+  request: unknown,
+  userCode: string | null | undefined
+): { clientId: string; data: Record<string, unknown> } {
+  if (isStagedBatchRequest(request)) {
+    if (!isNonEmptyString(request.client.client_id) || request.entries.length === 0) {
+      throw bindingError("invalid_request", "Batch pending request is malformed");
+    }
+    const sources = request.entries.map((entry) => {
+      const slice = asSingleEntryRequestSlice(request, entry);
+      requireStructuredPendingRequestShape(slice);
+      return describeSourceBinding(requireStructuredPendingRequestBindings(slice).sourceBinding);
+    });
+    return {
+      clientId: request.client.client_id,
+      data: { sources, user_code: userCode },
+    };
+  }
+  requireStructuredPendingRequestShape(request);
+  return {
+    clientId: request.client.client_id,
+    data: {
+      source: describeSourceBinding(requireStructuredPendingRequestBindings(request).sourceBinding),
+      user_code: userCode,
+    },
+  };
+}
+
+export async function denyGrant(
+  deviceCode: string,
+  opts: { beforeCasHook?: () => void | Promise<void>; faultHook?: AuthorizationDecisionFaultHook } = {}
+): Promise<boolean> {
   const pending = await getPendingConsentRow(deviceCode);
   if (pending?.status !== "pending") {
     return false;
@@ -9135,21 +10371,14 @@ export async function denyGrant(deviceCode: string): Promise<boolean> {
     await markPendingConsentExpired(deviceCode);
     return false;
   }
-  await markPendingConsentDenied(deviceCode);
-
   const request: unknown = JSON.parse(pending.params_json);
-  requireStructuredPendingRequestShape(request);
   const traceContext = requirePersistedPendingTraceContext(pending);
-  request.trace_context = traceContext;
-  const { sourceBinding } = requireStructuredPendingRequestBindings(request);
-  await emitSpineEvent({
+  const deniedContext = buildPendingConsentDeniedEventContext(request, pending.user_code);
+  const deniedEvent: AuthSpineEventInput = {
     actor_id: pending.subject_id || "owner_local",
     actor_type: "subject",
-    client_id: request.client?.client_id || null,
-    data: {
-      source: describeSourceBinding(sourceBinding),
-      user_code: pending.user_code,
-    },
+    client_id: deniedContext.clientId,
+    data: deniedContext.data,
     event_type: "consent.denied",
     object_id: deviceCode,
     object_type: "pending_consent",
@@ -9157,6 +10386,13 @@ export async function denyGrant(deviceCode: string): Promise<boolean> {
     scenario_id: traceContext.scenario_id,
     status: "denied",
     trace_id: traceContext.trace_id,
+  };
+  await opts.beforeCasHook?.();
+  await getPendingConsentStore().markDeniedAtomically({
+    deniedAt: nowIso(),
+    deviceCode,
+    event: deniedEvent,
+    ...(opts.faultHook ? { faultHook: opts.faultHook } : {}),
   });
 
   return true;
@@ -9308,7 +10544,8 @@ export async function getOwnerDeviceAuthorizationByUserCode(
  */
 export async function approveOwnerDeviceAuthorization(
   userCode: unknown,
-  subjectId = "owner_local"
+  subjectId = "owner_local",
+  opts: { faultHook?: OwnerDeviceApprovalFaultHook } = {}
 ): Promise<Record<string, unknown>> {
   const pending = await getOwnerDeviceAuthRowByUserCode(userCode);
   if (!pending) {
@@ -9316,90 +10553,49 @@ export async function approveOwnerDeviceAuthorization(
     err.code = "not_found";
     throw err;
   }
-  if (pending.status !== "pending") {
-    throw attachOwnerDeviceTraceContext(
-      Object.assign(new Error("Owner device authorization is not available"), {
-        code: "not_found",
-      }),
-      pending
-    );
-  }
-  if (isExpired(pending)) {
-    await markOwnerDeviceAuthExpired(pending.device_code);
-    throw attachOwnerDeviceTraceContext(
-      Object.assign(new Error("Owner device authorization has expired"), {
-        code: "not_found",
-      }),
-      pending
-    );
-  }
-  let registeredClient: RegisteredClient | null;
+
+  const traceContext = ownerDeviceTraceContext(pending);
+  const token = generateToken();
+  const tokenExpiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+  let approved: OwnerDeviceAuthRow;
   try {
-    registeredClient = await getRegisteredClient(pending.client_id);
+    approved = await getOwnerDeviceAuthStore().approveAtomically({
+      clientId: pending.client_id,
+      consentApprovedEvent: buildOwnerDeviceConsentApprovedEvent({
+        clientId: pending.client_id,
+        pending,
+        subjectId,
+        traceContext,
+      }),
+      deviceCode: pending.device_code,
+      expiresAt: tokenExpiresAt,
+      faultHook: opts.faultHook,
+      pendingSnapshot: pending,
+      subjectId,
+      tokenId: token,
+      tokenIssuedEvent: buildOwnerDeviceTokenIssuedEvent({
+        clientId: pending.client_id,
+        pending,
+        subjectId,
+        token,
+        traceContext,
+      }),
+    });
   } catch (err: unknown) {
-    if (isAuthError(err) && err.code === "invalid_client") {
-      throw attachOwnerDeviceTraceContext(err, pending);
+    if (isOwnerDeviceExpiredError(err)) {
+      await markOwnerDeviceAuthExpired(pending.device_code);
     }
     throw err;
   }
-  if (!registeredClient) {
-    const err: AuthError = new Error(`Unknown client_id: ${pending.client_id}`);
-    err.code = "invalid_client";
-    throw attachOwnerDeviceTraceContext(err, pending);
-  }
-  try {
-    registeredClient = await bindDynamicClientToApprovingOwner(registeredClient, subjectId);
-  } catch (err: unknown) {
-    if (!isAuthError(err)) {
-      throw err;
-    }
-    throw attachOwnerDeviceTraceContext(err, pending);
-  }
 
-  const traceContext =
-    isNonEmptyString(pending.trace_id) && isNonEmptyString(pending.request_id)
-      ? {
-          request_id: pending.request_id,
-          ...(isNonEmptyString(pending.scenario_id) ? { scenario_id: pending.scenario_id } : {}),
-          trace_id: pending.trace_id,
-        }
-      : null;
-
-  await emitSpineEvent({
-    actor_id: subjectId,
-    actor_type: "subject",
-    client_id: registeredClient.client_id,
-    data: {
-      issuance_path: "owner_device_flow",
-      user_code: pending.user_code,
-    },
-    event_type: "consent.approved",
-    object_id: pending.device_code,
-    object_type: "owner_device_auth",
-    request_id: traceContext?.request_id || undefined,
-    scenario_id: traceContext?.scenario_id || undefined,
-    status: "succeeded",
-    subject_id: subjectId,
-    subject_type: "subject",
-    trace_id: traceContext?.trace_id || undefined,
-  });
-
-  const token = await issueOwnerToken(subjectId, {
-    clientId: registeredClient.client_id,
-    traceContext,
-    userCode: pending.user_code,
-  });
-  await markOwnerDeviceAuthApproved(pending.device_code, { subjectId, tokenId: token });
-
-  return {
-    access_token: token,
-    expires_in: 365 * 24 * 60 * 60,
-    subject_id: subjectId,
-    token_type: "Bearer",
-  };
+  return ownerDeviceApprovalResponse(approved, subjectId);
 }
 
-export async function denyOwnerDeviceAuthorization(userCode: unknown, subjectId = "owner_local"): Promise<void> {
+export async function denyOwnerDeviceAuthorization(
+  userCode: unknown,
+  subjectId = "owner_local",
+  opts: { beforeCasHook?: () => void | Promise<void>; faultHook?: AuthorizationDecisionFaultHook } = {}
+): Promise<void> {
   const pending = await getOwnerDeviceAuthRowByUserCode(userCode);
   if (!pending) {
     const err: AuthError = new Error("Unknown user code");
@@ -9433,8 +10629,7 @@ export async function denyOwnerDeviceAuthorization(userCode: unknown, subjectId 
         }
       : null;
 
-  await markOwnerDeviceAuthDenied(pending.device_code);
-  await emitSpineEvent({
+  const rejectedEvent: AuthSpineEventInput = {
     actor_id: subjectId,
     actor_type: "subject",
     client_id: pending.client_id,
@@ -9455,13 +10650,121 @@ export async function denyOwnerDeviceAuthorization(userCode: unknown, subjectId 
     subject_id: subjectId,
     subject_type: "subject",
     trace_id: traceContext?.trace_id || undefined,
-  });
+  };
+  await opts.beforeCasHook?.();
+  try {
+    await getOwnerDeviceAuthStore().markDeniedAtomically({
+      deniedAt: nowIso(),
+      deviceCode: pending.device_code,
+      event: rejectedEvent,
+      ...(opts.faultHook ? { faultHook: opts.faultHook } : {}),
+    });
+  } catch (err: unknown) {
+    if (isAuthError(err) && err.code === "approval_conflict") {
+      throw attachOwnerDeviceTraceContext(err, pending);
+    }
+    throw err;
+  }
 }
 
 function ownerDeviceExchangeError(row: OwnerDeviceAuthRow, code: string, message: string): AuthError {
   const err: AuthError = new Error(message);
   err.code = code;
   return attachOwnerDeviceTraceContext(err, row);
+}
+
+function ownerDeviceApprovalResponse(row: OwnerDeviceAuthRow, fallbackSubjectId: string): Record<string, unknown> {
+  return {
+    access_token: row.token_id,
+    expires_in: 365 * 24 * 60 * 60,
+    subject_id: row.subject_id || fallbackSubjectId,
+    token_type: "Bearer",
+  };
+}
+
+function ownerDeviceTraceContext(row: OwnerDeviceAuthRow): TraceContext | null {
+  if (!(isNonEmptyString(row.trace_id) && isNonEmptyString(row.request_id))) {
+    return null;
+  }
+  return {
+    request_id: row.request_id,
+    ...(isNonEmptyString(row.scenario_id) ? { scenario_id: row.scenario_id } : {}),
+    trace_id: row.trace_id,
+  };
+}
+
+function ownerDeviceTraceEventFields(
+  traceContext: TraceContext | null
+): Pick<AuthSpineEventInput, "request_id" | "scenario_id" | "trace_id"> {
+  return traceContext
+    ? {
+        request_id: traceContext.request_id,
+        scenario_id: traceContext.scenario_id,
+        trace_id: traceContext.trace_id,
+      }
+    : {};
+}
+
+function buildOwnerDeviceConsentApprovedEvent({
+  clientId,
+  pending,
+  subjectId,
+  traceContext,
+}: {
+  clientId: string;
+  pending: OwnerDeviceAuthRow;
+  subjectId: string;
+  traceContext: TraceContext | null;
+}): AuthSpineEventInput {
+  return {
+    actor_id: subjectId,
+    actor_type: "subject",
+    client_id: clientId,
+    data: {
+      issuance_path: "owner_device_flow",
+      user_code: pending.user_code,
+    },
+    event_type: "consent.approved",
+    object_id: pending.device_code,
+    object_type: "owner_device_auth",
+    status: "succeeded",
+    subject_id: subjectId,
+    subject_type: "subject",
+    ...ownerDeviceTraceEventFields(traceContext),
+  };
+}
+
+function buildOwnerDeviceTokenIssuedEvent({
+  clientId,
+  pending,
+  subjectId,
+  token,
+  traceContext,
+}: {
+  clientId: string;
+  pending: OwnerDeviceAuthRow;
+  subjectId: string;
+  token: string;
+  traceContext: TraceContext | null;
+}): AuthSpineEventInput {
+  return {
+    actor_id: "pdpp_as",
+    actor_type: "authorization_server",
+    client_id: clientId,
+    data: {
+      issuance_path: "owner_device_flow",
+      token_kind: "owner",
+      user_code: pending.user_code,
+    },
+    event_type: "token.issued",
+    object_id: token,
+    object_type: "token",
+    status: "succeeded",
+    subject_id: subjectId,
+    subject_type: "subject",
+    token_id: token,
+    ...ownerDeviceTraceEventFields(traceContext),
+  };
 }
 
 async function requireOwnerDeviceClient(row: OwnerDeviceAuthRow, clientId: string): Promise<void> {
@@ -9818,6 +11121,18 @@ function inactiveInvalidGrantToken(row: TokenIntrospectionRow): TokenIntrospecti
   };
 }
 
+function inactiveUnsupportedLegacyGrantToken(row: TokenIntrospectionRow): TokenIntrospectionResult {
+  return {
+    active: false,
+    client_id: row.client_id,
+    grant_id: row.grant_id,
+    inactive_reason: "authorization_state.unsupported_legacy_shape",
+    scenario_id: row.scenario_id,
+    subject_id: row.subject_id,
+    trace_id: row.trace_id,
+  };
+}
+
 function enrichPackageTokenIntrospection(
   row: TokenIntrospectionRow,
   result: TokenIntrospectionResult
@@ -9861,6 +11176,9 @@ function enrichClientTokenIntrospection(
     result.scenario_id = row.scenario_id;
     return result;
   } catch (err: unknown) {
+    if (isAuthError(err) && err.code === "authorization_state.unsupported_legacy_shape") {
+      return inactiveUnsupportedLegacyGrantToken(row);
+    }
     if (!isAuthError(err) || err.code !== "grant_invalid") {
       throw err;
     }
@@ -9885,6 +11203,14 @@ export async function introspect(token: unknown): Promise<TokenIntrospectionResu
     return {
       active: false,
       inactive_reason: row.token_kind === "client" ? "grant_revoked" : "token_revoked",
+      ...getInactiveTokenBinding(row),
+    };
+  }
+
+  if (row.refresh_family_id && !row.refresh_family_active) {
+    return {
+      active: false,
+      inactive_reason: "refresh_family_revoked",
       ...getInactiveTokenBinding(row),
     };
   }
@@ -9925,10 +11251,12 @@ export async function introspect(token: unknown): Promise<TokenIntrospectionResu
 
   const result: TokenIntrospectionResult = {
     active: true,
-    exp: row.expires_at ? Math.floor(new Date(row.expires_at).getTime() / 1000) : null,
     pdpp_token_kind: row.token_kind,
     subject_id: row.subject_id,
   };
+  if (row.expires_at) {
+    result.exp = Math.floor(new Date(row.expires_at).getTime() / 1000);
+  }
 
   if (row.token_kind === "owner" && row.client_id) {
     result.client_id = row.client_id;
@@ -9954,6 +11282,11 @@ interface GrantRevocationContext {
   trace_id?: string | null;
 }
 
+const REVOCATION_INVALID_GRANT_ERROR_CODES = new Set<string | undefined>([
+  "authorization_state.unsupported_legacy_shape",
+  "grant_invalid",
+]);
+
 async function requireRevocablePersistedGrant(
   row: GrantRevocationRow,
   grantId: string,
@@ -9963,7 +11296,7 @@ async function requireRevocablePersistedGrant(
     const { grant } = requirePersistedGrantState(row);
     return grant;
   } catch (err: unknown) {
-    if (!(isAuthError(err) && err.code === "grant_invalid")) {
+    if (!(isAuthError(err) && REVOCATION_INVALID_GRANT_ERROR_CODES.has(err.code))) {
       throw err;
     }
     const sourceDescriptor = describePersistedGrantSource(row);

@@ -6,6 +6,8 @@ import test from "node:test";
 
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { introspectionHeaders } from "./helpers/introspection.ts";
+import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
 interface CloseableServer {
   close: (callback?: (err?: Error) => void) => unknown;
@@ -60,9 +62,11 @@ async function withServer(fn: (ctx: { asUrl: string }) => Promise<void>): Promis
     asPort: 0,
     dbPath: ":memory:",
     dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+    introspectionCallerCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
     ownerAuthPassword: TEST_PASSWORD,
     ownerAuthSubjectId: TEST_SUBJECT,
     quiet: true,
+    rsIntrospectionCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
     rsPort: 0,
   })) as StartedServer;
   try {
@@ -209,7 +213,7 @@ async function issueOwnerTokenViaDeviceFlow(
       device_code: device.device_code,
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
     }),
-    headers: { "Content-Type": "application/json" },
+    headers: introspectionHeaders(),
     method: "POST",
   });
   assert.equal(tokenResp.status, 200);
@@ -240,7 +244,7 @@ interface RevokeResult {
 async function introspect(asUrl: string, token: string): Promise<IntrospectResult> {
   const resp = await fetch(`${asUrl}/introspect`, {
     body: JSON.stringify({ token }),
-    headers: { "Content-Type": "application/json" },
+    headers: introspectionHeaders(),
     method: "POST",
   });
   assert.equal(resp.status, 200);
@@ -514,7 +518,7 @@ test("10.C.4 GET /_ref/grant-packages/count returns the total without paging the
           client: { client_id: "cli_x" },
           grant_id: grantId,
           issued_at: now,
-          source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+          source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
           source_declaration: { version: "reference.source-declaration.test.v1" },
           streams: [],
           subject: { id: TEST_SUBJECT },
@@ -547,7 +551,7 @@ test("10.C.4 GET /_ref/grant-packages/count returns the total without paging the
         pid,
         grantId,
         `${pid}_token`,
-        JSON.stringify({ id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" }),
+        JSON.stringify({ id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" }),
         now
       );
     }

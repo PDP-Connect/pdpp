@@ -1,0 +1,44 @@
+{
+  "access_mode": "continuous",
+  "client": {
+    "client_id": "pr89-seam-client"
+  },
+  "expires_at": null,
+  "grant_id": "grt_pr89",
+  "issued_at": "2026-08-11T11:55:00Z",
+  "purpose_code": "https://pdpp.dev/purpose/personal_ai_assistant",
+  "purpose_description": "Build a personal listening summary",
+  "retention": {
+    "max_duration": "P30D",
+    "on_expiry": "delete"
+  },
+  "source": {
+    "id": "https://sources.example/records/spotify",
+    "kind": "connector"
+  },
+  "source_declaration": {
+    "version": "spotify-pr89-v1"
+  },
+  "streams": [
+    {
+      "fields": ["id", "name", "observed_at"],
+      "instance_ids": ["account-a"],
+      "name": "top_artists",
+      "resources": ["artist:42"],
+      "time_constraint": {
+        "field": "observed_at",
+        "since": "2026-01-01T00:00:00Z",
+        "until": "2026-04-01T00:00:00Z"
+      }
+    },
+    {
+      "fields": ["id", "played_at", "title"],
+      "instance_ids": ["account-b"],
+      "name": "recently_played"
+    }
+  ],
+  "subject": {
+    "id": "owner-local"
+  },
+  "version": "0.1.0"
+}

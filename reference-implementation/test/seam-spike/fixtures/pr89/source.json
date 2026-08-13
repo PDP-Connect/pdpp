@@ -1,0 +1,54 @@
+{
+  "declaration_version": "spotify-pr89-v1",
+  "display": {
+    "name": "Spotify"
+  },
+  "protocol_version": "0.1.0",
+  "publisher": {
+    "id": "https://publishers.example/spotify"
+  },
+  "source": {
+    "id": "https://sources.example/records/spotify",
+    "kind": "connector"
+  },
+  "streams": [
+    {
+      "consent_time_field": "observed_at",
+      "name": "top_artists",
+      "primary_key": ["id"],
+      "schema": {
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "observed_at": { "format": "date-time", "type": "string" }
+        },
+        "required": ["id", "observed_at"],
+        "type": "object"
+      },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "semantics": "mutable_state"
+    },
+    {
+      "consent_time_field": "played_at",
+      "name": "recently_played",
+      "primary_key": ["id"],
+      "schema": {
+        "properties": {
+          "id": { "type": "string" },
+          "played_at": { "format": "date-time", "type": "string" },
+          "title": { "type": "string" }
+        },
+        "required": ["id", "played_at"],
+        "type": "object"
+      },
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "semantics": "append_only"
+    }
+  ]
+}

@@ -21,6 +21,10 @@ import {
   admitOwnerRunConnection,
   makeDefaultAccountConnectorInstanceId,
 } from "../server/stores/connector-instance-store.ts";
+import {
+  TEST_INTROSPECTION_SERVER_OPTS,
+  TEST_RS_INTROSPECTION_CREDENTIALS,
+} from "./helpers/introspection-test-credentials.ts";
 
 type RuntimeConnectorManifest = NonNullable<Parameters<typeof runConnector>[0]["manifest"]>;
 
@@ -67,14 +71,14 @@ const TOP_LEVEL_REGEX_40 = /Unknown client_id/;
 const TOP_LEVEL_REGEX_42 = /Access Denied/;
 const TOP_LEVEL_REGEX_43 = /Access Denied/;
 const TOP_LEVEL_REGEX_44 = /Unsupported request fields: redirect_uri, response_type/;
-const TOP_LEVEL_REGEX_45 = /authorization_details\[0\] is invalid: \/streams\/0 must NOT be valid/;
+const TOP_LEVEL_REGEX_45 = /Selection request is invalid: \/streams\/0 must NOT be valid/;
 const TOP_LEVEL_REGEX_46 = /Grant is malformed or no longer valid/;
 const TOP_LEVEL_REGEX_47 = /Request ID: (req_[A-Za-z0-9]+)/;
 const TOP_LEVEL_REGEX_48 = /Reference trace ID: (trc_[A-Za-z0-9]+)/;
 const TOP_LEVEL_REGEX_49 = /Invalid initial access token/;
 const TOP_LEVEL_REGEX_50 = /Source kind does not match the retained declaration/;
 const TOP_LEVEL_REGEX_51 = /Unknown source/;
-const TOP_LEVEL_REGEX_52 = /authorization_details must use source: \{ id, kind\?: 'connector' \| 'provider_native' \}/;
+const TOP_LEVEL_REGEX_52 = /Selection request is invalid: .*additional properties.*source\/id must match format "uri"/s;
 const TOP_LEVEL_REGEX_53 = /Registered client:/;
 const TOP_LEVEL_REGEX_54 = /User code: ([A-Z0-9]+)/;
 const TOP_LEVEL_REGEX_55 = /is not scoped to stream saved_tracks/;
@@ -99,11 +103,10 @@ const TOP_LEVEL_REGEX_73 = /Request ID: (req_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_74 = /Reference trace ID: (trc_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_CLIENT_FILTER_UNSUPPORTED =
   /filter\[\.\.\.\] is not supported for client-token reads in PDPP v0\.1/;
+const TOP_LEVEL_REGEX_INTROSPECTION_FAILED = /Token introspection failed closed/;
+const TOP_LEVEL_REGEX_INVALID_TOKEN = /Invalid or expired token/;
 const TOP_LEVEL_REGEX_77 = /Record not found/;
 const TOP_LEVEL_REGEX_78 = /Record not found/;
-const TOP_LEVEL_REGEX_79 = /Stream 'recently_played' not in grant/;
-const TOP_LEVEL_REGEX_80 = /Stream 'recently_played' not in grant/;
-const TOP_LEVEL_REGEX_81 = /Stream 'saved_tracks' not in grant/;
 const TOP_LEVEL_REGEX_82 = /Record not found/;
 const TOP_LEVEL_REGEX_83 = /Record not found/;
 const TOP_LEVEL_REGEX_84 = /invalid INTERACTION.kind/;
@@ -159,6 +162,8 @@ const TOP_LEVEL_REGEX_133 = /Reference trace ID: (trc_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_134 = /Stream 'not_a_stream' not found/;
 const TOP_LEVEL_REGEX_135 = /connector_id must be a single non-empty string for polyfill owner access/;
 const TOP_LEVEL_REGEX_136 = /request\.source_binding must include only kind and id/;
+const TOP_LEVEL_REGEX_137 =
+  /Missing introspection caller credentials: set PDPP_RS_INTROSPECTION_CLIENT_ID and PDPP_RS_INTROSPECTION_CLIENT_SECRET/;
 const CLI_GRANT_FIXTURE_OWNER_SUBJECTS = ["cli_owner", "u1", "employee_1"] as const;
 
 const execFile = promisify(execFileCallback);
@@ -422,6 +427,7 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>) {
     dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -453,6 +459,7 @@ async function withNativeHarness(fn: (ctx: NativeHarnessContext) => Promise<void
     nativeManifest,
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -931,6 +938,7 @@ async function withMalformedPolyfillClientGrant(fn: (ctx: MalformedPolyfillClien
       dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
       quiet: true,
       rsPort: server.rsPort,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
 
     const reRegisterResp = await fetchJson(`${asUrl}/connectors`, {
@@ -1038,6 +1046,8 @@ async function runCli(args: readonly string[], env: Record<string, string> = {})
       ...process.env,
       AS_URL: "",
       PDPP_AS_URL: "",
+      PDPP_RS_INTROSPECTION_CLIENT_ID: TEST_RS_INTROSPECTION_CREDENTIALS.clientId,
+      PDPP_RS_INTROSPECTION_CLIENT_SECRET: TEST_RS_INTROSPECTION_CREDENTIALS.clientSecret,
       PDPP_RS_URL: "",
       RS_URL: "",
       ...env,
@@ -1068,6 +1078,8 @@ async function runCliExpectFailure(args: readonly string[], env: Record<string, 
         ...process.env,
         AS_URL: "",
         PDPP_AS_URL: "",
+        PDPP_RS_INTROSPECTION_CLIENT_ID: TEST_RS_INTROSPECTION_CREDENTIALS.clientId,
+        PDPP_RS_INTROSPECTION_CLIENT_SECRET: TEST_RS_INTROSPECTION_CREDENTIALS.clientSecret,
         PDPP_RS_URL: "",
         RS_URL: "",
         ...env,
@@ -1115,7 +1127,7 @@ test("PDPP CLI smoke", async (t) => {
   });
 
   await t.test(
-    "auth introspect preserves the current native client grant shape without storage-binding leakage",
+    "auth introspect exposes native client authorization details without storage-binding leakage",
     async () => {
       await withNativeHarness(async ({ asUrl, rsUrl, nativeManifest }) => {
         await seedNorthstar(nativeManifest);
@@ -1140,10 +1152,13 @@ test("PDPP CLI smoke", async (t) => {
         assert.equal(result.json.subject_id, "cli_owner");
         assert.ok(typeof result.json.trace_id === "string" && result.json.trace_id.startsWith("trc_"));
         assert.ok(typeof result.json.scenario_id === "string" && result.json.scenario_id.startsWith("scn_"));
-        const resultGrantSource = asRecord(asRecord(result.json.grant).source);
+        const resultAuthorizationDetails = asRecord(
+          (result.json.authorization_details as readonly unknown[] | undefined)?.[0]
+        );
+        const resultGrantSource = asRecord(resultAuthorizationDetails.source);
         assert.equal(resultGrantSource.kind, "provider_native");
         assert.equal(resultGrantSource.id, nativeManifest.provider_id);
-        assert.equal("grant_storage_binding" in result.json, false);
+        assert.equal("grant_storage_binding" in resultAuthorizationDetails, false);
         assert.equal(result.stderr, "");
 
         const recordsResponse = await fetch(`${rsUrl}/v1/streams/pay_statements/records`, {
@@ -1156,6 +1171,19 @@ test("PDPP CLI smoke", async (t) => {
     }
   );
 
+  await t.test("auth introspect requires caller credentials from the environment", async () => {
+    const result = await runCliExpectFailure(
+      ["auth", "introspect", "--rs-url", "http://localhost:1", "--token", "token"],
+      {
+        PDPP_RS_INTROSPECTION_CLIENT_ID: "",
+        PDPP_RS_INTROSPECTION_CLIENT_SECRET: "",
+      }
+    );
+
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, TOP_LEVEL_REGEX_137);
+  });
+
   await t.test("auth introspect preserves grant_invalid client context", async () => {
     const { dbPath, cleanup } = createTempDbPath();
     const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/northstar-hr.json"), "utf8"));
@@ -1165,6 +1193,7 @@ test("PDPP CLI smoke", async (t) => {
       nativeManifest,
       quiet: true,
       rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
@@ -1188,6 +1217,7 @@ test("PDPP CLI smoke", async (t) => {
         nativeManifest,
         quiet: true,
         rsPort: server.rsPort,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
 
       const result = await runCli([
@@ -1307,7 +1337,15 @@ test("PDPP CLI smoke", async (t) => {
         ],
         {
           cwd: REFERENCE_IMPL_DIR,
-          env: { ...process.env, AS_URL: "", PDPP_AS_URL: "", PDPP_RS_URL: "", RS_URL: "" },
+          env: {
+            ...process.env,
+            AS_URL: "",
+            PDPP_AS_URL: "",
+            PDPP_RS_INTROSPECTION_CLIENT_ID: TEST_RS_INTROSPECTION_CREDENTIALS.clientId,
+            PDPP_RS_INTROSPECTION_CLIENT_SECRET: TEST_RS_INTROSPECTION_CREDENTIALS.clientSecret,
+            PDPP_RS_URL: "",
+            RS_URL: "",
+          },
           stdio: ["ignore", "pipe", "pipe"],
         }
       );
@@ -3073,7 +3111,7 @@ test("PDPP CLI smoke", async (t) => {
     async () => {
       await withNativeHarness(async ({ asUrl, nativeManifest }) => {
         const initiate = await startGrantRequest(asUrl, {
-          access_mode: "single_use",
+          access_mode: "continuous",
           client_id: "longview",
           purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
@@ -3627,7 +3665,13 @@ test("PDPP CLI smoke", async (t) => {
   });
 
   await t.test("agent bootstrap uses the reference-local DCR default without an explicit token", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startServer({
+      asPort: 0,
+      dbPath: ":memory:",
+      quiet: true,
+      rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
+    });
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
     const cacheRoot = mkdtempSync(join(tmpdir(), "pdpp-agent-bootstrap-"));
@@ -4518,7 +4562,7 @@ test("PDPP CLI smoke", async (t) => {
         assert.ok(hiddenRecord, "expected an owner-visible saved_tracks record outside the client grant");
         assert.ok(hiddenRecord.id, "expected the hidden saved_tracks record to carry an id");
 
-        const approved = await approveGrant(asUrl, "cli_owner", {
+        await approveGrant(asUrl, "cli_owner", {
           access_mode: "single_use",
           client_display: { name: "Concert Recommendation App" },
           client_id: "concert_recommendation_app",
@@ -4530,56 +4574,68 @@ test("PDPP CLI smoke", async (t) => {
 
         const scenarios = [
           {
-            expectedCode: "grant_stream_not_allowed",
-            expectedMessage: TOP_LEVEL_REGEX_79,
-            expectStatus: 403,
+            expectedBodyMessage: TOP_LEVEL_REGEX_INTROSPECTION_FAILED,
+            expectedCode: "context.stream_not_allowed",
+            expectedTimelineMessage: TOP_LEVEL_REGEX_INVALID_TOKEN,
+            expectStatus: 401,
             label: "stream-metadata reads",
             queryShape: "stream_metadata",
             streamId: "recently_played",
-            trigger: () =>
+            trigger: (token: string) =>
               fetch(`${rsUrl}/v1/streams/recently_played`, {
-                headers: { Authorization: `Bearer ${approved.token}` },
+                headers: { Authorization: `Bearer ${token}` },
               }),
           },
           {
-            expectedCode: "grant_stream_not_allowed",
-            expectedMessage: TOP_LEVEL_REGEX_80,
-            expectStatus: 403,
+            expectedBodyMessage: TOP_LEVEL_REGEX_INTROSPECTION_FAILED,
+            expectedCode: "context.stream_not_allowed",
+            expectedTimelineMessage: TOP_LEVEL_REGEX_INVALID_TOKEN,
+            expectStatus: 401,
             label: "record-list reads",
             queryShape: "record_list",
             streamId: "recently_played",
-            trigger: () =>
+            trigger: (token: string) =>
               fetch(`${rsUrl}/v1/streams/recently_played/records?limit=1`, {
-                headers: { Authorization: `Bearer ${approved.token}` },
+                headers: { Authorization: `Bearer ${token}` },
               }),
           },
           {
-            expectedCode: "grant_stream_not_allowed",
-            expectedMessage: TOP_LEVEL_REGEX_81,
-            expectStatus: 403,
+            expectedBodyMessage: TOP_LEVEL_REGEX_INTROSPECTION_FAILED,
+            expectedCode: "context.stream_not_allowed",
+            expectedTimelineMessage: TOP_LEVEL_REGEX_INVALID_TOKEN,
+            expectStatus: 401,
             label: "record-detail reads",
             queryShape: "record_detail",
             requestedRecordId: hiddenRecord.id,
             streamId: "saved_tracks",
-            trigger: () =>
+            trigger: (token: string) =>
               fetch(`${rsUrl}/v1/streams/saved_tracks/records/${encodeURIComponent(String(hiddenRecord.id))}`, {
-                headers: { Authorization: `Bearer ${approved.token}` },
+                headers: { Authorization: `Bearer ${token}` },
               }),
           },
         ];
 
         for await (const scenario of scenarios) {
-          const rejectedResp = await scenario.trigger();
-          assert.equal(rejectedResp.status, scenario.expectStatus);
+          const approved = await approveGrant(asUrl, "cli_owner", {
+            access_mode: "continuous",
+            client_display: { name: "Concert Recommendation App" },
+            client_id: "concert_recommendation_app",
+            purpose_code: "https://pdpp.dev/purpose/personalization",
+            purpose_description: "Recommend concerts using top artists only",
+            source: { id: spotifyManifest.connector_id, kind: "connector" },
+            streams: [{ name: "top_artists", view: "basic" }],
+          });
+          const rejectedResp = await scenario.trigger(approved.token);
+          const rejectedBody = asRecord(await rejectedResp.clone().json());
+          assert.equal(rejectedResp.status, scenario.expectStatus, JSON.stringify({ body: rejectedBody, scenario }));
           const rejectedRequestId = rejectedResp.headers.get("Request-Id");
           const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
           assert.ok(rejectedRequestId, "expected rejectedRequestId to be present");
           assert.ok(rejectedRequestId.startsWith("req_"));
           assert.ok(rejectedTraceId, "expected rejectedTraceId to be present");
           assert.ok(rejectedTraceId.startsWith("trc_"));
-          const rejectedBody = asRecord(await rejectedResp.json());
           assert.equal(asRecord(rejectedBody.error).code, scenario.expectedCode);
-          assert.match(String(asRecord(rejectedBody.error).message ?? ""), scenario.expectedMessage);
+          assert.match(String(asRecord(rejectedBody.error).message ?? ""), scenario.expectedBodyMessage);
 
           const timeline = await runCli([
             "grant",
@@ -4600,8 +4656,12 @@ test("PDPP CLI smoke", async (t) => {
           assert.equal(queryReceived.stream_id, scenario.streamId);
           assert.equal(queryReceived.data?.query_shape, scenario.queryShape);
           assert.equal(queryReceived.data?.requested_record_id ?? null, scenario.requestedRecordId ?? null);
-          assert.equal(asRecord(queryReceived.data?.source).kind, "connector");
-          assert.equal(asRecord(queryReceived.data?.source).id, spotifyManifest.connector_id);
+          if (scenario.expectStatus === 403) {
+            assert.equal(asRecord(queryReceived.data?.source).kind, "connector");
+            assert.equal(asRecord(queryReceived.data?.source).id, spotifyManifest.connector_id);
+          } else {
+            assert.equal(queryReceived.data?.source, undefined);
+          }
 
           const rejectedEvent = (timeline.json.data || []).find(
             (event) => event.event_type === "query.rejected" && event.object_id === rejectedRequestId
@@ -4611,10 +4671,14 @@ test("PDPP CLI smoke", async (t) => {
           assert.equal(rejectedEvent.stream_id, scenario.streamId);
           assert.equal(rejectedEvent.data?.query_shape, scenario.queryShape);
           assert.equal(rejectedEvent.data?.requested_record_id ?? null, scenario.requestedRecordId ?? null);
-          assert.equal(asRecord(rejectedEvent.data?.source).kind, "connector");
-          assert.equal(asRecord(rejectedEvent.data?.source).id, spotifyManifest.connector_id);
+          if (scenario.expectStatus === 403) {
+            assert.equal(asRecord(rejectedEvent.data?.source).kind, "connector");
+            assert.equal(asRecord(rejectedEvent.data?.source).id, spotifyManifest.connector_id);
+          } else {
+            assert.equal(rejectedEvent.data?.source, undefined);
+          }
           assert.equal(asRecord(rejectedEvent.data?.error).code, scenario.expectedCode);
-          assert.match(String(asRecord(rejectedEvent.data?.error).message ?? ""), scenario.expectedMessage);
+          assert.match(String(asRecord(rejectedEvent.data?.error).message ?? ""), scenario.expectedTimelineMessage);
 
           const servedEvent = (timeline.json.data || []).find(
             (event) => event.event_type === "disclosure.served" && event.object_id === rejectedRequestId
@@ -7215,6 +7279,7 @@ rl.on('line', (line) => {
       dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
       quiet: true,
       rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
     const asUrl = `http://localhost:${server.asPort}`;
     const committedState: unknown[] = [];
@@ -7849,6 +7914,7 @@ rl.on('line', (line) => {
         nativeManifest,
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;
@@ -7880,6 +7946,7 @@ rl.on('line', (line) => {
           nativeManifest,
           quiet: true,
           rsPort: server.rsPort,
+          ...TEST_INTROSPECTION_SERVER_OPTS,
         });
 
         const result = await runCliExpectFailure(["query", "streams", "--rs-url", rsUrl], {
@@ -7988,6 +8055,7 @@ rl.on('line', (line) => {
             nativeManifest,
             quiet: true,
             rsPort: server.rsPort,
+            ...TEST_INTROSPECTION_SERVER_OPTS,
           });
         },
       },
@@ -8032,6 +8100,7 @@ rl.on('line', (line) => {
         nativeManifest,
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;
@@ -8112,6 +8181,7 @@ rl.on('line', (line) => {
               nativeManifest,
               quiet: true,
               rsPort: server.rsPort,
+              ...TEST_INTROSPECTION_SERVER_OPTS,
             });
           },
         },
@@ -8156,6 +8226,7 @@ rl.on('line', (line) => {
           nativeManifest,
           quiet: true,
           rsPort: 0,
+          ...TEST_INTROSPECTION_SERVER_OPTS,
         });
         const asUrl = `http://localhost:${server.asPort}`;
         const rsUrl = `http://localhost:${server.rsPort}`;
@@ -8261,6 +8332,7 @@ rl.on('line', (line) => {
         nativeManifest,
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;

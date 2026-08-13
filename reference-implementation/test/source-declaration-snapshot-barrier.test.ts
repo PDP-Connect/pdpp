@@ -65,7 +65,7 @@ const NO_ACTIVE_INSTANCE_RE = /exactly one eligible instance.*found 0/;
 const MULTIPLE_ACTIVE_INSTANCES_RE = /exactly one eligible instance.*found 2/;
 const MULTIPLE_LOCAL_BINDINGS_RE = /multiple local fulfillment bindings/;
 const PURPOSE_CODE_RE = /purpose_code/;
-const REVERSED_TIME_RE = /since must not follow.*until/;
+const INVALID_TIME_RANGE_RE = /source\.selection\.invalid_time_range/;
 const COMPOUND_RESOURCE_RE = /compound resource key has the wrong shape/;
 const INVALID_NATIVE_INSTANCE_RE = /must equal its configured local instance/;
 const GRANT_BINDING_RE = /Grant is malformed|grant/i;
@@ -757,7 +757,7 @@ test("grant approval requires an existing unambiguous instance while staging clo
           ],
           client_id: driver.getRegisteredClientId(),
         }),
-      REVERSED_TIME_RE
+      INVALID_TIME_RANGE_RE
     );
 
     const manifestRow = getDb().prepare("SELECT manifest FROM connectors WHERE connector_id = ?").get("spotify") as {

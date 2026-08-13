@@ -105,6 +105,8 @@ test("buildFieldCapabilities: a null grant (owner/unfiltered) marks every field 
 
 test("buildFieldCapabilities retains typed filter capabilities for owner metadata", () => {
   const caps = buildFieldCapabilities(MANIFEST_STREAM, null);
-  assert.deepEqual(caps.amount?.exact_filter, { declared: true, usable: true });
-  assert.deepEqual(caps.amount?.range_filter, { declared: true, operators: ["gte", "lte"], usable: true });
+  const { amount } = caps;
+  assert.ok(amount, "amount field capabilities must be present");
+  assert.deepEqual(amount.exact_filter, { declared: true, usable: true });
+  assert.deepEqual(amount.range_filter, { declared: true, operators: ["gte", "lte"], usable: true });
 });

@@ -21,7 +21,7 @@
  * adapters (`postgresPendingConsentStore` and `postgresOwnerDeviceAuthStore`)
  * actually execute:
  *   - createOwnerDeviceAuth / getOwnerDeviceAuthRowByUserCode /
- *     markOwnerDeviceAuthApproved / getOwnerDeviceAuthRow (owner device flow)
+ *     approveAtomically / getOwnerDeviceAuthRow (owner device flow)
  *   - createPendingConsent / getPendingConsentRow (incl. the
  *     `params_json::text` cast) / markPendingConsentApproved (consent flow)
  *
@@ -41,9 +41,13 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  type AuthorizationDecisionFaultHook,
   approveGrant,
   approveOwnerDeviceAuthorization,
+  consumeConsentExchangeCode,
+  createConsentExchangeCode,
   createHostedMcpGrantPackage,
+  denyGrant,
   denyOwnerDeviceAuthorization,
   exchangeOwnerDeviceCode,
   getOwnerDeviceAuthorizationByUserCode,
@@ -54,6 +58,7 @@ import {
   issueToken,
   parsePendingConsentRequestUri,
   registerConnector,
+  revokeGrantPackage,
   seedPreRegisteredClients,
 } from "../server/auth.ts";
 import { closeDb, initDb } from "../server/db.ts";
@@ -75,11 +80,70 @@ const REFERENCE_IMPL_DIR = join(__dirname, "..");
 
 const CONSOLE_CLIENT_ID = "pg_path_console";
 const POSTGRES_AUTH_INSTANCE_ID = "cin_pg_auth_source_snapshot_0811";
+const FORCED_POSTGRES_AFTER_TOKEN_INSERT_RE = /forced postgres after_token_insert/;
+const FORCED_POSTGRES_DENIAL_ROLLBACK_RE = /forced postgres denial rollback/;
 const GRANT_BINDING_RE = /Grant is malformed|grant/i;
 const PROJECTED_DECLARATION_VERSION_RE = /^reference\.legacy-connector-projection\.v1:sha256:[0-9a-f]{64}$/;
-
 function loadSpotifyManifest() {
   return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+}
+
+function createDecisionPause(): { paused: Promise<void>; release: () => void; hook: () => Promise<void> } {
+  let release: () => void = () => undefined;
+  let markPaused: () => void = () => undefined;
+  const paused = new Promise<void>((resolve) => {
+    markPaused = resolve;
+  });
+  const resumed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    hook: async () => {
+      markPaused();
+      await resumed;
+    },
+    paused,
+    release,
+  };
+}
+
+async function startReviewedPendingConsent(): Promise<{ deviceCode: string; reviewRevision: string }> {
+  const manifest = loadSpotifyManifest();
+  const initiated = await initiateGrant({
+    authorization_details: [
+      {
+        access_mode: "continuous",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
+        purpose_description: "atomic terminal decision postgres proof",
+        source: { id: manifest.connector_id, kind: "connector" },
+        streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
+        type: "https://pdpp.dev/data-access",
+      },
+    ],
+    client_id: CONSOLE_CLIENT_ID,
+  });
+  const deviceCode = parsePendingConsentRequestUri(initiated.request_uri);
+  assert.ok(deviceCode);
+  const pending = await getPendingConsent(deviceCode, { finalizeReview: true, subjectId: "owner_local" });
+  const reviewRevision = pending?.reviewRevision;
+  assert.equal(typeof reviewRevision, "string");
+  return { deviceCode, reviewRevision: reviewRevision as string };
+}
+
+async function upsertPostgresAuthFixtureInstance(): Promise<void> {
+  const now = new Date().toISOString();
+  await createPostgresConnectorInstanceStore().upsert({
+    connectorId: "spotify",
+    connectorInstanceId: POSTGRES_AUTH_INSTANCE_ID,
+    createdAt: now,
+    displayName: "Postgres auth path fixture",
+    ownerSubjectId: "owner_local",
+    sourceBinding: { fixture: POSTGRES_AUTH_INSTANCE_ID },
+    sourceBindingKey: POSTGRES_AUTH_INSTANCE_ID,
+    sourceKind: "manual",
+    status: "active",
+    updatedAt: now,
+  });
 }
 
 if (POSTGRES_URL) {
@@ -107,20 +171,14 @@ if (POSTGRES_URL) {
         registration_mode: "pre_registered_public",
       },
     ]);
-    const now = new Date().toISOString();
-    await createPostgresConnectorInstanceStore().upsert({
-      connectorId: "spotify",
-      connectorInstanceId: POSTGRES_AUTH_INSTANCE_ID,
-      createdAt: now,
-      displayName: "Postgres auth path fixture",
-      ownerSubjectId: "owner_local",
-      sourceBinding: { fixture: POSTGRES_AUTH_INSTANCE_ID },
-      sourceBindingKey: POSTGRES_AUTH_INSTANCE_ID,
-      sourceKind: "manual",
-      status: "active",
-      updatedAt: now,
-    });
+    await upsertPostgresAuthFixtureInstance();
     setupOk = true;
+  });
+
+  test.beforeEach(async () => {
+    if (setupOk) {
+      await upsertPostgresAuthFixtureInstance();
+    }
   });
 
   test.after(async () => {
@@ -135,8 +193,8 @@ if (POSTGRES_URL) {
   // A) Owner-device-authorization flow.
   //
   // Exercises the postgresOwnerDeviceAuthStore adapter: insert (createOwnerDeviceAuth),
-  // getByUserCode (getOwnerDeviceAuthRowByUserCode), markApproved
-  // (markOwnerDeviceAuthApproved), getByDeviceCode (getOwnerDeviceAuthRow).
+  // getByUserCode (getOwnerDeviceAuthRowByUserCode), approveAtomically,
+  // getByDeviceCode (getOwnerDeviceAuthRow).
   // ---------------------------------------------------------------------
   test("owner device authorization: approve + exchange through real auth.js postgres adapters", async () => {
     assert.equal(setupOk, true, "before() setup must have completed");
@@ -171,6 +229,149 @@ if (POSTGRES_URL) {
     assert.equal(exchanged.access_token, approved.access_token, "exchanged token is the token bound at approval");
   });
 
+  test("owner device authorization: atomic approval rolls back faults and is retry-idempotent on postgres", async () => {
+    assert.equal(setupOk, true, "before() setup must have completed");
+
+    const failed = await initiateOwnerDeviceAuthorization(CONSOLE_CLIENT_ID, {
+      expiresIn: 300,
+      interval: 1,
+    });
+    assert.equal(typeof failed.user_code, "string");
+    assert.equal(typeof failed.device_code, "string");
+    const ownerTokenCountBeforeFault = await postgresQuery<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM tokens WHERE client_id = $1 AND token_kind = 'owner'",
+      [CONSOLE_CLIENT_ID]
+    );
+
+    await assert.rejects(
+      approveOwnerDeviceAuthorization(failed.user_code, "owner_local", {
+        faultHook: (stage) => {
+          if (stage === "after_token_insert") {
+            throw new Error("forced postgres after_token_insert");
+          }
+        },
+      }),
+      FORCED_POSTGRES_AFTER_TOKEN_INSERT_RE
+    );
+
+    const failedRow = await postgresQuery<{ status: string; token_id: string | null }>(
+      "SELECT status, token_id FROM owner_device_auth WHERE device_code = $1",
+      [failed.device_code]
+    );
+    assert.deepEqual(failedRow.rows[0], { status: "pending", token_id: null });
+    const orphanCount = await postgresQuery<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM tokens WHERE client_id = $1 AND token_kind = 'owner'",
+      [CONSOLE_CLIENT_ID]
+    );
+    assert.equal(orphanCount.rows[0]?.count, ownerTokenCountBeforeFault.rows[0]?.count, "fault leaves no owner token");
+
+    const recovered = await approveOwnerDeviceAuthorization(failed.user_code, "owner_local");
+    assert.equal(typeof recovered.access_token, "string");
+    const retry = await approveOwnerDeviceAuthorization(failed.user_code, "owner_local");
+    assert.equal(retry.access_token, recovered.access_token, "retry returns the bound token");
+
+    const concurrentStarted = await initiateOwnerDeviceAuthorization(CONSOLE_CLIENT_ID, {
+      expiresIn: 300,
+      interval: 1,
+    });
+    assert.equal(typeof concurrentStarted.user_code, "string");
+    const approvals = await Promise.all(
+      Array.from({ length: 8 }, () => approveOwnerDeviceAuthorization(concurrentStarted.user_code, "owner_local"))
+    );
+    const tokens = new Set(approvals.map((approval) => approval.access_token));
+    assert.equal(tokens.size, 1, "concurrent postgres approvals return one token");
+
+    const recoveredApprovalEvents = await postgresQuery<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM spine_events
+       WHERE object_id = $1
+         AND object_type = 'owner_device_auth'
+         AND event_type = 'consent.approved'`,
+      [failed.device_code]
+    );
+    assert.equal(recoveredApprovalEvents.rows[0]?.count, "1");
+    const recoveredTokenEvents = await postgresQuery<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM spine_events
+       WHERE token_id = $1
+         AND object_type = 'token'
+         AND event_type = 'token.issued'`,
+      [recovered.access_token]
+    );
+    assert.equal(recoveredTokenEvents.rows[0]?.count, "1");
+
+    const tokenState = await introspect(recovered.access_token);
+    assert.equal(tokenState.active, true, "recovered postgres owner token introspects active");
+    assert.equal(tokenState.pdpp_token_kind, "owner");
+  });
+
+  test("owner device authorization: approved recovery rejects a different subject on postgres", async () => {
+    assert.equal(setupOk, true, "before() setup must have completed");
+
+    const initiated = await initiateOwnerDeviceAuthorization(CONSOLE_CLIENT_ID, {
+      expiresIn: 300,
+      interval: 1,
+    });
+    assert.equal(typeof initiated.user_code, "string");
+    assert.equal(typeof initiated.device_code, "string");
+
+    const ownerA = await approveOwnerDeviceAuthorization(initiated.user_code, "owner_A");
+    assert.equal(ownerA.subject_id, "owner_A");
+    await assert.rejects(approveOwnerDeviceAuthorization(initiated.user_code, "owner_B"), (err) => {
+      assert.ok(isDeviceAuthError(err), "rejection is an Error");
+      assert.equal(err.code, "not_found", "cross-subject recovery is hidden");
+      return true;
+    });
+
+    const ownerRows = await postgresQuery<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM tokens WHERE client_id = $1 AND token_kind = 'owner'",
+      [CONSOLE_CLIENT_ID]
+    );
+    assert.equal(Number(ownerRows.rows[0]?.count) >= 1, true, "owner token rows remain queryable");
+    const row = await postgresQuery<{ status: string; subject_id: string | null; token_id: string | null }>(
+      "SELECT status, subject_id, token_id FROM owner_device_auth WHERE device_code = $1",
+      [initiated.device_code]
+    );
+    assert.deepEqual(row.rows[0], { status: "approved", subject_id: "owner_A", token_id: ownerA.access_token });
+  });
+
+  test("owner device authorization: mixed concurrent subjects produce one postgres owner token", async () => {
+    assert.equal(setupOk, true, "before() setup must have completed");
+
+    const initiated = await initiateOwnerDeviceAuthorization(CONSOLE_CLIENT_ID, {
+      expiresIn: 300,
+      interval: 1,
+    });
+    assert.equal(typeof initiated.user_code, "string");
+    const attempts = await Promise.allSettled(
+      Array.from({ length: 8 }, (_, index) =>
+        approveOwnerDeviceAuthorization(initiated.user_code, index % 2 === 0 ? "owner_A" : "owner_B")
+      )
+    );
+    const approvals = attempts
+      .filter((attempt): attempt is PromiseFulfilledResult<Record<string, unknown>> => attempt.status === "fulfilled")
+      .map((attempt) => attempt.value);
+    assert.ok(approvals.length >= 1, "one subject claims the row");
+    assert.ok(approvals.length <= 4, "only the claimed subject recovers");
+    assert.equal(new Set(approvals.map((approval) => approval.subject_id)).size, 1);
+    assert.equal(new Set(approvals.map((approval) => approval.access_token)).size, 1);
+
+    const row = await postgresQuery<{ status: string; subject_id: string | null; token_id: string | null }>(
+      "SELECT status, subject_id, token_id FROM owner_device_auth WHERE device_code = $1",
+      [initiated.device_code]
+    );
+    assert.deepEqual(row.rows[0], {
+      status: "approved",
+      subject_id: approvals[0]?.subject_id as string,
+      token_id: approvals[0]?.access_token as string,
+    });
+    const tokenRows = await postgresQuery<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM tokens WHERE token_id = $1",
+      [approvals[0]?.access_token]
+    );
+    assert.equal(tokenRows.rows[0]?.count, "1", "claimed token is stored once");
+  });
+
   test("owner device authorization: deny then exchange fails through real auth.js postgres adapters", async () => {
     assert.equal(setupOk, true, "before() setup must have completed");
 
@@ -180,7 +381,7 @@ if (POSTGRES_URL) {
     });
     assert.ok(initiated.device_code, "second initiate returns a device_code");
 
-    // Deny: markDenied (PG UPDATE).
+    // Deny: markDeniedAtomically (PG UPDATE + denial event transaction).
     await denyOwnerDeviceAuthorization(initiated.user_code);
 
     // Exchange against a denied row must be rejected. getByDeviceCode (PG
@@ -197,6 +398,31 @@ if (POSTGRES_URL) {
         assert.equal(err.code, "access_denied", "denied row exchange is access_denied");
         return true;
       }
+    );
+  });
+
+  test("owner device authorization: approve and deny arbitrate one terminal decision on postgres", async () => {
+    const approvalWins = await initiateOwnerDeviceAuthorization(CONSOLE_CLIENT_ID, { expiresIn: 300, interval: 1 });
+    const pause = createDecisionPause();
+    const denial = denyOwnerDeviceAuthorization(approvalWins.user_code, "owner_local", {
+      beforeCasHook: pause.hook,
+    });
+    await pause.paused;
+    const approved = await approveOwnerDeviceAuthorization(approvalWins.user_code, "owner_local");
+    pause.release();
+    await assert.rejects(denial, (err: unknown) => isDeviceAuthError(err) && err.code === "approval_conflict");
+    assert.equal((await introspect(approved.access_token)).active, true);
+    const losingDenialEvents = await postgresQuery<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM spine_events WHERE object_id = $1 AND event_type = 'request.rejected'",
+      [approvalWins.device_code]
+    );
+    assert.equal(losingDenialEvents.rows[0]?.count, "0");
+
+    const denialWins = await initiateOwnerDeviceAuthorization(CONSOLE_CLIENT_ID, { expiresIn: 300, interval: 1 });
+    await denyOwnerDeviceAuthorization(denialWins.user_code, "owner_local");
+    await assert.rejects(
+      approveOwnerDeviceAuthorization(denialWins.user_code, "owner_local"),
+      (err: unknown) => isDeviceAuthError(err) && err.code === "approval_conflict"
     );
   });
 
@@ -349,16 +575,47 @@ if (POSTGRES_URL) {
     assert.equal(afterApproval, null, "approved consent is no longer pending");
   });
 
+  test("pending consent: approve and deny arbitrate atomically with rollback on postgres", async () => {
+    const approvalWins = await startReviewedPendingConsent();
+    const pause = createDecisionPause();
+    const denial = denyGrant(approvalWins.deviceCode, { beforeCasHook: pause.hook });
+    await pause.paused;
+    const approved = await approveGrant(approvalWins.deviceCode, "owner_local", {
+      approval_review_revision: approvalWins.reviewRevision,
+    });
+    pause.release();
+    await assert.rejects(denial, (err: unknown) => isDeviceAuthError(err) && err.code === "approval_conflict");
+    assert.equal((await introspect(approved.token)).active, true);
+
+    const rollback = await startReviewedPendingConsent();
+    const faultHook: AuthorizationDecisionFaultHook = (stage) => {
+      if (stage === "after_event_before_commit") {
+        throw new Error("forced postgres denial rollback");
+      }
+    };
+    await assert.rejects(denyGrant(rollback.deviceCode, { faultHook }), FORCED_POSTGRES_DENIAL_ROLLBACK_RE);
+    assert.ok(await getPendingConsent(rollback.deviceCode), "rolled-back denial remains pending");
+
+    const denialWins = await startReviewedPendingConsent();
+    assert.equal(await denyGrant(denialWins.deviceCode), true);
+    await assert.rejects(
+      approveGrant(denialWins.deviceCode, "owner_local", {
+        approval_review_revision: denialWins.reviewRevision,
+      }),
+      (err: unknown) => isDeviceAuthError(err) && err.code === "approval_conflict"
+    );
+  });
+
   test("pre-Source v1 package token requires fresh consent through the real Postgres introspection path", async () => {
     const manifest = loadSpotifyManifest();
     const result = await createHostedMcpGrantPackage({
       authorizationDetails: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+          purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
           source: { id: manifest.connector_id, kind: "connector" },
           streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       clientId: CONSOLE_CLIENT_ID,
@@ -380,6 +637,162 @@ if (POSTGRES_URL) {
     const tokenState = await introspect(result.token);
     assert.equal(tokenState.active, false);
     assert.equal(tokenState.inactive_reason, "package_invalid");
+  });
+
+  test("consent handoff: concurrent Postgres redemption converges on one persisted token", async () => {
+    const manifest = loadSpotifyManifest();
+    const initiated = await initiateGrant({
+      authorization_details: [
+        {
+          access_mode: "continuous",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
+          source: { id: manifest.connector_id, kind: "connector" },
+          streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
+          type: "https://pdpp.dev/data-access",
+        },
+      ],
+      client_id: CONSOLE_CLIENT_ID,
+    });
+    const deviceCode = parsePendingConsentRequestUri(initiated.request_uri);
+    assert.ok(deviceCode);
+    const pending = await getPendingConsent(deviceCode, { finalizeReview: true, subjectId: "owner_local" });
+    assert.ok(pending);
+    assert.equal(typeof pending.reviewRevision, "string");
+    const approved = await approveGrant(deviceCode, "owner_local", {
+      approval_review_revision: pending.reviewRevision,
+    });
+    const code = await createConsentExchangeCode({
+      grant: approved.grant,
+      grantId: approved.grant.grant_id as string,
+      token: approved.token,
+    });
+    const attempts = await Promise.all(Array.from({ length: 8 }, () => consumeConsentExchangeCode(code)));
+    const successes = attempts.filter((attempt) => attempt.ok);
+    const consumed = attempts.filter((attempt) => !attempt.ok && attempt.reason === "consumed");
+    assert.equal(successes.length, 1);
+    assert.equal(consumed.length, 7);
+    assert.equal(successes[0]?.token, approved.token);
+    assert.equal(successes[0]?.grantId, approved.grant.grant_id);
+    const stored = await postgresQuery<{ count: string; redeemed_count: string }>(
+      `SELECT COUNT(*)::text AS count,
+              COUNT(redeemed_at)::text AS redeemed_count
+         FROM consent_exchange_codes
+        WHERE token_id = $1`,
+      [approved.token]
+    );
+    assert.deepEqual(stored.rows[0], { count: "1", redeemed_count: "1" });
+
+    const replay = await consumeConsentExchangeCode(code);
+    assert.equal(replay.ok, false);
+    assert.equal(replay.reason, "consumed");
+  });
+
+  test("consent handoff: Postgres response-loss retry succeeds only with the same bound proof", async () => {
+    const manifest = loadSpotifyManifest();
+    const initiated = await initiateGrant({
+      authorization_details: [
+        {
+          access_mode: "continuous",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
+          source: { id: manifest.connector_id, kind: "connector" },
+          streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
+          type: "https://pdpp.dev/data-access",
+        },
+      ],
+      client_id: CONSOLE_CLIENT_ID,
+    });
+    const deviceCode = parsePendingConsentRequestUri(initiated.request_uri);
+    assert.ok(deviceCode);
+    const pending = await getPendingConsent(deviceCode, { finalizeReview: true, subjectId: "owner_local" });
+    assert.ok(pending?.reviewRevision);
+    const approved = await approveGrant(deviceCode, "owner_local", {
+      approval_review_revision: pending.reviewRevision,
+    });
+    const proof = "postgres-bound-proof";
+    const code = await createConsentExchangeCode({
+      grant: approved.grant,
+      grantId: approved.grant.grant_id as string,
+      recoveryProof: proof,
+      token: approved.token,
+    });
+    const first = await consumeConsentExchangeCode(code, proof);
+    assert.equal(first.ok, true);
+    const retry = await consumeConsentExchangeCode(code, proof);
+    assert.deepEqual(retry, first);
+    const wrongProof = await consumeConsentExchangeCode(code, "wrong-proof");
+    assert.equal(wrongProof.ok, false);
+    assert.equal(wrongProof.reason, "consumed");
+  });
+
+  test("consent handoff: Postgres reissue invalidates older outstanding codes", async () => {
+    const manifest = loadSpotifyManifest();
+    const initiated = await initiateGrant({
+      authorization_details: [
+        {
+          access_mode: "continuous",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
+          source: { id: manifest.connector_id, kind: "connector" },
+          streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
+          type: "https://pdpp.dev/data-access",
+        },
+      ],
+      client_id: CONSOLE_CLIENT_ID,
+    });
+    const deviceCode = parsePendingConsentRequestUri(initiated.request_uri);
+    assert.ok(deviceCode);
+    const pending = await getPendingConsent(deviceCode, { finalizeReview: true, subjectId: "owner_local" });
+    assert.ok(pending?.reviewRevision);
+    const approved = await approveGrant(deviceCode, "owner_local", {
+      approval_review_revision: pending.reviewRevision,
+    });
+    const firstCode = await createConsentExchangeCode({
+      grant: approved.grant,
+      grantId: approved.grant.grant_id as string,
+      token: approved.token,
+    });
+    const secondCode = await createConsentExchangeCode({
+      grant: approved.grant,
+      grantId: approved.grant.grant_id as string,
+      token: approved.token,
+    });
+    const first = await consumeConsentExchangeCode(firstCode);
+    assert.equal(first.ok, false);
+    assert.equal(first.reason, "expired");
+    const second = await consumeConsentExchangeCode(secondCode);
+    assert.equal(second.ok, true);
+    assert.equal(second.token, approved.token);
+  });
+
+  test("consent handoff: Postgres package delivery works and revocation fails closed", async () => {
+    const manifest = loadSpotifyManifest();
+    const created = await createHostedMcpGrantPackage({
+      authorizationDetails: [
+        {
+          access_mode: "continuous",
+          purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
+          source: { id: manifest.connector_id, kind: "connector" },
+          streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
+          type: "https://pdpp.dev/data-access",
+        },
+      ],
+      clientId: CONSOLE_CLIENT_ID,
+      connectionIds: [POSTGRES_AUTH_INSTANCE_ID],
+      storageBindings: [{ connector_id: "spotify" }],
+    });
+    const packageId = created.package_id as string;
+    const grant = created.package as Record<string, unknown>;
+    const firstCode = await createConsentExchangeCode({ grant, grantId: packageId, token: created.token as string });
+    const delivered = await consumeConsentExchangeCode(firstCode);
+    assert.equal(delivered.ok, true);
+    assert.equal(delivered.packageId, packageId);
+    assert.equal(delivered.token, created.token);
+
+    const revokedCode = await createConsentExchangeCode({ grant, grantId: packageId, token: created.token as string });
+    await revokeGrantPackage(packageId);
+    const rejected = await consumeConsentExchangeCode(revokedCode);
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.reason, "revoked");
+    assert.equal(rejected.token, undefined);
   });
 } else {
   test("auth.js consent/owner-device-auth postgres-adapter path (skipped: PDPP_TEST_POSTGRES_URL unset)", {

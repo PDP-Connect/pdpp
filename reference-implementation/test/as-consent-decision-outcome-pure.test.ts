@@ -114,6 +114,7 @@ test("executeAsConsentDecision: approve surfaces package fields when the grant i
 test("executeAsConsentDecision: deny returns a success/deny outcome", async () => {
   const out = await executeAsConsentDecision(inputFor({ action: "deny", requestUri: "urn:req:dc-1" }), resolvingDeps());
   assert.ok(out.outcome === "success" && out.action === "deny");
+  assert.equal(out.requestUri, "urn:req:dc-1");
   assert.ok(!("token" in out), "a deny has no token");
 });
 

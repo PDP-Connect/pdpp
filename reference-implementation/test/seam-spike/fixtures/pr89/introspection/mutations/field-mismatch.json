@@ -1,0 +1,6 @@
+{
+  "kind": "request",
+  "query": "fields=private_note",
+  "expected": "unknown_field",
+  "status": 400
+}

@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "case": {
+      "additionalProperties": false,
+      "properties": {
+        "case_output_digest": { "$ref": "#/$defs/digest" },
+        "evidence_digest": { "$ref": "#/$defs/digest" },
+        "fixtures_digest": { "$ref": "#/$defs/digest" },
+        "implementation_inputs_digest": { "$ref": "#/$defs/digest" },
+        "oracle_code": {
+          "enum": [
+            "authorization_state.unsupported_legacy_shape",
+            "context_resolved",
+            "durable_handoff",
+            "equal",
+            "gnap_map",
+            "partial_approval",
+            "races_and_refresh",
+            "response_only"
+          ]
+        },
+        "status": { "const": "pass" },
+        "terminal_events_digest": { "$ref": "#/$defs/digest" },
+        "test_file_digest": { "$ref": "#/$defs/digest" }
+      },
+      "required": [
+        "case_output_digest",
+        "evidence_digest",
+        "fixtures_digest",
+        "implementation_inputs_digest",
+        "oracle_code",
+        "status",
+        "terminal_events_digest",
+        "test_file_digest"
+      ],
+      "type": "object"
+    },
+    "digest": { "pattern": "^sha256:[a-f0-9]{64}$", "type": "string" }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "assertions": {
+      "additionalProperties": false,
+      "properties": {
+        "authenticated_http_introspection": { "const": true },
+        "durable_post_approval_handoff": { "const": true },
+        "fresh_authorization_required": { "const": true },
+        "legacy_refresh_state_rejected": { "const": true },
+        "no_in_process_fallback": { "const": true },
+        "postgresql_races": { "const": true },
+        "refresh_family_access_tokens_inactive_on_replay": { "const": true },
+        "refresh_family_revoked_on_replay": { "const": true },
+        "response_only_enforcement": { "const": true }
+      },
+      "required": [
+        "authenticated_http_introspection",
+        "durable_post_approval_handoff",
+        "fresh_authorization_required",
+        "legacy_refresh_state_rejected",
+        "no_in_process_fallback",
+        "postgresql_races",
+        "refresh_family_access_tokens_inactive_on_replay",
+        "refresh_family_revoked_on_replay",
+        "response_only_enforcement"
+      ],
+      "type": "object"
+    },
+    "backend": { "const": "postgresql" },
+    "cases": {
+      "additionalProperties": false,
+      "properties": {
+        "case-1": { "$ref": "#/$defs/case" },
+        "case-2": { "$ref": "#/$defs/case" },
+        "case-3": { "$ref": "#/$defs/case" },
+        "case-4": { "$ref": "#/$defs/case" },
+        "case-5": { "$ref": "#/$defs/case" },
+        "case-6": { "$ref": "#/$defs/case" },
+        "case-7": { "$ref": "#/$defs/case" },
+        "case-8": { "$ref": "#/$defs/case" }
+      },
+      "required": [
+        "case-1",
+        "case-2",
+        "case-3",
+        "case-4",
+        "case-5",
+        "case-6",
+        "case-7",
+        "case-8"
+      ],
+      "type": "object"
+    },
+    "clock": { "const": "2026-08-11T12:00:00Z" },
+    "command": {
+      "const": "pnpm --filter pdpp-reference-implementation test:seam:pr89 -- --backend postgresql"
+    },
+    "decisions": {
+      "additionalProperties": false,
+      "properties": {
+        "approved_authorization_shape": { "const": "pass" },
+        "authorization_context_composition": { "const": "pass" },
+        "binding_separation": { "const": "pass" }
+      },
+      "required": [
+        "approved_authorization_shape",
+        "authorization_context_composition",
+        "binding_separation"
+      ],
+      "type": "object"
+    },
+    "evidence_tree_digest": { "$ref": "#/$defs/digest" },
+    "fixtures_digest": { "$ref": "#/$defs/digest" },
+    "hardening": {
+      "additionalProperties": false,
+      "properties": {
+        "code_reuse_revocation": { "const": "separately_reported" },
+        "dpop": { "const": "not_demonstrated" },
+        "keyless_recovery": { "const": "deferred" },
+        "refresh_rotation": { "const": "pass" },
+        "security_profile_floor": { "const": "deferred" }
+      },
+      "required": [
+        "code_reuse_revocation",
+        "dpop",
+        "keyless_recovery",
+        "refresh_rotation",
+        "security_profile_floor"
+      ],
+      "type": "object"
+    },
+    "implementation_inputs_digest": { "$ref": "#/$defs/digest" },
+    "relevant_file_tree_digest": { "$ref": "#/$defs/digest" },
+    "response_envelopes_digest": { "$ref": "#/$defs/digest" },
+    "schema": { "const": "pdpp.pr89.receipt.v2" },
+    "undecided_common_schemas": { "const": true }
+  },
+  "required": [
+    "assertions",
+    "backend",
+    "cases",
+    "clock",
+    "command",
+    "decisions",
+    "evidence_tree_digest",
+    "fixtures_digest",
+    "hardening",
+    "implementation_inputs_digest",
+    "relevant_file_tree_digest",
+    "response_envelopes_digest",
+    "schema",
+    "undecided_common_schemas"
+  ],
+  "type": "object"
+}

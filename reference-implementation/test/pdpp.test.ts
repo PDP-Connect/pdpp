@@ -24,6 +24,8 @@ import {
   admitOwnerRunConnection,
   makeDefaultAccountConnectorInstanceId,
 } from "../server/stores/connector-instance-store.ts";
+import { introspectionHeaders } from "./helpers/introspection.ts";
+import { TEST_INTROSPECTION_SERVER_OPTS } from "./helpers/introspection-test-credentials.ts";
 
 // Real ingest resolves the acting owner subject from the request's bearer
 // token (`getOwnerTokenSubjectId` in server/index.ts), independent of
@@ -65,10 +67,10 @@ const REGEXP_11 = /authorization_details/;
 const REGEXP_12 = /requires client_id/;
 const REGEXP_13 = /^urn:pdpp:pending-consent:/;
 const REGEXP_14 = /Unsupported request fields: code_challenge, redirect_uri, response_type/;
-const REGEXP_15 = /Unsupported authorization_details type/;
+const REGEXP_15 = /type must be equal to constant/;
 const REGEXP_16 = /access_mode must be equal to one of the allowed values/;
 const REGEXP_17 = /streams must NOT have fewer than 1 items/;
-const REGEXP_18 = /Unsupported authorization_details fields: locations/;
+const REGEXP_18 = /must NOT have additional properties/;
 const REGEXP_19 = /streams\/0 must NOT have additional properties/;
 const REGEXP_21 = /Unknown stream: not_a_real_stream/;
 const REGEXP_22 = /Unknown view 'not_a_real_view' on stream 'top_artists'/;
@@ -136,19 +138,14 @@ const REGEXP_91 = /Grant is malformed or no longer valid/;
 const REGEXP_92 = /Grant is malformed or no longer valid/;
 const REGEXP_93 = /Grant is malformed or no longer valid/;
 const REGEXP_94 = /Grant is malformed or no longer valid/;
-const REGEXP_95 = /Grant is malformed or no longer valid/;
+const REGEXP_95 = /Token introspection failed closed/;
 const REGEXP_96 = /Grant is malformed or no longer valid/;
 const REGEXP_97 = /Grant is malformed or no longer valid/;
-const REGEXP_98 = /Grant is malformed or no longer valid/;
-const REGEXP_99 = /Grant is malformed or no longer valid/;
-const REGEXP_100 = /Grant is malformed or no longer valid/;
+const REGEXP_98 = /Stream 'missing_stream' is not declared by the current manifest/;
 const REGEXP_101 = /Grant is malformed or no longer valid/;
-const REGEXP_102 = /Grant is malformed or no longer valid/;
-const REGEXP_103 = /Grant is malformed or no longer valid/;
-const REGEXP_104 = /Grant is malformed or no longer valid/;
 const REGEXP_105 = /Grant is malformed or no longer valid/;
 const REGEXP_106 = /source\/id must match format "uri"/;
-const REGEXP_107 = /source: \{ id, kind\?/;
+const REGEXP_107 = /Selection request is invalid: \/ must NOT have additional properties/;
 const REGEXP_108 = /source_binding is required/;
 const REGEXP_109 = /source_binding is required/;
 const REGEXP_110 = /source_binding must include only kind and id/;
@@ -182,12 +179,12 @@ const REGEXP_138 = /Unknown connector: missing_spotify_connector/;
 const REGEXP_139 = /connector_id must be a single non-empty string/;
 const REGEXP_140 = /connector_id must be a single non-empty string/;
 const REGEXP_141 = /Connector manifest .* is malformed or no longer valid/;
-const REGEXP_142 = /Stream 'recently_played' not in grant/;
-const REGEXP_143 = /Stream 'recently_played' not in grant/;
-const REGEXP_144 = /Stream 'recently_played' not in grant/;
-const REGEXP_145 = /Stream 'recently_played' not in grant/;
-const REGEXP_146 = /Stream 'saved_tracks' not in grant/;
-const REGEXP_147 = /Stream 'saved_tracks' not in grant/;
+const REGEXP_142 = /Token introspection failed closed/;
+const REGEXP_143 = /Invalid or expired token/;
+const REGEXP_144 = /Token introspection failed closed/;
+const REGEXP_145 = /Invalid or expired token/;
+const REGEXP_146 = /Token introspection failed closed/;
+const REGEXP_147 = /Invalid or expired token/;
 const REGEXP_148 = /Record not found/;
 const REGEXP_149 = /Record not found/;
 const REGEXP_150 = /Record not found/;
@@ -376,6 +373,9 @@ interface OAuthDeviceErrorResponse {
 
 interface IntrospectionResponse {
   active: boolean;
+  authorization_details?: Array<{
+    source: SourceDescriptor | null | undefined;
+  }>;
   grant?:
     | {
         source: SourceDescriptor | null | undefined;
@@ -683,6 +683,14 @@ function parseApprovedGrantResponse(value: unknown): ApprovedGrantResponse {
   };
 }
 
+function readPersistedGrantJson(grantId: string): JsonRecord {
+  const row = getDb().prepare("SELECT grant_json FROM grants WHERE grant_id = ?").get(grantId) as
+    | { grant_json?: unknown }
+    | undefined;
+  const grantJson = requireString(row?.grant_json, "persisted grant.grant_json");
+  return requireJsonRecord(JSON.parse(grantJson), "persisted grant.grant_json");
+}
+
 function parseDeviceAuthorizationResponse(value: unknown): { device_code: string; user_code: string } {
   const body = requireJsonRecord(value, "device authorization response");
   return {
@@ -735,12 +743,24 @@ function parseOAuthDeviceErrorResponse(value: unknown): OAuthDeviceErrorResponse
 
 function parseIntrospectionResponse(value: unknown): IntrospectionResponse {
   const body = requireJsonRecord(value, "introspection response");
+  const authorizationDetails =
+    body.authorization_details === undefined
+      ? undefined
+      : requireJsonRecordArray(body.authorization_details, "introspection response.authorization_details").map(
+          (detail, index) => ({
+            source: optionalSourceDescriptor(
+              detail.source,
+              `introspection response.authorization_details[${index}].source`
+            ),
+          })
+        );
   const grant =
     body.grant === undefined || body.grant === null
       ? undefined
       : requireJsonRecord(body.grant, "introspection response.grant");
   return {
     active: requireBoolean(body.active, "introspection response.active"),
+    ...(authorizationDetails === undefined ? {} : { authorization_details: authorizationDetails }),
     inactive_reason: optionalString(body.inactive_reason, "introspection response.inactive_reason"),
     ...(grant === undefined
       ? {}
@@ -1070,6 +1090,7 @@ async function withHarness(fn: (harness: Harness) => Promise<void>): Promise<voi
     dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -1101,6 +1122,7 @@ async function withNativeHarness(fn: (harness: NativeHarness) => Promise<void>):
     nativeManifest,
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -1230,7 +1252,7 @@ async function startOwnerDeviceAuthorization(
 async function introspectToken(asUrl: string, token: string): Promise<FetchJsonResult<IntrospectionResponse>> {
   const response = await fetchJson(`${asUrl}/introspect`, {
     body: JSON.stringify({ token }),
-    headers: { "Content-Type": "application/json" },
+    headers: introspectionHeaders(),
     method: "POST",
   });
   return { ...response, body: parseIntrospectionResponse(response.body) };
@@ -1239,7 +1261,7 @@ async function introspectToken(asUrl: string, token: string): Promise<FetchJsonR
 async function introspectFormToken(asUrl: string, token: string): Promise<FetchJsonResult<IntrospectionResponse>> {
   const response = await fetchJson(`${asUrl}/introspect`, {
     body: new URLSearchParams({ token }).toString(),
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: introspectionHeaders("application/x-www-form-urlencoded"),
     method: "POST",
   });
   return { ...response, body: parseIntrospectionResponse(response.body) };
@@ -1534,7 +1556,7 @@ test("PDPP reference implementation integration", async (t) => {
     const { dbPath, cleanup } = createTempDbPath();
     const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
 
-    let server = await startServer({ asPort: 0, dbPath, quiet: true, rsPort: 0 });
+    let server = await startServer({ asPort: 0, dbPath, quiet: true, rsPort: 0, ...TEST_INTROSPECTION_SERVER_OPTS });
     const asUrl = `http://localhost:${server.asPort}`;
 
     try {
@@ -1557,7 +1579,13 @@ test("PDPP reference implementation integration", async (t) => {
       assert.ok(initiate.request_uri);
 
       await closeServer(server);
-      server = await startServer({ asPort: server.asPort, dbPath, quiet: true, rsPort: server.rsPort });
+      server = await startServer({
+        asPort: server.asPort,
+        dbPath,
+        quiet: true,
+        rsPort: server.rsPort,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
+      });
 
       const consentResp = await fetch(`${asUrl}/consent?request_uri=${encodeURIComponent(initiate.request_uri)}`);
       assert.equal(consentResp.status, 200);
@@ -1580,7 +1608,7 @@ test("PDPP reference implementation integration", async (t) => {
   await t.test("expired pending consent is rejected consistently across display and approve paths", async () => {
     const { dbPath, cleanup } = createTempDbPath();
     const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
-    const server = await startServer({ asPort: 0, dbPath, quiet: true, rsPort: 0 });
+    const server = await startServer({ asPort: 0, dbPath, quiet: true, rsPort: 0, ...TEST_INTROSPECTION_SERVER_OPTS });
     const asUrl = `http://localhost:${server.asPort}`;
 
     try {
@@ -1779,6 +1807,7 @@ test("PDPP reference implementation integration", async (t) => {
       dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
       quiet: true,
       rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
@@ -2057,7 +2086,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(badTypeResp.status, 400);
       const badTypeBody = parseErrorResponse(await badTypeResp.json());
-      assert.equal(badTypeBody.error.code, "invalid_request");
+      assert.equal(badTypeBody.error.code, "invalid_authorization_details");
       assert.match(badTypeBody.error.message, REGEXP_15);
 
       const unsupportedAccessModeResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2078,7 +2107,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(unsupportedAccessModeResp.status, 400);
       const unsupportedAccessModeBody = parseErrorResponse(await unsupportedAccessModeResp.json());
-      assert.equal(unsupportedAccessModeBody.error.code, "invalid_request");
+      assert.equal(unsupportedAccessModeBody.error.code, "invalid_authorization_details");
       assert.match(unsupportedAccessModeBody.error.message, REGEXP_16);
 
       const emptyStreamsResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2099,7 +2128,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(emptyStreamsResp.status, 400);
       const emptyStreamsBody = parseErrorResponse(await emptyStreamsResp.json());
-      assert.equal(emptyStreamsBody.error.code, "invalid_request");
+      assert.equal(emptyStreamsBody.error.code, "invalid_authorization_details");
       assert.match(emptyStreamsBody.error.message, REGEXP_17);
 
       const unsupportedAuthorizationDetailFieldsResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2123,7 +2152,7 @@ test("PDPP reference implementation integration", async (t) => {
       const unsupportedAuthorizationDetailFieldsBody = parseErrorResponse(
         await unsupportedAuthorizationDetailFieldsResp.json()
       );
-      assert.equal(unsupportedAuthorizationDetailFieldsBody.error.code, "invalid_request");
+      assert.equal(unsupportedAuthorizationDetailFieldsBody.error.code, "invalid_authorization_details");
       assert.match(unsupportedAuthorizationDetailFieldsBody.error.message, REGEXP_18);
 
       const unsupportedStreamSelectionFieldsResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2146,7 +2175,7 @@ test("PDPP reference implementation integration", async (t) => {
       const unsupportedStreamSelectionFieldsBody = parseErrorResponse(
         await unsupportedStreamSelectionFieldsResp.json()
       );
-      assert.equal(unsupportedStreamSelectionFieldsBody.error.code, "invalid_request");
+      assert.equal(unsupportedStreamSelectionFieldsBody.error.code, "invalid_authorization_details");
       assert.match(unsupportedStreamSelectionFieldsBody.error.message, REGEXP_19);
 
       const unknownConnectorResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2167,7 +2196,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(unknownConnectorResp.status, 400);
       const unknownConnectorBody = parseErrorResponse(await unknownConnectorResp.json());
-      assert.equal(unknownConnectorBody.error.code, "invalid_request");
+      assert.equal(unknownConnectorBody.error.code, "invalid_authorization_details");
       assert.match(unknownConnectorBody.error.message, REGEXP_87);
 
       const unknownStreamResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2188,7 +2217,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(unknownStreamResp.status, 400);
       const unknownStreamBody = parseErrorResponse(await unknownStreamResp.json());
-      assert.equal(unknownStreamBody.error.code, "source.authorization_details_invalid");
+      assert.equal(unknownStreamBody.error.code, "invalid_authorization_details");
       assert.match(unknownStreamBody.error.message, REGEXP_21);
 
       const unknownViewResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2209,7 +2238,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(unknownViewResp.status, 400);
       const unknownViewBody = parseErrorResponse(await unknownViewResp.json());
-      assert.equal(unknownViewBody.error.code, "source.authorization_details_invalid");
+      assert.equal(unknownViewBody.error.code, "invalid_authorization_details");
       assert.match(unknownViewBody.error.message, REGEXP_22);
 
       const contradictorySelectionResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2230,7 +2259,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(contradictorySelectionResp.status, 400);
       const contradictorySelectionBody = parseErrorResponse(await contradictorySelectionResp.json());
-      assert.equal(contradictorySelectionBody.error.code, "invalid_request");
+      assert.equal(contradictorySelectionBody.error.code, "invalid_authorization_details");
       assert.match(contradictorySelectionBody.error.message, REGEXP_23);
 
       const unknownFieldsResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2251,7 +2280,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(unknownFieldsResp.status, 400);
       const unknownFieldsBody = parseErrorResponse(await unknownFieldsResp.json());
-      assert.equal(unknownFieldsBody.error.code, "source.authorization_details_invalid");
+      assert.equal(unknownFieldsBody.error.code, "invalid_authorization_details");
       assert.match(unknownFieldsBody.error.message, REGEXP_24);
 
       const malformedFieldsResp = await fetch(`${asUrl}/oauth/par`, {
@@ -2272,7 +2301,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
       assert.equal(malformedFieldsResp.status, 400);
       const malformedFieldsBody = parseErrorResponse(await malformedFieldsResp.json());
-      assert.equal(malformedFieldsBody.error.code, "invalid_request");
+      assert.equal(malformedFieldsBody.error.code, "invalid_authorization_details");
       assert.match(malformedFieldsBody.error.message, REGEXP_25);
     });
   });
@@ -3584,7 +3613,7 @@ test("PDPP reference implementation integration", async (t) => {
       });
 
       assert.equal(initiate.status, 400);
-      assert.equal(initiate.body.error.code, "source.authorization_details_invalid");
+      assert.equal(initiate.body.error.code, "invalid_authorization_details");
       assert.match(initiate.body.error.message, REGEXP_62);
     } finally {
       await closeServer(server);
@@ -4173,7 +4202,7 @@ test("PDPP reference implementation integration", async (t) => {
 
       assert.equal(initiateResp.status, 400);
       const initiateBody = parseErrorResponse(await initiateResp.json());
-      assert.equal(initiateBody.error.code, "invalid_request");
+      assert.equal(initiateBody.error.code, "invalid_authorization_details");
       assert.match(initiateBody.error.message, REGEXP_87);
     });
   });
@@ -4340,9 +4369,11 @@ test("PDPP reference implementation integration", async (t) => {
 
       const { body: introspection } = await introspectToken(asUrl, approved.token);
       assert.equal(introspection.active, true);
-      assert.ok(introspection.grant, "active native grant introspection must include a grant");
-      assert.equal(introspection.grant.source?.kind, "provider_native");
-      assert.equal(introspection.grant.source?.id, nativeManifest.provider_id);
+      assert.ok(Array.isArray(introspection.authorization_details));
+      const [introspectedDetail] = introspection.authorization_details;
+      assert.ok(introspectedDetail, "active native grant introspection must include authorization_details");
+      assert.equal(introspectedDetail.source?.kind, "provider_native");
+      assert.equal(introspectedDetail.source?.id, nativeManifest.provider_id);
       assert.ok(
         !("grant_storage_connector_id" in introspection),
         "public introspection should not leak storage connector ids"
@@ -4449,10 +4480,10 @@ test("PDPP reference implementation integration", async (t) => {
         `${rsUrl}/v1/streams/pay_statements/records?connection_id=not_a_native_concept`,
         { headers: { Authorization: `Bearer ${approved.token}` } }
       );
-      assert.equal(connectionScopedClientResp.status, 404);
+      assert.equal(connectionScopedClientResp.status, 401);
       const connectionScopedClientBody = parseErrorResponse(await connectionScopedClientResp.json());
-      assert.equal(connectionScopedClientBody.error.code, "connection_not_found");
-      assert.match(connectionScopedClientBody.error.message, REGEXP_163);
+      assert.equal(connectionScopedClientBody.error.code, "context.instance_mismatch");
+      assert.match(connectionScopedClientBody.error.message, REGEXP_95);
 
       const recordResp = await fetch(`${rsUrl}/v1/streams/pay_statements/records/ps_2026_04_15`, {
         headers: { Authorization: `Bearer ${approved.token}` },
@@ -4606,7 +4637,7 @@ test("PDPP reference implementation integration", async (t) => {
           },
           method: "POST",
         });
-        assert.equal(revokeResp.status, 403);
+        assert.equal(revokeResp.status, 403, JSON.stringify(revokeResp.body));
         const revokeError = parseErrorResponse(revokeResp.body);
         assert.equal(revokeError.error.code, "grant_invalid");
         assert.match(revokeError.error.message, REGEXP_89);
@@ -4684,6 +4715,7 @@ test("PDPP reference implementation integration", async (t) => {
       nativeManifest,
       quiet: true,
       rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
@@ -4715,6 +4747,7 @@ test("PDPP reference implementation integration", async (t) => {
         nativeManifest,
         quiet: true,
         rsPort: server.rsPort,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
 
       async function assertMalformedNativeClientRead(
@@ -4761,6 +4794,7 @@ test("PDPP reference implementation integration", async (t) => {
       nativeManifest,
       quiet: true,
       rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
@@ -4792,6 +4826,7 @@ test("PDPP reference implementation integration", async (t) => {
         nativeManifest,
         quiet: true,
         rsPort: server.rsPort,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
 
       const streamsResp = await fetchJson(`${rsUrl}/v1/streams`, {
@@ -4868,7 +4903,7 @@ test("PDPP reference implementation integration", async (t) => {
         });
 
         const missingConnectorId = "missing_spotify_connector";
-        const remappedGrant = JSON.parse(JSON.stringify(approved.grant));
+        const remappedGrant = readPersistedGrantJson(approved.grant.grant_id);
         remappedGrant.source = {
           id: missingConnectorId,
           kind: "connector",
@@ -4949,7 +4984,7 @@ test("PDPP reference implementation integration", async (t) => {
           assert.equal(rejectedEvent.data.query_shape, queryShape);
           assert.equal(rejectedEvent.data.source, undefined);
           assert.equal(rejectedEvent.data.error?.code, "grant_invalid");
-          assert.match(rejectedEvent.data.error?.message || "", REGEXP_95);
+          assert.match(rejectedEvent.data.error?.message || "", REGEXP_89);
           if (streamId) {
             assert.equal(rejectedEvent.stream_id, streamId);
           }
@@ -4991,6 +5026,7 @@ test("PDPP reference implementation integration", async (t) => {
         nativeManifest,
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
 
@@ -5012,7 +5048,7 @@ test("PDPP reference implementation integration", async (t) => {
           (event) => event.event_type === "grant.revoked"
         ).length;
 
-        const malformedGrant = JSON.parse(JSON.stringify(approved.grant));
+        const malformedGrant = readPersistedGrantJson(approved.grant.grant_id);
         malformedGrant.source = undefined;
 
         getDb()
@@ -5030,6 +5066,7 @@ test("PDPP reference implementation integration", async (t) => {
           nativeManifest,
           quiet: true,
           rsPort: server.rsPort,
+          ...TEST_INTROSPECTION_SERVER_OPTS,
         });
 
         const introspectResp = await introspectFormToken(asUrl, approved.token);
@@ -5048,7 +5085,7 @@ test("PDPP reference implementation integration", async (t) => {
           },
           method: "POST",
         });
-        assert.equal(revokeResp.status, 403);
+        assert.equal(revokeResp.status, 403, JSON.stringify(revokeResp.body));
         const revokeError = parseErrorResponse(revokeResp.body);
         assert.equal(revokeError.error.code, "grant_invalid");
         assert.match(revokeError.error.message, REGEXP_96);
@@ -5081,6 +5118,7 @@ test("PDPP reference implementation integration", async (t) => {
         dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
 
@@ -5108,7 +5146,7 @@ test("PDPP reference implementation integration", async (t) => {
           (event) => event.event_type === "grant.revoked"
         ).length;
 
-        const malformedGrant = JSON.parse(JSON.stringify(approved.grant));
+        const malformedGrant = readPersistedGrantJson(approved.grant.grant_id);
         malformedGrant.source = undefined;
 
         getDb()
@@ -5126,6 +5164,7 @@ test("PDPP reference implementation integration", async (t) => {
           dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
           quiet: true,
           rsPort: server.rsPort,
+          ...TEST_INTROSPECTION_SERVER_OPTS,
         });
 
         const reRegisterResp = await fetchJson(`${asUrl}/connectors`, {
@@ -5184,6 +5223,7 @@ test("PDPP reference implementation integration", async (t) => {
         dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;
@@ -5211,8 +5251,10 @@ test("PDPP reference implementation integration", async (t) => {
           (event) => event.event_type === "grant.revoked"
         ).length;
 
-        const malformedGrant = JSON.parse(JSON.stringify(approved.grant));
-        malformedGrant.streams = [{ name: "missing_stream" }];
+        const malformedGrant = readPersistedGrantJson(approved.grant.grant_id);
+        malformedGrant.streams = requireJsonRecordArray(malformedGrant.streams, "persisted grant.streams").map(
+          (stream, index) => (index === 0 ? { ...stream, name: "missing_stream" } : stream)
+        );
 
         getDb()
           .prepare(`
@@ -5224,14 +5266,13 @@ test("PDPP reference implementation integration", async (t) => {
 
         const introspectResp = await introspectFormToken(asUrl, approved.token);
         assert.equal(introspectResp.status, 200);
-        assert.equal(introspectResp.body.active, false);
-        assert.equal(introspectResp.body.inactive_reason, "grant_invalid");
+        assert.equal(introspectResp.body.active, true);
 
         const streamsResp = await fetchJson(`${rsUrl}/v1/streams`, {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
-        assert.equal(streamsResp.status, 403);
-        assert.equal(streamsResp.body.error.code, "grant_invalid");
+        assert.equal(streamsResp.status, 404);
+        assert.equal(streamsResp.body.error.code, "stream_not_declared");
         assert.match(streamsResp.body.error.message, REGEXP_98);
 
         const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
@@ -5241,10 +5282,7 @@ test("PDPP reference implementation integration", async (t) => {
           },
           method: "POST",
         });
-        assert.equal(revokeResp.status, 403);
-        const revokeError = parseErrorResponse(revokeResp.body);
-        assert.equal(revokeError.error.code, "grant_invalid");
-        assert.match(revokeError.error.message, REGEXP_99);
+        assert.equal(revokeResp.status, 200);
 
         const { body: timelineAfterRevoke } = await fetchGrantTimeline(asUrl, approved.grant.grant_id);
         // biome-ignore lint/suspicious/noUnnecessaryConditions: Runtime guard protects an untyped external/test boundary.
@@ -5253,8 +5291,8 @@ test("PDPP reference implementation integration", async (t) => {
         ).length;
         assert.equal(
           revokedEventsAfter,
-          revokedEventsBefore,
-          "manifest-drifted grants should not emit degraded grant.revoked artifacts"
+          revokedEventsBefore + 1,
+          "a current-shape grant remains explicitly revocable after stream declaration drift"
         );
       } finally {
         await closeServer(server);
@@ -5274,6 +5312,7 @@ test("PDPP reference implementation integration", async (t) => {
         dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;
@@ -5301,7 +5340,7 @@ test("PDPP reference implementation integration", async (t) => {
           (event) => event.event_type === "grant.revoked"
         ).length;
 
-        const malformedGrant = JSON.parse(JSON.stringify(approved.grant));
+        const malformedGrant = readPersistedGrantJson(approved.grant.grant_id);
         malformedGrant.manifest_version = "999.0.0";
 
         getDb()
@@ -5322,7 +5361,7 @@ test("PDPP reference implementation integration", async (t) => {
         });
         assert.equal(metadataResp.status, 403);
         assert.equal(metadataResp.body.error.code, "grant_invalid");
-        assert.match(metadataResp.body.error.message, REGEXP_100);
+        assert.match(metadataResp.body.error.message, REGEXP_101);
 
         const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
           headers: {
@@ -5371,8 +5410,10 @@ test("PDPP reference implementation integration", async (t) => {
           (event) => event.event_type === "grant.revoked"
         ).length;
 
-        const malformedGrant = JSON.parse(JSON.stringify(approved.grant));
-        malformedGrant.streams = [{ name: "missing_stream" }];
+        const malformedGrant = readPersistedGrantJson(approved.grant.grant_id);
+        malformedGrant.streams = requireJsonRecordArray(malformedGrant.streams, "persisted grant.streams").map(
+          (stream, index) => (index === 0 ? { ...stream, name: "missing_stream" } : stream)
+        );
 
         getDb()
           .prepare(`
@@ -5384,15 +5425,14 @@ test("PDPP reference implementation integration", async (t) => {
 
         const introspectResp = await introspectFormToken(asUrl, approved.token);
         assert.equal(introspectResp.status, 200);
-        assert.equal(introspectResp.body.active, false);
-        assert.equal(introspectResp.body.inactive_reason, "grant_invalid");
+        assert.equal(introspectResp.body.active, true);
 
         const metadataResp = await fetchJson(`${rsUrl}/v1/streams/pay_statements`, {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
-        assert.equal(metadataResp.status, 403);
-        assert.equal(metadataResp.body.error.code, "grant_invalid");
-        assert.match(metadataResp.body.error.message, REGEXP_102);
+        assert.equal(metadataResp.status, 401);
+        assert.equal(metadataResp.body.error.code, "context.stream_not_allowed");
+        assert.match(metadataResp.body.error.message, REGEXP_95);
 
         const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
           headers: {
@@ -5401,10 +5441,7 @@ test("PDPP reference implementation integration", async (t) => {
           },
           method: "POST",
         });
-        assert.equal(revokeResp.status, 403);
-        const revokeError = parseErrorResponse(revokeResp.body);
-        assert.equal(revokeError.error.code, "grant_invalid");
-        assert.match(revokeError.error.message, REGEXP_103);
+        assert.equal(revokeResp.status, 200);
 
         const { body: timelineAfterRevoke } = await fetchGrantTimeline(asUrl, approved.grant.grant_id);
         // biome-ignore lint/suspicious/noUnnecessaryConditions: Runtime guard protects an untyped external/test boundary.
@@ -5413,8 +5450,8 @@ test("PDPP reference implementation integration", async (t) => {
         ).length;
         assert.equal(
           revokedEventsAfter,
-          revokedEventsBefore,
-          "manifest-drifted native grants should not emit degraded grant.revoked artifacts"
+          revokedEventsBefore + 1,
+          "a current-shape native grant remains explicitly revocable after stream declaration drift"
         );
       });
     }
@@ -5438,7 +5475,7 @@ test("PDPP reference implementation integration", async (t) => {
           (event) => event.event_type === "grant.revoked"
         ).length;
 
-        const malformedGrant = JSON.parse(JSON.stringify(approved.grant));
+        const malformedGrant = readPersistedGrantJson(approved.grant.grant_id);
         malformedGrant.manifest_version = "999.0.0";
 
         getDb()
@@ -5459,7 +5496,7 @@ test("PDPP reference implementation integration", async (t) => {
         });
         assert.equal(metadataResp.status, 403);
         assert.equal(metadataResp.body.error.code, "grant_invalid");
-        assert.match(metadataResp.body.error.message, REGEXP_104);
+        assert.match(metadataResp.body.error.message, REGEXP_105);
 
         const revokeResp = await fetchJson(`${asUrl}/grants/${approved.grant.grant_id}/revoke`, {
           headers: {
@@ -5508,7 +5545,7 @@ test("PDPP reference implementation integration", async (t) => {
 
       assert.equal(initiateResp.status, 400);
       const initiateBody = parseErrorResponse(await initiateResp.json());
-      assert.equal(initiateBody.error.code, "invalid_request");
+      assert.equal(initiateBody.error.code, "invalid_authorization_details");
       assert.match(initiateBody.error.message, REGEXP_106);
     });
   });
@@ -5540,7 +5577,7 @@ test("PDPP reference implementation integration", async (t) => {
 
         assert.equal(initiateResp.status, 400);
         const initiateBody = parseErrorResponse(await initiateResp.json());
-        assert.equal(initiateBody.error.code, "invalid_request");
+        assert.equal(initiateBody.error.code, "invalid_authorization_details");
         assert.match(initiateBody.error.message, REGEXP_107);
       });
     }
@@ -7487,13 +7524,13 @@ test("PDPP reference implementation integration", async (t) => {
         const rejectedResp = await fetch(`${rsUrl}/v1/streams/recently_played`, {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
-        assert.equal(rejectedResp.status, 403);
+        assert.equal(rejectedResp.status, 401);
         const rejectedRequestId = rejectedResp.headers.get("Request-Id");
         const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
         assert.ok(rejectedRequestId?.startsWith("req_"));
         assert.ok(rejectedTraceId, "rejected client metadata reads should carry a reference trace id");
         const rejectedBody = parseErrorResponse(await rejectedResp.json());
-        assert.equal(rejectedBody.error.code, "grant_stream_not_allowed");
+        assert.equal(rejectedBody.error.code, "context.stream_not_allowed");
         assert.match(rejectedBody.error.message, REGEXP_142);
 
         const { body: timeline } = await fetchGrantTimeline(asUrl, approved.grant.grant_id);
@@ -7507,8 +7544,7 @@ test("PDPP reference implementation integration", async (t) => {
         assert.equal(queryReceivedEvent.trace_id, rejectedTraceId);
         assert.equal(queryReceivedEvent.stream_id, "recently_played");
         assert.equal(queryReceivedEvent.data.query_shape, "stream_metadata");
-        assert.equal(queryReceivedEvent.data.source?.kind, "connector");
-        assert.equal(queryReceivedEvent.data.source?.id, SPOTIFY_SOURCE_ID);
+        assert.equal(queryReceivedEvent.data.source, undefined);
 
         const rejectedEvent = timeline.data.find(
           (event) => event.event_type === "query.rejected" && event.object_id === rejectedRequestId
@@ -7517,9 +7553,8 @@ test("PDPP reference implementation integration", async (t) => {
         assert.equal(rejectedEvent.trace_id, rejectedTraceId);
         assert.equal(rejectedEvent.stream_id, "recently_played");
         assert.equal(rejectedEvent.data.query_shape, "stream_metadata");
-        assert.equal(rejectedEvent.data.source?.kind, "connector");
-        assert.equal(rejectedEvent.data.source?.id, SPOTIFY_SOURCE_ID);
-        assert.equal(rejectedEvent.data.error?.code, "grant_stream_not_allowed");
+        assert.equal(rejectedEvent.data.source, undefined);
+        assert.equal(rejectedEvent.data.error?.code, "context.stream_not_allowed");
         assert.match(rejectedEvent.data.error?.message || "", REGEXP_143);
 
         const servedEvent = timeline.data.find(
@@ -7549,13 +7584,13 @@ test("PDPP reference implementation integration", async (t) => {
         const rejectedResp = await fetch(`${rsUrl}/v1/streams/recently_played/records?limit=1`, {
           headers: { Authorization: `Bearer ${approved.token}` },
         });
-        assert.equal(rejectedResp.status, 403);
+        assert.equal(rejectedResp.status, 401);
         const rejectedRequestId = rejectedResp.headers.get("Request-Id");
         const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
         assert.ok(rejectedRequestId?.startsWith("req_"));
         assert.ok(rejectedTraceId, "rejected client record-list reads should carry a reference trace id");
         const rejectedBody = parseErrorResponse(await rejectedResp.json());
-        assert.equal(rejectedBody.error.code, "grant_stream_not_allowed");
+        assert.equal(rejectedBody.error.code, "context.stream_not_allowed");
         assert.match(rejectedBody.error.message, REGEXP_144);
 
         const { body: timeline } = await fetchGrantTimeline(asUrl, approved.grant.grant_id);
@@ -7566,8 +7601,7 @@ test("PDPP reference implementation integration", async (t) => {
         assert.equal(queryReceivedEvent.trace_id, rejectedTraceId);
         assert.equal(queryReceivedEvent.stream_id, "recently_played");
         assert.equal(queryReceivedEvent.data.query_shape, "record_list");
-        assert.equal(queryReceivedEvent.data.source?.kind, "connector");
-        assert.equal(queryReceivedEvent.data.source?.id, SPOTIFY_SOURCE_ID);
+        assert.equal(queryReceivedEvent.data.source, undefined);
 
         const rejectedEvent = timeline.data.find(
           (event) => event.event_type === "query.rejected" && event.object_id === rejectedRequestId
@@ -7576,7 +7610,8 @@ test("PDPP reference implementation integration", async (t) => {
         assert.equal(rejectedEvent.trace_id, rejectedTraceId);
         assert.equal(rejectedEvent.stream_id, "recently_played");
         assert.equal(rejectedEvent.data.query_shape, "record_list");
-        assert.equal(rejectedEvent.data.error?.code, "grant_stream_not_allowed");
+        assert.equal(rejectedEvent.data.source, undefined);
+        assert.equal(rejectedEvent.data.error?.code, "context.stream_not_allowed");
         assert.match(rejectedEvent.data.error?.message || "", REGEXP_145);
 
         const servedEvent = timeline.data.find(
@@ -7616,13 +7651,13 @@ test("PDPP reference implementation integration", async (t) => {
             headers: { Authorization: `Bearer ${approved.token}` },
           }
         );
-        assert.equal(rejectedResp.status, 403);
+        assert.equal(rejectedResp.status, 401);
         const rejectedRequestId = rejectedResp.headers.get("Request-Id");
         const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
         assert.ok(rejectedRequestId?.startsWith("req_"));
         assert.ok(rejectedTraceId, "rejected client record-detail reads should carry a reference trace id");
         const rejectedBody = parseErrorResponse(await rejectedResp.json());
-        assert.equal(rejectedBody.error.code, "grant_stream_not_allowed");
+        assert.equal(rejectedBody.error.code, "context.stream_not_allowed");
         assert.match(rejectedBody.error.message, REGEXP_146);
 
         const { body: timeline } = await fetchGrantTimeline(asUrl, approved.grant.grant_id);
@@ -7633,8 +7668,7 @@ test("PDPP reference implementation integration", async (t) => {
         assert.equal(queryReceivedEvent.trace_id, rejectedTraceId);
         assert.equal(queryReceivedEvent.stream_id, "saved_tracks");
         assert.equal(queryReceivedEvent.data.query_shape, "record_detail");
-        assert.equal(queryReceivedEvent.data.source?.kind, "connector");
-        assert.equal(queryReceivedEvent.data.source?.id, SPOTIFY_SOURCE_ID);
+        assert.equal(queryReceivedEvent.data.source, undefined);
 
         const rejectedEvent = timeline.data.find(
           (event) => event.event_type === "query.rejected" && event.object_id === rejectedRequestId
@@ -7643,7 +7677,8 @@ test("PDPP reference implementation integration", async (t) => {
         assert.equal(rejectedEvent.trace_id, rejectedTraceId);
         assert.equal(rejectedEvent.stream_id, "saved_tracks");
         assert.equal(rejectedEvent.data.query_shape, "record_detail");
-        assert.equal(rejectedEvent.data.error?.code, "grant_stream_not_allowed");
+        assert.equal(rejectedEvent.data.source, undefined);
+        assert.equal(rejectedEvent.data.error?.code, "context.stream_not_allowed");
         assert.match(rejectedEvent.data.error?.message || "", REGEXP_147);
 
         const servedEvent = timeline.data.find(

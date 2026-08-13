@@ -669,6 +669,7 @@ CREATE TABLE IF NOT EXISTS tokens (
   token_id      TEXT PRIMARY KEY,
   grant_id      TEXT,
   package_id    TEXT,
+  refresh_family_id TEXT,
   subject_id    TEXT NOT NULL,
   client_id     TEXT,
   token_kind    TEXT NOT NULL,
@@ -676,6 +677,19 @@ CREATE TABLE IF NOT EXISTS tokens (
   revoked       INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS consent_exchange_codes (
+  code_hash      TEXT PRIMARY KEY,
+  proof_hash     TEXT,
+  token_id       TEXT NOT NULL,
+  created_at     TEXT NOT NULL,
+  expires_at     TEXT NOT NULL,
+  redeemed_at    TEXT,
+  FOREIGN KEY(token_id) REFERENCES tokens(token_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_consent_exchange_codes_expiry
+  ON consent_exchange_codes(expires_at);
 
 CREATE TABLE IF NOT EXISTS pending_consents (
   device_code              TEXT PRIMARY KEY,
@@ -709,6 +723,30 @@ CREATE TABLE IF NOT EXISTS pending_consents (
 
 CREATE INDEX IF NOT EXISTS idx_pending_consents_status_expires
   ON pending_consents(status, expires_at);
+
+CREATE TABLE IF NOT EXISTS agent_connect_attempts (
+  id                TEXT PRIMARY KEY,
+  request_uri       TEXT NOT NULL,
+  client_id         TEXT,
+  polling_code_hash TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'pending',
+  approval_url      TEXT NOT NULL,
+  token_url         TEXT NOT NULL,
+  interval_seconds  INTEGER NOT NULL DEFAULT 2,
+  created_at        TEXT NOT NULL,
+  expires_at_ms     INTEGER NOT NULL,
+  completed_at      TEXT,
+  grant_id          TEXT,
+  grant_json        TEXT,
+  token             TEXT,
+  response_json     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_connect_attempts_request_uri
+  ON agent_connect_attempts(request_uri, status);
+
+CREATE INDEX IF NOT EXISTS idx_agent_connect_attempts_status_expires
+  ON agent_connect_attempts(status, expires_at_ms);
 
 CREATE TABLE IF NOT EXISTS owner_device_auth (
   device_code        TEXT PRIMARY KEY,
@@ -1281,6 +1319,9 @@ CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_client_status
 
 CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
   refresh_token_hash   TEXT PRIMARY KEY,
+  family_id            TEXT NOT NULL,
+  generation           INTEGER NOT NULL,
+  parent_generation    INTEGER,
   client_id            TEXT NOT NULL,
   grant_id             TEXT,
   package_id           TEXT,
@@ -1289,6 +1330,7 @@ CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
   created_at           TEXT NOT NULL,
   expires_at           TEXT,
   last_used_at         TEXT,
+  superseded_at        TEXT,
   revoked_at           TEXT
 );
 
@@ -1296,7 +1338,6 @@ CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_grant
   ON oauth_refresh_tokens(grant_id, status);
 CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_client_status
   ON oauth_refresh_tokens(client_id, status, expires_at);
-
 CREATE TABLE IF NOT EXISTS grant_packages (
   package_id        TEXT PRIMARY KEY,
   subject_id        TEXT NOT NULL,
@@ -5018,6 +5059,59 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   );
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "pending_consents", "last_polled_at", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "owner_device_auth", "approval_id", "TEXT"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "consent_exchange_codes", "proof_hash", "TEXT"));
+  // Add the v0.1 refresh-family columns without reconstructing legacy token
+  // state. The fail-closed migration below revokes families and bound bearers
+  // that lack the new linkage, so they require fresh authorization.
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "oauth_refresh_tokens", "family_id", "TEXT"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "oauth_refresh_tokens", "generation", "INTEGER"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "oauth_refresh_tokens", "parent_generation", "INTEGER"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "oauth_refresh_tokens", "superseded_at", "TEXT"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "tokens", "refresh_family_id", "TEXT"));
+  runWithSqliteBusyRetrySync(() => {
+    raw.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_family_generation ON oauth_refresh_tokens(family_id, generation)"
+    );
+  });
+  runWithSqliteBusyRetrySync(() => {
+    raw.exec("CREATE INDEX IF NOT EXISTS idx_tokens_refresh_family ON tokens(refresh_family_id, revoked)");
+  });
+  runWithSqliteBusyRetrySync(() => {
+    raw.transaction(() =>
+      raw.exec(`
+      UPDATE tokens
+         SET revoked = 1
+       WHERE revoked = 0
+         AND (
+           grant_id IN (
+             SELECT legacy.grant_id
+               FROM oauth_refresh_tokens legacy
+              WHERE legacy.grant_id IS NOT NULL
+                AND legacy.status <> 'revoked'
+                AND NOT EXISTS (
+                  SELECT 1 FROM tokens linked WHERE linked.refresh_family_id = legacy.family_id
+                )
+           )
+           OR package_id IN (
+             SELECT legacy.package_id
+               FROM oauth_refresh_tokens legacy
+              WHERE legacy.package_id IS NOT NULL
+                AND legacy.status <> 'revoked'
+                AND NOT EXISTS (
+                  SELECT 1 FROM tokens linked WHERE linked.refresh_family_id = legacy.family_id
+                )
+           )
+         );
+      UPDATE oauth_refresh_tokens
+         SET status = 'revoked',
+             revoked_at = COALESCE(revoked_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+       WHERE status <> 'revoked'
+         AND NOT EXISTS (
+           SELECT 1 FROM tokens linked WHERE linked.refresh_family_id = oauth_refresh_tokens.family_id
+         );
+      `)
+    )();
+  });
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_exporters", "agent_version", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_exporters", "collector_protocol_version", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_exporters", "last_heartbeat_at", "TEXT"));

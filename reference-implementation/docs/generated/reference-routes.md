@@ -16,7 +16,7 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **POST** | `/consent/exchange` | `exchangeConsentCode` | Redeem a short-lived single-use consent exchange code from the hosted HTML consent flow for the client token. |
 | **POST** | `/oauth/device_authorization` | `startOwnerDeviceAuthorization` | Start the owner device flow used for owner-self-export and dashboard bootstrap. |
 | **POST** | `/oauth/token` | `exchangeOwnerDeviceToken` | Exchange an OAuth device code, authorization code, or refresh token for a bearer token. |
-| **POST** | `/introspect` | `introspectToken` | Inspect token activity and, for active client tokens, the bound grant projection. |
+| **POST** | `/introspect` | `introspectToken` | Inspect token activity for an authenticated confidential resource server. |
 | **POST** | `/grants/{grantId}/revoke` | `revokeGrant` | Revoke a grant and all tokens minted from it. |
 | **GET** | `/v1/connectors` | `listConnectors` | List connector or source boundaries visible under the bearer token, with stream summaries and coarse capability hints. |
 | **GET** | `/v1/schema` | `getSchema` | Return the caller-visible source/stream capability graph. Use `view=compact` and optional `stream=<name>` for a token-efficient agent discovery step; omitted `view` returns the full schema, query declarations, field capabilities, expand capabilities, and freshness. |
@@ -276,7 +276,7 @@ Alternative 3:
 
 `POST /introspect`
 
-Inspect token activity and, for active client tokens, the bound grant projection.
+Inspect token activity for an authenticated confidential resource server.
 
 ### Request body
 
@@ -287,6 +287,7 @@ Inspect token activity and, for active client tokens, the bound grant projection
 
 - `200` - JSON body
 - `400` - Missing token parameter
+- `401` - Confidential resource-server authentication failed
 
 ## revokeGrant
 

@@ -175,6 +175,11 @@ import {
 } from "./hosted-ui.ts";
 import { registerInboxRoutes } from "./inbox.ts";
 import {
+  authenticateIntrospectionCaller,
+  createRemoteIntrospector,
+  type IntrospectionCallerCredentials,
+} from "./introspection-http.ts";
+import {
   buildAuthorizationServerMetadata,
   buildClientEventSubscriptionsCapability,
   buildHybridRetrievalCapability,
@@ -423,6 +428,11 @@ import {
 import { requireSourceDeclaration } from "./source-declaration.ts";
 import type { AcceptedSourceDeclarationRevisionStore } from "./source-declaration-trust/revision-store.ts";
 import {
+  enforceSourceReadRequest,
+  projectSourceIntrospectionWireContext,
+  SourceIntrospectionContextError,
+} from "./source-introspection-context.ts";
+import {
   createPostgresAcquisitionBatchStore,
   createSqliteAcquisitionBatchStore,
 } from "./stores/acquisition-batch-store.ts";
@@ -670,6 +680,8 @@ interface ServerOpts {
   hybridRetrievalCapability?: unknown;
   hybridRetrievalSupported?: boolean;
   ignoreAmbientPublicUrls?: boolean;
+  introspectionCallerCredentials?: IntrospectionCallerCredentials;
+  introspectionFetch?: typeof fetch;
   isNekoProxyTargetApproved?:
     | ((
         descriptor: unknown,
@@ -716,7 +728,11 @@ interface ServerOpts {
   referenceMode?: string | null;
   referenceOrigin?: string | null;
   referenceRevision?: string | null;
+  resolveIntrospectionAudience?: (() => string | null) | null;
+  resolveIntrospectionIssuer?: (() => string | null) | null;
   rsInternalUrl?: string | null;
+  rsIntrospectionCredentials?: IntrospectionCallerCredentials;
+  rsIntrospectionEndpoint?: string | null;
   rsPort?: number;
   rsPublicUrl?: string | null;
   rsUrl?: string | null;
@@ -761,6 +777,42 @@ function requestSelectsSource(body: unknown, sourceId: string): boolean {
   );
 }
 
+function readIntrospectionCredentialsFromEnv(): IntrospectionCallerCredentials | null {
+  const clientId = process.env.PDPP_RS_INTROSPECTION_CLIENT_ID?.trim();
+  const clientSecret = process.env.PDPP_RS_INTROSPECTION_CLIENT_SECRET?.trim();
+  if (!(clientId || clientSecret)) {
+    return null;
+  }
+  if (!(clientId && clientSecret)) {
+    throw new Error("PDPP RS introspection requires both client id and client secret");
+  }
+  return { clientId, clientSecret };
+}
+
+function generateLocalIntrospectionCredentials(): IntrospectionCallerCredentials {
+  return {
+    clientId: `rs-${randomBytes(12).toString("base64url")}`,
+    clientSecret: randomBytes(32).toString("base64url"),
+  };
+}
+
+function resolveIntrospectionCredentials(opts: ServerOpts): IntrospectionCallerCredentials {
+  const asCredentials = opts.introspectionCallerCredentials;
+  const rsCredentials = opts.rsIntrospectionCredentials;
+  if (asCredentials && rsCredentials) {
+    if (
+      asCredentials.clientId !== rsCredentials.clientId ||
+      asCredentials.clientSecret !== rsCredentials.clientSecret
+    ) {
+      throw new Error("AS and RS introspection credentials must match when both are configured");
+    }
+    return asCredentials;
+  }
+  return (
+    asCredentials ?? rsCredentials ?? readIntrospectionCredentialsFromEnv() ?? generateLocalIntrospectionCredentials()
+  );
+}
+
 function configuredNativeSourceId(opts: ServerOpts): string | null {
   const declaration = opts.nativeManifest?.source_declaration;
   if (!(declaration && typeof declaration === "object" && "source" in declaration)) {
@@ -769,7 +821,6 @@ function configuredNativeSourceId(opts: ServerOpts): string | null {
   const { source } = declaration as { source?: { id?: unknown } };
   return typeof source?.id === "string" && source.id ? source.id : null;
 }
-
 interface OwnerDeviceAuthStore {
   approve: (userCode: string, subjectId?: string) => Promise<unknown>;
   deny: (userCode: string, subjectId?: string) => Promise<void>;
@@ -1296,12 +1347,20 @@ function createRequestAbortSignal(req: ReqLike | null | undefined, message: stri
   };
 }
 
-function oauthError(res: ResLike, status: number, code: string, description: string) {
+function oauthError(
+  res: ResLike,
+  status: number,
+  code: string,
+  description: string,
+  _param?: string | null,
+  extras?: Readonly<Record<string, unknown>> | null
+) {
   const requestId = ensureRequestId(res);
   res.status(status).json({
     error: code,
     error_description: description,
     request_id: requestId,
+    ...(extras ?? {}),
   });
 }
 
@@ -1711,14 +1770,35 @@ async function rejectMutation(res: ResLike, req: ReqLike, context: MutationConte
 // ─── Auth middleware ─────────────────────────────────────────────────────────
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
-async function requireToken(req: ReqLike, res: ResLike, next: () => void) {
+async function requireTokenWithIntrospection(
+  req: ReqLike,
+  res: ResLike,
+  next: () => void,
+  introspectToken: (token: string) => Promise<TokenInfo>
+) {
   const auth = req.headers?.authorization;
   if (!auth || typeof auth !== "string" || !auth.startsWith("Bearer ")) {
     setProtectedResourceMetadataChallenge(res);
     return pdppError(res, 401, "authentication_error", "Missing Bearer token");
   }
   const token = auth.slice(7);
-  const info = (await introspect(token)) as TokenInfo;
+  const info = await introspectToken(token);
+  if (info.active && info.pdpp_token_kind === "client" && req.params?.stream) {
+    const requestedConnection = resolveRequestConnectionId(req.query ?? {}).connectionId;
+    try {
+      enforceSourceReadRequest(info, {
+        ...(requestedConnection ? { instance_id: requestedConnection } : {}),
+        stream: req.params.stream,
+      });
+    } catch (error: unknown) {
+      if (error instanceof SourceIntrospectionContextError) {
+        info.active = false;
+        info.inactive_reason = error.code;
+      } else {
+        throw error;
+      }
+    }
+  }
   if (!info.active) {
     if (info.trace_id) {
       setReferenceTraceId(res, info.trace_id);
@@ -1770,6 +1850,14 @@ async function requireToken(req: ReqLike, res: ResLike, next: () => void) {
     }
     if (info.inactive_reason === "grant_invalid") {
       return pdppError(res, 403, "grant_invalid", "Grant is malformed or no longer valid");
+    }
+    if (info.inactive_reason?.startsWith("context.")) {
+      setProtectedResourceMetadataChallenge(res);
+      return pdppError(res, 401, info.inactive_reason, "Token introspection failed closed");
+    }
+    if (info.inactive_reason === "authorization_state.unsupported_legacy_shape") {
+      setProtectedResourceMetadataChallenge(res);
+      return pdppError(res, 401, info.inactive_reason, "Fresh consent is required");
     }
     setProtectedResourceMetadataChallenge(res);
     return pdppError(res, 401, "authentication_error", "Invalid or expired token");
@@ -2909,7 +2997,6 @@ function projectManifestStreamForGrant(streamGrant: Record<string, unknown>): Re
     ...(frozenTimeField ? { consent_time_field: frozenTimeField } : {}),
   };
 }
-
 // Emit one `expand_capabilities` entry per enabled parent-stream relation (a
 // `query.expand[]` capability backed by a `relationships[]` declaration),
 // including relations whose target stream is unreadable under the current
@@ -4274,11 +4361,18 @@ export function buildAsApp(opts: ServerOpts = {}) {
     },
   } as unknown as Parameters<typeof mountAsDeviceUi>[1]);
 
-  // POST /introspect extracted to `server/routes/as-oauth.ts` per OpenSpec
-  // change `split-reference-server-by-route-family` (§6). Behaviour-preserving:
-  // same contract metadata, same auth posture (none — public endpoint),
-  // same response envelope, same status codes.
-  mountAsIntrospect(app, { introspect, pdppError });
+  const introspectionCallerCredentials = opts.introspectionCallerCredentials ?? readIntrospectionCredentialsFromEnv();
+  if (!introspectionCallerCredentials) {
+    throw new Error("AS introspection caller credentials must be configured");
+  }
+  mountAsIntrospect(app, {
+    authenticateCaller: (authorization) =>
+      authenticateIntrospectionCaller(authorization, introspectionCallerCredentials),
+    introspect: async (token) => projectSourceIntrospectionWireContext(await introspect(token)),
+    pdppError,
+    resolveAudience: opts.resolveIntrospectionAudience ?? (() => opts.rsPublicUrl ?? null),
+    resolveIssuer: opts.resolveIntrospectionIssuer ?? (() => opts.asIssuer ?? opts.asPublicUrl ?? null),
+  });
 
   // Spine correlation list / timeline / search routes delegate envelope
   // assembly to canonical operation modules. Timeline and search remain
@@ -4680,23 +4774,21 @@ export function buildAsApp(opts: ServerOpts = {}) {
       } catch (err) {
         // Failed restore is terminal, never a route to a connector resuming
         // against a phone-shaped shared surface.
-        try {
-          // The runtime may still be blocked in its interaction promise. Give
-          // it a terminal cancelled envelope before aborting the child so a
-          // failed restore cannot leave a live run waiting indefinitely.
-          originalRespondToInteraction(runId, {
-            interaction_id: interactionId,
-            status: "cancelled",
-          });
-        } finally {
-          // Same trusted internal resolution as onPresentationRestoreFailure
-          // above: this is system-initiated teardown of a run already known
-          // to the controller, not an owner-facing cancel request.
-          const restoreFailureOwnerSubjectId = controller?.getActiveRunOwnerSubjectId(runId);
-          if (restoreFailureOwnerSubjectId) {
-            await originalCancelRun?.(runId, restoreFailureOwnerSubjectId);
-          }
-        }
+        // Same trusted internal resolution as onPresentationRestoreFailure
+        // above: this is system-initiated teardown of a run already known
+        // to the controller, not an owner-facing cancel request. Start the
+        // cancellation before resolving the blocked interaction so the
+        // runtime cannot record success, but resolve before awaiting the
+        // cancellation because the connector may need it in order to exit.
+        const restoreFailureOwnerSubjectId = controller?.getActiveRunOwnerSubjectId(runId);
+        const cancellation = restoreFailureOwnerSubjectId
+          ? originalCancelRun?.(runId, restoreFailureOwnerSubjectId)
+          : undefined;
+        await originalRespondToInteraction(runId, {
+          interaction_id: interactionId,
+          status: "cancelled",
+        });
+        await cancellation;
         throw err;
       } finally {
         await runTargetRegistry.forceUnregister({ interactionId, runId });
@@ -5682,6 +5774,19 @@ function buildRsApp(opts: ServerOpts = {}) {
   const internalResource = opts.rsInternalUrl ?? null;
   const trustedMetadataHosts =
     opts.trustedMetadataHosts ?? (opts.ignoreAmbientPublicUrls ? null : process.env.PDPP_TRUSTED_HOSTS);
+  const rsIntrospectionCredentials = opts.rsIntrospectionCredentials ?? readIntrospectionCredentialsFromEnv();
+  if (!rsIntrospectionCredentials) {
+    throw new Error("RS introspection credentials must be configured");
+  }
+  const introspectToken = createRemoteIntrospector({
+    ...rsIntrospectionCredentials,
+    endpoint: opts.rsIntrospectionEndpoint ?? `http://127.0.0.1:${opts.asPort ?? AS_PORT}/introspect`,
+    expectedAudience: opts.resolveIntrospectionAudience ?? (() => explicitResource ?? null),
+    expectedIssuer: opts.resolveIntrospectionIssuer ?? (() => opts.asIssuer ?? opts.asPublicUrl ?? null),
+    ...(opts.introspectionFetch ? { fetchImpl: opts.introspectionFetch } : {}),
+  });
+  const requireToken = (req: ReqLike, res: ResLike, next: () => void) =>
+    requireTokenWithIntrospection(req, res, next, introspectToken);
 
   app.use(((
     req: ReqLike & { headers: Record<string, string | string[] | undefined> },
@@ -6458,6 +6563,7 @@ function buildRsApp(opts: ServerOpts = {}) {
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 export async function startServer(opts: ServerOpts = {}) {
+  const introspectionCredentials = resolveIntrospectionCredentials(opts);
   const logger = opts.logger ?? buildLogger({ quiet: !!opts.quiet });
   setConnectorSummaryReconcileObservationSink(createConnectorSummaryReconcileObservationSink(logger));
   const nativeConfig = validateNativeConfiguration(opts);
@@ -6971,6 +7077,7 @@ export async function startServer(opts: ServerOpts = {}) {
     dynamicClientRegistrationInitialAccessTokens: resolveDynamicClientRegistrationInitialAccessTokens(opts),
     enableDynamicClientRegistration: resolveDynamicClientRegistrationEnabled(opts),
     ignoreAmbientPublicUrls,
+    introspectionCallerCredentials: introspectionCredentials,
     isNekoProxyTargetApproved: opts.isNekoProxyTargetApproved,
     makePresentationAttachmentId: opts.makePresentationAttachmentId,
     makeStreamingBrowserSessionId: opts.makeStreamingBrowserSessionId,
@@ -6991,6 +7098,8 @@ export async function startServer(opts: ServerOpts = {}) {
     providerName,
     publicDynamicClientRegistrationRateLimit: opts.publicDynamicClientRegistrationRateLimit,
     referenceRevision: opts.referenceRevision,
+    resolveIntrospectionAudience: () => configuredRsPublicUrl || runtimeContext.rsUrl,
+    resolveIntrospectionIssuer: () => configuredAsIssuer || runtimeContext.referenceBaseUrl,
     staticSecretCredentialProber,
     streamingClearTimeout: opts.streamingClearTimeout,
     streamingCompanionFactory: opts.streamingCompanionFactory,
@@ -7065,6 +7174,7 @@ export async function startServer(opts: ServerOpts = {}) {
     // builder.
     hybridRetrievalSupported: opts.hybridRetrievalSupported,
     ignoreAmbientPublicUrls,
+    introspectionFetch: opts.introspectionFetch,
     lexicalRetrievalCapability: opts.lexicalRetrievalCapability,
     // Lexical retrieval extension knobs — see search.js + the metadata route.
     lexicalRetrievalSupported: opts.lexicalRetrievalSupported,
@@ -7078,11 +7188,15 @@ export async function startServer(opts: ServerOpts = {}) {
     onScheduleMutation: () => schedulerManager?.refresh(),
     providerName,
     referenceRevision: opts.referenceRevision,
+    resolveIntrospectionAudience: () => configuredRsPublicUrl || runtimeContext.rsUrl,
+    resolveIntrospectionIssuer: () => configuredAsIssuer || runtimeContext.referenceBaseUrl,
     // Explicitly-configured internal RS base for the hosted-MCP adapter's
     // child-grant self-calls (null when only the bare default would apply, so
     // the adapter falls back to the public resource). See explicitRsInternalUrl.
     // Spec: openspec/changes/route-hosted-mcp-adapter-self-calls-internally/
     rsInternalUrl: explicitRsInternalUrl,
+    rsIntrospectionCredentials: introspectionCredentials,
+    rsIntrospectionEndpoint: opts.rsIntrospectionEndpoint ?? `http://127.0.0.1:${asPort}/introspect`,
     rsPublicUrl: configuredRsPublicUrl,
     semanticRetrievalCapability: opts.semanticRetrievalCapability,
     // Semantic retrieval experimental extension knobs — see search-semantic.js

@@ -107,7 +107,7 @@ process.stdout.write(`${JSON.stringify({ asPort: server.asPort, mode, ready: tru
 async function shutdown() {
   // biome-ignore lint/suspicious/noUnnecessaryConditions: localized test assertion preserves its explicit contract.
   server.abortStartupBackfill?.("fixture shutdown");
-  server.schedulerManager?.stop?.();
+  server.schedulerManager?.stop();
   // biome-ignore lint/suspicious/noUnnecessaryConditions: localized test assertion preserves its explicit contract.
   server.stopBrowserSurfaceLeaseSweep?.();
   if ("closeAllConnections" in server.asServer && typeof server.asServer.closeAllConnections === "function") {

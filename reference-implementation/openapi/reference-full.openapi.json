@@ -1732,6 +1732,9 @@
                     "error_description": {
                       "type": "string"
                     },
+                    "fresh_authorization_required": {
+                      "type": "boolean"
+                    },
                     "request_id": {
                       "type": "string"
                     }
@@ -1759,6 +1762,9 @@
                     "error_description": {
                       "type": "string"
                     },
+                    "fresh_authorization_required": {
+                      "type": "boolean"
+                    },
                     "request_id": {
                       "type": "string"
                     }
@@ -1785,6 +1791,9 @@
                     },
                     "error_description": {
                       "type": "string"
+                    },
+                    "fresh_authorization_required": {
+                      "type": "boolean"
                     },
                     "request_id": {
                       "type": "string"
@@ -5240,6 +5249,9 @@
                     "error_description": {
                       "type": "string"
                     },
+                    "fresh_authorization_required": {
+                      "type": "boolean"
+                    },
                     "request_id": {
                       "type": "string"
                     }
@@ -5358,6 +5370,9 @@
                     "error_description": {
                       "type": "string"
                     },
+                    "fresh_authorization_required": {
+                      "type": "boolean"
+                    },
                     "request_id": {
                       "type": "string"
                     }
@@ -5384,6 +5399,9 @@
                     },
                     "error_description": {
                       "type": "string"
+                    },
+                    "fresh_authorization_required": {
+                      "type": "boolean"
                     },
                     "request_id": {
                       "type": "string"
@@ -5884,9 +5902,97 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Confidential resource-server authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
           }
         },
-        "summary": "Inspect token activity and, for active client tokens, the bound grant projection.",
+        "summary": "Inspect token activity for an authenticated confidential resource server.",
         "tags": [
           "oauth"
         ],

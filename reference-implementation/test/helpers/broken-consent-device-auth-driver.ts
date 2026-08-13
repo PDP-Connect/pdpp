@@ -10,12 +10,11 @@
  * The breaks here are not random. Each one mimics a plausible storage-driver
  * mistake that would compromise the reference's security/lifecycle posture:
  *
- *   1. Pending consent re-approval is allowed. A driver that does
+ *   1. Pending consent re-approval mints a second result. A driver that does
  *      `mark_approved` without checking the prior status (or that uses an
  *      idempotent UPSERT keyed on device_code) lets the same consent get
- *      re-approved twice. The harness's "approval is terminal" scenario
- *      pins this — under this broken driver it MUST fail because the
- *      second approval call succeeds and re-mints a grant.
+ *      re-approved twice. The harness's durable-resume scenario pins this:
+ *      the second call may succeed, but it MUST return the persisted result.
  *
  *   2. Owner-device denial does not transition the row to a terminal
  *      `denied` status; it simply removes the public-lookup entry. The

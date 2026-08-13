@@ -6,7 +6,14 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { getGrantPackageIdForGrant, listGrantPackagesForOwner, parsePendingConsentRequestUri } from "../server/auth.ts";
+import {
+  approveGrant,
+  denyGrant,
+  getGrantPackageIdForGrant,
+  listGrantPackagesForOwner,
+  parsePendingConsentRequestUri,
+  revokeGrantPackage,
+} from "../server/auth.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
@@ -33,13 +40,15 @@ const REGEXP_19 = /widening is forbidden/;
 const REGEXP_20 = /not in the staged field set/;
 const REGEXP_21 = /earlier than the staged bound/;
 const REGEXP_22 = /not a valid ISO-8601 instant/;
-const REGEXP_23 = /^reference\.legacy-connector-projection\.v1:sha256:[0-9a-f]{64}$/;
 const REGEXP_24 = /not in the approved set/;
 const REGEXP_25 = /Narrow this source/;
 const REGEXP_26 = /name="narrow_streams_0"/;
 const REGEXP_27 = /name="narrow_fields_0__/;
 const REGEXP_28 = /name="narrow_since_0__/;
 const REGEXP_29 = /Client-authored claims/;
+const CONSENT_EXCHANGE_CODE_RE = /cex_[0-9a-f]{64}/;
+const LEGACY_PROJECTION_REVISION_RE = /^reference\.legacy-connector-projection\.v1:sha256:[0-9a-f]{64}$/;
+const PACKAGE_ID_RE = /gpkg_[a-zA-Z0-9]+/;
 const SPOTIFY_BATCH_COMMITMENT = "Only use Spotify listening history for playlist suggestions.";
 const REDDIT_BATCH_COMMITMENT = "Only use Reddit posts for community summaries.";
 
@@ -55,6 +64,35 @@ function countRows(sql: string): number {
   const row = getDb().prepare(sql).get<{ n: number }>();
   assert.ok(row, `count query returns a row: ${sql}`);
   return row.n;
+}
+
+function countConsentEvents(deviceCode: string, eventType: string): number {
+  return (
+    getDb()
+      .prepare(
+        "SELECT COUNT(*) AS count FROM spine_events WHERE object_id = ? AND object_type = 'pending_consent' AND event_type = ?"
+      )
+      .get(deviceCode, eventType) as { count: number }
+  ).count;
+}
+
+function createDecisionPause(): { hook: () => Promise<void>; paused: Promise<void>; release: () => void } {
+  let markPaused: () => void = () => undefined;
+  let release: () => void = () => undefined;
+  const paused = new Promise<void>((resolve) => {
+    markPaused = resolve;
+  });
+  const resumed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    hook: async () => {
+      markPaused();
+      await resumed;
+    },
+    paused,
+    release,
+  };
 }
 
 function requirePackageId(body: GateResponseBody): string {
@@ -293,6 +331,30 @@ async function approveForm(asUrl: string, fields: Record<string, unknown>): Prom
   return { body: (await resp.json().catch(() => null)) as GateResponseBody | null, status: resp.status };
 }
 
+async function approveBatchHtml(asUrl: string, requestUri: string, approvedSourceIndexes: number[]): Promise<Response> {
+  const review = await fetch(`${asUrl}/consent/review`, {
+    body: JSON.stringify({
+      approved_source_indexes: approvedSourceIndexes,
+      request_uri: requestUri,
+      subject_id: "owner_local",
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(review.status, 200, await review.clone().text());
+  const reviewed = (await review.json()) as { approval_review_revision?: unknown };
+  assert.equal(typeof reviewed.approval_review_revision, "string");
+  return fetch(`${asUrl}/consent/approve`, {
+    body: new URLSearchParams({
+      approval_review_revision: reviewed.approval_review_revision as string,
+      confirm_reviewed_decision: "1",
+      request_uri: requestUri,
+    }).toString(),
+    headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
+  });
+}
+
 /** Narrows a `{status, body}` result's body from `T | null` to `T`, failing the assertion if null. */
 function unwrapBody<T>(result: { status: number; body: T | null }): T {
   assert.ok(result.body, `expected a response body (status ${result.status})`);
@@ -312,6 +374,68 @@ function issuedGrant(result: GateResult): IssuedGrant {
   assert.ok(grant?.child_grants, `expected a grant with child_grants (status ${result.status})`);
   return grant as IssuedGrant;
 }
+
+test("batch consent terminal decision is exclusive across approval and denial", async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const body = unwrapBody(
+      await par(asUrl, [
+        detail({ id: spotify.connector_id, kind: "connector" }, [{ name: "top_artists" }]),
+        detail({ id: reddit.connector_id, kind: "connector" }, [{ name: "posts" }]),
+      ])
+    );
+    const code = parsePendingConsentRequestUri(body.request_uri);
+    assert.ok(code);
+    const review = await fetch(`${asUrl}/consent/review`, {
+      body: JSON.stringify({
+        approved_source_indexes: [0, 1],
+        request_uri: body.request_uri,
+        subject_id: "owner_local",
+      }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(review.status, 200);
+    const revision = ((await review.json()) as { approval_review_revision: string }).approval_review_revision;
+    const pause = createDecisionPause();
+    const denial = denyGrant(code, { beforeCasHook: pause.hook });
+    await pause.paused;
+    const approval = await approveGrant(code, "owner_local", { approval_review_revision: revision });
+    pause.release();
+    await assert.rejects(
+      denial,
+      (error: unknown) => error instanceof Error && "code" in error && error.code === "approval_conflict"
+    );
+    assert.equal(typeof approval.token, "string");
+    assert.equal(countConsentEvents(code, "consent.denied"), 0);
+    assert.equal(countRows("SELECT COUNT(*) AS n FROM grant_packages"), 1);
+
+    const body2 = unwrapBody(
+      await par(asUrl, [
+        detail({ id: spotify.connector_id, kind: "connector" }, [{ name: "top_artists" }]),
+        detail({ id: reddit.connector_id, kind: "connector" }, [{ name: "posts" }]),
+      ])
+    );
+    const code2 = parsePendingConsentRequestUri(body2.request_uri);
+    assert.ok(code2);
+    const review2 = await fetch(`${asUrl}/consent/review`, {
+      body: JSON.stringify({
+        approved_source_indexes: [0, 1],
+        request_uri: body2.request_uri,
+        subject_id: "owner_local",
+      }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    const revision2 = ((await review2.json()) as { approval_review_revision: string }).approval_review_revision;
+    assert.equal(await denyGrant(code2), true);
+    await assert.rejects(
+      approveGrant(code2, "owner_local", { approval_review_revision: revision2 }),
+      (error: unknown) => error instanceof Error && "code" in error && error.code === "approval_conflict"
+    );
+    assert.equal(countConsentEvents(code2, "consent.denied"), 1);
+    assert.equal(countRows("SELECT COUNT(*) AS n FROM grant_packages"), 1);
+  });
+});
 
 test("batch consent gate: page defaults to per-source confirmation and suppresses approve-all for continuous all-streams", async () => {
   await withHarness(async ({ asUrl, spotify, reddit }) => {
@@ -502,6 +626,61 @@ test("batch consent gate: approved sources become independent child grants under
   });
 });
 
+test("batch consent gate: HTML approval hands off the package token durably", async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const staged = unwrapBody(
+      await par(asUrl, [
+        detail({ id: spotify.connector_id, kind: "connector" }, [{ name: "top_artists" }]),
+        detail({ id: reddit.connector_id, kind: "connector" }, [{ name: "posts" }]),
+      ])
+    );
+    const approval = await approveBatchHtml(asUrl, staged.request_uri || "", [0, 1]);
+    assert.equal(approval.status, 200);
+    const code = (await approval.text()).match(CONSENT_EXCHANGE_CODE_RE)?.[0];
+    assert.ok(code);
+    const exchange = await fetch(`${asUrl}/consent/exchange`, {
+      body: JSON.stringify({ code }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(exchange.status, 200);
+    const result = (await exchange.json()) as {
+      grant: { child_grants?: unknown[]; package?: boolean };
+      package_id?: string;
+      token?: string;
+    };
+    assert.ok(result.package_id?.startsWith("gpkg_"));
+    assert.equal(result.grant.package, true);
+    assert.equal(result.grant.child_grants?.length, 2);
+    assert.ok(result.token);
+  });
+});
+
+test("batch consent gate: a revoked package is not delivered by a stored exchange code", async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const staged = unwrapBody(
+      await par(asUrl, [
+        detail({ id: spotify.connector_id, kind: "connector" }, [{ name: "top_artists" }]),
+        detail({ id: reddit.connector_id, kind: "connector" }, [{ name: "posts" }]),
+      ])
+    );
+    const approval = await approveBatchHtml(asUrl, staged.request_uri || "", [0, 1]);
+    const html = await approval.text();
+    const code = html.match(CONSENT_EXCHANGE_CODE_RE)?.[0];
+    const packageId = html.match(PACKAGE_ID_RE)?.[0];
+    assert.ok(code);
+    assert.ok(packageId);
+    await revokeGrantPackage(packageId);
+    const exchange = await fetch(`${asUrl}/consent/exchange`, {
+      body: JSON.stringify({ code }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(exchange.status, 404);
+    assert.equal((await exchange.text()).includes("tok_"), false);
+  });
+});
+
 test("batch consent gate: low-risk approve-all requires re-asserting confirmation", async () => {
   await withHarness(async ({ asUrl, spotify, reddit }) => {
     const entries = [
@@ -597,7 +776,7 @@ test("batch consent gate: staged batch remains source-bounded in storage", async
     assert.ok(spotifySnapshot);
     assert.ok(redditSnapshot);
     for (const snapshot of [spotifySnapshot, redditSnapshot]) {
-      assert.match(snapshot.declaration_version, REGEXP_23);
+      assert.match(snapshot.declaration_version, LEGACY_PROJECTION_REVISION_RE);
       assert.equal(snapshot.snapshot_version, "reference.source-declaration-snapshot.v1");
       assert.equal(snapshot.declaration.declaration_version, snapshot.declaration_version);
     }

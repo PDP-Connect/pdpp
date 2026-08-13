@@ -95,25 +95,25 @@ export const DIRECT_PREPARE_ALLOWLIST: readonly DirectPrepareAllowlistEntry[] = 
   },
   {
     category: "grandfathered_pre_wrapper",
-    line: 7213,
+    line: 7272,
     note: "backfillSqliteRecordSemanticTimesForManifest: prepared UPDATE records SET semantic_time = ? (per-record backfill write inside the writeTransaction)",
     path: "reference-implementation/server/records.ts",
   },
   {
     category: "grandfathered_pre_wrapper",
-    line: 390,
+    line: 391,
     note: "applyDatasetSummaryRecordDelta: prepared upsert of the per-stream projection row",
     path: "reference-implementation/server/dataset-summary-read-model.ts",
   },
   {
     category: "grandfathered_pre_wrapper",
-    line: 756,
+    line: 757,
     note: "updateReconciledStreamRows: prepared optimistic record-time-bounds update inside the reconcile transaction",
     path: "reference-implementation/server/dataset-summary-read-model.ts",
   },
   {
     category: "grandfathered_pre_wrapper",
-    line: 827,
+    line: 828,
     note: "assertDeltaCanUseStreamProjection: prepared stream-count guard query",
     path: "reference-implementation/server/dataset-summary-read-model.ts",
   },
@@ -125,7 +125,7 @@ export const DIRECT_PREPARE_ALLOWLIST: readonly DirectPrepareAllowlistEntry[] = 
   },
   {
     category: "grandfathered_pre_wrapper",
-    line: 933,
+    line: 935,
     note: "replaceStreamProjections: prepared stream-projection insert reused for the rebuild batch",
     path: "reference-implementation/server/dataset-summary-read-model.ts",
   },

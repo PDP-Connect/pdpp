@@ -19,8 +19,11 @@ const INSTANCE_ID = "cin_approval_artifact_spotify";
 const SOURCE_ID = "https://sources.example.test/approval-artifact/spotify";
 const BATCH_DRIFT_RE = /REJECTED SOURCE PURPOSE|MUTABLE BATCH|MUTABLE CATALOG DRIFT/;
 const BATCH_FINAL_FIELDS_RE = /name="approved_source_indexes"|name="narrow_streams_/;
+const MUTABLE_BATCH_CLAIM_RE = /MUTABLE BATCH CLAIM/;
 const CONFIRM_REVIEWED_DECISION_RE = /name="confirm_reviewed_decision"/;
 const CLIENT_CLAIM_DISCLAIMER_RE = /not enforced by your server/i;
+const CONCERT_RECOMMENDATIONS_RE = /Only use this for concert recommendations/;
+const MUTABLE_CLAIM_DRIFT_RE = /MUTABLE CLAIM DRIFT/;
 const REGEXP_SPECIAL_CHARACTERS_RE = /[.*+?^${}()|[\]\\]/g;
 const SINGLE_DRIFT_RE = /MUTABLE REQUEST|MUTABLE CATALOG DRIFT|drift\.example\.test/;
 const SINGLE_FROZEN_FIELDS_RE = /name="subject_id"|name="ai_training_consented"/;
@@ -362,7 +365,7 @@ test("resumed batch HTML renders only approved frozen sources, order, and narrow
       assert.match(html, new RegExp(String(fact).replace(REGEXP_SPECIAL_CHARACTERS_RE, "\\$&")));
     }
     assert.doesNotMatch(html, BATCH_DRIFT_RE);
-    assert.doesNotMatch(html, /MUTABLE BATCH CLAIM/);
+    assert.doesNotMatch(html, MUTABLE_BATCH_CLAIM_RE);
     assert.doesNotMatch(html, BATCH_FINAL_FIELDS_RE);
     assert.match(html, CONFIRM_REVIEWED_DECISION_RE);
     assert.match(html, CLIENT_CLAIM_DISCLAIMER_RE);
@@ -421,9 +424,9 @@ test("client claims are frozen in final review evidence without becoming grant r
     const resumed = await fetch(`${asUrl}/consent?request_uri=${encodeURIComponent(firstRequestUri)}`);
     const html = await resumed.text();
     assert.equal(resumed.status, 200, html);
-    assert.match(html, /Only use this for concert recommendations/);
+    assert.match(html, CONCERT_RECOMMENDATIONS_RE);
     assert.match(html, CLIENT_CLAIM_DISCLAIMER_RE);
-    assert.doesNotMatch(html, /MUTABLE CLAIM DRIFT/);
+    assert.doesNotMatch(html, MUTABLE_CLAIM_DRIFT_RE);
 
     const staleApprove = await fetch(`${asUrl}/consent/approve`, {
       body: JSON.stringify({ approval_review_revision: firstReview.revision, request_uri: firstRequestUri }),

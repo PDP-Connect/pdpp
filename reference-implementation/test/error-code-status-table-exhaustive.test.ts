@@ -63,6 +63,7 @@ const EXPECTED_CODE_TO_STATUS = {
   insufficient_scope: 403,
   interaction_id_mismatch: 409,
   invalid_argument: 400,
+  invalid_authorization_details: 400,
   invalid_client: 400,
   invalid_client_metadata: 400,
   invalid_cursor: 400,

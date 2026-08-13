@@ -105,7 +105,7 @@ export async function executeAsDeviceDecision(
       outcome: "failure",
       // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       requestId: (err as { request_id?: string | null })?.request_id ?? null,
-      status: 400,
+      status: errCode === "approval_conflict" ? 409 : 400,
       // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       traceId: (err as { trace_id?: string | null })?.trace_id ?? null,
     };

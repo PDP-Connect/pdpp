@@ -1,0 +1,6 @@
+{
+  "kind": "response",
+  "path": "iss",
+  "value": "https://wrong.example",
+  "expected": "context.issuer_mismatch"
+}

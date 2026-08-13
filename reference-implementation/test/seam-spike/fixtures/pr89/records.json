@@ -1,0 +1,32 @@
+{
+  "allowed": {
+    "data": {
+      "id": "artist:42",
+      "name": "Allowed",
+      "observed_at": "2026-02-01T00:00:00Z"
+    },
+    "emitted_at": "2026-02-01T00:00:00Z",
+    "key": "artist:42",
+    "stream": "top_artists"
+  },
+  "outside_resource": {
+    "data": {
+      "id": "artist:99",
+      "name": "Outside resource",
+      "observed_at": "2026-02-01T00:00:00Z"
+    },
+    "emitted_at": "2026-02-01T00:00:00Z",
+    "key": "artist:99",
+    "stream": "top_artists"
+  },
+  "outside_time": {
+    "data": {
+      "id": "artist:42",
+      "name": "Outside time",
+      "observed_at": "2026-06-01T00:00:00Z"
+    },
+    "emitted_at": "2026-06-01T00:00:00Z",
+    "key": "artist:42",
+    "stream": "top_artists"
+  }
+}

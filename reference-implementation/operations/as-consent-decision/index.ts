@@ -104,6 +104,8 @@ export interface AsConsentDecisionApproveSuccessOutcome {
 export interface AsConsentDecisionDenySuccessOutcome {
   readonly action: "deny";
   readonly outcome: "success";
+  /** Canonical request URI, including when the caller supplied approval_id. */
+  readonly requestUri: string;
   readonly traceContext: { request_id?: string | null; trace_id?: string | null } | null;
 }
 
@@ -126,7 +128,7 @@ export async function executeAsConsentDecision(
   let requestUri = input.requestUri || null;
   if (!requestUri && input.approvalId) {
     const row = await deps.getPendingConsentByApprovalId(input.approvalId);
-    if (row?.status !== "pending") {
+    if (!(row && (row.status === "pending" || (input.action === "approve" && row.status === "approved")))) {
       return {
         errorCode: "not_found",
         errorMessage: "No pending consent for approval_id",
@@ -182,6 +184,7 @@ export async function executeAsConsentDecision(
   return {
     action: "deny",
     outcome: "success",
+    requestUri,
     traceContext,
   };
 }

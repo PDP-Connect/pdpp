@@ -20,6 +20,8 @@ import type { RefSpineEventsPageEnvelope } from "../operations/ref-spine-events-
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { introspectionHeaders } from "./helpers/introspection.ts";
+import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -206,7 +208,14 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>): Promise<
   const spotifyManifest = JSON.parse(
     readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
   ) as SpotifyManifest;
-  const server = (await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 })) as TestServer;
+  const server = (await startServer({
+    asPort: 0,
+    dbPath: ":memory:",
+    introspectionCallerCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
+    quiet: true,
+    rsIntrospectionCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
+    rsPort: 0,
+  })) as TestServer;
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   try {
@@ -300,7 +309,6 @@ test("security: harden reference auth surfaces", async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const approval = await approveSpotifyGrant(asUrl, spotifyManifest);
       const resp = await fetch(`${asUrl}/grants/${approval.grant.grant_id}/revoke`, {
-        headers: { "Content-Type": "application/json" },
         method: "POST",
       });
       assert.equal(resp.status, 401);
@@ -310,7 +318,7 @@ test("security: harden reference auth surfaces", async (t) => {
       // The grant SHALL remain unchanged. Use a fresh introspect call to prove it.
       const introResp = await fetch(`${asUrl}/introspect`, {
         body: JSON.stringify({ token: approval.token }),
-        headers: { "Content-Type": "application/json" },
+        headers: introspectionHeaders(),
         method: "POST",
       });
       const intro = (await introResp.json()) as IntrospectResponseBody;
@@ -354,7 +362,7 @@ test("security: harden reference auth surfaces", async (t) => {
       // A should still be active.
       const introResp = await fetch(`${asUrl}/introspect`, {
         body: JSON.stringify({ token: a.token }),
-        headers: { "Content-Type": "application/json" },
+        headers: introspectionHeaders(),
         method: "POST",
       });
       const intro = (await introResp.json()) as IntrospectResponseBody;
