@@ -206,7 +206,7 @@ function attachmentsCoverageMessage(messages: readonly EmittedMessage[]): Emitte
   return messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "attachments");
 }
 
-test("collect(): zero attachments across both parent streams proves a verified-empty 0/0 attachments claim", async () => {
+test("collect(): zero attachments across both parent streams proves a verified-empty 0/0 attachments claim with STATE", async () => {
   const restore = stubFetchByPath({
     "/v3/groups": [GROUP],
     "/v3/chats": [CHAT],
@@ -246,15 +246,19 @@ test("collect(): zero attachments across both parent streams proves a verified-e
     await collect(ctx);
 
     const coverage = attachmentsCoverageMessage(messages);
+    const state = messages.find((m) => m.type === "STATE" && m.stream === "attachments");
+
     assert.ok(coverage, "attachments DETAIL_COVERAGE must be emitted when both parent streams succeed cleanly");
     assert.equal(coverage?.type === "DETAIL_COVERAGE" && coverage.considered, 0);
     assert.equal(coverage?.type === "DETAIL_COVERAGE" && coverage.covered, 0);
+
+    assert.ok(state, "attachments STATE must be emitted when parent streams succeed cleanly");
   } finally {
     restore();
   }
 });
 
-test("collect(): nonzero attachments with no blob-upload backend configured proves considered > 0, covered: 0 — never false-complete", async () => {
+test("collect(): nonzero attachments with no blob-upload backend configured proves considered > 0, covered: 0 — never false-complete, and emits STATE", async () => {
   // No PDPP_RS_URL/PDPP_OWNER_TOKEN in this test process env, so
   // makeUploader() returns undefined and every attachment with a URL stays
   // hydration_status: "deferred" (attempted this run, but not retained).
@@ -269,6 +273,8 @@ test("collect(): nonzero attachments with no blob-upload backend configured prov
     await collect(ctx);
 
     const coverage = attachmentsCoverageMessage(messages);
+    const state = messages.find((m) => m.type === "STATE" && m.stream === "attachments");
+
     assert.ok(coverage, "attachments DETAIL_COVERAGE must still be emitted — the run itself was clean");
     assert.equal(coverage?.type === "DETAIL_COVERAGE" && coverage.considered, 2, "both attachments were considered");
     assert.equal(
@@ -276,12 +282,14 @@ test("collect(): nonzero attachments with no blob-upload backend configured prov
       0,
       "an unconfigured blob backend must never be reported as covered — that would be a false completeness claim"
     );
+
+    assert.ok(state, "attachments STATE must be emitted when parent streams succeed cleanly");
   } finally {
     restore();
   }
 });
 
-test("collect(): a failed REQUESTED parent stream (group_messages) withholds attachments coverage entirely — an interrupted run must not claim a partial boundary as proven", async () => {
+test("collect(): a failed REQUESTED parent stream (group_messages) withholds attachments STATE and coverage — partial enumeration must not persist", async () => {
   const restore = stubFetchByPath({
     "/v3/groups": [GROUP],
     "/v3/chats": [CHAT],
@@ -289,22 +297,23 @@ test("collect(): a failed REQUESTED parent stream (group_messages) withholds att
     "/v3/chats/chat-1/messages": { count: 1, direct_messages: [directMessageWithAttachment("dmsg-1")] },
   });
   try {
-    const { ctx, messages } = makeCtx();
+    const { ctx, messages } = makeCtx({ attachments: { fingerprints: "prior-state" } });
     await collect(ctx);
 
     const coverage = attachmentsCoverageMessage(messages);
+    const attachmentsState = messages.find((m) => m.type === "STATE" && m.stream === "attachments");
+
     assert.equal(
       coverage,
       undefined,
-      "group_messages failed this run — its attachment boundary is unknown/partial, so attachments coverage must be withheld, not reported against only the successful parent"
+      "group_messages failed this run — its attachment boundary is unknown/partial, so attachments coverage must be withheld"
     );
 
-    // The attachments STATE checkpoint still commits (fingerprints for
-    // whatever WAS emitted this run survive), matching the existing
-    // per-stream withhold-coverage-not-state discipline used elsewhere in
-    // this file for groups/group_messages/direct_messages/direct_chat_messages.
-    const attachmentsState = messages.find((m) => m.type === "STATE" && m.stream === "attachments");
-    assert.ok(attachmentsState, "attachments STATE still commits even though its coverage claim is withheld");
+    assert.equal(
+      attachmentsState,
+      undefined,
+      "group_messages failed this run — attachments enumeration is incomplete, so attachments STATE must also be withheld to preserve the prior cursor for next run"
+    );
   } finally {
     restore();
   }

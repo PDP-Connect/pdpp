@@ -1829,13 +1829,24 @@ export async function collect({
     await emit(buildFullScanCoverageMessage("direct_chat_messages", directChatMessagesOutcome.considered));
   }
   if (attachmentsRequested) {
-    await emit({
-      type: "STATE",
-      stream: "attachments",
-      cursor: { fingerprints: attachmentCursor.toState() },
-    });
-    if (attachmentParentsProvenClean(requested, groupMessagesOutcome, directChatMessagesOutcome)) {
+    const parentsProven = attachmentParentsProvenClean(requested, groupMessagesOutcome, directChatMessagesOutcome);
+    if (parentsProven) {
+      await emit({
+        type: "STATE",
+        stream: "attachments",
+        cursor: { fingerprints: attachmentCursor.toState() },
+      });
       await emit(buildAttachmentDetailCoverageMessage(attachmentCoverage));
+    } else {
+      // A requested parent failed: attachments enumeration is incomplete for
+      // an unknown subset of messages. Withhold both STATE and coverage —
+      // the previous cursor is retained and will be reused next run when we
+      // walk the parent streams again.
+      await reportStreamFailure?.(
+        "attachments",
+        "attachments detail collection incomplete: a requested parent stream failed",
+        { retryable: true }
+      );
     }
   }
 }
