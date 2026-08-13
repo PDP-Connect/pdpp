@@ -429,6 +429,10 @@ export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, rec
       // outcome bucket. too_large is a deployment cap (may change); deferred is
       // not attempted this run. Neither justifies permanent skip or gap claim.
       return;
+    default: {
+      const unhandledStatus: never = record.hydration_status;
+      throw new Error(`Unhandled attachment hydration status: ${unhandledStatus}`);
+    }
   }
 }
 

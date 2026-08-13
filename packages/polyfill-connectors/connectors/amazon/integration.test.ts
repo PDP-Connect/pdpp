@@ -1999,7 +1999,10 @@ test("discriminator: policy-deferred (unaccounted) vs attempted-failed (gap) dif
   await processListOrder(failedPage, failedDeps, makeRunFlags(), makeListOrder({ orderId: "failed-1" }));
   assert.deepEqual(failed.required, ["failed-1"], "attempted: required");
   assert.deepEqual(failed.gap, ["failed-1"], "attempted-failed: in gap");
-  assert.ok(findDetailGaps(failedMsgs).some((g) => g.record_key === "failed-1"), "gap backed by DETAIL_GAP");
+  assert.ok(
+    findDetailGaps(failedMsgs).some((g) => g.record_key === "failed-1"),
+    "gap backed by DETAIL_GAP"
+  );
 });
 
 test("policy-skipped run (PDPP_AMAZON_SKIP_DETAIL): unaccounted required defers checkpoint", async () => {

@@ -2120,7 +2120,6 @@ export function buildAccountDetailGap(outcome: {
   };
 }
 
-
 /**
  * Emit the per-run DETAIL_COVERAGE for the account -> transactions detail
  * fan-out. `accounts` is Chase's enumerated inventory (a known denominator),

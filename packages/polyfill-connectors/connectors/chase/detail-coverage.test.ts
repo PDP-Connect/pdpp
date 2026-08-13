@@ -295,14 +295,21 @@ test("emitStatementDetailCoverage: PDF download failure emits DETAIL_GAP, not op
   assert.ok(coverage, "expected a DETAIL_COVERAGE message");
   assert.deepEqual(coverage.required_keys, ["STMT-1", "STMT-2"]);
   assert.deepEqual(coverage.hydrated_keys, ["STMT-1"]);
-  assert.deepEqual(coverage.gap_keys, ["STMT-2"], "missing local PDF bytes due to transport failure is a retryable gap");
+  assert.deepEqual(
+    coverage.gap_keys,
+    ["STMT-2"],
+    "missing local PDF bytes due to transport failure is a retryable gap"
+  );
   assert.equal(coverage.optional_skip_keys, undefined, "transport failures must not populate optional_skip_keys");
   assert.equal(coverage.considered, 2, "both statement index rows were enumerated");
   assert.equal(coverage.covered, 1, "only hydrated statements count as covered; gaps are partial");
 
   const gaps = messages.filter((m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP");
   assert.equal(gaps.length, 1, "one DETAIL_GAP emitted for the failed PDF");
-  assert.ok(gaps.some(g => g.record_key === "STMT-2"), "gap keyed by statement ID");
+  assert.ok(
+    gaps.some((g) => g.record_key === "STMT-2"),
+    "gap keyed by statement ID"
+  );
 });
 
 test("emitStatementDetailCoverage: gap outcome with no carried hydration remains a retryable gap", async () => {
@@ -323,7 +330,7 @@ test("emitStatementDetailCoverage: gap outcome with no carried hydration remains
 
   const gaps = messages.filter((m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP");
   assert.equal(gaps.length, 1);
-  assert.ok(gaps.some(g => g.record_key === "NEW-STMT" && g.reason === "temporary_unavailable"));
+  assert.ok(gaps.some((g) => g.record_key === "NEW-STMT" && g.reason === "temporary_unavailable"));
 });
 
 test("emitStatementDetailCoverage: emits nothing when statements are out of scope", async () => {

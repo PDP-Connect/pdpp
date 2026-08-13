@@ -4171,20 +4171,17 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and un
   assert.equal(emitted.filter((r) => r.stream === "attachments").length, 3);
 
   // DETAIL_COVERAGE: covered = hydrated only (no unaccounted keys claimed).
-  assert.deepEqual(
-    buildAttachmentDetailCoverageMessage(coverage),
-    {
-      type: "DETAIL_COVERAGE",
-      reference_only: true,
-      stream: "attachments",
-      state_stream: "messages",
-      required_keys: ["ok:1", "bad:1", "big:1"],
-      hydrated_keys: ["ok:1"],
-      gap_keys: ["bad:1"],
-      considered: 3,
-      covered: 1,
-    }
-  );
+  assert.deepEqual(buildAttachmentDetailCoverageMessage(coverage), {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    stream: "attachments",
+    state_stream: "messages",
+    required_keys: ["ok:1", "bad:1", "big:1"],
+    hydrated_keys: ["ok:1"],
+    gap_keys: ["bad:1"],
+    considered: 3,
+    covered: 1,
+  });
 
   // P0 invariant: every gap_keys entry MUST be backed by a matching durable
   // DETAIL_GAP. `gap_keys` alone do not satisfy the host commit-gate, which

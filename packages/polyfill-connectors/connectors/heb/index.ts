@@ -800,9 +800,7 @@ export async function processListOrder(
     // it must still join the required denominator.
     if (deps.wantsItems && deps.orderItemsCoverage) {
       recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, "gap");
-      await deps.emit(
-        buildHebDetailGap(listOrder.orderId, "temporary_unavailable", "parse_missing", undefined)
-      );
+      await deps.emit(buildHebDetailGap(listOrder.orderId, "temporary_unavailable", "parse_missing", undefined));
     }
     // The list scan still enumerated this order, so the `orders` denominator
     // must not silently drop it: considered, but not covered (no accounting

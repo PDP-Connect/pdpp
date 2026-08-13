@@ -8,6 +8,8 @@
  * Auth rejection (invalid credentials, disabled IMAP) remains non-retryable.
  */
 
+const TRANSIENT_IMAP_MESSAGE_PATTERN = /ECONN|ETIMEDOUT|fetch failed|EPIPE|timeout/i;
+
 /**
  * Classify an IMAP transport error as transient (retryable) or terminal.
  * Checks both error code (structured, from imapflow) and message (fallback).
@@ -37,5 +39,5 @@ export function isImapTransientError(err: unknown): boolean {
   }
   // Fallback: message pattern (Node.js errors, downstream HTTP clients, etc.).
   const msg = err instanceof Error ? err.message : String(err);
-  return /ECONN|ETIMEDOUT|fetch failed|EPIPE|timeout/i.test(msg);
+  return TRANSIENT_IMAP_MESSAGE_PATTERN.test(msg);
 }
