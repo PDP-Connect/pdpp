@@ -616,15 +616,13 @@ function outboxTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
  * `accepted_absence`/`optional` stream that is merely stale or partial annotates but
  * does NOT downgrade the pill below the required-stream tone (mitigates "worst-wins
  * over-ambers on a trivial optional stream", design Risks). A required stream always
- * contributes its full tone. A terminal/unsupported coverage on ANY stream is a real
- * red regardless of priority — a lost stream is a lost stream.
+ * contributes its full tone; optional stream coverage remains an advisory fact.
  */
 function worstStreamCoverageTone(streams: readonly StreamRollup[]): VerdictTone {
   let worstTone: VerdictTone = "green";
   for (const stream of streams) {
     const tone = coverageTone(stream.coverage);
-    const isHardRed = tone === "red"; // terminal/unsupported/unavailable
-    if (stream.priority === "required" || isHardRed) {
+    if (stream.priority === "required") {
       worstTone = worse(worstTone, tone);
     }
     // optional/accepted-absence non-red coverage annotates only; does not downgrade.
@@ -661,7 +659,7 @@ function connectionDisposition(
   let worst: ForwardDisposition = snapshot.forward_disposition;
   for (const stream of streams) {
     const disposition = streamDisposition(stream, snapshot, refresh, scheduleEvidence);
-    const counts = stream.priority === "required" || disposition === "terminal";
+    const counts = stream.priority === "required";
     if (!counts) {
       continue;
     }

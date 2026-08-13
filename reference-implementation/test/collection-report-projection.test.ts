@@ -1389,6 +1389,35 @@ test("carry-forward: an undeclared fact-only stream resting unknown does NOT tri
   );
 });
 
+test("optional terminal stream remains advisory while required terminal stream remains blocking", () => {
+  const optional: CollectionReportEntry = {
+    checkpoint: "not_staged",
+    collected: 0,
+    considered: "unknown",
+    coverage_condition: "terminal_gap",
+    coverage_strategy: null,
+    covered: "unknown",
+    evidence_as_of: null,
+    forward_disposition: "terminal",
+    freshness_strategy: null,
+    pending_detail_gaps: 0,
+    pending_detail_gaps_is_floor: false,
+    required: false,
+    skipped: { reason: "optional_resource_unavailable" },
+    stream: "optional_stream",
+  };
+  const required = { ...optional, required: true, stream: "required_stream" };
+
+  assert.equal(
+    rollupCollectionReportCoverageOverride("complete", [optional], [{ name: "optional_stream", required: false }]),
+    null
+  );
+  assert.equal(
+    rollupCollectionReportCoverageOverride("complete", [required], [{ name: "required_stream" }]),
+    "terminal_gap"
+  );
+});
+
 // openspec/changes/fix-recovery-run-lifecycle: a recovery-only run performs
 // no forward/list inventory pass by definition, so `buildCollectionFacts`
 // (connector-gap-bounding.ts) returns null for it unconditionally — a

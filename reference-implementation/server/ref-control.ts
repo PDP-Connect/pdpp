@@ -2509,13 +2509,19 @@ const DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER = ["terminal_gap", "retryable_gap",
 
 export function rollupCollectionReportCoverageOverride(
   currentAxis: CoverageAxis,
-  report: readonly CollectionReportEntry[]
+  report: readonly CollectionReportEntry[],
+  manifestStreams: readonly ManifestStream[] = []
 ): CoverageAxis | null {
+  const manifestByStream = firstManifestStreamsByName(manifestStreams);
+  const requiredReport = report.filter((entry) => {
+    const manifestStream = manifestByStream.get(entry.stream);
+    return manifestStream ? isRequiredStream(manifestStream) : entry.required;
+  });
   const currentIndex = DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER.indexOf(
     currentAxis as (typeof DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER)[number]
   );
   const currentRank = currentIndex === -1 ? DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER.length : currentIndex;
-  const conditions = new Set(report.map((entry) => entry.coverage_condition));
+  const conditions = new Set(requiredReport.map((entry) => entry.coverage_condition));
   const degrading =
     DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER.slice(0, currentRank).find((axis) => conditions.has(axis)) ?? null;
   if (degrading) {
@@ -2532,7 +2538,7 @@ export function rollupCollectionReportCoverageOverride(
   if (
     currentIndex === -1 &&
     currentAxis !== "unknown" &&
-    report.some((entry) => entry.required && entry.coverage_condition === "unknown")
+    requiredReport.some((entry) => entry.coverage_condition === "unknown")
   ) {
     return "unknown";
   }
@@ -2615,7 +2621,8 @@ export function refineConnectionHealthWithCollectionReport(
 ): ConnectionHealthSnapshot {
   const coverageOverride = rollupCollectionReportCoverageOverride(
     initialConnectionHealth.axes.coverage,
-    collectionReport
+    collectionReport,
+    healthInput.manifestStreams
   );
   const freshnessOverride = proofAgeFreshnessOverride(healthInput, collectionReport);
   if (coverageOverride === null && freshnessOverride === null) {

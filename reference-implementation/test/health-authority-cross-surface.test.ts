@@ -267,3 +267,24 @@ test("fresh manual success stays green across health, rendered, owner, and fleet
   assert.deepEqual(fleet.dimensions.system.degraded_or_broken, []);
   assert.deepEqual(fleet.dimensions.attention.needs_owner, []);
 });
+
+test("optional terminal stream stays visible as an advisory across health, fleet, pill, and stream surfaces", () => {
+  const projected = project(
+    input({ coverage: { axis: "complete" }, refresh: MANUAL_REFRESH, schedule: null }),
+    [stream({ coverage: "terminal_gap", priority: "optional", stream_id: "optional_stream" })],
+    MANUAL_REFRESH,
+    null
+  );
+
+  assert.equal(projected.snapshot.state, "healthy");
+  assert.equal(projected.snapshot.axes.coverage, "complete");
+  assert.equal(projected.verdict.pill.label, "Healthy");
+  assert.equal(projected.verdict.pill.tone, "green");
+  assert.equal(projected.verdict.streams.some((row) => row.stream_id === "optional_stream"), true);
+  assert.equal(projected.ownerState.resolver, "healthy");
+
+  const fleet = fleetFor("optional-stream", projected);
+  assert.equal(fleet.state, "healthy");
+  assert.deepEqual(fleet.dimensions.system.degraded_or_broken, []);
+  assert.deepEqual(fleet.dimensions.attention.needs_owner, []);
+});
