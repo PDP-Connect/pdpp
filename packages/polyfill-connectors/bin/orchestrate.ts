@@ -15,6 +15,12 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config as dotenvConfig } from "dotenv";
+import { isPostgresStorageBackend } from "../../../reference-implementation/server/postgres-storage.ts";
+import {
+  admitOwnerRunConnection,
+  createPostgresConnectorInstanceStore,
+  createSqliteConnectorInstanceStore,
+} from "../../../reference-implementation/server/stores/connector-instance-store.ts";
 import { handleInteraction } from "../src/interaction-handler.ts";
 import {
   DEFAULT_AS_URL,
@@ -60,6 +66,11 @@ interface ProgressEvent {
 }
 
 interface RunConnectorOpts {
+  admitRunConnection: (input: {
+    connectorId: string;
+    connectorInstanceId: string | null;
+    ownerSubjectId: string | null;
+  }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>;
   collectionMode: "incremental" | "full_refresh";
   connectorId: string;
   connectorPath: string;
@@ -99,11 +110,15 @@ async function cmdRun(name: string): Promise<{ ok: boolean; result: RunResult }>
     await registerManifest(asUrl, manifest);
 
     console.error("[orchestrate] minting owner token...");
-    const ownerToken = await issueOwnerToken(asUrl, process.env.PDPP_SUBJECT_ID || "owner_local");
+    const ownerSubjectId = process.env.PDPP_SUBJECT_ID || "owner_local";
+    const ownerToken = await issueOwnerToken(asUrl, ownerSubjectId);
 
     console.error("[orchestrate] loading prior sync state...");
     const runtime = (await import(join(REFERENCE_IMPL_DIR, "runtime/index.ts"))) as RuntimeModule;
     const { runConnector, loadSyncState } = runtime;
+    const connectorInstanceStore = isPostgresStorageBackend()
+      ? createPostgresConnectorInstanceStore()
+      : createSqliteConnectorInstanceStore();
     const prior = await loadSyncState({
       connectorId: manifest.connector_id,
       ownerToken,
@@ -114,6 +129,19 @@ async function cmdRun(name: string): Promise<{ ok: boolean; result: RunResult }>
 
     console.error(`[orchestrate] running connector: ${connectorPath}`);
     const result = await runConnector({
+      admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId: admittedOwnerSubjectId }) => {
+        const namespace = await admitOwnerRunConnection({
+          connectorId,
+          connectorInstanceId,
+          connectorInstanceStore,
+          ownerSubjectId: admittedOwnerSubjectId ?? ownerSubjectId,
+        });
+        return {
+          connectorId: namespace.connectorId,
+          connectorInstanceId: namespace.connectorInstanceId,
+          ownerSubjectId: namespace.ownerSubjectId,
+        };
+      },
       connectorPath,
       connectorId: manifest.connector_id,
       ownerToken,

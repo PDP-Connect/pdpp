@@ -52,6 +52,7 @@ export const PRODUCTION_READY_CONNECTORS: Record<string, { testFile: string }> =
   strava: { testFile: "connectors/strava/schemas.test.ts" },
   usaa: { testFile: "connectors/usaa/integration.test.ts" },
   whatsapp: { testFile: "connectors/whatsapp/integration.test.ts" },
+  whoop: { testFile: "connectors/whoop/integration.test.ts" },
   ynab: { testFile: "connectors/ynab/integration.test.ts" },
 };
 

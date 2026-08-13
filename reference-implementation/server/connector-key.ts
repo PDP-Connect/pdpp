@@ -85,6 +85,7 @@ const FIRST_PARTY_CONNECTOR_KEYS = Object.freeze([
   "usaa",
   "whatsapp",
   "wholefoods",
+  "whoop",
   "ynab",
 ]);
 

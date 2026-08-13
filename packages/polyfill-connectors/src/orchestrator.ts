@@ -75,6 +75,7 @@ const KNOWN_CONNECTORS: Record<string, ConnectorPaths> = {
   strava: c("strava"),
   notion: c("notion"),
   reddit: c("reddit"),
+  whoop: c("whoop"),
   claude_code: {
     connectorPath: join(CONNECTORS_DIR, "claude_code", "index.ts"),
     manifestPath: join(MANIFEST_DIR, "claude_code.json"),

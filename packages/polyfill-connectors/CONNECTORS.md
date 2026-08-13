@@ -5,7 +5,7 @@ When adding or changing a connector manifest, follow the repo-level
 is enforced by manifest-honesty tests for search affordances and presentation
 roles; do not land readable owner-visible fields without the matching semantics.
 
-31 connectors, organized by auth/operational class.
+32 connectors, organized by auth/operational class.
 
 ## What the status columns mean
 
@@ -46,6 +46,7 @@ First-run-portability notes are platform-specific and worth reading before handi
 | Connector | Bootstrap needs | Maintainer-verified | First-run portable | Records (mine) | Notes on first-run |
 |---|---|---|---|---|---|
 | amazon | Amazon login + 2FA | ✅ | ⚠ needs 2FA device | 2,863 (orders+items) | 2FA on the account's registered device. First run may burn trusted-device state; subsequent runs smoother. Full best-practices refactor (Zod, shape-check, tracing, p-retry, structural extraction, isolated browser). |
+| whoop | Owner login in isolated WHOOP browser | ✅ | ⚠ owner login required | 44 (6 streams) | Uses the authenticated app.whoop.com session and first-party JSON endpoints. Live owner testing proved full collection plus a second checkpointed run with saved-session reuse; no credentials or tokens leave the browser context. |
 | chase | Chase login + SMS 2FA | ✅ | ⚠ needs SMS access, fresh OTP per run | 21 (4 streams verified) | Chase does not persist trusted-device cookie across runs; every run currently requires a fresh OTP. Root cause: `_tmprememberme` cookie is session-only; the opt-in "remember me" checkbox may not be getting ticked. See `src/auto-login/chase.js` — speculative fix landed but un-verified. |
 | chatgpt | ChatGPT login (email+password); optional 2FA | ✅ | ⚠ conditional | 2,302 conv / 9,252 msg | Cloudflare may challenge on new IPs. Core defaults local browser sessions headed; set deployment-wide `PDPP_BROWSER_HEADLESS=1` only for an intentionally headless run. p-retry on 429/5xx from OpenAI API. |
 | usaa | USAA member login + SMS 2FA | ✅ | ⚠ needs SMS access | 887 (5 streams, pre-refactor) | SMS OTP delivered to the account's registered phone. Tier A refactor (Zod, shape-check, tracing, isolated-browser code) complete; end-to-end validation blocked on Akamai rejecting the maintainer's IP — need reverse proxy or fresh IP. |
