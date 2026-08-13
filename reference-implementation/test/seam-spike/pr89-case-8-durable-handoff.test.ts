@@ -197,6 +197,7 @@ test("consent-exchange: SQLite restart, single-use, and response-loss recovery",
 
 test("batch consent: package handoff and revocation are durable", async () => {
   await assertFocusedTestsPass("test/batch-consent-per-source-gate.test.ts", [
+    "batch consent terminal decision is exclusive across approval and denial",
     "batch consent gate: HTML approval hands off the package token durably",
     "batch consent gate: a revoked package is not delivered by a stored exchange code",
   ]);

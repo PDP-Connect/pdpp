@@ -7,6 +7,8 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  approveGrant,
+  denyGrant,
   getGrantPackageIdForGrant,
   listGrantPackagesForOwner,
   parsePendingConsentRequestUri,
@@ -62,6 +64,35 @@ function countRows(sql: string): number {
   const row = getDb().prepare(sql).get<{ n: number }>();
   assert.ok(row, `count query returns a row: ${sql}`);
   return row.n;
+}
+
+function countConsentEvents(deviceCode: string, eventType: string): number {
+  return (
+    getDb()
+      .prepare(
+        "SELECT COUNT(*) AS count FROM spine_events WHERE object_id = ? AND object_type = 'pending_consent' AND event_type = ?"
+      )
+      .get(deviceCode, eventType) as { count: number }
+  ).count;
+}
+
+function createDecisionPause(): { hook: () => Promise<void>; paused: Promise<void>; release: () => void } {
+  let markPaused: () => void = () => undefined;
+  let release: () => void = () => undefined;
+  const paused = new Promise<void>((resolve) => {
+    markPaused = resolve;
+  });
+  const resumed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    hook: async () => {
+      markPaused();
+      await resumed;
+    },
+    paused,
+    release,
+  };
 }
 
 function requirePackageId(body: GateResponseBody): string {
@@ -343,6 +374,68 @@ function issuedGrant(result: GateResult): IssuedGrant {
   assert.ok(grant?.child_grants, `expected a grant with child_grants (status ${result.status})`);
   return grant as IssuedGrant;
 }
+
+test("batch consent terminal decision is exclusive across approval and denial", async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const body = unwrapBody(
+      await par(asUrl, [
+        detail({ id: spotify.connector_id, kind: "connector" }, [{ name: "top_artists" }]),
+        detail({ id: reddit.connector_id, kind: "connector" }, [{ name: "posts" }]),
+      ])
+    );
+    const code = parsePendingConsentRequestUri(body.request_uri);
+    assert.ok(code);
+    const review = await fetch(`${asUrl}/consent/review`, {
+      body: JSON.stringify({
+        approved_source_indexes: [0, 1],
+        request_uri: body.request_uri,
+        subject_id: "owner_local",
+      }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(review.status, 200);
+    const revision = ((await review.json()) as { approval_review_revision: string }).approval_review_revision;
+    const pause = createDecisionPause();
+    const denial = denyGrant(code, { beforeCasHook: pause.hook });
+    await pause.paused;
+    const approval = await approveGrant(code, "owner_local", { approval_review_revision: revision });
+    pause.release();
+    await assert.rejects(
+      denial,
+      (error: unknown) => error instanceof Error && "code" in error && error.code === "approval_conflict"
+    );
+    assert.equal(typeof approval.token, "string");
+    assert.equal(countConsentEvents(code, "consent.denied"), 0);
+    assert.equal(countRows("SELECT COUNT(*) AS n FROM grant_packages"), 1);
+
+    const body2 = unwrapBody(
+      await par(asUrl, [
+        detail({ id: spotify.connector_id, kind: "connector" }, [{ name: "top_artists" }]),
+        detail({ id: reddit.connector_id, kind: "connector" }, [{ name: "posts" }]),
+      ])
+    );
+    const code2 = parsePendingConsentRequestUri(body2.request_uri);
+    assert.ok(code2);
+    const review2 = await fetch(`${asUrl}/consent/review`, {
+      body: JSON.stringify({
+        approved_source_indexes: [0, 1],
+        request_uri: body2.request_uri,
+        subject_id: "owner_local",
+      }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    const revision2 = ((await review2.json()) as { approval_review_revision: string }).approval_review_revision;
+    assert.equal(await denyGrant(code2), true);
+    await assert.rejects(
+      approveGrant(code2, "owner_local", { approval_review_revision: revision2 }),
+      (error: unknown) => error instanceof Error && "code" in error && error.code === "approval_conflict"
+    );
+    assert.equal(countConsentEvents(code2, "consent.denied"), 1);
+    assert.equal(countRows("SELECT COUNT(*) AS n FROM grant_packages"), 1);
+  });
+});
 
 test("batch consent gate: page defaults to per-source confirmation and suppresses approve-all for continuous all-streams", async () => {
   await withHarness(async ({ asUrl, spotify, reddit }) => {
