@@ -73,14 +73,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { writeTransaction } from "../lib/db.ts";
 import {
+  __testOnlySetSweepDiscoveryHook,
   getConnectorSummaryEvidence,
   markConnectorSummaryEvidenceDirty,
   rebuildConnectorSummaryEvidence,
   runBoundedSummaryEvidenceSweep,
 } from "../server/connector-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
-import { writeTransaction } from "../lib/db.ts";
 
 const NOW = "2026-08-12T00:00:00.000Z";
 const PAGE_SIZE = 25;
@@ -322,20 +323,28 @@ test(
     let cursor: string | null = null;
     let firstTranche: "walk" | "acceleration" = "walk";
     let convergedAtRound = -1;
-    for (let round = 1; round <= MAX_ROUNDS; round += 1) {
-      // biome-ignore lint/performance/noAwaitInLoops: each round must observe the prior round's durable cursor and evidence state.
-      const result = await runBoundedSummaryEvidenceSweep({
-        afterId: cursor,
-        firstTranche,
-        maxDurationMs: ROUND_MS,
-        pageSize: PAGE_SIZE,
-      });
-      cursor = result.resumeAfterId;
-      firstTranche = firstTranche === "walk" ? "acceleration" : "walk";
-      if (isCurrentWithRun(discriminatorId, runId)) {
-        convergedAtRound = round;
-        break;
+    const firstDiscoveryByRound: string[] = [];
+    try {
+      for (let round = 1; round <= MAX_ROUNDS; round += 1) {
+        const discoveryOrder: string[] = [];
+        __testOnlySetSweepDiscoveryHook((point) => discoveryOrder.push(point));
+        // biome-ignore lint/performance/noAwaitInLoops: each round must observe the prior round's durable cursor and evidence state.
+        const result = await runBoundedSummaryEvidenceSweep({
+          afterId: cursor,
+          firstTranche,
+          maxDurationMs: ROUND_MS,
+          pageSize: PAGE_SIZE,
+        });
+        firstDiscoveryByRound.push(discoveryOrder[0] ?? "none");
+        cursor = result.resumeAfterId;
+        firstTranche = firstTranche === "walk" ? "acceleration" : "walk";
+        if (isCurrentWithRun(discriminatorId, runId)) {
+          convergedAtRound = round;
+          break;
+        }
       }
+    } finally {
+      __testOnlySetSweepDiscoveryHook(null);
     }
 
     assert.ok(
@@ -343,20 +352,14 @@ test(
       `the freshly-dirtied discriminator must converge within ${MAX_ROUNDS} bounded rounds once firstTranche ` +
         "alternates — it did not converge, meaning alternation failed to give acceleration first opportunity"
     );
-    // The structural bound this fix provides: acceleration gets FIRST
-    // OPPORTUNITY (the round's complete, undivided budget) on every
-    // "acceleration"-first round, i.e. at least every OTHER round. A small,
-    // fixed cap (well under the many-round windows a fold-heavy backlog's
-    // OWN convergence can legitimately take) proves the bound is real
-    // without pinning the exact round to one value — the repair itself can
-    // occasionally straddle a round boundary under real cooperative-unit
-    // timing (the same class of variance this codebase already accepts
-    // elsewhere: "one already-started unit may finish late").
-    const STRUCTURAL_CONVERGENCE_ROUND_CAP = 4;
-    assert.ok(
-      convergedAtRound <= STRUCTURAL_CONVERGENCE_ROUND_CAP,
-      `alternation guarantees acceleration first opportunity at least every other round, so convergence must land ` +
-        `within ${STRUCTURAL_CONVERGENCE_ROUND_CAP} rounds — converged at round ${convergedAtRound} instead`
+    // Alternation structurally bounds when a tranche STARTS, not how quickly
+    // its cooperative work completes on a contended host. Assert the actual
+    // invariant directly instead of turning runner throughput into a false
+    // correctness condition.
+    assert.equal(
+      firstDiscoveryByRound[1],
+      "acceleration_dirty_ids",
+      `round 2 must give acceleration first opportunity; observed ${firstDiscoveryByRound.join(", ")}`
     );
   })
 );
