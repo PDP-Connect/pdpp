@@ -39,8 +39,8 @@ async function closeServer(server: TestServer): Promise<void> {
   ]);
 }
 
-function sign(secret: string, timestamp: string, body: string): string {
-  return `sha256=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}`;
+function sign(secret: string, eventId: string, timestamp: string, body: string): string {
+  return `sha256=${createHmac("sha256", secret).update(`${eventId}.${timestamp}.${body}`).digest("hex")}`;
 }
 
 async function withHarness(
@@ -116,7 +116,7 @@ async function postWebhook(
     headers: {
       "Content-Type": "text/plain",
       "PDPP-Webhook-Event-Id": eventId,
-      "PDPP-Webhook-Signature": sign(secret, timestamp, body),
+      "PDPP-Webhook-Signature": sign(secret, eventId, timestamp, body),
       "PDPP-Webhook-Timestamp": timestamp,
     },
     method: "POST",
