@@ -506,10 +506,14 @@ test("repeated/nonprogressing cursor: a forward page violating documented ascend
  *  with a clean single-message backward-walk page (only reachable if the
  *  fallback actually fires). Returns the live fetch-count so a test can
  *  assert whether the fallback path was taken. */
-function stubFirstFetchStatus(firstFetchStatus: number): { fetchCount: () => number; restore: () => void } {
+function stubFirstFetchStatus(
+  firstFetchStatus: number,
+  persistent = false
+): { fetchCount: () => number; restore: () => void } {
   let messageFetchCount = 0;
   const backwardPage = [groupMessage({ id: "m-full-1", created_at: 1_700_000_100 })];
   const original = globalThis.fetch;
+  const responseInit = firstFetchStatus === 429 ? { headers: { "retry-after": "0" } } : {};
   globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
     const url = new URL(typeof input === "string" ? input : input.toString());
     if (url.pathname === "/v3/groups") {
@@ -518,7 +522,18 @@ function stubFirstFetchStatus(firstFetchStatus: number): { fetchCount: () => num
     messageFetchCount += 1;
     if (messageFetchCount === 1) {
       return Promise.resolve(
-        new Response(JSON.stringify({ meta: { code: firstFetchStatus } }), { status: firstFetchStatus })
+        new Response(JSON.stringify({ meta: { code: firstFetchStatus } }), {
+          status: firstFetchStatus,
+          ...responseInit,
+        })
+      );
+    }
+    if (persistent) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ meta: { code: firstFetchStatus } }), {
+          status: firstFetchStatus,
+          ...responseInit,
+        })
       );
     }
     return Promise.resolve(
@@ -581,8 +596,7 @@ test("deleted/invalid cursor fallback: a 404 on the FIRST resumed fetch also fal
 // non-2xx status alike — silently misclassifying a transient 429/5xx as an
 // invalid cursor and triggering an expensive, unsignaled full backward
 // rescan with `failed: false`. Each status below must propagate as an
-// ORDINARY failure: `failed: true`, no fallback walk attempted (fetchCount
-// stays at 1 — the backward-walk-only page is never reached), and STATE
+// ORDINARY failure: `failed: true`, no fallback walk attempted, and STATE
 // withheld for the caller (asserted separately via collect()).
 
 test("P1 regression: a 401 on the FIRST resumed fetch propagates as groupme_auth_failed, no fallback", async () => {
@@ -621,7 +635,7 @@ test("P1 regression: a 403 on the FIRST resumed fetch propagates as groupme_auth
   }
 });
 
-test("P1 regression: a 429 on the FIRST resumed fetch fails the pass, no fallback rescan", async () => {
+test("P1 regression: a transient 429 on the FIRST resumed fetch recovers in place, no fallback rescan", async () => {
   const stub = stubFirstFetchStatus(429);
   try {
     const cursor = openFingerprintCursor(new Map());
@@ -630,15 +644,15 @@ test("P1 regression: a 429 on the FIRST resumed fetch fails the pass, no fallbac
       "group-1": "m-old-cursor",
     });
 
-    assert.equal(outcome.failed, true, "a 429 must be treated as an ordinary transient failure, not an invalid cursor");
-    assert.equal(stub.fetchCount(), 1, "no fallback backward walk was attempted for a rate-limit response");
-    assert.equal(emitted.length, 0);
+    assert.equal(outcome.failed, false, "a transient 429 should recover within the request budget");
+    assert.equal(stub.fetchCount(), 2, "the retry is in place; no fallback backward walk was attempted");
+    assert.equal(emitted.filter((r) => r.stream === "group_messages").length, 1);
   } finally {
     stub.restore();
   }
 });
 
-test("P1 regression: a 500 on the FIRST resumed fetch fails the pass, no fallback rescan", async () => {
+test("P1 regression: a transient 500 on the FIRST resumed fetch recovers in place, no fallback rescan", async () => {
   const stub = stubFirstFetchStatus(500);
   try {
     const cursor = openFingerprintCursor(new Map());
@@ -647,29 +661,52 @@ test("P1 regression: a 500 on the FIRST resumed fetch fails the pass, no fallbac
       "group-1": "m-old-cursor",
     });
 
-    assert.equal(outcome.failed, true, "a 500 must be treated as an ordinary transient failure, not an invalid cursor");
-    assert.equal(
-      stub.fetchCount(),
-      1,
-      "no fallback backward walk was attempted — this is the exact P1: a transient 5xx must never trigger a full rescan"
-    );
+    assert.equal(outcome.failed, false, "a transient 500 should recover within the request budget");
+    assert.equal(stub.fetchCount(), 2, "the retry is in place; no fallback backward walk was attempted");
+    assert.equal(emitted.filter((r) => r.stream === "group_messages").length, 1);
+  } finally {
+    stub.restore();
+  }
+});
+
+// Persistent retryable failures must still fail the pass after the bounded
+// request budget. They must not reach the invalid-cursor fallback or emit
+// coverage that claims the stream was completely observed.
+test("persistent 429 on the FIRST resumed fetch fails after bounded retries", async () => {
+  const stub = stubFirstFetchStatus(429, true);
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord, null, {
+      "group-1": "m-old-cursor",
+    });
+    assert.equal(outcome.failed, true);
+    assert.equal(stub.fetchCount(), 3);
     assert.equal(emitted.length, 0);
   } finally {
     stub.restore();
   }
 });
 
-// NOTE on 429/500 above: the connector's HTTP governor (src/http-retry.ts's
-// default shouldRetry, wired via connector-http-governor.ts) already treats
-// 429/408/5xx as retryable and — once its own retry budget is exhausted —
-// throws its OWN error shape ("HTTP request got retryable status N after
-// retry budget was exhausted"), which never reaches makeRequest's
-// groupme_http_-prefixed throw at all. So the 429/500 tests above are
-// defense-in-depth against a future config change (e.g. a raised
-// maxAttempts) rather than exercises of the original vulnerable line. The
-// status class that genuinely reaches — and, pre-fix, broke — the fallback
-// gate is any non-2xx/non-304 code the governor does NOT retry and that
-// isn't 400/404, e.g. 422. That is the true regression reproducer:
+test("persistent 500 on the FIRST resumed fetch fails after bounded retries", async () => {
+  const stub = stubFirstFetchStatus(500, true);
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord, null, {
+      "group-1": "m-old-cursor",
+    });
+    assert.equal(outcome.failed, true);
+    assert.equal(stub.fetchCount(), 3);
+    assert.equal(emitted.length, 0);
+  } finally {
+    stub.restore();
+  }
+});
+
+// The status class that genuinely reaches — and, pre-fix, broke — the
+// fallback gate is any non-2xx/non-304 code the governor does NOT retry and
+// that isn't 400/404, e.g. 422. That is the true regression reproducer:
 test("P1 true reproducer: a 422 on the FIRST resumed fetch fails the pass, no fallback rescan (422 is not governor-retried and not 400/404)", async () => {
   const stub = stubFirstFetchStatus(422);
   try {

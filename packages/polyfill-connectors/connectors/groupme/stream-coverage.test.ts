@@ -862,6 +862,73 @@ test("collectDirectChatMessages: http error partway through a chat's pages repor
   }
 });
 
+test("collectDirectChatMessages: retries one transient chat page in place without refetching prior chats", async () => {
+  let messageCalls = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    if (url.pathname === "/v3/chats") {
+      return Promise.resolve(
+        new Response(JSON.stringify({ response: [directChat({ id: "chat-1" }), directChat({ id: "chat-2" })] }), {
+          status: 200,
+        })
+      );
+    }
+    messageCalls += 1;
+    if (messageCalls === 2) {
+      return Promise.resolve(new Response(JSON.stringify({ error: "transient server error" }), { status: 500 }));
+    }
+    const messageId = messageCalls === 1 ? "sibling-1" : "recovered-2";
+    return Promise.resolve(
+      new Response(JSON.stringify({ response: { count: 1, direct_messages: [directMessage({ id: messageId })] } }), {
+        status: 200,
+      })
+    );
+  }) as typeof globalThis.fetch;
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChatMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
+
+    assert.deepEqual(outcome, { considered: 2, failed: false });
+    assert.deepEqual(
+      emitted
+        .filter((record) => record.stream === "direct_chat_messages")
+        .map((record) => (record.data as { id: string }).id),
+      ["sibling-1", "recovered-2"]
+    );
+    assert.equal(messageCalls, 3, "the 500 is retried in place; chat-1 is not refetched");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("collectDirectChatMessages: persistent 500 remains failed after bounded request attempts", async () => {
+  let messageCalls = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    if (url.pathname === "/v3/chats") {
+      return Promise.resolve(
+        new Response(JSON.stringify({ response: [directChat({ id: "chat-1" })] }), { status: 200 })
+      );
+    }
+    messageCalls += 1;
+    return Promise.resolve(new Response(JSON.stringify({ error: "persistent server error" }), { status: 500 }));
+  }) as typeof globalThis.fetch;
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChatMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
+
+    assert.equal(outcome.failed, true);
+    assert.equal(emitted.length, 0);
+    assert.equal(messageCalls, 3, "request retries are bounded at three attempts");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("collectDirectChatMessages: malformed body on the chat-list fetch reports failed: true, not a proven-empty walk", async () => {
   const restore = stubFetchMalformedBody();
   try {

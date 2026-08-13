@@ -80,7 +80,10 @@ import { validateRecord } from "./schemas.ts";
 
 let httpGovernor = createConnectorHttpGovernor({
   name: "groupme",
-  maxAttempts: 1,
+  // Retry transient 5xx/transport failures at the request boundary. This is
+  // deliberately bounded and shared: a failed page is retried in place, so
+  // successful chats are never replayed and the run is never replayed here.
+  maxAttempts: 3,
   profile: groupmePacingProfile(),
 });
 
@@ -96,7 +99,7 @@ let httpGovernor = createConnectorHttpGovernor({
 export function __setZeroDelayHttpGovernorForTests(): void {
   httpGovernor = createConnectorHttpGovernor({
     name: "groupme",
-    maxAttempts: 1,
+    maxAttempts: 3,
     profile: groupmePacingProfile(),
     pacingInitialIntervalMs: 0,
   });
@@ -107,7 +110,7 @@ export function __setZeroDelayHttpGovernorForTests(): void {
 export function __resetHttpGovernorForTests(): void {
   httpGovernor = createConnectorHttpGovernor({
     name: "groupme",
-    maxAttempts: 1,
+    maxAttempts: 3,
     profile: groupmePacingProfile(),
   });
 }
@@ -524,7 +527,10 @@ async function makeRequest<T>(token: string, path: string, queryParams?: Record<
     }
   }
 
-  const r = await httpGovernor.request<{ body: string; status: number }, { body: string; status: number }>(
+  const r = await httpGovernor.request<
+    { body: string; status: number; headers: Record<string, string | undefined> },
+    { body: string; status: number; headers: Record<string, string | undefined> }
+  >(
     async () => {
       const res = await fetch(url.toString(), {
         headers: {
@@ -533,10 +539,11 @@ async function makeRequest<T>(token: string, path: string, queryParams?: Record<
       });
       return {
         body: await res.text().catch((): string => ""),
+        headers: { "retry-after": res.headers.get("retry-after") ?? undefined },
         status: res.status,
       };
     },
-    (resp) => ({ status: resp.status, value: resp })
+    (resp) => ({ headers: resp.headers, status: resp.status, value: resp })
   );
   const raw = r.value;
 
