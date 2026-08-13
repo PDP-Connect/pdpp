@@ -33,8 +33,8 @@ import {
 const SECRET = "test-webhook-secret";
 const NOW = 1_700_000_000_000; // fixed clock
 
-function sign(timestamp: string, body: string): string {
-  return `sha256=${createHmac("sha256", SECRET).update(`${timestamp}.${body}`).digest("hex")}`;
+function sign(timestamp: string, body: string, eventId = "evt-1"): string {
+  return `sha256=${createHmac("sha256", SECRET).update(`${eventId}.${timestamp}.${body}`).digest("hex")}`;
 }
 
 function makeDeps(overrides: Partial<SourceWebhookDependencies> = {}): SourceWebhookDependencies {

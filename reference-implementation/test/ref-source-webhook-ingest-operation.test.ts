@@ -15,8 +15,8 @@ import {
 const NOW_MS = Date.parse("2026-05-15T12:00:00.000Z");
 const SECRET = "source_secret";
 
-function sign(body: string, timestamp = String(Math.floor(NOW_MS / 1000))): string {
-  return `sha256=${createHmac("sha256", SECRET).update(`${timestamp}.${body}`).digest("hex")}`;
+function sign(body: string, timestamp = String(Math.floor(NOW_MS / 1000)), eventId = "evt_1"): string {
+  return `sha256=${createHmac("sha256", SECRET).update(`${eventId}.${timestamp}.${body}`).digest("hex")}`;
 }
 
 function deps(overrides: Partial<SourceWebhookDependencies> = {}): SourceWebhookDependencies {
@@ -50,6 +50,19 @@ function input(body: string, overrides: Partial<SourceWebhookInput> = {}): Sourc
 test("ref.source-webhook verifies HMAC before processing", async () => {
   await assert.rejects(
     () => executeSourceWebhook(input('{"action":"schedule_run"}', { signature: "sha256=bad" }), deps()),
+    (err: unknown) => {
+      assert.ok(err instanceof SourceWebhookError);
+      assert.equal(err.code, "invalid_signature");
+      assert.equal(err.status, 401);
+      return true;
+    }
+  );
+});
+
+test("ref.source-webhook rejects a signature replayed with a different event id", async () => {
+  const body = '{"action":"schedule_run"}';
+  await assert.rejects(
+    () => executeSourceWebhook(input(body, { eventId: "evt_2", signature: sign(body) }), deps()),
     (err: unknown) => {
       assert.ok(err instanceof SourceWebhookError);
       assert.equal(err.code, "invalid_signature");
