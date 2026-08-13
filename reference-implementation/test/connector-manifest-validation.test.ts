@@ -18,6 +18,7 @@ const PARENT_STREAMS_UNKNOWN_PATTERN = /parent_streams entry 'ghost' must name a
 const PARENT_STREAMS_SELF_PATTERN = /parent_streams must not name the stream itself/;
 const PARENT_STREAMS_STRATEGY_PATTERN =
   /parent_streams, which is only valid with coverage_strategy "parent_detail_accounting"/;
+const BOTH_STATE_STREAM_AND_PARENT_STREAMS_PATTERN = /must not declare both state_stream and parent_streams/;
 const TOP_LEVEL_REGEX_15 = /capabilities\.proven must be an object when declared/;
 const TOP_LEVEL_REGEX_16 = /capabilities\.proven has unsupported keys: bogus_key/;
 const TOP_LEVEL_REGEX_17 = /capabilities\.proven\.local_collector must be a boolean when declared/;
@@ -400,6 +401,23 @@ test("validateConnectorManifest rejects ambiguous parent_streams declarations", 
     () => validateConnectorManifest({ ...manifest, streams: [...base, detail(["items"], "full_inventory")] }),
     PARENT_STREAMS_STRATEGY_PATTERN
   );
+});
+
+// Direct discriminator for spec Validation rule 4 ("both fields present").
+// `state_stream` and `parent_streams` are each gated to a different,
+// mutually exclusive `coverage_strategy` value, which makes this combination
+// unrepresentable as an incidental side effect of that gate today — but the
+// rule is normative on its own and must be enforced directly, not merely as
+// a side effect of the two single-field coverage_strategy checks. This test
+// crafts a stream that would otherwise satisfy state_stream's own checks
+// (coverage_strategy: "checkpoint_window", valid state_stream target) while
+// also declaring parent_streams, to prove the explicit joint check fires
+// before either individual field validator gets a chance to pass it.
+test("validateConnectorManifest rejects a stream declaring both state_stream and parent_streams", () => {
+  const manifest = manifestWithChildStateStream({
+    parent_streams: ["items"],
+  });
+  assert.throws(() => validateConnectorManifest(manifest), BOTH_STATE_STREAM_AND_PARENT_STREAMS_PATTERN);
 });
 
 // ─── validateProvenCapability: adversarial direct tests ───────────────────

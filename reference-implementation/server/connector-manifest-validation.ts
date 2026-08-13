@@ -1476,6 +1476,20 @@ export function validateStreamEvidenceDeclarations(
       code
     );
   }
+  // Direct, explicit rejection of both checkpoint-dependency declaration
+  // shapes on one stream. `state_stream` and `parent_streams` are gated to
+  // different, mutually exclusive `coverage_strategy` values today, which
+  // makes this combination unrepresentable as an incidental side effect —
+  // but the profile's Validation rule 4 is normative regardless of that
+  // side channel, so this check must fail closed on its own even if
+  // `coverage_strategy`'s constraints ever change. See
+  // spec-collection-profile.md, Checkpoint dependency > Validation, rule 4.
+  if (stream.state_stream !== undefined && stream.parent_streams !== undefined) {
+    throw invalidConnectorManifest(
+      `Stream '${stream.name as string}' must not declare both state_stream and parent_streams`,
+      code
+    );
+  }
   validateStreamStateStreamDeclaration(stream, code, declaredStreamNames);
   validateStreamParentStreamsDeclaration(stream, code, declaredStreamNames);
 }
