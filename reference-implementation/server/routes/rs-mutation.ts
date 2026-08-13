@@ -77,8 +77,8 @@ import {
   type RecordsIngestDependencies,
   RecordsIngestInvalidRequestError,
   RecordsIngestNotFoundError,
-  RecordsIngestSystemicFailureError,
   type RecordsIngestOutput,
+  RecordsIngestSystemicFailureError,
 } from "../../operations/rs-records-ingest/index.ts";
 import { canonicalConnectorKey } from "../connector-key.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
@@ -105,6 +105,34 @@ interface ClassifiedIngestFailureLike {
   readonly code: string;
   readonly message: string;
   readonly retryable: boolean;
+}
+
+const SYSTEMIC_INGEST_PUBLIC_MESSAGE = "Ingest failed due to a transient storage error; retry later.";
+
+function mapSystemicIngestError(err: unknown): (Error & { code?: string }) | null {
+  if (!(err instanceof RecordsIngestSystemicFailureError)) {
+    return null;
+  }
+  console.warn(`[records-ingest] systemic ingest failure: ${err.message}`);
+  const mapped = new Error(SYSTEMIC_INGEST_PUBLIC_MESSAGE) as Error & { code?: string };
+  mapped.code = err.code;
+  return mapped;
+}
+
+function mapPublicRecordsIngestOperationError(err: unknown): (Error & { code?: string }) | null {
+  const systemicError = mapSystemicIngestError(err);
+  if (systemicError) {
+    return systemicError;
+  }
+  if (!(err instanceof RecordsIngestInvalidRequestError || err instanceof RecordsIngestNotFoundError)) {
+    return null;
+  }
+  const mapped = new Error(err.message) as Error & { code?: string };
+  const errCode = (err as { code?: string }).code;
+  if (errCode !== undefined) {
+    mapped.code = errCode;
+  }
+  return mapped;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
@@ -1093,19 +1121,9 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
           dependencies
         );
       } catch (opErr) {
-        if (
-          opErr instanceof RecordsIngestInvalidRequestError ||
-          opErr instanceof RecordsIngestNotFoundError ||
-          opErr instanceof RecordsIngestSystemicFailureError
-        ) {
-          const mapped = new Error((opErr as Error).message) as Error & {
-            code?: string;
-          };
-          const errCode3 = (opErr as { code?: string }).code;
-          if (errCode3 !== undefined) {
-            mapped.code = errCode3;
-          }
-          return await ctx.rejectMutation(res, req, mutationContext, mapped);
+        const publicError = mapPublicRecordsIngestOperationError(opErr);
+        if (publicError) {
+          return await ctx.rejectMutation(res, req, mutationContext, publicError);
         }
         throw opErr;
       }

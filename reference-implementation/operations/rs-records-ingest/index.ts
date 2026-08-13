@@ -15,11 +15,9 @@
  * - the public `{ stream, records_accepted, records_rejected, errors }`
  *   response envelope.
  *
- * The default capability is deliberately per-line and ordered: the operation
- * awaits each `ingestRecord` call before advancing. Hosts that provide the
- * optional `ingestRecords` capability may batch only the already-parsed
- * records; they still return one result per input record so parse and ingest
- * failures remain line-addressable and ordered.
+ * The capability is deliberately per-line and ordered: the operation parses
+ * one line, awaits that line's `ingestRecord` call, then advances. It MUST
+ * NOT parallelize ingest, batch ingests, or coalesce errors.
  *
  * Atomicity and durable write ordering for each record remain the
  * responsibility of the underlying ingest capability. A failure on one line
@@ -78,20 +76,6 @@ export interface RecordsIngestDependencies {
     connectorInstanceId: string | null,
     record: Record<string, unknown>
   ) => unknown | Promise<unknown>;
-  /**
-   * Optional host optimization for a single NDJSON request. The input is in
-   * line order and contains only successfully parsed records. Each result is
-   * either null (accepted) or a classified `IngestLineFailure` for that
-   * record. Hosts MUST preserve the same per-record durability and
-   * failure-isolation contract as `ingestRecord`, and MUST classify
-   * `retryable` from their own typed error shape, never by guessing from a
-   * message string.
-   */
-  ingestRecords?: (
-    connectorId: string,
-    connectorInstanceId: string | null,
-    records: readonly Record<string, unknown>[]
-  ) => readonly (IngestLineFailure | null)[] | Promise<readonly (IngestLineFailure | null)[]>;
 }
 
 export interface RecordsIngestEnvelope {
@@ -111,12 +95,6 @@ export interface RecordsIngestOutput {
    * have a reason to split the two phases.
    */
   readonly submittedRecordCount: number;
-}
-
-interface ParsedRecordLines {
-  readonly lineErrors: Array<IngestLineFailure | null>;
-  readonly parsedLineIndexes: number[];
-  readonly parsedRecords: Record<string, unknown>[];
 }
 
 export class RecordsIngestInvalidRequestError extends Error {
@@ -177,82 +155,6 @@ export function parseLines(body: string | null | undefined): string[] {
   return body.split("\n").filter((line) => line.trim().length > 0);
 }
 
-function parseRecordLines(lines: readonly string[], streamName: string): ParsedRecordLines {
-  const lineErrors = new Array<IngestLineFailure | null>(lines.length).fill(null);
-  const parsedRecords: Record<string, unknown>[] = [];
-  const parsedLineIndexes: number[] = [];
-
-  for (const [lineIndex, line] of lines.entries()) {
-    try {
-      const parsed = JSON.parse(line) as Record<string, unknown>;
-      parsedRecords.push({ ...parsed, stream: streamName });
-      parsedLineIndexes.push(lineIndex);
-    } catch (err) {
-      // Malformed NDJSON is permanent by construction: the same bytes will
-      // never parse differently on retry. Never retryable.
-      lineErrors[lineIndex] = { message: err instanceof Error ? err.message : String(err), retryable: false };
-    }
-  }
-
-  return { lineErrors, parsedLineIndexes, parsedRecords };
-}
-
-async function ingestParsedRecords(
-  connectorId: string,
-  connectorInstanceId: string | null,
-  parsedRecords: readonly Record<string, unknown>[],
-  dependencies: RecordsIngestDependencies
-): Promise<readonly (IngestLineFailure | null)[]> {
-  if (parsedRecords.length === 0) {
-    return [];
-  }
-  if (dependencies.ingestRecords) {
-    return await ingestWithBatchCapability(connectorId, connectorInstanceId, parsedRecords, dependencies.ingestRecords);
-  }
-  return await ingestSequentially(connectorId, connectorInstanceId, parsedRecords, dependencies.ingestRecord);
-}
-
-async function ingestWithBatchCapability(
-  connectorId: string,
-  connectorInstanceId: string | null,
-  parsedRecords: readonly Record<string, unknown>[],
-  ingestRecords: NonNullable<RecordsIngestDependencies["ingestRecords"]>
-): Promise<readonly (IngestLineFailure | null)[]> {
-  try {
-    const results = await ingestRecords(connectorId, connectorInstanceId, parsedRecords);
-    if (results.length !== parsedRecords.length) {
-      throw new Error(`ingestRecords returned ${results.length} results for ${parsedRecords.length} records`);
-    }
-    return results;
-  } catch (err) {
-    // The batch capability itself threw (not a per-record outcome) — e.g. a
-    // connection-level failure before any per-record result could be
-    // produced. Unclassifiable by definition (no per-record typed error to
-    // read), so every line in the batch defaults to retryable/systemic, same
-    // as an unrecognized error code at the storage layer.
-    const message = err instanceof Error ? err.message : String(err);
-    return parsedRecords.map(() => ({ message, retryable: true }));
-  }
-}
-
-async function ingestSequentially(
-  connectorId: string,
-  connectorInstanceId: string | null,
-  parsedRecords: readonly Record<string, unknown>[],
-  ingestRecord: RecordsIngestDependencies["ingestRecord"]
-): Promise<readonly (IngestLineFailure | null)[]> {
-  const errors: Array<IngestLineFailure | null> = new Array(parsedRecords.length).fill(null);
-  for (const [recordIndex, record] of parsedRecords.entries()) {
-    try {
-      // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior when the host has no batch capability.
-      await ingestRecord(connectorId, connectorInstanceId, record);
-    } catch (err) {
-      errors[recordIndex] = classifyThrownIngestError(err);
-    }
-  }
-  return errors;
-}
-
 /**
  * Classify an error thrown directly by the single-record `ingestRecord`
  * dependency. Reads the SAME typed `.retryable` boolean a host's storage
@@ -267,19 +169,6 @@ function classifyThrownIngestError(err: unknown): IngestLineFailure {
   const retryableField = (err as { retryable?: unknown } | null)?.retryable;
   const retryable = typeof retryableField === "boolean" ? retryableField : true;
   return { message, retryable };
-}
-
-function applyIngestErrors(
-  lineErrors: Array<IngestLineFailure | null>,
-  parsedLineIndexes: readonly number[],
-  ingestErrors: readonly (IngestLineFailure | null)[]
-): void {
-  for (const [recordIndex, error] of ingestErrors.entries()) {
-    const lineIndex = parsedLineIndexes[recordIndex];
-    if (lineIndex !== undefined) {
-      lineErrors[lineIndex] = error;
-    }
-  }
 }
 
 function buildIngestEnvelope(stream: string, lineErrors: readonly (IngestLineFailure | null)[]): RecordsIngestEnvelope {
@@ -323,12 +212,9 @@ function firstRetryableFailureMessage(lineErrors: readonly (IngestLineFailure | 
  *   1. parse non-empty NDJSON lines.
  *   2. invalid_request when connector_id is missing/empty.
  *   3. not_found when the manifest does not declare the stream.
- *   4. JSON.parse each line and ingest under `{ ...record, stream }`.
- *      JSON.parse failures and ingest errors both increment records_rejected
- *      and append the message to errors. If the host exposes `ingestRecords`,
- *      valid records use that capability once while preserving line order in
- *      the returned results; otherwise the established sequential capability
- *      is used.
+ *   4. iterate lines sequentially. Each line is JSON.parsed and ingested
+ *      under `{ ...record, stream }`. JSON.parse failures and ingest throws
+ *      both increment records_rejected and append the message to errors.
  *   5. return the envelope plus submitted_record_count for instrumentation.
  */
 export async function executeRecordsIngest(
@@ -348,14 +234,26 @@ export async function executeRecordsIngest(
     throw new RecordsIngestNotFoundError(`Stream '${input.streamName}' not found for connector ${connectorId}`);
   }
 
-  const parsed = parseRecordLines(lines, input.streamName);
-  const ingestErrors = await ingestParsedRecords(
-    connectorId,
-    input.connectorInstanceId ?? null,
-    parsed.parsedRecords,
-    dependencies
-  );
-  applyIngestErrors(parsed.lineErrors, parsed.parsedLineIndexes, ingestErrors);
+  const lineErrors = new Array<IngestLineFailure | null>(lines.length).fill(null);
+
+  for (const [lineIndex, line] of lines.entries()) {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(line) as Record<string, unknown>;
+    } catch (err) {
+      lineErrors[lineIndex] = { message: err instanceof Error ? err.message : String(err), retryable: false };
+      continue;
+    }
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior and mutation timing.
+      await dependencies.ingestRecord(connectorId, input.connectorInstanceId ?? null, {
+        ...parsed,
+        stream: input.streamName,
+      });
+    } catch (err) {
+      lineErrors[lineIndex] = classifyThrownIngestError(err);
+    }
+  }
 
   // At least one line failed systemically (retryable: true) — a storage or
   // coordination failure that never proved that line's OWN data invalid.
@@ -369,9 +267,9 @@ export async function executeRecordsIngest(
   // success: retrying the identical batch is safe (idempotent per the
   // manifest's primary_key/upsert semantics), so surfacing it as a non-2xx,
   // retryable failure is strictly safer than the 200 envelope this replaces.
-  const retryableFailureCount = countRetryableFailures(parsed.lineErrors);
+  const retryableFailureCount = countRetryableFailures(lineErrors);
   if (retryableFailureCount > 0) {
-    const firstMessage = firstRetryableFailureMessage(parsed.lineErrors);
+    const firstMessage = firstRetryableFailureMessage(lineErrors);
     throw new RecordsIngestSystemicFailureError(
       `Ingest for stream '${input.streamName}' had ${retryableFailureCount} systemic/retryable record failure(s) ` +
         `out of ${lines.length} submitted; first: ${firstMessage ?? "(no message)"}`,
@@ -380,7 +278,7 @@ export async function executeRecordsIngest(
   }
 
   return {
-    envelope: buildIngestEnvelope(input.streamName, parsed.lineErrors),
+    envelope: buildIngestEnvelope(input.streamName, lineErrors),
     submittedRecordCount,
   };
 }

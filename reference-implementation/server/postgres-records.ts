@@ -1792,7 +1792,9 @@ async function assertPostgresRunStillAdmitted(
   );
   const runStatus = (runStatusResult.rows[0] as { status?: unknown } | undefined)?.status;
   if (runStatus !== "running") {
-    const err = new Error(`run ${runId} is already terminal; refusing to commit an ingest write admitted before cancellation`);
+    const err = new Error(
+      `run ${runId} is already terminal; refusing to commit an ingest write admitted before cancellation`
+    );
     (err as Error & { code?: string }).code = "run_terminal";
     throw err;
   }

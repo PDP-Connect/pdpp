@@ -28,6 +28,7 @@ import {
 } from "../operations/rs-records-ingest/index.ts";
 
 const REGEXP_1 = /store down/;
+const DRIVER_CONNECTION_RESET_RE = /driver connection reset/;
 
 function defaultDeps(overrides: Partial<RecordsIngestDependencies> = {}): RecordsIngestDependencies {
   return {
@@ -205,53 +206,7 @@ test("rs.records.ingest throws typed systemic failure when any line is retryable
       assert.ok(err instanceof RecordsIngestSystemicFailureError);
       assert.equal(err.code, "ingest_batch_storage_error");
       assert.equal(err.retryableFailureCount, 1);
-      assert.match(err.message, /driver connection reset/);
-      return true;
-    }
-  );
-});
-
-test("rs.records.ingest batch capability preserves retryable bits", async () => {
-  await assert.rejects(
-    () =>
-      executeRecordsIngest(
-        defaultInput({ body: '{"id":"r1"}\n{"id":"r2"}\n{"id":"r3"}' }),
-        defaultDeps({
-          ingestRecord: () => {
-            throw new Error("should use batch");
-          },
-          ingestRecords: () => [
-            null,
-            { message: "permanent identity", retryable: false },
-            { message: "storage fault", retryable: true },
-          ],
-        })
-      ),
-    (err) => {
-      assert.ok(err instanceof RecordsIngestSystemicFailureError);
-      assert.equal(err.retryableFailureCount, 1);
-      assert.match(err.message, /storage fault/);
-      return true;
-    }
-  );
-});
-
-test("rs.records.ingest batch capability throw defaults every parsed line to systemic", async () => {
-  await assert.rejects(
-    () =>
-      executeRecordsIngest(
-        defaultInput({ body: '{"id":"r1"}\nNOT_JSON\n{"id":"r3"}' }),
-        defaultDeps({
-          ingestRecord: () => undefined,
-          ingestRecords: () => {
-            throw new Error("batch writer unavailable");
-          },
-        })
-      ),
-    (err) => {
-      assert.ok(err instanceof RecordsIngestSystemicFailureError);
-      assert.equal(err.retryableFailureCount, 2);
-      assert.match(err.message, /batch writer unavailable/);
+      assert.match(err.message, DRIVER_CONNECTION_RESET_RE);
       return true;
     }
   );
