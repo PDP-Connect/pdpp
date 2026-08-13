@@ -3611,6 +3611,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return streams.length > 0 ? streams : null;
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Run admission owns ordered source-webhook replay, active-run, browser-surface, and runtime-launch state transitions.
   async function runNow(connectorId: string, options: RunNowOptions = {}): Promise<RunNowResult> {
     const runOwnerSubjectId = options.ownerSubjectId || ownerSubjectId;
     const admittedConnection = await resolveAdmittedRunConnection(
@@ -3696,7 +3697,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (bookkeeping.kind === "replay") {
       return sourceWebhookReceiptRunHandle(bookkeeping.receipt);
     }
-    const streamingNonce = bookkeeping.streamingNonce;
+    const { streamingNonce } = bookkeeping;
     let browserSurfaceLease: BrowserSurfaceLease | null = null;
     let browserSurfaceEnv: Record<string, string> | null = null;
     try {
