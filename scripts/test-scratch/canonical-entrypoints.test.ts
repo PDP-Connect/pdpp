@@ -60,6 +60,57 @@ test("a newly discovered block-scalar workflow test command cannot bypass the ow
   }
 });
 
+test("the standalone lifecycle oracle exception cannot bless another raw workflow test", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFixture(
+      root,
+      ".github/workflows/test-scratch-lifecycle.yml",
+      [
+        "jobs:",
+        "  check:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - run: pnpm exec tsx --test scripts/test-scratch/run-command.test.ts",
+        "      - run: pnpm exec tsx --test scripts/test-scratch/canonical-entrypoints.test.ts",
+        "",
+      ].join("\n")
+    );
+    const findings = await findCanonicalEntrypointBypasses(root);
+    assert.deepEqual(findings, [
+      {
+        path: ".github/workflows/test-scratch-lifecycle.yml",
+        reason:
+          "workflow run bypasses the scratch owner: pnpm exec tsx --test scripts/test-scratch/canonical-entrypoints.test.ts",
+      },
+    ]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("the lifecycle workflow routes its static ratchet through one owner", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFixture(
+      root,
+      ".github/workflows/test-scratch-lifecycle.yml",
+      [
+        "jobs:",
+        "  check:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - run: pnpm exec tsx --test scripts/test-scratch/run-command.test.ts",
+        "      - run: pnpm test:scratch -- pnpm exec tsx --test scripts/test-scratch/canonical-entrypoints.test.ts",
+        "",
+      ].join("\n")
+    );
+    assert.deepEqual(await findCanonicalEntrypointBypasses(root), []);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("a newly discovered executable literal host writer cannot bypass review", async () => {
   const root = await fixtureRepository();
   try {

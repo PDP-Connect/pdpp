@@ -28,16 +28,23 @@ if (process.argv.includes("--record-signals")) {
       process.exit(signal === "SIGINT" ? 130 : 143);
     });
   }
+  await writeFile(join(root, "signals-ready"), "ready\n");
 }
-function startGrandchild(name: string, throughShell = false): void {
-  const grandchildArgs = process.argv.includes("--grandchild-ignore-term") ? ["--ignore-term"] : [];
+function startGrandchild(name: string, throughShell = false, detached = false): void {
+  const grandchildArgs = [
+    ...(process.argv.includes("--grandchild-ignore-term") ? ["--ignore-term"] : []),
+    ...(detached ? ["--wait"] : []),
+  ];
   const grandchild = new URL("./grandchild.ts", import.meta.url).pathname;
   const args = ["--import", "tsx", grandchild, `--name=${name}`, ...grandchildArgs];
-  spawn(
+  const grandchildProcess = spawn(
     throughShell ? "sh" : process.execPath,
     throughShell ? ["-c", 'exec "$@"', "sh", process.execPath, ...args] : args,
-    { detached: false, env: process.env, stdio: "ignore" }
+    { detached, env: process.env, stdio: "ignore" }
   );
+  if (detached) {
+    grandchildProcess.unref();
+  }
 }
 
 if (process.argv.includes("--grandchild") || process.argv.includes("--node-grandchild")) {
@@ -45,6 +52,9 @@ if (process.argv.includes("--grandchild") || process.argv.includes("--node-grand
 }
 if (process.argv.includes("--shell-grandchild")) {
   startGrandchild("shell", true);
+}
+if (process.argv.includes("--escaped-grandchild")) {
+  startGrandchild("escaped", false, true);
 }
 if (process.argv.includes("--nested-participant")) {
   spawn(

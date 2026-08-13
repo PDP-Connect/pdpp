@@ -1,0 +1,80 @@
+name: test-scratch-lifecycle
+
+# The lifecycle oracle deliberately starts without an inherited owner so it can
+# verify outer-owner allocation, signal, and recovery behavior itself.
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/test-scratch-lifecycle.yml"
+      - ".github/workflows/**"
+      - "**/*.cjs"
+      - "**/*.cts"
+      - "**/*.js"
+      - "**/*.jsx"
+      - "**/*.mjs"
+      - "**/*.mts"
+      - "**/*.sh"
+      - "**/*.ts"
+      - "**/*.tsx"
+      - "scripts/test-scratch/**"
+      - "scripts/test-scratch/tsconfig.json"
+      - "package.json"
+      - "**/package.json"
+      - "pnpm-lock.yaml"
+  pull_request:
+    paths:
+      - ".github/workflows/test-scratch-lifecycle.yml"
+      - ".github/workflows/**"
+      - "**/*.cjs"
+      - "**/*.cts"
+      - "**/*.js"
+      - "**/*.jsx"
+      - "**/*.mjs"
+      - "**/*.mts"
+      - "**/*.sh"
+      - "**/*.ts"
+      - "**/*.tsx"
+      - "scripts/test-scratch/**"
+      - "scripts/test-scratch/tsconfig.json"
+      - "package.json"
+      - "**/package.json"
+      - "pnpm-lock.yaml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: test-scratch-lifecycle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lifecycle:
+    name: lifecycle + canonical-entrypoint ratchet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      - name: Scoped strict TypeScript
+        run: pnpm exec tsc --project scripts/test-scratch/tsconfig.json --pretty false
+
+      - name: Lifecycle owner oracle
+        run: pnpm exec tsx --test scripts/test-scratch/run-command.test.ts
+
+      - name: Canonical-entrypoint ratchet
+        run: pnpm test:scratch -- pnpm exec tsx --test scripts/test-scratch/canonical-entrypoints.test.ts

@@ -39,25 +39,59 @@ without `pnpm test:scratch -- <command> [args...]` or a routed canonical alias
 The owner SHALL record an exclusively-created 0600 marker containing its known
 schema state, a nonce of exactly 48 lowercase ASCII hexadecimal characters,
 parent/root identity, device, inode, creation time, owner PID, and running
-PGID when available. Normal cleanup and recovery SHALL act only through the
-allocation capability. Before a quarantine rename, they SHALL prove both the
-source and nonce-derived quarantine target are immediate children of the
-validated canonical parent: the target `dirname` SHALL equal that parent, its
-relative path SHALL be one non-empty non-traversal component, and its basename
-SHALL be the exact nonce-derived quarantine name. They SHALL refuse an existing
-quarantine target, revalidate non-symlink directory device/inode identity, and
-recursively remove only that entry. Recursive removal SHALL unlink, not
-traverse, a symlink inside the owned root. POSIX separators, Windows
-separators, drive/UNC-looking values, nested names, absolute-looking text,
-encoded separators, and Unicode slash variants in a marker nonce SHALL be
-malformed and retained.
+PGID when available. It SHALL durably transition `allocated` to `launching`
+before calling `spawn()`, and SHALL durably transition `launching` to `running`
+with the direct-child PID as PGID immediately after successful spawn. Marker
+writes SHALL sync both the file and its parent directory. Only the live owner
+MAY return `launching` to `allocated` after proving spawn was not attempted.
 
-Startup recovery SHALL inspect only immediate `run-*` children of the dedicated
-parent. It SHALL remove a candidate only when it is past the grace interval,
-same-UID, non-symlink, 0700, has a parseable known marker with a strict nonce
-agreeing on identity, and has a demonstrably absent owner; a same-boot running
-candidate also requires an absent process group. Recovery SHALL NOT signal marker PIDs
-or PGIDs. All unverifiable candidates SHALL remain with stable reason codes.
+Normal cleanup and recovery SHALL act only through the allocation capability.
+Before a quarantine rename, cleanup SHALL write and sync a same-UID,
+non-symlink 0600 parent-side journal containing the full marker capability and
+the exact nonce-derived quarantine path. The journal SHALL NOT start a process
+or grant an independent cleanup owner. Cleanup SHALL prove both the source and
+nonce-derived quarantine target are immediate children of the validated
+canonical parent: the target `dirname` SHALL equal that parent, its relative
+path SHALL be one non-empty non-traversal component, and its basename SHALL be
+the exact nonce-derived quarantine name. It SHALL refuse an existing quarantine
+target, revalidate non-symlink directory device/inode identity, recursively
+remove only that entry, and unlink the journal only after both original and
+quarantine locations are absent. Recursive removal SHALL unlink, not traverse,
+a symlink inside the owned root. POSIX separators, Windows separators, drive/
+UNC-looking values, nested names, absolute-looking text, encoded separators,
+and Unicode slash variants in a marker nonce SHALL be malformed and retained.
+
+Startup recovery SHALL read all immediate dirent names without candidate stat
+or marker fanout, sort those names lexically, and rotate the scan strictly
+after a durable same-UID non-symlink 0600 parent-side cursor. The cursor SHALL
+be scheduling metadata only and SHALL NOT authorize deletion; a missing,
+malformed, unreadable, or wrong-mode cursor SHALL safely restart at the lexical
+head. Recovery SHALL deeply inspect only a fixed bound of the rotated names,
+with concurrent candidate work fixed at one, and SHALL durably advance the
+cursor after the last inspected name. It SHALL use fixed bounds for inspected
+entries, journal/rename transitions, and recursive-removal attempts; it SHALL
+emit `recovery-budget-exhausted` and defer remaining work when any bound is
+reached. A bound SHALL NOT prevent a new owner allocation. The bounds SHALL NOT
+claim a bound on recursive deletion time or bytes for an individual permitted
+removal.
+
+Recovery SHALL remove a `run-*` candidate only when it is past the grace
+interval, same-UID, non-symlink, 0700, has a parseable known marker with a
+strict nonce agreeing on identity, and has a demonstrably absent owner.
+`allocated` may satisfy that predicate. An owner-dead `launching` candidate
+SHALL remain with `launch-unknown`; recovery SHALL NOT use age, owner absence,
+or later group absence as proof to remove it. A `running` candidate SHALL have
+a positive PGID and a syntactically valid lowercase Linux UUID boot ID.
+Regardless of whether its UUID matches the live host, recovery SHALL require
+`kill(-pgid, 0)` to prove the recorded group absent before deletion; a live
+group SHALL remain with `group-live` to protect against PID/PGID reuse. An
+unavailable live boot ID SHALL retain `unverifiable-boot` after the group proof.
+Recovery SHALL NOT signal marker PIDs or PGIDs. A valid journal MAY resume only its exact recorded `run-*` or
+`.quarantine-*` device/inode target after the same owner/group proof. An intact
+pre-journal quarantine marker MAY provide the equivalent capability; a partial
+quarantine with neither valid capability SHALL remain with
+`quarantine-no-capability`. All unverifiable candidates SHALL remain with
+stable reason codes.
 
 #### Scenario: Cleanup receives a swapped root
 
@@ -74,6 +108,35 @@ when required, process group are absent
 **AND** malformed, live, wrong-owner, wrong-mode, foreign, symlink, or
 identity-mismatched entries SHALL remain.
 
+#### Scenario: SIGKILL interrupts the spawn-to-running handoff
+
+**WHEN** an external SIGKILL terminates the owner after the durable `launching`
+transition and after `spawn()` returns, but before `running` persistence
+**THEN** a later recovery SHALL retain the root with `launch-unknown`
+**AND** it SHALL retain that root even after the child group later becomes absent.
+
+#### Scenario: Cleanup crashes after journal persistence or quarantine rename
+
+**WHEN** cleanup is interrupted after its journal sync or after rename while
+the embedded marker is partly deleted
+**THEN** recovery SHALL use the journal to validate and remove only its exact
+recorded device/inode target
+**AND** it SHALL remove the journal only after the target is absent.
+
+#### Scenario: A recovery budget is exhausted
+
+**WHEN** the dedicated parent contains more recovery candidates than a fixed
+startup limit permits
+**THEN** recovery SHALL emit `recovery-budget-exhausted`, defer remaining work,
+and permit the new outer owner to allocate its own root.
+
+#### Scenario: A stale candidate is beyond the first recovery page
+
+**WHEN** lexically earlier entries consume the current inspection budget
+**THEN** the durable non-authoritative cursor SHALL advance after that page
+**AND** a later invocation SHALL rotate past those entries and inspect the
+verified stale candidate without increasing recovery concurrency.
+
 #### Scenario: Hard termination interrupts an owner
 
 **WHEN** the owner is terminated by SIGKILL, OOM, or host failure
@@ -89,14 +152,23 @@ process group, and wait for the child `close` event before final result
 handling. It SHALL not add normal-path stdout/stderr output or change
 concurrency/output ordering.
 
+Process-group membership SHALL be the containment contract for descendants.
+The owner SHALL NOT claim a `/proc` ancestry proof or cgroup containment, and
+an intentionally detached `setsid` descendant SHALL be outside the guarantee:
+it is neither proven absent nor removed by this lifecycle.
+
 A normal child code, including voluntary 130 or 143, SHALL remain a normal
 code. A signal-terminated child or wrapper SHALL be reported by self-signaling
 with the same signal after bounded group shutdown and cleanup; it SHALL NOT be
-converted to `128 + signal`. SIGINT/SIGTERM to the owner SHALL be forwarded
-once to the negative owned PGID, then remaining members MAY be SIGKILLed after
-the bounded grace period while the original initiating signal remains the
-result. A successful child whose root cannot be proven removed SHALL return
-infrastructure code 74; a failed or signaled child result remains dominant.
+converted to `128 + signal`. The outer owner SHALL install and latch
+SIGINT/SIGTERM before recovery or allocation. A latched signal during recovery
+SHALL prevent allocation; a latched signal during allocation SHALL clean the
+verified allocation and SHALL prevent spawn. SIGINT/SIGTERM to the owner after
+`running` SHALL be forwarded once to the negative owned PGID, then remaining
+members MAY be SIGKILLed after the bounded grace period while the original
+initiating signal remains the result. A successful child whose root cannot be
+proven removed SHALL return infrastructure code 74; a failed or signaled child
+result remains dominant.
 
 #### Scenario: A child exits voluntarily with 130
 
@@ -110,6 +182,20 @@ after cleanup succeeds.
 **THEN** it SHALL forward SIGTERM to the owned group, wait and escalate only as
 needed, remove its root, and self-signal with SIGTERM
 **AND** the observing parent SHALL receive `{ code: null, signal: 'SIGTERM' }`.
+
+#### Scenario: A descendant deliberately leaves the process group
+
+**WHEN** a descendant invokes `setsid` and leaves the owned process group
+**THEN** the owner SHALL only terminate and verify the original negative PGID
+**AND** it SHALL NOT claim that the detached descendant was removed.
+
+#### Scenario: The owner receives SIGTERM before allocation
+
+**WHEN** the outer owner receives SIGTERM while recovering or while allocating
+its root
+**THEN** it SHALL not spawn a child
+**AND** after any verified allocated root is cleaned, the observing parent SHALL
+receive `{ code: null, signal: 'SIGTERM' }`.
 
 ### Requirement: Canonical routing and host-write checks SHALL remain explicit
 
@@ -127,6 +213,14 @@ from fixtures and reads, and retain narrow exact-file/source-pattern reasons
 for reviewed container paths, parser/path fixtures, production/external roots,
 and the stable shared dynamic n.eko flock. The flock SHALL NOT be moved into
 per-invocation scratch or unlinked while waiters can exist.
+
+The lifecycle CI workflow SHALL trigger when any source extension scanned by
+the host-write ratchet changes (`.cjs`, `.cts`, `.js`, `.jsx`, `.mjs`, `.mts`,
+`.sh`, `.ts`, or `.tsx`), or when a package manifest, workflow, lockfile, or
+its scoped TypeScript configuration changes. It SHALL run strict TypeScript for
+every `scripts/test-scratch/*.ts` lifecycle/canonical-gate source and fixture.
+That scoped result SHALL NOT claim the unrelated repository-wide TypeScript
+baseline is green.
 
 #### Scenario: A canonical workflow adds a raw Node test command
 
@@ -153,3 +247,9 @@ exception
 **WHEN** a newly discovered executable source or shell file writes to literal
 `/tmp` without an exact reviewed exception
 **THEN** the host-write gate SHALL fail without editing its inventory.
+
+#### Scenario: A scanned host-writer source changes outside test-scratch
+
+**WHEN** an executable source or shell file under any repository location uses
+an extension scanned by the host-write ratchet
+**THEN** the lifecycle CI workflow SHALL run the canonical-entrypoint gate.

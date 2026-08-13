@@ -30,9 +30,11 @@ Non-goals:
   `mkdtemp` call sites.
 - Deleting ambient `TMPDIR`, `/tmp`, a workspace, container state, an external
   database, or a caller-provided arbitrary path.
-- Claiming cleanup after SIGKILL, OOM, host failure, detached descendants,
-  containers/services, hostile same-UID mutation, or Windows process-tree
-  parity.
+- Claiming cleanup after SIGKILL, OOM, host failure, containers/services,
+  hostile same-UID mutation, or Windows process-tree parity.
+- Proving or removing descendants that intentionally call `setsid` or otherwise
+  leave the owned process group. Process-group membership is the containment
+  contract; this design makes no `/proc` or cgroup-containment claim.
 
 ## Ownership model
 
@@ -59,6 +61,12 @@ participant: it passes the variables through, creates no root or process group,
 and never attempts owner cleanup or recovery. Incomplete or invalid metadata
 fails closed rather than authorizing a second owner or deletion.
 
+On POSIX, membership in the detached process group is the only descendant
+containment proof. The owner signals and checks that group by negative PGID; it
+does not infer containment from `/proc` ancestry or claim cgroup isolation. A
+descendant that deliberately invokes `setsid` is outside the guarantee and is
+not proven absent or removable by scratch cleanup.
+
 ## Allocation, cleanup, and recovery
 
 Allocation records a capability, not a caller-controlled path:
@@ -68,38 +76,67 @@ bytes, and is rejected at marker parsing otherwise. POSIX separators, Windows
 separators and drive/UNC-looking values, nested names, absolute-looking text,
 encoded separators, and Unicode slash variants are all malformed. The root is a same-UID,
 non-symlink 0700 `mkdtemp` child. Its marker is written exclusively with mode
-0600 and atomically transitions from `allocated` to `running` once the child
-PGID exists. It includes schema, nonce, creation time, optional Linux boot ID,
-owner PID, canonical parent/root identities, device, inode, and the running
-PGID when applicable.
+0600 and atomically transitions from `allocated` to durable `launching` before
+calling `spawn()`. After `spawn()` returns a positive direct-child PID, the
+next durable transition records that PID as the `running` PGID. A marker write
+syncs its file and parent directory. `launching` is intentionally ambiguous:
+the live owner can return it to `allocated` only when it proves no spawn was
+attempted, but a later recovery retains an owner-dead `launching` root as
+`launch-unknown`. Age, an absent owner, and an absent later group do not prove
+that the unrecorded handoff never created a process. Markers include schema,
+nonce, creation time, optional Linux boot ID, owner PID, canonical parent/root
+identities, device, inode, and the running PGID when applicable.
 
-Normal cleanup first waits for the owned process group to quiesce. It proves
-both the source and nonce-derived opaque quarantine target are immediate
-children of the already validated canonical parent before rename: the target's
+Normal cleanup first waits for the owned process group to quiesce. It writes
+and syncs a parent-side 0600 cleanup journal before rename. The journal records
+the complete allocation marker and exact nonce-derived quarantine path; it is
+data for recovery, not another cleanup owner. Cleanup proves both the source
+and nonce-derived opaque quarantine target are immediate children of the
+already validated canonical parent before rename: the target's
 `dirname` equals that parent, its relative path is one non-empty non-traversal
 component, and its basename is the exact nonce-derived opaque name. It refuses
 an existing quarantine target and renames the exact root only then.
 It then requires a non-symlink directory with the recorded device/inode before
-recursive removal. The rename gives concurrent cleaners one winner and the
-identity recheck refuses path swaps. Recursive removal must unlink a symlink
-inside the root without traversing it.
+recursive removal. The journal is unlinked only after both the original and
+quarantine locations are absent. The rename gives concurrent cleaners one
+winner and the identity recheck refuses path swaps. Recursive removal must
+unlink a symlink inside the root without traversing it.
 
-Owner startup performs opportunistic recovery only over immediate `run-*`
-children of the dedicated validated parent. A candidate is removable only when
-it is old enough to be past the allocation/handoff grace interval; is a
-same-UID non-symlink 0700 directory; has a parseable known-state marker with a
-strict nonce whose path/device/inode agree; and has a demonstrably absent
-recorded owner.
-For a same-boot `running` marker, `kill(-pgid, 0)` must also prove the group is
-absent. Recovery never signals a recorded PID or PGID. Any ambiguity (fresh,
-live or reused identity, prior-platform ambiguity, malformed, wrong owner or
-mode, symlink, foreign, unknown state, or identity mismatch) is retained with
-a stable reason code. Verified stale cleanup uses the same quarantine path.
+Owner startup reads immediate dirent names without candidate stat or marker
+fanout, sorts them lexically, then rotates after a durable same-UID 0600
+parent-side scan cursor. The cursor is scheduling metadata only: a malformed or
+missing cursor starts at the lexical head, and it never authorizes deletion.
+Recovery deeply inspects sequentially and has fixed limits for inspected
+entries, journal/rename state transitions, and recursive-removal attempts. It
+durably advances the cursor after the final inspected name. Limit exhaustion
+emits `recovery-budget-exhausted` and defers work; it never blocks a new
+allocation. These limits bound candidate and concurrent recovery work, not the
+recursive time or bytes of an individual permitted removal.
+
+A `run-*` candidate is removable only when it is old enough to be past the
+allocation grace interval; is a same-UID non-symlink 0700 directory; has a
+parseable known-state marker with a strict nonce whose path/device/inode agree;
+and has a demonstrably absent recorded owner. `allocated` may meet that common
+predicate. `launching` is retained as `launch-unknown`. A `running` candidate
+also requires a positive PGID and a syntactically valid lowercase Linux UUID
+boot ID. Regardless of whether that UUID matches the live host,
+`kill(-pgid, 0)` must prove the recorded group absent before deletion; a live
+group is retained as `group-live` to protect against PID/PGID reuse. An
+unavailable live boot ID retains `unverifiable-boot` after that group proof.
+Recovery never signals a recorded PID or PGID.
+
+A validated journal may resume its exact original `run-*` or exact
+`.quarantine-<nonce>` device/inode target after the same owner and group proof,
+then remove the journal only after both locations are absent. A pre-journal
+quarantine can use its intact embedded marker only with those equivalent
+proofs. A partly deleted quarantine without either capability is retained as
+`quarantine-no-capability`. Any other ambiguity (fresh, live or reused
+identity, malformed boot ID, wrong owner or mode, symlink, foreign, unknown
+state, or identity mismatch) is retained with a stable reason code.
 
 SIGKILL and host failure leave an orphan until a later owner recovery or a
-bounded host/CI age cleaner. Such a cleaner may target only this dedicated
-parent and must have a TTL greater than the supported test duration plus
-margin.
+bounded host/CI cleaner. A cleaner may target only this dedicated parent. It
+must never use age alone to delete an owner-dead `launching` root.
 
 ## Command and signal semantics
 
@@ -114,8 +151,15 @@ Node parent as `{ code, signal: null }`. If a child dies by signal, the owner
 cleans, removes its handler, restores default handling, and signals itself with
 that same signal. It must not substitute `process.exit(128 + signal)`.
 
-On owner SIGINT or SIGTERM, the first signal is latched and forwarded once to
-the validated negative PGID. The owner waits a bounded grace period, escalates
+The outer owner installs SIGINT/SIGTERM listeners before recovery or
+allocation. The listener only latches the first signal until a validated group
+exists. A signal during recovery prevents allocation; a signal during
+allocation cleans the closed allocated capability and prevents spawn, including
+when a pre-launch hook then throws. A signal after the durable `launching`
+transition but before spawn returns the marker to `allocated` before cleanup.
+If the launching transition itself may have reached disk and then fails, the
+root remains fail-closed. On owner SIGINT or SIGTERM after `running`, the
+first signal is forwarded once to the validated negative PGID. The owner waits a bounded grace period, escalates
 remaining group members to SIGKILL, cleans the root, then self-signals with
 the initiating signal. After a normal direct-child close, lingering members of
 the owned group are terminated before deletion. The initiating signal remains
@@ -162,7 +206,10 @@ front doors in `reference-implementation/package.json`, `packages/cli`,
 `packages/pdpp-brand-react`, `apps/console`, and `apps/site`; and raw test
 commands in `.github/workflows/reference-implementation.yml`,
 `openspec-archive-check.yml`, `remote-surface.yml`, `docker-images.yml`, and
-`reference-stack-project-safety.yml`. `packages/list-envelope` is
+`reference-stack-project-safety.yml`. The lifecycle oracle workflow directly
+runs its tests without an inherited owner so it can prove owner behavior; the
+canonical-entrypoint ratchet permits only that exact reviewed command.
+`packages/list-envelope` is
 authority-only and is not given a new package test front door.
 
 The routing ratchet derives its inventory from every repository package
@@ -172,6 +219,14 @@ test runner commands, then requires each covered entrypoint to own, delegate
 to, or use a narrowly reviewed exception. It rejects a newly added raw CI
 `node --test`, `tsx *.test.ts`, or test-shell invocation without changing the
 ratchet inventory.
+
+The lifecycle workflow runs when any tracked executable source extension that
+the host-write ratchet scans changes (`.cjs`, `.cts`, `.js`, `.jsx`, `.mjs`,
+`.mts`, `.sh`, `.ts`, or `.tsx`), or when a package manifest, workflow, lockfile,
+or the scoped configuration changes. It runs a strict TypeScript project for
+all `scripts/test-scratch/*.ts` and its fixtures. This is an intentionally
+scoped gate for the lifecycle and canonical-ratchet implementation; it does not
+claim the unrelated repository-wide TypeScript baseline is green.
 
 Only confirmed executable host writers present in this worktree migrate: the RI
 browser ledger direct `/tmp` allocation and the listed n.eko
@@ -206,8 +261,12 @@ cleanup-failure result precedence; byte-exact stdout/stderr drainage;
 self-signal and forwarded SIGINT/SIGTERM semantics; TERM-ignoring child and
 grandchild escalation; parallel roots/nonces; nested participants and parallel
 workers; and crash recovery across allocated/running/prior-boot/live/reused,
-malformed, traversal/absolute/encoded nonce variants, wrong-UID/mode, symlink,
-inode-swap, foreign, and concurrent cases.
+malformed, traversal/absolute/encoded nonce variants, malformed boot IDs,
+wrong-UID/mode, symlink, inode-swap, foreign, and concurrent cases. They also
+kill an external wrapper after `spawn()` but before `running` persistence,
+exercise SIGTERM before recovery and before spawn, resume cleanup after journal
+creation and after a renamed marker is deleted, and prove bounded recovery
+defers inventory and recursive removal without preventing the next owner.
 
 Integration coverage runs the boundary through authority, RI, secondary
 runners, shell and Python leaves, representative affected package/smoke

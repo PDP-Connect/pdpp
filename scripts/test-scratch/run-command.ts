@@ -6,7 +6,10 @@ import {
   allocateScratchOwnership,
   cleanupScratchOwnership,
   inheritedScratchOwnership,
+  markScratchLaunching,
   markScratchRunning,
+  markScratchUnlaunched,
+  type RecoveryLimits,
   recoverStaleScratch,
   type ScratchOwnership,
   ScratchOwnershipError,
@@ -131,10 +134,180 @@ async function cleanupWithResult(
 }
 
 export interface RunScratchCommandOptions {
-  /** Test seam for the signal window before the child PID is latched as PGID. */
-  beforePgidAssignment?: () => Promise<void>;
+  /** Test seam after allocation but before durable launch or child spawn. */
+  afterAllocationBeforeSpawn?: () => Promise<void>;
+  /** Test seam after latching signals but before recovery starts. */
+  afterSignalHandlersInstalled?: () => Promise<void>;
+  /** Test seam after spawn and before the running PGID becomes durable. */
+  afterSpawnBeforeRunning?: () => Promise<void>;
+  /** Fixed startup-recovery limits, exposed only for deterministic lifecycle tests. */
+  recoveryLimits?: Partial<RecoveryLimits>;
   /** Test seam for the fail-closed path after a process-group shutdown attempt. */
   stopGroup?: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>;
+}
+
+interface SignalControl {
+  activateRunningGroup: (pgid: number) => void;
+  pgid: () => number | undefined;
+  receivedAt: () => number | undefined;
+  release: () => void;
+  setPgid: (pgid: number) => void;
+  shutdown: () => Promise<boolean> | undefined;
+  signal: () => Signal | undefined;
+}
+
+function installSignalControl(
+  stopGroup: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>
+): SignalControl {
+  let firstSignal: Signal | undefined;
+  let pgid: number | undefined;
+  let runningGroupActive = false;
+  let signalReceivedAt: number | undefined;
+  let signalShutdown: Promise<boolean> | undefined;
+  const startSignalShutdown = () => {
+    if (firstSignal && pgid !== undefined && runningGroupActive && !signalShutdown) {
+      signalShutdown = stopGroup(pgid, signalReceivedAt, firstSignal);
+    }
+  };
+  const forwardSignal = (signal: Signal) => {
+    firstSignal ??= signal;
+    signalReceivedAt ??= Date.now();
+    startSignalShutdown();
+  };
+  process.on("SIGINT", forwardSignal);
+  process.on("SIGTERM", forwardSignal);
+  return {
+    activateRunningGroup: (value) => {
+      pgid = value;
+      runningGroupActive = true;
+      startSignalShutdown();
+    },
+    pgid: () => pgid,
+    receivedAt: () => signalReceivedAt,
+    release: () => {
+      process.off("SIGINT", forwardSignal);
+      process.off("SIGTERM", forwardSignal);
+    },
+    shutdown: () => signalShutdown,
+    signal: () => firstSignal,
+    setPgid: (value) => {
+      pgid = value;
+    },
+  };
+}
+
+function latchedSignalResult(control: SignalControl): CommandResult | undefined {
+  const signal = control.signal();
+  return signal ? { code: null, signal } : undefined;
+}
+
+function stopTrackedGroup(
+  control: SignalControl,
+  stopGroup: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>
+): Promise<boolean> {
+  const pgid = control.pgid();
+  if (pgid === undefined) {
+    return Promise.resolve(true);
+  }
+  const shutdown = control.shutdown();
+  return shutdown ?? stopGroup(pgid, control.receivedAt(), control.signal());
+}
+
+async function runLaunchedCommand(
+  command: string[],
+  ownership: ScratchOwnership,
+  control: SignalControl,
+  options: RunScratchCommandOptions,
+  stopGroup: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>
+): Promise<CommandResult> {
+  let runningRecorded = false;
+  try {
+    const [file, ...args] = command;
+    if (!file) {
+      return cleanupWithResult(ownership, { code: INFRASTRUCTURE_EXIT_CODE, signal: null });
+    }
+    const child = spawn(file, args, {
+      cwd: process.cwd(),
+      detached: true,
+      env: ownership.env,
+      shell: false,
+      stdio: "inherit",
+    });
+    const observed = observeChild(child);
+    if (!child.pid) {
+      await markScratchUnlaunched(ownership);
+      throw new ScratchOwnershipError("spawn-failed");
+    }
+    control.setPgid(child.pid);
+    if (options.afterSpawnBeforeRunning) {
+      await options.afterSpawnBeforeRunning();
+    }
+    await markScratchRunning(ownership, child.pid);
+    runningRecorded = true;
+    control.activateRunningGroup(child.pid);
+    const result = await observed.close;
+    if (observed.launchError()) {
+      throw observed.launchError();
+    }
+    const groupStopped = await stopTrackedGroup(control, stopGroup);
+    const signalResult = latchedSignalResult(control);
+    return cleanupWithResult(ownership, signalResult ?? result, groupStopped);
+  } catch (error) {
+    const reason = error instanceof ScratchOwnershipError ? error.reason : "spawn-failed";
+    process.stderr.write(`test scratch command failed: ${reason}\n`);
+    const pgid = control.pgid();
+    const groupStopped = await stopTrackedGroup(control, stopGroup);
+    const signalResult = latchedSignalResult(control);
+    if (!runningRecorded) {
+      process.stderr.write("test scratch cleanup failed: launch-unknown\n");
+      if (signalResult) {
+        return signalResult;
+      }
+      return pgid === undefined
+        ? cleanupWithResult(ownership, { code: INFRASTRUCTURE_EXIT_CODE, signal: null })
+        : { code: INFRASTRUCTURE_EXIT_CODE, signal: null };
+    }
+    return cleanupWithResult(ownership, signalResult ?? { code: INFRASTRUCTURE_EXIT_CODE, signal: null }, groupStopped);
+  }
+}
+
+async function runAllocatedCommand(
+  command: string[],
+  ownership: ScratchOwnership,
+  control: SignalControl,
+  options: RunScratchCommandOptions,
+  stopGroup: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>
+): Promise<CommandResult> {
+  // Once the durable transition has been attempted, its on-disk outcome is
+  // ambiguous on failure. Preserve the launching root rather than guessing.
+  let launchTransitionAttempted = false;
+  try {
+    const signalBeforeLaunch = latchedSignalResult(control);
+    if (signalBeforeLaunch) {
+      return cleanupWithResult(ownership, signalBeforeLaunch);
+    }
+    await options.afterAllocationBeforeSpawn?.();
+    const signalBeforeSpawn = latchedSignalResult(control);
+    if (signalBeforeSpawn) {
+      return cleanupWithResult(ownership, signalBeforeSpawn);
+    }
+    launchTransitionAttempted = true;
+    await markScratchLaunching(ownership);
+    const signalAfterLaunching = latchedSignalResult(control);
+    if (signalAfterLaunching) {
+      await markScratchUnlaunched(ownership);
+      return cleanupWithResult(ownership, signalAfterLaunching);
+    }
+    return runLaunchedCommand(command, ownership, control, options, stopGroup);
+  } catch (error) {
+    const reason = error instanceof ScratchOwnershipError ? error.reason : "launch-failed";
+    process.stderr.write(`test scratch launch failed: ${reason}\n`);
+    const signalResult = latchedSignalResult(control);
+    if (signalResult) {
+      return launchTransitionAttempted ? signalResult : cleanupWithResult(ownership, signalResult);
+    }
+    return cleanupWithResult(ownership, { code: INFRASTRUCTURE_EXIT_CODE, signal: null });
+  }
 }
 
 export async function runScratchCommand(
@@ -146,73 +319,39 @@ export async function runScratchCommand(
   if (participant) {
     return runParticipant(command);
   }
-  let ownership: ScratchOwnership;
-  try {
-    // Recovery is intentionally opportunistic; malformed and live candidates remain.
-    await recoverStaleScratch();
-    ownership = await allocateScratchOwnership();
-  } catch (error) {
-    const reason = error instanceof ScratchOwnershipError ? error.reason : "allocation-failed";
-    process.stderr.write(`test scratch allocation failed: ${reason}\n`);
-    return { code: INFRASTRUCTURE_EXIT_CODE, signal: null };
-  }
-  const [file, ...args] = command;
-  if (!file) {
-    return cleanupWithResult(ownership, { code: INFRASTRUCTURE_EXIT_CODE, signal: null });
-  }
-  let firstSignal: Signal | undefined;
-  let pgid: number | undefined;
-  let signalReceivedAt: number | undefined;
-  let signalShutdown: Promise<boolean> | undefined;
   const stopGroup = options.stopGroup ?? terminateRemainingGroup;
-  const startSignalShutdown = () => {
-    if (firstSignal && pgid !== undefined && !signalShutdown) {
-      signalShutdown = stopGroup(pgid, signalReceivedAt, firstSignal);
-    }
-  };
-  const forwardSignal = (signal: Signal) => {
-    firstSignal ??= signal;
-    signalReceivedAt ??= Date.now();
-    startSignalShutdown();
-  };
-  process.on("SIGINT", forwardSignal);
-  process.on("SIGTERM", forwardSignal);
+  const control = installSignalControl(stopGroup);
   try {
-    const child = spawn(file, args, {
-      cwd: process.cwd(),
-      detached: true,
-      env: ownership.env,
-      shell: false,
-      stdio: "inherit",
-    });
-    const observed = observeChild(child);
-    if (!child.pid) {
-      throw new ScratchOwnershipError("spawn-failed");
+    await options.afterSignalHandlersInstalled?.();
+    // Recovery is intentionally opportunistic; malformed and live candidates remain.
+    await recoverStaleScratch(options.recoveryLimits === undefined ? {} : { limits: options.recoveryLimits });
+    const signalResult = latchedSignalResult(control);
+    if (signalResult) {
+      return signalResult;
     }
-    await options.beforePgidAssignment?.();
-    pgid = child.pid;
-    startSignalShutdown();
-    await markScratchRunning(ownership, pgid);
-    let result = await observed.close;
-    if (observed.launchError()) {
-      throw observed.launchError();
+    let ownership: ScratchOwnership;
+    try {
+      ownership = await allocateScratchOwnership();
+    } catch (error) {
+      const latched = latchedSignalResult(control);
+      if (latched) {
+        return latched;
+      }
+      const reason = error instanceof ScratchOwnershipError ? error.reason : "allocation-failed";
+      process.stderr.write(`test scratch allocation failed: ${reason}\n`);
+      return { code: INFRASTRUCTURE_EXIT_CODE, signal: null };
     }
-    const groupStopped = signalShutdown ? await signalShutdown : await stopGroup(pgid);
-    if (firstSignal) {
-      result = { code: null, signal: firstSignal };
-    }
-    return await cleanupWithResult(ownership, result, groupStopped);
+    return await runAllocatedCommand(command, ownership, control, options, stopGroup);
   } catch (error) {
-    const reason = error instanceof ScratchOwnershipError ? error.reason : "spawn-failed";
-    process.stderr.write(`test scratch command failed: ${reason}\n`);
-    let groupStopped = true;
-    if (pgid !== undefined) {
-      groupStopped = signalShutdown ? await signalShutdown : await stopGroup(pgid, signalReceivedAt, firstSignal);
+    const signalResult = latchedSignalResult(control);
+    if (signalResult) {
+      return signalResult;
     }
-    return await cleanupWithResult(ownership, { code: INFRASTRUCTURE_EXIT_CODE, signal: null }, groupStopped);
+    const reason = error instanceof ScratchOwnershipError ? error.reason : "recovery-failed";
+    process.stderr.write(`test scratch recovery failed: ${reason}\n`);
+    return { code: INFRASTRUCTURE_EXIT_CODE, signal: null };
   } finally {
-    process.off("SIGINT", forwardSignal);
-    process.off("SIGTERM", forwardSignal);
+    control.release();
   }
 }
 

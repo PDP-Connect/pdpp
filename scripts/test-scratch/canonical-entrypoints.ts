@@ -6,7 +6,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { basename, extname, join, relative } from "node:path";
 import { promisify } from "node:util";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome does not follow this package's export map.
-import { parse } from "@babel/parser";
+import { type ParserPlugin, parse } from "@babel/parser";
 
 const IGNORED_DIRECTORIES = new Set([
   ".git",
@@ -25,6 +25,10 @@ const OWNER_COMMAND = "test-scratch/run-command.ts";
 const ROOT_OWNER_COMMAND = "test:scratch";
 const RAW_TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const ROOT_REVIEWED_NON_TEST_SCRIPTS = new Set(["test-accounting:inventory"]);
+const REVIEWED_STANDALONE_LIFECYCLE_ORACLE = {
+  command: "pnpm exec tsx --test scripts/test-scratch/run-command.test.ts",
+  path: ".github/workflows/test-scratch-lifecycle.yml",
+} as const;
 const TMP_PATH = /\/tmp/;
 const WHITESPACE = /\s/;
 const ROOT_HOST_ALIAS = /(?:^|:)(?:smoke|acceptance)(?::|$)/;
@@ -127,9 +131,9 @@ async function filesBelow(root: string, directory = ""): Promise<string[]> {
     entries.map((entry): Promise<string[]> => {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) {
-        return IGNORED_DIRECTORIES.has(entry.name) ? [] : filesBelow(root, path);
+        return IGNORED_DIRECTORIES.has(entry.name) ? Promise.resolve([]) : filesBelow(root, path);
       }
-      return entry.isFile() ? [path] : [];
+      return Promise.resolve(entry.isFile() ? [path] : []);
     })
   );
   return nested.flat();
@@ -278,6 +282,8 @@ function shellCommandToken(tokens: readonly string[]): string | undefined {
     }
     index = shellWrapperCommandIndex(tokens, index + 1, wrapper, optionArguments);
   }
+  // biome-ignore lint/complexity/noUselessUndefined: explicit undefined satisfies noImplicitReturns.
+  return undefined;
 }
 
 function isRawTestTokens(tokens: readonly string[]): boolean {
@@ -423,7 +429,8 @@ async function workflowFindings(root: string, files: readonly string[]): Promise
       workflowFiles.map(async (path) => {
         const source = await readFile(join(root, path), "utf8");
         return workflowRuns(source, path).flatMap((run) =>
-          hasUnroutedRawTest(run)
+          hasUnroutedRawTest(run) &&
+          !(path === REVIEWED_STANDALONE_LIFECYCLE_ORACLE.path && run === REVIEWED_STANDALONE_LIFECYCLE_ORACLE.command)
             ? [{ path, reason: `workflow run bypasses the scratch owner: ${singleLine(run)}` }]
             : []
         );
@@ -448,6 +455,8 @@ function calleeName(expression: { type?: string; name?: string; property?: { nam
   if (expression.type === "MemberExpression" || expression.type === "OptionalMemberExpression") {
     return expression.property?.name;
   }
+  // biome-ignore lint/complexity/noUselessUndefined: explicit undefined satisfies noImplicitReturns.
+  return undefined;
 }
 
 function literalValue(node?: {
@@ -465,6 +474,8 @@ function literalValue(node?: {
   if (node.type === "TemplateLiteral") {
     return node.quasis?.map((quasi) => quasi.value?.cooked ?? "").join("") ?? undefined;
   }
+  // biome-ignore lint/complexity/noUselessUndefined: explicit undefined satisfies noImplicitReturns.
+  return undefined;
 }
 
 function pathArgumentIndexes(name: string): readonly number[] {
@@ -472,7 +483,7 @@ function pathArgumentIndexes(name: string): readonly number[] {
 }
 
 function sourceWriterLiterals(source: string, path: string): string[] {
-  const plugins = path.endsWith("x") ? ["jsx", "typescript"] : ["typescript"];
+  const plugins: ParserPlugin[] = path.endsWith("x") ? ["jsx", "typescript"] : ["typescript"];
   const file = parse(source, { plugins, sourceType: "unambiguous" });
   const values: string[] = [];
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: a parser AST has a heterogeneous recursive shape.

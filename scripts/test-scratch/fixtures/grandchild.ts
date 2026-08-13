@@ -15,7 +15,10 @@ if (process.argv.includes("--ignore-term")) {
   process.on("SIGTERM", () => {
     // Intentional fixture: wrapper must escalate a group member that ignores TERM.
   });
+}
+if (process.argv.includes("--ignore-term") || process.argv.includes("--wait")) {
   await new Promise(() => {
     // Intentional fixture hang for signal tests.
+    setInterval(() => undefined, 1000);
   });
 }

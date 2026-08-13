@@ -10,6 +10,10 @@
       normal results, ambient-temp preservation, symlink/inode attacks,
       cleanup-failure precedence, nested/parallel descendants, signals,
       escalation, SIGKILL recovery, and stable recovery reason codes.
+- [x] 1.4 Repair the launch handoff, early signal latch, journal-backed
+      quarantine recovery, bounded rotating startup harvest, strict Linux UUID
+      boot-ID parsing, and running-group absence proof; add deterministic
+      crash, signal, fairness, and malformed-boot tests.
 
 ## 2. Canonical routing
 
@@ -22,6 +26,14 @@
       runners; do not add a `packages/list-envelope` front door.
 - [x] 2.3 Route raw test commands in exactly the five workflows named in
       `design.md` through `pnpm test:scratch -- ...`.
+- [x] 2.5 Install the pinned Node, pnpm, and workspace dependencies before the
+      reference-stack project-safety workflow invokes the routed boundary.
+- [x] 2.6 Add a lifecycle workflow for the owner oracle and canonical-entrypoint
+      ratchet, with the sole reviewed direct lifecycle command documented
+      because inheriting an owner would invalidate the oracle; trigger it for
+      every host-writer source extension it inventories and run the honest
+      scoped strict TypeScript project for lifecycle/canonical sources and
+      fixtures.
 - [x] 2.4 Add the repository-derived canonical-entrypoint ratchet over package
       manifests and workflow YAML run blocks; permit only owned routes,
       reviewed delegates, or explicit reviewed exemptions, and prove injected
@@ -51,9 +63,9 @@
 - [x] 4.1 Document `pnpm test:scratch -- <command> [args...]`, its canonical
       containment promise, infrastructure-failure behavior, and raw-command
       bypass boundary in `CONTRIBUTING.md`.
-- [x] 4.2 Run focused lifecycle and static-ratchet tests, affected script and
+- [ ] 4.2 Run focused lifecycle and static-ratchet tests, affected script and
       package tests, RI tests, accounting checks, formatter/typecheck, and
       `openspec validate contain-test-scratch --strict`.
-- [x] 4.3 Inspect the final diff; read every touched file; grep migrated old
+- [ ] 4.3 Inspect the final diff; read every touched file; grep migrated old
       paths and every reviewed exception pattern; record unrelated baseline
       failures separately with command evidence.

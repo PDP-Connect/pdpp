@@ -33,6 +33,7 @@ import { runScratchCommand } from "./run-command.ts";
 const child = new URL("./fixtures/child.ts", import.meta.url).pathname;
 const CHILD_SIGINT_OUTPUT = /child-signal:SIGINT/;
 const CHILD_SIGTERM_OUTPUT = /child-signal:SIGTERM/;
+const LINUX_BOOT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function temporaryParent(): Promise<string> {
   return mkdtemp(join(tmpdir(), "pdpp-test-scratch-test-"));
@@ -43,6 +44,7 @@ function command(args: string[]): string[] {
 }
 
 const wrapperPath = new URL("./run-command.ts", import.meta.url).pathname;
+const lifecycleWrapperPath = new URL("./fixtures/lifecycle-wrapper.ts", import.meta.url).pathname;
 
 interface ChildResult {
   code: number | null;
@@ -60,6 +62,13 @@ function startRawWrapper(argv: string[], env: NodeJS.ProcessEnv = process.env) {
   return spawn(process.execPath, ["--import", "tsx", wrapperPath, "--", ...argv], {
     env,
     stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function startLaunchingWrapper(env: NodeJS.ProcessEnv = process.env) {
+  return spawn(process.execPath, ["--import", "tsx", lifecycleWrapperPath], {
+    env,
+    stdio: ["ignore", "pipe", "ignore"],
   });
 }
 
@@ -98,8 +107,19 @@ function exited(proc: ReturnType<typeof spawn>): Promise<ChildResult> {
 
 function currentBootId(): Promise<string | undefined> {
   return readFile("/proc/sys/kernel/random/boot_id", "utf8")
-    .then((value) => value.trim() || undefined)
+    .then((value) => {
+      const bootId = value.trim();
+      return LINUX_BOOT_ID.test(bootId) ? bootId : undefined;
+    })
     .catch(() => undefined);
+}
+
+function differentBootId(bootId: string | undefined): string {
+  const fallback = "00000000-0000-4000-8000-000000000000";
+  if (!bootId) {
+    return fallback;
+  }
+  return `${bootId[0] === "0" ? "1" : "0"}${bootId.slice(1)}`;
 }
 
 async function oldMarker(
@@ -477,6 +497,7 @@ test("SIGINT is forwarded unchanged to the owned group before cleanup", async ()
     wrapper.once("error", reject);
     wrapper.once("close", (code, signal) => resolve({ code, signal }));
   });
+  await eventuallyRead(join(root, "signals-ready"));
   wrapper.kill("SIGINT");
   assert.deepEqual(await result, { code: null, signal: "SIGINT" });
   assert.match(output, CHILD_SIGINT_OUTPUT);
@@ -526,14 +547,314 @@ test("SIGTERM starts bounded escalation before a TERM-ignoring direct child clos
   await assert.rejects(access(root));
 });
 
-test("a signal latched before PGID assignment is forwarded after the PGID exists", async () => {
+test("an intentionally detached descendant is outside the process-group containment contract", async () => {
+  const runnerTemp = await temporaryParent();
+  const wrapper = startWrapper(["--print-root", "--escaped-grandchild", "--wait"], {
+    ...process.env,
+    RUNNER_TEMP: runnerTemp,
+  });
+  let escapedPid: number | undefined;
+  try {
+    const root = await reportedRoot(wrapper);
+    escapedPid = Number.parseInt(await eventuallyRead(join(root, "grandchild-escaped.txt")), 10);
+    assert.ok(Number.isSafeInteger(escapedPid) && escapedPid > 0);
+    const close = closed(wrapper);
+    wrapper.kill("SIGTERM");
+    assert.deepEqual(await close, { code: null, signal: "SIGTERM" });
+    process.kill(escapedPid, 0);
+    await assert.rejects(access(root));
+  } finally {
+    if (escapedPid !== undefined) {
+      try {
+        process.kill(-escapedPid, "SIGKILL");
+      } catch (error) {
+        assert.equal((error as NodeJS.ErrnoException).code, "ESRCH");
+      }
+      await eventuallyAbsentGroup(escapedPid);
+    }
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
+test("a signal latched while the running transition is durable is forwarded after the PGID exists", async () => {
   const result = await runScratchCommand(command(["--ignore-term", "--wait"]), {
-    beforePgidAssignment: async () => {
+    afterSpawnBeforeRunning: async () => {
       process.kill(process.pid, "SIGTERM");
       await new Promise((resolve) => setTimeout(resolve, 25));
     },
   });
   assert.deepEqual(result, { code: null, signal: "SIGTERM" });
+});
+
+test("SIGTERM latched before recovery creates no allocation or child", async () => {
+  const runnerTemp = await temporaryParent();
+  const parent = join(runnerTemp, "pdpp-test-scratch");
+  const previousRunnerTemp = process.env.RUNNER_TEMP;
+  process.env.RUNNER_TEMP = runnerTemp;
+  try {
+    const result = await runScratchCommand(command(["--print-root"]), {
+      afterSignalHandlersInstalled: async () => {
+        process.kill(process.pid, "SIGTERM");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      },
+    });
+    assert.deepEqual(result, { code: null, signal: "SIGTERM" });
+    assert.deepEqual(await readdir(parent), []);
+  } finally {
+    if (previousRunnerTemp === undefined) {
+      delete process.env.RUNNER_TEMP;
+    } else {
+      process.env.RUNNER_TEMP = previousRunnerTemp;
+    }
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
+test("SIGTERM during allocation cleanup prevents spawn", async () => {
+  const runnerTemp = await temporaryParent();
+  const parent = join(runnerTemp, "pdpp-test-scratch");
+  const previousRunnerTemp = process.env.RUNNER_TEMP;
+  process.env.RUNNER_TEMP = runnerTemp;
+  try {
+    const result = await runScratchCommand(command(["--print-root"]), {
+      afterAllocationBeforeSpawn: async () => {
+        process.kill(process.pid, "SIGTERM");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      },
+    });
+    assert.deepEqual(result, { code: null, signal: "SIGTERM" });
+    assert.deepEqual(await readdir(parent), []);
+  } finally {
+    if (previousRunnerTemp === undefined) {
+      delete process.env.RUNNER_TEMP;
+    } else {
+      process.env.RUNNER_TEMP = previousRunnerTemp;
+    }
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
+test("a latched signal plus a pre-launch error cleans the provably allocated root", async () => {
+  const runnerTemp = await temporaryParent();
+  const parent = join(runnerTemp, "pdpp-test-scratch");
+  const previousRunnerTemp = process.env.RUNNER_TEMP;
+  process.env.RUNNER_TEMP = runnerTemp;
+  try {
+    const result = await runScratchCommand(command(["--print-root"]), {
+      afterAllocationBeforeSpawn: async () => {
+        process.kill(process.pid, "SIGTERM");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        throw new Error("simulate pre-launch failure");
+      },
+    });
+    assert.deepEqual(result, { code: null, signal: "SIGTERM" });
+    assert.deepEqual(await readdir(parent), []);
+  } finally {
+    if (previousRunnerTemp === undefined) {
+      delete process.env.RUNNER_TEMP;
+    } else {
+      process.env.RUNNER_TEMP = previousRunnerTemp;
+    }
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
+test("SIGKILL during spawn-before-running retains a launching root even after its group dies", async () => {
+  const runnerTemp = await temporaryParent();
+  const parent = join(runnerTemp, "pdpp-test-scratch");
+  const proc = startLaunchingWrapper({ ...process.env, RUNNER_TEMP: runnerTemp });
+  try {
+    const root = await reportedRoot(proc);
+    const markerPath = join(root, ".pdpp-test-scratch.json");
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as { state: string };
+    assert.equal(marker.state, "launching");
+    const childPid = Number.parseInt(await eventuallyRead(join(root, "child.txt")), 10);
+    const close = exited(proc);
+    proc.kill("SIGKILL");
+    assert.deepEqual(await close, { code: null, signal: "SIGKILL" });
+    const now = Date.now() + 120_000;
+    assert.deepEqual(await recoverStaleScratch({ now, parent }), [
+      { path: root, reason: "launch-unknown", removed: false },
+    ]);
+    process.kill(-childPid, "SIGKILL");
+    await eventuallyAbsentGroup(childPid);
+    assert.deepEqual(await recoverStaleScratch({ now: now + 120_000, parent }), [
+      { path: root, reason: "launch-unknown", removed: false },
+    ]);
+    await access(root);
+  } finally {
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
+test("journal recovery resumes an interrupted rename and survives embedded-marker removal", async () => {
+  const parent = await temporaryParent();
+  const sentinel = join(parent, "sentinel");
+  await writeFile(sentinel, "unchanged");
+  const beforeRename = await allocateScratchOwnership({ parent });
+  const afterRename = await allocateScratchOwnership({ parent });
+  try {
+    await oldMarker(beforeRename);
+    await assert.rejects(
+      cleanupScratchOwnership(beforeRename, {
+        afterJournal: () => Promise.reject(new Error("simulate crash after journal")),
+      })
+    );
+    await oldMarker(afterRename);
+    await assert.rejects(
+      cleanupScratchOwnership(afterRename, {
+        afterRename: async () => {
+          await rm(afterRename.allocation.markerPath);
+          throw new Error("simulate crash after rename and marker loss");
+        },
+      })
+    );
+    const results = await recoverStaleScratch({ parent });
+    assert.ok(results.some((result) => result.reason === "dead-verified" && result.removed));
+    await assert.rejects(access(beforeRename.allocation.root));
+    await assert.rejects(access(afterRename.allocation.root));
+    assert.equal(await readFile(sentinel, "utf8"), "unchanged");
+    assert.ok(!(await readdir(parent)).some((entry) => entry.startsWith(".scratch-cleanup-")));
+    assert.ok(!(await readdir(parent)).some((entry) => entry.startsWith(".quarantine-")));
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test("recovery retains a quarantine whose marker was partly removed without a journal", async () => {
+  const parent = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  const quarantine = join(parent, `.quarantine-${ownership.allocation.nonce}`);
+  try {
+    await oldMarker(ownership);
+    await rename(ownership.allocation.root, quarantine);
+    await rm(join(quarantine, ".pdpp-test-scratch.json"));
+    assert.deepEqual(await recoverStaleScratch({ parent }), [
+      { path: quarantine, reason: "quarantine-no-capability", removed: false },
+    ]);
+    await access(quarantine);
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test("a malformed nonempty boot identity cannot bypass the live-group proof", async () => {
+  const parent = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  const liveGroup = spawn("sh", ["-c", "exec sleep 30"], { detached: true, stdio: "ignore" });
+  assert.ok(liveGroup.pid);
+  try {
+    await oldMarker(ownership, { boot_id: "not-a-lowercase-linux-uuid", pgid: liveGroup.pid, state: "running" });
+    assert.deepEqual(await recoverStaleScratch({ parent }), [
+      { path: ownership.allocation.root, reason: "malformed-marker", removed: false },
+    ]);
+    await access(ownership.allocation.root);
+    process.kill(-liveGroup.pid, 0);
+  } finally {
+    process.kill(-liveGroup.pid, "SIGKILL");
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test("recovery budgets bound inventory inspection and still permit the new owner", async () => {
+  const runnerTemp = await temporaryParent();
+  const parent = join(runnerTemp, "pdpp-test-scratch");
+  const previousRunnerTemp = process.env.RUNNER_TEMP;
+  process.env.RUNNER_TEMP = runnerTemp;
+  try {
+    await mkdir(parent, { mode: 0o700 });
+    await Promise.all(Array.from({ length: 12 }, (_, index) => writeFile(join(parent, `foreign-${index}`), "defer")));
+    const inspected: string[] = [];
+    const recovered = await recoverStaleScratch({
+      hooks: { onInspect: (path) => inspected.push(path) },
+      limits: { maxInspectedEntries: 3 },
+      parent,
+    });
+    assert.ok(inspected.length <= 3);
+    assert.deepEqual(recovered.at(-1), { path: parent, reason: "recovery-budget-exhausted", removed: false });
+    assert.deepEqual(await runScratchCommand(command(["--exit=0"]), { recoveryLimits: { maxInspectedEntries: 1 } }), {
+      code: 0,
+      signal: null,
+    });
+  } finally {
+    if (previousRunnerTemp === undefined) {
+      delete process.env.RUNNER_TEMP;
+    } else {
+      process.env.RUNNER_TEMP = previousRunnerTemp;
+    }
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
+test("a durable lexical cursor eventually reaches a stale candidate beyond an initial recovery page", async () => {
+  const parent = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  const cursor = join(parent, ".scratch-recovery-cursor.json");
+  const limits = { maxInspectedEntries: 2, maxRemovalAttempts: 1, maxStateTransitions: 2 };
+  try {
+    await oldMarker(ownership);
+    await Promise.all(Array.from({ length: 5 }, (_, index) => writeFile(join(parent, `entry-0${index}`), "defer")));
+    await writeFile(cursor, "{not-json}\n", { mode: 0o600 });
+
+    const firstInspected: string[] = [];
+    const first = await recoverStaleScratch({
+      hooks: { onInspect: (path) => firstInspected.push(path) },
+      limits,
+      parent,
+    });
+    assert.deepEqual(firstInspected, [join(parent, "entry-00"), join(parent, "entry-01")]);
+    assert.ok(!firstInspected.includes(ownership.allocation.root));
+    assert.deepEqual(first.at(-1), { path: parent, reason: "recovery-budget-exhausted", removed: false });
+
+    const secondInspected: string[] = [];
+    const second = await recoverStaleScratch({
+      hooks: { onInspect: (path) => secondInspected.push(path) },
+      limits,
+      parent,
+    });
+    assert.deepEqual(secondInspected, [join(parent, "entry-02"), join(parent, "entry-03")]);
+    assert.deepEqual(second.at(-1), { path: parent, reason: "recovery-budget-exhausted", removed: false });
+
+    const thirdInspected: string[] = [];
+    const third = await recoverStaleScratch({
+      hooks: { onInspect: (path) => thirdInspected.push(path) },
+      limits,
+      parent,
+    });
+    assert.deepEqual(thirdInspected, [join(parent, "entry-04"), ownership.allocation.root]);
+    assert.ok(third.some((result) => result.path === ownership.allocation.root && result.removed));
+    await assert.rejects(access(ownership.allocation.root));
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test("startup recovery quarantines a large verified root when recursive removal is budgeted out", async () => {
+  const parent = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  const quarantine = join(parent, `.quarantine-${ownership.allocation.nonce}`);
+  const transitions: string[] = [];
+  const removals: string[] = [];
+  try {
+    await writeFile(join(ownership.allocation.root, "large"), "x".repeat(1024 * 1024));
+    await oldMarker(ownership);
+    const recovered = await recoverStaleScratch({
+      hooks: {
+        onRemovalAttempt: (path) => removals.push(path),
+        onStateTransition: (path) => transitions.push(path),
+      },
+      limits: { maxRemovalAttempts: 0, maxStateTransitions: 2 },
+      parent,
+    });
+    assert.deepEqual(removals, []);
+    assert.equal(transitions.length, 2);
+    assert.ok(recovered.some((result) => result.reason === "recovery-budget-exhausted"));
+    await access(quarantine);
+    await access(join(quarantine, "large"));
+    await access(join(parent, `.scratch-cleanup-${ownership.allocation.nonce}.json`));
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
 });
 
 test("SIGKILL leaves a live orphan, then a later recovery removes its dead group", async () => {
@@ -590,10 +911,11 @@ test("recovery has stable fail-closed classifications for every stale candidate 
   const liveGroup = spawn("sh", ["-c", "exec sleep 30"], { detached: true, stdio: "ignore" });
   assert.ok(liveGroup.pid);
   const runningLiveGroup = await allocateScratchOwnership({ parent });
+  const priorBootLiveGroup = await allocateScratchOwnership({ parent });
   try {
     await oldMarker(allocated);
     await oldMarker(sameBootDead, { boot_id: bootId, pgid: 999_999_999, state: "running" });
-    await oldMarker(priorBoot, { boot_id: "prior-boot", pgid: 999_999_999, state: "running" });
+    await oldMarker(priorBoot, { boot_id: differentBootId(bootId), pgid: 999_999_999, state: "running" });
     await oldMarker(ownerLive, { owner_pid: process.pid });
     await mkdir(malformed, { mode: 0o700 });
     await oldMarker(unknownState, { state: "unexpected" });
@@ -605,10 +927,17 @@ test("recovery has stable fail-closed classifications for every stale candidate 
     const parked = `${swapped.allocation.root}-parked`;
     await rename(swapped.allocation.root, parked);
     await mkdir(swapped.allocation.root, { mode: 0o700 });
-    await writeFile(swapped.allocation.markerPath, await readFile(join(parked, ".pdpp-test-scratch.json")));
+    await writeFile(swapped.allocation.markerPath, await readFile(join(parked, ".pdpp-test-scratch.json")), {
+      mode: 0o600,
+    });
     await mkdir(foreign, { mode: 0o700 });
     await oldMarker(runningLiveGroup, {
       boot_id: bootId,
+      pgid: liveGroup.pid,
+      state: "running",
+    });
+    await oldMarker(priorBootLiveGroup, {
+      boot_id: differentBootId(bootId),
       pgid: liveGroup.pid,
       state: "running",
     });
@@ -628,12 +957,9 @@ test("recovery has stable fail-closed classifications for every stale candidate 
     assert.equal(reason.get(swapped.allocation.root), "identity-mismatch");
     assert.equal(reason.get(foreign), "foreign-entry");
     assert.equal(reason.get(fresh.allocation.root), "fresh");
-    if (bootId) {
-      assert.equal(reason.get(runningLiveGroup.allocation.root), "group-live");
-    } else {
-      assert.equal(reason.get(runningLiveGroup.allocation.root), "unverifiable-boot");
-    }
-    assert.equal(reason.get(unverifiableBoot.allocation.root), "unverifiable-boot");
+    assert.equal(reason.get(runningLiveGroup.allocation.root), "group-live");
+    assert.equal(reason.get(priorBootLiveGroup.allocation.root), "group-live");
+    assert.equal(reason.get(unverifiableBoot.allocation.root), "group-live");
     await assert.rejects(access(allocated.allocation.root));
     if (bootId) {
       await assert.rejects(access(sameBootDead.allocation.root));
@@ -644,6 +970,7 @@ test("recovery has stable fail-closed classifications for every stale candidate 
     }
     await access(ownerLive.allocation.root);
     await access(runningLiveGroup.allocation.root);
+    await access(priorBootLiveGroup.allocation.root);
     await access(unverifiableBoot.allocation.root);
     process.kill(-liveGroup.pid, 0);
   } finally {
