@@ -18,7 +18,8 @@ import { dirname, join } from "node:path";
 //   2. The HTML branch DOES embed an opaque cex_… exchange code.
 //   3. POST /consent/exchange redeems the code and returns
 //      { grant_id, token, grant }.
-//   4. A repeated redemption returns the same result after response loss.
+//   4. A proofless HTML code is single-use, while a matching out-of-band
+//      recovery proof can recover the same result after response loss.
 //   5. An expired code fails with a 4xx PDPP error envelope.
 //   6. An unknown code fails with a 4xx PDPP error envelope.
 //   7. The JSON branch of POST /consent/approve still returns the bearer in
@@ -213,7 +214,7 @@ function createDecisionPause(): { paused: Promise<void>; release: () => void; ho
 function countConsentEvents(deviceCode: string, eventType: string): number {
   const row = getDb()
     .prepare(
-      "SELECT COUNT(*) AS count FROM spine_events WHERE object_id = ? AND object_type = 'grant' AND event_type = ?"
+      "SELECT COUNT(*) AS count FROM spine_events WHERE object_id = ? AND object_type = 'pending_consent' AND event_type = ?"
     )
     .get(deviceCode, eventType) as { count: number };
   return row.count;

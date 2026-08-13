@@ -196,6 +196,7 @@ async function createAgentConnectRequest({
   });
   const start = (await startResp.json()) as AgentConnectStart;
   assert.equal(startResp.status, 201, JSON.stringify(start));
+  assertCredentialNoStoreHeaders(startResp);
   assert.equal(start.status, "pending");
   assert.equal(typeof start.polling_code, "string");
   assert.equal(typeof start.approval_url, "string");
@@ -741,6 +742,16 @@ test("agent-connect: owner approval completes polling without exposing owner tok
     assert.equal(afterPrunePoll.resp.status, 200, "unrelated registration must not delete retained response");
     assertCredentialNoStoreHeaders(afterPrunePoll.resp);
     assert.equal(afterPrunePoll.body.access_token, completedPoll.body.access_token);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("agent-connect: registration 201 carries credential no-store headers", async () => {
+  const { server, asUrl } = await spinUpServer();
+  try {
+    const { start } = await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Cache Headers" });
+    assert.equal(start.status, "pending");
   } finally {
     await closeServer(server);
   }

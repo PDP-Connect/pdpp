@@ -897,6 +897,7 @@ export function mountAsAgentConnect(app: AppLike, ctx: MountAsAgentConnectContex
         return ctx.pdppError(res, 400, "expired_token", "Pending grant request is unknown or expired");
       }
 
+      applyCredentialResponseNoStoreHeaders(res);
       return res.status(201).json({
         ...publicAttemptEnvelope(attempt, now),
         polling_code: pollingCode,

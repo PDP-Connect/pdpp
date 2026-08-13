@@ -33,9 +33,9 @@ implementation.
   with RFC 6749's `Cache-Control: no-store` and `Pragma: no-cache` headers,
   including package variants and device-code responses.
 - Replace the process-local HTML consent handoff with a durable exchange-code
-  record. A committed approval can be resumed after process failure, and
-  repeated redemption returns the same persisted token result until the
-  exchange code expires.
+  record. HTML carries a proofless, single-use code; a separate out-of-band
+  proof-bound code supports response-loss retry by the same proof holder until
+  expiry, returning the same persisted token result.
 - Treat pre-v0.1 persisted authorization state as disposable. Reject its bytes
   before introspection or route handling with
   `authorization_state.unsupported_legacy_shape` and require fresh consent.

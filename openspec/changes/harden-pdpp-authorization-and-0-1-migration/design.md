@@ -106,7 +106,7 @@ handling. It does not reconstruct missing authorization or binding facts from
 current configuration. There is no acceptance flag, compatibility adapter, or
 alternate context kind. Users must complete fresh consent.
 
-### The post-approval HTML handoff is durable and replay-safe
+### The post-approval handoff is durable with explicit recovery modes
 
 The existing HTML approval path commits the grant and token, then stores its
 exchange code in a process-local map. A restart loses that map. If the approval
@@ -114,13 +114,18 @@ or exchange response is lost after commit, the client cannot recover the
 result. This is a durable handoff defect, not a reason to persist another copy
 of the bearer.
 
-The replacement stores only a hash of the exchange code plus a reference to
+The replacement stores only a hash of the exchange code, an optional hash of a
+recovery proof, plus a reference to
 `tokens.token_id`, the reference implementation's existing plaintext bearer
 authority. It does not persist a second plaintext bearer. Creation and redemption use the configured
 database backend. Redemption locks the handoff row, records the first
-redemption once, and returns the same grant and token for a retry until expiry.
-This makes response-loss retries idempotent without persisting a second
-plaintext bearer. An approval retry for an already-approved request recovers
+redemption once. A proofless code is the HTML handoff mode: it is single-use,
+and any later redemption fails. A proof-bound code is an out-of-band recovery
+mode: the holder of the matching proof may redeem it repeatedly until expiry,
+and each successful redemption returns the same grant and token. Missing or
+wrong proof fails closed without disclosing the bearer. Proof-bound codes are
+never embedded in HTML. This makes response-loss retries idempotent without
+persisting a second plaintext bearer. An approval retry for an already-approved request recovers
 the same persisted grant and token, so a failure between approval commit and
 handoff creation can mint a new bounded exchange code. JSON approval and OAuth
 authorization-code responses keep their existing transport.

@@ -12,9 +12,19 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function runNodeTests(file: string, testNames: readonly string[]): Promise<string> {
+function runNodeTests(
+  file: string,
+  testNames: readonly string[],
+  opts: { forceSqlite?: boolean } = {}
+): Promise<string> {
   const childEnv = { ...process.env };
   childEnv.NODE_TEST_CONTEXT = undefined;
+  if (opts.forceSqlite) {
+    childEnv.DATABASE_URL = undefined;
+    childEnv.PDPP_DATABASE_URL = undefined;
+    childEnv.PDPP_STORAGE_BACKEND = undefined;
+    childEnv.PDPP_TEST_POSTGRES_URL = undefined;
+  }
   const pattern = `^(${testNames.map(escapeRegExp).join("|")})$`;
   return new Promise((resolveOutput, reject) => {
     const child = spawn(process.execPath, ["--import", "tsx", "--test", "--test-name-pattern", pattern, file], {
@@ -47,8 +57,16 @@ async function assertFocusedTestsPass(file: string, testNames: readonly string[]
   }
 }
 
-async function assertFocusedNestedTestsPass(file: string, testNames: readonly string[]): Promise<void> {
-  await runNodeTests(file, testNames);
+async function assertFocusedNestedTestsPass(
+  file: string,
+  parentTestName: string,
+  testNames: readonly string[],
+  opts: { forceSqlite?: boolean } = {}
+): Promise<void> {
+  const output = await runNodeTests(file, [parentTestName, ...testNames], opts);
+  for (const required of testNames) {
+    assert.match(output, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
 }
 
 test("owner-device-approval-atomicity: rollback, owner concurrency, and cross-subject recovery", async () => {
@@ -63,10 +81,44 @@ test("owner-device-approval-atomicity: rollback, owner concurrency, and cross-su
   ]);
 });
 
+test("terminal decisions: SQLite approval and denial arbitrate without contradictory evidence", async () => {
+  await assertFocusedTestsPass("test/owner-device-approval-atomicity.test.ts", [
+    "owner-device approval wins a denial race without contradictory rejection",
+    "owner-device denial wins before approval and denial event rolls back on failure",
+  ]);
+  await assertFocusedNestedTestsPass(
+    "test/security-consent-token-handoff.test.ts",
+    "security: harden consent token handoff",
+    [
+      "ordinary approval wins a paused denial without contradictory denial evidence",
+      "ordinary denial is terminal and rolls back its event on transaction failure",
+    ],
+    { forceSqlite: true }
+  );
+});
+
+test("terminal decisions: live PostgreSQL approval and denial arbitrate atomically", async () => {
+  assert.ok(process.env.PDPP_TEST_POSTGRES_URL, "live PostgreSQL is required");
+  await assertFocusedTestsPass("test/auth-consent-device-postgres-path.test.ts", [
+    "owner device authorization: approve and deny arbitrate one terminal decision on postgres",
+    "pending consent: approve and deny arbitrate atomically with rollback on postgres",
+  ]);
+});
+
 test("agent-cli: crash recovery from committed pending approval", async () => {
   await assertFocusedTestsPass("test/agent-cli.test.ts", [
     "agent-connect: approval committed before completion recovers at poll time",
   ]);
+});
+
+test("agent-connect: registration response is cache-safe", async () => {
+  await assertFocusedTestsPass("test/agent-cli.test.ts", [
+    "agent-connect: registration 201 carries credential no-store headers",
+  ]);
+});
+
+test("agent-connect: denial response is bounded", async () => {
+  await assertFocusedTestsPass("test/agent-cli.test.ts", ["agent-connect: owner denial returns bounded access_denied"]);
 });
 
 test("agent-cli: crash-completed expiry and prune revoke committed approvals", async () => {
@@ -127,11 +179,15 @@ test("agent-cli: live PostgreSQL crash expiry/prune and response-loss replay", a
 });
 
 test("consent-exchange: SQLite restart, single-use, and response-loss recovery", async () => {
-  await assertFocusedNestedTestsPass("test/security-consent-token-handoff.test.ts", [
-    "concurrent SQLite redemptions converge on one stored transition",
-    "an already-committed approval can create a fresh HTML handoff",
-    "an exchange code survives a SQLite-backed server restart",
-  ]);
+  await assertFocusedNestedTestsPass(
+    "test/security-consent-token-handoff.test.ts",
+    "security: harden consent token handoff",
+    [
+      "concurrent SQLite redemptions converge on one stored transition",
+      "an already-committed approval can create a fresh HTML handoff",
+      "an exchange code survives a SQLite-backed server restart",
+    ]
+  );
 });
 
 test("batch consent: package handoff and revocation are durable", async () => {

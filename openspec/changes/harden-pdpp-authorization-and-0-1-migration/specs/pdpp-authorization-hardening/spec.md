@@ -240,15 +240,20 @@ discovery metadata, or sunset policy.
   `authorization_state.unsupported_legacy_shape`
 - **AND** it SHALL NOT obtain missing facts from current configuration
 
-### Requirement: Post-approval HTML handoff SHALL survive failure and response loss
+### Requirement: Post-approval handoff SHALL be durable and use explicit recovery modes
 
-The HTML consent path SHALL store exchange-code state in the configured
+The consent exchange path SHALL store exchange-code state in the configured
 database, not in process memory. The store SHALL retain only a non-reversible
-code hash and a reference to `tokens.token_id`, the reference implementation's
-existing plaintext bearer authority. It SHALL NOT persist a second plaintext bearer. The first
-successful redemption SHALL record its transition atomically. A retry of the
-same unexpired code SHALL return the same grant and token result and SHALL NOT
-issue another token. An already-committed approval SHALL be resumable so a
+code hash, an optional non-reversible recovery-proof hash, and a reference to
+`tokens.token_id`, the reference implementation's existing plaintext bearer
+authority. It SHALL NOT persist a second plaintext bearer. The first
+successful redemption SHALL record its transition atomically. A proofless code
+is the HTML handoff mode and SHALL be single-use: any later redemption SHALL
+fail. A proof-bound code SHALL only be created and delivered out of band; the
+holder of the matching proof MAY redeem it repeatedly until expiry, and each
+successful redemption SHALL return the same grant and token result without
+issuing another token. Missing or wrong proof SHALL fail closed without
+revealing the bearer. An already-committed approval SHALL be resumable so a
 failure before handoff delivery can create a fresh bounded exchange code.
 Expired and unknown codes SHALL fail closed. JSON approval and OAuth
 authorization-code transport SHALL remain unchanged.
@@ -262,12 +267,23 @@ authorization-code transport SHALL remain unchanged.
 - **THEN** the client SHALL redeem the code from the reopened database and
   receive the approved grant and existing token
 
-#### Scenario: A lost redemption response is safely retried
+#### Scenario: A proof-bound lost redemption response is safely retried
 
-- **WHEN** the first redemption commits but its response is lost
-- **THEN** a retry of the same unexpired code SHALL return the same grant and
-  token
+- **WHEN** the first redemption of an out-of-band proof-bound code commits but
+  its response is lost
+- **THEN** a retry of the same unexpired code with the matching proof SHALL
+  return the same grant and token
 - **AND** it SHALL NOT issue or persist a second token
+- **AND** a retry with a missing or wrong proof SHALL fail with a bounded
+  bearer-free error
+
+#### Scenario: A proofless HTML code is single-use
+
+- **WHEN** a caller redeems a code embedded in the HTML approval response
+- **THEN** the first redemption SHALL return the approved grant and token
+- **AND** a later redemption, with or without a proof, SHALL fail with a
+  bounded bearer-free error
+- **AND** the HTML response SHALL NOT contain a recovery proof
 
 #### Scenario: Approval-to-handoff failure is recoverable
 
@@ -276,10 +292,19 @@ authorization-code transport SHALL remain unchanged.
 - **THEN** retrying that approval SHALL recover the committed grant and token
   and create a new bounded exchange code
 
-#### Scenario: Concurrent redemption converges
+#### Scenario: Concurrent proof-bound redemption converges
 
-- **WHEN** two requests redeem the same valid exchange code concurrently
+- **WHEN** two requests redeem the same valid proof-bound exchange code with
+  the matching proof concurrently
 - **THEN** both SHALL observe the same grant and token result
+- **AND** exactly one first-redemption transition SHALL be stored
+
+#### Scenario: Concurrent proofless redemption has one winner
+
+- **WHEN** two requests redeem the same valid proofless exchange code
+  concurrently
+- **THEN** exactly one SHALL receive the approved grant and token
+- **AND** every losing request SHALL receive a bounded bearer-free error
 - **AND** exactly one first-redemption transition SHALL be stored
 
 ### Requirement: The seam result SHALL remain bounded and receipt-verifiable

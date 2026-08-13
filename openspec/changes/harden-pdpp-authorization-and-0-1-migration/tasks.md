@@ -113,13 +113,18 @@
       handoff delivery can create a fresh bounded exchange code without a
       second grant or token.
 - [x] 9.3 Make redemption atomic and response-loss idempotent: concurrent or
-      repeated redemption of one unexpired code returns the same grant and
-      token and records one first-redemption transition.
+      repeated redemption of one unexpired proof-bound code returns the same
+      grant and token and records one first-redemption transition; keep the
+      proofless HTML code single-use and bearer-free on replay.
 - [x] 9.4 Add SQLite restart and concurrency tests plus a live PostgreSQL
       concurrency test. Preserve the JSON and OAuth authorization-code paths.
 - [x] 9.5 Run focused tests, TypeScript, strict OpenSpec validation, query
       registry validation, `git diff --check`, and stale sweeps for the removed
       process-local map.
+- [x] 9.6 Keep the contract and focused evidence explicit about proofless HTML
+      single-use versus proof-bound out-of-band response-loss replay. HTML
+      SHALL never embed a proof-bound code; missing or wrong proof SHALL remain
+      a bounded, bearer-free failure.
 
 ## 10. Token response cache controls
 
