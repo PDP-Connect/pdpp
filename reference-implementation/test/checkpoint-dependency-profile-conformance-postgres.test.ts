@@ -33,6 +33,7 @@
 import test from "node:test";
 import { runConnector } from "../runtime/index.ts";
 import { startServer as startServerUntyped } from "../server/index.ts";
+import { closePostgresStorage } from "../server/postgres-storage.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
 import { runMultiParentScenario } from "./helpers/checkpoint-dependency-multi-parent-scenario.ts";
@@ -40,10 +41,18 @@ import { runMultiParentScenario } from "./helpers/checkpoint-dependency-multi-pa
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 interface ClosableServer {
+  abortStartupBackfill: (reason: unknown) => void;
   asPort: number;
   asServer: { close: (cb: () => void) => void; closeAllConnections: () => void };
+  controller: { drainActiveRuns: (timeoutMs: number) => Promise<unknown> };
   rsPort: number;
   rsServer: { close: (cb: () => void) => void; closeAllConnections: () => void };
+  schedulerManager?: { stop?: () => void };
+  startupBackfillDone: Promise<unknown>;
+  startupSummaryEvidenceSweepDone: Promise<unknown>;
+  stopBrowserSurfaceLeaseSweep: () => void;
+  stopClientEventDeliveryWorker: () => Promise<void>;
+  stopConnectorMaintenanceSweep: () => void;
 }
 interface StartServerOptions {
   asPort?: number;
@@ -56,12 +65,21 @@ interface StartServerOptions {
 const startServer = startServerUntyped as unknown as (opts: StartServerOptions) => Promise<ClosableServer>;
 
 async function closeServer(server: ClosableServer): Promise<void> {
+  server.abortStartupBackfill("test shutdown");
+  server.schedulerManager?.stop?.();
+  server.stopBrowserSurfaceLeaseSweep();
+  server.stopConnectorMaintenanceSweep();
   server.asServer.closeAllConnections();
   server.rsServer.closeAllConnections();
   await Promise.allSettled([
     new Promise<void>((resolve) => server.asServer.close(() => resolve())),
     new Promise<void>((resolve) => server.rsServer.close(() => resolve())),
+    server.controller.drainActiveRuns(5000),
+    server.startupBackfillDone,
+    server.startupSummaryEvidenceSweepDone,
+    server.stopClientEventDeliveryWorker(),
   ]);
+  await closePostgresStorage();
 }
 
 if (POSTGRES_URL) {
