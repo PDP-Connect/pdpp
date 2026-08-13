@@ -80,6 +80,7 @@ export interface SkipResultMessage {
   diagnostics?: unknown;
   message: string;
   reason: string;
+  recovery_hint?: string | { action?: string; retryable?: boolean };
   stream: string;
   type: "SKIP_RESULT";
 }
@@ -135,6 +136,8 @@ export interface BlobRef {
 }
 
 export interface AllMailCursor {
+  /** Forward/new-mail watermark. Kept separate from the historical boundary. */
+  forward_uidnext?: number;
   highest_modseq?: number | string | null;
   uidnext?: number;
   uidvalidity?: number;
@@ -142,6 +145,14 @@ export interface AllMailCursor {
 
 export interface PriorMessagesState {
   all_mail?: AllMailCursor;
+  backfill?: MessagesBackfillCursor;
+}
+
+export interface MessagesBackfillCursor {
+  backfilled_through_uid?: number;
+  completed_at?: string | null;
+  target_uid?: number;
+  uidvalidity?: number;
 }
 
 export interface AttachmentAllMailCursor {

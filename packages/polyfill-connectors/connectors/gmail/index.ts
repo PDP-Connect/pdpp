@@ -87,6 +87,7 @@ import type {
   EmittedMessage,
   InteractionMessage,
   InteractionResponse,
+  MessagesBackfillCursor,
   PriorAttachmentsState,
   PriorMessagesState,
   PriorThreadsState,
@@ -659,6 +660,7 @@ export interface PerMessageDeps {
   emitProgress: ProgressEmitter;
   emitProtocol: (msg: EmittedMessage) => Promise<void>;
   emitRecord: EmitRecordFn;
+  failOnError?: boolean;
   fetchBodies: FetchBodiesFn;
   hydrateAttachment: HydrateAttachmentFn;
   nowIso: () => string;
@@ -701,6 +703,9 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
   const gmMsgid = String(msg.emailId ?? "");
   const gmThrid = String(msg.threadId ?? "");
   if (!gmMsgid) {
+    if (deps.failOnError) {
+      await emitHistoricalMessageSkip(deps, msg.uid);
+    }
     return false;
   }
 
@@ -778,7 +783,10 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
  * FETCH_MSG_PROGRESS rows. Per-message errors are logged to stderr and
  * swallowed so a single bad message doesn't halt the whole pass.
  */
-export async function emitMessagesPass(deps: PerMessageDeps, metas: readonly FetchMessageObject[]): Promise<void> {
+export async function emitMessagesPass(
+  deps: PerMessageDeps,
+  metas: readonly FetchMessageObject[]
+): Promise<{ considered: number; covered: number }> {
   let count = 0;
   for (const msg of metas) {
     try {
@@ -806,11 +814,40 @@ export async function emitMessagesPass(deps: PerMessageDeps, metas: readonly Fet
         // so the run ends cleanly through the normal uncaught-rejection path.
         throw perMsgErr;
       }
+      if (deps.failOnError) {
+        await emitHistoricalMessageSkip(deps, msg.uid);
+        continue;
+      }
       const emsg = perMsgErr instanceof Error ? (perMsgErr.stack ?? perMsgErr.message) : String(perMsgErr);
       process.stderr.write(`[gmail] per-message error at UID ${String(msg.uid)}: ${emsg}\n`);
       // Continue with next message; don't let one bad record halt the whole run.
     }
   }
+  return { considered: metas.length, covered: count };
+}
+
+/** Record a bounded terminal outcome so a poison UID cannot replay forever. */
+async function emitHistoricalMessageSkip(deps: PerMessageDeps, uid: number | undefined): Promise<void> {
+  await deps.emitProtocol({
+    type: "SKIP_RESULT",
+    stream: "messages",
+    reason: "historical_message_unaccounted",
+    message: "A Gmail historical message could not be represented; the UID was recorded as a terminal gap.",
+    diagnostics: { uid: typeof uid === "number" ? uid : null },
+  });
+}
+
+async function emitHistoricalContinuationSkip(
+  emitFn: (msg: EmittedMessage) => Promise<void>,
+  stream: string
+): Promise<void> {
+  await emitFn({
+    type: "SKIP_RESULT",
+    stream,
+    reason: "historical_backfill_pending",
+    message: "This bounded page completed; more historical work remains and will be retried by the next run.",
+    recovery_hint: { action: "retry_by_runtime", retryable: true },
+  });
 }
 
 /** Read one START line from stdin, or reject if malformed. */
@@ -1036,6 +1073,7 @@ interface AllMailSession {
   attachmentBackfill: AttachmentAllMailCursor;
   fullResync: boolean;
   highestModseqCursor: number | string | null;
+  messagesBackfill: MessagesBackfillCursor;
   priorModseq: number | string | null | undefined;
   priorUidnext: number;
   uidnext: number | undefined;
@@ -1066,6 +1104,7 @@ function deriveAllMailSession(mailbox: MailboxObject, state: Record<string, unkn
   const legacyState = state as { all_mail?: AllMailCursor };
   const priorAllMail: AllMailCursor = messagesState.all_mail ?? legacyState.all_mail ?? {};
   const priorAttachmentAllMail: AttachmentAllMailCursor = attachmentsState.all_mail ?? {};
+  const priorMessagesBackfill: MessagesBackfillCursor = messagesState.backfill ?? {};
   const priorUidvalidity = priorAllMail.uidvalidity;
   const attachmentBackfill =
     priorAttachmentAllMail.uidvalidity === uidvalidityNum
@@ -1076,10 +1115,14 @@ function deriveAllMailSession(mailbox: MailboxObject, state: Record<string, unkn
         };
   return {
     attachmentBackfill,
+    messagesBackfill:
+      priorMessagesBackfill.uidvalidity === uidvalidityNum
+        ? priorMessagesBackfill
+        : { uidvalidity: uidvalidityNum, backfilled_through_uid: 0, completed_at: null },
     fullResync: !priorUidvalidity || priorUidvalidity !== uidvalidityNum,
     highestModseqCursor: bigintToCursor(mailbox.highestModseq),
     priorModseq: priorAllMail.highest_modseq,
-    priorUidnext: priorAllMail.uidnext ?? 1,
+    priorUidnext: priorAllMail.forward_uidnext ?? priorAllMail.uidnext ?? 1,
     uidnext: mailbox.uidNext,
     uidvalidityNum,
   };
@@ -1368,9 +1411,10 @@ async function fetchBodies(
 export function selectAllMailFetchRange(
   session: { fullResync: boolean; priorUidnext: number },
   _requested: Map<string, StreamRequest>
-): string {
-  // Range is determined purely by the persisted cursor:
-  //   - Full resync (no prior uidvalidity, or it changed): 1:*.
+): string | null {
+  // Range is determined purely by the persisted forward cursor:
+  //   - Full resync (no prior uidvalidity, or it changed): no forward range;
+  //     historical work selects its own bounded UID page.
   //   - Incremental: priorUidnext:* — only UIDs we haven't seen yet.
   //
   // The earlier behavior forced 1:* whenever the run scope included
@@ -1391,9 +1435,74 @@ export function selectAllMailFetchRange(
   // activates that path so a healthy-looking messages cursor does not hide
   // durable attachment work.
   if (session.fullResync) {
-    return "1:*";
+    return null;
   }
   return `${session.priorUidnext}:*`;
+}
+
+export const DEFAULT_MESSAGES_BACKFILL_WINDOW_UIDS = 500;
+const MESSAGES_BACKFILL_WINDOW_UIDS_ENV = "PDPP_GMAIL_MESSAGES_BACKFILL_WINDOW_UIDS";
+
+function normalizeMessagesBackfillWindowUids(value: number | undefined): number {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+    return value;
+  }
+  return DEFAULT_MESSAGES_BACKFILL_WINDOW_UIDS;
+}
+
+export function resolveMessagesBackfillWindowUids(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[MESSAGES_BACKFILL_WINDOW_UIDS_ENV];
+  if (!(raw && POSITIVE_INTEGER_PATTERN.test(raw))) {
+    return DEFAULT_MESSAGES_BACKFILL_WINDOW_UIDS;
+  }
+  return normalizeMessagesBackfillWindowUids(Number(raw));
+}
+
+/**
+ * Select one historical message work unit. The unit is a UID interval, not a
+ * positional page: Gmail UIDs may contain holes, but a successful fetch of the
+ * interval accounts for those holes and lets the cursor advance to the exact
+ * admitted interval end.
+ */
+export function selectMessagesBackfillFetchRange(args: {
+  messagesBackfill: MessagesBackfillCursor;
+  maxWindowUids?: number;
+  uidnext: number | undefined;
+  uidvalidity?: number;
+}): string | null {
+  const cursor = args.messagesBackfill;
+  const sameEpoch = args.uidvalidity === undefined || cursor.uidvalidity === args.uidvalidity;
+  const backfilledThrough = sameEpoch ? (cursor.backfilled_through_uid ?? 0) : 0;
+  const targetUid = sameEpoch
+    ? (cursor.target_uid ?? Math.max(0, (args.uidnext ?? 1) - 1))
+    : Math.max(0, (args.uidnext ?? 1) - 1);
+  const startUid = Math.max(1, backfilledThrough + 1);
+  if (startUid > targetUid) {
+    return null;
+  }
+  const windowUids = normalizeMessagesBackfillWindowUids(args.maxWindowUids);
+  return `${startUid}:${Math.min(targetUid, startUid + windowUids - 1)}`;
+}
+
+export function advanceMessagesBackfillCursor(args: {
+  now: string;
+  pageEndUid: number;
+  prior: MessagesBackfillCursor;
+}): Required<MessagesBackfillCursor> {
+  const priorEnd = args.prior.backfilled_through_uid ?? 0;
+  const targetUid = args.prior.target_uid ?? priorEnd;
+  if (args.pageEndUid < priorEnd) {
+    throw new Error("messages backfill cursor must not regress");
+  }
+  if (args.pageEndUid > targetUid) {
+    throw new Error("messages backfill page must not pass its target");
+  }
+  return {
+    backfilled_through_uid: args.pageEndUid,
+    completed_at: args.pageEndUid >= targetUid ? args.now : null,
+    target_uid: targetUid,
+    uidvalidity: args.prior.uidvalidity ?? 0,
+  };
 }
 
 export function isAttachmentBackfillRequested(streamsToBackfill: readonly string[] | undefined): boolean {
@@ -2866,9 +2975,10 @@ async function runDeltaPass(
 
 async function runThreadsPass(
   client: Pick<ImapFlow, "fetch">,
+  fetchRange: string,
   emitRecord: EmitRecordFn,
   cursor: FingerprintCursor
-): Promise<void> {
+): Promise<number> {
   await emit({
     type: "PROGRESS",
     stream: "threads",
@@ -2886,7 +2996,7 @@ async function runThreadsPass(
     labels: true,
     bodyStructure: true,
   };
-  for await (const msg of client.fetch("1:*", threadQuery, { uid: true })) {
+  for await (const msg of client.fetch(fetchRange, threadQuery, { uid: true })) {
     const tid = String(msg.threadId ?? "");
     if (!tid) {
       continue;
@@ -2907,22 +3017,17 @@ async function runThreadsPass(
     threadAgg.set(tid, next);
   }
   await emitChangedThreads(threadAgg.values(), cursor, emitRecord);
-  // The distinct threads aggregated from the full `1:*` scan are the boundary
-  // this pass weighed, counted from the aggregate map rather than from what
-  // `emitChangedThreads` emitted. Every aggregate is either emitted or
-  // suppressed as unchanged by the fingerprint cursor, so the boundary is fully
-  // accounted for; messages carrying no thread id never entered the map and are
-  // correctly outside both counts.
-  await emit(buildFullScanCoverageMessage("threads", threadAgg.size));
+  return threadAgg.size;
 }
 
 /**
  * Gate every aggregated thread through the shared fingerprint cursor and
  * emit only the records whose semantic shape moved since the prior run.
  * Pruning stale ids is the caller's responsibility — `runThreadsPass`
- * always drives a full `1:*` scan, so the orchestrator calls
- * `cursor.pruneStale()` after this returns. Threads with empty ids are
- * silently dropped: the upstream IMAP loop already filters them.
+ * receives one bounded UID range per scheduled run. Threads with empty ids are
+ * silently dropped: the upstream IMAP loop already filters them. The caller
+ * deliberately does not prune stale fingerprints on bounded pages; pruning is
+ * only sound after the historical high-water boundary is complete.
  *
  * Exported so the two-pass churn invariant can be exercised without
  * standing up an IMAP fixture.
@@ -2991,6 +3096,7 @@ type GmailAllMailClient = GmailAttachmentBackfillClient & Pick<ImapFlow, "close"
  * threads aggregation, and the final STATE emit — all inside the mailbox
  * lock. The list-mailbox lookup happens in `main()` before entering here.
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Gmail's ordered mailbox phases intentionally share one commit boundary.
 export async function runAllMailPasses(
   client: GmailAllMailClient,
   allMail: ListResponse,
@@ -3008,12 +3114,32 @@ export async function runAllMailPasses(
     return;
   }
 
-  // Determine fetch range.
-  // - Full resync: 1..*
-  // - Incremental: new UIDs (priorUidnext..*) + flag/label changes
-  //   (CHANGEDSINCE priorModseq).
+  // Forward progress and historical progress are separate. A first run has no
+  // forward range: it receives one bounded historical UID page below.
   const timeRange = deps.requested.get("messages")?.time_range || deps.requested.get("attachments")?.time_range;
-  const fetchRange = selectAllMailFetchRange(session, deps.requested);
+  const messageHistoryRequested =
+    deps.requested.has("messages") ||
+    deps.requested.has("message_bodies") ||
+    deps.requested.has("attachments") ||
+    deps.requested.has("threads");
+  const forwardFetchRange = selectAllMailFetchRange(session, deps.requested);
+  const historicalTargetUid =
+    session.messagesBackfill.target_uid ?? Math.max(0, (session.uidnext ?? session.priorUidnext) - 1);
+  const historicalCursor: MessagesBackfillCursor = {
+    ...session.messagesBackfill,
+    backfilled_through_uid: session.messagesBackfill.backfilled_through_uid ?? 0,
+    completed_at: session.messagesBackfill.completed_at ?? null,
+    target_uid: historicalTargetUid,
+    uidvalidity: session.uidvalidityNum,
+  };
+  const historicalFetchRange = messageHistoryRequested
+    ? selectMessagesBackfillFetchRange({
+        messagesBackfill: historicalCursor,
+        uidnext: session.uidnext,
+        uidvalidity: session.uidvalidityNum,
+        maxWindowUids: resolveMessagesBackfillWindowUids(),
+      })
+    : null;
   // Parse declared collection_scope.since into IMAP date format (day-granular)
   // for the bounded SINCE search criterion, and keep the exact ISO for
   // post-filtering to honor time-of-day precision.
@@ -3091,10 +3217,13 @@ export async function runAllMailPasses(
     return;
   }
 
-  await emit({
-    type: "PROGRESS",
-    message: `Fetching ${session.fullResync ? "all" : "new"} messages (${fetchRange}) from ${allMail.path}`,
-  });
+  let fetchProgressMessage = "No Gmail message UID work is pending";
+  if (historicalFetchRange) {
+    fetchProgressMessage = `Fetching bounded historical messages (${historicalFetchRange}) from ${allMail.path}`;
+  } else if (forwardFetchRange) {
+    fetchProgressMessage = `Fetching new messages (${forwardFetchRange}) from ${allMail.path}`;
+  }
+  await emit({ type: "PROGRESS", message: fetchProgressMessage });
 
   // Phase A: pull all metadata into an array up-front.
   // Phase B: for each metadata row, do any additional IMAP commands
@@ -3120,11 +3249,11 @@ export async function runAllMailPasses(
     const threadCursor = openFingerprintCursor(state, {
       priorFingerprints: readPriorThreadFingerprints(state),
     });
-    await runThreadsPass(client, deps.emitRecord, threadCursor);
-    // Full `1:*` scan: drop ids absent from this run so a future
-    // re-creation of the same thread_id triggers a fresh emit instead of
-    // matching a stale fingerprint.
-    threadCursor.pruneStale();
+    const threadRanges = [historicalFetchRange, forwardFetchRange].filter((range): range is string => range !== null);
+    let threadItemsConsidered = 0;
+    for (const threadRange of threadRanges) {
+      threadItemsConsidered += await runThreadsPass(client, threadRange, deps.emitRecord, threadCursor);
+    }
     // The threads STATE cursor carries the next-run fingerprint map.
     // Emitted here (inside the mailbox lock) so it's persisted right
     // after the threads pass and before the messages pass; if the
@@ -3138,9 +3267,35 @@ export async function runAllMailPasses(
         thread_fingerprints: threadCursor.toState(),
       },
     });
+    if (historicalFetchRange) {
+      const historicalPageEndUid = Number(historicalFetchRange.split(":")[1]);
+      if (historicalPageEndUid < historicalTargetUid) {
+        await emitHistoricalContinuationSkip(emit, "threads");
+      } else {
+        await emit(
+          buildDetailCoverageMessage({
+            considered: threadItemsConsidered,
+            covered: threadItemsConsidered,
+            hydratedKeys: [],
+            requiredKeys: [],
+            stateStream: "threads",
+            stream: "threads",
+          })
+        );
+      }
+    }
   }
 
-  const metas = await collectMetadata(client, fetchRange, sinceDate, sinceIso);
+  const historicalMetas: FetchMessageObject[] = [];
+  const forwardMetas: FetchMessageObject[] = [];
+  const metas: FetchMessageObject[] = [];
+  if (historicalFetchRange) {
+    historicalMetas.push(...(await collectMetadata(client, historicalFetchRange, sinceDate, sinceIso)));
+  }
+  if (forwardFetchRange) {
+    forwardMetas.push(...(await collectMetadata(client, forwardFetchRange, sinceDate, sinceIso)));
+  }
+  metas.push(...historicalMetas, ...forwardMetas);
   await emit({
     type: "PROGRESS",
     stream: "messages",
@@ -3151,6 +3306,7 @@ export async function runAllMailPasses(
     emitProtocol: emit,
     emitProgress: (m) => emit(m),
     emitRecord: deps.emitRecord,
+    failOnError: false,
     fetchBodies: fetchBodiesBound,
     hydrateAttachment,
     recoveredAttachmentGapIds,
@@ -3161,7 +3317,11 @@ export async function runAllMailPasses(
     wantBodies: deps.requested.has("message_bodies"),
     wantMessages: deps.requested.has("messages"),
   };
-  await emitMessagesPass(perMessageDeps, metas);
+  const historicalMessageCoverage = await emitMessagesPass(
+    { ...perMessageDeps, failOnError: historicalFetchRange !== null },
+    historicalMetas
+  );
+  await emitMessagesPass(perMessageDeps, forwardMetas);
 
   await runAttachmentBackfillAndRecoveryPass({
     allMail,
@@ -3191,16 +3351,59 @@ export async function runAllMailPasses(
   // Pass 2: detect flag/label changes on already-seen messages (incremental only)
   await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt);
 
+  if (messageHistoryRequested && historicalFetchRange) {
+    const historicalPageEndUid = Number(historicalFetchRange.split(":")[1]);
+    if (historicalPageEndUid < historicalTargetUid) {
+      await emitHistoricalContinuationSkip(emit, "messages");
+    } else {
+      await emit(
+        buildDetailCoverageMessage({
+          considered: historicalMessageCoverage.considered,
+          covered: historicalMessageCoverage.covered,
+          hydratedKeys: [],
+          requiredKeys: [],
+          stateStream: "messages",
+          stream: "messages",
+        })
+      );
+    }
+  }
+
   // Keep the cursor value (possibly string if out of safe-integer range) on STATE.
+  let nextMessagesBackfill: MessagesBackfillCursor | null = null;
+  if (messageHistoryRequested) {
+    if (historicalFetchRange) {
+      nextMessagesBackfill = advanceMessagesBackfillCursor({
+        now: nowIso(),
+        pageEndUid: Number(historicalFetchRange.split(":")[1]),
+        prior: historicalCursor,
+      });
+    } else if (historicalCursor.completed_at === null) {
+      nextMessagesBackfill = advanceMessagesBackfillCursor({
+        now: nowIso(),
+        pageEndUid: historicalTargetUid,
+        prior: historicalCursor,
+      });
+    } else {
+      nextMessagesBackfill = historicalCursor;
+    }
+  }
+  const nextForwardUidnext = session.uidnext;
+  const nextUidnext =
+    nextMessagesBackfill && nextMessagesBackfill.completed_at === null
+      ? (nextMessagesBackfill.backfilled_through_uid ?? 0) + 1
+      : nextForwardUidnext;
   await emit({
     type: "STATE",
     stream: "messages",
     cursor: {
       all_mail: {
         uidvalidity: session.uidvalidityNum,
-        uidnext: session.uidnext,
+        uidnext: nextUidnext,
+        forward_uidnext: nextForwardUidnext,
         highest_modseq: session.highestModseqCursor ?? null,
       },
+      ...(nextMessagesBackfill ? { backfill: nextMessagesBackfill } : {}),
     },
   });
 }

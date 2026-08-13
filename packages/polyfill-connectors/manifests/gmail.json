@@ -649,6 +649,8 @@
     }
   ],
   "reason_display_messages": {
+    "historical_backfill_pending": "This bounded sync page completed; more historical Gmail data remains and will be collected automatically",
+    "historical_message_unaccounted": "A historical message could not be represented; its UID was recorded as a permanent coverage gap",
     "schema_validation_failed": "Some data didn't match the expected format and was skipped"
   }
 }

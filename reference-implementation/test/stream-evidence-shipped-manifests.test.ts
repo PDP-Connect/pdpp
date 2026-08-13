@@ -279,6 +279,67 @@ test("shipped gmail manifest: message_bodies inherits the messages checkpoint th
   assert.equal(condition(entries, "message_bodies"), "complete");
 });
 
+test("shipped gmail manifest: bounded pages stay retryable until final per-run coverage is complete", () => {
+  const manifest = manifestStreams("gmail");
+  const messages = manifest.find((stream) => stream.name === "messages");
+  assert.ok(messages, "the shipped Gmail manifest declares messages");
+  assert.equal(messages.coverage_strategy, "checkpoint_window");
+  assert.equal(messages.freshness_strategy, "scheduled_window");
+
+  const boundedPages = [
+    report("gmail", [
+      {
+        checkpoint: "committed",
+        collected: 2,
+        considered: null,
+        covered: null,
+        pending_detail_gaps: 0,
+        skipped: { reason: "historical_backfill_pending", recovery_action: "retry_by_runtime" },
+        stream: "messages",
+      },
+    ]),
+    report("gmail", [
+      {
+        checkpoint: "committed",
+        collected: 2,
+        considered: 2,
+        covered: 2,
+        pending_detail_gaps: 0,
+        skipped: null,
+        stream: "messages",
+      },
+    ]),
+  ];
+  assert.equal(condition(boundedPages[0], "messages"), "retryable_gap");
+  assert.equal(condition(boundedPages[1], "messages"), "complete");
+
+  const threadPartial = report("gmail", [
+    {
+      checkpoint: "committed",
+      collected: 1,
+      considered: null,
+      covered: null,
+      pending_detail_gaps: 0,
+      skipped: { reason: "historical_backfill_pending", recovery_action: "retry_by_runtime" },
+      stream: "threads",
+    },
+  ]);
+  assert.equal(condition(threadPartial, "threads"), "retryable_gap");
+
+  const poison = report("gmail", [
+    {
+      checkpoint: "committed",
+      collected: 1,
+      considered: null,
+      covered: null,
+      pending_detail_gaps: 0,
+      skipped: { reason: "historical_message_unaccounted" },
+      stream: "messages",
+    },
+  ]);
+  assert.equal(condition(poison, "messages"), "terminal_gap");
+});
+
 test("shipped manifests: a required stream with NO steady-state fact still rests unknown (the audit contract, not a blanket green)", () => {
   const entries = report("chase", [committedFact("current_activity")]);
   assert.equal(condition(entries, "balances"), "unknown", "no fact -> unknown; only real evidence classifies complete");

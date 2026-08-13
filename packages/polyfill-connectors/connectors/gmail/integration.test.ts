@@ -56,6 +56,7 @@ import {
   AttachmentStallTimeoutError,
   type AttachmentTransferProgress,
   addAttachmentBackfillRecordToSummary,
+  advanceMessagesBackfillCursor,
   attachmentBackfillPageByteBudget,
   buildAttachmentDetailCoverageMessage,
   buildAttachmentDetailGap,
@@ -93,6 +94,7 @@ import {
   runAttachmentBackfillAndRecoveryPass,
   selectAllMailFetchRange,
   selectAttachmentBackfillFetchRange,
+  selectMessagesBackfillFetchRange,
   shouldBackfillAttachments,
   trimAttachmentBackfillPageToByteBudget,
   type UploadBodyBlobFn,
@@ -1459,9 +1461,585 @@ test("selectAllMailFetchRange: incremental runs use priorUidnext:* regardless of
     ),
     "500:*"
   );
-  // Full resync (no prior uidvalidity or uidvalidity changed): still 1:*.
-  assert.equal(selectAllMailFetchRange({ fullResync: true, priorUidnext: 500 }, makeRequested(["attachments"])), "1:*");
-  assert.equal(selectAllMailFetchRange({ fullResync: true, priorUidnext: 500 }, makeRequested(["messages"])), "1:*");
+  // A first run has no forward range: its bounded historical page is planned
+  // separately and must never fall back to a monolithic 1:* walk.
+  assert.equal(selectAllMailFetchRange({ fullResync: true, priorUidnext: 500 }, makeRequested(["attachments"])), null);
+  assert.equal(selectAllMailFetchRange({ fullResync: true, priorUidnext: 500 }, makeRequested(["messages"])), null);
+});
+
+test("selectMessagesBackfillFetchRange: first and later pages are bounded UID ranges", () => {
+  assert.equal(
+    selectMessagesBackfillFetchRange({
+      messagesBackfill: { uidvalidity: 123, target_uid: 1200 },
+      uidnext: 1300,
+    }),
+    "1:500"
+  );
+  assert.equal(
+    selectMessagesBackfillFetchRange({
+      messagesBackfill: { backfilled_through_uid: 500, uidvalidity: 123, target_uid: 1200 },
+      uidnext: 1300,
+    }),
+    "501:1000"
+  );
+  assert.equal(
+    selectMessagesBackfillFetchRange({
+      messagesBackfill: { backfilled_through_uid: 1000, uidvalidity: 123, target_uid: 1200 },
+      uidnext: 1300,
+    }),
+    "1001:1200"
+  );
+});
+
+test("advanceMessagesBackfillCursor: page completion is monotonic and partial pages stay incomplete", () => {
+  const partial = advanceMessagesBackfillCursor({
+    now: FROZEN_NOW,
+    pageEndUid: 500,
+    prior: { backfilled_through_uid: 0, target_uid: 1200, uidvalidity: 123 },
+  });
+  assert.deepEqual(partial, {
+    backfilled_through_uid: 500,
+    completed_at: null,
+    target_uid: 1200,
+    uidvalidity: 123,
+  });
+
+  assert.throws(
+    () =>
+      advanceMessagesBackfillCursor({
+        now: FROZEN_NOW,
+        pageEndUid: 400,
+        prior: partial,
+      }),
+    /must not regress/
+  );
+
+  const complete = advanceMessagesBackfillCursor({
+    now: FROZEN_NOW,
+    pageEndUid: 1200,
+    prior: partial,
+  });
+  assert.equal(complete.backfilled_through_uid, 1200);
+  assert.equal(complete.completed_at, FROZEN_NOW);
+});
+
+test("messages backfill cursor resets on UIDVALIDITY change instead of reusing the old epoch", () => {
+  assert.equal(
+    selectMessagesBackfillFetchRange({
+      messagesBackfill: { backfilled_through_uid: 999, uidvalidity: 456, target_uid: 1200 },
+      uidnext: 1300,
+      uidvalidity: 789,
+    }),
+    "1:500",
+    "a cursor from another UIDVALIDITY must restart at UID 1"
+  );
+  assert.equal(
+    selectMessagesBackfillFetchRange({
+      messagesBackfill: { backfilled_through_uid: 999, uidvalidity: 456, target_uid: 1200 },
+      uidnext: 301,
+      uidvalidity: 789,
+    }),
+    "1:300",
+    "a new UIDVALIDITY uses the new mailbox head, not the dead epoch target"
+  );
+});
+
+test("messages backfill interruption replays one bounded page until its STATE boundary is durable", () => {
+  const prior = { backfilled_through_uid: 0, target_uid: 1200, uidvalidity: 123 };
+  const firstAttempt = selectMessagesBackfillFetchRange({ messagesBackfill: prior, uidnext: 1300 });
+  const replayAfterInterruption = selectMessagesBackfillFetchRange({ messagesBackfill: prior, uidnext: 1300 });
+  assert.equal(firstAttempt, "1:500");
+  assert.equal(replayAfterInterruption, firstAttempt);
+  assert.equal(
+    selectMessagesBackfillFetchRange({
+      messagesBackfill: advanceMessagesBackfillCursor({ now: FROZEN_NOW, pageEndUid: 500, prior }),
+      uidnext: 1300,
+    }),
+    "501:1000"
+  );
+});
+
+test("messages backfill never emits a full-coverage proof for a partial page", () => {
+  const partial = advanceMessagesBackfillCursor({
+    now: FROZEN_NOW,
+    pageEndUid: 500,
+    prior: { backfilled_through_uid: 0, target_uid: 1200, uidvalidity: 123 },
+  });
+  assert.equal(partial.completed_at, null);
+  assert.equal("coverage_condition" in partial, false);
+});
+
+test("runAllMailPasses: first historical page is bounded, durable only at page end, and stays partial", async () => {
+  const originalWrite = globalThis.process.stdout.write;
+  const protocolMessages: Record<string, unknown>[] = [];
+  const fetchRanges: string[] = [];
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        protocolMessages.push(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        // Ignore non-protocol output.
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called without attachments");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called without bodies");
+      },
+      search: mock.fn(async () => []),
+      mailbox: {
+        delimiter: "/",
+        exists: 1200,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        uidNext: 1201,
+        uidValidity: 123n,
+      },
+      // biome-ignore lint/suspicious/useAwait: async generator is required by the ImapFlow fetch shape.
+      async *fetch(range: string) {
+        fetchRanges.push(range);
+        for (const uid of [1, 2]) {
+          yield makeMsg({ uid, emailId: `msg-${uid}` });
+        }
+      },
+    };
+
+    await runAllMailPasses(
+      client,
+      makeAllMailMailbox(),
+      {},
+      {
+        emitRecord: async () => true,
+        emittedAt: FROZEN_NOW,
+        requested: makeRequested(["messages"]),
+      }
+    );
+
+    assert.deepEqual(fetchRanges, ["1:500"]);
+    const state = protocolMessages.find((message) => message.type === "STATE" && message.stream === "messages");
+    assert.ok(state, "the successful page emits one messages STATE");
+    assert.deepEqual((state.cursor as Record<string, unknown>).backfill, {
+      backfilled_through_uid: 500,
+      completed_at: null,
+      target_uid: 1200,
+      uidvalidity: 123,
+    });
+    assert.equal(
+      protocolMessages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "messages"),
+      false,
+      "a partial page does not claim detail coverage"
+    );
+    assert.deepEqual(
+      protocolMessages.find((message) => message.type === "SKIP_RESULT" && message.stream === "messages"),
+      {
+        type: "SKIP_RESULT",
+        stream: "messages",
+        reason: "historical_backfill_pending",
+        message: "This bounded page completed; more historical work remains and will be retried by the next run.",
+        recovery_hint: { action: "retry_by_runtime", retryable: true },
+      },
+      "a partial page remains explicitly retryable"
+    );
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
+});
+
+test("runAllMailPasses: scheduled runs advance historical pages while forwarding new mail", async () => {
+  const originalWrite = globalThis.process.stdout.write;
+  const protocolMessages: Record<string, unknown>[] = [];
+  const fetchRanges: string[] = [];
+  const emittedRecords: Array<{ data: Record<string, unknown>; stream: string }> = [];
+  let uidNext = 1201;
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        protocolMessages.push(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        // Ignore non-protocol output.
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called without attachments");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called without bodies");
+      },
+      search: mock.fn(async () => []),
+      mailbox: {
+        delimiter: "/",
+        exists: 1200,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        get uidNext() {
+          return uidNext;
+        },
+        uidValidity: 123n,
+      },
+      // biome-ignore lint/suspicious/useAwait: async generator is required by the ImapFlow fetch shape.
+      async *fetch(range: string) {
+        fetchRanges.push(range);
+        let ids: number[] = [1];
+        if (range === "1201:*") {
+          ids = [1250];
+        } else if (range === "1001:1200") {
+          ids = [1001];
+        }
+        for (const uid of ids) {
+          yield makeMsg({ uid, emailId: `msg-${uid}` });
+        }
+      },
+    };
+
+    const run = async (state: Record<string, unknown>) => {
+      protocolMessages.length = 0;
+      fetchRanges.length = 0;
+      await runAllMailPasses(client, makeAllMailMailbox(), state, {
+        emitRecord: (stream, data) => {
+          emittedRecords.push({ data, stream });
+          return Promise.resolve(true);
+        },
+        emittedAt: FROZEN_NOW,
+        requested: makeRequested(["messages"]),
+      });
+      const stateMessage = protocolMessages.find(
+        (message) => message.type === "STATE" && message.stream === "messages"
+      );
+      assert.ok(stateMessage, "each scheduled run commits a messages state at a page boundary");
+      return stateMessage.cursor as Record<string, unknown>;
+    };
+
+    const first = await run({});
+    assert.deepEqual(fetchRanges, ["1:500"]);
+    assert.deepEqual(first.all_mail, {
+      forward_uidnext: 1201,
+      highest_modseq: null,
+      uidnext: 501,
+      uidvalidity: 123,
+    });
+    uidNext = 1301;
+
+    const second = await run({ messages: first });
+    assert.deepEqual(fetchRanges, ["501:1000", "1201:*"]);
+    assert.equal((second.all_mail as Record<string, unknown>).uidnext, 1001);
+    assert.equal((second.all_mail as Record<string, unknown>).forward_uidnext, 1301);
+    assert.ok(
+      emittedRecords.some((record) => record.stream === "messages" && record.data.id === "msg-1250"),
+      "new mail in the forward range is collected while historical backfill is pending"
+    );
+
+    const third = await run({ messages: second });
+    assert.deepEqual(fetchRanges, ["1001:1200", "1301:*"]);
+    assert.equal((third.all_mail as Record<string, unknown>).uidnext, 1301);
+    assert.equal(typeof (third.backfill as Record<string, unknown>).completed_at, "string");
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
+});
+
+test("runAllMailPasses: attachments-only scope keeps the bounded message lane and forward lane alive", async () => {
+  const originalWrite = globalThis.process.stdout.write;
+  const protocolMessages: Record<string, unknown>[] = [];
+  const fetchRanges: string[] = [];
+  let uidNext = 1201;
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        protocolMessages.push(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        // Ignore non-protocol output.
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called without attachment parts");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called without message bodies");
+      },
+      search: mock.fn(async () => []),
+      mailbox: {
+        delimiter: "/",
+        exists: 1200,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        get uidNext() {
+          return uidNext;
+        },
+        uidValidity: 123n,
+      },
+      // biome-ignore lint/suspicious/useAwait: async generator is required by the ImapFlow fetch shape.
+      async *fetch(range: string) {
+        fetchRanges.push(range);
+        yield makeMsg({ uid: range === "1201:*" ? 1250 : 1, emailId: "attachment-only-message" });
+      },
+    };
+
+    const run = async (state: Record<string, unknown>) => {
+      protocolMessages.length = 0;
+      fetchRanges.length = 0;
+      await runAllMailPasses(client, makeAllMailMailbox(), state, {
+        emitRecord: async () => true,
+        emittedAt: FROZEN_NOW,
+        requested: makeRequested(["attachments"]),
+      });
+      const stateMessage = protocolMessages.find(
+        (message) => message.type === "STATE" && message.stream === "messages"
+      );
+      assert.ok(stateMessage, "attachments-only runs retain the messages-owned UID state");
+      return stateMessage.cursor as Record<string, unknown>;
+    };
+
+    const first = await run({});
+    assert.deepEqual(fetchRanges, ["1:500"]);
+    assert.equal((first.all_mail as Record<string, unknown>).uidnext, 501);
+    assert.equal((first.all_mail as Record<string, unknown>).forward_uidnext, 1201);
+
+    uidNext = 1301;
+    const second = await run({ messages: first });
+    assert.deepEqual(fetchRanges, ["501:1000", "1201:*"]);
+    assert.equal((second.all_mail as Record<string, unknown>).forward_uidnext, 1301);
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
+});
+
+test("runAllMailPasses: threads use the bounded page instead of starving until message history completes", async () => {
+  const originalWrite = globalThis.process.stdout.write;
+  const protocolMessages: Record<string, unknown>[] = [];
+  const fetchRanges: string[] = [];
+  const emittedStreams: string[] = [];
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        protocolMessages.push(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        // Ignore non-protocol output.
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called without attachments");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called without bodies");
+      },
+      search: mock.fn(async () => []),
+      mailbox: {
+        delimiter: "/",
+        exists: 1200,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        uidNext: 1201,
+        uidValidity: 123n,
+      },
+      // biome-ignore lint/suspicious/useAwait: async generator is required by the ImapFlow fetch shape.
+      async *fetch(range: string) {
+        fetchRanges.push(range);
+        yield makeMsg({ uid: 1, emailId: "thread-message", threadId: "thread-1" });
+      },
+    };
+
+    await runAllMailPasses(
+      client,
+      makeAllMailMailbox(),
+      {},
+      {
+        emitRecord: (stream) => {
+          emittedStreams.push(stream);
+          return Promise.resolve(true);
+        },
+        emittedAt: FROZEN_NOW,
+        requested: makeRequested(["threads"]),
+      }
+    );
+
+    assert.deepEqual(fetchRanges, ["1:500", "1:500"]);
+    assert.equal(fetchRanges.includes("1:*"), false, "thread work must not reopen a monolithic scan");
+    assert.ok(emittedStreams.includes("threads"), "a bounded page emits thread records immediately");
+    assert.ok(
+      protocolMessages.some((message) => message.type === "STATE" && message.stream === "threads"),
+      "thread fingerprints advance at the same bounded page boundary"
+    );
+    assert.equal(
+      protocolMessages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "threads"),
+      false,
+      "a partial thread page does not claim detail coverage"
+    );
+    assert.deepEqual(
+      protocolMessages.find((message) => message.type === "SKIP_RESULT" && message.stream === "threads"),
+      {
+        type: "SKIP_RESULT",
+        stream: "threads",
+        reason: "historical_backfill_pending",
+        message: "This bounded page completed; more historical work remains and will be retried by the next run.",
+        recovery_hint: { action: "retry_by_runtime", retryable: true },
+      },
+      "bounded thread work remains explicitly retryable"
+    );
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
+});
+
+test("runAllMailPasses: a poison historical message becomes a terminal skip and advances once", async () => {
+  const originalWrite = globalThis.process.stdout.write;
+  const protocolMessages: Record<string, unknown>[] = [];
+  const fetchRanges: string[] = [];
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        protocolMessages.push(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        // Ignore non-protocol output.
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called without attachments");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called without bodies");
+      },
+      search: mock.fn(async () => []),
+      mailbox: {
+        delimiter: "/",
+        exists: 1200,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        uidNext: 1201,
+        uidValidity: 123n,
+      },
+      // biome-ignore lint/suspicious/useAwait: async generator is required by the ImapFlow fetch shape.
+      async *fetch(range: string) {
+        fetchRanges.push(range);
+        yield makeMsg({ uid: 77, emailId: "" });
+      },
+    };
+
+    await runAllMailPasses(
+      client,
+      makeAllMailMailbox(),
+      {},
+      {
+        emitRecord: () => Promise.resolve(true),
+        emittedAt: FROZEN_NOW,
+        requested: makeRequested(["messages"]),
+      }
+    );
+
+    const skip = protocolMessages.find((message) => message.type === "SKIP_RESULT");
+    assert.equal(skip?.reason, "historical_message_unaccounted");
+    assert.deepEqual(fetchRanges, ["1:500"]);
+    assert.ok(
+      protocolMessages.some((message) => message.type === "STATE" && message.stream === "messages"),
+      "the terminal skip is durable evidence, so the same poison UID cannot replay forever"
+    );
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
+});
+
+test("runAllMailPasses: interruption during a historical page withholds its cursor for bounded replay", async () => {
+  const originalWrite = globalThis.process.stdout.write;
+  const protocolMessages: Record<string, unknown>[] = [];
+  const fetchRanges: string[] = [];
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        protocolMessages.push(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        // Ignore non-protocol output.
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called without attachments");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called without bodies");
+      },
+      search: mock.fn(async () => []),
+      mailbox: {
+        delimiter: "/",
+        exists: 1200,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        uidNext: 1201,
+        uidValidity: 123n,
+      },
+      // biome-ignore lint/suspicious/useAwait: async generator is required by the ImapFlow fetch shape.
+      async *fetch(range: string) {
+        fetchRanges.push(range);
+        yield makeMsg({ uid: 1, emailId: "msg-1" });
+        throw new Error("historical page interrupted");
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        runAllMailPasses(
+          client,
+          makeAllMailMailbox(),
+          {},
+          {
+            emitRecord: async () => true,
+            emittedAt: FROZEN_NOW,
+            requested: makeRequested(["messages"]),
+          }
+        ),
+      /historical page interrupted/
+    );
+    assert.deepEqual(fetchRanges, ["1:500"]);
+    assert.equal(
+      protocolMessages.some((message) => message.type === "STATE" && message.stream === "messages"),
+      false,
+      "an interrupted page cannot emit a durable cursor"
+    );
+    assert.equal(
+      selectMessagesBackfillFetchRange({
+        messagesBackfill: { target_uid: 1200, uidvalidity: 123 },
+        uidnext: 1201,
+      }),
+      "1:500",
+      "the unchanged durable cursor replays only the same bounded page"
+    );
+  } finally {
+    globalThis.process.stdout.write = originalWrite;
+  }
 });
 
 test("selectAttachmentBackfillFetchRange: historical range is bounded and independent of messages uidnext cursor", () => {
@@ -1702,6 +2280,7 @@ test("runAttachmentBackfillAndRecoveryPass: served gaps preempt historical attac
       attachmentBackfill: { backfilled_through_uid: 250, uidvalidity: 123 },
       fullResync: false,
       highestModseqCursor: null,
+      messagesBackfill: { uidvalidity: 123, backfilled_through_uid: 0, completed_at: null },
       priorModseq: null,
       priorUidnext: 500,
       uidnext: 600,
@@ -1893,6 +2472,7 @@ test("runAttachmentBackfillAndRecoveryPass: recoveryOnly=true recovers served ga
       attachmentBackfill: { backfilled_through_uid: 250, uidvalidity: 123 },
       fullResync: false,
       highestModseqCursor: null,
+      messagesBackfill: { uidvalidity: 123, backfilled_through_uid: 0, completed_at: null },
       priorModseq: null,
       priorUidnext: 500,
       uidnext: 600,
