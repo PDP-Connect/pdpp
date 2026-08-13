@@ -672,15 +672,16 @@ test("scheduled runs inject store credentials env-absent for every static-secret
 test("startServer controller and scheduler-manager pass operator policy into spawned connector children", async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-prod-env-policy-"));
   const providerManifest = JSON.parse(
-    readFileSync(new URL("../../packages/polyfill-connectors/manifests/google_calendar.json", import.meta.url), "utf8")
+    readFileSync(new URL("../../packages/polyfill-connectors/manifests/google_maps_data_portability.json", import.meta.url), "utf8")
   );
   const manualManifest = JSON.parse(
     readFileSync(new URL("../../packages/polyfill-connectors/manifests/whatsapp.json", import.meta.url), "utf8")
   );
   const nestedManifest = minimalNestedAuthManifest("nested-auth-policy-test");
   const observedNames = [
-    "GOOGLE_OAUTH_CLIENT_ID",
-    "GOOGLE_OAUTH_CLIENT_SECRET",
+    "GOOGLE_DATAPORTABILITY_CLIENT_ID",
+    "GOOGLE_DATAPORTABILITY_CLIENT_SECRET",
+    "GOOGLE_DATAPORTABILITY_REDIRECT_URI",
     "WHATSAPP_EXPORT_DIR",
     "NESTED_PRIMARY_TOKEN",
     "NESTED_SECONDARY_TOKEN",
@@ -692,8 +693,9 @@ test("startServer controller and scheduler-manager pass operator policy into spa
   const nested = writeEnvSnapshotConnector(tmpDir, "nested", observedNames);
   const priorEnv = new Map(
     [
-      "GOOGLE_OAUTH_CLIENT_ID",
-      "GOOGLE_OAUTH_CLIENT_SECRET",
+      "GOOGLE_DATAPORTABILITY_CLIENT_ID",
+      "GOOGLE_DATAPORTABILITY_CLIENT_SECRET",
+      "GOOGLE_DATAPORTABILITY_REDIRECT_URI",
       "WHATSAPP_EXPORT_DIR",
       "NESTED_PRIMARY_TOKEN",
       "NESTED_SECONDARY_TOKEN",
@@ -702,8 +704,10 @@ test("startServer controller and scheduler-manager pass operator policy into spa
       "SIBLING_SECRET",
     ].map((key) => [key, process.env[key]])
   );
-  process.env.GOOGLE_OAUTH_CLIENT_ID = "operator-google-client-id";
-  process.env.GOOGLE_OAUTH_CLIENT_SECRET = "operator-google-client-secret";
+  process.env.GOOGLE_DATAPORTABILITY_CLIENT_ID = "operator-google-dataportability-client-id";
+  process.env.GOOGLE_DATAPORTABILITY_CLIENT_SECRET = "operator-google-dataportability-client-secret";
+  process.env.GOOGLE_DATAPORTABILITY_REDIRECT_URI =
+    "https://operator.example/oauth/google-dataportability/callback";
   process.env.HTTP_PROXY = "http://operator:proxy-password@proxy.example";
   process.env.NESTED_PRIMARY_TOKEN = "operator-nested-primary";
   process.env.NESTED_SECONDARY_TOKEN = "operator-nested-secondary";
@@ -712,16 +716,22 @@ test("startServer controller and scheduler-manager pass operator policy into spa
   process.env.PDPP_CONNECTOR_ENVIRONMENT_POLICY = JSON.stringify({
     bindings: [
       {
-        connector_id: "google-calendar",
-        logical_key: "client_id",
-        source: { key: "GOOGLE_OAUTH_CLIENT_ID", kind: "process_env" },
-        target_key: "GOOGLE_OAUTH_CLIENT_ID",
+        connector_id: "google-maps-data-portability",
+        logical_key: "GOOGLE_DATAPORTABILITY_CLIENT_ID",
+        source: { key: "GOOGLE_DATAPORTABILITY_CLIENT_ID", kind: "process_env" },
+        target_key: "GOOGLE_DATAPORTABILITY_CLIENT_ID",
       },
       {
-        connector_id: "google-calendar",
-        logical_key: "client_secret",
-        source: { key: "GOOGLE_OAUTH_CLIENT_SECRET", kind: "process_env" },
-        target_key: "GOOGLE_OAUTH_CLIENT_SECRET",
+        connector_id: "google-maps-data-portability",
+        logical_key: "GOOGLE_DATAPORTABILITY_CLIENT_SECRET",
+        source: { key: "GOOGLE_DATAPORTABILITY_CLIENT_SECRET", kind: "process_env" },
+        target_key: "GOOGLE_DATAPORTABILITY_CLIENT_SECRET",
+      },
+      {
+        connector_id: "google-maps-data-portability",
+        logical_key: "GOOGLE_DATAPORTABILITY_REDIRECT_URI",
+        source: { key: "GOOGLE_DATAPORTABILITY_REDIRECT_URI", kind: "process_env" },
+        target_key: "GOOGLE_DATAPORTABILITY_REDIRECT_URI",
       },
       {
         connector_id: "whatsapp",
@@ -742,19 +752,19 @@ test("startServer controller and scheduler-manager pass operator policy into spa
         target_key: "NESTED_SECONDARY_TOKEN",
       },
       {
-        connector_id: "google-calendar",
-        logical_key: "client_id",
+        connector_id: "google-maps-data-portability",
+        logical_key: "GOOGLE_DATAPORTABILITY_CLIENT_ID",
         source: { key: "HTTP_PROXY", kind: "process_env" },
         target_key: "HTTP_PROXY",
       },
     ],
-    proxy_connector_ids: ["google-calendar"],
+    proxy_connector_ids: ["google-maps-data-portability"],
   });
   const server = await startServer({
     asPort: 0,
     autoEnrollEligibleSchedules: false,
     connectorPathResolver: (connectorId) => {
-      if (connectorId === "google-calendar") {
+      if (connectorId === "google-maps-data-portability") {
         return provider.connectorPath;
       }
       if (connectorId === "whatsapp") {
@@ -777,9 +787,9 @@ test("startServer controller and scheduler-manager pass operator policy into spa
     await registerManifest(asUrl, nestedManifest);
 
     await registerFixtureConnectorInstance({
-      connectorId: "google-calendar",
-      connectorInstanceId: "cin_google_calendar_policy",
-      displayName: "Google Calendar",
+      connectorId: "google-maps-data-portability",
+      connectorInstanceId: "cin_google_maps_data_portability_policy",
+      displayName: "Google Maps Data Portability",
       ownerSubjectId: "owner_local",
     });
     await registerFixtureConnectorInstance({
@@ -794,15 +804,19 @@ test("startServer controller and scheduler-manager pass operator policy into spa
       ownerSubjectId: "owner_local",
     });
 
-    const providerHandle = await server.controller.runNow("google-calendar", {
-      connectorInstanceId: "cin_google_calendar_policy",
+    const providerHandle = await server.controller.runNow("google-maps-data-portability", {
+      connectorInstanceId: "cin_google_maps_data_portability_policy",
       manifest: providerManifest,
       runId: "run_provider_policy",
     });
     await server.controller.awaitRun(providerHandle.run_id);
     const providerEnv = JSON.parse(readFileSync(provider.snapshotPath, "utf8"));
-    assert.equal(providerEnv.GOOGLE_OAUTH_CLIENT_ID, "operator-google-client-id");
-    assert.equal(providerEnv.GOOGLE_OAUTH_CLIENT_SECRET, "operator-google-client-secret");
+    assert.equal(providerEnv.GOOGLE_DATAPORTABILITY_CLIENT_ID, "operator-google-dataportability-client-id");
+    assert.equal(providerEnv.GOOGLE_DATAPORTABILITY_CLIENT_SECRET, "operator-google-dataportability-client-secret");
+    assert.equal(
+      providerEnv.GOOGLE_DATAPORTABILITY_REDIRECT_URI,
+      "https://operator.example/oauth/google-dataportability/callback"
+    );
     assert.equal(providerEnv.HTTP_PROXY, "http://operator:proxy-password@proxy.example");
     assert.equal(providerEnv.SIBLING_SECRET, null);
 

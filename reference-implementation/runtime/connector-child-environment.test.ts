@@ -431,27 +431,39 @@ test("every proxy binding source requires connector-scoped authority", () => {
 
 test("shipped manifests keep logical declarations compatible while rejecting auth env aliases", () => {
   const google = compose(
-    shippedManifest("google_calendar"),
+    shippedManifest("google_maps_data_portability"),
     {
       AWS_SECRET_ACCESS_KEY: "must-not-cross",
-      GOOGLE_OAUTH_CLIENT_ID: "client-id",
-      GOOGLE_OAUTH_CLIENT_SECRET: "client-secret",
+      GOOGLE_DATAPORTABILITY_CLIENT_ID: "dataportability-client-id",
+      GOOGLE_DATAPORTABILITY_CLIENT_SECRET: "dataportability-client-secret",
     },
     {
       approvedBindings: [
-        processBinding("GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_ID", "google-calendar"),
         processBinding(
-          "GOOGLE_OAUTH_CLIENT_SECRET",
-          "GOOGLE_OAUTH_CLIENT_SECRET",
-          "GOOGLE_OAUTH_CLIENT_SECRET",
-          "google-calendar"
+          "GOOGLE_DATAPORTABILITY_CLIENT_ID",
+          "GOOGLE_DATAPORTABILITY_CLIENT_ID",
+          "GOOGLE_DATAPORTABILITY_CLIENT_ID",
+          "google-maps-data-portability"
+        ),
+        processBinding(
+          "GOOGLE_DATAPORTABILITY_CLIENT_SECRET",
+          "GOOGLE_DATAPORTABILITY_CLIENT_SECRET",
+          "GOOGLE_DATAPORTABILITY_CLIENT_SECRET",
+          "google-maps-data-portability"
+        ),
+        processBinding(
+          "GOOGLE_DATAPORTABILITY_REDIRECT_URI",
+          "GOOGLE_DATAPORTABILITY_REDIRECT_URI",
+          "GOOGLE_DATAPORTABILITY_REDIRECT_URI",
+          "google-maps-data-portability"
         ),
       ],
-      connectorId: "google-calendar",
+      connectorId: "google-maps-data-portability",
     }
   );
-  assert.equal(google.GOOGLE_OAUTH_CLIENT_ID, "client-id");
-  assert.equal(google.GOOGLE_OAUTH_CLIENT_SECRET, "client-secret");
+  assert.equal(google.GOOGLE_DATAPORTABILITY_CLIENT_ID, "dataportability-client-id");
+  assert.equal(google.GOOGLE_DATAPORTABILITY_CLIENT_SECRET, "dataportability-client-secret");
+  assert.equal(google.GOOGLE_DATAPORTABILITY_REDIRECT_URI, undefined);
   assert.equal(google.AWS_SECRET_ACCESS_KEY, undefined);
 
   const notion = compose(shippedManifest("notion"), { NOTION_API_TOKEN: "ambient-token" });
@@ -491,13 +503,13 @@ test("shipped manifests keep logical declarations compatible while rejecting aut
   assert.equal(whatsapp.WHATSAPP_EXPORT_DIR, "/imports/whatsapp");
 
   const googleConnection = compose(
-    shippedManifest("google_calendar"),
+    shippedManifest("google_maps_data_portability"),
     {},
     {
-      connectionEnv: { GOOGLE_CALENDAR_REFRESH_TOKEN: "connection-refresh-token" },
+      connectionEnv: { GOOGLE_DATAPORTABILITY_REDIRECT_URI: "https://owner.example/oauth/callback" },
     }
   );
-  assert.equal(googleConnection.GOOGLE_CALENDAR_REFRESH_TOKEN, "connection-refresh-token");
+  assert.equal(googleConnection.GOOGLE_DATAPORTABILITY_REDIRECT_URI, "https://owner.example/oauth/callback");
 });
 
 test("a sibling shipped manifest cannot consume another connector's approved logical binding", () => {
