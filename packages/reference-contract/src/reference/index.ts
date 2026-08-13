@@ -890,6 +890,158 @@ const ApprovalItemSchema = {
   type: "object",
 };
 
+const ApprovalIdParamSchema = {
+  additionalProperties: false,
+  properties: { approvalId: { minLength: 1, type: "string" } },
+  required: ["approvalId"],
+  type: "object",
+};
+
+const ApprovalReviewSecretPropertyPattern =
+  "^(?:[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Aa][Uu][Tt][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Bb][Ee][Aa][Rr][Ee][Rr][_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt](?:[_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Ss][Ee][Cc][Rr][Ee][Tt])|[Dd][Ee][Vv][Ii][Cc][Ee][_-]?[Cc][Oo][Dd][Ee]|[Ii][Dd][_-]?[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Rr][Aa][Mm][Ss][_-]?[Jj][Ss][Oo][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Qq][Uu][Ee][Ss][Tt][_-]?[Uu][Rr][Ii]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Uu][Ss][Ee][Rr][_-]?[Cc][Oo][Dd][Ee])$";
+
+function approvalReviewJsonSchema(depth = 4): Record<string, unknown> {
+  const next = depth > 0 ? approvalReviewJsonSchema(depth - 1) : {};
+  return {
+    oneOf: [
+      { type: ["boolean", "null", "number", "string"] },
+      { items: next, type: "array" },
+      {
+        additionalProperties: next,
+        propertyNames: { not: { pattern: ApprovalReviewSecretPropertyPattern } },
+        type: "object",
+      },
+    ],
+  };
+}
+
+const ConsentApprovalReviewSchema = {
+  additionalProperties: false,
+  properties: {
+    approval_id: { type: "string" },
+    client: {
+      additionalProperties: false,
+      properties: {
+        client_id: { type: "string" },
+        display: {
+          additionalProperties: false,
+          properties: {
+            name: { type: ["string", "null"] },
+            policy_uri: { type: ["string", "null"] },
+            tos_uri: { type: ["string", "null"] },
+            uri: { type: ["string", "null"] },
+          },
+          required: ["name", "policy_uri", "tos_uri", "uri"],
+          type: "object",
+        },
+        registration_mode: { type: "string" },
+      },
+      required: ["client_id", "display", "registration_mode"],
+      type: "object",
+    },
+    created_at: { type: "string" },
+    expires_at: { type: "string" },
+    grant_outcome: {
+      additionalProperties: false,
+      properties: {
+        access_mode: { type: "string" },
+        description: { type: "string" },
+      },
+      required: ["access_mode", "description"],
+      type: "object",
+    },
+    kind: { const: "consent" },
+    object: { const: "approval_review" },
+    purpose: {
+      additionalProperties: false,
+      properties: {
+        code: { type: ["string", "null"] },
+        description: { type: ["string", "null"] },
+      },
+      required: ["code", "description"],
+      type: "object",
+    },
+    retention: approvalReviewJsonSchema(),
+    source: {
+      oneOf: [
+        {
+          additionalProperties: false,
+          properties: {
+            id: { type: "string" },
+            kind: { enum: ["connector", "provider_native"], type: "string" },
+          },
+          required: ["id", "kind"],
+          type: "object",
+        },
+        { type: "null" },
+      ],
+    },
+    streams: {
+      items: {
+        additionalProperties: false,
+        properties: {
+          client_claims: approvalReviewJsonSchema(),
+          connection_id: { type: ["string", "null"] },
+          fields: { oneOf: [{ items: { type: "string" }, type: "array" }, { type: "null" }] },
+          name: { type: "string" },
+          necessity: { type: ["string", "null"] },
+          resources: { oneOf: [{ items: approvalReviewJsonSchema(), type: "array" }, { type: "null" }] },
+          time_range: {
+            oneOf: [
+              {
+                additionalProperties: false,
+                properties: { since: { type: ["string", "null"] } },
+                required: ["since"],
+                type: "object",
+              },
+              { type: "null" },
+            ],
+          },
+          view: { type: ["string", "null"] },
+        },
+        required: ["client_claims", "connection_id", "fields", "name", "necessity", "resources", "time_range", "view"],
+        type: "object",
+      },
+      type: "array",
+    },
+    trust: { const: "unverified" },
+  },
+  required: [
+    "object",
+    "approval_id",
+    "client",
+    "created_at",
+    "expires_at",
+    "grant_outcome",
+    "kind",
+    "purpose",
+    "retention",
+    "source",
+    "streams",
+    "trust",
+  ],
+  type: "object",
+};
+
+const OwnerDeviceApprovalReviewSchema = {
+  additionalProperties: false,
+  properties: {
+    approval_id: { type: "string" },
+    client_id: { type: "string" },
+    created_at: { type: "string" },
+    expires_at: { type: "string" },
+    kind: { const: "owner_device" },
+    object: { const: "approval_review" },
+  },
+  required: ["object", "approval_id", "client_id", "kind", "created_at", "expires_at"],
+  type: "object",
+};
+
+const ApprovalReviewSchema = {
+  oneOf: [ConsentApprovalReviewSchema, OwnerDeviceApprovalReviewSchema],
+  type: "object",
+};
+
 const RefSearchRecordSchema = {
   additionalProperties: true,
   properties: {
@@ -2242,6 +2394,17 @@ export const referenceManifests = [
       ...CommonErrors,
     },
     summary: "List pending approvals across provider-connect consents and owner-device flows.",
+    surface: "reference",
+    tags: ["reference", "grants"],
+  },
+  {
+    id: "refGetApproval",
+    method: "GET",
+    path: "/_ref/approvals/{approvalId}",
+    request: { params: ApprovalIdParamSchema },
+    responses: { 200: { schema: ApprovalReviewSchema }, ...CommonErrors },
+    summary:
+      "Get one pending approval review by opaque approval_id. The reference projection excludes device-flow credentials and raw persisted request payloads.",
     surface: "reference",
     tags: ["reference", "grants"],
   },
