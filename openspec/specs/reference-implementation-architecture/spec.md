@@ -919,12 +919,19 @@ The connector SHALL NOT inline attachment bytes into the attachment record or th
 
 The reference SHALL provide a connector-facing blob upload path that allows authorized connector/runtime code to upload bytes for a specific `connector_id`, `stream`, and `record_key`. The upload path SHALL return the canonical `blob_id`, `sha256`, `size_bytes`, and `mime_type` that records can expose through `blob_ref`. Uploading the same bytes for the same record binding SHALL be idempotent.
 
+The upload transport SHALL preserve request bytes independently of the blob's declared MIME type. Connector runtimes SHALL send blob bytes with a binary-safe transport content type and declare the stored MIME type separately. The reference SHALL continue to accept legacy uploads that use the request `Content-Type` as the stored MIME type.
+
 The reference SHALL continue to authorize `GET /v1/blobs/{blob_id}` by resolving the blob's bound record and requiring that record to be visible under the caller's grant with a matching visible `data.blob_ref.blob_id`. A caller SHALL NOT gain blob access by guessing a `blob_id`, by reading attachment metadata without `blob_ref`, or by holding access to a different record that does not reference the blob.
 
 #### Scenario: A connector uploads the same attachment twice
 - **WHEN** connector/runtime code uploads identical attachment bytes for the same Gmail attachment record more than once
 - **THEN** the reference SHALL return the same canonical blob identity
 - **AND** it SHALL NOT create duplicate logical blobs for that record binding
+
+#### Scenario: Binary bytes carry a text MIME type
+- **WHEN** connector/runtime code uploads non-UTF-8 bytes and declares the blob MIME type as `text/plain`
+- **THEN** the reference SHALL hash and store the exact uploaded bytes without text decoding or re-encoding
+- **AND** the returned `mime_type` SHALL remain `text/plain`
 
 #### Scenario: A caller can see the attachment blob reference
 - **WHEN** a caller is authorized to read a Gmail `attachments` record including its `blob_ref` field
@@ -11949,4 +11956,3 @@ The repository SHALL provide an executable test that scans `reference-implementa
 - **WHEN** a change edits the guard's own allowlist, detection patterns, or exemption list to make a real violation pass
 - **THEN** the change SHALL state that widening explicitly in its proposal
 - **AND** reviewers SHALL treat an unexplained narrowing of the guard's detection surface as a regression, not a passing gate
-

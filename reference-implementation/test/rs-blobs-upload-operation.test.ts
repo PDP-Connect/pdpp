@@ -149,6 +149,29 @@ test("rs.blobs.upload normalizes Content-Type by stripping parameters and lowerc
   assert.equal(captured.mimeType, "image/png");
 });
 
+test("rs.blobs.upload uses declared blob MIME type independently of transport Content-Type", async () => {
+  let captured: BlobsUploadPersistArgs | undefined;
+  await executeBlobsUpload(
+    defaultInput({
+      contentType: "application/octet-stream",
+      requestParams: {
+        connector_id: "gmail",
+        mime_type: "TEXT/PLAIN; charset=utf-8",
+        record_key: "rk_1",
+        stream: "messages",
+      },
+    }),
+    defaultDeps({
+      persistBlob: (args) => {
+        captured = args;
+        return { blob_id: "b", mime_type: args.mimeType, sha256: "s", size_bytes: args.data.byteLength };
+      },
+    })
+  );
+  assert.ok(captured);
+  assert.equal(captured.mimeType, "text/plain");
+});
+
 test("rs.blobs.upload throws not_found when manifest does not declare the stream", async () => {
   await assert.rejects(
     () => executeBlobsUpload(defaultInput(), defaultDeps({ hasManifestStream: () => false })),

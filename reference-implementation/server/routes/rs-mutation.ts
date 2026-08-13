@@ -581,6 +581,7 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
           requestParams: {
             connector_id: (req.query as Record<string, unknown>).connector_id,
             json_path: (req.query as Record<string, unknown>).json_path,
+            mime_type: (req.query as Record<string, unknown>).mime_type,
             record_key: (req.query as Record<string, unknown>).record_key,
             stream: (req.query as Record<string, unknown>).stream,
           },

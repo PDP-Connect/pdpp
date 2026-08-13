@@ -26,6 +26,7 @@
 export interface BlobsUploadRequestParams {
   readonly connector_id?: unknown;
   readonly json_path?: unknown;
+  readonly mime_type?: unknown;
   readonly record_key?: unknown;
   readonly stream?: unknown;
 }
@@ -119,15 +120,21 @@ function readSingleNonEmptyString(value: unknown, name: string): string {
 
 const MEDIA_TYPE_PATTERN = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
 
-function readContentType(value: unknown): string {
+function readMediaType(value: unknown, name: string): string {
   if (typeof value !== "string") {
-    throw new BlobsUploadInvalidRequestError("Content-Type header is required");
+    throw new BlobsUploadInvalidRequestError(`${name} is required`);
   }
   const mediaType = (value.split(";")[0] ?? "").trim().toLowerCase();
   if (!(mediaType && MEDIA_TYPE_PATTERN.test(mediaType))) {
-    throw new BlobsUploadInvalidRequestError("Content-Type header must be a valid media type");
+    throw new BlobsUploadInvalidRequestError(`${name} must be a valid media type`);
   }
   return mediaType;
+}
+
+function readBlobMimeType(requestValue: unknown, contentType: unknown): string {
+  return requestValue === undefined
+    ? readMediaType(contentType, "Content-Type header")
+    : readMediaType(requestValue, "mime_type");
 }
 
 function readJsonPath(value: unknown): string {
@@ -179,7 +186,7 @@ export async function executeBlobsUpload(
   const stream = readSingleNonEmptyString(input.requestParams.stream, "stream");
   const recordKey = readSingleNonEmptyString(input.requestParams.record_key, "record_key");
   const jsonPath = readJsonPath(input.requestParams.json_path);
-  const mimeType = readContentType(input.contentType);
+  const mimeType = readBlobMimeType(input.requestParams.mime_type, input.contentType);
 
   const visible = await dependencies.hasManifestStream(connectorId, stream);
   if (!visible) {

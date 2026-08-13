@@ -83,6 +83,7 @@ function isBlobUploadResponse(value: unknown): value is BlobUploadResponse {
 function makeBlobUploadUrl(args: {
   connectorId: string;
   connectorInstanceId?: string | null;
+  mimeType: string;
   recordKey: string;
   jsonPath?: string;
   rsUrl: string;
@@ -95,6 +96,7 @@ function makeBlobUploadUrl(args: {
   }
   url.searchParams.set("stream", args.stream);
   url.searchParams.set("record_key", args.recordKey);
+  url.searchParams.set("mime_type", args.mimeType);
   if (args.jsonPath) {
     url.searchParams.set("json_path", args.jsonPath);
   }
@@ -206,13 +208,16 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function uploadRequestInit(ownerToken: string, mimeType: string, upload: HashingUploadBody): StreamingRequestInit {
+function uploadRequestInit(ownerToken: string, upload: HashingUploadBody): StreamingRequestInit {
   return {
     body: upload.body,
     duplex: "half",
     headers: {
       Authorization: `Bearer ${ownerToken}`,
-      "Content-Type": mimeType,
+      // The logical blob MIME type travels separately in `mime_type`. A
+      // binary payload labelled text/plain would otherwise pass through the
+      // host's text parser and lose byte fidelity before blob hashing.
+      "Content-Type": "application/octet-stream",
     },
     method: "POST",
   };
@@ -301,11 +306,12 @@ export function makeReferenceBlobUploader(args: {
     const upload = createHashingUploadBody(content);
     const response = await fetchUploadResponse({
       fetchFn: args.fetchFn ?? fetch,
-      requestInit: uploadRequestInit(args.ownerToken, mimeType, upload),
+      requestInit: uploadRequestInit(args.ownerToken, upload),
       upload,
       url: makeBlobUploadUrl({
         connectorId,
         connectorInstanceId: connectorInstanceId ?? args.connectorInstanceId ?? null,
+        mimeType,
         recordKey,
         rsUrl: args.rsUrl,
         stream,
