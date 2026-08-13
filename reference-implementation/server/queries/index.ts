@@ -365,10 +365,12 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Records — change-log snapshot/page reads for /changes feed.
   readonly recordsSnapshotsGetSnapshotAtVersion: ReadOneQuery;
   readonly recordsSnapshotsListChangeGroups: IterateQuery;
-  readonly recordsSyncStateListConnectorState: SmallEnumerationQuery;
+  readonly recordsSyncStateGetConnectorManifestGeneration: ReadOneQuery;
   // Records — Collection Profile sync-state (owner-authenticated).
+  readonly recordsSyncStateListConnectorState: SmallEnumerationQuery;
   readonly recordsSyncStateListGrantConnectorState: SmallEnumerationQuery;
   readonly recordsSyncStateUpsertConnectorState: MutationQuery;
+  readonly recordsSyncStateUpsertConnectorStateWithGeneration: MutationQuery;
   readonly recordsSyncStateUpsertGrantConnectorState: MutationQuery;
   readonly searchIndexCountByStream: ReadOneQuery;
   // Lexical retrieval — FTS5 index maintenance.
@@ -448,6 +450,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Spine — run-handle status lookups (bounded LIMIT 1 lifecycle reads).
   readonly spineGetRunStartedEvent: ReadOneQuery;
   readonly spineGetRunTerminalEvent: ReadOneQuery;
+  readonly spineGetTerminalRunCommitReceipt: ReadOneQuery;
   // Spine — append and correlation search.
   readonly spineInsertEvent: MutationQuery;
   readonly spineListEventsByGrantId: ReadManyQuery;
@@ -696,6 +699,7 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "spineListEventsByRunId",
     "spineGetRunStartedEvent",
     "spineGetRunTerminalEvent",
+    "spineGetTerminalRunCommitReceipt",
     // Auth — pending_consents
     "authPendingConsentsGetByDeviceCode",
     "authPendingConsentsGetByApprovalId",

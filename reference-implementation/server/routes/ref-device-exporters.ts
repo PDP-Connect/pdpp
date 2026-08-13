@@ -26,11 +26,15 @@
 // directly.
 
 import { createHash } from "node:crypto";
-import { handleLocalDeviceTerminalCollection } from "../../operations/local-device-terminal-collection.ts";
+import {
+  handleLocalDeviceTerminalCollection,
+  handleLocalDeviceTerminalRunCommit,
+} from "../../operations/local-device-terminal-collection.ts";
 import { mapWithConcurrency } from "../concurrency.ts";
 import { type DeviceAttemptContext, fingerprintDeviceAttemptManifest } from "../device-ingest-attempt-context.ts";
 import { deriveReferenceFreshness } from "../freshness.ts";
 import { assertRecordIdentity, normalizePrimaryKey } from "../record-expand-helpers.ts";
+import { commitTerminalRun } from "../stores/terminal-run-commit-store.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import {
   type EnrolledSourceKind,
@@ -434,6 +438,7 @@ export interface MountRefDeviceExportersContext {
 
   // Canonical key resolution
   canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  commitTerminalRun?: typeof commitTerminalRun;
   createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
 
   // Error class for batch conflict detection
@@ -2587,6 +2592,7 @@ export function mountRefDeviceExporterSourceInstanceStatePut(app: AppLike, ctx: 
     }
   );
   mountRefDeviceExporterTerminalCollection(app, ctx);
+  mountRefDeviceExporterTerminalRunCommit(app, ctx);
 }
 
 // POST /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/terminal-collection
@@ -2605,6 +2611,26 @@ export function mountRefDeviceExporterTerminalCollection(app: AppLike, ctx: Moun
         resolveAuthorizedSource: async (deviceId, sourceInstanceId) =>
           await resolveAuthorizedDeviceSource(ctx, req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 }),
         sameConnectorType: (left, right) => sameConnectorType(ctx, left, right),
+      })
+  );
+}
+
+// POST /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/terminal-run-commits
+export function mountRefDeviceExporterTerminalRunCommit(app: AppLike, ctx: MountRefDeviceExportersContext): void {
+  app.post(
+    "/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/terminal-run-commits",
+    { contract: "refCommitDeviceExporterTerminalRun" },
+    ctx.requireDeviceExporterCredential,
+    async (req: RouteRequest, res: RouteResponse) =>
+      await handleLocalDeviceTerminalRunCommit({
+        ctx: {
+          ...ctx,
+          commitTerminalRun: ctx.commitTerminalRun ?? commitTerminalRun,
+        },
+        req,
+        res,
+        resolveAuthorizedSource: async (deviceId, sourceInstanceId) =>
+          await resolveAuthorizedDeviceSource(ctx, req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 }),
       })
   );
 }
