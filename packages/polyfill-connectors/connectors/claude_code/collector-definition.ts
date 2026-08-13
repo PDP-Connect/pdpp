@@ -45,12 +45,12 @@ export const CLAUDE_CODE_DEFAULT_STREAMS = [
  * `claude_code` manifest gives a `consent_time_field`
  * (`sessions.started_at`, `messages.timestamp`, `attachments.timestamp`).
  *
- * The remaining default streams (skills, slash_commands, memory_notes, the
- * inventory stores) carry no time field, so a date bound is not measurable
- * against them. They are collected whole under a scoped run and reported as
- * out-of-scope rather than being silently narrowed.
+ * Streams without a consent time field remain whole-store under a time bound;
+ * the runner keeps them in the requested inventory and marks them unscoped.
  */
 export const CLAUDE_CODE_TIME_SCOPABLE_STREAMS = ["sessions", "messages", "attachments"] as const;
+
+export const CLAUDE_CODE_SOURCE_ROOT_SCOPABLE_STREAMS = CLAUDE_CODE_TIME_SCOPABLE_STREAMS;
 
 export const claudeCodeCollectorDefinition: LocalCollectorDefinition = {
   connector_id: "claude_code",
@@ -58,5 +58,6 @@ export const claudeCodeCollectorDefinition: LocalCollectorDefinition = {
   bindings: { filesystem: { required: true } },
   streams: CLAUDE_CODE_DEFAULT_STREAMS,
   enforces_source_roots: true,
+  source_root_scopable_streams: CLAUDE_CODE_SOURCE_ROOT_SCOPABLE_STREAMS,
   time_scopable_streams: CLAUDE_CODE_TIME_SCOPABLE_STREAMS,
 };

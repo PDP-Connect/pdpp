@@ -3055,6 +3055,9 @@ export function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec 
     // knowing any connector; absent for a custom-command dev entry, which then
     // simply runs unscoped rather than guessing.
     ...(bundled?.time_scopable_streams ? { timeScopableStreams: bundled.time_scopable_streams } : {}),
+    ...(bundled?.source_root_scopable_streams
+      ? { sourceRootScopableStreams: bundled.source_root_scopable_streams }
+      : {}),
     // Only a connector that declared it prunes by root may have a roots
     // boundary honoured; otherwise it is declassified, never falsely claimed.
     ...(bundled?.enforces_source_roots ? { enforcesSourceRoots: true } : {}),

@@ -29,7 +29,6 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-
 import { buildAgentVersion } from "./collector-build-info.ts";
 import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime-protocol.ts";
 import {
@@ -594,6 +593,8 @@ export interface CollectorConnectorSpec extends ConnectorPlacementInput {
    * pass — itself a declared boundary, recorded as `unscoped` on the evidence.
    */
   readonly scope?: CollectionScope | null;
+  /** Streams whose enumeration honors source roots. */
+  readonly sourceRootScopableStreams?: readonly string[];
   /** Streams the collector should request from the connector. */
   readonly streams: readonly string[];
   /** Optional explicit stream backfills requested from the connector. */
@@ -601,8 +602,9 @@ export interface CollectorConnectorSpec extends ConnectorPlacementInput {
   /**
    * Streams the connector declared a `since` can be PROVEN against (mirrors the
    * manifest's `consent_time_field`; see `LocalCollectorDefinition`). Streams
-   * outside this set are collected whole under a scoped run rather than being
-   * narrowed against a field they do not have.
+   * outside this set remain in the requested inventory and are collected whole
+   * under a scoped run rather than being narrowed against a field they do not
+   * have.
    */
   readonly timeScopableStreams?: readonly string[];
 }
@@ -1035,7 +1037,8 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
             streamResult.coverageByStore,
             scopedTimeRanges,
             scopedRoots,
-            config.connector.enforcesSourceRoots === true
+            config.connector.enforcesSourceRoots === true,
+            config.connector.sourceRootScopableStreams
           ),
         });
       }
@@ -1360,7 +1363,8 @@ export function buildTerminalCollectionFacts(
   coverageByStore: ReadonlyMap<string, { status: CollectorCoverageStatus; stream: string | null }>,
   timeRanges: CollectorStreamTimeRanges = {},
   sourceRoots: readonly string[] = [],
-  enforcesSourceRoots = false
+  enforcesSourceRoots = false,
+  sourceRootScopableStreams: readonly string[] = []
 ): readonly TerminalCollectionFact[] {
   const statusesByStream = new Map<string, CollectorCoverageStatus[]>();
   for (const entry of coverageByStore.values()) {
@@ -1378,6 +1382,7 @@ export function buildTerminalCollectionFacts(
   // connector the roots boundary is declassified here (data still collected, no
   // stream claims the bound) rather than silently honoured.
   const rootsBounded = sourceRoots.length > 0 && enforcesSourceRoots;
+  const rootScopedStreams = new Set(sourceRootScopableStreams);
   const scopedRun = rootsBounded || Object.keys(timeRanges).length > 0;
   return [...statusesByStream.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
@@ -1387,7 +1392,9 @@ export function buildTerminalCollectionFacts(
       // Only meaningful on a scoped run. `false` is the honest marker for a
       // stream the bound could not be enforced on: it was collected whole, so
       // its coverage must never be read as proving the declared boundary.
-      ...(scopedRun ? { scoped: rootsBounded || Object.hasOwn(timeRanges, stream) } : {}),
+      ...(scopedRun
+        ? { scoped: Object.hasOwn(timeRanges, stream) || (rootsBounded && rootScopedStreams.has(stream)) }
+        : {}),
     }));
 }
 

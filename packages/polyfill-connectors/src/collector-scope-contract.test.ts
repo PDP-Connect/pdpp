@@ -141,11 +141,14 @@ async function writeScopeFixture(input: { truncate?: boolean }): Promise<string>
   // durable records, no coverage claim -- and it must stay non-green even
   // though the run "succeeded" and a boundary was declared.
   emit({ type: "DONE", status: "succeeded", records_emitted: 2 });`
-      : `// A stream with no manifest time field: collected WHOLE under a scoped run.
+      : `if (scopes.has("skills")) {
   emit({ type: "RECORD", stream: "skills", key: "skill-1", data: { id: "skill-1" }, emitted_at: "2020-01-01T00:00:00.000Z" });
   emit({ type: "STATE", stream: "skills", cursor: { fetched_at: "2026-08-01T00:00:00.000Z" } });
+  }
   emit({ type: "RECORD", stream: "coverage_diagnostics", key: "coverage:projects", data: { id: "coverage:projects", store: "projects", stream: "sessions", status: "collected" }, emitted_at: "2026-08-01T00:00:00.000Z" });
-  emit({ type: "RECORD", stream: "coverage_diagnostics", key: "coverage:skills", data: { id: "coverage:skills", store: "skills", stream: "skills", status: "collected" }, emitted_at: "2026-08-01T00:00:00.000Z" });
+  if (scopes.has("skills")) {
+    emit({ type: "RECORD", stream: "coverage_diagnostics", key: "coverage:skills", data: { id: "coverage:skills", store: "skills", stream: "skills", status: "collected" }, emitted_at: "2026-08-01T00:00:00.000Z" });
+  }
   emit({ type: "STATE", stream: "coverage_diagnostics", cursor: { fetched_at: "2026-08-01T00:00:00.000Z" } });
   emit({ type: "DONE", status: "succeeded", records_emitted: 4 });`
   }
@@ -206,6 +209,27 @@ test("the declared boundary reaches the connector only on streams that can prove
   );
 });
 
+test("since, roots, and both preserve the full requested inventory while applying each axis independently", () => {
+  const since = resolveScopedStreamTimeRanges({ since: SINCE }, TIME_SCOPABLE);
+  const sinceOnly = buildCollectorStartMessage(ALL_STREAMS, [], null, {}, since, []);
+  const rootsOnly = buildCollectorStartMessage(ALL_STREAMS, [], null, {}, {}, ["proj-a"]);
+  const both = buildCollectorStartMessage(ALL_STREAMS, [], null, {}, since, ["proj-a"]);
+  for (const start of [sinceOnly, rootsOnly, both]) {
+    assert.deepEqual(
+      start.scope.streams.map((stream) => stream.name),
+      ALL_STREAMS,
+      "a bounded axis must not silently remove declared/default streams"
+    );
+  }
+  assert.deepEqual(
+    sinceOnly.scope.streams.find((stream) => stream.name === "skills"),
+    { name: "skills" },
+    "non-time-scopable lightweight stores remain represented whole-store"
+  );
+  assert.deepEqual(rootsOnly.scope.streams.find((stream) => stream.name === "skills")?.source_roots, ["proj-a"]);
+  assert.deepEqual(both.scope.streams.find((stream) => stream.name === "sessions")?.time_range, { since: SINCE });
+});
+
 test("the reserved scope entry is never handed to the connector as a stream cursor", () => {
   const start = buildCollectorStartMessage(["sessions"], [], {
     ...scopeState(SINCE),
@@ -253,7 +277,7 @@ test("(b) a complete scoped pass commits coverage stamped with its boundary", as
 });
 
 // (c) out-of-scope data is NOT claimed as covered
-test("(c) a stream the bound could not be enforced on is not claimed as covering it", async () => {
+test("(c) a non-time-scopable global store remains represented but is not falsely scoped", async () => {
   const harness = await startScopeHarness(scopeState(SINCE));
   try {
     await runScoped({ harness });
@@ -263,11 +287,7 @@ test("(c) a stream the bound could not be enforced on is not claimed as covering
     const byStream = new Map((post.streams ?? []).map((s) => [s.stream, s]));
 
     assert.equal(byStream.get("sessions")?.scoped, true, "a timed stream carried the bound and proves it");
-    assert.equal(
-      byStream.get("skills")?.scoped,
-      false,
-      "skills was collected whole; its coverage must not read as proof of the declared since"
-    );
+    assert.equal(byStream.get("skills")?.scoped, false, "skills remains whole-store, not since-scoped");
   } finally {
     await harness.close();
   }
@@ -343,10 +363,13 @@ test("a supplied root cannot produce scoped:true for a connector that does not e
   // ...and the same inputs DO produce a scoped claim once the connector has
   // declared (and implemented) enforcement, so the gate is the declaration
   // rather than an accident of the data.
-  const supported = buildTerminalCollectionFacts(coverage, {}, ["proj-a"], true);
-  for (const fact of supported) {
-    assert.equal((fact as { scoped?: boolean }).scoped, true, `${fact.stream}: an enforced roots boundary is provable`);
-  }
+  const supported = buildTerminalCollectionFacts(coverage, {}, ["proj-a"], true, ["photos"]);
+  assert.equal((supported.find((fact) => fact.stream === "photos") as { scoped?: boolean }).scoped, true);
+  assert.equal(
+    (supported.find((fact) => fact.stream === "coverage_diagnostics") as { scoped?: boolean }).scoped,
+    false,
+    "diagnostics is represented but is not falsely claimed as root-scoped"
+  );
 });
 
 test("roots are not transmitted to a connector that never declared root enforcement", () => {

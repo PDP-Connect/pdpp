@@ -50,11 +50,12 @@ export const CODEX_DEFAULT_STREAMS = [
  * `codex` manifest gives a `consent_time_field` (`sessions.started_at`,
  * `messages.timestamp`, `function_calls.timestamp`).
  *
- * The remaining default streams (rules, prompts, skills, history, and the
- * inventory stores) carry no time field, so a date bound is not measurable
- * against them; they are collected whole and reported as out-of-scope.
+ * Streams without a consent time field remain whole-store under a time bound;
+ * the runner keeps them in the requested inventory and marks them unscoped.
  */
 export const CODEX_TIME_SCOPABLE_STREAMS = ["sessions", "messages", "function_calls"] as const;
+
+export const CODEX_SOURCE_ROOT_SCOPABLE_STREAMS = CODEX_TIME_SCOPABLE_STREAMS;
 
 export const codexCollectorDefinition: LocalCollectorDefinition = {
   connector_id: "codex",
@@ -62,5 +63,6 @@ export const codexCollectorDefinition: LocalCollectorDefinition = {
   bindings: { filesystem: { required: true } },
   streams: CODEX_DEFAULT_STREAMS,
   enforces_source_roots: true,
+  source_root_scopable_streams: CODEX_SOURCE_ROOT_SCOPABLE_STREAMS,
   time_scopable_streams: CODEX_TIME_SCOPABLE_STREAMS,
 };

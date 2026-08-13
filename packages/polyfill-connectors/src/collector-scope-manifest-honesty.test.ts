@@ -29,6 +29,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { LOCAL_COLLECTOR_DEFINITIONS } from "./collector-registry.ts";
+import { buildCollectorStartMessage, resolveScopedStreamTimeRanges } from "./collector-runner.ts";
 
 interface ManifestStream {
   consent_time_field?: string;
@@ -110,6 +111,32 @@ test("no definition claims a time-scopable stream it does not collect", () => {
       assert.ok(
         requested.has(stream),
         `${definition.connector_id}: "${stream}" is declared time-scopable but is not in the collector's stream set`
+      );
+    }
+  }
+});
+
+test("every definition preserves all requested streams and applies since only to manifest time-scopable streams", () => {
+  const bounded = { since: "2026-08-01T00:00:00.000Z" };
+  for (const definition of LOCAL_COLLECTOR_DEFINITIONS) {
+    const start = buildCollectorStartMessage(
+      definition.streams,
+      [],
+      null,
+      {},
+      resolveScopedStreamTimeRanges(bounded, definition.time_scopable_streams)
+    );
+    const expected = new Set(definition.streams);
+    assert.deepEqual(
+      new Set(start.scope.streams.map((stream) => stream.name)),
+      expected,
+      `${definition.connector_id}: bounded scope must not silently remove declared streams`
+    );
+    for (const stream of start.scope.streams) {
+      assert.equal(
+        "time_range" in stream,
+        (definition.time_scopable_streams ?? []).includes(stream.name),
+        `${definition.connector_id}.${stream.name}: time scope must follow manifest applicability`
       );
     }
   }

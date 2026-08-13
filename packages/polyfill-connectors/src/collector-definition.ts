@@ -53,6 +53,8 @@ export interface LocalCollectorDefinition {
    * the definition stays a pure, platform-independent value.
    */
   readonly entry: string;
+  /** Streams whose enumeration honors declared source roots. */
+  readonly source_root_scopable_streams?: readonly string[];
   /**
    * Default streams an unscoped `run` should request. Operators can override
    * with `--streams`. Must be non-empty and manifest-declared.
@@ -66,9 +68,9 @@ export interface LocalCollectorDefinition {
    *
    * The direction of knowledge is the same as `streams`: the connector declares
    * what it can prove a bound against; the runtime enforces without knowing any
-   * connector. A stream omitted here is NEVER silently narrowed against a field
-   * it does not have — it is collected whole and reported as out-of-scope, which
-   * is the honest outcome rather than an invisible drop.
+   * connector. A stream omitted here remains in the requested inventory and is
+   * collected whole, rather than being silently narrowed against a field it
+   * does not have.
    *
    * Absent/empty means the connector supports no time boundary at all.
    */
