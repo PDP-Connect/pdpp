@@ -12,6 +12,12 @@ const TOP_LEVEL_REGEX_11 = /state_stream must name a different parent stream, no
 const TOP_LEVEL_REGEX_12 = /state_stream must be a non-empty string/;
 const TOP_LEVEL_REGEX_13 = /state_stream, which is only valid with coverage_strategy "checkpoint_window"/;
 const TOP_LEVEL_REGEX_14 = /state_stream, which is only valid with coverage_strategy "checkpoint_window"/;
+const PARENT_STREAMS_ARRAY_PATTERN = /parent_streams must be a non-empty string array/;
+const PARENT_STREAMS_DUPLICATE_PATTERN = /parent_streams must not contain duplicates/;
+const PARENT_STREAMS_UNKNOWN_PATTERN = /parent_streams entry 'ghost' must name another declared stream/;
+const PARENT_STREAMS_SELF_PATTERN = /parent_streams must not name the stream itself/;
+const PARENT_STREAMS_STRATEGY_PATTERN =
+  /parent_streams, which is only valid with coverage_strategy "parent_detail_accounting"/;
 const TOP_LEVEL_REGEX_15 = /capabilities\.proven must be an object when declared/;
 const TOP_LEVEL_REGEX_16 = /capabilities\.proven has unsupported keys: bogus_key/;
 const TOP_LEVEL_REGEX_17 = /capabilities\.proven\.local_collector must be a boolean when declared/;
@@ -337,6 +343,62 @@ test("validateConnectorManifest rejects state_stream without an explicit checkpo
   assert.throws(
     () => validateConnectorManifest({ ...manifest, streams: [manifest.streams[0], stateStream] }),
     TOP_LEVEL_REGEX_14
+  );
+});
+
+test("validateConnectorManifest accepts a parent-detail stream with multiple declared parents", () => {
+  const manifest = manifestWithChildStateStream();
+  assert.doesNotThrow(() =>
+    validateConnectorManifest({
+      ...manifest,
+      streams: [
+        manifest.streams[0],
+        { name: "other_parent", primary_key: ["id"], schema: { properties: { id: { type: "string" } } } },
+        {
+          coverage_strategy: "parent_detail_accounting",
+          name: "details",
+          parent_streams: ["items", "other_parent"],
+          primary_key: ["id"],
+          schema: { properties: { id: { type: "string" } } },
+        },
+      ],
+    })
+  );
+});
+
+test("validateConnectorManifest rejects ambiguous parent_streams declarations", () => {
+  const manifest = manifestWithChildStateStream();
+  const detail = (parent_streams: unknown, coverage_strategy = "parent_detail_accounting") => ({
+    coverage_strategy,
+    name: "details",
+    parent_streams,
+    primary_key: ["id"],
+    schema: { properties: { id: { type: "string" } } },
+  });
+  const base = [
+    manifest.streams[0],
+    { name: "other_parent", primary_key: ["id"], schema: { properties: { id: { type: "string" } } } },
+  ];
+
+  assert.throws(
+    () => validateConnectorManifest({ ...manifest, streams: [...base, detail([])] }),
+    PARENT_STREAMS_ARRAY_PATTERN
+  );
+  assert.throws(
+    () => validateConnectorManifest({ ...manifest, streams: [...base, detail(["items", "items"])] }),
+    PARENT_STREAMS_DUPLICATE_PATTERN
+  );
+  assert.throws(
+    () => validateConnectorManifest({ ...manifest, streams: [...base, detail(["ghost"])] }),
+    PARENT_STREAMS_UNKNOWN_PATTERN
+  );
+  assert.throws(
+    () => validateConnectorManifest({ ...manifest, streams: [...base, detail(["details"])] }),
+    PARENT_STREAMS_SELF_PATTERN
+  );
+  assert.throws(
+    () => validateConnectorManifest({ ...manifest, streams: [...base, detail(["items"], "full_inventory")] }),
+    PARENT_STREAMS_STRATEGY_PATTERN
   );
 });
 

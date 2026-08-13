@@ -152,6 +152,46 @@ describe("GroupMe attachments stream (production seam)", () => {
       assert.match(String(record.hydration_error), /Stream 'attachments' not found/);
     });
 
+    it("records provider-unavailable media without claiming blob bytes", async () => {
+      const emitted: unknown[] = [];
+      await normalizeOneAttachment(
+        { type: "image", url: "https://i.groupme.com/gone.jpg", name: null },
+        0,
+        "msg.1",
+        "group_messages",
+        () => Promise.resolve({ kind: "unavailable", reason: "provider_object_unavailable" }),
+        (data) => {
+          emitted.push(data);
+          return Promise.resolve();
+        }
+      );
+
+      const record = emitted[0] as Record<string, unknown>;
+      strictEqual(record.hydration_status, "unavailable");
+      strictEqual(record.blob_ref, null);
+      strictEqual(record.hydration_error, "provider_object_unavailable");
+    });
+
+    it("preserves the legacy null uploader result as deferred hydration", async () => {
+      const emitted: unknown[] = [];
+      await normalizeOneAttachment(
+        { type: "image", url: "https://i.groupme.com/deferred.jpg", name: null },
+        0,
+        "msg.1",
+        "group_messages",
+        () => Promise.resolve(null),
+        (data) => {
+          emitted.push(data);
+          return Promise.resolve();
+        }
+      );
+
+      const record = emitted[0] as Record<string, unknown>;
+      strictEqual(record.hydration_status, "deferred");
+      strictEqual(record.blob_ref, null);
+      strictEqual(record.hydration_error, null);
+    });
+
     it("does not emit an attachments record for location/emoji attachments (no blob to hydrate)", async () => {
       const emitted: unknown[] = [];
       await normalizeOneAttachment(

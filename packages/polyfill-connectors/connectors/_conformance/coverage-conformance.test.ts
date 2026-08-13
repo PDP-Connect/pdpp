@@ -883,20 +883,19 @@ test("capability: GroupMe's real collect() path reaches a genuine boundary_short
   );
 });
 
-test("mutation: GroupMe withholds attachments coverage entirely when a requested parent stream fails, rather than reporting a partial boundary", async () => {
+test("mutation: GroupMe withholds only the failed attachment parent while preserving the successful sibling's report", async () => {
   const result = await GROUPME_ATTACHMENTS_WITHHELD_DRIVER.run();
   if (!result.exercised) {
     assert.fail(`groupme withheld driver reported unexercised: ${result.reason}`);
   }
-  const coverage = result.messages.find(
+  const coverage = result.messages.filter(
     (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
       m.type === "DETAIL_COVERAGE" && m.stream === "attachments"
   );
-  assert.equal(
-    coverage,
-    undefined,
-    "group_messages failed this run — attachments' boundary is unknown/partial, so no coverage claim should be emitted at all"
-  );
+  assert.equal(coverage.length, 1, "the failed group_messages parent must emit no coverage report");
+  assert.equal(coverage[0]?.state_stream, "direct_chat_messages");
+  assert.equal(coverage[0]?.considered, 1);
+  assert.equal(coverage[0]?.covered, 0, "the successful parent still reports its real unconfigured-backend shortfall");
 });
 
 test("capability: groupme.attachments is required:false and therefore absent from the aggregate required-stream gate/ratchet by construction", () => {

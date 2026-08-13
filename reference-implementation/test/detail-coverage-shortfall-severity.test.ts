@@ -54,6 +54,10 @@ import { admitOwnerRunConnection } from "../server/stores/connector-instance-sto
 const SHORTFALL_MESSAGE_PATTERN =
   /Connector detail coverage incomplete: state_stream=holdings stream=valuations missing_required_keys=1/;
 const SCOPED_DENOMINATOR_PATTERN = /stream=valuations missing_required_keys=1/;
+const HOLDINGS_STATE_STREAM_PATTERN = /state_stream=holdings/;
+const ACTIVITY_STATE_STREAM_PATTERN = /state_stream=activity/;
+const DUPLICATE_COVERAGE_PATTERN = /duplicate DETAIL_COVERAGE/;
+const OVERLAPPING_OUTCOME_PATTERN = /outcome key appears in multiple sets/;
 
 interface ClosableServer {
   abortStartupBackfill: (reason: string) => void;
@@ -196,7 +200,9 @@ const MANIFEST = {
       semantics: "append_only",
     },
     {
+      coverage_strategy: "parent_detail_accounting",
       name: "valuations",
+      parent_streams: ["holdings", "activity"],
       primary_key: ["id"],
       schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
       semantics: "append_only",
@@ -275,7 +281,8 @@ async function runShortfall(
   server: ClosableServer,
   ownerToken: string,
   messages: readonly Record<string, unknown>[],
-  connectorInstanceId?: string
+  connectorInstanceId?: string,
+  streams: readonly string[] = ["holdings", "activity", "valuations"]
 ): Promise<{ result: RuntimeRunConnectorResult | null; thrown: unknown }> {
   const { connectorPath, cleanup } = createCannedConnector(messages);
   let result: RuntimeRunConnectorResult | null = null;
@@ -293,7 +300,7 @@ async function runShortfall(
       ownerToken,
       persistState: true,
       rsUrl: `http://localhost:${server.rsPort}`,
-      scope: { streams: [{ name: "holdings" }, { name: "activity" }, { name: "valuations" }] },
+      scope: { streams: streams.map((name) => ({ name })) },
       state: null,
     });
   } catch (err) {
@@ -314,21 +321,23 @@ async function registerAndAuthorize(server: ClosableServer): Promise<string> {
   return await issueOwnerToken(asUrl);
 }
 
-// Before the fix this threw "Connector detail coverage incomplete: ...
-// stream=valuations missing_required_keys=1" and the run terminated as
-// connector_protocol_violation with the already-ingested record's run marked
-// failed. A connector-declared gap key is accounted-for coverage.
-test("a connector-declared gap key satisfies detail coverage without a per-stream durable DETAIL_GAP", async (t) => {
+// A gap_keys declaration is diagnostic, not retry authority. Without a matching
+// durable DETAIL_GAP the runtime must keep the parent checkpoint uncommitted so
+// a connector cannot turn an assertion into evidence and strand the detail.
+test("a connector-declared gap key without a durable DETAIL_GAP withholds the parent checkpoint", async (t) => {
   const server = await typedStartServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   t.after(() => closeServer(server));
   const ownerToken = await registerAndAuthorize(server);
 
   const { result, thrown } = await runShortfall(server, ownerToken, shortfallMessages());
 
-  assert.equal(thrown, null, "an honestly-declared coverage gap must not throw");
+  assert.equal(thrown, null, "an unbacked coverage gap is incomplete, not a protocol crash");
   assert.ok(result, "runConnector returned a result");
   assert.equal(result.status, "succeeded", "the run keeps the records it already ingested");
   assert.equal(result.records_emitted, 1);
+  assert.equal(result.checkpoint_summary?.state_streams_staged, 1);
+  assert.equal(result.checkpoint_summary?.state_streams_committed, 0, "the shared holdings parent remains uncommitted");
+  assert.equal(result.checkpoint_summary?.commit_status, "not_committed");
 });
 
 // Required oracle: two instances of the SAME connector, one REVOKED (holding a
@@ -479,4 +488,238 @@ test("an undeclared coverage shortfall reports a gap and withholds the cursor in
     0,
     "the unproven state_stream's cursor is not advanced"
   );
+});
+
+test("one detail stream can independently prove two parent checkpoints", async (t) => {
+  const server = await typedStartServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  t.after(() => closeServer(server));
+  const ownerToken = await registerAndAuthorize(server);
+
+  const messages: Record<string, unknown>[] = [
+    { data: { id: "H" }, emitted_at: "2026-04-18T00:00:00Z", key: "H", stream: "holdings", type: "RECORD" },
+    { data: { id: "A" }, emitted_at: "2026-04-18T00:00:00Z", key: "A", stream: "activity", type: "RECORD" },
+    {
+      hydrated_keys: [],
+      reference_only: true,
+      required_keys: ["H"],
+      state_stream: "holdings",
+      stream: "valuations",
+      type: "DETAIL_COVERAGE",
+    },
+    {
+      hydrated_keys: ["A"],
+      reference_only: true,
+      required_keys: ["A"],
+      state_stream: "activity",
+      stream: "valuations",
+      type: "DETAIL_COVERAGE",
+    },
+    { cursor: { page: "holdings-1" }, stream: "holdings", type: "STATE" },
+    { cursor: { page: "activity-1" }, stream: "activity", type: "STATE" },
+    { records_emitted: 2, status: "succeeded", type: "DONE" },
+  ];
+
+  const { result, thrown } = await runShortfall(server, ownerToken, messages);
+
+  assert.equal(thrown, null, "sharing a detail stream across parents is valid when each report names its parent");
+  assert.ok(result?.checkpoint_summary);
+  assert.equal(result.checkpoint_summary.state_streams_staged, 2);
+  assert.equal(
+    result.checkpoint_summary.state_streams_committed,
+    1,
+    "the proven activity cursor commits while the incomplete holdings cursor remains retryable"
+  );
+  const coverageGap = (result.known_gaps ?? []).find((gap) => gap.reason === "detail_coverage_incomplete");
+  assert.equal(coverageGap?.stream, "valuations");
+  assert.match(String(coverageGap?.message ?? ""), HOLDINGS_STATE_STREAM_PATTERN);
+});
+
+test("a durable gap cannot satisfy the same detail key under a different parent", async (t) => {
+  const server = await typedStartServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  t.after(() => closeServer(server));
+  const ownerToken = await registerAndAuthorize(server);
+
+  const messages: Record<string, unknown>[] = [
+    {
+      detail_locator: { holding_id: "K", kind: "test.holding" },
+      parent_stream: "holdings",
+      reason: "temporary_unavailable",
+      record_key: "K",
+      retryable: true,
+      stream: "valuations",
+      type: "DETAIL_GAP",
+    },
+    {
+      hydrated_keys: [],
+      reference_only: true,
+      required_keys: ["K"],
+      state_stream: "holdings",
+      stream: "valuations",
+      type: "DETAIL_COVERAGE",
+    },
+    {
+      hydrated_keys: [],
+      reference_only: true,
+      required_keys: ["K"],
+      state_stream: "activity",
+      stream: "valuations",
+      type: "DETAIL_COVERAGE",
+    },
+    { cursor: { page: "holdings-1" }, stream: "holdings", type: "STATE" },
+    { cursor: { page: "activity-1" }, stream: "activity", type: "STATE" },
+    { records_emitted: 0, status: "succeeded", type: "DONE" },
+  ];
+
+  const { result, thrown } = await runShortfall(server, ownerToken, messages);
+
+  assert.equal(thrown, null);
+  assert.ok(result?.checkpoint_summary);
+  assert.equal(
+    result.checkpoint_summary.state_streams_committed,
+    1,
+    "the holdings gap accounts only for holdings; activity remains retryable despite sharing key K"
+  );
+  const coverageGap = (result.known_gaps ?? []).find((gap) => gap.reason === "detail_coverage_incomplete");
+  assert.equal(coverageGap?.stream, "valuations");
+  assert.match(String(coverageGap?.message ?? ""), ACTIVITY_STATE_STREAM_PATTERN);
+});
+
+test("a legacy parentless gap cannot authorize one parent of a manifest-declared multi-parent detail stream", async (t) => {
+  const server = await typedStartServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  t.after(() => closeServer(server));
+  const ownerToken = await registerAndAuthorize(server);
+  const messages: Record<string, unknown>[] = [
+    {
+      detail_locator: { kind: "test.valuation" },
+      reason: "temporary_unavailable",
+      record_key: "K",
+      reference_only: true,
+      retryable: true,
+      status: "pending",
+      stream: "valuations",
+      type: "DETAIL_GAP",
+    },
+    {
+      hydrated_keys: [],
+      reference_only: true,
+      required_keys: ["K"],
+      state_stream: "activity",
+      stream: "valuations",
+      type: "DETAIL_COVERAGE",
+    },
+    { cursor: { page: "activity-1" }, stream: "activity", type: "STATE" },
+    { records_emitted: 0, status: "succeeded", type: "DONE" },
+  ];
+
+  const { result, thrown } = await runShortfall(server, ownerToken, messages, undefined, ["activity", "valuations"]);
+
+  assert.equal(thrown, null);
+  assert.equal(result?.checkpoint_summary?.state_streams_committed, 0);
+  assert.ok(result?.known_gaps?.some((gap) => gap.reason === "detail_coverage_incomplete"));
+});
+
+test("a staged parent without its required detail coverage report cannot commit", async (t) => {
+  const server = await typedStartServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  t.after(() => closeServer(server));
+  const ownerToken = await registerAndAuthorize(server);
+  const messages: Record<string, unknown>[] = [
+    {
+      hydrated_keys: ["H"],
+      reference_only: true,
+      required_keys: ["H"],
+      state_stream: "holdings",
+      stream: "valuations",
+      type: "DETAIL_COVERAGE",
+    },
+    { cursor: { page: "holdings-1" }, stream: "holdings", type: "STATE" },
+    { cursor: { page: "activity-1" }, stream: "activity", type: "STATE" },
+    { records_emitted: 0, status: "succeeded", type: "DONE" },
+  ];
+
+  const { result, thrown } = await runShortfall(server, ownerToken, messages);
+
+  assert.equal(thrown, null);
+  assert.equal(result?.checkpoint_summary?.state_streams_staged, 2);
+  assert.equal(result?.checkpoint_summary?.state_streams_committed, 1);
+  const missingReport = result?.known_gaps?.find(
+    (gap) => gap.reason === "detail_coverage_incomplete" && String(gap.message).includes("coverage_report=missing")
+  );
+  assert.ok(missingReport, "the missing activity report remains visible instead of silently committing its cursor");
+});
+
+test("duplicate coverage reports for one parent boundary fail closed", async (t) => {
+  const server = await typedStartServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  t.after(() => closeServer(server));
+  const ownerToken = await registerAndAuthorize(server);
+  const report = {
+    hydrated_keys: ["K"],
+    reference_only: true,
+    required_keys: ["K"],
+    state_stream: "holdings",
+    stream: "valuations",
+    type: "DETAIL_COVERAGE",
+  };
+
+  const { result, thrown } = await runShortfall(server, ownerToken, [report, report]);
+
+  assert.equal(result, null);
+  assert.match(String(thrown), DUPLICATE_COVERAGE_PATTERN);
+});
+
+test("overlapping coverage outcome sets fail closed", async (t) => {
+  const server = await typedStartServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  t.after(() => closeServer(server));
+  const ownerToken = await registerAndAuthorize(server);
+
+  const { result, thrown } = await runShortfall(server, ownerToken, [
+    {
+      hydrated_keys: ["K"],
+      optional_skip_keys: ["K"],
+      reference_only: true,
+      required_keys: ["K"],
+      state_stream: "holdings",
+      stream: "valuations",
+      type: "DETAIL_COVERAGE",
+    },
+  ]);
+
+  assert.equal(result, null);
+  assert.match(String(thrown), OVERLAPPING_OUTCOME_PATTERN);
+});
+
+test("an uncovered detail key leaves its parent retryable and a later complete pass commits it", async (t) => {
+  const server = await typedStartServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  t.after(() => closeServer(server));
+  const ownerToken = await registerAndAuthorize(server);
+  const incomplete = await runShortfall(server, ownerToken, [
+    { data: { id: "K" }, emitted_at: "2026-04-18T00:00:00Z", key: "K", stream: "holdings", type: "RECORD" },
+    {
+      hydrated_keys: [],
+      reference_only: true,
+      required_keys: ["K"],
+      state_stream: "holdings",
+      stream: "valuations",
+      type: "DETAIL_COVERAGE",
+    },
+    { cursor: { page: "1" }, stream: "holdings", type: "STATE" },
+    { records_emitted: 1, status: "succeeded", type: "DONE" },
+  ]);
+  assert.equal(incomplete.thrown, null);
+  assert.equal(incomplete.result?.checkpoint_summary?.state_streams_committed, 0);
+
+  const complete = await runShortfall(server, ownerToken, [
+    { data: { id: "K" }, emitted_at: "2026-04-18T00:00:00Z", key: "K", stream: "holdings", type: "RECORD" },
+    {
+      hydrated_keys: ["K"],
+      reference_only: true,
+      required_keys: ["K"],
+      state_stream: "holdings",
+      stream: "valuations",
+      type: "DETAIL_COVERAGE",
+    },
+    { cursor: { page: "2" }, stream: "holdings", type: "STATE" },
+    { records_emitted: 1, status: "succeeded", type: "DONE" },
+  ]);
+  assert.equal(complete.thrown, null);
+  assert.equal(complete.result?.checkpoint_summary?.state_streams_committed, 1);
 });

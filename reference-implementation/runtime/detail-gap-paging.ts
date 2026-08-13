@@ -33,6 +33,7 @@ interface BoundedPositiveIntegerOptions {
 interface DetailGap {
   detail_locator?: string | null;
   gap_id: string;
+  parent_stream?: string | null;
   record_key?: string | null;
   status: string;
   stream: string;
@@ -42,6 +43,7 @@ interface DetailGap {
 interface PendingStartDetailGap {
   detail_locator: string | null;
   gap_id: string;
+  parent_stream?: string | null;
   record_key: string | null;
   reference_only: boolean;
   status: string;
@@ -56,6 +58,7 @@ interface ServedDetailGapLease {
   attempted: boolean;
   gapId: string;
   leaseId: string;
+  parentStream: string | null;
   recordKey: string | null;
   runId: string;
   stream: string | null;
@@ -178,6 +181,7 @@ function buildStartDetailGap(gap: DetailGap): PendingStartDetailGap {
   return {
     detail_locator: gap.detail_locator ?? null,
     gap_id: gap.gap_id,
+    ...(gap.parent_stream ? { parent_stream: gap.parent_stream } : {}),
     record_key: gap.record_key ?? null,
     reference_only: true,
     status: gap.status,
@@ -370,6 +374,7 @@ export function createDetailGapPageReader({
           attempted: false,
           gapId: gap.gap_id,
           leaseId: gap.lease_id,
+          parentStream: gap.parent_stream ?? null,
           recordKey: gap.record_key === null ? null : String(gap.record_key),
           runId,
           // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.

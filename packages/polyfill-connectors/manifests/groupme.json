@@ -379,7 +379,7 @@
           },
           "hydration_status": {
             "type": "string",
-            "enum": ["deferred", "failed", "hydrated"]
+            "enum": ["deferred", "failed", "hydrated", "unavailable"]
           },
           "hydration_error": {
             "type": ["string", "null"]
@@ -413,6 +413,7 @@
         ]
       },
       "primary_key": ["id"],
+      "parent_streams": ["group_messages", "direct_chat_messages"],
       "selection": {
         "fields": true,
         "resources": true

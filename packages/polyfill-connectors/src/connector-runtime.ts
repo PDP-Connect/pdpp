@@ -529,9 +529,11 @@ export interface DetailCoverageParams {
 }
 
 /**
- * Build the per-run DETAIL_COVERAGE message a list+detail connector emits once
- * after its detail lane. Pure: the caller owns when/whether to emit. Empty
- * optional key sets are omitted so a fully hydrated run carries no gap fields.
+ * Build one parent-boundary DETAIL_COVERAGE message after that detail work
+ * settles. A shared detail stream emits one message per independently
+ * checkpointed parent. Pure: the caller owns when/whether to emit. Empty
+ * optional key sets are omitted so a fully hydrated boundary carries no gap
+ * fields.
  */
 export function buildDetailCoverageMessage(params: DetailCoverageParams): DetailCoverageMessage {
   const { stream, stateStream, requiredKeys, hydratedKeys, gapKeys, optionalSkipKeys, considered, covered } = params;

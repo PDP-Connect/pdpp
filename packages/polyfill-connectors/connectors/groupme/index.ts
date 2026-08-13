@@ -59,6 +59,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { SaxesParser } from "saxes";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import {
   buildDetailCoverageMessage,
@@ -262,7 +263,11 @@ export function normalizeAttachmentContentType(rawHeader: string | null | undefi
   return SAFE_ATTACHMENT_CONTENT_TYPES.has(base) ? base : null;
 }
 
-async function readAttachmentBody(res: Response, recordKey: string): Promise<{ buffer: Buffer; size: number } | null> {
+async function readAttachmentBody(
+  res: Response,
+  recordKey: string,
+  maxBytes = BLOB_MAX_BYTES
+): Promise<{ buffer: Buffer; size: number } | null> {
   const chunks: Buffer[] = [];
   let totalBytes = 0;
 
@@ -280,10 +285,10 @@ async function readAttachmentBody(res: Response, recordKey: string): Promise<{ b
     }
 
     totalBytes += value.byteLength;
-    if (totalBytes > BLOB_MAX_BYTES) {
+    if (totalBytes > maxBytes) {
       reader.cancel();
       // eslint-disable-next-line no-console
-      console.warn(`groupme: attachment streaming exceeded limit (${recordKey}): ${totalBytes} > ${BLOB_MAX_BYTES}`);
+      console.warn(`groupme: attachment streaming exceeded limit (${recordKey}): ${totalBytes} > ${maxBytes}`);
       return null;
     }
 
@@ -303,26 +308,183 @@ export async function fetchAttachmentBlob(
   urlString: string,
   recordKey: string
 ): Promise<{ buffer: Buffer; contentType: string | null; size: number } | null> {
-  const validation = validateAttachmentUrl(urlString);
+  const outcome = await fetchAttachmentBlobOutcome(urlString, recordKey);
+  return outcome.kind === "available" ? outcome.blob : null;
+}
+
+export type AttachmentFetchOutcome =
+  | { kind: "available"; blob: { buffer: Buffer; contentType: string | null; size: number } }
+  | { kind: "failed"; reason: string }
+  | { kind: "unavailable"; reason: "provider_object_unavailable" };
+
+const GROUPME_PROVIDER_ERROR_MAX_BYTES = 16 * 1024;
+const DECIMAL_HEADER_RE = /^\d+$/;
+const GROUPME_PROVIDER_ERROR_FIELDS = new Set(["Code", "HostId", "Key", "Message", "RequestId", "Resource"]);
+
+function parseTerminalProviderErrorCode(xml: string): "AccessDenied" | "NoSuchKey" | null {
+  let code = "";
+  let codeCount = 0;
+  let depth = 0;
+  let invalid = false;
+  let insideCode = false;
+  let rootCount = 0;
+  const seenFields = new Set<string>();
+  const parser = new SaxesParser({ xmlns: false });
+
+  parser.on("opentag", (tag) => {
+    depth += 1;
+    if (depth === 1) {
+      rootCount += 1;
+      invalid ||= tag.name !== "Error" || Object.keys(tag.attributes).length !== 0;
+      return;
+    }
+    if (depth === 2) {
+      if (
+        !GROUPME_PROVIDER_ERROR_FIELDS.has(tag.name) ||
+        seenFields.has(tag.name) ||
+        Object.keys(tag.attributes).length !== 0
+      ) {
+        invalid = true;
+      }
+      seenFields.add(tag.name);
+      if (tag.name === "Code") {
+        codeCount += 1;
+        insideCode = true;
+      }
+      return;
+    }
+    invalid = true;
+  });
+  parser.on("text", (text) => {
+    if (insideCode) {
+      code += text;
+    } else if (depth < 2 && text.trim()) {
+      invalid = true;
+    }
+  });
+  parser.on("closetag", (tag) => {
+    if (depth === 2 && tag.name === "Code") {
+      insideCode = false;
+    }
+    depth -= 1;
+  });
+  parser.on("cdata", () => {
+    invalid = true;
+  });
+  parser.on("comment", () => {
+    invalid = true;
+  });
+  parser.on("doctype", () => {
+    invalid = true;
+  });
+  parser.on("processinginstruction", () => {
+    invalid = true;
+  });
+  parser.on("error", () => {
+    invalid = true;
+  });
+
+  try {
+    parser.write(xml).close();
+  } catch {
+    return null;
+  }
+  const normalizedCode = code.trim();
+  if (invalid || rootCount !== 1 || depth !== 0 || insideCode || codeCount !== 1) {
+    return null;
+  }
+  return normalizedCode === "AccessDenied" || normalizedCode === "NoSuchKey" ? normalizedCode : null;
+}
+
+async function readTerminalProviderErrorCode(response: Response): Promise<"AccessDenied" | "NoSuchKey" | null> {
+  const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+  if (contentType !== "application/xml" && contentType !== "text/xml") {
+    return null;
+  }
+  const declaredLengthHeader = response.headers.get("content-length");
+  let declaredLength: number | null = null;
+  if (declaredLengthHeader !== null) {
+    if (!DECIMAL_HEADER_RE.test(declaredLengthHeader)) {
+      return null;
+    }
+    declaredLength = Number(declaredLengthHeader);
+    if (
+      !Number.isSafeInteger(declaredLength) ||
+      declaredLength < 1 ||
+      declaredLength > GROUPME_PROVIDER_ERROR_MAX_BYTES
+    ) {
+      return null;
+    }
+  }
+  const body = await readAttachmentBody(response, "provider-error", GROUPME_PROVIDER_ERROR_MAX_BYTES);
+  if (!body || (declaredLength !== null && body.size !== declaredLength)) {
+    return null;
+  }
+  return parseTerminalProviderErrorCode(body.buffer.toString("utf8").trim());
+}
+
+async function classifyAttachmentHttpFailure(response: Response, recordKey: string): Promise<AttachmentFetchOutcome> {
+  const terminalCode = await readTerminalProviderErrorCode(response);
+  const providerObjectUnavailable =
+    (response.status === 403 && terminalCode === "AccessDenied") ||
+    (response.status === 404 && terminalCode === "NoSuchKey");
+  if (providerObjectUnavailable) {
+    // eslint-disable-next-line no-console
+    console.warn(`groupme: attachment is unavailable from the provider (${recordKey}): HTTP ${response.status}`);
+    return { kind: "unavailable", reason: "provider_object_unavailable" };
+  }
+  // eslint-disable-next-line no-console
+  console.warn(`groupme: attachment fetch failed (${recordKey}): HTTP ${response.status}`);
+  return { kind: "failed", reason: `attachment_http_${response.status}` };
+}
+
+function canonicalAttachmentFetchUrl(urlString: string): string {
+  try {
+    const url = new URL(urlString);
+    if (
+      url.protocol === "http:" &&
+      url.hostname === "i.groupme.com" &&
+      url.port === "" &&
+      !url.username &&
+      !url.password
+    ) {
+      url.protocol = "https:";
+      return url.toString();
+    }
+  } catch {
+    // The validator below owns the typed invalid-URL outcome.
+  }
+  return urlString;
+}
+
+/**
+ * Preserve the distinction between a provider object that no longer exists
+ * and a fetch that may succeed later. GroupMe's public CDN returns 403/404 for
+ * unavailable objects; every other failure remains retryable/unproven.
+ */
+export async function fetchAttachmentBlobOutcome(
+  urlString: string,
+  recordKey: string
+): Promise<AttachmentFetchOutcome> {
+  const fetchUrl = canonicalAttachmentFetchUrl(urlString);
+  const validation = validateAttachmentUrl(fetchUrl);
   if (!validation.valid) {
     // eslint-disable-next-line no-console
     console.warn(`groupme: attachment validation failed (${recordKey}): ${validation.reason}`);
-    return null;
+    return { kind: "failed", reason: "attachment_url_invalid" };
   }
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), BLOB_FETCH_TIMEOUT_MS);
 
   try {
-    const res = await fetch(urlString, {
+    const res = await fetch(fetchUrl, {
       signal: controller.signal,
       redirect: "error", // Fail closed on any redirect
     });
 
     if (!res.ok) {
-      // eslint-disable-next-line no-console
-      console.warn(`groupme: attachment fetch failed (${recordKey}): HTTP ${res.status}`);
-      return null;
+      return classifyAttachmentHttpFailure(res, recordKey);
     }
 
     // Validate Content-Length header exists and is within bounds
@@ -330,27 +492,40 @@ export async function fetchAttachmentBlob(
     if (!contentLengthHeader) {
       // eslint-disable-next-line no-console
       console.warn(`groupme: attachment missing content-length (${recordKey})`);
-      return null;
+      return { kind: "failed", reason: "attachment_content_length_missing" };
     }
 
-    const contentLength = Number.parseInt(contentLengthHeader, 10);
-    if (Number.isNaN(contentLength) || contentLength < 0) {
+    if (!DECIMAL_HEADER_RE.test(contentLengthHeader)) {
       // eslint-disable-next-line no-console
       console.warn(`groupme: attachment invalid content-length (${recordKey}): ${contentLengthHeader}`);
-      return null;
+      return { kind: "failed", reason: "attachment_content_length_invalid" };
+    }
+    const contentLength = Number(contentLengthHeader);
+    if (!Number.isSafeInteger(contentLength)) {
+      // eslint-disable-next-line no-console
+      console.warn(`groupme: attachment invalid content-length (${recordKey}): ${contentLengthHeader}`);
+      return { kind: "failed", reason: "attachment_content_length_invalid" };
     }
 
     if (contentLength > BLOB_MAX_BYTES) {
       // eslint-disable-next-line no-console
       console.warn(`groupme: attachment exceeds size limit (${recordKey}): ${contentLength} > ${BLOB_MAX_BYTES}`);
-      return null;
+      return { kind: "failed", reason: "attachment_too_large" };
     }
 
     const body = await readAttachmentBody(res, recordKey);
     if (!body) {
-      return null;
+      return { kind: "failed", reason: "attachment_body_unreadable" };
     }
-    return { ...body, contentType: normalizeAttachmentContentType(res.headers.get("content-type")) };
+    if (body.size !== contentLength) {
+      // eslint-disable-next-line no-console
+      console.warn(`groupme: attachment content-length mismatch (${recordKey}): ${body.size} != ${contentLength}`);
+      return { kind: "failed", reason: "attachment_content_length_mismatch" };
+    }
+    return {
+      kind: "available",
+      blob: { ...body, contentType: normalizeAttachmentContentType(res.headers.get("content-type")) },
+    };
   } catch (error) {
     if (error instanceof TypeError && error.message.includes("redirect")) {
       // eslint-disable-next-line no-console
@@ -361,7 +536,7 @@ export async function fetchAttachmentBlob(
         `groupme: attachment fetch error (${recordKey}): ${error instanceof Error ? error.message : String(error)}`
       );
     }
-    return null;
+    return { kind: "failed", reason: "attachment_fetch_failed" };
   } finally {
     clearTimeout(timeoutId);
   }
@@ -389,6 +564,8 @@ interface NormalizedAttachment {
   url: string | null;
 }
 
+type AttachmentRecordEmitter = (data: RecordData) => Promise<void>;
+
 export function attachmentContentType(att: GroupMeAttachment): string {
   return att.type === "image" ? "image/jpeg" : "application/octet-stream";
 }
@@ -413,7 +590,7 @@ export async function normalizeOneAttachment(
   messageId: string,
   messageStream: "group_messages" | "direct_chat_messages",
   uploader: BlobUploader | undefined,
-  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined
+  emitAttachmentRecord: AttachmentRecordEmitter | undefined
 ): Promise<NormalizedAttachment> {
   const url = att.url || att.picture_url || null;
   const normalized: NormalizedAttachment = {
@@ -431,15 +608,19 @@ export async function normalizeOneAttachment(
   const contentType = attachmentContentType(att);
   const recordId = attachmentRecordId(messageId, index, url);
   let blobRef: ReferenceBlobRef | null = null;
-  let hydrationStatus: "deferred" | "failed" | "hydrated" = "deferred";
+  let hydrationStatus: HydrationStatus = "deferred";
   let hydrationError: string | null = null;
 
   if (uploader) {
     try {
-      blobRef = await uploader(url, contentType, recordId);
+      const uploadResult = await uploader(url, contentType, recordId);
+      // Keep the exported normalization seam compatible with callers that
+      // provide a direct blob uploader; the production uploader returns the
+      // richer tagged outcome needed for unavailable-vs-failed accounting.
+      const applied = applyBlobUploadResult(uploadResult);
+      ({ blobRef, hydrationError, hydrationStatus } = applied);
       if (blobRef) {
         normalized.blob_id = blobRef.blob_id;
-        hydrationStatus = "hydrated";
       }
     } catch (error) {
       // Per-item failure: log but continue, don't fail the whole record
@@ -473,7 +654,7 @@ export async function normalizeAttachments(
   messageId: string,
   messageStream: "group_messages" | "direct_chat_messages",
   uploader: BlobUploader | undefined,
-  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined
+  emitAttachmentRecord: AttachmentRecordEmitter | undefined
 ): Promise<NormalizedAttachment[]> {
   if (!(attachments && Array.isArray(attachments))) {
     return [];
@@ -668,7 +849,7 @@ async function toGroupMessageRecord(
   msg: GroupMeMessage,
   groupId: string,
   uploader: BlobUploader | undefined,
-  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined
+  emitAttachmentRecord: AttachmentRecordEmitter | undefined
 ): Promise<RecordData> {
   return {
     id: msg.id,
@@ -711,7 +892,7 @@ async function toDirectChatMessageRecord(
   msg: GroupMeMessage,
   chatId: string,
   uploader: BlobUploader | undefined,
-  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined
+  emitAttachmentRecord: AttachmentRecordEmitter | undefined
 ): Promise<RecordData> {
   return {
     id: msg.id,
@@ -731,7 +912,33 @@ async function toDirectChatMessageRecord(
   };
 }
 
-type BlobUploader = (url: string, mimeType: string, recordKey: string) => Promise<ReferenceBlobRef | null>;
+type BlobHydrationOutcome =
+  | { kind: "failed"; reason: string }
+  | { kind: "hydrated"; blobRef: ReferenceBlobRef }
+  | { kind: "unavailable"; reason: "provider_object_unavailable" };
+type BlobUploader = (
+  url: string,
+  mimeType: string,
+  recordKey: string
+) => Promise<BlobHydrationOutcome | ReferenceBlobRef | null>;
+
+function applyBlobUploadResult(uploadResult: BlobHydrationOutcome | ReferenceBlobRef | null): {
+  blobRef: ReferenceBlobRef | null;
+  hydrationError: string | null;
+  hydrationStatus: HydrationStatus;
+} {
+  if (uploadResult === null) {
+    return { blobRef: null, hydrationError: null, hydrationStatus: "deferred" };
+  }
+  const outcome: BlobHydrationOutcome =
+    "kind" in uploadResult ? uploadResult : { kind: "hydrated", blobRef: uploadResult };
+  if (outcome.kind === "hydrated") {
+    return { blobRef: outcome.blobRef, hydrationError: null, hydrationStatus: "hydrated" };
+  }
+  return { blobRef: null, hydrationError: outcome.reason, hydrationStatus: outcome.kind };
+}
+
+type HydrationStatus = "deferred" | "failed" | "hydrated" | "unavailable";
 type ProgressFn = (message: string, extra?: ProgressExtra) => Promise<void>;
 
 /**
@@ -757,16 +964,16 @@ function makeUploader(): BlobUploader | undefined {
     ownerToken,
     rsUrl,
   });
-  return async (url: string, mimeType: string, recordKey: string): Promise<ReferenceBlobRef | null> => {
-    // Use production fetch seam (validates URL, enforces HTTPS, bounded streaming)
-    const blob = await fetchAttachmentBlob(url, recordKey);
-    if (!blob) {
-      return null; // Failure already logged by fetchAttachmentBlob
+  return async (url: string, mimeType: string, recordKey: string): Promise<BlobHydrationOutcome> => {
+    const fetched = await fetchAttachmentBlobOutcome(url, recordKey);
+    if (fetched.kind !== "available") {
+      return fetched;
     }
+    const { blob } = fetched;
     const resolvedMimeType = resolveUploadMimeType(blob.contentType, mimeType);
 
     try {
-      return await blobUploader({
+      const blobRef = await blobUploader({
         connectorId: "groupme",
         connectorInstanceId: process.env.PDPP_CONNECTOR_INSTANCE_ID || null,
         content: [blob.buffer],
@@ -774,12 +981,13 @@ function makeUploader(): BlobUploader | undefined {
         recordKey,
         stream: "attachments",
       });
+      return blobRef ? { kind: "hydrated", blobRef } : { kind: "failed", reason: "attachment_blob_upload_failed" };
     } catch (error) {
       // eslint-disable-next-line no-console
       console.warn(
         `groupme: blob upload failed (${recordKey}): ${error instanceof Error ? error.message : String(error)}`
       );
-      return null;
+      return { kind: "failed", reason: "attachment_blob_upload_failed" };
     }
   };
 }
@@ -968,7 +1176,7 @@ async function emitInScopeGroupMessages(
   groupId: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
   uploader: BlobUploader | undefined,
-  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
+  emitAttachmentRecord: AttachmentRecordEmitter | undefined,
   emitRecord: (stream: string, data: RecordData) => Promise<void>
 ): Promise<void> {
   for (const msg of inScope) {
@@ -1017,7 +1225,7 @@ async function collectGroupMessagesForwardFromCursor(
   startAfterId: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
   uploader: BlobUploader | undefined,
-  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
+  emitAttachmentRecord: AttachmentRecordEmitter | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>
 ): Promise<PerConversationWalkResult> {
@@ -1144,7 +1352,7 @@ async function collectGroupMessagesBackwardToNaturalEnd(
   group: GroupMeGroup,
   cursor: ReturnType<typeof openFingerprintCursor>,
   uploader: BlobUploader | undefined,
-  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
+  emitAttachmentRecord: AttachmentRecordEmitter | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
   sinceEpochSeconds: number | null
@@ -1244,51 +1452,60 @@ export interface CollectionOutcome {
  * `hydrationStatus` then places it in exactly one outcome bucket:
  *   - `hydrated` -> `hydratedKeys` (the numerator: blob bytes actually
  *     committed to storage).
- *   - `deferred` or `failed` -> neither bucket. `deferred` covers TWO
- *     distinct causes this connector cannot currently tell apart from the
- *     emitted record alone — no blob-upload backend configured this run, or
- *     `fetchAttachmentBlob` returning null on a real per-item failure (bad
- *     URL, oversized body, non-2xx fetch) — so crediting it as covered would
- *     risk overclaiming a real failure as proven. Treating both as
- *     uncovered is the conservative, honest choice: it never overclaims,
- *     it only ever under-claims a legitimately-unavailable-backend run.
+ *   - `unavailable` -> `unavailableKeys`: the public provider CDN returned a
+ *     bounded, recognized terminal-object error. Metadata stays retained and
+ *     the key is reported as an explicit optional skip.
+ *   - `deferred` or `failed` -> neither bucket. Missing runtime support,
+ *     validation failures, transient HTTP failures, and upload failures stay
+ *     uncovered because another run may still acquire the bytes.
  *
- * There is no gap-key/retry tracking here (unlike gmail's DETAIL_GAP for the
- * same `failed` outcome) — a stream a `failed`/`deferred` hydration leaves
- * short of `considered` simply reads `not_proven` for this run; the next
- * run's ordinary re-walk of the owning message re-attempts hydration since
- * the fingerprint cursor keys `attachments` on the derived attachment
- * record, not the owning message.
+ * A `failed` hydration remains uncovered. Its parent-bound DETAIL_COVERAGE
+ * report then withholds that parent's cursor, so the next run re-enumerates the
+ * owning message and retries the provider URL without persisting that URL in
+ * durable control-plane metadata. A missing uploader is handled the same way.
  */
 export interface AttachmentDetailCoverage {
   hydratedKeys: string[];
   requiredKeys: string[];
+  unavailableKeys: string[];
 }
+
+type AttachmentParentStream = "direct_chat_messages" | "group_messages";
 
 /** Fresh, empty accumulator for one run's attachments detail pass. */
 export function makeAttachmentDetailCoverage(): AttachmentDetailCoverage {
-  return { hydratedKeys: [], requiredKeys: [] };
+  return { hydratedKeys: [], requiredKeys: [], unavailableKeys: [] };
+}
+
+interface AttachmentRecordEmitterDeps {
+  attachmentCursor: ReturnType<typeof openFingerprintCursor>;
+  coverageByParent: Record<AttachmentParentStream, AttachmentDetailCoverage>;
+  emitRecord: CollectContext["emitRecord"];
+}
+
+function createAttachmentRecordEmitter(deps: AttachmentRecordEmitterDeps): AttachmentRecordEmitter {
+  return async (data: RecordData): Promise<void> => {
+    const parent = data.message_stream as AttachmentParentStream;
+    recordAttachmentCoverage(deps.coverageByParent[parent], data);
+    if (deps.attachmentCursor.shouldEmit(data)) {
+      await deps.emitRecord("attachments", data);
+    }
+  };
 }
 
 /**
- * Whether `attachments` coverage is provable for this run: every REQUESTED
- * parent stream that could feed it (`group_messages`, `direct_chat_messages`)
- * completed cleanly. A parent that was never requested contributes no
- * attachments and does not block the claim; a requested parent that failed
- * means this run's attachment enumeration is incomplete for an unknown
- * subset of messages, so the accumulated coverage reflects only a partial
- * boundary and must not be reported as proven. Extracted from `collect()`
- * purely to keep that function's cognitive complexity within the lint
- * ceiling — no behavior change from inlining it.
+ * Whether one requested attachment parent completed its own enumeration.
+ * Coverage is emitted independently per parent, so a failed group-message
+ * boundary does not erase a proven direct-message boundary (or vice versa).
+ * An unrequested parent contributes no report. Extracted from `collect()` to
+ * keep that function's cognitive complexity within the lint ceiling.
  */
-function attachmentParentsProvenClean(
+function attachmentParentCompleted(
   requested: CollectContext["requested"],
-  groupMessagesOutcome: CollectionOutcome | undefined,
-  directChatMessagesOutcome: CollectionOutcome | undefined
+  parent: AttachmentParentStream,
+  outcome: CollectionOutcome | undefined
 ): boolean {
-  const groupMessagesOk = !requested.has("group_messages") || groupMessagesOutcome?.failed === false;
-  const directChatMessagesOk = !requested.has("direct_chat_messages") || directChatMessagesOutcome?.failed === false;
-  return groupMessagesOk && directChatMessagesOk;
+  return requested.has(parent) && outcome?.failed === false;
 }
 
 /**
@@ -1304,25 +1521,43 @@ export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, dat
   coverage.requiredKeys.push(key);
   if (data.hydration_status === "hydrated") {
     coverage.hydratedKeys.push(key);
+  } else if (data.hydration_status === "unavailable") {
+    coverage.unavailableKeys.push(key);
   }
 }
 
 /**
- * Build the `attachments` DETAIL_COVERAGE from one run's accumulated
- * per-attachment outcomes. `stateStream: "attachments"` (not a parent
- * message stream) because `attachments` carries its own fingerprint cursor
- * and STATE checkpoint (see `collect()`), unlike gmail's attachments detail
- * pass which anchors on the parent list cursor.
+ * Build one parent-bound attachment coverage report. Group and direct-message
+ * cursors advance independently, so a shortfall must withhold only the parent
+ * whose message walk produced the missing attachment.
  */
-export function buildAttachmentDetailCoverageMessage(coverage: AttachmentDetailCoverage): DetailCoverageMessage {
+export function buildAttachmentDetailCoverageMessage(
+  coverage: AttachmentDetailCoverage,
+  stateStream: AttachmentParentStream
+): DetailCoverageMessage {
   return buildDetailCoverageMessage({
     stream: "attachments",
-    stateStream: "attachments",
+    stateStream,
     requiredKeys: coverage.requiredKeys,
     hydratedKeys: coverage.hydratedKeys,
+    optionalSkipKeys: coverage.unavailableKeys,
     considered: coverage.requiredKeys.length,
-    covered: coverage.hydratedKeys.length,
+    covered: coverage.hydratedKeys.length + coverage.unavailableKeys.length,
   });
+}
+
+async function emitAttachmentCoverageByParent(
+  requested: CollectContext["requested"],
+  coverageByParent: Record<AttachmentParentStream, AttachmentDetailCoverage>,
+  outcomes: Record<AttachmentParentStream, CollectionOutcome | undefined>,
+  emit: CollectContext["emit"]
+): Promise<void> {
+  if (attachmentParentCompleted(requested, "group_messages", outcomes.group_messages)) {
+    await emit(buildAttachmentDetailCoverageMessage(coverageByParent.group_messages, "group_messages"));
+  }
+  if (attachmentParentCompleted(requested, "direct_chat_messages", outcomes.direct_chat_messages)) {
+    await emit(buildAttachmentDetailCoverageMessage(coverageByParent.direct_chat_messages, "direct_chat_messages"));
+  }
 }
 
 /**
@@ -1468,7 +1703,7 @@ async function collectDirectChatMessagesForChat(
   chat: GroupMeDirectChat,
   cursor: ReturnType<typeof openFingerprintCursor>,
   uploader: BlobUploader | undefined,
-  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
+  emitAttachmentRecord: AttachmentRecordEmitter | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
   sinceEpochSeconds: number | null = null
@@ -1540,7 +1775,7 @@ export async function collectDirectChatMessages(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
   uploader: BlobUploader | undefined,
-  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
+  emitAttachmentRecord: AttachmentRecordEmitter | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
   sinceEpochSeconds: number | null = null,
@@ -1606,7 +1841,7 @@ async function collectOneGroupMessages(
   bypassCursor: boolean,
   cursor: ReturnType<typeof openFingerprintCursor>,
   uploader: BlobUploader | undefined,
-  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
+  emitAttachmentRecord: AttachmentRecordEmitter | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
   sinceEpochSeconds: number | null
@@ -1650,7 +1885,7 @@ export async function collectGroupMessages(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
   uploader: BlobUploader | undefined,
-  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
+  emitAttachmentRecord: AttachmentRecordEmitter | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
   sinceEpochSeconds: number | null = null,
@@ -1739,16 +1974,10 @@ function parseSinceEpochSeconds(requested: CollectContext["requested"], stream: 
  * cursors. There is no prior persisted state to migrate — GroupMe has never
  * shipped a build that read these keys.
  */
-export async function collect({
-  state,
-  requested,
-  credentials,
-  emit,
-  emitRecord,
-  progress,
-  reportStreamFailure,
-  collectionMode,
-}: CollectContext): Promise<void> {
+export async function collect(
+  { state, requested, credentials, emit, emitRecord, progress, reportStreamFailure, collectionMode }: CollectContext,
+  testDependencies: { uploader?: BlobUploader } = {}
+): Promise<void> {
   const progressWithSignals = progress as ProgressFn;
   const token = credentials.GROUPME_ACCESS_TOKEN;
   if (!token) {
@@ -1759,7 +1988,7 @@ export async function collect({
   // BaseCollectContext.collectionMode's doc comment.
   const effectiveCollectionMode = collectionMode === "full_refresh" ? "full_refresh" : "incremental";
 
-  const uploader = makeUploader();
+  const uploader = "uploader" in testDependencies ? testDependencies.uploader : makeUploader();
 
   const groupCursor = openFingerprintCursor(state.groups);
   const groupMessageCursor = openFingerprintCursor(state.group_messages);
@@ -1768,14 +1997,16 @@ export async function collect({
   const attachmentCursor = openFingerprintCursor(state.attachments);
 
   const attachmentsRequested = requested.has("attachments");
-  const attachmentCoverage = makeAttachmentDetailCoverage();
+  const attachmentCoverageByParent: Record<AttachmentParentStream, AttachmentDetailCoverage> = {
+    direct_chat_messages: makeAttachmentDetailCoverage(),
+    group_messages: makeAttachmentDetailCoverage(),
+  };
   const emitAttachmentRecord = attachmentsRequested
-    ? async (data: RecordData): Promise<void> => {
-        recordAttachmentCoverage(attachmentCoverage, data);
-        if (attachmentCursor.shouldEmit(data)) {
-          await emitRecord("attachments", data);
-        }
-      }
+    ? createAttachmentRecordEmitter({
+        attachmentCursor,
+        coverageByParent: attachmentCoverageByParent,
+        emitRecord,
+      })
     : undefined;
 
   let groupsOutcome: CollectionOutcome | undefined;
@@ -1864,25 +2095,24 @@ export async function collect({
     await emit(buildFullScanCoverageMessage("direct_chat_messages", directChatMessagesOutcome.considered));
   }
   if (attachmentsRequested) {
-    const parentsProven = attachmentParentsProvenClean(requested, groupMessagesOutcome, directChatMessagesOutcome);
-    if (parentsProven) {
+    const parentOutcomes = {
+      direct_chat_messages: directChatMessagesOutcome,
+      group_messages: groupMessagesOutcome,
+    };
+    const anyParentCompleted = Object.entries(parentOutcomes).some(([parent, outcome]) =>
+      attachmentParentCompleted(requested, parent as AttachmentParentStream, outcome)
+    );
+    if (anyParentCompleted) {
       await emit({
         type: "STATE",
         stream: "attachments",
         cursor: { fingerprints: attachmentCursor.toState() },
       });
-      await emit(buildAttachmentDetailCoverageMessage(attachmentCoverage));
-    } else {
-      // A requested parent failed: attachments enumeration is incomplete for
-      // an unknown subset of messages. Withhold both STATE and coverage —
-      // the previous cursor is retained and will be reused next run when we
-      // walk the parent streams again.
-      await reportStreamFailure?.(
-        "attachments",
-        "attachments detail collection incomplete: a requested parent stream failed",
-        { retryable: true }
-      );
+      await emitAttachmentCoverageByParent(requested, attachmentCoverageByParent, parentOutcomes, emit);
     }
+    // A failed parent already emitted its own stream_collection_failed result
+    // in runCollectionPass. Do not also fail the shared attachments stream:
+    // that would implicate the successful parent's independently proven cursor.
   }
 }
 

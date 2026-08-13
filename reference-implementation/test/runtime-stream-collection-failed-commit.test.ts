@@ -299,6 +299,8 @@ test("runConnector withholds an unrelated DETAIL_COVERAGE shortfall during a cer
 
     const result = await runStub({ asUrl, connectorPath, manifest, ownerToken, rsUrl });
     assert.equal(result.status, "failed");
+    const runId = result.run_id;
+    assert.ok(runId);
     assert.equal(result.checkpoint_summary?.state_streams_staged, 2);
     assert.equal(result.checkpoint_summary?.state_streams_committed, 1);
 
@@ -459,10 +461,10 @@ test("runConnector withholds a manifest-declared PARENT state_stream shared with
 });
 
 test("runConnector withholds a state_stream the connector's own DETAIL_COVERAGE associated with the failed data stream", async () => {
-  // A connector's DETAIL_COVERAGE{state_stream, stream} messages are an
-  // independent, self-reported stream->state_stream association that is not
-  // required to match the manifest's own state_stream field. This proves that
-  // one runtime mapping wins over a different static mapping.
+  // A connector's live DETAIL_COVERAGE{state_stream, stream} association
+  // supersedes the legacy singular manifest `state_stream` fallback. This is
+  // distinct from manifest `parent_streams`, whose complete set is retained
+  // and unioned with live multi-parent coverage evidence.
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -521,8 +523,8 @@ test("runConnector withholds a state_stream the connector's own DETAIL_COVERAGE 
     const result = await runStub({ asUrl, connectorPath, manifest, ownerToken, rsUrl });
     assert.equal(result.status, "failed");
 
-    // child_b's runtime mapping wins over its different manifest mapping, so
-    // the runtime_parent checkpoint is withheld.
+    // child_b's live relationship supersedes its singular `state_stream`
+    // fallback, so runtime_parent is withheld.
     assert.equal(result.checkpoint_summary?.state_streams_staged, 1);
     assert.equal(result.checkpoint_summary?.state_streams_committed, 0);
 
@@ -541,7 +543,7 @@ test("runConnector withholds a state_stream the connector's own DETAIL_COVERAGE 
   }
 });
 
-test("runConnector rejects conflicting DETAIL_COVERAGE parents before committing any checkpoint", async () => {
+test("runConnector withholds every declared parent of a failed shared detail stream", async () => {
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -585,38 +587,29 @@ test("runConnector rejects conflicting DETAIL_COVERAGE parents before committing
     });
     assert.equal(registerResp.status, 201);
     const ownerToken = await issueOwnerToken(asUrl);
-    let rejected: (Error & { checkpoint_summary?: RunResult["checkpoint_summary"]; run_id?: string }) | undefined;
-
-    await assert.rejects(
-      () => runStub({ asUrl, connectorPath, manifest, ownerToken, rsUrl }),
-      (
-        error: Error & {
-          checkpoint_summary?: RunResult["checkpoint_summary"];
-          failure_reason?: string;
-          run_id?: string;
-        }
-      ) => {
-        rejected = error;
-        assert.equal(error.failure_reason, "connector_protocol_violation");
-        assert.equal(error.checkpoint_summary?.state_streams_staged, 2);
-        assert.equal(error.checkpoint_summary?.state_streams_committed, 0);
-        return true;
-      }
-    );
-    assert.ok(rejected?.run_id, "the protocol failure must identify its run");
+    const result = await runStub({ asUrl, connectorPath, manifest, ownerToken, rsUrl });
+    assert.equal(result.status, "failed");
+    const runId = result.run_id;
+    assert.ok(runId);
+    assert.equal(result.checkpoint_summary?.state_streams_staged, 2);
+    assert.equal(result.checkpoint_summary?.state_streams_committed, 1);
 
     const stateResp = await fetch(`${rsUrl}/v1/state/${encodeURIComponent(manifest.connector_id)}`, {
       headers: { Authorization: `Bearer ${ownerToken}` },
     });
     const stateBody = (await stateResp.json()) as { state?: Record<string, unknown> };
-    assert.deepEqual(stateBody.state ?? {}, {}, "conflicting runtime evidence must commit nothing");
+    assert.deepEqual(
+      stateBody.state ?? {},
+      { sibling_a: { cursor: "sibling_a_cursor" } },
+      "every parent of the failed detail stream is withheld while an unrelated sibling still commits"
+    );
 
     const { body: runTimeline } = await fetchJson<TraceTimelineBody>(
-      `${asUrl}/_ref/runs/${encodeURIComponent(rejected?.run_id ?? "")}/timeline`
+      `${asUrl}/_ref/runs/${encodeURIComponent(runId)}/timeline`
     );
     const eventTypes = (runTimeline.data || []).map((event) => event.event_type);
     assert.ok(eventTypes.includes("run.failed"));
-    assert.ok(!eventTypes.includes("run.state_advanced"));
+    assert.ok(eventTypes.includes("run.state_advanced"));
     assert.ok(!eventTypes.includes("run.completed"));
   } finally {
     rmSync(tmpDir, { force: true, recursive: true });

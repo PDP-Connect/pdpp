@@ -94,6 +94,7 @@ interface ManifestStream {
   availability?: { state?: string } | null;
   consent_time_field?: string | null;
   name: string;
+  parent_streams?: string[] | null;
   primary_key?: string | string[] | null;
   schema?: { required?: string[] } | null;
   selection?: { resource_field?: string } | null;
@@ -266,6 +267,7 @@ interface ServedGapLease {
   attempted: boolean;
   gapId: string;
   leaseId: string;
+  parentStream: string | null;
   recordKey: string | null;
   runId: string;
   stream: string | null;
@@ -319,21 +321,32 @@ function unsupportedDetailGapStoreCapability(capability: string): () => never {
   };
 }
 
-/** Per-`state_stream` DETAIL_COVERAGE accounting collected during a run. */
+/** Per-parent-boundary DETAIL_COVERAGE accounting collected during a run. */
 interface DetailCoverageEntry {
   considered: number | null;
   covered: number | null;
   /**
-   * Keys the connector declared it could not hydrate this run. A declared gap
-   * is an accounted-for key — the connector reported the shortfall honestly
-   * rather than claiming coverage it does not have — so it satisfies the
-   * coverage invariant just like a durable DETAIL_GAP for the same key.
+   * Keys the connector declared it could not hydrate this run. Diagnostic
+   * only: checkpoint authority still requires a matching durable DETAIL_GAP
+   * for the same stream, key, and parent boundary.
    */
   gapKeys: Set<string>;
   hydratedKeys: Set<string>;
+  /** Keys accepted by the connector's explicit optional-detail policy. */
   optionalSkipKeys: Set<string>;
   requiredKeys: string[];
   stream: string;
+}
+
+function durableGapMatchesCoverageParent(
+  gapParentStream: string | null | undefined,
+  stateStream: string,
+  hasMultipleParents: boolean
+): boolean {
+  if (gapParentStream) {
+    return gapParentStream === stateStream;
+  }
+  return !hasMultipleParents;
 }
 
 /**
@@ -1363,12 +1376,11 @@ function findServedDetailGapLease(leases: Map<string, ServedGapLease>, msg: Conn
     return null;
   }
   const recordKey = String(msg.record_key);
-  for (const lease of leases.values()) {
-    if (lease.stream === msg.stream && lease.recordKey === recordKey) {
-      return lease;
-    }
-  }
-  return null;
+  const parentStream = typeof msg.parent_stream === "string" ? msg.parent_stream : null;
+  const matches = [...leases.values()].filter(
+    (lease) => lease.stream === msg.stream && lease.recordKey === recordKey && lease.parentStream === parentStream
+  );
+  return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
 function validateDetailGapAttemptedMessage(msg: ConnectorMessage, scopeByStream: ScopeByStream): void {
@@ -1396,6 +1408,35 @@ function normalizeCoverageKey(key: string | number): string {
   return String(key);
 }
 
+function validateCoverageKeySets(msg: ConnectorMessage): void {
+  const fields = ["required_keys", "hydrated_keys", "gap_keys", "optional_skip_keys"] as const;
+  const keysByField = new Map<string, Set<string>>();
+  for (const field of fields) {
+    const values = (msg[field] as (string | number)[] | null | undefined) || [];
+    const normalized = values.map(normalizeCoverageKey);
+    const unique = new Set(normalized);
+    if (unique.size !== normalized.length) {
+      throw new Error(`Connector emitted invalid DETAIL_COVERAGE.${field}: duplicate key`);
+    }
+    keysByField.set(field, unique);
+  }
+
+  const required = keysByField.get("required_keys") as Set<string>;
+  const outcomes = ["hydrated_keys", "gap_keys", "optional_skip_keys"] as const;
+  const seenOutcomes = new Set<string>();
+  for (const field of outcomes) {
+    for (const key of keysByField.get(field) as Set<string>) {
+      if (!required.has(key)) {
+        throw new Error(`Connector emitted invalid DETAIL_COVERAGE.${field}: key not present in required_keys`);
+      }
+      if (seenOutcomes.has(key)) {
+        throw new Error("Connector emitted invalid DETAIL_COVERAGE: outcome key appears in multiple sets");
+      }
+      seenOutcomes.add(key);
+    }
+  }
+}
+
 function validateDetailCoverageMessage(msg: ConnectorMessage, scopeByStream: ScopeByStream): void {
   if (msg.reference_only !== true) {
     throw new Error("Connector emitted invalid DETAIL_COVERAGE.reference_only: expected true");
@@ -1419,6 +1460,7 @@ function validateDetailCoverageMessage(msg: ConnectorMessage, scopeByStream: Sco
   if (!isNullish(msg.optional_skip_keys)) {
     assertCoverageKeyArray(msg.optional_skip_keys, "optional_skip_keys");
   }
+  validateCoverageKeySets(msg);
 }
 
 function validateDetailGapRecoveredMessage(msg: ConnectorMessage, scopeByStream: ScopeByStream): void {
@@ -1847,6 +1889,22 @@ function buildManifestStateStreamMap(manifest: ConnectorManifest): Map<string, s
   return stateStreams;
 }
 
+function buildManifestDetailParentStreamsMap(manifest: ConnectorManifest): Map<string, Set<string>> {
+  const parentsByStream = new Map<string, Set<string>>();
+  for (const stream of manifest.streams || []) {
+    if (!(stream && Array.isArray(stream.parent_streams))) {
+      continue;
+    }
+    if (stream.parent_streams.length) {
+      // Keep the complete declared set. Its cardinality is an authority fact:
+      // scoping a two-parent run to one parent must not make a legacy,
+      // parentless gap appear unambiguous.
+      parentsByStream.set(stream.name, new Set(stream.parent_streams));
+    }
+  }
+  return parentsByStream;
+}
+
 function openRuntimeTraceFile(traceDir: string | undefined, connectorId: string, runId: string): string | null {
   if (!traceDir) {
     return null;
@@ -2052,6 +2110,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // co-emitted stream's `checkpoint` reflects the parent's committed cursor
   // instead of a spurious `not_staged`.
   const manifestStateStreamByStream = buildManifestStateStreamMap(manifest);
+  const manifestDetailParentStreamsByStream = buildManifestDetailParentStreamsMap(manifest);
   // `getDefaultConnectorDetailGapStore()` is declared `unknown` at its own
   // module boundary (that store has not been migrated yet), so the runtime
   // states the surface it actually drives here.
@@ -2648,9 +2707,14 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // attention-writer's open/byRequestId Maps) — no schema change on the hot spine
   // append path. The cross-run re-defer suppression is the discovered_run_id gate.
   const detailGapRecordedThisRun = new Set<string>();
-  // A connector's DETAIL_COVERAGE evidence may override the static manifest
-  // mapping, but one data stream must not acquire two runtime parents.
-  const detailCoverageStateStreamByStream = new Map<string, string>();
+  // Retain every manifest-declared `parent_streams` relationship and union any
+  // live DETAIL_COVERAGE parent observed this run. One detail stream can have
+  // multiple independently checkpointed parents, each represented by its own
+  // coverage entry. The older singular `state_stream` mapping remains a
+  // fallback only when this multi-parent/live set is empty.
+  const detailCoverageStateStreamsByStream = new Map<string, Set<string>>(
+    [...manifestDetailParentStreamsByStream].map(([stream, parents]) => [stream, new Set(parents)])
+  );
   const detailCoverageByStateStream = new Map<string, DetailCoverageEntry[]>();
   // Latest `collection_rate` progress payload seen this run. Updated on each
   // rate-change PROGRESS event so the terminal event can carry the final
@@ -2954,6 +3018,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       durableDetailGaps,
       emittedByStream,
       knownGaps,
+      manifestDetailParentStreamsByStream,
       manifestStateStreamByStream,
       newState,
       persistState,
@@ -3018,14 +3083,13 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     // non-empty strings and the three key arrays are string/number arrays.
     const stateStream = msg.state_stream as string;
     const stream = msg.stream as string;
-    const previousStateStream = detailCoverageStateStreamByStream.get(stream);
-    if (previousStateStream && previousStateStream !== stateStream) {
-      throw new Error(
-        `Connector emitted invalid DETAIL_COVERAGE.stream: stream '${stream}' maps to multiple state_stream parents ('${previousStateStream}', '${stateStream}')`
-      );
-    }
-    detailCoverageStateStreamByStream.set(stream, stateStream);
+    const parentStateStreams = detailCoverageStateStreamsByStream.get(stream) || new Set<string>();
+    parentStateStreams.add(stateStream);
+    detailCoverageStateStreamsByStream.set(stream, parentStateStreams);
     const entries = detailCoverageByStateStream.get(stateStream) || [];
+    if (entries.some((entry) => entry.stream === stream)) {
+      throw new Error(`Connector emitted duplicate DETAIL_COVERAGE for state_stream=${stateStream} stream=${stream}`);
+    }
     entries.push({
       // Optional connector-declared considered denominator (task 2.1). Retained
       // here — normalized to a trusted safe non-negative integer or null — so
@@ -3038,9 +3102,9 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       // against `covered` when present so a steady-state full-sync run reads
       // `complete`, never inferred from collected.
       covered: boundConsideredCount(msg.covered),
-      // Connector-declared unhydrated keys. Retained (not just counted for the
-      // timeline event) so the coverage invariant can credit a key the
-      // connector honestly reported as a gap.
+      // Connector-declared unhydrated keys. Retained for collection facts and
+      // diagnostics, but never authoritative by themselves: the checkpoint
+      // gate credits a gap only when the same key has a durable DETAIL_GAP.
       gapKeys: new Set(((msg.gap_keys as (string | number)[] | null) || []).map(normalizeCoverageKey)),
       hydratedKeys: new Set((msg.hydrated_keys as (string | number)[]).map(normalizeCoverageKey)),
       optionalSkipKeys: new Set(
@@ -3052,22 +3116,17 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     detailCoverageByStateStream.set(stateStream, entries);
   }
 
-  // Resolves the STATE_STREAM checkpoint key (the `newState`/`commitState`
-  // key) that a given DATA stream's cursor is actually staged under. A data
-  // stream and its state_stream are not always the same name: a manifest may
-  // declare several data streams sharing one parent state_stream
-  // (`stream.state_stream`, see buildManifestStateStreamMap), and a
-  // connector's own DETAIL_COVERAGE{state_stream, stream} messages are an
-  // independent, connector-self-reported association that is not required to
-  // agree with the manifest. Preference order: DETAIL_COVERAGE observed THIS
-  // run (the connector's own live claim, and the only source with no static
-  // fallback if it disagrees with the manifest) — then the manifest's static
-  // declaration — then the data stream name itself (no distinct state_stream
-  // declared or observed anywhere).
-  function resolveStateStreamForDataStream(dataStream: string): string {
-    return (
-      detailCoverageStateStreamByStream.get(dataStream) || manifestStateStreamByStream.get(dataStream) || dataStream
-    );
+  // Resolve every STATE_STREAM checkpoint key owned by a data stream. A
+  // detail stream may be fed by multiple independently checkpointed parents.
+  // The map retains every manifest-declared parent and unions any live
+  // DETAIL_COVERAGE relationship observed this run. The data stream's own name
+  // remains the fallback when neither source declares a relationship.
+  function resolveStateStreamsForDataStream(dataStream: string): ReadonlySet<string> {
+    const declaredParents = detailCoverageStateStreamsByStream.get(dataStream);
+    if (declaredParents?.size) {
+      return declaredParents;
+    }
+    return new Set([manifestStateStreamByStream.get(dataStream) || dataStream]);
   }
 
   // A DETAIL_COVERAGE shortfall is a coverage GAP, not a protocol violation.
@@ -3082,29 +3141,48 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   //
   // Returns the `state_stream`s whose coverage is unproven; the caller skips
   // exactly those commits and commits the rest.
+  function missingDetailCoverageReports(
+    stateStream: string,
+    coverageEntries: readonly DetailCoverageEntry[]
+  ): string[] {
+    const missing: string[] = [];
+    for (const [detailStream, parents] of manifestDetailParentStreamsByStream) {
+      if (
+        scopeByStream.has(detailStream) &&
+        parents.has(stateStream) &&
+        !coverageEntries.some((coverage) => coverage.stream === detailStream)
+      ) {
+        missing.push(detailStream);
+      }
+    }
+    return missing;
+  }
+
   async function recordDetailCoverageShortfalls(): Promise<Set<string>> {
     const shortfallStateStreams = new Set<string>();
     for (const stateStream of Object.keys(newState)) {
       const coverageEntries = detailCoverageByStateStream.get(stateStream) || [];
+      for (const detailStream of missingDetailCoverageReports(stateStream, coverageEntries)) {
+        shortfallStateStreams.add(stateStream);
+        // biome-ignore lint/performance/noAwaitInLoops: one bounded gap per missing parent report; sequential ordering keeps the timeline honest.
+        await recordMissingDetailCoverageReport(stateStream, detailStream);
+      }
       for (const coverage of coverageEntries) {
+        const coverageParents = manifestDetailParentStreamsByStream.get(coverage.stream);
+        const hasMultipleParents = (coverageParents?.size || 0) > 1;
         const accountedGapKeys = new Set(
           durableDetailGaps
             .filter(
               (gap) =>
                 gap.stream === coverage.stream &&
                 (gap.status === "pending" || gap.status === "recovered") &&
+                durableGapMatchesCoverageParent(gap.parent_stream, stateStream, hasMultipleParents) &&
                 !isNullish(gap.record_key)
             )
             .map((gap) => normalizeCoverageKey(gap.record_key as string | number))
         );
         const missingKeys = coverage.requiredKeys.filter(
-          (key) =>
-            !(
-              coverage.hydratedKeys.has(key) ||
-              coverage.optionalSkipKeys.has(key) ||
-              coverage.gapKeys.has(key) ||
-              accountedGapKeys.has(key)
-            )
+          (key) => !(coverage.hydratedKeys.has(key) || coverage.optionalSkipKeys.has(key) || accountedGapKeys.has(key))
         );
         if (!missingKeys.length) {
           continue;
@@ -3115,6 +3193,40 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       }
     }
     return shortfallStateStreams;
+  }
+
+  async function recordMissingDetailCoverageReport(stateStream: string, stream: string): Promise<void> {
+    const message = `Connector detail coverage incomplete: state_stream=${stateStream} stream=${stream} coverage_report=missing`;
+    const gap = buildKnownGap({
+      diagnostics: { coverage_report: "missing", state_stream: stateStream },
+      kind: "detail_coverage",
+      message,
+      reason: "detail_coverage_incomplete",
+      recoveryHint: "retry_by_runtime",
+      stream,
+    });
+    appendKnownGap(gap);
+    await emitSpineEventTracked({
+      actor_id: connectorId,
+      actor_type: "runtime",
+      data: {
+        known_gap: gap,
+        message,
+        reason: "detail_coverage_incomplete",
+        source: runSource,
+        state_stream: stateStream,
+        stream,
+      },
+      event_type: "run.stream_skipped",
+      object_id: runId,
+      object_type: "run",
+      run_id: runId,
+      scenario_id: traceContext.scenario_id,
+      status: "skipped",
+      stream_id: stream,
+      trace_id: traceContext.trace_id,
+    });
+    onProgress({ reason: "detail_coverage_incomplete", stream, type: "stream_skipped" });
   }
 
   // Per-shortfall known gap + timeline event. `detail_coverage_incomplete` is a
@@ -3977,6 +4089,9 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       const leasedGap = findServedDetailGapLease(allServedGapLeases, msg);
       if (msg.lease_id && (!leasedGap || leasedGap.leaseId !== msg.lease_id)) {
         throw new Error("Connector re-deferred a detail gap without the current run-owned lease");
+      }
+      if (leasedGap && leasedGap.parentStream !== gapParentStream) {
+        throw new Error("Connector re-deferred a detail gap under a different parent stream");
       }
       const gapInput = {
         connectorId,
@@ -4853,13 +4968,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
           // straight through as if it were the STATE_STREAM key would filter
           // nothing (no match in newState) and falsely commit the parent
           // checkpoint a failed CHILD stream shares with untouched siblings.
-          // resolveStateStreamForDataStream consults whichever mapping this run
-          // actually observed (DETAIL_COVERAGE first, since it is the
-          // connector's own live self-report; the static manifest declaration
-          // as fallback; the data stream name itself when neither applies) so
-          // the exclusion always targets the real checkpoint key.
+          // resolveStateStreamsForDataStream uses the union of static manifest
+          // parents and live DETAIL_COVERAGE relationships, falling back to the
+          // data stream name only when neither exists. The exclusion therefore
+          // targets every checkpoint key the failed stream may own.
           const failedStateStreams = new Set(
-            Array.from(streamCollectionFailedStreams, (stream) => resolveStateStreamForDataStream(stream))
+            Array.from(streamCollectionFailedStreams).flatMap((stream) => [...resolveStateStreamsForDataStream(stream)])
           );
           await Object.entries(newState)
             .filter(

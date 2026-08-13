@@ -34,6 +34,7 @@ import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connecto
 type RunConnectorTestOptions = Omit<RuntimeRunConnectorOptions, "detailGapStore"> & { detailGapStore?: unknown };
 type RunConnectorFn = (opts: RunConnectorTestOptions) => Promise<RuntimeRunConnectorResult>;
 const runConnectorWithGapStore = runConnector as RunConnectorFn;
+const DIFFERENT_PARENT_STREAM_PATTERN = /different parent stream/;
 
 // This file never routes through the real connector-instance store — every
 // dependency it hands the runtime (detail gap store, state server, etc.) is
@@ -402,6 +403,36 @@ rl.on('line', (line) => {
   process.stdout.write(JSON.stringify({
     type: 'DETAIL_GAP_ATTEMPTED', reference_only: true,
     gap_id: first.gap_id, lease_id: second.lease_id, stream: first.stream,
+  }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
+  rl.close();
+  process.stdout.write('', () => process.exit(0));
+});
+`,
+    "utf8"
+  );
+  return { cleanup: () => rmSync(dir, { force: true, recursive: true }), connectorPath };
+}
+
+function createParentSwapRedeferConnector(outputPath: string): ConnectorHandle {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-detail-gap-parent-swap-"));
+  const connectorPath = join(dir, "connector.mjs");
+  writeFileSync(
+    connectorPath,
+    `
+import { createInterface } from 'node:readline';
+import { writeFileSync } from 'node:fs';
+const rl = createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  const start = JSON.parse(line);
+  if (start.type !== 'START') return;
+  writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify(start), 'utf8');
+  const [first, second] = start.detail_gaps;
+  process.stdout.write(JSON.stringify({
+    type: 'DETAIL_GAP', reference_only: true, status: 'pending', retryable: true,
+    gap_id: first.gap_id, lease_id: first.lease_id, stream: first.stream,
+    parent_stream: second.parent_stream, record_key: first.record_key,
+    detail_locator: first.detail_locator, reason: 'temporary_unavailable',
   }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
   rl.close();
@@ -2033,6 +2064,62 @@ test(
       pending.every((gap) => gap.attempt_count === 0),
       true
     );
+  })
+);
+
+test(
+  "a served multi-parent gap cannot be re-deferred under its sibling parent",
+  withTempDb(async (dir) => {
+    const store = createSqliteConnectorDetailGapStore();
+    for (const parentStream of ["group_messages", "direct_chat_messages"]) {
+      // biome-ignore lint/performance/noAwaitInLoops: ordered setup creates two distinct parent-scoped identities.
+      await store.upsertPendingGap({
+        connectorId: "groupme",
+        detailLocator: { kind: "groupme.attachment", message_id: "shared-key" },
+        grantId: "grant_parent_swap",
+        parentStream,
+        reason: "temporary_unavailable",
+        recordKey: "shared-key",
+        stream: "attachments",
+      });
+    }
+    const startPath = join(dir, "parent-swap-start.json");
+    const { connectorPath, cleanup } = createParentSwapRedeferConnector(startPath);
+    try {
+      await assert.rejects(
+        () =>
+          runConnectorWithGapStore({
+            admitRunConnection: fakeAdmitRunConnection(),
+            connectorId: "groupme",
+            connectorPath,
+            detailGapStore: store,
+            grantId: "grant_parent_swap",
+            manifest: {
+              streams: [
+                { name: "group_messages" },
+                { name: "direct_chat_messages" },
+                {
+                  coverage_strategy: "parent_detail_accounting",
+                  name: "attachments",
+                  parent_streams: ["group_messages", "direct_chat_messages"],
+                },
+              ],
+            },
+            // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op progress observer for the protocol fixture.
+            onProgress: () => {},
+            ownerToken: "owner",
+            persistState: false,
+          }),
+        DIFFERENT_PARENT_STREAM_PATTERN
+      );
+    } finally {
+      cleanup();
+    }
+    const start = JSON.parse(readFileSync(startPath, "utf8"));
+    assert.deepEqual(start.detail_gaps.map((gap: { parent_stream: string }) => gap.parent_stream).sort(), [
+      "direct_chat_messages",
+      "group_messages",
+    ]);
   })
 );
 

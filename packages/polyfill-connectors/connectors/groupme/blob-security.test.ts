@@ -18,7 +18,12 @@
 
 import assert, { deepStrictEqual, match, ok, strictEqual } from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { fetchAttachmentBlob, normalizeAttachmentContentType, validateAttachmentUrl } from "./index.ts";
+import {
+  fetchAttachmentBlob,
+  fetchAttachmentBlobOutcome,
+  normalizeAttachmentContentType,
+  validateAttachmentUrl,
+} from "./index.ts";
 
 function fakeAttachmentResponse(headers: Record<string, string>, body: Buffer): unknown {
   return {
@@ -43,7 +48,146 @@ function fakeAttachmentResponse(headers: Record<string, string>, body: Buffer): 
   };
 }
 
+function providerXmlError(status: 403 | 404, code: "AccessDenied" | "NoSuchKey"): Response {
+  const body = `<?xml version="1.0" encoding="UTF-8"?><Error><Code>${code}</Code><Message>unavailable</Message></Error>`;
+  return new Response(body, {
+    headers: { "content-length": String(Buffer.byteLength(body)), "content-type": "application/xml" },
+    status,
+  });
+}
+
+function providerXmlResponse(
+  status: 403 | 404,
+  body: string,
+  contentLength = String(Buffer.byteLength(body))
+): Response {
+  return new Response(body, {
+    headers: { "content-length": contentLength, "content-type": "application/xml" },
+    status,
+  });
+}
+
 describe("GroupMe blob attachment security (production seam)", () => {
+  describe("fetchAttachmentBlobOutcome", () => {
+    let originalFetch: typeof global.fetch;
+
+    beforeEach(() => {
+      originalFetch = global.fetch;
+    });
+
+    afterEach(() => {
+      (global as any).fetch = originalFetch;
+    });
+
+    it("classifies a bounded provider AccessDenied response as unavailable", async () => {
+      (global as any).fetch = async () => providerXmlError(403, "AccessDenied");
+      const result = await fetchAttachmentBlobOutcome("https://i.groupme.com/gone.jpg", "gone-403");
+      deepStrictEqual(result, { kind: "unavailable", reason: "provider_object_unavailable" });
+    });
+
+    it("classifies a bounded provider NoSuchKey response as unavailable", async () => {
+      (global as any).fetch = async () => providerXmlError(404, "NoSuchKey");
+      const result = await fetchAttachmentBlobOutcome("https://i.groupme.com/gone.jpg", "gone-404");
+      deepStrictEqual(result, { kind: "unavailable", reason: "provider_object_unavailable" });
+    });
+
+    for (const status of [403, 404]) {
+      it(`keeps a bare HTTP ${status} response as an unproven failure`, async () => {
+        (global as any).fetch = async () => new Response(null, { status });
+        const result = await fetchAttachmentBlobOutcome("https://i.groupme.com/gone.jpg", `bare-${status}`);
+        deepStrictEqual(result, { kind: "failed", reason: `attachment_http_${status}` });
+      });
+    }
+
+    it("does not accept a mismatched status and provider error code", async () => {
+      (global as any).fetch = async () => providerXmlError(404, "AccessDenied");
+      const result = await fetchAttachmentBlobOutcome("https://i.groupme.com/gone.jpg", "mismatch");
+      deepStrictEqual(result, { kind: "failed", reason: "attachment_http_404" });
+    });
+
+    for (const [label, body] of [
+      ["CDATA", "<Error><![CDATA[<Code>NoSuchKey</Code>]]></Error>"],
+      ["nested Code", "<Error><Message><Code>NoSuchKey</Code></Message></Error>"],
+      ["comment", "<Error><!-- <Code>NoSuchKey</Code> --><Code>NoSuchKey</Code></Error>"],
+      ["multiple roots", "<Error><Code>NoSuchKey</Code></Error><Error><Code>NoSuchKey</Code></Error>"],
+      ["attribute", '<Error><Code source="guess">NoSuchKey</Code></Error>'],
+      ["processing instruction", "<Error><?guess value?><Code>NoSuchKey</Code></Error>"],
+      ["nested field", "<Error><Message><Value>gone</Value></Message><Code>NoSuchKey</Code></Error>"],
+      ["duplicate field", "<Error><Code>NoSuchKey</Code><Code>NoSuchKey</Code></Error>"],
+    ] as const) {
+      it(`rejects ${label} that only resembles the terminal provider envelope`, async () => {
+        (global as any).fetch = async () => providerXmlResponse(404, body);
+        const result = await fetchAttachmentBlobOutcome("https://i.groupme.com/gone.jpg", `xml-${label}`);
+        deepStrictEqual(result, { kind: "failed", reason: "attachment_http_404" });
+      });
+    }
+
+    it("rejects a malformed Content-Length instead of accepting its integer prefix", async () => {
+      const body = "<Error><Code>NoSuchKey</Code></Error>";
+      (global as any).fetch = async () => providerXmlResponse(404, body, `${Buffer.byteLength(body)}junk`);
+      const result = await fetchAttachmentBlobOutcome("https://i.groupme.com/gone.jpg", "bad-length");
+      deepStrictEqual(result, { kind: "failed", reason: "attachment_http_404" });
+    });
+
+    it("accepts terminal XML without Content-Length because the reader enforces the byte cap", async () => {
+      const body = "<Error><Code>NoSuchKey</Code></Error>";
+      (global as any).fetch = async () =>
+        new Response(body, { headers: { "content-type": "application/xml" }, status: 404 });
+      const result = await fetchAttachmentBlobOutcome("https://i.groupme.com/gone.jpg", "unbounded");
+      deepStrictEqual(result, { kind: "unavailable", reason: "provider_object_unavailable" });
+    });
+
+    it("does not accept a provider error body larger than the bounded parser limit", async () => {
+      const body = `<Error><Code>NoSuchKey</Code><Message>${"x".repeat(17 * 1024)}</Message></Error>`;
+      (global as any).fetch = async () =>
+        new Response(body, { headers: { "content-type": "application/xml" }, status: 404 });
+      const result = await fetchAttachmentBlobOutcome("https://i.groupme.com/gone.jpg", "oversized-error");
+      deepStrictEqual(result, { kind: "failed", reason: "attachment_http_404" });
+    });
+
+    it("upgrades the provider's legacy HTTP object URL without following redirects", async () => {
+      let requestedUrl = "";
+      (global as any).fetch = (input: string) => {
+        requestedUrl = input;
+        return Promise.resolve(providerXmlError(404, "NoSuchKey"));
+      };
+      const result = await fetchAttachmentBlobOutcome("http://i.groupme.com/gone.jpg", "legacy-http");
+      strictEqual(requestedUrl, "https://i.groupme.com/gone.jpg");
+      deepStrictEqual(result, { kind: "unavailable", reason: "provider_object_unavailable" });
+    });
+
+    for (const status of [429, 500]) {
+      it(`keeps HTTP ${status} as an unproven fetch failure`, async () => {
+        (global as any).fetch = async () => new Response(null, { status });
+        const result = await fetchAttachmentBlobOutcome("https://i.groupme.com/retry.jpg", `retry-${status}`);
+        deepStrictEqual(result, { kind: "failed", reason: `attachment_http_${status}` });
+      });
+    }
+
+    it("retries an unproven attachment on the next invocation and hydrates it when the provider recovers", async () => {
+      const bytes = Buffer.from("recovered");
+      let attempts = 0;
+      (global as any).fetch = () => {
+        attempts += 1;
+        return Promise.resolve(
+          attempts === 1
+            ? new Response(null, { status: 500 })
+            : new Response(bytes, {
+                headers: { "content-length": String(bytes.length), "content-type": "image/jpeg" },
+                status: 200,
+              })
+        );
+      };
+
+      const first = await fetchAttachmentBlobOutcome("https://i.groupme.com/retry.jpg", "retry-first");
+      const second = await fetchAttachmentBlobOutcome("https://i.groupme.com/retry.jpg", "retry-second");
+
+      deepStrictEqual(first, { kind: "failed", reason: "attachment_http_500" });
+      strictEqual(second.kind, "available");
+      strictEqual(attempts, 2, "the transient failure is not cached or converted into terminal absence");
+    });
+  });
+
   describe("validateAttachmentUrl (origin validation)", () => {
     it("allows https://i.groupme.com/image.jpg (canonical)", () => {
       const result = validateAttachmentUrl("https://i.groupme.com/image.jpg");
@@ -150,6 +294,20 @@ describe("GroupMe blob attachment security (production seam)", () => {
       });
 
       const result = await fetchAttachmentBlob("https://i.groupme.com/image.jpg", "test4");
+      assert.strictEqual(result, null);
+    });
+
+    it("rejects a content-length with a numeric prefix and trailing junk", async () => {
+      (global as any).fetch = async () => fakeAttachmentResponse({ "content-length": "4junk" }, Buffer.from("test"));
+
+      const result = await fetchAttachmentBlob("https://i.groupme.com/image.jpg", "numeric-prefix");
+      assert.strictEqual(result, null);
+    });
+
+    it("rejects a body whose actual byte count differs from Content-Length", async () => {
+      (global as any).fetch = async () => fakeAttachmentResponse({ "content-length": "5" }, Buffer.from("test"));
+
+      const result = await fetchAttachmentBlob("https://i.groupme.com/image.jpg", "length-mismatch");
       assert.strictEqual(result, null);
     });
 

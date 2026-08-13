@@ -221,11 +221,17 @@ export const REFRESH_POLICY_INTERACTION_POSTURES = new Set([
 export const REFRESH_POLICY_SENSITIVITY_LEVELS = new Set(["low", "medium", "high"]);
 export function validatePublicListingTier(manifest: Record<string, unknown>, code: string): void {
   const { capabilities } = manifest;
-  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) return;
+  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
+    return;
+  }
   const { public_listing: listing } = capabilities as Record<string, unknown>;
-  if (listing === undefined || listing === null) return;
+  if (listing === undefined || listing === null) {
+    return;
+  }
   const error = publicListingTierError(listing);
-  if (error) throw invalidConnectorManifest(error, code);
+  if (error) {
+    throw invalidConnectorManifest(error, code);
+  }
 }
 export const REFRESH_POLICY_ALLOWED_KEYS = new Set([
   "recommended_mode",
@@ -628,7 +634,11 @@ function validateRefreshPolicyIntervals(pol: Record<string, unknown>, code: stri
 function validateRefreshPolicyRecoveryBudgets(pol: Record<string, unknown>, code: string): void {
   if (pol.max_cooldown_cycles !== undefined) {
     const { max, min } = REFRESH_POLICY_MAX_COOLDOWN_CYCLES_RANGE;
-    if (!isPositiveInteger(pol.max_cooldown_cycles) || (pol.max_cooldown_cycles as number) < min || (pol.max_cooldown_cycles as number) > max) {
+    if (
+      !isPositiveInteger(pol.max_cooldown_cycles) ||
+      (pol.max_cooldown_cycles as number) < min ||
+      (pol.max_cooldown_cycles as number) > max
+    ) {
       throw invalidConnectorManifest(
         `capabilities.refresh_policy.max_cooldown_cycles must be an integer between ${min} and ${max} when declared`,
         code
@@ -637,7 +647,11 @@ function validateRefreshPolicyRecoveryBudgets(pol: Record<string, unknown>, code
   }
   if (pol.max_recovery_attempts !== undefined) {
     const { max, min } = REFRESH_POLICY_MAX_RECOVERY_ATTEMPTS_RANGE;
-    if (!isPositiveInteger(pol.max_recovery_attempts) || (pol.max_recovery_attempts as number) < min || (pol.max_recovery_attempts as number) > max) {
+    if (
+      !isPositiveInteger(pol.max_recovery_attempts) ||
+      (pol.max_recovery_attempts as number) < min ||
+      (pol.max_recovery_attempts as number) > max
+    ) {
       throw invalidConnectorManifest(
         `capabilities.refresh_policy.max_recovery_attempts must be an integer between ${min} and ${max} when declared`,
         code
@@ -1363,6 +1377,44 @@ function validateStreamStateStreamDeclaration(
   }
 }
 
+function validateStreamParentStreamsDeclaration(
+  stream: Record<string, unknown>,
+  code: string,
+  declaredStreamNames?: Set<string>
+): void {
+  if (stream.parent_streams === undefined) {
+    return;
+  }
+  const streamName = stream.name as string;
+  if (
+    !Array.isArray(stream.parent_streams) ||
+    stream.parent_streams.length === 0 ||
+    stream.parent_streams.some((parent) => !isNonEmptyString(parent))
+  ) {
+    throw invalidConnectorManifest(`Stream '${streamName}' parent_streams must be a non-empty string array`, code);
+  }
+  const parents = stream.parent_streams as string[];
+  if (new Set(parents).size !== parents.length) {
+    throw invalidConnectorManifest(`Stream '${streamName}' parent_streams must not contain duplicates`, code);
+  }
+  if (parents.includes(streamName)) {
+    throw invalidConnectorManifest(`Stream '${streamName}' parent_streams must not name the stream itself`, code);
+  }
+  const unknownParent = declaredStreamNames && parents.find((parent) => !declaredStreamNames.has(parent));
+  if (unknownParent) {
+    throw invalidConnectorManifest(
+      `Stream '${streamName}' parent_streams entry '${unknownParent}' must name another declared stream`,
+      code
+    );
+  }
+  if (stream.coverage_strategy !== "parent_detail_accounting") {
+    throw invalidConnectorManifest(
+      `Stream '${streamName}' declares parent_streams, which is only valid with coverage_strategy "parent_detail_accounting" (got "${stream.coverage_strategy as string}")`,
+      code
+    );
+  }
+}
+
 // Coverage policies that declare the manifest author's accepted-absence claim
 // for a stream (anything other than the `collect` default). Mirrors
 // packages/polyfill-connectors/src/coverage-policy-manifest-honesty.test.ts's
@@ -1425,6 +1477,7 @@ export function validateStreamEvidenceDeclarations(
     );
   }
   validateStreamStateStreamDeclaration(stream, code, declaredStreamNames);
+  validateStreamParentStreamsDeclaration(stream, code, declaredStreamNames);
 }
 
 // ---------------------------------------------------------------------------

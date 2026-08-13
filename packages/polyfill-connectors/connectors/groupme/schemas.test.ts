@@ -126,6 +126,23 @@ describe("GroupMe schemas", () => {
     assert.equal(result.ok, true);
   });
 
+  it("validates a provider-unavailable attachment without claiming blob bytes", () => {
+    const record = {
+      id: "msg-1:attachment:0:abcd1234abcd1234",
+      message_id: "msg-1",
+      message_stream: "group_messages",
+      type: "image",
+      content_type: "image/jpeg",
+      size_bytes: null,
+      content_sha256: null,
+      hydration_status: "unavailable",
+      hydration_error: "provider_object_unavailable",
+      blob_ref: null,
+    };
+    const result = validateRecord("attachments", record);
+    assert.equal(result.ok, true);
+  });
+
   it("rejects an attachments record missing the required message_id", () => {
     const record = {
       id: "msg-1:attachment:0:abcd1234abcd1234",

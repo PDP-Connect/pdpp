@@ -74,6 +74,8 @@ export interface DetailGapStartEntry {
   gap_id: string;
   /** Opaque, run-owned token required when settling a served recovery lease. */
   lease_id?: string;
+  /** Checkpoint-owning parent retained from the durable gap, when declared. */
+  parent_stream?: string | null;
   record_key?: string | number | null;
   reference_only?: true;
   status: "pending";
@@ -176,6 +178,7 @@ export interface DetailGapMessage {
   };
   lease_id?: string;
   list_cursor?: unknown;
+  /** Checkpoint-owning parent stream; must match DETAIL_COVERAGE.state_stream. */
   parent_stream?: string;
   reason: "rate_limited" | "retry_exhausted" | "temporary_unavailable" | "upstream_pressure";
   record_key: string | number;
@@ -214,6 +217,11 @@ export interface DetailCoverageMessage {
   covered?: number;
   gap_keys?: Array<string | number>;
   hydrated_keys: Array<string | number>;
+  /**
+   * Required keys accepted by an explicit optional-detail policy. A provider
+   * failure belongs here only after connector-specific evidence establishes a
+   * terminal unavailable object; status, age, or retry exhaustion alone do not.
+   */
   optional_skip_keys?: Array<string | number>;
   reference_only: true;
   required_keys: Array<string | number>;

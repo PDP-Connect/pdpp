@@ -34,13 +34,13 @@
 // No Playwright/CDP/raw-DOM terms. Closed connector evidence is revalidated
 // here before it can enter the durable spine.
 
-import { isNullish } from "../lib/nullish.ts";
 import {
   optionalContinuationField,
   projectRuntimeSkip,
-  selectAuthoritativeSkip,
   type RuntimeContinuationFact,
+  selectAuthoritativeSkip,
 } from "../../packages/polyfill-connectors/src/connector-runtime-protocol.ts";
+import { isNullish } from "../lib/nullish.ts";
 import { redactStderrTail } from "./stderr-redact.ts";
 
 // ── CLUSTER-EXCLUSIVE CONSTANTS ───────────────────────────────────────────────
@@ -475,12 +475,12 @@ interface DetailCoverageEntry {
 }
 
 interface KnownGap {
+  continuation?: unknown;
   kind: string;
   reason?: string;
   recovery_hint?: unknown;
   status?: string;
   stream?: string;
-  continuation?: unknown;
 }
 
 interface BuildCollectionFactsInput {
@@ -489,6 +489,8 @@ interface BuildCollectionFactsInput {
   durableDetailGaps: KnownGap[];
   emittedByStream: Map<string, number>;
   knownGaps: KnownGap[];
+  /** Manifest-declared checkpoint parents for a shared detail stream. */
+  manifestDetailParentStreamsByStream?: Map<string, ReadonlySet<string>>;
   /**
    * Manifest-declared checkpoint parent per stream (`state_stream`). Co-emitted
    * streams that ride a parent list stream's cursor and emit no DETAIL_COVERAGE
@@ -558,6 +560,7 @@ export function buildCollectionFacts({
   durableDetailGaps,
   detailCoverageByStateStream,
   manifestStateStreamByStream,
+  manifestDetailParentStreamsByStream,
   newState,
   committedStateStreams,
   persistState,
@@ -588,17 +591,27 @@ export function buildCollectionFacts({
   //     stream's cursor: they emit no DETAIL_COVERAGE, so the mapping is declared
   //     in the manifest via `state_stream` and threaded in here. DETAIL_COVERAGE
   //     wins when both are present.
-  const streamToStateStream = new Map<string, string>();
+  const streamToStateStreams = new Map<string, Set<string>>();
+  for (const [stream, parents] of manifestDetailParentStreamsByStream || new Map()) {
+    // Checkpoint facts describe this run's scope. The runtime separately
+    // retains the complete manifest parent set for ambiguity checks.
+    const inScopeParents = new Set([...parents].filter((parent) => scopeByStream.has(parent)));
+    if (inScopeParents.size) {
+      streamToStateStreams.set(stream, inScopeParents);
+    }
+  }
   for (const [stateStream, entries] of detailCoverageByStateStream) {
     for (const entry of entries) {
-      if (entry?.stream && !streamToStateStream.has(entry.stream)) {
-        streamToStateStream.set(entry.stream, stateStream);
+      if (entry?.stream) {
+        const parents = streamToStateStreams.get(entry.stream) || new Set<string>();
+        parents.add(stateStream);
+        streamToStateStreams.set(entry.stream, parents);
       }
     }
   }
   for (const [stream, stateStream] of manifestStateStreamByStream || []) {
-    if (!streamToStateStream.has(stream)) {
-      streamToStateStream.set(stream, stateStream);
+    if (!streamToStateStreams.has(stream)) {
+      streamToStateStreams.set(stream, new Set([stateStream]));
     }
   }
 
@@ -606,60 +619,75 @@ export function buildCollectionFacts({
   const committed = committedStateStreams instanceof Set ? committedStateStreams : new Set(committedStateStreams || []);
   const stagedStateStreams = new Set(Object.keys(newState || {}));
 
-  const checkpointForStateStream = (stateStream: string): string => {
+  const checkpointForStateStreams = (stateStreams: ReadonlySet<string>): string => {
     if (!persistState) {
       return "disabled";
     }
-    if (committed.has(stateStream)) {
+    if ([...stateStreams].every((stateStream) => committed.has(stateStream))) {
       return "committed";
     }
-    if (stagedStateStreams.has(stateStream)) {
+    if ([...stateStreams].some((stateStream) => !(committed.has(stateStream) || stagedStateStreams.has(stateStream)))) {
+      return "not_staged";
+    }
+    if ([...stateStreams].some((stateStream) => stagedStateStreams.has(stateStream))) {
       return "not_committed";
     }
     return "not_staged";
   };
 
-  // First declared considered (DETAIL_COVERAGE.considered) wins, else the
-  // required-keys count, else unknown (omitted). Never derived from collected.
+  const coverageEntriesForStream = (stream: string): DetailCoverageEntry[] =>
+    [...detailCoverageByStateStream.values()].flatMap((entries) => entries.filter((entry) => entry?.stream === stream));
+
+  const hasCoverageReportForEveryStateStream = (stream: string): boolean => {
+    const expectedParents = streamToStateStreams.get(stream);
+    if (!expectedParents?.size) {
+      return true;
+    }
+    return [...expectedParents].every((parent) =>
+      (detailCoverageByStateStream.get(parent) || []).some((entry) => entry?.stream === stream)
+    );
+  };
+
+  // Every independently checkpointed parent contributes to the detail
+  // stream's denominator. A missing parent count keeps the aggregate unknown;
+  // it must never be replaced with another parent's smaller denominator.
   const declaredConsideredForStream = (stream: string): number | null => {
-    let requiredKeysFallback: number | null = null;
-    for (const entries of detailCoverageByStateStream.values()) {
-      for (const entry of entries) {
-        if (entry?.stream !== stream) {
-          continue;
-        }
-        if (typeof entry.considered === "number") {
-          return entry.considered;
-        }
-        if (requiredKeysFallback === null && Array.isArray(entry.requiredKeys)) {
-          requiredKeysFallback = entry.requiredKeys.length;
-        }
+    if (!hasCoverageReportForEveryStateStream(stream)) {
+      return null;
+    }
+    const entries = coverageEntriesForStream(stream);
+    if (!entries.length) {
+      return null;
+    }
+    let total = 0;
+    for (const entry of entries) {
+      if (typeof entry.considered === "number") {
+        total += entry.considered;
+      } else if (Array.isArray(entry.requiredKeys)) {
+        total += entry.requiredKeys.length;
+      } else {
+        return null;
       }
     }
-    return requiredKeysFallback;
+    return total;
   };
 
-  // First declared covered count (DETAIL_COVERAGE.covered) wins, else unknown
-  // (omitted). Mirrors declaredConsideredForStream. The projection compares
-  // `considered` against `covered` when present so a full-sync stream that
-  // suppressed every unchanged record reads `complete`. Never inferred from
-  // collected; there is no required-keys fallback (covered is a run-outcome count,
-  // not a declared key set).
+  // Covered is similarly additive only when every parent declared it. One
+  // parent's count cannot prove another parent's work.
   const declaredCoveredForStream = (stream: string): number | null => {
-    for (const entries of detailCoverageByStateStream.values()) {
-      for (const entry of entries) {
-        if (entry?.stream !== stream) {
-          continue;
-        }
-        if (typeof entry.covered === "number") {
-          return entry.covered;
-        }
-      }
+    if (!hasCoverageReportForEveryStateStream(stream)) {
+      return null;
     }
-    return null;
+    const entries = coverageEntriesForStream(stream);
+    if (!entries.length || entries.some((entry) => typeof entry.covered !== "number")) {
+      return null;
+    }
+    return entries.reduce((total, entry) => total + (entry.covered as number), 0);
   };
 
-  const skipForStream = (stream: string): { reason: string; recovery_action?: string; continuation?: RuntimeContinuationFact } | null => {
+  const skipForStream = (
+    stream: string
+  ): { reason: string; recovery_action?: string; continuation?: RuntimeContinuationFact } | null => {
     const gap = selectAuthoritativeSkip(knownGaps, stream);
     if (!gap) {
       return null;
@@ -675,7 +703,7 @@ export function buildCollectionFacts({
     const covered = declaredCoveredForStream(stream);
     const streamSkip = skipForStream(stream);
     const continuation = streamSkip?.continuation;
-    const stateStream = streamToStateStream.get(stream) || stream;
+    const stateStreams = streamToStateStreams.get(stream) || new Set([stream]);
     return {
       collected: emittedByStream.get(stream) || 0,
       stream,
@@ -685,7 +713,7 @@ export function buildCollectionFacts({
       // Optional covered count (task 4.4): omit when unknown. When present the
       // projection compares `considered` against this instead of `collected`.
       ...(covered === null ? {} : { covered }),
-      checkpoint: checkpointForStateStream(stateStream),
+      checkpoint: checkpointForStateStreams(stateStreams),
       ...(continuation ? { collection_scope: continuation.boundary } : {}),
       pending_detail_gaps: pendingDetailGapsForStream(stream),
       skipped: streamSkip,
@@ -846,6 +874,9 @@ function classifyKnownGapSeverity({
 // ── KNOWN GAP BUILDER ─────────────────────────────────────────────────────────
 
 interface BuildKnownGapInput {
+  continuation?:
+    | import("../../packages/polyfill-connectors/src/connector-runtime-protocol.ts").RuntimeContinuationFact
+    | null;
   diagnostics?: unknown;
   explicitSelection?: boolean;
   interactionKind?: string | null;
@@ -857,7 +888,6 @@ interface BuildKnownGapInput {
   severity?: string | null;
   stream?: string | null;
   unsupportedInDefaultScope?: boolean;
-  continuation?: import("../../packages/polyfill-connectors/src/connector-runtime-protocol.ts").RuntimeContinuationFact | null;
 }
 
 export function buildKnownGap({

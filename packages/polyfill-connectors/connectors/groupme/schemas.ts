@@ -100,7 +100,7 @@ export const AttachmentRecordSchema = z.object({
   content_type: z.string(),
   size_bytes: z.number().nullable(),
   content_sha256: z.string().nullable(),
-  hydration_status: z.enum(["deferred", "failed", "hydrated"]),
+  hydration_status: z.enum(["deferred", "failed", "hydrated", "unavailable"]),
   hydration_error: z.string().nullable(),
   blob_ref: BlobRefSchema.nullable(),
 });
