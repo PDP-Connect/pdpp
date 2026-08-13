@@ -739,4 +739,45 @@ test("security: harden consent token handoff", async (t) => {
       assert.equal(countConsentEvents(deniedCode, "consent.approved"), 0);
     });
   });
+
+  await t.test("ordinary mixed approval and denial contention has one terminal outcome", async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const initiated = await initiateGrantRequest(asUrl, spotifyManifest);
+      const deviceCode = parsePendingConsentRequestUri(initiated.request_uri);
+      assert.ok(deviceCode);
+      const pending = await getPendingConsent(deviceCode, { finalizeReview: true, subjectId: OWNER_SUBJECT_ID });
+      assert.ok(pending?.reviewRevision);
+      const attempts = await Promise.allSettled(
+        Array.from({ length: 16 }, (_, index) =>
+          index % 2 === 0
+            ? approveGrant(deviceCode, OWNER_SUBJECT_ID, { approval_review_revision: pending.reviewRevision })
+            : denyGrant(deviceCode)
+        )
+      );
+      let approvedToken: string | null = null;
+      for (const attempt of attempts) {
+        if (
+          attempt.status === "fulfilled" &&
+          typeof attempt.value === "object" &&
+          attempt.value !== null &&
+          "token" in attempt.value &&
+          typeof attempt.value.token === "string"
+        ) {
+          approvedToken = attempt.value.token;
+          break;
+        }
+      }
+      const terminal = (await getDb()
+        .prepare("SELECT status, token_id FROM pending_consents WHERE device_code = ?")
+        .get(deviceCode)) as { status: string; token_id: string | null };
+      assert.ok(terminal.status === "approved" || terminal.status === "denied");
+      assert.equal(terminal.status === "approved", approvedToken !== null);
+      assert.equal(countConsentEvents(deviceCode, "consent.approved"), terminal.status === "approved" ? 1 : 0);
+      assert.equal(countConsentEvents(deviceCode, "consent.denied"), terminal.status === "denied" ? 1 : 0);
+      assert.equal(terminal.status === "denied", terminal.token_id === null);
+      if (approvedToken) {
+        assert.equal((await introspect(approvedToken)).active, true);
+      }
+    });
+  });
 });

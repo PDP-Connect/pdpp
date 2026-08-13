@@ -82,9 +82,13 @@ test("owner-device-approval-atomicity: rollback, owner concurrency, and cross-su
 });
 
 test("terminal decisions: SQLite approval and denial arbitrate without contradictory evidence", async () => {
+  await assertFocusedTestsPass("test/as-device-decision-outcome-pure.test.ts", [
+    "executeAsDeviceDecision: approval_conflict maps to HTTP 409 and preserves trace ids",
+  ]);
   await assertFocusedTestsPass("test/owner-device-approval-atomicity.test.ts", [
     "owner-device approval wins a denial race without contradictory rejection",
     "owner-device denial wins before approval and denial event rolls back on failure",
+    "owner-device mixed approval and denial contention has one durable terminal outcome",
   ]);
   await assertFocusedNestedTestsPass(
     "test/security-consent-token-handoff.test.ts",
@@ -92,6 +96,7 @@ test("terminal decisions: SQLite approval and denial arbitrate without contradic
     [
       "ordinary approval wins a paused denial without contradictory denial evidence",
       "ordinary denial is terminal and rolls back its event on transaction failure",
+      "ordinary mixed approval and denial contention has one terminal outcome",
     ],
     { forceSqlite: true }
   );

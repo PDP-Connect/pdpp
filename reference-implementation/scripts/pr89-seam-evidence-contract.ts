@@ -290,6 +290,7 @@ export const CASE_DEFINITIONS = {
   "case-8": {
     fixturePaths: [],
     implementationInputPaths: [
+      "reference-implementation/operations/as-device-decision/index.ts",
       "reference-implementation/operations/as-consent-decision/index.ts",
       "reference-implementation/operations/as-consent-exchange/index.ts",
       "reference-implementation/server/auth.ts",
@@ -324,6 +325,7 @@ export const CASE_DEFINITIONS = {
       "reference-implementation/server/routes/as-agent-connect.ts",
       "reference-implementation/server/routes/as-consent.ts",
       "reference-implementation/test/agent-cli.test.ts",
+      "reference-implementation/test/as-device-decision-outcome-pure.test.ts",
       "reference-implementation/test/auth-consent-device-postgres-path.test.ts",
       "reference-implementation/test/batch-consent-per-source-gate.test.ts",
       "reference-implementation/test/owner-device-approval-atomicity.test.ts",

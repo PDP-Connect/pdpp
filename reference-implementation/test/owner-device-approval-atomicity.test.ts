@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -27,8 +30,8 @@ interface StartedOwnerDeviceAuth {
   user_code: string;
 }
 
-function setupSqliteAuth() {
-  initDb();
+function setupSqliteAuth(path = ":memory:") {
+  initDb(path);
   return seedPreRegisteredClients([
     {
       client_id: CLIENT_ID,
@@ -350,4 +353,34 @@ test("owner-device denial wins before approval and denial event rolls back on fa
   assert.equal(countOwnerTokensForClient(), 0);
   assert.equal(countOwnerDeviceEvents(denied.device_code, "request.rejected"), 1);
   assert.equal(countOwnerDeviceEvents(denied.device_code, "consent.approved"), 0);
+});
+
+test("owner-device mixed approval and denial contention has one durable terminal outcome", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pdpp-owner-contention-"));
+  const dbPath = join(directory, "pdpp.sqlite");
+  try {
+    setupSqliteAuth(dbPath);
+    const started = await startOwnerDeviceAuth();
+    await Promise.allSettled(
+      Array.from({ length: 16 }, (_, index) =>
+        index % 2 === 0
+          ? approveOwnerDeviceAuthorization(started.user_code, "owner_local")
+          : denyOwnerDeviceAuthorization(started.user_code, "owner_local")
+      )
+    );
+    const row = ownerDeviceRow(started.device_code);
+    assert.ok(row.status === "approved" || row.status === "denied");
+    assert.equal(countOwnerDeviceEvents(started.device_code, "consent.approved"), row.status === "approved" ? 1 : 0);
+    assert.equal(countOwnerDeviceEvents(started.device_code, "request.rejected"), row.status === "denied" ? 1 : 0);
+    assert.equal(countOwnerTokensForClient(), row.status === "approved" ? 1 : 0);
+
+    closeDb();
+    initDb(dbPath);
+    assert.deepEqual(ownerDeviceRow(started.device_code), row, "terminal decision survives close/reopen");
+    assert.equal(countOwnerDeviceEvents(started.device_code, "consent.approved"), row.status === "approved" ? 1 : 0);
+    assert.equal(countOwnerDeviceEvents(started.device_code, "request.rejected"), row.status === "denied" ? 1 : 0);
+  } finally {
+    closeDb();
+    rmSync(directory, { force: true, recursive: true });
+  }
 });
