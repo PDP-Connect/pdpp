@@ -225,6 +225,7 @@ export const BROWSER_BOUND_CONNECTORS = [
   "shopify",
   "uber",
   "usaa",
+  "whoop",
   "wholefoods",
 ] as const;
 

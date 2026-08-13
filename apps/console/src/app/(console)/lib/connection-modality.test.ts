@@ -41,6 +41,7 @@ test("supported browser-collector set is derived from browser-bound production r
     "heb",
     "reddit",
     "usaa",
+    "whoop",
   ]);
 });
 
@@ -78,6 +79,7 @@ test("isSupportedBrowserCollectorConnector follows shipped runtime support", () 
   assert.equal(isSupportedBrowserCollectorConnector("chatgpt"), true);
   assert.equal(isSupportedBrowserCollectorConnector("reddit"), true);
   assert.equal(isSupportedBrowserCollectorConnector("usaa"), true);
+  assert.equal(isSupportedBrowserCollectorConnector("whoop"), true);
   assert.equal(isSupportedBrowserCollectorConnector("anthropic"), false);
   assert.equal(isSupportedBrowserCollectorConnector("claude_code"), false);
   assert.equal(isSupportedBrowserCollectorConnector(""), false);
@@ -146,6 +148,7 @@ test("isBrowserBoundConnector narrows only the browser-bound keys", () => {
   assert.equal(isBrowserBoundConnector("amazon"), true);
   assert.equal(isBrowserBoundConnector("chase"), true);
   assert.equal(isBrowserBoundConnector("chatgpt"), true);
+  assert.equal(isBrowserBoundConnector("whoop"), true);
   assert.equal(isBrowserBoundConnector("claude_code"), false);
   assert.equal(isBrowserBoundConnector("gmail"), false);
   assert.equal(isBrowserBoundConnector(""), false);

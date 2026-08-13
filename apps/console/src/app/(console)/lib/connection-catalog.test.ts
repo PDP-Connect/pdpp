@@ -135,7 +135,11 @@ test("heb is cataloged as one browser-bound account setup with optional stored c
   assert.equal(sourceSetupSecondaryAction(heb), null);
   assert.match(sourceSetupGuidance(heb), SECURE_BROWSER_SESSION_RE);
   assert.match(sourceSetupGuidance(heb), SAVE_SIGN_IN_DETAILS_RE);
-  assert.deepEqual(browserCollectorEntries(catalog), []);
+  assert.equal(
+    browserCollectorEntries(catalog).some((entry) => entry.connectorKey === "heb"),
+    false,
+    "heb must not also appear in browser-collector enrollment"
+  );
 });
 
 test("browser-bound static-secret-capable connectors get one primary choice generically", () => {
@@ -458,7 +462,10 @@ test("the grouping helpers partition the catalog without overlap or loss", async
   assert.equal(total, catalog.length, "every entry must land in exactly one render group");
   // At least one of each supported path class that still has committed entries.
   assert.ok(localCollectorEntries(catalog).length >= 2, "claude_code + codex");
-  assert.equal(browserCollectorEntries(catalog).length, 0, "heb now routes through browser-bound static-secret setup");
+  assert.ok(
+    browserCollectorEntries(catalog).some((entry) => entry.connectorKey === "whoop"),
+    "whoop uses browser-collector enrollment"
+  );
   assert.ok(browserBoundRunbookEntries(catalog).length >= 1);
   assert.equal(
     staticSecretConnectEntries(catalog).length,
