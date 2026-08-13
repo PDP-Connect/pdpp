@@ -57,6 +57,8 @@ function repoRoot(): string {
 // invocation and cannot leak.
 const FIXTURE_COMMIT_CONFIG = [
   "-c",
+  "commit.gpgsign=false",
+  "-c",
   "core.hooksPath=/dev/null",
   "-c",
   "user.email=fixture@example.test",
