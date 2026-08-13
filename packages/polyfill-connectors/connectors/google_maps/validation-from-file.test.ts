@@ -490,9 +490,21 @@ test("outcome proof: a 110 MiB sparse Timeline export separates streaming from w
 
     const { spawnSync } = await import("node:child_process");
     const childPath = new URL("./oversized-element-oracle.test.child.ts", import.meta.url);
+    // Keep a wide margin between the 110 MiB input and the heap ceiling.
+    // A 220 MiB ceiling was close enough for V8's string representation to
+    // let the whole-buffer mutation survive on some GitHub runners.
+    const heapLimitMiB = 128;
     const wholeBuffer = spawnSync(
       process.execPath,
-      ["--max-old-space-size=220", "--import", "tsx", childPath.pathname, path, String(fileSize), "whole-buffer"],
+      [
+        `--max-old-space-size=${heapLimitMiB}`,
+        "--import",
+        "tsx",
+        childPath.pathname,
+        path,
+        String(fileSize),
+        "whole-buffer",
+      ],
       { encoding: "utf8", timeout: 30_000 }
     );
     assert.notEqual(
@@ -502,7 +514,7 @@ test("outcome proof: a 110 MiB sparse Timeline export separates streaming from w
     );
     const result = spawnSync(
       process.execPath,
-      ["--max-old-space-size=220", "--import", "tsx", childPath.pathname, path, String(fileSize)],
+      [`--max-old-space-size=${heapLimitMiB}`, "--import", "tsx", childPath.pathname, path, String(fileSize)],
       { encoding: "utf8", timeout: 30_000 }
     );
 
