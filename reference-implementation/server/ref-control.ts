@@ -129,12 +129,7 @@ import {
   projectLocalDeviceProgress,
 } from "./connector-outbox-axis.ts";
 import {
-  type ConnectorListSummaryTerminalProjection,
-  getConnectorListSummaryTerminalProjectionBatch,
   listConnectorSummaryEvidence,
-  MAX_TERMINAL_PROJECTION_BATCH_IDS,
-  publishConnectorListSummaryTerminalProjection,
-  TERMINAL_PROJECTION_PUBLICATION_RACE,
 } from "./connector-summary-read-model.ts";
 import { filterRunGapsProvenCompleteByReport } from "./continuation-proof.ts";
 import { getSqliteStoreCacheIdentity } from "./db.ts";
@@ -187,7 +182,6 @@ import {
   createSqliteConnectorInstanceStore,
   isOwnerVisibleConnectorInstance,
 } from "./stores/connector-instance-store.ts";
-import type { ConnectorMaintenanceCursorLease } from "./stores/connector-maintenance-cursor-store.ts";
 import {
   getDefaultDeviceExporterStore,
   listSourceInstanceHeartbeatsByConnectionIds,
@@ -6734,72 +6728,6 @@ async function projectConnectorSummaryIdentityPage(
  * health/verdict calculation; this helper only supplies its result to the
  * revision-fenced terminal projection writer.
  */
-export async function rebuildConnectorListSummaryTerminalProjectionPage(
-  controller: ControllerLike | null | undefined,
-  connectorInstanceIds: readonly string[],
-  options: {
-    readonly maintenanceLease?: ConnectorMaintenanceCursorLease;
-    readonly ownerSubjectId?: string;
-  } = {}
-): Promise<{ readonly attempted: number; readonly published: number }> {
-  const ids = [...new Set(connectorInstanceIds.filter((id) => id.length > 0))];
-  if (ids.length === 0) {
-    return { attempted: 0, published: 0 };
-  }
-  if (ids.length > MAX_TERMINAL_PROJECTION_BATCH_IDS) {
-    throw new RangeError(
-      `connector list-summary projection rebuild accepts at most ${MAX_TERMINAL_PROJECTION_BATCH_IDS} connection ids`
-    );
-  }
-  const projectionStates = await getConnectorListSummaryTerminalProjectionBatch(ids);
-  const idsNeedingPublication = ids.filter((id) => projectionStates.get(id)?.state !== "current");
-  if (idsNeedingPublication.length === 0) {
-    return { attempted: 0, published: 0 };
-  }
-  const ownerSubjectId = options.ownerSubjectId ?? REFERENCE_OWNER_SUBJECT_ID;
-  const store = getConnectorInstanceStore();
-  const rows = (await Promise.all(idsNeedingPublication.map((id) => Promise.resolve(store.get(id)))))
-    .filter(
-      (instance): instance is NonNullable<typeof instance> =>
-        instance !== null && instance.ownerSubjectId === ownerSubjectId && isOwnerVisibleConnectorInstance(instance)
-    )
-    .map((instance) => instance as unknown as ConnectorInstanceRow);
-  let attempted = 0;
-  let published = 0;
-  await projectConnectorSummaryIdentityPage(controller, {
-    includeRunSummaries: "singleton-active",
-    onProjectedSummary: async ({ canonicalEvidenceRevision, runtime, summary }) => {
-      attempted += 1;
-      const computedAt = new Date().toISOString();
-      const projection: ConnectorListSummaryTerminalProjection = {
-        runtime: { observed_at: computedAt, projection: runtime },
-        summary: summary as unknown as Record<string, unknown>,
-      };
-      if (
-        await publishConnectorListSummaryTerminalProjection({
-          canonicalEvidenceRevision,
-          computedAt,
-          connectorInstanceId: summary.connector_instance_id,
-          ...(options.maintenanceLease ? { maintenanceLease: options.maintenanceLease } : {}),
-          projection,
-        })
-      ) {
-        published += 1;
-      }
-    },
-    ownerSubjectId,
-    rows,
-  });
-  if (published !== attempted) {
-    const error = new Error(
-      `Connector list-summary projection publication lost a canonical or maintenance-lease race (${published}/${attempted}); retry the page.`
-    );
-    error.name = TERMINAL_PROJECTION_PUBLICATION_RACE;
-    throw error;
-  }
-  return { attempted, published };
-}
-
 /**
  * Page summary synthesis starts from immutable owner-visible identities. It
  * deliberately does not use the all-list synthesizer: every durable product

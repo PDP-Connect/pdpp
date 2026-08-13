@@ -264,7 +264,6 @@ import {
   listConnectorSummaryPage,
   listOwnerVisibleConnectorInstances,
   listPendingApprovals,
-  rebuildConnectorListSummaryTerminalProjectionPage,
 } from "./ref-control.ts";
 import {
   DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
@@ -7321,13 +7320,6 @@ export async function startServer(opts: ServerOpts = {}) {
         ...(args.firstTranche === undefined ? {} : { firstTranche: args.firstTranche }),
         maxDurationMs: args.maxDurationMs,
         ...(args.lease ? { maintenanceLease: args.lease } : {}),
-        onPageConverged: async (connectorInstanceIds, maintenanceLease) => {
-          await rebuildConnectorListSummaryTerminalProjectionPage(
-            controller,
-            connectorInstanceIds,
-            maintenanceLease ? { maintenanceLease } : {}
-          );
-        },
         pageSize: args.pageSize ?? CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
       }),
     runHistoryBackfillStage,

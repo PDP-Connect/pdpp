@@ -456,12 +456,6 @@ test(
 // absent — i.e. no usable terminal/stream facts). The dirty-first prefix
 // cannot help those 30 rows: they carry no dirty marker at all. Convergence
 // for them is the cursor walk's job, and these tests pin exactly that.
-//
-// (`list_summary_projection_state` was stale for all 45 in the same snapshot.
-// That column is written to 'stale' and never republished, and no consumer
-// reads it — `publishConnectorListSummaryTerminalProjection` has zero
-// production callers — so it is not what the owner is seeing. Tracked as a
-// separate finding rather than conflated with this fix.)
 // ---------------------------------------------------------------------------
 
 test(
