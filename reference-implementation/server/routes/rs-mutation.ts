@@ -113,7 +113,9 @@ function mapSystemicIngestError(err: unknown): (Error & { code?: string }) | nul
   if (!(err instanceof RecordsIngestSystemicFailureError)) {
     return null;
   }
-  console.warn(`[records-ingest] systemic ingest failure: ${err.message}`);
+  console.warn(
+    `[records-ingest] systemic ingest failure code=${err.code} retryable_failure_count=${err.retryableFailureCount}`
+  );
   const mapped = new Error(SYSTEMIC_INGEST_PUBLIC_MESSAGE) as Error & { code?: string };
   mapped.code = err.code;
   return mapped;

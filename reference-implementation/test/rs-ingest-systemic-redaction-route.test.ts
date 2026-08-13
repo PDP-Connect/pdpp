@@ -20,6 +20,7 @@ const INTERNAL_RUN_ID = "run_internal_secret_storage_detail";
 const NOW = "2026-08-13T00:00:00.000Z";
 const PUBLIC_MESSAGE = "Ingest failed due to a transient storage error; retry later.";
 const INTERNAL_DETAIL_RE = /internal_secret_storage_detail|already terminal|refusing to commit/;
+const SYSTEMIC_CODE_RE = /ingest_batch_storage_error/;
 
 interface RouteResponse {
   json: (body: unknown) => unknown;
@@ -175,6 +176,14 @@ test("real ingest route redacts systemic storage diagnostics in the public 503 e
   await seedConnection();
   seedCancelledRun();
   const route = mountRoute();
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  t.after(() => {
+    console.warn = originalWarn;
+  });
 
   await route.handler(
     {
@@ -195,4 +204,6 @@ test("real ingest route redacts systemic storage diagnostics in the public 503 e
   assert.equal(body.error?.code, "ingest_batch_storage_error");
   assert.equal(body.error?.message, PUBLIC_MESSAGE);
   assert.doesNotMatch(JSON.stringify(body), INTERNAL_DETAIL_RE);
+  assert.doesNotMatch(JSON.stringify(warnings), INTERNAL_DETAIL_RE);
+  assert.match(JSON.stringify(warnings), SYSTEMIC_CODE_RE);
 });

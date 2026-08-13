@@ -5742,7 +5742,11 @@ function buildRsApp(opts: ServerOpts = {}) {
       )[0] ?? null,
     getSyncState,
     handleError,
-    ingestRecord: (target: unknown, record: unknown, options?: { requireConnectionAdmission?: boolean; runId?: string | null }) =>
+    ingestRecord: (
+      target: unknown,
+      record: unknown,
+      options?: { requireConnectionAdmission?: boolean; runId?: string | null }
+    ) =>
       ingestRecord(target as Parameters<typeof ingestRecord>[0], record as Parameters<typeof ingestRecord>[1], options),
     // Same cache the mutation routes below already invalidate on every other
     // connection-mutating action (revoke, reactivate, schedule, run, rename,
