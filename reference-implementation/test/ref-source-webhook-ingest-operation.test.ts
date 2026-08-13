@@ -24,6 +24,10 @@ function sign(body: string, timestamp = String(Math.floor(NOW_MS / 1000)), event
   return `sha256=${createHmac("sha256", SECRET).update(`${eventId}.${timestamp}.${body}`).digest("hex")}`;
 }
 
+function bodyHash(body: string): string {
+  return createHmac("sha256", SECRET).update(body).digest("hex");
+}
+
 function deps(overrides: Partial<SourceWebhookDependencies> = {}): SourceWebhookDependencies {
   return {
     claimEvent: () => true,
@@ -204,10 +208,15 @@ test("ref.source-webhook maps run trigger to scheduler signal only", async () =>
 
 test("ref.source-webhook starts webhook-classified run when run dependency is available", async () => {
   let signaled = false;
+  let genericClaims = 0;
   let capturedRunRequest: Parameters<NonNullable<SourceWebhookDependencies["requestRun"]>>[0] | undefined;
   const result = await executeSourceWebhook(
     input('{"action":"schedule_run"}'),
     deps({
+      claimEvent: () => {
+        genericClaims += 1;
+        return true;
+      },
       projectAutomationPolicy: () => ({
         allowed_to_start: true,
         automation_mode: "unattended",
@@ -230,9 +239,12 @@ test("ref.source-webhook starts webhook-classified run when run dependency is av
   );
 
   assert.equal(signaled, false);
+  assert.equal(genericClaims, 0, "a fresh receipt-bound run must not create a generic claim");
   assert.ok(capturedRunRequest && result.run);
   assert.equal(capturedRunRequest.connectorInstanceId, "cin_gmail_owner_custom_second");
   assert.equal(capturedRunRequest.ownerSubjectId, "owner_custom");
+  assert.equal(capturedRunRequest.sourceId, "gmail");
+  assert.equal(capturedRunRequest.bodyHash, bodyHash('{"action":"schedule_run"}'));
   assert.equal(capturedRunRequest.triggerKind, "webhook");
   assert.equal(capturedRunRequest.automationPolicy.trigger_kind, "webhook");
   assert.equal(result.run.run_id, "run_webhook");
@@ -314,6 +326,8 @@ test("ref.source-webhook canonicalizes a URL-shaped configured connector id for 
   assert.equal(capturedPolicy.connectorId, "slack");
   assert.equal(capturedRunRequest.connectorId, "slack");
   assert.equal(capturedRunRequest.connectorInstanceId, "cin_slack_webhook");
+  assert.equal(capturedRunRequest.sourceId, "gmail");
+  assert.equal(capturedRunRequest.bodyHash, bodyHash('{"action":"schedule_run"}'));
 });
 
 test("ref.source-webhook does not start webhook run when automation policy blocks it", async () => {
@@ -338,4 +352,74 @@ test("ref.source-webhook does not start webhook run when automation policy block
   assert.ok(result.automation_policy);
   assert.equal(result.automation_policy.automation_mode, "manual_only");
   assert.equal(result.run, null);
+});
+
+test("ref.source-webhook preserves a blocked generic claim when policy later allows runs", async () => {
+  let allowed = false;
+  let claimed = false;
+  let runCalls = 0;
+  const operationDeps = deps({
+    claimEvent: () => {
+      if (claimed) {
+        return false;
+      }
+      claimed = true;
+      return true;
+    },
+    projectAutomationPolicy: () => ({ allowed_to_start: allowed, trigger_kind: "webhook" }),
+    requestRun: () => {
+      if (claimed) {
+        return null;
+      }
+      runCalls += 1;
+      return { run_id: "run_after_block", status: "started", trace_id: "trc_after_block" };
+    },
+  });
+
+  const first = await executeSourceWebhook(input('{"action":"schedule_run"}'), operationDeps);
+  allowed = true;
+  const retry = await executeSourceWebhook(input('{"action":"schedule_run"}'), operationDeps);
+
+  assert.equal(first.duplicate, false);
+  assert.equal(retry.duplicate, true);
+  assert.equal(runCalls, 0, "a policy transition must not re-admit a generic-claimed event");
+});
+
+test("ref.source-webhook preserves a fallback generic claim when the controller later becomes available", async () => {
+  let controllerAvailable: () => boolean = () => false;
+  let claimed = false;
+  let runCalls = 0;
+  let schedulerSignals = 0;
+  const operationDeps = deps({
+    claimEvent: () => {
+      if (claimed) {
+        return false;
+      }
+      claimed = true;
+      return true;
+    },
+    projectAutomationPolicy: () => ({ allowed_to_start: true, trigger_kind: "webhook" }),
+    requestRun: () => {
+      if (!controllerAvailable()) {
+        return null;
+      }
+      if (claimed) {
+        return null;
+      }
+      runCalls += 1;
+      return { run_id: "run_after_fallback", status: "started", trace_id: "trc_after_fallback" };
+    },
+    signalScheduler: () => {
+      schedulerSignals += 1;
+    },
+  });
+
+  const first = await executeSourceWebhook(input('{"action":"schedule_run"}'), operationDeps);
+  controllerAvailable = () => true;
+  const retry = await executeSourceWebhook(input('{"action":"schedule_run"}'), operationDeps);
+
+  assert.equal(first.duplicate, false);
+  assert.equal(retry.duplicate, true);
+  assert.equal(schedulerSignals, 1);
+  assert.equal(runCalls, 0, "a controller transition must not re-admit a generic-claimed event");
 });

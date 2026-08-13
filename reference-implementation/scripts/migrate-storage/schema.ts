@@ -54,6 +54,7 @@ const TABLE_ORDER = [
   "device_source_instances",
   "device_ingest_batch_outcomes",
   "source_webhook_events",
+  "source_webhook_run_receipts",
   "connector_state",
   "grant_connector_state",
   "connector_schedules",

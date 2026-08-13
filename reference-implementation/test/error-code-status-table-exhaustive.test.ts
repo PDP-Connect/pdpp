@@ -82,6 +82,7 @@ const EXPECTED_CODE_TO_STATUS = {
   resource_limit: 413,
   run_already_active: 409,
   run_owner_mismatch: 403,
+  source_webhook_event_conflict: 409,
   unknown_field: 400,
   unsupported_version: 400,
 };

@@ -31,8 +31,14 @@ import {
   getOne,
   iterateDynamicSqlAcknowledged,
   referenceQueries,
+  writeTransaction,
 } from "../../lib/db.ts";
-import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
+import {
+  getStorageBackendKind,
+  isPostgresStorageBackend,
+  postgresQuery,
+  withPostgresTransaction,
+} from "../postgres-storage.ts";
 
 // ─── Domain records (public, semantic) ──────────────────────────────────────
 
@@ -72,6 +78,47 @@ export interface ActiveRunRecord {
   readonly started_at: string;
   readonly trace_id: string;
 }
+
+/**
+ * Durable source-webhook dispatch result. This is intentionally separate
+ * from `controller_active_runs`: active rows are deleted when a run reaches a
+ * terminal state, but a webhook retry must still recover the original handle.
+ */
+export interface SourceWebhookRunReceipt {
+  readonly action: "schedule_run";
+  readonly automation_mode: string | null;
+  readonly automation_summary: string | null;
+  readonly body_hash: string;
+  readonly connector_id: string;
+  readonly connector_instance_id: string;
+  readonly event_id: string;
+  readonly owner_subject_id: string;
+  readonly run_id: string;
+  readonly source_id: string;
+  readonly started_at: string;
+  readonly trace_id: string;
+}
+
+export interface SourceWebhookRunAdmissionInput {
+  readonly active_run: ActiveRunRecord;
+  readonly source_event: {
+    readonly action: "schedule_run";
+    readonly automation_mode: string | null;
+    readonly automation_summary: string | null;
+    readonly body_hash: string;
+    readonly event_id: string;
+    readonly owner_subject_id: string;
+    readonly received_at: string;
+    readonly source_id: string;
+  };
+}
+
+export type SourceWebhookRunAdmission =
+  | { readonly kind: "admitted" }
+  | { readonly kind: "active_run_exists" }
+  | { readonly kind: "generic_claim_exists" }
+  | { readonly kind: "replay"; readonly receipt: SourceWebhookRunReceipt }
+  | { readonly kind: "conflict"; readonly receipt: SourceWebhookRunReceipt };
 
 export interface SchedulerRunHistoryRecord {
   readonly attempt: number;
@@ -122,6 +169,7 @@ export interface SchedulerLastRunTimeRecord {
 
 // ─── Public store surface ───────────────────────────────────────────────────
 
+// biome-ignore assist/source/useSortedInterfaceMembers: The interface is grouped by lifecycle concern, not alphabetically.
 export interface SchedulerStore {
   // Scheduler run history + interval gate timestamps.
   appendRunHistory: (record: SchedulerRunHistoryRecord) => Promise<void> | void;
@@ -130,9 +178,21 @@ export interface SchedulerStore {
   createSchedule: (record: ScheduleCreate) => Promise<void> | void;
 
   // Active-run registry — semantic lifecycle verbs.
+  /**
+   * Atomically creates the durable source-event receipt and its active-run
+   * admission. A replay returns the original receipt; a different identity
+   * under the same source/event key is a conflict.
+   */
+  admitSourceWebhookRun?: (
+    input: SourceWebhookRunAdmissionInput
+  ) => Promise<SourceWebhookRunAdmission> | SourceWebhookRunAdmission;
   deleteActiveRun: (connectorInstanceId: string, runId: string) => Promise<void> | void;
   deleteSchedule: (connectorInstanceId: string) => Promise<void> | void;
   getActiveRun: (connectorInstanceId: string) => Promise<ActiveRunRecord | null> | ActiveRunRecord | null;
+  getSourceWebhookRunReceipt?: (
+    sourceId: string,
+    eventId: string
+  ) => Promise<SourceWebhookRunReceipt | null> | SourceWebhookRunReceipt | null;
   getLatestRunHistoryForConnection: (
     connectorInstanceId: string,
     status?: string | null
@@ -365,7 +425,64 @@ function requireRunHistoryConnectorInstanceId(record: SchedulerRunHistoryRecord)
   return record.connectorInstanceId;
 }
 
+function sourceWebhookReceiptMatches(receipt: SourceWebhookRunReceipt, input: SourceWebhookRunAdmissionInput): boolean {
+  const { active_run: activeRun, source_event: sourceEvent } = input;
+  return (
+    receipt.source_id === sourceEvent.source_id &&
+    receipt.event_id === sourceEvent.event_id &&
+    receipt.body_hash === sourceEvent.body_hash &&
+    receipt.connector_id === activeRun.connector_id &&
+    receipt.connector_instance_id === (activeRun.connector_instance_id ?? activeRun.connector_id) &&
+    receipt.owner_subject_id === sourceEvent.owner_subject_id &&
+    receipt.action === sourceEvent.action
+  );
+}
+
+function sourceWebhookReplayOutcome(
+  receipt: SourceWebhookRunReceipt,
+  input: SourceWebhookRunAdmissionInput
+): Extract<SourceWebhookRunAdmission, { kind: "conflict" | "replay" }> {
+  return sourceWebhookReceiptMatches(receipt, input) ? { kind: "replay", receipt } : { kind: "conflict", receipt };
+}
+
+function sourceWebhookReceiptInsertParameters(input: SourceWebhookRunAdmissionInput): (string | null)[] {
+  const { active_run: activeRun, source_event: sourceEvent } = input;
+  return [
+    sourceEvent.source_id,
+    sourceEvent.event_id,
+    sourceEvent.body_hash,
+    activeRun.connector_id,
+    activeRun.connector_instance_id ?? activeRun.connector_id,
+    sourceEvent.owner_subject_id,
+    sourceEvent.action,
+    activeRun.run_id,
+    activeRun.trace_id,
+    sourceEvent.automation_mode,
+    sourceEvent.automation_summary,
+    activeRun.started_at,
+  ];
+}
+
+class SourceWebhookRunAdmissionActiveConflict extends Error {
+  constructor() {
+    super("A controller active run already exists for this connector instance.");
+  }
+}
+
+function activeRunInsertParameters(record: ActiveRunRecord): (string | number)[] {
+  return [
+    record.connector_instance_id ?? record.connector_id,
+    record.connector_id,
+    record.run_id,
+    record.trace_id,
+    record.scenario_id,
+    record.started_at,
+    record.run_generation,
+  ];
+}
+
 export function createSqliteSchedulerStore(): SchedulerStore {
+  // biome-ignore assist/source/useSortedKeys: Store verbs follow the lifecycle order documented by SchedulerStore.
   return {
     appendRunHistory(record) {
       const connectorInstanceId = requireRunHistoryConnectorInstanceId(record);
@@ -403,6 +520,47 @@ export function createSqliteSchedulerStore(): SchedulerStore {
       ]);
     },
 
+    admitSourceWebhookRun(input) {
+      try {
+        return writeTransaction(() => {
+          const existing = getOne<SourceWebhookRunReceipt>(referenceQueries.sourceWebhookRunsGetReceipt, [
+            input.source_event.source_id,
+            input.source_event.event_id,
+          ]);
+          if (existing) {
+            return sourceWebhookReplayOutcome(existing, input);
+          }
+
+          const genericClaim = exec(referenceQueries.sourceWebhooksClaimEvent, [
+            input.source_event.source_id,
+            input.source_event.event_id,
+            input.source_event.body_hash,
+            input.source_event.received_at,
+          ]);
+          if (genericClaim.changes === 0) {
+            return { kind: "generic_claim_exists" } as const;
+          }
+
+          exec(referenceQueries.sourceWebhookRunsInsertReceipt, sourceWebhookReceiptInsertParameters(input));
+          const activeRun = exec(
+            referenceQueries.controllerUpsertActiveRun,
+            activeRunInsertParameters(input.active_run)
+          );
+          if (activeRun.changes === 0) {
+            // Throwing rolls back the receipt too. A bare receipt without its
+            // corresponding durable admission would make a retry lie.
+            throw new SourceWebhookRunAdmissionActiveConflict();
+          }
+          return { kind: "admitted" } as const;
+        });
+      } catch (err) {
+        if (err instanceof SourceWebhookRunAdmissionActiveConflict) {
+          return { kind: "active_run_exists" } as const;
+        }
+        throw err;
+      }
+    },
+
     deleteActiveRun(connectorInstanceId, runId) {
       exec(referenceQueries.controllerDeleteActiveRun, [runId, connectorInstanceId, connectorInstanceId]);
     },
@@ -415,6 +573,10 @@ export function createSqliteSchedulerStore(): SchedulerStore {
       const rows = allowUnboundedReadAcknowledged<ActiveRunRecord>(referenceQueries.controllerListActiveRuns);
       const found = rows.find((row) => (row.connector_instance_id ?? row.connector_id) === connectorInstanceId);
       return found ?? null;
+    },
+
+    getSourceWebhookRunReceipt(sourceId, eventId) {
+      return getOne<SourceWebhookRunReceipt>(referenceQueries.sourceWebhookRunsGetReceipt, [sourceId, eventId]) ?? null;
     },
 
     getLatestRunHistoryForConnection(connectorInstanceId, status = null) {
@@ -634,15 +796,7 @@ export function createSqliteSchedulerStore(): SchedulerStore {
     upsertActiveRun(record) {
       // Fail closed: a live row already present for the connector instance
       // must preserve the incumbent row rather than replacing it.
-      const result = exec(referenceQueries.controllerUpsertActiveRun, [
-        record.connector_instance_id ?? record.connector_id,
-        record.connector_id,
-        record.run_id,
-        record.trace_id,
-        record.scenario_id,
-        record.started_at,
-        record.run_generation,
-      ]);
+      const result = exec(referenceQueries.controllerUpsertActiveRun, activeRunInsertParameters(record));
       return result.changes > 0;
     },
 
@@ -658,6 +812,7 @@ export function createSqliteSchedulerStore(): SchedulerStore {
 }
 
 export function createPostgresSchedulerStore(): SchedulerStore {
+  // biome-ignore assist/source/useSortedKeys: Store verbs follow the lifecycle order documented by SchedulerStore.
   return {
     async appendRunHistory(record) {
       const connectorInstanceId = requireRunHistoryConnectorInstanceId(record);
@@ -737,6 +892,91 @@ export function createPostgresSchedulerStore(): SchedulerStore {
       );
     },
 
+    async admitSourceWebhookRun(input) {
+      try {
+        return await withPostgresTransaction(async (client) => {
+          const genericClaim = await client.query(
+            `INSERT INTO source_webhook_events(source_id, event_id, body_hash, received_at)
+             VALUES($1, $2, $3, $4)
+             ON CONFLICT(source_id, event_id) DO NOTHING`,
+            [
+              input.source_event.source_id,
+              input.source_event.event_id,
+              input.source_event.body_hash,
+              input.source_event.received_at,
+            ]
+          );
+          if ((genericClaim.rowCount ?? 0) === 0) {
+            const existing = await client.query(
+              `SELECT source_id, event_id, body_hash, connector_id, connector_instance_id, owner_subject_id,
+                      action, run_id, trace_id, automation_mode, automation_summary, started_at
+                 FROM source_webhook_run_receipts
+                WHERE source_id = $1
+                  AND event_id = $2`,
+              [input.source_event.source_id, input.source_event.event_id]
+            );
+            const receipt = existing.rows[0] as SourceWebhookRunReceipt | undefined;
+            return receipt ? sourceWebhookReplayOutcome(receipt, input) : ({ kind: "generic_claim_exists" } as const);
+          }
+          const insertedReceipt = await client.query(
+            `INSERT INTO source_webhook_run_receipts(
+               source_id,
+               event_id,
+               body_hash,
+               connector_id,
+               connector_instance_id,
+               owner_subject_id,
+               action,
+               run_id,
+               trace_id,
+               automation_mode,
+               automation_summary,
+               started_at
+             )
+             VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+             ON CONFLICT (source_id, event_id) DO NOTHING
+             RETURNING source_id, event_id, body_hash, connector_id, connector_instance_id, owner_subject_id,
+                       action, run_id, trace_id, automation_mode, automation_summary, started_at`,
+            sourceWebhookReceiptInsertParameters(input)
+          );
+          if ((insertedReceipt.rowCount ?? 0) === 0) {
+            const existing = await client.query(
+              `SELECT source_id, event_id, body_hash, connector_id, connector_instance_id, owner_subject_id,
+                      action, run_id, trace_id, automation_mode, automation_summary, started_at
+                 FROM source_webhook_run_receipts
+                WHERE source_id = $1
+                  AND event_id = $2`,
+              [input.source_event.source_id, input.source_event.event_id]
+            );
+            const receipt = existing.rows[0] as SourceWebhookRunReceipt | undefined;
+            if (!receipt) {
+              throw new Error("Source-webhook receipt conflict did not expose an incumbent receipt.");
+            }
+            return sourceWebhookReplayOutcome(receipt, input);
+          }
+
+          const activeRun = await client.query(
+            `INSERT INTO controller_active_runs(
+               connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at, run_generation
+             ) VALUES($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (connector_instance_id) DO NOTHING`,
+            activeRunInsertParameters(input.active_run)
+          );
+          if ((activeRun.rowCount ?? 0) === 0) {
+            // The transaction rolls back the fresh receipt, preserving the
+            // invariant that every receipt names a real durable admission.
+            throw new SourceWebhookRunAdmissionActiveConflict();
+          }
+          return { kind: "admitted" } as const;
+        });
+      } catch (err) {
+        if (err instanceof SourceWebhookRunAdmissionActiveConflict) {
+          return { kind: "active_run_exists" } as const;
+        }
+        throw err;
+      }
+    },
+
     async deleteActiveRun(connectorInstanceId, runId) {
       await postgresQuery(
         `DELETE FROM controller_active_runs
@@ -761,6 +1001,18 @@ export function createPostgresSchedulerStore(): SchedulerStore {
         [connectorInstanceId]
       );
       return result.rows[0] ? (result.rows[0] as ActiveRunRecord) : null;
+    },
+
+    async getSourceWebhookRunReceipt(sourceId, eventId) {
+      const result = await postgresQuery(
+        `SELECT source_id, event_id, body_hash, connector_id, connector_instance_id, owner_subject_id,
+                action, run_id, trace_id, automation_mode, automation_summary, started_at
+           FROM source_webhook_run_receipts
+          WHERE source_id = $1
+            AND event_id = $2`,
+        [sourceId, eventId]
+      );
+      return result.rows[0] ? (result.rows[0] as SourceWebhookRunReceipt) : null;
     },
 
     async getLatestRunHistoryForConnection(connectorInstanceId, status = null) {

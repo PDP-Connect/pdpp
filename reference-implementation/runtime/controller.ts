@@ -57,6 +57,8 @@ import {
   type SchedulerLastRunTimeRecord,
   type SchedulerRunHistoryRecord,
   type SchedulerStore,
+  type SourceWebhookRunAdmission,
+  type SourceWebhookRunReceipt,
 } from "../server/stores/scheduler-store.ts";
 import {
   type BrowserSurfaceRuntimeInventorySnapshot,
@@ -137,6 +139,19 @@ export interface ValidatedSchedulePatch {
 // rather than touching SQLite-flavored row shapes directly.
 type Schedule = ScheduleRecord;
 type PersistedActiveRun = ActiveRunRecord;
+
+/**
+ * Authenticated source-event identity passed only by the source-webhook
+ * boundary after HMAC verification. The controller persists this identity
+ * with the resolved run admission so a retry receives the original handle.
+ */
+export interface SourceWebhookRunEvent {
+  readonly action: "schedule_run";
+  readonly bodyHash: string;
+  readonly eventId: string;
+  readonly receivedAt: string;
+  readonly sourceId: string;
+}
 
 interface TerminalRunRow {
   readonly present: 1;
@@ -261,6 +276,7 @@ export interface RunNowOptions {
   runAdmission?: "browser_enrollment";
   runId?: string;
   scenarioId?: string;
+  sourceWebhookEvent?: SourceWebhookRunEvent;
   traceContext?: SpineTraceContext;
   triggerKind?: Extract<RunTriggerKind, "manual" | "webhook" | "scheduled">;
 }
@@ -350,6 +366,44 @@ function runAutomationMetadata(
     automation_mode: projection.automation_mode,
     automation_summary: automationModeCopy(projection.automation_mode),
     trigger_kind: projection.trigger_kind,
+  };
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function validatedSourceWebhookRunEvent(options: RunNowOptions): SourceWebhookRunEvent | null {
+  const event = options.sourceWebhookEvent;
+  if (!event) {
+    return null;
+  }
+  if (options.triggerKind !== "webhook") {
+    throw new ControllerError("sourceWebhookEvent requires triggerKind=webhook", "invalid_request");
+  }
+  if (
+    event.action !== "schedule_run" ||
+    !isNonEmptyString(event.sourceId) ||
+    !isNonEmptyString(event.eventId) ||
+    !isNonEmptyString(event.bodyHash) ||
+    !isNonEmptyString(event.receivedAt)
+  ) {
+    throw new ControllerError(
+      "sourceWebhookEvent must contain a non-empty authenticated event identity",
+      "invalid_request"
+    );
+  }
+  return event;
+}
+
+function sourceWebhookReceiptRunHandle(receipt: SourceWebhookRunReceipt): RunNowResult {
+  return {
+    ...(receipt.automation_mode ? { automation_mode: receipt.automation_mode as RunAutomationMode } : {}),
+    ...(receipt.automation_summary ? { automation_summary: receipt.automation_summary } : {}),
+    run_id: receipt.run_id,
+    status: "started",
+    trace_id: receipt.trace_id,
+    trigger_kind: "webhook",
   };
 }
 
@@ -868,6 +922,31 @@ export class ControllerError extends Error {
     this.runId = extra.runId;
     this.name = "ControllerError";
   }
+}
+
+function sourceWebhookAdmissionReplayOrThrow(
+  outcome: SourceWebhookRunAdmission,
+  runId: string
+): SourceWebhookRunReceipt | null {
+  if (outcome.kind === "admitted") {
+    return null;
+  }
+  if (outcome.kind === "replay") {
+    return outcome.receipt;
+  }
+  if (outcome.kind === "conflict") {
+    throw new ControllerError(
+      "Source webhook event is already bound to a different dispatch identity.",
+      "source_webhook_event_conflict"
+    );
+  }
+  if (outcome.kind === "generic_claim_exists") {
+    throw new ControllerError(
+      "Source webhook event was already handled without a durable run receipt.",
+      "source_webhook_event_duplicate"
+    );
+  }
+  throw new ControllerError(`Connector already has an active run: ${runId}`, "run_already_active", { runId });
 }
 
 // ─── Module-scoped state ────────────────────────────────────────────────────
@@ -2942,19 +3021,25 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   async function registerActiveRunBookkeeping(input: {
+    readonly automationMetadata: Pick<RunNowResult, "automation_mode" | "automation_summary">;
     readonly connectorId: string;
     readonly connectorInstanceId: string;
     readonly key: string;
     readonly runId: string;
+    readonly sourceWebhookEvent?: SourceWebhookRunEvent;
+    readonly sourceWebhookOwnerSubjectId?: string;
     readonly startedAt: string;
     readonly traceContext: SpineTraceContext;
-  }): Promise<string | null> {
+  }): Promise<
+    | { readonly kind: "admitted"; readonly streamingNonce: string | null }
+    | { readonly kind: "replay"; readonly receipt: SourceWebhookRunReceipt }
+  > {
     // Advance the fencing token only after the durable gate accepts the row.
     // That keeps a rejected admission from mutating generation state and
     // ensures a stale runner cannot clear a newer row.
     const prevGeneration = runGenerations.get(input.key) ?? 0;
     const newGeneration = prevGeneration + 1;
-    const inserted = await persistActiveRun({
+    const activeRun: PersistedActiveRun = {
       connector_id: input.connectorId,
       connector_instance_id: input.connectorInstanceId,
       run_generation: newGeneration,
@@ -2962,7 +3047,39 @@ export function createController(opts: ControllerOptions = {}): Controller {
       scenario_id: input.traceContext.scenario_id,
       started_at: input.startedAt,
       trace_id: input.traceContext.trace_id,
-    });
+    };
+    let inserted: boolean;
+    if (input.sourceWebhookEvent) {
+      const webhookOwnerSubjectId = input.sourceWebhookOwnerSubjectId;
+      if (!webhookOwnerSubjectId || typeof schedulerStore.admitSourceWebhookRun !== "function") {
+        throw new ControllerError(
+          "Source-webhook run receipt storage is unavailable; refusing non-durable dispatch.",
+          "source_webhook_receipt_unavailable"
+        );
+      }
+      const outcome = await Promise.resolve(
+        schedulerStore.admitSourceWebhookRun({
+          active_run: activeRun,
+          source_event: {
+            action: input.sourceWebhookEvent.action,
+            automation_mode: input.automationMetadata.automation_mode ?? null,
+            automation_summary: input.automationMetadata.automation_summary ?? null,
+            body_hash: input.sourceWebhookEvent.bodyHash,
+            event_id: input.sourceWebhookEvent.eventId,
+            owner_subject_id: webhookOwnerSubjectId,
+            received_at: input.sourceWebhookEvent.receivedAt,
+            source_id: input.sourceWebhookEvent.sourceId,
+          },
+        })
+      );
+      const replayReceipt = sourceWebhookAdmissionReplayOrThrow(outcome, input.runId);
+      if (replayReceipt) {
+        return { kind: "replay", receipt: replayReceipt };
+      }
+      inserted = true;
+    } else {
+      inserted = await persistActiveRun(activeRun);
+    }
     if (inserted === false) {
       throw new ControllerError(`Connector already has an active run: ${input.runId}`, "run_already_active", {
         runId: input.runId,
@@ -2982,7 +3099,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       connector_id: input.connectorId,
       pending: null,
     });
-    return mintStreamingRegistrationNonce(input.runId);
+    return { kind: "admitted", streamingNonce: mintStreamingRegistrationNonce(input.runId) };
   }
 
   function clearStreamingNonceForRun(runId: string): void {
@@ -3378,8 +3495,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!manifest) {
       throw new ControllerError(`Unknown connector: ${connectorId}`, "not_found");
     }
-    assertNoConflictingActiveRun(key);
-    await assertNoConflictingDurableActiveRun(key);
+    if (!options.sourceWebhookEvent) {
+      assertNoConflictingActiveRun(key);
+      await assertNoConflictingDurableActiveRun(key);
+    }
 
     await assertNotSourcePressureCoolingOff(connectorId, options);
 
@@ -3492,6 +3611,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return streams.length > 0 ? streams : null;
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Run admission owns ordered source-webhook replay, active-run, browser-surface, and runtime-launch state transitions.
   async function runNow(connectorId: string, options: RunNowOptions = {}): Promise<RunNowResult> {
     const runOwnerSubjectId = options.ownerSubjectId || ownerSubjectId;
     const admittedConnection = await resolveAdmittedRunConnection(
@@ -3503,6 +3623,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     );
     const { connectorId: admittedConnectorId, connectorInstanceId } = admittedConnection;
     const key = runtimeKey(admittedConnectorId, connectorInstanceId);
+    const sourceWebhookEvent = validatedSourceWebhookRunEvent(options);
     const { manifest, connectorPath } = await validateRunNowPreconditions(
       admittedConnectorId,
       { ...options, connectorInstanceId },
@@ -3563,14 +3684,20 @@ export function createController(opts: ControllerOptions = {}): Controller {
       needsHumanAttention.delete(key);
     }
 
-    const streamingNonce = await registerActiveRunBookkeeping({
-      connectorId,
+    const bookkeeping = await registerActiveRunBookkeeping({
+      automationMetadata,
+      connectorId: admittedConnectorId,
       connectorInstanceId,
       key,
       runId,
+      ...(sourceWebhookEvent ? { sourceWebhookEvent, sourceWebhookOwnerSubjectId: runOwnerSubjectId } : {}),
       startedAt,
       traceContext,
     });
+    if (bookkeeping.kind === "replay") {
+      return sourceWebhookReceiptRunHandle(bookkeeping.receipt);
+    }
+    const { streamingNonce } = bookkeeping;
     let browserSurfaceLease: BrowserSurfaceLease | null = null;
     let browserSurfaceEnv: Record<string, string> | null = null;
     try {
