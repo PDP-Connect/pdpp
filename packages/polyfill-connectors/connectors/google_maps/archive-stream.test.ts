@@ -195,7 +195,7 @@ test("a huge timelinePath stays bounded under a hard heap limit while unrelated 
       out.end((error?: Error | null) => (error ? reject(error) : resolve()))
     );
 
-    const childPath = new URL("./oversized-element-oracle-child.ts", import.meta.url);
+    const childPath = new URL("./oversized-element-oracle.test.child.ts", import.meta.url);
     const result = spawnSync(
       process.execPath,
       ["--max-old-space-size=96", "--import", "tsx", childPath.pathname, path, String(statSync(path).size), "stream"],

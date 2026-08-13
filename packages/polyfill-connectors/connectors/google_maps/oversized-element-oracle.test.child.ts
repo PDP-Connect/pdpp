@@ -16,7 +16,7 @@ import { validateGoogleMapsTimelineArtifactFromFile } from "./validation.ts";
 
 const [, , path, fileSizeArg, mode] = process.argv;
 if (!(path && fileSizeArg)) {
-  console.error("usage: oversized-element-oracle-child.ts <path> <fileSize>");
+  console.error("usage: oversized-element-oracle.test.child.ts <path> <fileSize>");
   process.exit(2);
 }
 

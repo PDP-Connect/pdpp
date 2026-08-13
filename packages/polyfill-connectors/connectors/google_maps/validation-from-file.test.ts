@@ -489,7 +489,7 @@ test("outcome proof: a 110 MiB sparse Timeline export separates streaming from w
     assert.ok(fileSize > 50 * 1024 * 1024, `fixture must exceed the manifest cap, got ${fileSize} bytes`);
 
     const { spawnSync } = await import("node:child_process");
-    const childPath = new URL("./oversized-element-oracle-child.ts", import.meta.url);
+    const childPath = new URL("./oversized-element-oracle.test.child.ts", import.meta.url);
     const wholeBuffer = spawnSync(
       process.execPath,
       ["--max-old-space-size=220", "--import", "tsx", childPath.pathname, path, String(fileSize), "whole-buffer"],
@@ -564,7 +564,7 @@ test("outcome proof: large wrapped locations and semanticSegments arrays stay be
       assert.ok(fileSize > 15 * 1024 * 1024, `${shape.key} fixture must be large enough, got ${fileSize} bytes`);
 
       const { spawnSync } = await import("node:child_process");
-      const childPath = new URL("./oversized-element-oracle-child.ts", import.meta.url);
+      const childPath = new URL("./oversized-element-oracle.test.child.ts", import.meta.url);
       const result = spawnSync(
         process.execPath,
         ["--max-old-space-size=96", "--import", "tsx", childPath.pathname, path, String(fileSize)],
@@ -589,7 +589,7 @@ test("outcome proof: a single oversized array element is rejected under a hard h
   // Deterministic child-process oracle, not an in-process memory-delta
   // measurement: builds the fixture in this (unconstrained) process, then
   // runs validation in a separate child under a hard V8 heap limit via
-  // oversized-element-oracle-child.ts. A regression that fails to bound the
+  // oversized-element-oracle.test.child.ts. A regression that fails to bound the
   // element crashes the child (OOM, non-zero exit via SIGABRT); the fix
   // exits 0. Fixture construction happens here, never inside the
   // constrained child, so the child's heap budget is spent solely on
@@ -605,7 +605,7 @@ test("outcome proof: a single oversized array element is rejected under a hard h
     const fileSize = statSync(path).size;
 
     const { spawnSync } = await import("node:child_process");
-    const childPath = new URL("./oversized-element-oracle-child.ts", import.meta.url);
+    const childPath = new URL("./oversized-element-oracle.test.child.ts", import.meta.url);
     const result = spawnSync(
       process.execPath,
       ["--max-old-space-size=100", "--import", "tsx", childPath.pathname, path, String(fileSize)],
@@ -637,7 +637,7 @@ test("outcome proof: an oversized primitive element fails before tokenizer buffe
     const fileSize = statSync(path).size;
 
     const { spawnSync } = await import("node:child_process");
-    const childPath = new URL("./oversized-element-oracle-child.ts", import.meta.url);
+    const childPath = new URL("./oversized-element-oracle.test.child.ts", import.meta.url);
     const result = spawnSync(
       process.execPath,
       ["--max-old-space-size=100", "--import", "tsx", childPath.pathname, path, String(fileSize)],
