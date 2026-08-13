@@ -95,9 +95,9 @@
     "date": "2026-07-22"
   },
   "server/postgres-records.ts": {
-    "allowed_mass": 204,
-    "reason": "Final TypeScript/PostgreSQL closure (2026-07-28): pg returns MIN/MAX aggregates over timestamptz columns as Date instances, while the typed query boundary also admits string-shaped rows from adapters and tests. computePostgresRecordWindow must distinguish both representations before normalizing them and reject invalid timestamps without emitting malformed window metadata. The eight-point increase over the unchanged 196 baseline is the explicit runtime discrimination that fixes the real PostgreSQL record-window parity failure; hiding it behind assertions or string coercion would erase the backend data-shape contract rather than reduce semantic complexity.",
-    "date": "2026-07-28"
+    "allowed_mass": 207,
+    "reason": "Final TypeScript/PostgreSQL closure (2026-07-28): pg returns MIN/MAX aggregates over timestamptz columns as Date instances, while the typed query boundary also admits string-shaped rows from adapters and tests. computePostgresRecordWindow must distinguish both representations before normalizing them and reject invalid timestamps without emitting malformed window metadata. The eight-point increase over the unchanged 196 baseline is the explicit runtime discrimination that fixes the real PostgreSQL record-window parity failure; hiding it behind assertions or string coercion would erase the backend data-shape contract rather than reduce semantic complexity. Transaction-native connector-instance admission (2026-08-13) adds the opt-in branch, a `FOR UPDATE` lifecycle read, and the deterministic locked-transaction race seam; these states are required to serialize revoke/delete with the admitted durable record mutation.",
+    "date": "2026-08-13"
   },
   "server/stores/connector-detail-gap-store.js": {
     "allowed_mass": 29,
@@ -205,9 +205,9 @@
     "date": "2026-07-28"
   },
   "server/records.ts": {
-    "allowed_mass": 456,
-    "reason": "TypeScript migration closure (2026-07-28): server/records.ts strict-plus type fixes add 7 conditional branches for null/undefined guards (string|null|undefined -> string narrowing), DevicePreparePlanEntry/DeviceRecordPlanEntry alignment, and exactOptionalPropertyTypes spreads. Each branch is an honest narrowing guard that expresses a real nullable boundary; the alternative is a cast or suppression that violates the strict-plus baseline.",
-    "date": "2026-07-28"
+    "allowed_mass": 469,
+    "reason": "TypeScript migration closure (2026-07-28): server/records.ts strict-plus type fixes add 7 conditional branches for null/undefined guards (string|null|undefined -> string narrowing), DevicePreparePlanEntry/DeviceRecordPlanEntry alignment, and exactOptionalPropertyTypes spreads. Each branch is an honest narrowing guard that expresses a real nullable boundary; the alternative is a cast or suppression that violates the strict-plus baseline. Transaction-native connector-instance admission (2026-08-13) adds the opt-in early refusal and SQLite in-transaction lifecycle check; both are required to close delete/revoke-versus-write ordering without changing non-opt-in storage callers.",
+    "date": "2026-08-13"
   },
   "server/connector-summary-evidence-engine.ts": {
     "allowed_mass": 75,

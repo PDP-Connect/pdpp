@@ -19,6 +19,7 @@ import {
   projectStorageDisplayName,
   resolveRequestConnectionId,
 } from "./connection-id-request.ts";
+import { assertConnectorInstanceWritableStatus } from "./connector-instance-admission.ts";
 import {
   type ConnectorInstanceWriteOwnership,
   withConnectorInstanceWrite,
@@ -59,6 +60,18 @@ import { advancePostgresDeviceIngestPrefix } from "./stores/device-exporter-stor
 type JsonObject = Record<string, unknown>;
 const SAFE_JSON_FIELD = /^[A-Za-z0-9_]+$/;
 const RECORD_TIME_FIELD = /^[A-Za-z_][A-Za-z0-9_]*$/;
+type PostgresAdmissionLockedPhaseHook = (point: string, context: Record<string, unknown>) => Promise<void> | void;
+
+let postgresAdmissionLockedPhaseHook: PostgresAdmissionLockedPhaseHook | null = null;
+
+/** Test-only seam after transaction-native connector-instance admission locks its row. */
+export function __setPostgresAdmissionLockedPhaseHookForTest(hook: unknown): void {
+  postgresAdmissionLockedPhaseHook = typeof hook === "function" ? (hook as PostgresAdmissionLockedPhaseHook) : null;
+}
+
+async function maybePostgresAdmissionLockedPhase(point: string, context: Record<string, unknown>): Promise<void> {
+  await postgresAdmissionLockedPhaseHook?.(point, context);
+}
 
 async function sequentially<T>(items: readonly T[], visit: (item: T) => Promise<void>): Promise<void> {
   const item = items.at(0);
@@ -241,6 +254,7 @@ interface IngestRecord {
 interface IngestOptions {
   attemptContext?: DeviceAttemptContext | null;
   deviceReservation?: JsonObject & { inputIndex: number };
+  requireConnectionAdmission?: boolean;
 }
 
 interface IngestOutcome {
@@ -1802,6 +1816,14 @@ export async function postgresIngestRecord(
     op === "delete" ? null : semanticTimeValue(data ?? null, manifestStream, effectiveEmittedAt);
 
   const outcome = await withPostgresTransaction<DurableIngestOutcome>(async (client) => {
+    if (options.requireConnectionAdmission) {
+      const admission = await client.query<{ status: string }>(
+        "SELECT status FROM connector_instances WHERE connector_instance_id = $1 FOR UPDATE",
+        [connectorInstanceId]
+      );
+      assertConnectorInstanceWritableStatus(admission.rows[0]?.status ?? null, connectorInstanceId);
+      await maybePostgresAdmissionLockedPhase("after-connector-instance-admission-lock", { connectorInstanceId });
+    }
     const finishDurableOutcome = async (value: DurableIngestOutcome): Promise<DurableIngestOutcome> => {
       if (options.deviceReservation) {
         await advancePostgresDeviceIngestPrefix(

@@ -55,6 +55,7 @@ import {
   resolveRecordIdentityForBinding,
   resolveRequestBindings,
 } from "./connection-identity.ts";
+import { assertConnectorInstanceWritableStatus } from "./connector-instance-admission.ts";
 import {
   type ConnectorInstanceWriteOwnership,
   withConnectorInstanceWrite,
@@ -196,12 +197,18 @@ interface AttemptContext {
   streams?: Record<string, AttemptStreamFacts>;
 }
 type DeviceReservation = Record<string, unknown> & { inputIndex: number };
-interface RecordIngestOptions {
+export interface RecordIngestOptions {
   attemptContext?: AttemptContext;
   coordinatorOwnership?: ConnectorInstanceWriteOwnership;
   deferIndexes?: boolean;
   deviceFinalInputIndex?: number;
   deviceReservation?: DeviceReservation;
+  /**
+   * Require a current, non-revoked connector-instance row before the durable
+   * record mutation. Omitted callers keep the connector-agnostic storage
+   * primitive behavior used by repair and compatibility paths.
+   */
+  requireConnectionAdmission?: boolean;
 }
 interface CurrentRecordRow {
   deleted: boolean | number;
@@ -1021,6 +1028,7 @@ let ingestFaultHook: FaultHook | null = null;
 let deleteFaultHook: FaultHook | null = null;
 let recordIndexFaultHook: FaultHook | null = null;
 let sqliteRecordSortBackfillPhaseHook: AsyncFaultHook | null = null;
+let admissionPreCheckPhaseHook: AsyncFaultHook | null = null;
 
 export function __setIngestFaultHookForTest(hook: unknown): void {
   ingestFaultHook = isFaultHook(hook) ? hook : null;
@@ -1043,8 +1051,17 @@ export function __setSqliteRecordSortBackfillPhaseHookForTest(hook: unknown): vo
   sqliteRecordSortBackfillPhaseHook = isAsyncFaultHook(hook) ? hook : null;
 }
 
+/** Test-only pause seam between the early admission check and durable write. */
+export function __setAdmissionPreCheckPhaseHookForTest(hook: unknown): void {
+  admissionPreCheckPhaseHook = isAsyncFaultHook(hook) ? hook : null;
+}
+
 async function maybeSqliteRecordSortBackfillPhaseForTest(point: string, context: HookContext): Promise<void> {
   await sqliteRecordSortBackfillPhaseHook?.(point, context);
+}
+
+async function maybeAfterAdmissionPreCheckPhase(point: string, context: HookContext): Promise<void> {
+  await admissionPreCheckPhaseHook?.(point, context);
 }
 
 function maybeFault(point: string, ctx: HookContext): void {
@@ -1063,6 +1080,34 @@ function maybeRecordIndexFault(point: string, ctx: HookContext): void {
   if (recordIndexFaultHook) {
     recordIndexFaultHook(point, ctx);
   }
+}
+
+/**
+ * Early refusal only. The transaction-native checks below are authoritative:
+ * a revoke or delete can commit after this async read returns.
+ */
+export async function assertConnectorInstanceWritable(connectorInstanceId: string): Promise<void> {
+  const status = isPostgresStorageBackend()
+    ? ((
+        await postgresQuery<{ status: string }>(
+          "SELECT status FROM connector_instances WHERE connector_instance_id = $1",
+          [connectorInstanceId]
+        )
+      ).rows[0]?.status ?? null)
+    : ((getOne(referenceQueries.connectorInstancesGetById, [connectorInstanceId]) as { status?: string } | null)
+        ?.status ?? null);
+  assertConnectorInstanceWritableStatus(status, connectorInstanceId);
+}
+
+/**
+ * SQLite's synchronous transaction callback leaves no await between this
+ * status read and the record mutation it admits.
+ */
+export function assertSqliteConnectorInstanceWritableWithinTransaction(connectorInstanceId: string): void {
+  const status =
+    (getOne(referenceQueries.connectorInstancesGetById, [connectorInstanceId]) as { status?: string } | null)?.status ??
+    null;
+  assertConnectorInstanceWritableStatus(status, connectorInstanceId);
 }
 
 /**
@@ -1095,8 +1140,15 @@ export async function ingestRecord(
   const coordinationInstanceId = resolveStorageConnectorInstanceId(storageTarget, coordinationConnectorId);
   return await withConnectorInstanceWrite(
     coordinationInstanceId,
-    (coordinatorOwnership) =>
-      ingestRecordWithinCoordinator(storageTarget, record, { ...options, coordinatorOwnership }),
+    async (coordinatorOwnership) => {
+      if (options.requireConnectionAdmission) {
+        await assertConnectorInstanceWritable(coordinationInstanceId);
+        await maybeAfterAdmissionPreCheckPhase("after-admission-pre-check", {
+          connectorInstanceId: coordinationInstanceId,
+        });
+      }
+      return ingestRecordWithinCoordinator(storageTarget, record, { ...options, coordinatorOwnership });
+    },
     options.coordinatorOwnership
   );
 }
@@ -1158,6 +1210,7 @@ function toPostgresIngestOptions(options: RecordIngestOptions) {
   return {
     ...(attemptContext ? { attemptContext } : {}),
     ...(options.deviceReservation ? { deviceReservation: options.deviceReservation } : {}),
+    ...(options.requireConnectionAdmission ? { requireConnectionAdmission: true } : {}),
   };
 }
 
@@ -1383,6 +1436,9 @@ async function ingestSqliteRecord(
   // Durable mutation unit: returns the operation outcome so derived index
   // maintenance can run *after* the commit succeeds.
   const outcome = writeTransaction<DurableIngestOutcome>(() => {
+    if (options.requireConnectionAdmission) {
+      assertSqliteConnectorInstanceWritableWithinTransaction(connectorInstanceId);
+    }
     const finishDurableOutcome = (value: DurableIngestOutcome): DurableIngestOutcome => {
       if (options.deviceReservation) {
         advanceSqliteDeviceIngestPrefix(options.deviceReservation, options.deviceReservation.inputIndex);
