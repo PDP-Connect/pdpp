@@ -4562,7 +4562,7 @@ test("PDPP CLI smoke", async (t) => {
         assert.ok(hiddenRecord, "expected an owner-visible saved_tracks record outside the client grant");
         assert.ok(hiddenRecord.id, "expected the hidden saved_tracks record to carry an id");
 
-        const approved = await approveGrant(asUrl, "cli_owner", {
+        await approveGrant(asUrl, "cli_owner", {
           access_mode: "single_use",
           client_display: { name: "Concert Recommendation App" },
           client_id: "concert_recommendation_app",
