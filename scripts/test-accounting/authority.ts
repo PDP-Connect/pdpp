@@ -196,6 +196,13 @@ interface Run {
   profile: Profile;
   suite: Suite;
 }
+export function suiteEnvironment(inherited: NodeJS.ProcessEnv, profile: string, suite: Suite): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { ...inherited, PDPP_TEST_PROFILE: profile, ...(suite.environment ?? {}) };
+  for (const name of suite.environment_unset ?? []) {
+    delete environment[name];
+  }
+  return environment;
+}
 function leafCommand(run: Run, authorityPath: string, root: string): string[] | null {
   if (run.suite.zero_tests) {
     return null;
@@ -256,14 +263,14 @@ export async function runAuthority({
   suites = [],
   profile,
   base,
+  env = process.env,
 }: {
   root?: string;
   suites?: string[];
   profile?: string | undefined;
   base?: string | undefined;
+  env?: NodeJS.ProcessEnv;
 } = {}) {
-  assertCleanSourceTree(root);
-  const head = gitHead(root);
   const manifest = await readManifest(resolve(root, "test-accounting.manifest.json"), { root, intendedBase: base });
   const files = trackedFiles(root);
   // Fail closed BEFORE selection — this is the fix for the gap the R1
@@ -306,11 +313,15 @@ export async function runAuthority({
     for (const run of selection.runs) {
       const entry = typeof run.profile === "string" ? { id: run.profile } : run.profile;
       const match = OPTIONAL_PREDICATE_PATTERN.exec(entry.optional_predicate ?? "");
-      if (entry.required === false && (!match || process.env[match[1] ?? ""] !== match[2])) {
+      if (entry.required === false && (!match || env[match[1] ?? ""] !== match[2])) {
         fail(`${run.suite.id}/${entry.id} requires its optional environment predicate`);
       }
     }
   }
+  // Reject a disabled optional profile before inspecting mutable source state.
+  // No child command has been spawned at this point.
+  assertCleanSourceTree(root);
+  const head = gitHead(root);
   const runs: Run[] = selection.runs
     .filter((run) => profile || requiredByDefault(run.profile))
     .map((run) => ({
@@ -365,7 +376,7 @@ export async function runAuthority({
         ? await capture(
             command,
             resolve(root, run.suite.cwd),
-            { ...process.env, PDPP_TEST_PROFILE: profileId, ...(run.suite.environment ?? {}) },
+            suiteEnvironment(env, profileId, run.suite),
             transcript,
             issued
           )

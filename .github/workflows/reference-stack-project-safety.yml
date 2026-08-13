@@ -12,9 +12,9 @@ name: reference-stack-project-safety
 # header for the full incident and threat model.
 #
 # Path-scoped like spec-check.yml/test-accounting.yml: this only needs to run
-# when the wrapper or its regression tests change, not on every PR. Pure bash,
-# stubs `docker` on PATH, and never touches a real Docker daemon — no
-# dependency install required.
+# when the wrapper or its regression tests change, not on every PR. The tests
+# stub `docker` on PATH and never touch a real Docker daemon. They run through
+# the workspace's routed Node boundary, so setup below is required.
 
 on:
   push:
@@ -44,11 +44,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
       - name: Syntax check
         run: bash -n scripts/reference-stack.sh scripts/reference-stack.project-name.test.sh scripts/reference-stack.dirty-guard.test.sh
 
       - name: Project-name default + paired-identity guard tests
-        run: bash scripts/reference-stack.project-name.test.sh
+        run: pnpm test:scratch -- bash scripts/reference-stack.project-name.test.sh
 
       - name: Dirty-tree build guard tests (adjacent wrapper regression)
-        run: bash scripts/reference-stack.dirty-guard.test.sh
+        run: pnpm test:scratch -- bash scripts/reference-stack.dirty-guard.test.sh

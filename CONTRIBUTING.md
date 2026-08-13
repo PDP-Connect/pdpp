@@ -172,6 +172,30 @@ pnpm reference-implementation:test    # reference implementation tests
 pnpm spec:check                       # root-spec / web-spec parity
 ```
 
+### Test scratch containment
+
+Use `pnpm test:scratch -- <command> [args...]` for supported ad hoc test or
+host-writing verification commands. Canonical repository test aliases and
+reviewed CI test commands enter this boundary automatically. It creates one
+private, command-scoped host scratch root, passes it to ordinary descendants
+through the normal temporary-directory environment, and removes the verified
+root after normal completion, failure, SIGINT, or SIGTERM.
+
+The wrapper preserves the exact child exit code and signal semantics. If a
+successful child leaves a root that cannot be verified and removed, the wrapper
+fails with infrastructure code 74 rather than reporting success. SIGKILL, OOM,
+host failure, detached descendants, container/service state, explicit external
+storage roots, and hard-coded paths that are not part of a reviewed migration
+remain outside the immediate-cleanup guarantee; verified stale roots are
+recovered conservatively by a later owner.
+
+A raw `node --test`, `tsx file.test.ts`, or direct shell command is an
+intentional bypass unless you invoke it through `pnpm test:scratch -- ...`.
+Do not set a global login-shell `TMPDIR` or delete ambient `/tmp`/`TMPDIR` to
+compensate. Keep per-test `t.after()`/`try/finally` cleanup for prompt local
+release, and do not move reviewed container paths or the shared dynamic n.eko
+flock into invocation scratch.
+
 See the [self-host quickstart](docs/operator/selfhost-quickstart.md) and the
 [reference implementation README](reference-implementation/README.md) for the
 full local, Docker, and connector workflows.

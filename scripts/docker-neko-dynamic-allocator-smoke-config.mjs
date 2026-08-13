@@ -3,16 +3,20 @@
 
 const DEPLOYMENT_LABEL = "org.pdpp.reference.neko.deployment_id";
 const SURFACE_LABEL = "org.pdpp.reference.neko.surface_id";
+const TRAILING_HYPHENS = /-+$/;
+const TRAILING_SLASH = /\/$/;
+const VALID_RUN_ID = /^[a-z0-9-]+$/;
+const UNSAFE_LINE_BREAK = /[\r\n]/;
 
 function runScoped(base, runId) {
-  if (!base || /[\r\n]/.test(base)) {
+  if (!base || UNSAFE_LINE_BREAK.test(base)) {
     throw new Error("dynamic n.eko smoke identity bases must be non-empty single-line strings");
   }
-  return `${base.replace(/-+$/, "")}-${runId}`;
+  return `${base.replace(TRAILING_HYPHENS, "")}-${runId}`;
 }
 
 export function deriveDynamicNekoSmokeConfig(env, runId) {
-  if (!/^[a-z0-9-]+$/.test(runId)) {
+  if (!VALID_RUN_ID.test(runId)) {
     throw new Error("dynamic n.eko smoke run id must contain only lowercase letters, digits, and hyphens");
   }
   if (env.PDPP_NEKO_WEBRTC_HOST_PORT_START || env.PDPP_NEKO_WEBRTC_HOST_PORT_END) {
@@ -22,7 +26,8 @@ export function deriveDynamicNekoSmokeConfig(env, runId) {
   }
 
   const projectName = runScoped(env.PDPP_NEKO_DYNAMIC_SMOKE_PROJECT_NAME ?? "pdppdynsmoke", runId);
-  const profileRoot = runScoped(env.PDPP_NEKO_PROFILE_STORAGE_ROOT ?? "/tmp/pdpp-neko-profiles-smoke", runId);
+  const scratchBase = env.PDPP_TEST_SCRATCH_ROOT ?? env.TMPDIR ?? "/tmp";
+  const profileRoot = runScoped(`${scratchBase.replace(TRAILING_SLASH, "")}/pdpp-neko-profiles-smoke`, runId);
   const deploymentId = env.PDPP_NEKO_DEPLOYMENT_ID ? runScoped(env.PDPP_NEKO_DEPLOYMENT_ID, runId) : projectName;
   const surfaceA = `dynamic-smoke-${runId}-a`;
   const surfaceB = `dynamic-smoke-${runId}-b`;

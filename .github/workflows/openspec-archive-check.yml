@@ -59,7 +59,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run archive-check unit tests
-        run: node --test --import tsx scripts/openspec-archive-check.test.ts
+        run: pnpm test:scratch -- node --test --import tsx scripts/openspec-archive-check.test.ts
 
       - name: Report archive-due changes (non-blocking)
         run: |

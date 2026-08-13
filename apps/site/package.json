@@ -15,7 +15,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "types:check": "node scripts/sync-spec-docs.mjs && fumadocs-mdx && next typegen && tsc --noEmit",
-    "test": "node --test --import tsx --import ../../packages/operator-ui/css-stub-register.ts \"scripts/*.test.ts\" \"src/**/*.test.ts\"",
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- bash -c 'node --test --import tsx --import ../../packages/operator-ui/css-stub-register.ts \"scripts/*.test.ts\" \"src/**/*.test.ts\"'",
     "colors:generate": "tsx scripts/generate-concept-colors.mts",
     "colors:check": "tsx scripts/generate-concept-colors.mts --check",
     "check": "ultracite check && pnpm --dir ../.. generated-artifacts:check",

@@ -127,4 +127,4 @@ jobs:
           "
 
       - name: Verify remote-surface reference boundary
-        run: node --test reference-implementation/test/remote-surface-reference-boundary.test.ts
+        run: pnpm test:scratch -- node --test reference-implementation/test/remote-surface-reference-boundary.test.ts

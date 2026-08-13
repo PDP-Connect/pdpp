@@ -71,6 +71,7 @@ cleanup() {
     fi
   done
   "${DC[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  rm -rf -- "$PROFILE_ROOT" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 

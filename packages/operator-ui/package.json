@@ -67,7 +67,7 @@
     "typecheck": "tsc --noEmit",
     "check": "ultracite check",
     "fix": "ultracite fix",
-    "test": "node --test --import tsx --import ./css-stub-register.ts \"src/**/*.test.ts\"",
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- bash -c 'node --test --import tsx --import ./css-stub-register.ts \"src/**/*.test.ts\"'",
     "verify": "pnpm typecheck && pnpm check && pnpm test"
   },
   "dependencies": {

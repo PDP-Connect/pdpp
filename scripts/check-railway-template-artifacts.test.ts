@@ -284,7 +284,7 @@ test("Railway handoff wires the runnable GHCR public-image probe into the publis
   assert.equal(pkg.scripts["railway:ghcr-public"], "node --import tsx scripts/check-railway-ghcr-public.ts");
   assert.equal(
     pkg.scripts["railway:ghcr-public:test"],
-    "node --test --import tsx scripts/check-railway-ghcr-public.test.ts"
+    "pnpm test:scratch -- node --test --import tsx scripts/check-railway-ghcr-public.test.ts"
   );
 });
 
