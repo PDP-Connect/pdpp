@@ -310,6 +310,7 @@ async function resolveSteamId(apiKey: string, rawSteamId: string): Promise<strin
 
 function profileRecord(summary: SteamPlayerSummary): RecordData {
   return {
+    id: summary.steamid,
     steamid: summary.steamid,
     personaname: summary.personaname ?? null,
     profileurl: summary.profileurl ?? null,

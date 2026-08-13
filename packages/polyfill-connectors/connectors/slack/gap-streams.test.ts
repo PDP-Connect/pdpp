@@ -48,7 +48,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 interface Captured {
-  considered: Array<{ considered: number; stream: string }>;
+  considered: Array<{ considered: number; covered: number | undefined; stream: string }>;
   records: Array<{ data: unknown; stream: string }>;
 }
 
@@ -57,7 +57,7 @@ function fakeDeps(db: DatabaseSync, captured: Captured, requested: readonly stri
     db,
     emit: (msg) => {
       if (msg.type === "DETAIL_COVERAGE") {
-        captured.considered.push({ stream: msg.stream, considered: msg.considered ?? 0 });
+        captured.considered.push({ stream: msg.stream, considered: msg.considered ?? 0, covered: msg.covered });
       }
       return Promise.resolve();
     },
@@ -86,6 +86,7 @@ test("runStarsStream: emits one RECORD per starred item and declares considered"
   assert.equal(captured.records.length, 1);
   assert.equal(captured.records[0]?.stream, "stars");
   assert.equal(captured.considered[0]?.considered, 1);
+  assert.equal(captured.considered[0]?.covered, 1);
 });
 
 test("runStarsStream: zero stars still completes and declares considered=0", async () => {
@@ -95,6 +96,7 @@ test("runStarsStream: zero stars still completes and declares considered=0", asy
   await runStarsStream(fakeDeps(db, captured, ["stars"]), "xoxc-fake", "d-fake");
   assert.equal(captured.records.length, 0);
   assert.equal(captured.considered[0]?.considered, 0);
+  assert.equal(captured.considered[0]?.covered, 0);
 });
 
 test("runUserGroupsStream: emits one RECORD per user group", async () => {

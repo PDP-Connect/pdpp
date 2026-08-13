@@ -3331,7 +3331,19 @@ export async function runAllMailPasses(
     { ...perMessageDeps, failOnError: historicalFetchRange !== null },
     historicalMetas
   );
-  await emitMessagesPass(perMessageDeps, forwardMetas);
+  const forwardMessageCoverage = await emitMessagesPass(perMessageDeps, forwardMetas);
+  if (deps.requested.has("message_bodies")) {
+    await emit(
+      buildDetailCoverageMessage({
+        considered: historicalMessageCoverage.considered + forwardMessageCoverage.considered,
+        covered: historicalMessageCoverage.covered + forwardMessageCoverage.covered,
+        hydratedKeys: [],
+        requiredKeys: [],
+        stateStream: "messages",
+        stream: "message_bodies",
+      })
+    );
+  }
 
   await runAttachmentBackfillAndRecoveryPass({
     allMail,

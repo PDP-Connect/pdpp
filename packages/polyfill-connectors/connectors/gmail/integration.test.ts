@@ -1618,7 +1618,7 @@ test("runAllMailPasses: first historical page is bounded, durable only at page e
       {
         emitRecord: async () => true,
         emittedAt: FROZEN_NOW,
-        requested: makeRequested(["messages"]),
+        requested: makeRequested(["messages", "message_bodies"]),
       }
     );
 
@@ -1635,6 +1635,20 @@ test("runAllMailPasses: first historical page is bounded, durable only at page e
       protocolMessages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "messages"),
       true,
       "a bounded page proves its own detail coverage even while historical continuation remains"
+    );
+    assert.deepEqual(
+      protocolMessages.find((message) => message.type === "DETAIL_COVERAGE" && message.stream === "message_bodies"),
+      {
+        type: "DETAIL_COVERAGE",
+        reference_only: true,
+        stream: "message_bodies",
+        state_stream: "messages",
+        required_keys: [],
+        hydrated_keys: [],
+        considered: 2,
+        covered: 2,
+      },
+      "the body stream reports the same bounded parent-message pass"
     );
     assert.deepEqual(
       protocolMessages.find((message) => message.type === "SKIP_RESULT" && message.stream === "messages"),

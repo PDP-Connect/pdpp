@@ -598,6 +598,11 @@ test("Steam protocol execution: optional friends 401 emits exact SKIP_RESULT and
       result.messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "friends"),
       false
     );
+    const profile = result.messages.find((message) => message.type === "RECORD" && message.stream === "profile");
+    assert.ok(profile, "the valid profile returned by Steam must reach the protocol");
+    if (profile?.type === "RECORD") {
+      assert.equal(profile.key, "76561198012345678");
+    }
     const done = result.messages.at(-1);
     assert.equal(done?.type, "DONE");
     assert.equal(done?.status, "succeeded");

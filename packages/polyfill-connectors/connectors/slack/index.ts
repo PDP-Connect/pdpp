@@ -2264,7 +2264,7 @@ export async function runCanvasesStream(deps: StreamDeps): Promise<void> {
   // emitted, and an honest `partial` if a canvas was weighed but dropped (e.g.
   // by record-shape validation). The denominator is measured here, never
   // aliased to the emitted count.
-  await declareListConsidered(deps, "canvases", canvasRows.length);
+  await deps.emit(buildFullScanCoverageMessage("canvases", canvasRows.length));
 }
 
 /**
@@ -2278,7 +2278,7 @@ export async function runStarsStream(deps: StreamDeps, token: string, cookie: st
   for (const item of items) {
     await deps.emitRecord("stars", buildStarRecord(item));
   }
-  await declareListConsidered(deps, "stars", items.length);
+  await deps.emit(buildFullScanCoverageMessage("stars", items.length));
 }
 
 export async function runUserGroupsStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
@@ -2286,7 +2286,7 @@ export async function runUserGroupsStream(deps: StreamDeps, token: string, cooki
   for (const g of groups) {
     await deps.emitRecord("user_groups", buildUserGroupRecord(g));
   }
-  await declareListConsidered(deps, "user_groups", groups.length);
+  await deps.emit(buildFullScanCoverageMessage("user_groups", groups.length));
 }
 
 export async function runRemindersStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
@@ -2294,7 +2294,7 @@ export async function runRemindersStream(deps: StreamDeps, token: string, cookie
   for (const r of reminders) {
     await deps.emitRecord("reminders", buildReminderRecord(r));
   }
-  await declareListConsidered(deps, "reminders", reminders.length);
+  await deps.emit(buildFullScanCoverageMessage("reminders", reminders.length));
 }
 
 /**
@@ -2335,7 +2335,7 @@ export async function runDmReadStatesStream(deps: StreamDeps, token: string, coo
   for (const state of states) {
     await deps.emitRecord("dm_read_states", buildDmReadStateRecord(state, deps.emittedAt));
   }
-  await declareListConsidered(deps, "dm_read_states", states.length);
+  await deps.emit(buildFullScanCoverageMessage("dm_read_states", states.length));
 }
 
 interface StateEmitDeps {
