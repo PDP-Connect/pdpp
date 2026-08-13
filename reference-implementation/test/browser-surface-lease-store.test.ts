@@ -210,7 +210,10 @@ async function assertNoPriorityBootstrapLocks(admin: Pool) {
   const locks = await admin.query(
     `
     SELECT count(*)::int AS count FROM pg_locks
-    WHERE locktype = 'advisory' AND classid = $1 AND objid IN ($2, $3)
+    WHERE locktype = 'advisory'
+      AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+      AND classid = $1
+      AND objid IN ($2, $3)
   `,
     [
       POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK[0],
