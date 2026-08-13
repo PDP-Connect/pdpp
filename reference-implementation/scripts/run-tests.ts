@@ -363,6 +363,7 @@ const topLevelTests = entries
 // discovery is intentionally narrow by directory, but extension-complete for the
 // Node loader used by the supported RI CI lines, including erasable TypeScript.
 const COLOCATED_TEST_DIRS = [
+  { dir: "runtime", extensions: NODE_TEST_EXTENSIONS },
   { dir: join("server", "streaming"), extensions: NODE_TEST_EXTENSIONS },
   { dir: "scripts", extensions: NODE_TEST_EXTENSIONS },
 ];
