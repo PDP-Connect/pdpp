@@ -466,6 +466,54 @@ test("owner-auth ingest reports a post-resolution revoke as a 200 rejected line"
   }
 });
 
+test("owner-auth ingest admits explicit paused instances and still rejects revoked instances", async () => {
+  const server = (await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 })) as TestServer;
+  try {
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const manifest = await registerSpotify(asUrl);
+    const connectorId = manifest.connector_id;
+    await seedTwoSpotifyInstances(connectorId);
+    const store = createSqliteConnectorInstanceStore();
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    await store.updateStatus("cin_spotify_personal", { status: "paused", updatedAt: NOW });
+    const pausedIngest = await fetchJson<IngestBody>(
+      `${rsUrl}/v1/ingest/top_artists?connector_id=${encodeURIComponent(connectorId)}&connector_instance_id=cin_spotify_personal`,
+      {
+        body: `${JSON.stringify({ data: { id: "artist_paused", name: "paused artist" }, key: "artist_paused" })}\n`,
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          "Content-Type": "application/x-ndjson",
+        },
+        method: "POST",
+      }
+    );
+    assert.equal(pausedIngest.status, 200);
+    assert.ok(pausedIngest.body, "expected an ingest body");
+    assert.equal(pausedIngest.body.records_accepted, 1);
+    assert.equal(pausedIngest.body.records_rejected, 0);
+
+    await store.updateStatus("cin_spotify_work", { revokedAt: NOW, status: "revoked", updatedAt: NOW });
+    const revokedIngest = await fetchJson<ErrorBody>(
+      `${rsUrl}/v1/ingest/top_artists?connector_id=${encodeURIComponent(connectorId)}&connector_instance_id=cin_spotify_work`,
+      {
+        body: `${JSON.stringify({ data: { id: "artist_revoked", name: "revoked artist" }, key: "artist_revoked" })}\n`,
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          "Content-Type": "application/x-ndjson",
+        },
+        method: "POST",
+      }
+    );
+    assert.equal(revokedIngest.status, 400);
+    assert.ok(revokedIngest.body, "expected an error body");
+    assert.equal(revokedIngest.body.error.code, "connector_instance_inactive");
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test("owner-auth blob upload and read route through explicit connector instance bindings", async () => {
   const server = (await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 })) as TestServer;
   try {
