@@ -108,7 +108,7 @@ function assertCimdRegistrationModes(
 function expectedDeviceAuthorizationProfiles() {
   return [
     {
-      authorization_details_type: "https://pdpp.org/data-access",
+      authorization_details_type: "https://pdpp.dev/data-access",
       normal_mcp_setup: true,
       pdpp_token_kind: "client",
       profile: "grant_scoped_mcp",
@@ -138,7 +138,7 @@ function expectedMcpAuthorization({ resource, issuer }: { resource: string; issu
       resource_parameter: "required",
     },
     device_code: {
-      authorization_details_type: "https://pdpp.org/data-access",
+      authorization_details_type: "https://pdpp.dev/data-access",
       device_authorization_endpoint: `${issuer}/oauth/device_authorization`,
       flow: "device_code",
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
@@ -1057,7 +1057,7 @@ test("provider metadata routes expose current honest capability set", async () =
     assertCimdRegistrationModes(authorizationServer.body);
     assertPublicClientAdvertised(authorizationServer.body, "pdpp_cli", "PDPP CLI");
     assert.deepEqual(authorizationServer.body.pdpp_authorization_details_types_supported, [
-      "https://pdpp.org/data-access",
+      "https://pdpp.dev/data-access",
     ]);
     assert.equal(authorizationServer.body.token_endpoint, `${asUrl}/oauth/token`);
     assert.deepEqual(authorizationServer.body.token_endpoint_auth_methods_supported, ["none"]);
@@ -1163,12 +1163,12 @@ test("explicit browser-facing public urls drive metadata, device verification, a
         authorization_details: [
           {
             access_mode: "single_use",
-            purpose_code: "https://pdpp.org/purpose/recommendation",
+            purpose_code: "https://pdpp.dev/purpose/recommendation",
             purpose_description: "Review top artists",
             retention: "P30D",
-            source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+            source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
             streams: [{ name: "top_artists" }],
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_display: { name: "Longview" },
@@ -1526,7 +1526,7 @@ test("native startup rejects manifests that include connector_id", async () => {
       asPort: 0,
       dbPath: ":memory:",
       nativeManifest: {
-        connector_id: "https://registry.pdpp.org/connectors/not-actually-native",
+        connector_id: "https://registry.pdpp.dev/connectors/not-actually-native",
         name: "Northstar HR",
         provider_id: "northstar_hr",
         storage_binding: { connector_id: "northstar_hr_native" },

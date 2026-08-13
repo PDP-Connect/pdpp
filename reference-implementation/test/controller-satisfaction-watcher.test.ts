@@ -22,7 +22,7 @@ import { evaluateSatisfactionContract, satisfiedOwnerActions } from "../runtime/
 import { closeDb, initDb } from "../server/db.ts";
 import type { ActiveRunRecord, ScheduleRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 
-const CONNECTOR_ID = "https://registry.pdpp.org/connectors/self-heal-test";
+const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/self-heal-test";
 const INSTANCE_ID = "cin_self_heal";
 const MANIFEST = {
   connector_id: CONNECTOR_ID,

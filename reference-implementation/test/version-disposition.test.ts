@@ -107,7 +107,7 @@ test("classifyVersionDisposition: recurring snapshot resolves local-device and r
   );
   assert.equal(
     classifyVersionDisposition({
-      connectorId: "https://registry.pdpp.org/connectors/codex",
+      connectorId: "https://registry.pdpp.dev/connectors/codex",
       hasCompactionPolicy: true,
       stream: "sessions",
     }),
@@ -135,7 +135,7 @@ test("classifyVersionDisposition: split residual entity streams are point_in_tim
 test("classifyVersionDisposition: point-in-time resolves the registry-URL id form", () => {
   assert.equal(
     classifyVersionDisposition({
-      connectorId: "https://registry.pdpp.org/connectors/github",
+      connectorId: "https://registry.pdpp.dev/connectors/github",
       hasCompactionPolicy: false,
       stream: "user",
     }),
@@ -318,7 +318,7 @@ test("claude-code/sessions is NOT in the reviewed-residue map (it is now a recur
 
 test("normalizeConnectorId strips registry-URL and local-device forms", () => {
   assert.equal(normalizeConnectorId("github"), "github");
-  assert.equal(normalizeConnectorId("https://registry.pdpp.org/connectors/github"), "github");
+  assert.equal(normalizeConnectorId("https://registry.pdpp.dev/connectors/github"), "github");
   assert.equal(normalizeConnectorId("local-device:claude-code"), "claude-code");
   assert.equal(normalizeConnectorId(null), null);
 });
@@ -360,7 +360,7 @@ test("classifyVersionRemediation: usaa/statements reviewed residue is content_fi
   // Same answer via the registry-URL connector_id form.
   assert.equal(
     classifyVersionRemediation({
-      connectorId: "https://registry.pdpp.org/connectors/usaa",
+      connectorId: "https://registry.pdpp.dev/connectors/usaa",
       stream: "statements",
       versionDisposition: "reviewed_historical_residue",
     }),

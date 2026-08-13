@@ -22,7 +22,7 @@ runtime behavior merely to satisfy a type or lint metric.
 - In a fresh project, install all four candidate tarballs with
   `npm install --ignore-scripts`; inspect `npm ls --all` and resolved paths; use
   `npx --no-install` for bin probes to prevent registry fallback.
-- Run the matrix at Node 22.14.0 and repository Node 25; include Node 26 where
+- Run the matrix at Node 22.14.0 and the current repository Node runtime; include Node 26 where
   the Neko/Docker boundary is affected. The exact matrix may use pinned images,
   but a local source import is never a substitute for installed execution.
 - Migrate by dependency/runtime class and preserve JS/MJS when a host loader,

@@ -201,7 +201,7 @@ async function issueClientGrant(
           purpose_description: params.purpose_description,
           source: { id: params.connector_id, kind: "connector" },
           streams: params.streams,
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: params.client_id,
@@ -311,7 +311,7 @@ test("introspection: active client token returns documented fields (B3)", async 
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/assist_summarize",
+      purpose_code: "https://pdpp.dev/purpose/assist_summarize",
       purpose_description: "B3 introspection proof",
       streams: [{ fields: ["id", "name", "popularity"], name: "top_artists" }],
     });
@@ -361,7 +361,7 @@ test("introspection: revoked grant returns active=false with inactive_reason (B3
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/assist_summarize",
+      purpose_code: "https://pdpp.dev/purpose/assist_summarize",
       purpose_description: "B3 revoke proof",
       streams: [{ fields: ["id", "name"], name: "top_artists" }],
     });
@@ -431,7 +431,7 @@ test("resources[] round-trip: grant contains resources, RS enforces them (B3)", 
       access_mode: "single_use",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/assist_search",
+      purpose_code: "https://pdpp.dev/purpose/assist_search",
       purpose_description: "B3 resources[] proof — two named artists",
       streams: [
         {
@@ -487,7 +487,7 @@ test("resources[] scoping applies to aggregate queries (B3)", async () => {
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorId,
-      purpose_code: "https://pdpp.org/purpose/assist_summarize",
+      purpose_code: "https://pdpp.dev/purpose/assist_summarize",
       purpose_description: "B3 aggregate resources[] proof",
       streams: [
         {

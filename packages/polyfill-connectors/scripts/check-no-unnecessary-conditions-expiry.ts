@@ -7,12 +7,9 @@
  * in biome.jsonc.
  *
  * That policy exists because Biome 2.5.5's noUnnecessaryConditions rule has
- * a confirmed false-positive: it claims `x?.prop ?? fallback` / `x?.prop`
- * is dead code whenever `x`'s nullability comes from
- * `noUncheckedIndexedAccess` (`Record<string, V>` / array indexing) or from
- * a field/param whose real optionality the rule fails to narrow correctly,
- * even though `tsc --noEmit` — and every runtime behavior in this package —
- * agrees the value genuinely can be null/undefined.
+ * a confirmed false-positive: it claims `record[key] ?? fallback` /
+ * `record[key]?.method()` is dead code even when TypeScript's
+ * `noUncheckedIndexedAccess` makes the indexed value genuinely undefined.
  *
  * This script re-runs that exact minimal repro against whatever Biome
  * version is currently installed. If Biome no longer flags it, the bug is
@@ -31,16 +28,10 @@ const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BIOME_BIN = join(PACKAGE_ROOT, "node_modules", ".bin", "biome");
 
 const REPRO_SOURCE = `
-class Foo {
-  readonly x: { state: string } | null;
-  constructor(v: { state: string } | null) {
-    this.x = v;
-  }
-  method(): string | null {
-    return this.x?.state ?? null;
-  }
+function contentType(headers: Record<string, string>): string {
+  return headers["content-type"]?.toLowerCase() ?? "";
 }
-export { Foo };
+export { contentType };
 `;
 
 const REPRO_CONFIG = JSON.stringify({

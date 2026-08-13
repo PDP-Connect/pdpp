@@ -19,7 +19,7 @@ import { buildConnectionSetupPlan } from "../server/connection-setup-plan.ts";
 
 function manifest(connectorId: string, extra: Partial<ConnectorManifestLike> = {}): ConnectorManifestLike {
   return {
-    connector_id: `https://registry.pdpp.org/connectors/${connectorId}`,
+    connector_id: `https://registry.pdpp.dev/connectors/${connectorId}`,
     connector_key: connectorId,
     display_name: connectorId,
     runtime_requirements: { bindings: { network: { required: true } } },

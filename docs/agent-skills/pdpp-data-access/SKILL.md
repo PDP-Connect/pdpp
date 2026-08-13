@@ -85,7 +85,7 @@ Notes:
 - `purpose_description` is read by the owner. Write it as one sentence the owner would accept on a consent screen.
 - Pick the smallest set of streams that can answer the current task. Adding fields later is cheap; explaining why you grabbed extra is expensive.
 - `access_mode` should be `single_use` for one-shot tasks. The reference consumes the grant at first token issuance, but the issued token remains usable for pagination and retries until token expiry or revocation. Long-lived agents use `continuous` only when the user has explicitly asked for it.
-- Set one `source` object: `{ "kind": "connector", "id": "<registry URI>" }` for polyfill-style providers or `{ "kind": "provider_native", "id": "<provider id>" }` for native PDPP providers. Use the exact connector source id from `/v1/schema` or `/v1/connectors` (for example `https://registry.pdpp.org/connectors/github`), not a guessed short name.
+- Set one `source` object: `{ "kind": "connector", "id": "<registry URI>" }` for polyfill-style providers or `{ "kind": "provider_native", "id": "<provider id>" }` for native PDPP providers. Use the exact connector source id from `/v1/schema` or `/v1/connectors` (for example `https://registry.pdpp.dev/connectors/github`), not a guessed short name.
 
 Previously known as: older docs used top-level `connector_id` for connector sources and `provider_id` for native providers. Those names now map to `source.id` under the matching `source.kind`; do not send them as public request fields.
 
@@ -349,10 +349,10 @@ Don't grab all email. Build:
 ```json
 {
   "authorization_details": [{
-    "type": "https://pdpp.org/data-access",
+    "type": "https://pdpp.dev/data-access",
     "source": {
       "kind": "connector",
-      "id": "https://registry.pdpp.org/connectors/gmail"
+      "id": "https://registry.pdpp.dev/connectors/gmail"
     },
     "purpose_code": "assist.summarize",
     "purpose_description": "Summarize emails from <sender> for the past 7 days.",
@@ -368,13 +368,13 @@ After approval, query `/v1/streams/messages/records?filter[from_email]=<sender>&
 
 User: "Did anything weird hit my checking account this month?"
 
-Use the exact finance connector id from `/v1/schema` (for example `https://registry.pdpp.org/connectors/ynab` or `https://registry.pdpp.org/connectors/usaa`), stream `transactions`, fields such as `date`, `amount`, `payee_name`/`description`, and `category_name`, scoped to the current month with stream `time_range` when the stream supports it. `purpose_code: "assist.review"`, `access_mode: "single_use"`. Don't request account numbers, routing numbers, or any field not needed for the answer.
+Use the exact finance connector id from `/v1/schema` (for example `https://registry.pdpp.dev/connectors/ynab` or `https://registry.pdpp.dev/connectors/usaa`), stream `transactions`, fields such as `date`, `amount`, `payee_name`/`description`, and `category_name`, scoped to the current month with stream `time_range` when the stream supports it. `purpose_code: "assist.review"`, `access_mode: "single_use"`. Don't request account numbers, routing numbers, or any field not needed for the answer.
 
 ### Coding history
 
 User: "Draft my weekly status update from this week's engineering activity."
 
-Use the data source that actually has the activity. Current first-party GitHub exposes `issues` and `pull_requests`, not a `commits` stream; request fields such as `repository_full_name`, `title`, `state`, `updated_at`, `merged_at`, `additions`, and `deletions`. If the user wants coding-agent history, prefer `https://registry.pdpp.org/connectors/claude-code` or `https://registry.pdpp.org/connectors/codex` streams that `/v1/schema` shows as available.
+Use the data source that actually has the activity. Current first-party GitHub exposes `issues` and `pull_requests`, not a `commits` stream; request fields such as `repository_full_name`, `title`, `state`, `updated_at`, `merged_at`, `additions`, and `deletions`. If the user wants coding-agent history, prefer `https://registry.pdpp.dev/connectors/claude-code` or `https://registry.pdpp.dev/connectors/codex` streams that `/v1/schema` shows as available.
 
 ### Cross-connector assistant memory
 

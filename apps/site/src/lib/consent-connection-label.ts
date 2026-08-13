@@ -28,7 +28,7 @@
  */
 
 const LOCAL_DEVICE_PREFIX = "local-device:";
-const REGISTRY_CONNECTOR_HOST = "registry.pdpp.org";
+const REGISTRY_CONNECTOR_HOST = "registry.pdpp.dev";
 const NON_ALPHANUMERIC = /[^a-z0-9]+/g;
 const WORD_SEPARATORS = /[\s_-]+/;
 const SPACE_OR_HYPHEN = /[\s-]+/g;

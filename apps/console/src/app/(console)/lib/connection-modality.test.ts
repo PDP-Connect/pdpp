@@ -73,7 +73,7 @@ test("isSupportedLocalCollectorConnector narrows only the supported keys", () =>
 
 test("isSupportedBrowserCollectorConnector follows shipped runtime support", () => {
   assert.equal(isSupportedBrowserCollectorConnector("amazon"), true);
-  assert.equal(isSupportedBrowserCollectorConnector("https://registry.pdpp.org/connectors/amazon"), true);
+  assert.equal(isSupportedBrowserCollectorConnector("https://registry.pdpp.dev/connectors/amazon"), true);
   assert.equal(isSupportedBrowserCollectorConnector("chase"), true);
   assert.equal(isSupportedBrowserCollectorConnector("chatgpt"), true);
   assert.equal(isSupportedBrowserCollectorConnector("reddit"), true);
@@ -92,7 +92,7 @@ test("isSupportedBrowserCollectorConnector follows shipped runtime support", () 
 // manifest bindings at the records list, so it enumerates the key set — pinned
 // against the committed manifests so it cannot drift from the real bindings.
 
-const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
+const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.dev/connectors/";
 const TRAILING_SLASH_RE = /\/$/;
 
 /**
@@ -170,9 +170,9 @@ test("isBrowserBoundConnector also accepts the registry-URL fallback form", () =
   // The RS summary canonicalizes first-party ids, but falls back to the raw
   // value when canonicalization fails. A URL-shaped id must still classify as
   // browser-bound for setup/enrollment guidance.
-  assert.equal(isBrowserBoundConnector("https://registry.pdpp.org/connectors/amazon"), true);
-  assert.equal(isBrowserBoundConnector("https://registry.pdpp.org/connectors/chase/"), true);
-  assert.equal(isBrowserBoundConnector("https://registry.pdpp.org/connectors/gmail"), false);
+  assert.equal(isBrowserBoundConnector("https://registry.pdpp.dev/connectors/amazon"), true);
+  assert.equal(isBrowserBoundConnector("https://registry.pdpp.dev/connectors/chase/"), true);
+  assert.equal(isBrowserBoundConnector("https://registry.pdpp.dev/connectors/gmail"), false);
 });
 
 test("a browser-bound connector is never in the supported local-collector set", () => {

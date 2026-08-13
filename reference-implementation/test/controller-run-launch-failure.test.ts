@@ -35,7 +35,7 @@ const REGEXP_1 = /run_id=run_launch_crash/;
 const REGEXP_2 = /executable missing/;
 const REGEXP_3 = /executable missing/;
 
-const CONNECTOR_ID = "https://registry.pdpp.org/connectors/launch-failure-test";
+const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/launch-failure-test";
 const MANIFEST = {
   connector_id: CONNECTOR_ID,
   name: "Launch Failure Test",

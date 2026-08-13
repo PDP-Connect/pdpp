@@ -121,11 +121,11 @@ const OVERLAY_FILE = `${REPO_ROOT}docker-compose.neko.yml`;
 const ENV_EXAMPLE_FILE = `${REPO_ROOT}.env.docker.example`;
 const NEKO_DOCKERFILE = `${REPO_ROOT}docker/neko/Dockerfile`;
 const NEKO_CHROMIUM_START = `${REPO_ROOT}docker/neko/start-chromium.sh`;
-const CHATGPT_CONNECTOR_ID = "https://registry.pdpp.org/connectors/chatgpt";
-const CHASE_CONNECTOR_ID = "https://registry.pdpp.org/connectors/chase";
-const USAA_CONNECTOR_ID = "https://registry.pdpp.org/connectors/usaa";
-const AMAZON_CONNECTOR_ID = "https://registry.pdpp.org/connectors/amazon";
-const REDDIT_CONNECTOR_ID = "https://registry.pdpp.org/connectors/reddit";
+const CHATGPT_CONNECTOR_ID = "https://registry.pdpp.dev/connectors/chatgpt";
+const CHASE_CONNECTOR_ID = "https://registry.pdpp.dev/connectors/chase";
+const USAA_CONNECTOR_ID = "https://registry.pdpp.dev/connectors/usaa";
+const AMAZON_CONNECTOR_ID = "https://registry.pdpp.dev/connectors/amazon";
+const REDDIT_CONNECTOR_ID = "https://registry.pdpp.dev/connectors/reddit";
 const MANAGED_CONNECTOR_IDS = [
   CHATGPT_CONNECTOR_ID,
   CHASE_CONNECTOR_ID,

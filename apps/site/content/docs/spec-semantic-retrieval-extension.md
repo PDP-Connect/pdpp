@@ -79,7 +79,7 @@ Every other parameter is rejected with `invalid_request_error` — explicitly in
       "object": "search_result",
       "stream": "messages",
       "record_key": "msg_123",
-      "connector_id": "https://registry.pdpp.org/connectors/messaging-app",
+      "connector_id": "https://registry.pdpp.dev/connectors/messaging-app",
       "record_url": "/v1/streams/messages/records/msg_123",
       "emitted_at": "2026-04-23T12:34:56Z",
       "score": { "kind": "semantic_distance", "value": 0.182, "order": "lower_is_better" },

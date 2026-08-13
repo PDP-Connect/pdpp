@@ -41,7 +41,7 @@ function assertInvalid(validator: ValidateFunction, value: unknown): void {
   assert.equal(validator(value), false);
 }
 
-const source = { id: "https://sources.example/github", kind: "connector" } as const;
+const source = { id: "https://registry.pdpp.dev/connectors/github", kind: "connector" } as const;
 const issuesStream: SourceDeclarationStream = {
   consent_time_field: "updated_at",
   cursor_field: "updated_at",
@@ -356,9 +356,9 @@ test("selection requests keep convenience forms request-only and never imply fan
   const validate = compile(SelectionRequestSchema);
   const base = {
     access_mode: "continuous",
-    purpose_code: "https://pdpp.org/purpose/research",
+    purpose_code: "https://pdpp.dev/purpose/research",
     source,
-    type: "https://pdpp.org/data-access",
+    type: "https://pdpp.dev/data-access",
   };
   assertValid(validate, { ...base, streams: [{ name: "*" }] });
   assertValid(validate, { ...base, source: { id: source.id }, streams: [{ name: "*" }] });
@@ -431,7 +431,7 @@ test("resolved grants require explicit frozen stream authorization facts", () =>
     client: { client_id: "app-1" },
     grant_id: "grant-1",
     issued_at: "2026-08-10T12:00:00Z",
-    purpose_code: "https://pdpp.org/purpose/research",
+    purpose_code: "https://pdpp.dev/purpose/research",
     source,
     source_declaration: { version: "release:opaque-v7" },
     streams: [

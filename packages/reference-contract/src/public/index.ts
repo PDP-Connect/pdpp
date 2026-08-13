@@ -319,7 +319,7 @@ const AuthorizationServerMetadataSchema = {
     introspection_endpoint: UriSchema,
     issuer: UriSchema,
     pdpp_authorization_details_types_supported: {
-      items: { const: "https://pdpp.org/data-access" },
+      items: { const: "https://pdpp.dev/data-access" },
       minItems: 1,
       type: "array",
     },

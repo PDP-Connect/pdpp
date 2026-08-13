@@ -72,14 +72,14 @@ export function executeAsAuthorizationServerMetadata(
     : registrationModesBase;
   return deps.buildAuthorizationServerMetadata({
     agentConnectEndpoint: `${issuer}/agent-connect`,
-    authorizationDetailsTypesSupported: ["https://pdpp.org/data-access"],
+    authorizationDetailsTypesSupported: ["https://pdpp.dev/data-access"],
     authorizationEndpoint: `${issuer}/oauth/authorize`,
     cimdEnabled,
     codeChallengeMethodsSupported: ["S256"],
     deviceAuthorizationEndpoint: `${issuer}/oauth/device_authorization`,
     deviceAuthorizationProfilesSupported: [
       {
-        authorization_details_type: "https://pdpp.org/data-access",
+        authorization_details_type: "https://pdpp.dev/data-access",
         normal_mcp_setup: true,
         pdpp_token_kind: "client",
         profile: "grant_scoped_mcp",

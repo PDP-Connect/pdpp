@@ -586,7 +586,7 @@ export function mountRefConnectionsList(app: AppLike, ctx: MountRefConnectorsCon
         const ownerSubjectId = ctx.getOwnerSubjectId(req);
         const rawConnectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
         // Canonicalize the owner-supplied connector_id filter so a URL-shaped
-        // value (e.g. https://registry.pdpp.org/connectors/spotify) matches the
+        // value (e.g. https://registry.pdpp.dev/connectors/spotify) matches the
         // canonical key the instances are stored under. Accept the legacy alias
         // at the boundary, then compare canonically. See canonicalize-connector-keys
         // Decision 1: connector instances bind to canonical keys only.

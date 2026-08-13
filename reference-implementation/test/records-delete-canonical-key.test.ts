@@ -26,7 +26,7 @@ test("deleteAllRecordsForConnector canonicalizes first-party registry URLs befor
       stream: "commits",
     });
 
-    const result = await deleteAllRecordsForConnector("https://registry.pdpp.org/connectors/github");
+    const result = await deleteAllRecordsForConnector("https://registry.pdpp.dev/connectors/github");
 
     assert.equal(result.deletedCount, 1);
     assert.deepEqual(result.streams, ["commits"]);

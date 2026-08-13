@@ -84,7 +84,7 @@ interface SelectionRequestBase {
   purpose_description?: string;
   retention?: { max_duration: string; on_expiry: "anonymize" | "delete" };
   source: SourceRequestObject;
-  type: "https://pdpp.org/data-access";
+  type: "https://pdpp.dev/data-access";
 }
 
 export type SelectionRequest = SelectionRequestBase &
@@ -269,7 +269,7 @@ const SourceDeclarationStreamSchema = {
 } satisfies JsonSchema;
 
 export const SourceDeclarationSchema = {
-  $id: "https://pdpp.org/schemas/source-declaration/0.1.0",
+  $id: "https://pdpp.dev/schemas/source-declaration/0.1.0",
   $schema: "https://json-schema.org/draft/2020-12/schema",
   additionalProperties: false,
   properties: {
@@ -840,7 +840,7 @@ export const SelectionRequestSchema = {
     selection_preset: NonEmptyStringSchema,
     source: SourceRequestObjectSchema,
     streams: { items: SelectionRequestStreamSchema, minItems: 1, type: "array", uniqueItems: true },
-    type: { const: "https://pdpp.org/data-access" },
+    type: { const: "https://pdpp.dev/data-access" },
   },
   required: ["type", "source", "purpose_code", "access_mode"],
   type: "object",

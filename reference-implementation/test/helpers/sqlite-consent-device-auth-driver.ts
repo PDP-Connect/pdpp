@@ -284,7 +284,7 @@ export function createSqliteConsentDeviceAuthDriver() {
 
     async startPendingConsent(input: ConsentInput = {}) {
       ensureSetup();
-      const purposeCode = input.purpose_code || "https://pdpp.org/purpose/personalization";
+      const purposeCode = input.purpose_code || "https://pdpp.dev/purpose/personalization";
       const purposeDescription = input.purpose_description || "consent-device-auth conformance";
       const accessMode = input.access_mode || "continuous";
       const streams = input.streams || [{ name: "top_artists", view: "basic" }];
@@ -297,7 +297,7 @@ export function createSqliteConsentDeviceAuthDriver() {
             purpose_description: purposeDescription,
             source: { id: manifest?.connector_id, kind: "connector" },
             streams,
-            type: "https://pdpp.org/data-access",
+            type: "https://pdpp.dev/data-access",
           },
         ],
         client_id: SAMPLE_CLIENT_ID,

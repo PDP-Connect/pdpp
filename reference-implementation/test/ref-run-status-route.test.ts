@@ -35,7 +35,7 @@ import type { MountRefRunStatusContext, RunStatusBody } from "../server/routes/r
 import { mountRefRunStatus } from "../server/routes/ref-run-status.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
-const CONNECTOR_ID = "https://registry.pdpp.org/connectors/run-status-test";
+const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/run-status-test";
 const ROUTE = "GET /_ref/runs/:runId";
 
 interface TestRequest {

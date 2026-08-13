@@ -20,7 +20,7 @@ const PNPM_INTEGRITY =
   "sha512-EFaLtKavtYyes2MNqQzJUWQXq+vT+rvmc58K55VyjaFJHp21pUTHatjrdXD1xLs9bGN7LLQb/c20f6gjyGSTGQ==";
 const PNPM_ENTRYPOINT_SHA256 = "b276da51dc8ca5b0d3ee3371695b50fc8b3244b281b091c63a3f082a88dadeb9";
 const DOCKER_RUNTIME_IMAGE =
-  "node:25.8.2-bookworm-slim@sha256:71be4054ee7a5fc8d0b2a66060705988b09a782025d70ba9318b29ff1a931fc0";
+  "node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03";
 
 export interface MatrixRow {
   exactFloor: boolean;
@@ -37,9 +37,9 @@ export const NODE_MATRIX: MatrixRow[] = [
     exactFloor: true,
   },
   {
-    id: "repository-docker-node-25.8.2",
+    id: "repository-docker-node-24.19.0",
     image: DOCKER_RUNTIME_IMAGE,
-    nodeVersion: "v25.8.2",
+    nodeVersion: "v24.19.0",
     exactFloor: false,
   },
 ];

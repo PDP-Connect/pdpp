@@ -195,7 +195,7 @@ test("findPolicy resolves codex and claude-code via short name or `local-device:
 
 test("findPolicy matches both short name and registry URL form for connector_id", () => {
   const a = findPolicy("slack", "workspace");
-  const b = findPolicy("https://registry.pdpp.org/connectors/slack", "workspace");
+  const b = findPolicy("https://registry.pdpp.dev/connectors/slack", "workspace");
   assert.ok(a);
   assert.ok(b);
   assert.equal(a, b, "short-name and URL lookups must resolve to the same policy entry");
@@ -214,7 +214,7 @@ test("findPolicy returns the registered policy for Slack channel_memberships wit
   // (id, channel_id, user_id) inside the fingerprint, so a membership
   // appearing or disappearing always remains a version boundary.
   const short = findPolicy("slack", "channel_memberships");
-  const url = findPolicy("https://registry.pdpp.org/connectors/slack", "channel_memberships");
+  const url = findPolicy("https://registry.pdpp.dev/connectors/slack", "channel_memberships");
   assert.ok(short, "slack/channel_memberships policy must be registered");
   assert.deepEqual(short.excludeKeys, ["fetched_at"]);
   assert.equal(short, url, "short-name and URL lookups must resolve to the same policy entry");
@@ -254,7 +254,7 @@ const POINT_IN_TIME_REAL_FIELD_STREAMS = [
 for (const { connector, stream, realField } of POINT_IN_TIME_REAL_FIELD_STREAMS) {
   test(`no compaction policy is registered for the point-in-time real-field stream ${connector}/${stream}`, () => {
     const short = findPolicy(connector, stream);
-    const url = findPolicy(`https://registry.pdpp.org/connectors/${connector}`, stream);
+    const url = findPolicy(`https://registry.pdpp.dev/connectors/${connector}`, stream);
     assert.equal(
       short,
       null,
@@ -312,7 +312,7 @@ test("server point-in-time real-field streams have NO compaction policy (split, 
       `${connector}/${stream} is a point-in-time split residual; it must NOT have a compaction policy`
     );
     assert.equal(
-      findPolicy(`https://registry.pdpp.org/connectors/${connector}`, stream),
+      findPolicy(`https://registry.pdpp.dev/connectors/${connector}`, stream),
       null,
       `${connector}/${stream} (registry-URL form) must also have no compaction policy`
     );

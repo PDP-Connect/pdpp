@@ -253,10 +253,10 @@ function credentialOf(body: Record<string, unknown>): { present: unknown } {
 function syntheticNoProbeStaticSecretManifest() {
   return {
     capabilities: { public_listing: { listed: true, status: "proven" } },
-    connector_id: "https://registry.pdpp.org/connectors/ynab",
+    connector_id: "https://registry.pdpp.dev/connectors/ynab",
     connector_key: "ynab",
     display_name: "YNAB",
-    manifest_uri: "https://registry.pdpp.org/connectors/ynab",
+    manifest_uri: "https://registry.pdpp.dev/connectors/ynab",
     protocol_version: "0.1.0",
     runtime_requirements: { bindings: { network: { required: true } } },
     setup: {

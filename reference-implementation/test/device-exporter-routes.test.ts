@@ -864,7 +864,7 @@ test("device ingest canonicalizes connector aliases for replay and rejects a dif
   await withServer(async ({ asUrl }) => {
     const device = await enrollDevice(asUrl, "connector-alias-identity");
     const batch = makeBatch(device, "batch-connector-alias-identity", "alias");
-    batch.connector_id = "https://registry.pdpp.org/connectors/codex";
+    batch.connector_id = "https://registry.pdpp.dev/connectors/codex";
     const accepted = await postJson(
       `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
       batch,

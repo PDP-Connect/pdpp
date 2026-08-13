@@ -932,34 +932,34 @@ test("config parser matches canonical connector URLs and short runtime ids", () 
   const parsed = parseNekoBrowserSurfaceLeaseConfig({
     PDPP_NEKO_BASE_URL: "http://neko:8080",
     PDPP_NEKO_CDP_HTTP_URL: "http://neko:9222",
-    PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.org/connectors/chatgpt/",
+    PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.dev/connectors/chatgpt/",
     PDPP_NEKO_SURFACE_CAP: "1",
   });
 
-  assert.equal(parsed.managedConnectors.has("https://registry.pdpp.org/connectors/chatgpt/"), true);
-  assert.equal(parsed.managedConnectors.has("https://registry.pdpp.org/connectors/chatgpt"), true);
+  assert.equal(parsed.managedConnectors.has("https://registry.pdpp.dev/connectors/chatgpt/"), true);
+  assert.equal(parsed.managedConnectors.has("https://registry.pdpp.dev/connectors/chatgpt"), true);
   assert.equal(parsed.managedConnectors.has("chatgpt"), true);
   assert.equal(parsed.staticProfileKey, "chatgpt");
 
   const unrelatedUrl = parseNekoBrowserSurfaceLeaseConfig({
     PDPP_NEKO_BASE_URL: "http://neko:8080",
     PDPP_NEKO_CDP_HTTP_URL: "http://neko:9222",
-    PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.org/not-connectors/chatgpt/",
+    PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.dev/not-connectors/chatgpt/",
     PDPP_NEKO_SURFACE_CAP: "1",
   });
 
   assert.equal(unrelatedUrl.managedConnectors.has("chatgpt"), false);
-  assert.equal(unrelatedUrl.staticProfileKey, "https://registry.pdpp.org/not-connectors/chatgpt/");
+  assert.equal(unrelatedUrl.staticProfileKey, "https://registry.pdpp.dev/not-connectors/chatgpt/");
 
   const unknownFirstPartyUrl = parseNekoBrowserSurfaceLeaseConfig({
     PDPP_NEKO_BASE_URL: "http://neko:8080",
     PDPP_NEKO_CDP_HTTP_URL: "http://neko:9222",
-    PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.org/connectors/not-real",
+    PDPP_NEKO_MANAGED_CONNECTORS: "https://registry.pdpp.dev/connectors/not-real",
     PDPP_NEKO_SURFACE_CAP: "1",
   });
 
   assert.equal(unknownFirstPartyUrl.managedConnectors.has("not-real"), false);
-  assert.equal(unknownFirstPartyUrl.staticProfileKey, "https://registry.pdpp.org/connectors/not-real");
+  assert.equal(unknownFirstPartyUrl.staticProfileKey, "https://registry.pdpp.dev/connectors/not-real");
 });
 
 test("runtime config parser preserves static default and exposes lease config", () => {

@@ -433,14 +433,14 @@ test("replay comparison rejects resealed command, runtime, file-list, and cross-
 
 test("repository Docker runtime must stay digest- and package-manager-pinned", () => {
   const dockerfile = [
-    "ARG NODE_VERSION=25.8.2-bookworm-slim@sha256:71be4054ee7a5fc8d0b2a66060705988b09a782025d70ba9318b29ff1a931fc0",
+    "ARG NODE_VERSION=24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03",
     "ARG PNPM_VERSION=10.33.0",
     "ARG PNPM_INTEGRITY=sha512-EFaLtKavtYyes2MNqQzJUWQXq+vT+rvmc58K55VyjaFJHp21pUTHatjrdXD1xLs9bGN7LLQb/c20f6gjyGSTGQ==",
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal Dockerfile shell `${PNPM_VERSION}` variable expansion, not JS interpolation.
     'RUN npm pack --ignore-scripts --loglevel=error --pack-destination /tmp "pnpm@${PNPM_VERSION}" && pnpm integrity drift',
   ].join("\n");
   assert.deepEqual(
-    assertRepositoryRuntimeConfiguration({ dockerfile, nvmrc: "v25.8.2\n", packageManager: "pnpm@10.33.0" }),
+    assertRepositoryRuntimeConfiguration({ dockerfile, nvmrc: "v24.19.0\n", packageManager: "pnpm@10.33.0" }),
     {
       name: "pnpm",
       version: "10.33.0",
@@ -450,25 +450,25 @@ test("repository Docker runtime must stay digest- and package-manager-pinned", (
   assert.throws(
     () =>
       assertRepositoryRuntimeConfiguration({
-        dockerfile: dockerfile.replace("71be", "dead"),
-        nvmrc: "v25.8.2",
+        dockerfile: dockerfile.replace("3638", "dead"),
+        nvmrc: "v24.19.0",
         packageManager: "pnpm@10.33.0",
       }),
     DOCKERFILE_NODE_BASE_PATTERN
   );
   assert.throws(
-    () => assertRepositoryRuntimeConfiguration({ dockerfile, nvmrc: "v25.8.3", packageManager: "pnpm@10.33.0" }),
+    () => assertRepositoryRuntimeConfiguration({ dockerfile, nvmrc: "v24.19.1", packageManager: "pnpm@10.33.0" }),
     MUST_MATCH_NVMRC_PATTERN
   );
   assert.throws(
-    () => assertRepositoryRuntimeConfiguration({ dockerfile, nvmrc: "v25.8.2", packageManager: "pnpm@10.34.0" }),
+    () => assertRepositoryRuntimeConfiguration({ dockerfile, nvmrc: "v24.19.0", packageManager: "pnpm@10.34.0" }),
     DOCKERFILE_PNPM_VERSION_PATTERN
   );
   assert.throws(
     () =>
       assertRepositoryRuntimeConfiguration({
         dockerfile: dockerfile.replace("EFaL", "dead"),
-        nvmrc: "v25.8.2",
+        nvmrc: "v24.19.0",
         packageManager: "pnpm@10.33.0",
       }),
     PNPM_INTEGRITY_PATTERN
@@ -477,7 +477,7 @@ test("repository Docker runtime must stay digest- and package-manager-pinned", (
     () =>
       assertRepositoryRuntimeConfiguration({
         dockerfile: `${dockerfile}\nRUN npm install -g corepack`,
-        nvmrc: "v25.8.2",
+        nvmrc: "v24.19.0",
         packageManager: "pnpm@10.33.0",
       }),
     COREPACK_MESSAGE_PATTERN

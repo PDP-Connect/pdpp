@@ -368,7 +368,7 @@ async function approveClientGrant(asUrl: string, params: ApproveClientGrantParam
           purpose_description: params.purpose_description,
           source: { id: params.connector_id, kind: "connector" },
           streams: params.streams,
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: params.client_id,
@@ -918,7 +918,7 @@ test("filtered lexical search rejects invalid filter shapes and still-forbidden 
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorA,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "lexical filtered retrieval test",
       streams: [{ fields: ["id", "title", "source_created_at"], name: "posts" }],
     });
@@ -985,7 +985,7 @@ test("client-token streams[] not in grant returns grant_stream_not_allowed", asy
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorA,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "lexical retrieval test",
       streams: [{ fields: ["id", "title"], name: "posts" }], // posts only
     });
@@ -1006,7 +1006,7 @@ test("a persisted client grant for a removed stream closes every retrieval route
       access_mode: "continuous",
       client_id: "longview",
       connector_id: REDDITISH_MANIFEST_A.connector_id,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "stale grant authority regression",
       streams: [{ fields: ["id", "title"], name: "posts" }],
     });
@@ -1111,7 +1111,7 @@ test("client grant authorizing only one of two declared lexical_fields restricts
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorA,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "lexical retrieval test",
       streams: [{ fields: ["id", "title"], name: "posts" }],
     });
@@ -1198,7 +1198,7 @@ test("grant with zero overlap on searchable fields contributes zero hits and no 
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorA,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "lexical retrieval test",
       streams: [{ fields: ["id"], name: "posts" }],
     });
@@ -1368,7 +1368,7 @@ test("manifest validator rejects bad lexical_fields shapes", async () => {
     for (const c of cases) {
       const manifest = {
         capabilities: { human_interaction: ["credentials"] },
-        connector_id: `https://test.pdpp.org/connectors/bad-${encodeURIComponent(c.label)}`,
+        connector_id: `https://test.pdpp.dev/connectors/bad-${encodeURIComponent(c.label)}`,
         display_name: `bad-${c.label}`,
         protocol_version: "0.1.0",
         streams: [baseStream({ query: c.query })],

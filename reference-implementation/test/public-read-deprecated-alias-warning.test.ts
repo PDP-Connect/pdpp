@@ -208,7 +208,7 @@ test("resolveRequestConnectionId treats empty alias as absent (no warning, no va
 
 test("projectStorageDisplayName treats registry URL connector labels as fallback placeholders", () => {
   assert.equal(
-    projectStorageDisplayName("https://registry.pdpp.org/connectors/amazon", {
+    projectStorageDisplayName("https://registry.pdpp.dev/connectors/amazon", {
       connectorId: "amazon",
       connectorInstanceId: "cin_amazon_personal",
     }),

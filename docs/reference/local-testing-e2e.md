@@ -146,7 +146,7 @@ CREDENTIAL_FILE="$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json"
 TOKEN="$(jq -r '.access_token' "$CREDENTIAL_FILE")"
 
 curl -s -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:7663/v1/streams?connector_id=https://registry.pdpp.org/connectors/chatgpt" \
+  "http://localhost:7663/v1/streams?connector_id=https://registry.pdpp.dev/connectors/chatgpt" \
   | python3 -m json.tool
 
 unset TOKEN
@@ -158,7 +158,7 @@ You should see a JSON block listing streams with their record counts.
 TOKEN="$(jq -r '.access_token' "$CREDENTIAL_FILE")"
 
 curl -s -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:7663/v1/streams/conversations/records?connector_id=https://registry.pdpp.org/connectors/chatgpt&limit=3" \
+  "http://localhost:7663/v1/streams/conversations/records?connector_id=https://registry.pdpp.dev/connectors/chatgpt&limit=3" \
   | python3 -m json.tool | head -60
 
 unset TOKEN
@@ -195,7 +195,7 @@ To authenticate, read `.access_token` from the credential file at call time,
 include `Authorization: Bearer <token>` on each request, and unset the token
 variable immediately after use. Do not print or summarize the bearer.
 
-Connector ID for ChatGPT: https://registry.pdpp.org/connectors/chatgpt
+Connector ID for ChatGPT: https://registry.pdpp.dev/connectors/chatgpt
 
 Available endpoints:
 

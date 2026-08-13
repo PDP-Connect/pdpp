@@ -85,7 +85,7 @@ Each `data[]` entry is a `search_result`. A result MUST include `stream`, `recor
       "object": "search_result",
       "stream": "messages",
       "record_key": "msg_01JQXA3N9Y",
-      "connector_id": "https://registry.pdpp.org/connectors/gmail",
+      "connector_id": "https://registry.pdpp.dev/connectors/gmail",
       "emitted_at": "2026-05-14T09:12:04Z",
       "matched_fields": ["text", "subject"],
       "snippet": { "field": "text", "text": "…confirmed the overdraft fee refund…" },

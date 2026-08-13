@@ -10,7 +10,7 @@ import { getConnectorManifest, registerConnector } from "../server/auth.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 
 const NOW = "2026-05-20T12:00:00.000Z";
-const CLAUDE_CANONICAL_ID = "https://registry.pdpp.org/connectors/claude-code";
+const CLAUDE_CANONICAL_ID = "https://registry.pdpp.dev/connectors/claude-code";
 
 function withTmpDb(fn: () => Promise<void>): () => Promise<void> {
   return async () => {

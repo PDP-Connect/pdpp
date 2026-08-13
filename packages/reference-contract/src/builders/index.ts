@@ -173,7 +173,7 @@ export function buildParRequest(input: ParRequestInput = {}): ObjectLike {
     retention: input.retention,
     source: isPlainObject(input.source) ? input.source : undefined,
     streams: Array.isArray(input.streams) ? input.streams : undefined,
-    type: input.type ?? "https://pdpp.org/data-access",
+    type: input.type ?? "https://pdpp.dev/data-access",
   });
 
   return compactObject({

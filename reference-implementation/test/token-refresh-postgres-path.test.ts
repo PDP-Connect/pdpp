@@ -171,11 +171,11 @@ async function completeOauthCodeFlow({
   const authorizationDetails = [
     {
       access_mode: "continuous",
-      purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+      purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
       purpose_description: "token-refresh postgres-path proof",
       source: { id: manifest.connector_id, kind: "connector" },
       streams: [{ name: "*" }],
-      type: "https://pdpp.org/data-access",
+      type: "https://pdpp.dev/data-access",
     },
   ];
   const authorizeUrl = new URL(`${asUrl}/oauth/authorize`);

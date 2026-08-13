@@ -84,7 +84,7 @@ export interface HostedMcpPickerRow {
 
 // Authorization-details constants.
 
-export const HOSTED_MCP_PICKER_PURPOSE_CODE = "https://pdpp.org/purpose/personal_ai_assistant";
+export const HOSTED_MCP_PICKER_PURPOSE_CODE = "https://pdpp.dev/purpose/personal_ai_assistant";
 export const HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION =
   "Allow this MCP client to read selected personal data through PDPP.";
 export const HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE = "continuous";
@@ -260,11 +260,11 @@ export function buildHostedMcpAuthorizationDetailsForConnector(connectorId: stri
   return [
     {
       access_mode: "continuous",
-      purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+      purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
       purpose_description: "Allow this MCP client to read selected personal data through PDPP.",
       source: { id: connectorId, kind: "connector" },
       streams: [{ name: "*" }],
-      type: "https://pdpp.org/data-access",
+      type: "https://pdpp.dev/data-access",
     },
   ];
 }
@@ -318,7 +318,7 @@ export function buildHostedMcpAuthorizationDetailForConnector(
     purpose_description: HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION,
     source: { id: connectorId, kind: "connector" },
     streams,
-    type: "https://pdpp.org/data-access",
+    type: "https://pdpp.dev/data-access",
   };
 }
 

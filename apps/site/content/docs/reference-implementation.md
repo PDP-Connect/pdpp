@@ -97,7 +97,7 @@ It is intentionally narrow:
 - registration creates a public `client_id` only; data access still requires owner-approved consent
 - meant to coexist with the pre-registered client path as fallback and examples
 
-The current reference contract expects a single RFC 9396 `authorization_details` entry of type `https://pdpp.org/data-access`.
+The current reference contract expects a single RFC 9396 `authorization_details` entry of type `https://pdpp.dev/data-access`.
 
 ### Consent and grant issuance
 
@@ -209,7 +209,7 @@ The reference is trying to prove one specific architectural point:
 That is why the same engine supports both:
 
 - `source: { kind: "provider_native", id: "northstar_hr" }` for native sources such as Northstar HR
-- `source: { kind: "connector", id: "https://registry.pdpp.org/connectors/spotify" }` for collected/polyfill sources such as Spotify
+- `source: { kind: "connector", id: "https://registry.pdpp.dev/connectors/spotify" }` for collected/polyfill sources such as Spotify
 
 ## What is still intentionally thin
 

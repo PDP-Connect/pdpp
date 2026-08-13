@@ -436,7 +436,7 @@ async function approveGrant(
           purpose_description: params.purpose_description,
           source: params.source || { id: params.connector_id, kind: "connector" },
           streams: params.streams,
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: params.client_id,
@@ -541,7 +541,7 @@ test("GET /v1/schema honors grant.streams[].connection_id constraint", async () 
       const approved = await approveGrant(asUrl, "owner_local", {
         access_mode: "continuous",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/analytics",
+        purpose_code: "https://pdpp.dev/purpose/analytics",
         purpose_description: "granted_connections scope test",
         source: { id: CONNECTOR_ID, kind: "connector" },
         streams: [
@@ -590,7 +590,7 @@ test("GET /v1/schema returns every active connection when grant omits connection
       const approved = await approveGrant(asUrl, "owner_local", {
         access_mode: "continuous",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/analytics",
+        purpose_code: "https://pdpp.dev/purpose/analytics",
         purpose_description: "granted_connections fan-in test",
         source: { id: CONNECTOR_ID, kind: "connector" },
         streams: [{ fields: ["id", "subject", "received_at"], name: STREAM }],

@@ -131,10 +131,10 @@ test("selection requests use optional per-stream instance_ids instead of connect
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
-          source: { id: "https://sources.example/spotify", kind: "connector" },
+          purpose_code: "https://pdpp.dev/purpose/personalization",
+          source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: "longview",
@@ -147,10 +147,10 @@ test("selection requests use optional per-stream instance_ids instead of connect
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
-          source: { id: "https://sources.example/spotify", kind: "connector" },
+          purpose_code: "https://pdpp.dev/purpose/personalization",
+          source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
           streams: [{ instance_ids: ["cin_abc"], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: "longview",
@@ -163,10 +163,10 @@ test("selection requests use optional per-stream instance_ids instead of connect
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
-          source: { id: "https://sources.example/spotify", kind: "connector" },
+          purpose_code: "https://pdpp.dev/purpose/personalization",
+          source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
           streams: [{ connection_id: "cin_abc", name: "top_artists" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: "longview",

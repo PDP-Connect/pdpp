@@ -29,7 +29,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 The Core `SourceDeclaration` (Section 5 of the core spec) defines the common
 consent, record, selection, and query surface. This profile owns the
-`https://pdpp.org/profile/collection` extension value, which adds connector
+`https://pdpp.dev/profile/collection` extension value, which adds connector
 acquisition and execution fields. Core preserves or ignores this value without
 interpreting it.
 
@@ -38,11 +38,11 @@ interpreting it.
   "protocol_version": "0.1.0",
   "source": {
     "kind": "connector",
-    "id": "https://sources.example/spotify"
+    "id": "https://registry.pdpp.dev/connectors/spotify"
   },
   "declaration_version": "2026-08-11",
   "publisher": {
-    "id": "https://registry.pdpp.org/"
+    "id": "https://registry.pdpp.dev/"
   },
   "display": { "name": "Spotify" },
   "streams": [
@@ -59,9 +59,9 @@ interpreting it.
     }
   ],
   "extensions": {
-    "https://pdpp.org/profile/collection": {
+    "https://pdpp.dev/profile/collection": {
       "connector": {
-        "id": "https://registry.pdpp.org/connectors/spotify-browser",
+        "id": "https://registry.pdpp.dev/connectors/spotify-browser",
         "version": "2.0.0"
       },
       "runtime_requirements": {
@@ -472,7 +472,7 @@ it is absent, the endpoint addresses the connector's global archival state.
 ```json
 {
   "object": "stream_state",
-  "connector_id": "https://registry.pdpp.org/connectors/spotify-browser",
+  "connector_id": "https://registry.pdpp.dev/connectors/spotify-browser",
   "grant_id": "grt_8f72a1b3",
   "state": {
     "top_artists": { "last_updated": "2026-04-01T00:00:00Z" }

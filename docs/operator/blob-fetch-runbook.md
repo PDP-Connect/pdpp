@@ -60,7 +60,7 @@ Set environment variables first:
 ```bash
 AS_URL="http://localhost:7662"   # authorization server
 RS_URL="http://localhost:7763"   # resource server
-CONNECTOR_ID="https://registry.pdpp.org/connectors/gmail"
+CONNECTOR_ID="https://registry.pdpp.dev/connectors/gmail"
 SUBJECT_ID="owner_local"
 ```
 
@@ -146,7 +146,7 @@ PAR=$(curl -s -X POST "$AS_URL/oauth/par" \
   -d "{
     \"client_id\": \"my_client\",
     \"authorization_details\": [{
-      \"type\": \"https://pdpp.org/data-access\",
+      \"type\": \"https://pdpp.dev/data-access\",
       \"source\": { \"kind\": \"connector\", \"id\": \"$CONNECTOR_ID\" },
       \"purpose_code\": \"assist.export\",
       \"purpose_description\": \"Export Gmail attachment bytes for local archival.\",

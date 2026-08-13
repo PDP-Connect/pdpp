@@ -98,7 +98,7 @@ test("as.authorization_server.metadata advertises pre_registered_public when DCR
   assert.equal(input.authorizationEndpoint, "https://example.test/oauth/authorize");
   assert.deepEqual(input.responseTypesSupported, ["code"]);
   assert.deepEqual(input.codeChallengeMethodsSupported, ["S256"]);
-  assert.deepEqual(input.authorizationDetailsTypesSupported, ["https://pdpp.org/data-access"]);
+  assert.deepEqual(input.authorizationDetailsTypesSupported, ["https://pdpp.dev/data-access"]);
   assert.deepEqual(result, { received: input });
 });
 

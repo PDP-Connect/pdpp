@@ -2,7 +2,7 @@
   "protocol_version": "0.1.0",
   "connector_id": "google-maps",
   "connector_key": "google-maps",
-  "manifest_uri": "https://registry.pdpp.org/connectors/google-maps",
+  "manifest_uri": "https://registry.pdpp.dev/connectors/google-maps",
   "version": "0.1.0",
   "display_name": "Google Maps Timeline Import",
   "runtime_requirements": {
