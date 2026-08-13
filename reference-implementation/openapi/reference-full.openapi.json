@@ -2085,6 +2085,28 @@
                   "authorization_details": {
                     "items": {
                       "additionalProperties": false,
+                      "oneOf": [
+                        {
+                          "not": {
+                            "required": [
+                              "selection_preset"
+                            ]
+                          },
+                          "required": [
+                            "streams"
+                          ]
+                        },
+                        {
+                          "not": {
+                            "required": [
+                              "streams"
+                            ]
+                          },
+                          "required": [
+                            "selection_preset"
+                          ]
+                        }
+                      ],
                       "properties": {
                         "access_mode": {
                           "enum": [
@@ -2093,7 +2115,23 @@
                           ],
                           "type": "string"
                         },
+                        "client_claims": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "commitments": {
+                              "items": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "minItems": 1,
+                              "type": "array",
+                              "uniqueItems": true
+                            }
+                          },
+                          "type": "object"
+                        },
                         "purpose_code": {
+                          "format": "uri",
                           "minLength": 1,
                           "type": "string"
                         },
@@ -2109,7 +2147,10 @@
                               "type": "string"
                             },
                             "on_expiry": {
-                              "minLength": 1,
+                              "enum": [
+                                "delete",
+                                "anonymize"
+                              ],
                               "type": "string"
                             }
                           },
@@ -2119,10 +2160,15 @@
                           ],
                           "type": "object"
                         },
+                        "selection_preset": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
                         "source": {
                           "additionalProperties": false,
                           "properties": {
                             "id": {
+                              "format": "uri",
                               "minLength": 1,
                               "type": "string"
                             },
@@ -2135,7 +2181,6 @@
                             }
                           },
                           "required": [
-                            "kind",
                             "id"
                           ],
                           "type": "object"
@@ -2143,23 +2188,34 @@
                         "streams": {
                           "items": {
                             "additionalProperties": false,
+                            "allOf": [
+                              {
+                                "not": {
+                                  "required": [
+                                    "fields",
+                                    "view"
+                                  ]
+                                }
+                              }
+                            ],
                             "properties": {
-                              "client_claims": {
-                                "additionalProperties": true,
-                                "type": "object"
-                              },
-                              "connection_id": {
-                                "description": "Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.",
-                                "minLength": 1,
-                                "type": "string"
-                              },
                               "fields": {
                                 "items": {
                                   "minLength": 1,
                                   "type": "string"
                                 },
                                 "minItems": 1,
-                                "type": "array"
+                                "type": "array",
+                                "uniqueItems": true
+                              },
+                              "instance_ids": {
+                                "items": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "minItems": 1,
+                                "type": "array",
+                                "uniqueItems": true
                               },
                               "name": {
                                 "minLength": 1,
@@ -2177,17 +2233,31 @@
                                   "minLength": 1,
                                   "type": "string"
                                 },
-                                "type": "array"
+                                "minItems": 1,
+                                "type": "array",
+                                "uniqueItems": true
                               },
                               "time_range": {
                                 "additionalProperties": false,
+                                "anyOf": [
+                                  {
+                                    "required": [
+                                      "since"
+                                    ]
+                                  },
+                                  {
+                                    "required": [
+                                      "until"
+                                    ]
+                                  }
+                                ],
                                 "properties": {
                                   "since": {
-                                    "minLength": 1,
+                                    "format": "date-time",
                                     "type": "string"
                                   },
                                   "until": {
-                                    "minLength": 1,
+                                    "format": "date-time",
                                     "type": "string"
                                   }
                                 },
@@ -2204,7 +2274,8 @@
                             "type": "object"
                           },
                           "minItems": 1,
-                          "type": "array"
+                          "type": "array",
+                          "uniqueItems": true
                         },
                         "type": {
                           "const": "https://pdpp.dev/data-access"
@@ -2214,8 +2285,7 @@
                         "type",
                         "source",
                         "purpose_code",
-                        "access_mode",
-                        "streams"
+                        "access_mode"
                       ],
                       "type": "object"
                     },
@@ -2347,11 +2417,8 @@
                           "format": "date-time",
                           "type": "string"
                         },
-                        "manifest_version": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
                         "purpose_code": {
+                          "format": "uri",
                           "minLength": 1,
                           "type": "string"
                         },
@@ -2367,7 +2434,10 @@
                               "type": "string"
                             },
                             "on_expiry": {
-                              "minLength": 1,
+                              "enum": [
+                                "delete",
+                                "anonymize"
+                              ],
                               "type": "string"
                             }
                           },
@@ -2377,10 +2447,15 @@
                           ],
                           "type": "object"
                         },
+                        "selection_preset": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
                         "source": {
                           "additionalProperties": false,
                           "properties": {
                             "id": {
+                              "format": "uri",
                               "minLength": 1,
                               "type": "string"
                             },
@@ -2398,36 +2473,46 @@
                           ],
                           "type": "object"
                         },
+                        "source_declaration": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "version": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "version"
+                          ],
+                          "type": "object"
+                        },
                         "streams": {
                           "items": {
                             "additionalProperties": false,
                             "properties": {
-                              "client_claims": {
-                                "additionalProperties": true,
-                                "type": "object"
-                              },
-                              "connection_id": {
-                                "description": "Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.",
-                                "minLength": 1,
-                                "type": "string"
-                              },
                               "fields": {
                                 "items": {
                                   "minLength": 1,
                                   "type": "string"
                                 },
                                 "minItems": 1,
-                                "type": "array"
+                                "type": "array",
+                                "uniqueItems": true
+                              },
+                              "instance_ids": {
+                                "items": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "minItems": 1,
+                                "type": "array",
+                                "uniqueItems": true
                               },
                               "name": {
                                 "minLength": 1,
-                                "type": "string"
-                              },
-                              "necessity": {
-                                "enum": [
-                                  "required",
-                                  "optional"
-                                ],
+                                "not": {
+                                  "const": "*"
+                                },
                                 "type": "string"
                               },
                               "resources": {
@@ -2435,34 +2520,54 @@
                                   "minLength": 1,
                                   "type": "string"
                                 },
-                                "type": "array"
+                                "minItems": 1,
+                                "type": "array",
+                                "uniqueItems": true
                               },
-                              "time_range": {
+                              "time_constraint": {
                                 "additionalProperties": false,
+                                "anyOf": [
+                                  {
+                                    "required": [
+                                      "since"
+                                    ]
+                                  },
+                                  {
+                                    "required": [
+                                      "until"
+                                    ]
+                                  }
+                                ],
                                 "properties": {
-                                  "since": {
+                                  "field": {
                                     "minLength": 1,
                                     "type": "string"
                                   },
+                                  "since": {
+                                    "format": "date-time",
+                                    "type": "string"
+                                  },
                                   "until": {
-                                    "minLength": 1,
+                                    "format": "date-time",
                                     "type": "string"
                                   }
                                 },
+                                "required": [
+                                  "field"
+                                ],
                                 "type": "object"
-                              },
-                              "view": {
-                                "minLength": 1,
-                                "type": "string"
                               }
                             },
                             "required": [
-                              "name"
+                              "name",
+                              "instance_ids",
+                              "fields"
                             ],
                             "type": "object"
                           },
                           "minItems": 1,
-                          "type": "array"
+                          "type": "array",
+                          "uniqueItems": true
                         },
                         "subject": {
                           "additionalProperties": false,
@@ -2478,7 +2583,7 @@
                           "type": "object"
                         },
                         "version": {
-                          "minLength": 1,
+                          "const": "0.1.0",
                           "type": "string"
                         }
                       },
@@ -2489,7 +2594,7 @@
                         "subject",
                         "client",
                         "source",
-                        "manifest_version",
+                        "source_declaration",
                         "purpose_code",
                         "access_mode",
                         "streams"
@@ -2931,11 +3036,8 @@
                           "format": "date-time",
                           "type": "string"
                         },
-                        "manifest_version": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
                         "purpose_code": {
+                          "format": "uri",
                           "minLength": 1,
                           "type": "string"
                         },
@@ -2951,7 +3053,10 @@
                               "type": "string"
                             },
                             "on_expiry": {
-                              "minLength": 1,
+                              "enum": [
+                                "delete",
+                                "anonymize"
+                              ],
                               "type": "string"
                             }
                           },
@@ -2961,10 +3066,15 @@
                           ],
                           "type": "object"
                         },
+                        "selection_preset": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
                         "source": {
                           "additionalProperties": false,
                           "properties": {
                             "id": {
+                              "format": "uri",
                               "minLength": 1,
                               "type": "string"
                             },
@@ -2982,36 +3092,46 @@
                           ],
                           "type": "object"
                         },
+                        "source_declaration": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "version": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "version"
+                          ],
+                          "type": "object"
+                        },
                         "streams": {
                           "items": {
                             "additionalProperties": false,
                             "properties": {
-                              "client_claims": {
-                                "additionalProperties": true,
-                                "type": "object"
-                              },
-                              "connection_id": {
-                                "description": "Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.",
-                                "minLength": 1,
-                                "type": "string"
-                              },
                               "fields": {
                                 "items": {
                                   "minLength": 1,
                                   "type": "string"
                                 },
                                 "minItems": 1,
-                                "type": "array"
+                                "type": "array",
+                                "uniqueItems": true
+                              },
+                              "instance_ids": {
+                                "items": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "minItems": 1,
+                                "type": "array",
+                                "uniqueItems": true
                               },
                               "name": {
                                 "minLength": 1,
-                                "type": "string"
-                              },
-                              "necessity": {
-                                "enum": [
-                                  "required",
-                                  "optional"
-                                ],
+                                "not": {
+                                  "const": "*"
+                                },
                                 "type": "string"
                               },
                               "resources": {
@@ -3019,34 +3139,54 @@
                                   "minLength": 1,
                                   "type": "string"
                                 },
-                                "type": "array"
+                                "minItems": 1,
+                                "type": "array",
+                                "uniqueItems": true
                               },
-                              "time_range": {
+                              "time_constraint": {
                                 "additionalProperties": false,
+                                "anyOf": [
+                                  {
+                                    "required": [
+                                      "since"
+                                    ]
+                                  },
+                                  {
+                                    "required": [
+                                      "until"
+                                    ]
+                                  }
+                                ],
                                 "properties": {
-                                  "since": {
+                                  "field": {
                                     "minLength": 1,
                                     "type": "string"
                                   },
+                                  "since": {
+                                    "format": "date-time",
+                                    "type": "string"
+                                  },
                                   "until": {
-                                    "minLength": 1,
+                                    "format": "date-time",
                                     "type": "string"
                                   }
                                 },
+                                "required": [
+                                  "field"
+                                ],
                                 "type": "object"
-                              },
-                              "view": {
-                                "minLength": 1,
-                                "type": "string"
                               }
                             },
                             "required": [
-                              "name"
+                              "name",
+                              "instance_ids",
+                              "fields"
                             ],
                             "type": "object"
                           },
                           "minItems": 1,
-                          "type": "array"
+                          "type": "array",
+                          "uniqueItems": true
                         },
                         "subject": {
                           "additionalProperties": false,
@@ -3062,7 +3202,7 @@
                           "type": "object"
                         },
                         "version": {
-                          "minLength": 1,
+                          "const": "0.1.0",
                           "type": "string"
                         }
                       },
@@ -3073,7 +3213,7 @@
                         "subject",
                         "client",
                         "source",
-                        "manifest_version",
+                        "source_declaration",
                         "purpose_code",
                         "access_mode",
                         "streams"
@@ -3795,11 +3935,8 @@
                           "format": "date-time",
                           "type": "string"
                         },
-                        "manifest_version": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
                         "purpose_code": {
+                          "format": "uri",
                           "minLength": 1,
                           "type": "string"
                         },
@@ -3815,7 +3952,10 @@
                               "type": "string"
                             },
                             "on_expiry": {
-                              "minLength": 1,
+                              "enum": [
+                                "delete",
+                                "anonymize"
+                              ],
                               "type": "string"
                             }
                           },
@@ -3825,10 +3965,15 @@
                           ],
                           "type": "object"
                         },
+                        "selection_preset": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
                         "source": {
                           "additionalProperties": false,
                           "properties": {
                             "id": {
+                              "format": "uri",
                               "minLength": 1,
                               "type": "string"
                             },
@@ -3846,36 +3991,46 @@
                           ],
                           "type": "object"
                         },
+                        "source_declaration": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "version": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "version"
+                          ],
+                          "type": "object"
+                        },
                         "streams": {
                           "items": {
                             "additionalProperties": false,
                             "properties": {
-                              "client_claims": {
-                                "additionalProperties": true,
-                                "type": "object"
-                              },
-                              "connection_id": {
-                                "description": "Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.",
-                                "minLength": 1,
-                                "type": "string"
-                              },
                               "fields": {
                                 "items": {
                                   "minLength": 1,
                                   "type": "string"
                                 },
                                 "minItems": 1,
-                                "type": "array"
+                                "type": "array",
+                                "uniqueItems": true
+                              },
+                              "instance_ids": {
+                                "items": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "minItems": 1,
+                                "type": "array",
+                                "uniqueItems": true
                               },
                               "name": {
                                 "minLength": 1,
-                                "type": "string"
-                              },
-                              "necessity": {
-                                "enum": [
-                                  "required",
-                                  "optional"
-                                ],
+                                "not": {
+                                  "const": "*"
+                                },
                                 "type": "string"
                               },
                               "resources": {
@@ -3883,34 +4038,54 @@
                                   "minLength": 1,
                                   "type": "string"
                                 },
-                                "type": "array"
+                                "minItems": 1,
+                                "type": "array",
+                                "uniqueItems": true
                               },
-                              "time_range": {
+                              "time_constraint": {
                                 "additionalProperties": false,
+                                "anyOf": [
+                                  {
+                                    "required": [
+                                      "since"
+                                    ]
+                                  },
+                                  {
+                                    "required": [
+                                      "until"
+                                    ]
+                                  }
+                                ],
                                 "properties": {
-                                  "since": {
+                                  "field": {
                                     "minLength": 1,
                                     "type": "string"
                                   },
+                                  "since": {
+                                    "format": "date-time",
+                                    "type": "string"
+                                  },
                                   "until": {
-                                    "minLength": 1,
+                                    "format": "date-time",
                                     "type": "string"
                                   }
                                 },
+                                "required": [
+                                  "field"
+                                ],
                                 "type": "object"
-                              },
-                              "view": {
-                                "minLength": 1,
-                                "type": "string"
                               }
                             },
                             "required": [
-                              "name"
+                              "name",
+                              "instance_ids",
+                              "fields"
                             ],
                             "type": "object"
                           },
                           "minItems": 1,
-                          "type": "array"
+                          "type": "array",
+                          "uniqueItems": true
                         },
                         "subject": {
                           "additionalProperties": false,
@@ -3926,7 +4101,7 @@
                           "type": "object"
                         },
                         "version": {
-                          "minLength": 1,
+                          "const": "0.1.0",
                           "type": "string"
                         }
                       },
@@ -3937,7 +4112,7 @@
                         "subject",
                         "client",
                         "source",
-                        "manifest_version",
+                        "source_declaration",
                         "purpose_code",
                         "access_mode",
                         "streams"

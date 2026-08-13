@@ -125,17 +125,14 @@ test("list and search operations do NOT declare 409 — fan-in is the contract t
   }
 });
 
-test("StreamSelection in grant scope accepts optional per-stream connection_id", () => {
-  // The grant carries `streams: [{ name, ... }]`. Validate that PAR/consent
-  // flow continues to accept entries without `connection_id` and that
-  // additional `connection_id` is permitted.
+test("selection requests use optional per-stream instance_ids instead of connection_id", () => {
   const baseline = validateRequest("createPushedAuthorizationRequest", {
     body: {
       authorization_details: [
         {
           access_mode: "continuous",
           purpose_code: "https://pdpp.dev/purpose/personalization",
-          source: { id: "spotify", kind: "connector" },
+          source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
           type: "https://pdpp.dev/data-access",
         },
@@ -143,7 +140,7 @@ test("StreamSelection in grant scope accepts optional per-stream connection_id",
       client_id: "longview",
     },
   });
-  assert.deepEqual(baseline, { ok: true }, "streams without connection_id must remain valid");
+  assert.deepEqual(baseline, { ok: true }, "a request may omit instance_ids for AS resolution");
 
   const constrained = validateRequest("createPushedAuthorizationRequest", {
     body: {
@@ -151,15 +148,31 @@ test("StreamSelection in grant scope accepts optional per-stream connection_id",
         {
           access_mode: "continuous",
           purpose_code: "https://pdpp.dev/purpose/personalization",
-          source: { id: "spotify", kind: "connector" },
-          streams: [{ connection_id: "cin_abc", name: "top_artists", view: "basic" }],
+          source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
+          streams: [{ instance_ids: ["cin_abc"], name: "top_artists", view: "basic" }],
           type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: "longview",
     },
   });
-  assert.deepEqual(constrained, { ok: true }, "streams with optional connection_id constraint must validate");
+  assert.deepEqual(constrained, { ok: true }, "explicit instance handles must validate");
+
+  const legacyConnection = validateRequest("createPushedAuthorizationRequest", {
+    body: {
+      authorization_details: [
+        {
+          access_mode: "continuous",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
+          source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
+          streams: [{ connection_id: "cin_abc", name: "top_artists" }],
+          type: "https://pdpp.dev/data-access",
+        },
+      ],
+      client_id: "longview",
+    },
+  });
+  assert.equal(legacyConnection.ok, false, "legacy request connection_id must not reintroduce implicit fan-in");
 });
 
 test("connection_id and connector_instance_id aliases validate together when supplied as request inputs", () => {

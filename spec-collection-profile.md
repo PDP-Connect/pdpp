@@ -25,52 +25,114 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 ---
 
-## 1. Connector Manifest Extensions
+## 1. Source Declaration Extension
 
-The core manifest (Section 5 of the core spec) defines the consent surface. The Collection Profile adds execution-specific fields.
+The Core `SourceDeclaration` (Section 5 of the core spec) defines the common
+consent, record, selection, and query surface. This profile owns the
+`https://pdpp.dev/profile/collection` extension value, which adds connector
+acquisition and execution fields. Core preserves or ignores this value without
+interpreting it.
 
 ```json
 {
   "protocol_version": "0.1.0",
-  "connector_id": "https://registry.pdpp.dev/connectors/spotify",
-  "version": "2.0.0",
-  "display_name": "Spotify",
-  "runtime_requirements": {
-    "bindings": {
-      "network": { "required": true },
-      "interactive": { "required": true }
-    }
+  "source": {
+    "kind": "connector",
+    "id": "https://registry.pdpp.dev/connectors/spotify"
   },
-  "capabilities": {
-    "human_interaction": ["credentials", "otp"]
+  "declaration_version": "2026-08-11",
+  "publisher": {
+    "id": "https://registry.pdpp.dev/"
   },
+  "display": { "name": "Spotify" },
   "streams": [
     {
       "name": "top_artists",
-      "incremental": true
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": { "id": { "type": "string" } },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "selection": { "fields": true, "resources": false }
     }
-  ]
+  ],
+  "extensions": {
+    "https://pdpp.dev/profile/collection": {
+      "connector": {
+        "id": "https://registry.pdpp.dev/connectors/spotify-browser",
+        "version": "2.0.0"
+      },
+      "runtime_requirements": {
+        "bindings": {
+          "network": { "required": true },
+          "interactive": { "required": true }
+        }
+      },
+      "capabilities": {
+        "human_interaction": ["credentials", "otp"]
+      },
+      "streams": [
+        { "name": "top_artists", "incremental": true }
+      ]
+    }
+  }
 }
 ```
 
-### Collection-specific manifest fields
+### Collection extension fields
 
 | Field | Description |
 |-------|-------------|
+| `connector.id` | Absolute URI identifying the connector implementation. It is not the Core `source.id`, a local storage key, or an owner account handle. |
+| `connector.version` | Version of the connector software. It is independent of `declaration_version`. |
 | `runtime_requirements.bindings` | Declared bindings the connector requires from the runtime. Keys are binding names; values are objects with `required: boolean` and optional binding-specific fields. Standard bindings are listed below. Extension bindings use namespaced identifiers (e.g., `nvidia.com/gpu`). Unqualified binding names are reserved for the spec-defined registry. |
 | `capabilities.human_interaction` | Interaction kinds this connector may request: `credentials`, `otp`, `manual_action`. |
 | `streams[].incremental` | Whether this stream supports cursor-based incremental sync. |
 
+The Collection extension value is a closed object. It MUST contain exactly the
+required `connector` and `runtime_requirements` members and MAY also contain
+`capabilities` and `streams`. Unknown top-level members are rejected.
+
+- `connector` is closed and MUST contain exactly non-empty `id` and `version`.
+  `id` MUST be an absolute URI.
+- `runtime_requirements` is closed and MUST contain exactly `bindings`.
+  `bindings` is an object keyed by a standard or namespaced binding identifier.
+  A connector with no binding requirements MUST use `"bindings": {}`; it MUST
+  NOT omit `runtime_requirements` or `bindings`.
+  Each binding requirement MUST contain `required`, a boolean. A standard
+  binding requirement MAY contain only the descriptor members registered for
+  that binding; a namespaced binding owns its additional descriptor members.
+- `capabilities`, when present, is closed and MUST contain exactly
+  `human_interaction`, a non-empty unique array containing only `credentials`,
+  `otp`, or `manual_action`.
+- `streams`, when present, is a non-empty array of closed objects. Each entry
+  MUST contain exactly `name` and `incremental`, where `name` is non-empty and
+  unique in the extension and `incremental` is boolean.
+
+The extension's `streams[].name` values MUST each match a stream in the
+enclosing SourceDeclaration. Collection fields MUST NOT redefine the Core
+schema, selection, consent, or query meaning of that stream. A
+`provider_native` SourceDeclaration MUST NOT use this extension. A connector
+SourceDeclaration remains valid Core input when the extension is absent.
+
 ### Standard bindings
 
-| Binding | Descriptor | Meaning |
-|---------|-----------|---------|
+Every declaration requirement has `required: boolean`. The table lists the
+additional descriptor members registered for that binding. Runtime-assigned
+members such as `ws_url` and `profile_path` are normally omitted from the
+declaration and populated by the runtime in `START.bindings`. A `START` binding
+descriptor omits the declaration-only `required` member.
+
+| Binding | Additional descriptor members | Meaning |
+|---------|-------------------------------|---------|
 | `browser_automation` | `{ interface: "cdp", ws_url: string, headed_supported?: boolean }` | Runtime provides a CDP WebSocket to a managed browser. |
 | `browser_profile` | `{ profile_path: string }` | Runtime provides a persistent browser profile directory. |
-| `filesystem` | `{}` | Presence indicates local filesystem access. |
-| `network` | `{}` | Presence indicates outbound network access. |
-| `interactive` | `{}` | Presence indicates INTERACTION messages will be handled. |
-| `loopback_listen` | `{}` | Presence indicates the connector may bind to local ports. |
+| `filesystem` | none | Presence indicates local filesystem access. |
+| `network` | none | Presence indicates outbound network access. |
+| `interactive` | none | Presence indicates INTERACTION messages will be handled. |
+| `loopback_listen` | none | Presence indicates the connector may bind to local ports. |
 
 ---
 
@@ -80,7 +142,7 @@ Connectors communicate with the runtime via newline-delimited JSON (JSONL) over 
 
 ### Runtime binding matching
 
-Before spawning a connector, the runtime checks the manifest's `runtime_requirements.bindings` against its own capabilities. If the runtime cannot satisfy a required binding, the run MUST fail with a clear error before the connector process is spawned. This follows the Kubernetes scheduler pattern: connectors declare requirements, runtimes advertise capabilities.
+Before spawning a connector, the runtime checks the Collection extension's `runtime_requirements.bindings` against its own capabilities. If the runtime cannot satisfy a required binding, the run MUST fail with a clear error before the connector process is spawned. This follows the Kubernetes scheduler pattern: connectors declare requirements, runtimes advertise capabilities.
 
 ### Connector process state machine
 
@@ -207,7 +269,7 @@ Connector compliance is not the only enforcement backstop. The runtime and downs
 - **Grant-scoped state:** Used and advanced by `continuous` grant runs, keyed by `grant_id`. The runtime reads and writes this namespace through `GET/PUT /v1/state/{connector_id}?grant_id={grant_id}`. It ensures recurring app syncs are incremental without interfering with global archival cursors.
 - **Single-use runs:** Receive `state: null`. STATE messages emitted during single-use runs are not persisted.
 
-`bindings` contains a descriptor for every binding declared `required: true` in the manifest. For every required binding, the runtime MUST include a valid descriptor. Connectors MUST treat a missing required binding as a fatal protocol error. Connectors MUST ignore unknown binding keys.
+`bindings` contains a descriptor for every binding declared `required: true` in the Collection extension. For every required binding, the runtime MUST include a valid descriptor. Connectors MUST treat a missing required binding as a fatal protocol error. Connectors MUST ignore unknown binding keys.
 
 #### INTERACTION_RESPONSE
 
@@ -360,7 +422,117 @@ On failure:
 
 ---
 
-## 4. Connector Conformance
+## 4. Resource Server Transport
+
+A Resource Server that claims Collection Profile support implements the
+owner-authenticated ingest and state endpoints in this section. These
+endpoints are not part of Core Resource Server conformance.
+
+### Ingest records
+
+```
+POST /v1/ingest/{stream}
+Authorization: Bearer <owner_token>
+Content-Type: application/x-ndjson
+```
+
+The body is NDJSON with one Core RECORD envelope per line.
+
+The Resource Server MUST reject a record whose `consent_time_field` value is
+null, absent, or not a valid ISO 8601 datetime with 400 `invalid_record`. It
+MUST reject a record with 400 `invalid_record_identity` when the values of the
+`data` fields named by `primary_key` disagree with the corresponding values in
+the RECORD `key`. If legacy records contain invalid `consent_time_field`
+values, the Resource Server MUST exclude them from time-bounded queries.
+
+Response:
+
+```json
+{
+  "stream": "conversations",
+  "records_accepted": 2,
+  "records_rejected": 0
+}
+```
+
+### Sync state
+
+```
+GET  /v1/state/{connector_id}
+PUT  /v1/state/{connector_id}
+Authorization: Bearer <owner_token>
+```
+
+These endpoints read and update the StreamState map. The optional `grant_id`
+query parameter addresses the state namespace for one `continuous` grant. If
+it is absent, the endpoint addresses the connector's global archival state.
+
+`GET` response:
+
+```json
+{
+  "object": "stream_state",
+  "connector_id": "https://registry.pdpp.dev/connectors/spotify-browser",
+  "grant_id": "grt_8f72a1b3",
+  "state": {
+    "top_artists": { "last_updated": "2026-04-01T00:00:00Z" }
+  },
+  "updated_at": "2026-04-06T15:00:00Z"
+}
+```
+
+If `grant_id` is absent from the request, it is omitted from the response. If
+it is present, the response contains only that grant's state namespace.
+
+`PUT` request body:
+
+```json
+{
+  "state": {
+    "top_artists": { "last_updated": "2026-04-06T15:00:00Z" }
+  }
+}
+```
+
+`PUT` returns the same shape as `GET`.
+
+`single_use` runs MUST NOT read or persist grant-scoped state. The runtime
+sends `state: null` and discards any emitted STATE checkpoints for those runs.
+
+### Concurrent collection
+
+Multiple runs for the same connector may execute concurrently. Record writes
+MUST be idempotent by primary key. A repeated write with the same key and data
+has no additional effect. The Resource Server MUST accept a cursor only when
+it advances the addressed global or grant-scoped state namespace. A slower
+run cannot regress that state.
+
+### Errors
+
+Collection transport errors use the Core structured error envelope.
+
+| Code | HTTP status | Meaning |
+|---|---:|---|
+| `invalid_record` | 400 | A record failed stream or temporal-field validation. |
+| `invalid_record_identity` | 400 | The RECORD key disagrees with the declared primary-key fields in `data`. |
+
+---
+
+## 5. Conformance
+
+Conformance claims for Core Resource Servers, Collection Resource Servers,
+connector runtimes, and connectors are independent. A combined product may
+claim more than one role, but Core conformance does not require parsing the
+Collection extension or implementing this profile.
+
+### A conformant Collection Resource Server:
+
+1. Implements `POST /v1/ingest/{stream}` with owner authentication and the validation rules above.
+2. Implements `GET /v1/state/{connector_id}` and `PUT /v1/state/{connector_id}`, including `grant_id` scoping for `continuous` runs.
+3. Applies state updates monotonically within each addressed namespace.
+4. Publishes Core `freshness` metadata on stream listings, stream metadata, and record-list responses, using `status: "unknown"` when recency is not known.
+
+### A conformant connector:
 
 A conformant connector:
 
@@ -389,10 +561,11 @@ A conformant connector:
 10. Sends an explicit non-empty `scope` in START. For grant-driven runs, this scope is a normalized, possibly narrowed projection of the grant and MUST NOT include wildcard stream names.
 11. For grant-driven runs, never constructs a `scope` broader than the grant permits.
 12. Rejects or discards connector emissions that fall outside the declared `scope` before durable write.
+13. Terminates an active grant-driven run as soon as practical after learning that the grant was revoked.
 
 ---
 
-## 5. TypeScript Types
+## 6. TypeScript Types
 
 ```typescript
 type InteractionKind = 'credentials' | 'otp' | 'manual_action';

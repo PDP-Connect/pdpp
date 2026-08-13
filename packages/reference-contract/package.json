@@ -9,6 +9,7 @@
     ".": "./src/index.ts",
     "./common": "./src/common/index.ts",
     "./public": "./src/public/index.ts",
+    "./public/source": "./src/public/source.ts",
     "./reference": "./src/reference/index.ts",
     "./builders": "./src/builders/index.ts",
     "./openapi": "./src/openapi/index.ts",

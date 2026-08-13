@@ -55,7 +55,7 @@ test("request validators accept the shipped public flow shapes", () => {
         {
           access_mode: "continuous",
           purpose_code: "https://pdpp.dev/purpose/personalization",
-          source: { id: "spotify", kind: "connector" },
+          source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
           streams: [{ name: "top_artists", view: "basic" }],
           type: "https://pdpp.dev/data-access",
         },
@@ -99,7 +99,7 @@ test("PAR contract advertises batch consent caps as advisory metadata, not hard 
   const entries = Array.from({ length: BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP + 1 }, (_, index) => ({
     access_mode: "continuous",
     purpose_code: "https://pdpp.dev/purpose/personalization",
-    source: { id: `source_${index + 1}`, kind: "connector" },
+    source: { id: `https://registry.pdpp.dev/connectors/source-${index + 1}`, kind: "connector" },
     streams: [{ name: "items", view: "basic" }],
     type: "https://pdpp.dev/data-access",
   }));
