@@ -839,13 +839,15 @@ async function emitHistoricalMessageSkip(deps: PerMessageDeps, uid: number | und
 
 async function emitHistoricalContinuationSkip(
   emitFn: (msg: EmittedMessage) => Promise<void>,
-  stream: string
+  stream: string,
+  continuation: { boundary: string; covered: number; considered: number; slice_start: number; slice_end: number }
 ): Promise<void> {
   await emitFn({
     type: "SKIP_RESULT",
     stream,
     reason: "historical_backfill_pending",
     message: "This bounded page completed; more historical work remains and will be retried by the next run.",
+    continuation: { ...continuation, owner: "runtime", remaining: true },
     recovery_hint: { action: "retry_by_runtime", retryable: true },
   });
 }
@@ -3250,9 +3252,12 @@ export async function runAllMailPasses(
       priorFingerprints: readPriorThreadFingerprints(state),
     });
     const threadRanges = [historicalFetchRange, forwardFetchRange].filter((range): range is string => range !== null);
-    let threadItemsConsidered = 0;
+    let historicalThreadItemsConsidered = 0;
     for (const threadRange of threadRanges) {
-      threadItemsConsidered += await runThreadsPass(client, threadRange, deps.emitRecord, threadCursor);
+      const considered = await runThreadsPass(client, threadRange, deps.emitRecord, threadCursor);
+      if (threadRange === historicalFetchRange) {
+        historicalThreadItemsConsidered = considered;
+      }
     }
     // The threads STATE cursor carries the next-run fingerprint map.
     // Emitted here (inside the mailbox lock) so it's persisted right
@@ -3269,19 +3274,24 @@ export async function runAllMailPasses(
     });
     if (historicalFetchRange) {
       const historicalPageEndUid = Number(historicalFetchRange.split(":")[1]);
+      await emit(
+        buildDetailCoverageMessage({
+          considered: historicalThreadItemsConsidered,
+          covered: historicalThreadItemsConsidered,
+          hydratedKeys: [],
+          requiredKeys: [],
+          stateStream: "threads",
+          stream: "threads",
+        })
+      );
       if (historicalPageEndUid < historicalTargetUid) {
-        await emitHistoricalContinuationSkip(emit, "threads");
-      } else {
-        await emit(
-          buildDetailCoverageMessage({
-            considered: threadItemsConsidered,
-            covered: threadItemsConsidered,
-            hydratedKeys: [],
-            requiredKeys: [],
-            stateStream: "threads",
-            stream: "threads",
-          })
-        );
+        await emitHistoricalContinuationSkip(emit, "threads", {
+          boundary: String(historicalCursor.uidvalidity),
+          considered: historicalThreadItemsConsidered,
+          covered: historicalThreadItemsConsidered,
+          slice_start: Number(historicalFetchRange.split(":")[0]),
+          slice_end: historicalPageEndUid,
+        });
       }
     }
   }
@@ -3353,19 +3363,24 @@ export async function runAllMailPasses(
 
   if (messageHistoryRequested && historicalFetchRange) {
     const historicalPageEndUid = Number(historicalFetchRange.split(":")[1]);
+    await emit(
+      buildDetailCoverageMessage({
+        considered: historicalMessageCoverage.considered,
+        covered: historicalMessageCoverage.covered,
+        hydratedKeys: [],
+        requiredKeys: [],
+        stateStream: "messages",
+        stream: "messages",
+      })
+    );
     if (historicalPageEndUid < historicalTargetUid) {
-      await emitHistoricalContinuationSkip(emit, "messages");
-    } else {
-      await emit(
-        buildDetailCoverageMessage({
-          considered: historicalMessageCoverage.considered,
-          covered: historicalMessageCoverage.covered,
-          hydratedKeys: [],
-          requiredKeys: [],
-          stateStream: "messages",
-          stream: "messages",
-        })
-      );
+      await emitHistoricalContinuationSkip(emit, "messages", {
+        boundary: String(historicalCursor.uidvalidity),
+        considered: historicalMessageCoverage.considered,
+        covered: historicalMessageCoverage.covered,
+        slice_start: Number(historicalFetchRange.split(":")[0]),
+        slice_end: historicalPageEndUid,
+      });
     }
   }
 

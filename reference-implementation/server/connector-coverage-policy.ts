@@ -20,6 +20,8 @@
 import { evaluateStreamCoherence } from "@pdpp/reference-contract/evidence";
 
 import type { CoverageAxis } from "../runtime/connection-health.ts";
+export type { CoverageAxis } from "../runtime/connection-health.ts";
+import { classifyContinuationCoverage, resolveSkippedCoverage } from "./continuation-proof.ts";
 import type { RuntimeCollectionFact, RuntimeCollectionFactSkip } from "./ref-control.ts";
 
 /** Accepted-coverage policy a manifest stream may declare for an absence. */
@@ -355,11 +357,14 @@ export function deriveStreamCoverageCondition(
   //    terminal-looking diagnostic skip; unsupported/unavailable/deferred skip
   //    reasons stay precise and non-green.
   if (fact.skipped) {
-    const skipCoverage = accepted ?? mapSkipCoverageCondition(fact.skipped);
-    if (fact.pending_detail_gaps > 0 && skipCoverage === "terminal_gap") {
-      return "retryable_gap";
-    }
-    return skipCoverage;
+    return resolveSkippedCoverage(
+      classifyContinuationCoverage(
+        fact,
+        deriveGapFreeStreamCoverageCondition(fact, null, readCoverageEvidenceStrategy(manifestStream)) === "complete"
+      ),
+      accepted ?? mapSkipCoverageCondition(fact.skipped),
+      fact.pending_detail_gaps
+    );
   }
   // 3. A pending recoverable detail gap is a retryable boundary.
   if (fact.pending_detail_gaps > 0) {

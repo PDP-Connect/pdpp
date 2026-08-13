@@ -35,6 +35,12 @@
 // here before it can enter the durable spine.
 
 import { isNullish } from "../lib/nullish.ts";
+import {
+  optionalContinuationField,
+  projectRuntimeSkip,
+  selectAuthoritativeSkip,
+  type RuntimeContinuationFact,
+} from "../../packages/polyfill-connectors/src/connector-runtime-protocol.ts";
 import { redactStderrTail } from "./stderr-redact.ts";
 
 // ── CLUSTER-EXCLUSIVE CONSTANTS ───────────────────────────────────────────────
@@ -474,6 +480,7 @@ interface KnownGap {
   recovery_hint?: unknown;
   status?: string;
   stream?: string;
+  continuation?: unknown;
 }
 
 interface BuildCollectionFactsInput {
@@ -652,19 +659,12 @@ export function buildCollectionFacts({
     return null;
   };
 
-  const skipForStream = (stream: string): { reason: string | undefined; recovery_action?: string } | null => {
-    const gap = knownGaps.find((candidate) => candidate.kind === "skip_result" && candidate.stream === stream);
+  const skipForStream = (stream: string): { reason: string; recovery_action?: string; continuation?: RuntimeContinuationFact } | null => {
+    const gap = selectAuthoritativeSkip(knownGaps, stream);
     if (!gap) {
       return null;
     }
-    const action =
-      gap.recovery_hint && typeof gap.recovery_hint === "object"
-        ? (gap.recovery_hint as { action?: string }).action
-        : null;
-    return {
-      reason: gap.reason,
-      ...(action ? { recovery_action: action } : {}),
-    };
+    return projectRuntimeSkip(gap);
   };
 
   const pendingDetailGapsForStream = (stream: string): number =>
@@ -673,6 +673,8 @@ export function buildCollectionFacts({
   const streams = inScopeStreams.map((stream) => {
     const considered = declaredConsideredForStream(stream);
     const covered = declaredCoveredForStream(stream);
+    const streamSkip = skipForStream(stream);
+    const continuation = streamSkip?.continuation;
     const stateStream = streamToStateStream.get(stream) || stream;
     return {
       collected: emittedByStream.get(stream) || 0,
@@ -684,8 +686,9 @@ export function buildCollectionFacts({
       // projection compares `considered` against this instead of `collected`.
       ...(covered === null ? {} : { covered }),
       checkpoint: checkpointForStateStream(stateStream),
+      ...(continuation ? { collection_scope: continuation.boundary } : {}),
       pending_detail_gaps: pendingDetailGapsForStream(stream),
-      skipped: skipForStream(stream),
+      skipped: streamSkip,
     };
   });
 
@@ -854,6 +857,7 @@ interface BuildKnownGapInput {
   severity?: string | null;
   stream?: string | null;
   unsupportedInDefaultScope?: boolean;
+  continuation?: import("../../packages/polyfill-connectors/src/connector-runtime-protocol.ts").RuntimeContinuationFact | null;
 }
 
 export function buildKnownGap({
@@ -868,6 +872,7 @@ export function buildKnownGap({
   severity = null,
   unsupportedInDefaultScope = false,
   diagnostics = null,
+  continuation = null,
 }: BuildKnownGapInput): Record<string, unknown> {
   const safeReason = boundGapString(reason) || "unknown";
   const safeMessage = boundGapString(message);
@@ -893,5 +898,6 @@ export function buildKnownGap({
       reason: safeReason,
     }),
     ...(boundedDiagnostics ? { diagnostics: boundedDiagnostics } : {}),
+    ...optionalContinuationField(continuation),
   };
 }

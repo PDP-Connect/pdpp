@@ -1633,8 +1633,8 @@ test("runAllMailPasses: first historical page is bounded, durable only at page e
     });
     assert.equal(
       protocolMessages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "messages"),
-      false,
-      "a partial page does not claim detail coverage"
+      true,
+      "a bounded page proves its own detail coverage even while historical continuation remains"
     );
     assert.deepEqual(
       protocolMessages.find((message) => message.type === "SKIP_RESULT" && message.stream === "messages"),
@@ -1643,6 +1643,15 @@ test("runAllMailPasses: first historical page is bounded, durable only at page e
         stream: "messages",
         reason: "historical_backfill_pending",
         message: "This bounded page completed; more historical work remains and will be retried by the next run.",
+        continuation: {
+          boundary: "123",
+          considered: 2,
+          covered: 2,
+          owner: "runtime",
+          remaining: true,
+          slice_start: 1,
+          slice_end: 500,
+        },
         recovery_hint: { action: "retry_by_runtime", retryable: true },
       },
       "a partial page remains explicitly retryable"
@@ -1886,8 +1895,8 @@ test("runAllMailPasses: threads use the bounded page instead of starving until m
     );
     assert.equal(
       protocolMessages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "threads"),
-      false,
-      "a partial thread page does not claim detail coverage"
+      true,
+      "a bounded thread page proves its own detail coverage even while historical continuation remains"
     );
     assert.deepEqual(
       protocolMessages.find((message) => message.type === "SKIP_RESULT" && message.stream === "threads"),
@@ -1896,6 +1905,15 @@ test("runAllMailPasses: threads use the bounded page instead of starving until m
         stream: "threads",
         reason: "historical_backfill_pending",
         message: "This bounded page completed; more historical work remains and will be retried by the next run.",
+        continuation: {
+          boundary: "123",
+          considered: 1,
+          covered: 1,
+          owner: "runtime",
+          remaining: true,
+          slice_start: 1,
+          slice_end: 500,
+        },
         recovery_hint: { action: "retry_by_runtime", retryable: true },
       },
       "bounded thread work remains explicitly retryable"

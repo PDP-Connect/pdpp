@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { deriveStreamCoverageCondition } from "../server/connector-coverage-policy.ts";
+import { readCollectionFactsFromTerminalData } from "../server/runtime-collection-facts.ts";
 import type { RuntimeCollectionFact } from "../server/ref-control.ts";
 
 function fact(overrides: Partial<RuntimeCollectionFact> = {}): RuntimeCollectionFact {
@@ -19,6 +20,60 @@ function fact(overrides: Partial<RuntimeCollectionFact> = {}): RuntimeCollection
     ...overrides,
   };
 }
+
+test("terminal collection fact round-trips continuation through the active parser and policy", () => {
+  const parsed = readCollectionFactsFromTerminalData({
+    collection_facts: {
+      collection_scope: "uidvalidity:1",
+      streams: [
+        {
+          checkpoint: "committed",
+          collected: 2,
+          considered: 2,
+          covered: 2,
+          pending_detail_gaps: 0,
+          stream: "messages",
+          collection_scope: "uidvalidity:1",
+          skipped: {
+            reason: "historical_backfill_pending",
+            recovery_action: "retry_by_runtime",
+            continuation: {
+              boundary: "uidvalidity:1",
+              considered: 2,
+              covered: 2,
+              owner: "runtime",
+              remaining: true,
+              slice_start: 1,
+              slice_end: 2,
+            },
+          },
+        },
+      ],
+    },
+  });
+  assert.ok(parsed?.streams[0]?.skipped?.continuation);
+  assert.equal(
+    deriveStreamCoverageCondition(parsed.streams[0], { coverage_strategy: "parent_detail_accounting" }),
+    "complete"
+  );
+});
+
+test("active parser drops malformed continuation evidence", () => {
+  const parsed = readCollectionFactsFromTerminalData({
+    collection_facts: {
+      streams: [{
+        stream: "messages",
+        considered: 2,
+        covered: 2,
+        skipped: {
+          reason: "historical_backfill_pending",
+          continuation: { boundary: "uidvalidity:1", owner: "runtime", remaining: true, slice_start: -1, slice_end: 2 },
+        },
+      }],
+    },
+  });
+  assert.equal(parsed?.streams[0]?.skipped?.continuation, undefined);
+});
 
 test("checkpoint-window streams treat collected as changed-record count, not coverage numerator", () => {
   assert.equal(
@@ -91,6 +146,104 @@ test("skip facts outrank checkpoint strategy proof", () => {
       }
     ),
     "retryable_gap"
+  );
+});
+
+test("a retryable continuation with a proven page is complete coverage with background work", () => {
+  assert.equal(
+    deriveStreamCoverageCondition(
+      fact({
+        considered: 100,
+        covered: 100,
+        collection_scope: "uidvalidity:1",
+        skipped: {
+          continuation: {
+            boundary: "uidvalidity:1",
+            considered: 100,
+            covered: 100,
+            owner: "runtime",
+            remaining: true,
+            slice_start: 1,
+            slice_end: 100,
+          },
+          reason: "opaque",
+          recovery_action: "retry_by_runtime",
+        },
+      }),
+      { coverage_strategy: "parent_detail_accounting", freshness_strategy: "scheduled_window" }
+    ),
+    "complete"
+  );
+});
+
+test("an ordinary retryable skip stays non-green despite a complete denominator", () => {
+  assert.equal(
+    deriveStreamCoverageCondition(
+      fact({ considered: 100, covered: 100, skipped: { reason: "rate_limited", recovery_action: "retry_by_runtime" } }),
+      { coverage_strategy: "parent_detail_accounting" }
+    ),
+    "retryable_gap"
+  );
+});
+
+test("a stalled continuation without progress stays non-green", () => {
+  assert.equal(
+    deriveStreamCoverageCondition(
+      fact({ skipped: { reason: "opaque", recovery_action: "retry_by_runtime" } }),
+      { coverage_strategy: "parent_detail_accounting" }
+    ),
+    "retryable_gap"
+  );
+});
+
+test("a continuation measured outside the declared boundary stays non-green", () => {
+  assert.equal(
+    deriveStreamCoverageCondition(
+      fact({
+        considered: 100,
+        covered: 100,
+        scoped: false,
+        skipped: {
+          continuation: {
+            boundary: "uidvalidity:stale",
+            considered: 100,
+            covered: 100,
+            owner: "runtime",
+            remaining: true,
+            slice_start: 1,
+            slice_end: 100,
+          },
+          reason: "opaque",
+          recovery_action: "retry_by_runtime",
+        },
+      }),
+      { coverage_strategy: "parent_detail_accounting" }
+    ),
+    "unknown"
+  );
+});
+
+test("a retryable continuation without page proof remains a retryable gap", () => {
+  assert.equal(
+    deriveStreamCoverageCondition(
+      fact({ skipped: { reason: "historical_backfill_pending", recovery_action: "retry_by_runtime" } }),
+      { coverage_strategy: "parent_detail_accounting" }
+    ),
+    "retryable_gap"
+  );
+});
+
+test("an unaccounted record remains non-green even when continuation is scheduled", () => {
+  assert.equal(
+    deriveStreamCoverageCondition(
+      fact({
+        considered: 100,
+        covered: 99,
+        skipped: { reason: "historical_backfill_pending", recovery_action: "retry_by_runtime" },
+      }),
+      { coverage_strategy: "parent_detail_accounting" }
+    ),
+    "partial"
   );
 });
 

@@ -13,6 +13,7 @@ import type {
   DetailGapRecoveredMessage,
   DetailGapStartEntry,
 } from "../../src/connector-runtime.ts";
+import type { RuntimeContinuationFact } from "../../src/connector-runtime-protocol.ts";
 
 export interface StreamRequest {
   name: string;
@@ -77,6 +78,7 @@ export interface DoneMessage {
 }
 
 export interface SkipResultMessage {
+  continuation?: RuntimeContinuationFact;
   diagnostics?: unknown;
   message: string;
   reason: string;

@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { emitControllerBootedAndStashEpoch } from "../lib/controller-boot.ts";
 import type { SpineEventInput, SpineEventRecord } from "../lib/spine.ts";
+import { validateRuntimeContinuationFact } from "../../packages/polyfill-connectors/src/connector-runtime-protocol.ts";
 import { createTraceContext, emitSpineEvent, getCurrentBootEpoch } from "../lib/spine.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { readStoredCollectionScope } from "../server/local-collection-scope.ts";
@@ -1323,6 +1324,9 @@ function validateSkipResultMessage(msg: ConnectorMessage, scopeByStream: ScopeBy
   requireOptionalNonEmptyString(msg.reason, "SKIP_RESULT.reason");
   requireOptionalNonEmptyString(msg.message, "SKIP_RESULT.message");
   validateSkipRecoveryHint(msg.recovery_hint);
+  if (!isNullish(msg.continuation)) {
+    validateRuntimeContinuationFact(msg.continuation);
+  }
   validateSkipStringArray(msg.resource_ids, "resource_ids");
   validateSkipStringArray(msg.resources, "resources");
   validateSkipTimeRange(msg.time_range);
@@ -4223,8 +4227,13 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       // proved it is a non-empty, in-scope stream name.
       const skipStream = (msg.stream as string | undefined) || null;
       const skippedManifestStream = skipStream ? manifestByStream.get(skipStream) : null;
+      const continuation = msg.continuation ?? null;
+      if (continuation !== null) {
+        validateRuntimeContinuationFact(continuation);
+      }
       const gap = buildKnownGap({
         diagnostics: msg.diagnostics ?? null,
+        continuation,
         explicitSelection: Boolean(skipStream && explicitlyRequestedStreams?.has(skipStream)),
         kind: "skip_result",
         message: (msg.message as string | undefined) || null,

@@ -317,6 +317,14 @@ Signals that a stream or resource was intentionally skipped. Does not cause a st
 
 `SKIP_RESULT` MAY carry an optional `recovery_hint`. See [Recovery hints](#recovery-hints) below for its shape and validation rules — the same rules apply here as for `DONE.error.recovery_hint`.
 
+`SKIP_RESULT` MAY carry an optional typed `continuation` fact when a bounded
+page completed and the runtime owns the next page. It MUST contain
+`boundary`, `slice_start`, `slice_end`, `considered`, `covered`,
+`remaining: true`, and `owner: "runtime"`. The counts bind the continuation to
+the exact proven page; a runtime MUST NOT treat an ordinary retryable skip as a
+healthy continuation merely because its separate coverage denominator is full.
+The fact proves only that slice. It MUST NOT imply complete history.
+
 #### PROGRESS
 
 Optional progress update for display in runtime UIs.

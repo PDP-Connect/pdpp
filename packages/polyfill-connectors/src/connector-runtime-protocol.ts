@@ -222,6 +222,126 @@ export interface DetailCoverageMessage {
   type: "DETAIL_COVERAGE";
 }
 
+export interface RuntimeContinuationFact {
+  boundary: string;
+  considered: number;
+  covered: number;
+  owner: "runtime";
+  remaining: true;
+  slice_end: number;
+  slice_start: number;
+}
+
+export function optionalContinuationField(value: unknown): { continuation?: RuntimeContinuationFact } {
+  return value ? { continuation: value as RuntimeContinuationFact } : {};
+}
+
+export function validateRuntimeContinuationFact(value: unknown): asserts value is RuntimeContinuationFact {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Connector emitted invalid SKIP_RESULT.continuation");
+  }
+  const fact = value as Record<string, unknown>;
+  if (
+    ![
+      typeof fact.boundary === "string" && Boolean(fact.boundary.trim()),
+      Number.isSafeInteger(fact.considered) && (fact.considered as number) >= 0,
+      Number.isSafeInteger(fact.covered) && (fact.covered as number) >= 0,
+      fact.owner === "runtime",
+      fact.remaining === true,
+      Number.isSafeInteger(fact.slice_start) && (fact.slice_start as number) >= 0,
+      Number.isSafeInteger(fact.slice_end) && (fact.slice_end as number) >= (fact.slice_start as number),
+    ].every(Boolean)
+  ) {
+    throw new Error("Connector emitted invalid SKIP_RESULT.continuation");
+  }
+}
+
+export function readRuntimeContinuationFact(value: unknown): RuntimeContinuationFact | undefined {
+  return isRuntimeContinuationFact(value) ? value : undefined;
+}
+
+function isRuntimeContinuationFact(value: unknown): value is RuntimeContinuationFact {
+  try {
+    validateRuntimeContinuationFact(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function selectAuthoritativeContinuation<T extends { kind?: string; stream?: string; continuation?: unknown }>(
+  gaps: readonly T[],
+  stream: string
+): T | undefined {
+  return gaps.findLast(
+    (candidate) =>
+      candidate.kind === "skip_result" &&
+      candidate.stream === stream &&
+      readRuntimeContinuationFact(candidate.continuation) !== undefined
+  );
+}
+
+export function selectAuthoritativeSkip<T extends { kind?: string; stream?: string; continuation?: unknown }>(
+  gaps: readonly T[],
+  stream: string
+): T | undefined {
+  return (
+    selectAuthoritativeContinuation(gaps, stream) ??
+    gaps.findLast((candidate) => candidate.kind === "skip_result" && candidate.stream === stream)
+  );
+}
+
+export function readOptionalText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+export function optionalTextField(key: string, value: unknown): Record<string, string> {
+  const text = readOptionalText(value);
+  return text ? { [key]: text } : {};
+}
+
+export function projectRuntimeSkip(gap: { reason?: string; recovery_hint?: unknown; continuation?: unknown }): {
+  reason: string;
+  continuation?: RuntimeContinuationFact;
+  recovery_action?: string;
+} {
+  const action =
+    gap.recovery_hint && typeof gap.recovery_hint === "object"
+      ? (gap.recovery_hint as { action?: string }).action
+      : undefined;
+  return {
+    reason: gap.reason ?? "unknown",
+    ...optionalContinuationField(gap.continuation),
+    ...(action ? { recovery_action: action } : {}),
+  };
+}
+
+export function optionalRuntimeScopeFields(entry: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...optionalTextField("collection_scope", entry.collection_scope),
+    ...(typeof entry.scoped === "boolean" ? { scoped: entry.scoped } : {}),
+  };
+}
+
+export function readRuntimeSkipFact(
+  value: unknown
+): { reason: string; continuation?: RuntimeContinuationFact; recovery_action?: string } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const skip = value as Record<string, unknown>;
+  if (typeof skip.reason !== "string") {
+    return null;
+  }
+  const continuation = readRuntimeContinuationFact(skip.continuation);
+  const recoveryAction = typeof skip.recovery_action === "string" ? skip.recovery_action : undefined;
+  return {
+    reason: skip.reason,
+    ...(continuation ? { continuation } : {}),
+    ...(recoveryAction ? { recovery_action: recoveryAction } : {}),
+  };
+}
+
 export interface DetailGapRecoveredMessage {
   gap_id: string;
   lease_id?: string;
@@ -352,6 +472,7 @@ export type EmittedMessage =
       reason: string;
       message: string;
       diagnostics?: unknown;
+      continuation?: RuntimeContinuationFact;
       recovery_hint?: string | { action?: string; retryable?: boolean };
     }
   | DetailGapMessage

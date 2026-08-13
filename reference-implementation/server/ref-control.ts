@@ -163,6 +163,7 @@ import {
   readCollectionFactsFromTerminalData,
   readRuntimeCollectionFact,
 } from "./runtime-collection-facts.ts";
+import type { RuntimeContinuationFact } from "../../packages/polyfill-connectors/src/connector-runtime-protocol.ts";
 import {
   asBackoffRecord,
   asScheduleRecord,
@@ -452,6 +453,7 @@ interface StreamSummary {
  * — never free-text diagnostics.
  */
 export interface RuntimeCollectionFactSkip {
+  readonly continuation?: RuntimeContinuationFact;
   readonly reason: string;
   readonly recovery_action?: string;
 }
@@ -480,6 +482,8 @@ export interface RuntimeCollectionFact {
    * neither count, so a real shortfall still reads `partial`.
    */
   readonly covered: number | null;
+  /** Declared boundary fingerprint measured by this stream. */
+  readonly collection_scope?: string;
   readonly pending_detail_gaps: number;
   /**
    * Whether the run's declared collection boundary was actually enforceable on

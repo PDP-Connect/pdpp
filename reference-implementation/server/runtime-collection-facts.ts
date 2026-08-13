@@ -11,7 +11,8 @@
 // `parseCollectionRatePayload` from here.
 
 import type { CollectionRateSnapshot } from "../runtime/connection-health.ts";
-import type { RuntimeCollectionFact, RuntimeCollectionFactSkip, RuntimeCollectionFacts } from "./ref-control.ts";
+import { optionalRuntimeScopeFields, readRuntimeSkipFact } from "../../packages/polyfill-connectors/src/connector-runtime-protocol.ts";
+import type { RuntimeCollectionFact, RuntimeCollectionFacts } from "./ref-control.ts";
 
 const COLLECTION_RATE_NUMBER_FIELDS = [
   "ceiling_interval_ms",
@@ -40,7 +41,7 @@ export function readRuntimeCollectionFact(raw: unknown): RuntimeCollectionFact |
     return null;
   }
   const coverageStatuses = readCoverageStatuses(entry.coverage_statuses);
-  return {
+  const fact: RuntimeCollectionFact = {
     checkpoint: typeof entry.checkpoint === "string" ? entry.checkpoint : null,
     collected: readFiniteNumber(entry.collected, 0),
     // `considered` and `covered` are OMITTED upstream when unknown. Re-validate
@@ -50,9 +51,11 @@ export function readRuntimeCollectionFact(raw: unknown): RuntimeCollectionFact |
     covered: readSafeNonNegativeInteger(entry.covered),
     pending_detail_gaps: readFiniteNumber(entry.pending_detail_gaps, 0),
     ...(coverageStatuses ? { coverage_statuses: coverageStatuses } : {}),
-    skipped: readCollectionFactSkip(entry.skipped),
+    skipped: readRuntimeSkipFact(entry.skipped),
     stream: entry.stream,
   };
+  Object.assign(fact, optionalRuntimeScopeFields(entry));
+  return fact;
 }
 
 function readCoverageStatuses(value: unknown): readonly string[] | undefined {
@@ -95,19 +98,6 @@ export function readCollectionFactsFromTerminalData(
     }
   }
   return { streams: entries };
-}
-
-export function readCollectionFactSkip(value: unknown): RuntimeCollectionFactSkip | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const skip = value as Record<string, unknown>;
-  const reason = typeof skip.reason === "string" ? skip.reason : null;
-  if (reason === null) {
-    return null;
-  }
-  const recoveryAction = typeof skip.recovery_action === "string" ? skip.recovery_action : null;
-  return { reason, ...(recoveryAction ? { recovery_action: recoveryAction } : {}) };
 }
 
 function readCollectionRateNumbers(entry: Record<string, unknown>): CollectionRateNumbers | null {
