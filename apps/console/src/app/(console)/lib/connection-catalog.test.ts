@@ -237,6 +237,7 @@ test("unproven browser-bound static-secret entries fail closed", async () => {
 test("browser-bound static-secret capability is not enough to create an account", () => {
   const catalog = buildConnectorCatalog([
     {
+      capabilities: { public_listing: { tier: "supported" } },
       connector_id: "https://registry.pdpp.org/connectors/browser-sample",
       display_name: "Browser Sample",
       runtime_requirements: { bindings: { browser: { required: true } } },
