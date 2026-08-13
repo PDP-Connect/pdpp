@@ -808,6 +808,10 @@ export function runConnector(config: RunConnectorConfig): void {
     records_emitted = observedCounters?.totalEmitted ?? 0,
     code?: string
   ): void => {
+    // The runtime ACK handshake may outlive every ref'd process handle. Mark
+    // the natural exit path before emitting DONE so it cannot contradict the
+    // failed terminal status if Node exits before the explicit callback.
+    process.exitCode = 1;
     const terminalError = composeNormalizedTerminalError({ message, retryable, code, normalizeTerminalError });
     // Fire-and-forget. emit() resolves after stdout drains; we're about to
     // exit(1) anyway, so we don't need to block. If it rejects (the write

@@ -1826,7 +1826,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "src/connector-runtime.ts",
-    line: 1472,
+    line: 1476,
     column: 9,
     category: "shared_mutable_accumulator",
     note: "closeBrowserPage(): loop body mutates a shared accumulator the next iteration reads",
