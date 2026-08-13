@@ -23,24 +23,34 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : "Unexpected approval action failure";
 }
 
-export async function approvePendingApprovalAction(formData: FormData) {
-  await requireDashboardAccess("/grants#pending-approvals");
+export async function approveReviewedPendingApprovalAction(formData: FormData) {
   const kind = asString(formData.get("kind")) as "consent" | "owner_device";
   const approvalId = asString(formData.get("approval_id"));
-  const subjectId = asString(formData.get("subject_id")) || undefined;
+  const requestUri = asString(formData.get("request_uri"));
+  const approvalReviewRevision = asString(formData.get("approval_review_revision"));
+  const confirmation = asString(formData.get("approval_confirmation"));
+  if (confirmation !== "approve") {
+    redirect(`/grants/approvals/${encodeURIComponent(approvalId)}`);
+  }
+  await requireDashboardAccess(`/grants/approvals/${encodeURIComponent(approvalId)}?confirm=1`);
   let error: string | undefined;
 
   try {
     await approvePendingApproval({
       approvalId,
+      approvalReviewRevision,
       kind,
-      subjectId,
+      requestUri,
     });
   } catch (err) {
     error = errorMessage(err);
   }
 
-  redirect(baseHref(error));
+  redirect(
+    error
+      ? `/grants/approvals/${encodeURIComponent(approvalId)}?approval_error=${encodeURIComponent(error)}`
+      : "/grants"
+  );
 }
 
 export async function denyPendingApprovalAction(formData: FormData) {
