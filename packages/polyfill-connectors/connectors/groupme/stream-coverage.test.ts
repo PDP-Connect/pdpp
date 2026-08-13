@@ -609,7 +609,9 @@ test("collectGroupMessages: a group's backward walk pages past 200 full pages wi
 // ─── collectDirectChats: considered/failed contract ────────────────────────
 
 test("collectDirectChats: clean pass reports failed: false and considered === listed chats", async () => {
-  const restore = stubFetch({ response: [directChat(), directChat({ id: "chat-2" })] });
+  const restore = stubFetch({
+    response: [directChat({ id: undefined }), directChat({ id: undefined, other_user: { id: "user-3" } })],
+  });
   try {
     const cursor = openFingerprintCursor(new Map());
     const { emitRecord, emitted } = makeHarness();
@@ -617,6 +619,11 @@ test("collectDirectChats: clean pass reports failed: false and considered === li
 
     assert.deepEqual(outcome, { considered: 2, failed: false });
     assert.equal(emitted.filter((r) => r.stream === "direct_messages").length, 2);
+    assert.deepEqual(
+      emitted.filter((r) => r.stream === "direct_messages").map((r) => r.data.id),
+      ["user-2", "user-3"],
+      "live /chats responses use the other user as the stable one-to-one conversation identity"
+    );
   } finally {
     restore();
   }
@@ -728,20 +735,21 @@ test("collectDirectChatMessages: uses the direct-message endpoint keyed by the o
     urls.push(url);
     const response =
       url.pathname === "/v3/chats"
-        ? [directChat({ id: "conversation-1", other_user: { id: "user-2", name: "Bob" } })]
-        : { count: 0, direct_messages: [] };
+        ? [directChat({ id: undefined, other_user: { id: "user-2", name: "Bob" } })]
+        : { count: 1, direct_messages: [directMessage()] };
     return Promise.resolve(new Response(JSON.stringify({ response }), { status: 200 }));
   }) as typeof globalThis.fetch;
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emitRecord } = makeHarness();
+    const { emitRecord, emitted } = makeHarness();
     const outcome = await collectDirectChatMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
 
-    assert.deepEqual(outcome, { considered: 0, failed: false });
+    assert.deepEqual(outcome, { considered: 1, failed: false });
     assert.equal(urls[1]?.pathname, "/v3/direct_messages");
     assert.equal(urls[1]?.searchParams.get("other_user_id"), "user-2");
     assert.equal(urls[1]?.searchParams.get("limit"), String(PAGE_SIZE));
-    assert.ok(!urls.some((url) => url.pathname === "/v3/chats/conversation-1/messages"));
+    assert.equal(emitted.find((record) => record.stream === "direct_chat_messages")?.data.chat_id, "user-2");
+    assert.ok(!urls.some((url) => url.pathname === "/v3/chats/user-2/messages"));
   } finally {
     globalThis.fetch = original;
   }

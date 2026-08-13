@@ -159,7 +159,7 @@ interface GroupMeMessage {
 interface GroupMeDirectChat {
   avatar_url?: string | null;
   created_at?: number | null;
-  id: string;
+  id?: string | null;
   last_message?: string | null;
   last_message_at?: number | null;
   messages_count?: number | null;
@@ -600,11 +600,12 @@ interface PaginatedListResult<T> {
  * caught by `runCollectionPass`'s existing catch, converted to an ordinary
  * `failed: true`.
  */
-async function fetchPaginatedList<T extends { id: string }>(
+async function fetchPaginatedList<T extends { id?: string | null }>(
   token: string,
   path: string,
   stream: string,
-  progressWithSignals: ProgressFn
+  progressWithSignals: ProgressFn,
+  identityOf: (item: T) => string = (item) => (item.id === null || item.id === undefined ? "" : String(item.id).trim())
 ): Promise<PaginatedListResult<T>> {
   const items: T[] = [];
   const seenIds = new Set<string>();
@@ -613,12 +614,16 @@ async function fetchPaginatedList<T extends { id: string }>(
   for (;;) {
     await progressWithSignals(`Fetching ${path}`, { stream, phase: "fetch", page, total_seen: items.length });
     const pageItems = await makeRequest<T[]>(token, path, { page, per_page: PAGE_SIZE });
-    const newItems = pageItems.filter((item) => !seenIds.has(item.id));
+    const newItems = pageItems.filter((item) => !seenIds.has(identityOf(item)));
     if (pageItems.length >= PAGE_SIZE && newItems.length === 0) {
       throw new NonProgressError(path, "forward", String(page));
     }
     for (const item of newItems) {
-      seenIds.add(item.id);
+      const itemId = identityOf(item);
+      if (!itemId) {
+        throw new NonProgressError(path, "forward", String(page));
+      }
+      seenIds.add(itemId);
       items.push(item);
     }
     await progressWithSignals(`Fetched ${path} page`, {
@@ -669,14 +674,23 @@ async function toGroupMessageRecord(
   };
 }
 
+function directChatIdentity(chat: GroupMeDirectChat): string {
+  const chatId = chat.id?.trim() || chat.other_user?.id?.trim();
+  if (!chatId) {
+    throw new Error("groupme_direct_chat_missing_identity");
+  }
+  return chatId;
+}
+
 function toDirectChatRecord(chat: GroupMeDirectChat): RecordData {
+  const chatId = directChatIdentity(chat);
   return {
-    id: chat.id,
+    id: chatId,
     other_user_id: chat.other_user?.id ?? null,
     other_user_name: chat.other_user?.name ?? null,
     avatar_url: chat.avatar_url ?? chat.other_user?.avatar_url ?? null,
     last_message: chat.last_message ?? null,
-    last_message_at: convertTimestamp(chat.last_message_at, `direct chat ${chat.id}`),
+    last_message_at: convertTimestamp(chat.last_message_at, `direct chat ${chatId}`),
   };
 }
 
@@ -1386,7 +1400,8 @@ export async function collectDirectChats(
         token,
         "/chats",
         "direct_messages",
-        progressWithSignals
+        progressWithSignals,
+        directChatIdentity
       );
 
       for (const chat of chats) {
@@ -1449,8 +1464,9 @@ async function collectDirectChatMessagesForChat(
   let totalSeen = 0;
   const usedCursors = new Set<string>();
   const otherUserId = chat.other_user?.id;
+  const chatId = directChatIdentity(chat);
   if (!otherUserId) {
-    throw new Error(`groupme_direct_chat_missing_other_user: ${chat.id}`);
+    throw new Error(`groupme_direct_chat_missing_other_user: ${chatId}`);
   }
 
   for (;;) {
@@ -1488,7 +1504,7 @@ async function collectDirectChatMessagesForChat(
     });
 
     for (const msg of inScope) {
-      const record = await toDirectChatMessageRecord(msg, chat.id, uploader, emitAttachmentRecord);
+      const record = await toDirectChatMessageRecord(msg, chatId, uploader, emitAttachmentRecord);
       if (cursor.shouldEmit(record)) {
         await emitRecord("direct_chat_messages", record);
       }
@@ -1500,7 +1516,7 @@ async function collectDirectChatMessagesForChat(
 
     const nextBeforeId = messages.at(-1)?.id;
     if (!nextBeforeId || usedCursors.has(nextBeforeId)) {
-      throw new NonProgressError(chat.id, "backward", beforeId ?? "(start)");
+      throw new NonProgressError(chatId, "backward", beforeId ?? "(start)");
     }
     usedCursors.add(nextBeforeId);
     beforeId = nextBeforeId;
@@ -1531,7 +1547,8 @@ export async function collectDirectChatMessages(
         token,
         "/chats",
         "direct_chat_messages",
-        progressWithSignals
+        progressWithSignals,
+        directChatIdentity
       );
       for (const chat of chats) {
         const chatResult = await collectDirectChatMessagesForChat(
