@@ -429,10 +429,12 @@ function actionableOwnerActionFromTemplate(
   const action = template.supported_actions?.find((candidate) => candidate.family === "initiate_connection");
   const method = typeof action?.method === "string" ? action.method : null;
   const url = typeof action?.url === "string" && action.url.trim() ? action.url : null;
+  const listedOrExplicitlyExposed =
+    template.public_listing?.tier !== "development" || template.uat_expose_unlisted_connectors === true;
   const authority =
     template.registration_status === "registered" &&
-    template.public_listing?.tier !== "development" &&
-    template.setup_plan?.owner_actionable === true &&
+    listedOrExplicitlyExposed &&
+    (template.setup_plan?.owner_actionable === true || template.uat_expose_unlisted_connectors === true) &&
     entry.nextStepKind === template.setup_plan?.next_step_kind;
   const ownerAgentActionable =
     authority &&
@@ -475,9 +477,13 @@ export function buildOwnerConnectorCatalog(
   for (const template of templates) {
     const connectorKey = cleanManifestText(template.connector_key);
     const setupPlan = template.setup_plan;
-    // Development remains visible for diagnostics, but never becomes an Add
-    // Source offer. The manifest tier is the sole listing authority.
-    if (!connectorKey || template.registration_status !== "registered" || template.public_listing?.tier === "development") {
+    // Development remains hidden unless the authenticated server explicitly
+    // exposes this exact template for UAT.
+    if (
+      !connectorKey ||
+      template.registration_status !== "registered" ||
+      (template.public_listing?.tier === "development" && template.uat_expose_unlisted_connectors !== true)
+    ) {
       continue;
     }
     const disposition = setupPlan?.catalog_disposition;

@@ -1298,7 +1298,7 @@ test("a connector-key allowlist cannot declare readiness a deployment has not su
   );
 });
 
-test("console catalog uses the manifest tier as its sole listing authority", () => {
+test("console catalog exposes a development connector only with server UAT authority", () => {
   const uatFalseTemplate = ownerTemplate({
     connectorKey: "test-unproven",
     tier: "development",
@@ -1307,12 +1307,15 @@ test("console catalog uses the manifest tier as its sole listing authority", () 
   let catalog = buildOwnerConnectorCatalog([], [uatFalseTemplate]);
   assert.equal(catalog.length, 0, "development must be filtered from Add Source");
 
-  // The obsolete UAT exposure fact cannot override a development tier.
+  // The authenticated server can selectively expose one Development connector
+  // without changing its lifecycle tier.
   const uatTrueTemplate = ownerTemplate({
     connectorKey: "test-unproven",
     tier: "development",
     uat_expose_unlisted_connectors: true,
   });
   catalog = buildOwnerConnectorCatalog([], [uatTrueTemplate]);
-  assert.equal(catalog.length, 0, "UAT exposure must not override development");
+  assert.equal(catalog.length, 1, "explicit UAT exposure must admit the named development connector");
+  assert.equal(catalog[0]?.publicTier, "development", "UAT exposure must not promote the lifecycle tier");
+  assert.equal(catalog[0]?.ownerActionable, true, "the exposed setup path must be actionable in UAT");
 });
