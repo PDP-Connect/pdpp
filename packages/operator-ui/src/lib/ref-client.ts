@@ -512,6 +512,9 @@ export interface DatasetSummaryProjectionMetadata {
 // and the dashboard must not re-assemble them.
 export interface DeploymentDiagnostics {
   database: {
+    // Authoritative storage identity from the reference process. Optional for
+    // older deployments; absence is unknown, never SQLite.
+    backend?: "postgres" | "sqlite" | "unknown";
     path: string;
     // Read-only physical on-disk footprint (Postgres-only). `null` on a
     // SQLite backend or when the size read fails — never a fabricated `0`.

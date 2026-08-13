@@ -53,7 +53,10 @@ function datasetSummary(overrides: Partial<DatasetSummary> = {}): DatasetSummary
 }
 
 function pgDatabase(overrides: Partial<DatabaseBlock> = {}): DatabaseBlock {
+  // Compile-level contract check: this fixture must accept the authoritative
+  // reference backend discriminator through the shared input type.
   return {
+    backend: "postgres",
     path: "/var/lib/postgresql/data",
     physical_bytes: 51_000_000_000, // ~51 GB → "51.0 GB"
     top_relations: [
@@ -91,6 +94,22 @@ test("measured model renders physical and logical as two separate labeled number
   // is never aliased to or replaced by the retained number.
   assert.notEqual(model.physicalLabel, model.retainedLabel);
   assert.equal(model.unmeasuredNote, null);
+});
+
+test("split deployment trusts authoritative reference backend when physical probe is unavailable", () => {
+  const model = buildStorageFootprintModel(pgDatabase({ physical_bytes: null, top_relations: null }), 4_800_000_000);
+  assert.equal(model.measured, false);
+  assert.match(model.unmeasuredNote ?? "", /Postgres is authoritative/);
+  assert.doesNotMatch(model.unmeasuredNote ?? "", /SQLite-backed/);
+});
+
+test("unknown backend remains unknown instead of defaulting to SQLite", () => {
+  const model = buildStorageFootprintModel(
+    { path: "/remote/reference", physical_bytes: null, top_relations: null },
+    null
+  );
+  assert.match(model.unmeasuredNote ?? "", /backend is unknown/);
+  assert.doesNotMatch(model.unmeasuredNote ?? "", /SQLite-backed/);
 });
 
 test("measured model never sums physical with retained", () => {

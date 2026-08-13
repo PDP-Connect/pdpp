@@ -329,6 +329,7 @@ export interface EnvValueReport {
 export interface DeploymentDiagnosticsReport {
   readonly database: {
     readonly path: string;
+    readonly backend: "postgres" | "sqlite" | "unknown";
     // Read-only physical footprint (Postgres-only). `null` on SQLite or read
     // failure — never a fabricated `0`. Distinct from the logical retained
     // payload (`total_retained_bytes`); never aliased to or summed with it.
@@ -412,6 +413,8 @@ export interface DeploymentDiagnosticsReport {
 // provider-specific.
 
 const STATIC_ENV_ALLOWLIST: ReadonlyArray<{ readonly name: string; readonly secret?: boolean }> = [
+  { name: "PDPP_STORAGE_BACKEND" },
+  { name: "PDPP_DATABASE_URL", secret: true },
   { name: "AS_PORT" },
   { name: "RS_PORT" },
   { name: "AS_PUBLIC_URL" },
@@ -1142,6 +1145,7 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
 
   return {
     database: {
+      backend: resolveStorageBackend(input.env),
       path: input.dbPath,
       ...normalizePhysicalFootprint(input.physicalFootprint),
     },
@@ -1180,4 +1184,15 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
     },
     warnings,
   };
+}
+
+function resolveStorageBackend(env: DiagnosticsEnv): "postgres" | "sqlite" | "unknown" {
+  const explicit = env.PDPP_STORAGE_BACKEND?.trim().toLowerCase();
+  if (explicit === "postgres" || explicit === "sqlite") {
+    return explicit;
+  }
+  if (env.PDPP_DATABASE_URL?.trim() || env.DATABASE_URL?.trim()) {
+    return "postgres";
+  }
+  return "unknown";
 }

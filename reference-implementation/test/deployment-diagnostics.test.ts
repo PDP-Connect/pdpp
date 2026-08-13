@@ -887,6 +887,33 @@ test("database block carries physical_bytes + top_relations from a Postgres foot
   assert.ok(report.database.top_relations[0].bytes <= report.database.physical_bytes);
 });
 
+test("database backend comes from the reference env in a split web/reference deployment", () => {
+  const report = buildDeploymentDiagnostics({
+    backend: null,
+    db: null,
+    dbPath: "/var/lib/postgresql/data",
+    env: { PDPP_STORAGE_BACKEND: "postgres", PDPP_DATABASE_URL: "redacted-test-url" },
+    indexState: null,
+    manifests: [],
+    physicalFootprint: { physical_bytes: null, top_relations: null },
+  });
+
+  assert.equal(report.database.backend, "postgres");
+});
+
+test("database backend remains unknown when the reference env is silent", () => {
+  const report = buildDeploymentDiagnostics({
+    backend: null,
+    db: null,
+    dbPath: "/remote/reference",
+    env: {},
+    indexState: null,
+    manifests: [],
+  });
+
+  assert.equal(report.database.backend, "unknown");
+});
+
 test("database block degrades to null/null when no footprint is supplied (SQLite/absent)", () => {
   const report = buildDeploymentDiagnostics({
     backend: fakeBackend(),

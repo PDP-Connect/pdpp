@@ -44,8 +44,15 @@ export interface StorageFootprintModel {
   readonly unmeasuredNote: string | null;
 }
 
-const UNMEASURED_NOTE =
-  "On-disk size is reported for Postgres backends only. This deployment is SQLite-backed or the size read was unavailable.";
+function unmeasuredNote(backend: DeploymentDiagnostics["database"]["backend"]): string {
+  if (backend === "postgres") {
+    return "Postgres is authoritative for this deployment, but its read-only physical-size probe was unavailable.";
+  }
+  if (backend === "sqlite") {
+    return "On-disk size is reported for Postgres backends only. This deployment is SQLite-backed.";
+  }
+  return "Storage backend is unknown; the read-only physical-size probe was unavailable.";
+}
 
 // Format a byte count into a compact size string (decimal/SI units, matching
 // the "Retained" KPI on the overview hero). Returns "—" for a non-finite or
@@ -173,7 +180,7 @@ export function buildStorageFootprintModel(
       physicalLabel: "—",
       relations: [],
       retainedLabel,
-      unmeasuredNote: UNMEASURED_NOTE,
+      unmeasuredNote: unmeasuredNote(database.backend ?? "unknown"),
     };
   }
 
