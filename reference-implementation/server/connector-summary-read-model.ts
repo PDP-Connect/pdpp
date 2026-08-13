@@ -54,6 +54,7 @@ type ConnectorSummaryReconcileObservationSink = (observation: ConnectorSummaryRe
 
 const GENERIC_REPAIR_CANDIDATE_REASONS: readonly RepairCandidateReason[] = [
   "dirty",
+  "state_stale",
   "record_checkpoint_mismatch",
   "identity_mismatch",
   "manifest_mismatch",
@@ -185,6 +186,7 @@ export interface ConnectorListSummaryTerminalProjectionEnvelope {
 }
 
 const TERMINAL_PROJECTION_STATES = new Set(["current", "stale", "failed"]);
+export const TERMINAL_PROJECTION_PUBLICATION_RACE = "ConnectorListSummaryProjectionRace";
 const DECIMAL_SOURCE_REVISION_RE = /^\d+$/;
 const LEADING_ZEROES_SOURCE_REVISION_RE = /^0+(?=\d)/;
 const MAX_SOURCE_REVISION = "9223372036854775807";
@@ -1471,7 +1473,15 @@ function createStreamFactsFoldStore() {
                   stream_facts_fold_version = $5,
                   terminal_facts_state = $6,
                   terminal_facts_reason_code = $7,
-                  canonical_evidence_revision = canonical_evidence_revision + 1
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = CASE
+                    WHEN list_summary_projection_state = 'current' THEN 'stale'
+                    ELSE list_summary_projection_state
+                  END,
+                  list_summary_projection_reason_code = CASE
+                    WHEN list_summary_projection_state = 'current' THEN 'canonical_evidence_changed'
+                    ELSE list_summary_projection_reason_code
+                  END
             WHERE connector_instance_id = $1
               AND stream_facts_event_seq IS NOT DISTINCT FROM $4
               AND stream_facts_fold_version IS NOT DISTINCT FROM $8`,
@@ -1551,7 +1561,15 @@ function createStreamFactsFoldStore() {
                   stream_facts_fold_version = ?,
                   terminal_facts_state = ?,
                   terminal_facts_reason_code = ?,
-                  canonical_evidence_revision = canonical_evidence_revision + 1
+                  canonical_evidence_revision = canonical_evidence_revision + 1,
+                  list_summary_projection_state = CASE
+                    WHEN list_summary_projection_state = 'current' THEN 'stale'
+                    ELSE list_summary_projection_state
+                  END,
+                  list_summary_projection_reason_code = CASE
+                    WHEN list_summary_projection_state = 'current' THEN 'canonical_evidence_changed'
+                    ELSE list_summary_projection_reason_code
+                  END
             WHERE connector_instance_id = ?
               AND stream_facts_event_seq IS ?
               AND stream_facts_fold_version IS ?`
@@ -2760,7 +2778,7 @@ async function runBoundedObservationPhases(
 /**
  * The one internal observation barrier (design.md "Central consumer and
  * cache boundary"): discover+repair every row the complete canonical
- * `connector_instances` set classifies as needing it (missing, dirty,
+ * `connector_instances` set classifies as needing it (missing, dirty, stale,
  * checkpoint-mismatched, manifest-mismatched, and retained-bytes-changed —
  * see `reconcileConnectorSummaryEvidence` in
  * `connector-summary-evidence-engine.ts`), then fold terminal-event deltas
@@ -3051,6 +3069,10 @@ async function readDirtyInstanceIdPage(limit: number): Promise<readonly string[]
   }
 }
 
+function isExpectedProjectionRace(error: unknown): boolean {
+  return error instanceof Error && error.name === TERMINAL_PROJECTION_PUBLICATION_RACE;
+}
+
 /**
  * The keyset cursor walk over the canonical `connector_instances` set — the
  * sweep's correctness backstop, which eventually covers EVERY connection
@@ -3136,7 +3158,20 @@ async function runCursorWalk(args: {
       cursor = cursorBeforeCurrentPage;
       break;
     }
-    await args.onPageConverged?.(pageIds, args.maintenanceLease);
+    try {
+      await args.onPageConverged?.(pageIds, args.maintenanceLease);
+    } catch (error) {
+      if (!isExpectedProjectionRace(error)) {
+        throw error;
+      }
+      // The publisher's revision/lease CAS correctly rejected this page.
+      // Preserve the page as the durable resume point; the next bounded round
+      // will re-observe and republish it. Unexpected publication failures
+      // still escape and remain visible to the worker.
+      anyFoldIncomplete = true;
+      cursor = cursorBeforeCurrentPage;
+      break;
+    }
     cursor = pageIds.at(-1) ?? cursor;
     if (pageIds.length < pageSize) {
       // Short page: this was genuinely the last page of the complete set.
@@ -3262,7 +3297,19 @@ async function runDirtyPriorityAcceleration(args: {
   });
   emitScopedObservationUnit(result, dirtyIds.length, startedAt);
   if (!result.incomplete) {
-    await args.onPageConverged?.(dirtyIds, args.maintenanceLease);
+    try {
+      await args.onPageConverged?.(dirtyIds, args.maintenanceLease);
+    } catch (error) {
+      if (!isExpectedProjectionRace(error)) {
+        throw error;
+      }
+      return {
+        discovered: dirtyIds.length,
+        incomplete: true,
+        repaired: result.reconciled,
+        skipped: result.skipped,
+      };
+    }
   }
   return {
     discovered: dirtyIds.length,

@@ -128,9 +128,11 @@ import {
 } from "./connector-outbox-axis.ts";
 import {
   type ConnectorListSummaryTerminalProjection,
+  getConnectorListSummaryTerminalProjectionBatch,
   listConnectorSummaryEvidence,
   MAX_TERMINAL_PROJECTION_BATCH_IDS,
   publishConnectorListSummaryTerminalProjection,
+  TERMINAL_PROJECTION_PUBLICATION_RACE,
 } from "./connector-summary-read-model.ts";
 import { getSqliteStoreCacheIdentity } from "./db.ts";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
@@ -6707,9 +6709,14 @@ export async function rebuildConnectorListSummaryTerminalProjectionPage(
       `connector list-summary projection rebuild accepts at most ${MAX_TERMINAL_PROJECTION_BATCH_IDS} connection ids`
     );
   }
+  const projectionStates = await getConnectorListSummaryTerminalProjectionBatch(ids);
+  const idsNeedingPublication = ids.filter((id) => projectionStates.get(id)?.state !== "current");
+  if (idsNeedingPublication.length === 0) {
+    return { attempted: 0, published: 0 };
+  }
   const ownerSubjectId = options.ownerSubjectId ?? REFERENCE_OWNER_SUBJECT_ID;
   const store = getConnectorInstanceStore();
-  const rows = (await Promise.all(ids.map((id) => Promise.resolve(store.get(id)))))
+  const rows = (await Promise.all(idsNeedingPublication.map((id) => Promise.resolve(store.get(id)))))
     .filter(
       (instance): instance is NonNullable<typeof instance> =>
         instance !== null && instance.ownerSubjectId === ownerSubjectId && isOwnerVisibleConnectorInstance(instance)
@@ -6742,9 +6749,11 @@ export async function rebuildConnectorListSummaryTerminalProjectionPage(
     rows,
   });
   if (published !== attempted) {
-    throw new Error(
+    const error = new Error(
       `Connector list-summary projection publication lost a canonical or maintenance-lease race (${published}/${attempted}); retry the page.`
     );
+    error.name = TERMINAL_PROJECTION_PUBLICATION_RACE;
+    throw error;
   }
   return { attempted, published };
 }

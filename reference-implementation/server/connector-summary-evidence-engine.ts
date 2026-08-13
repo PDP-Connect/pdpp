@@ -181,6 +181,7 @@ export function deriveStreamCountState({
 export type RepairCandidateReason =
   | "missing"
   | "dirty"
+  | "state_stale"
   | "record_checkpoint_mismatch"
   | "identity_mismatch"
   | "manifest_mismatch"
@@ -359,6 +360,14 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
   }
   if (Number(existingEvidence.dirty || 0) !== 0) {
     return "dirty";
+  }
+  // `state` is an evidence claim, not a scheduling hint. A stale row with
+  // dirty=0 is still not publishable and must re-enter the ordinary bounded
+  // repair path. Without this check, terminal folding can advance the
+  // canonical facts while the stale generic envelope permanently blocks the
+  // projection publisher.
+  if (existingEvidence.state !== "fresh") {
+    return "state_stale";
   }
   if (
     existingEvidence.display_name !== instance.display_name ||
@@ -1761,6 +1770,47 @@ function buildRepairedRow(inputs: RepairInputs): Row {
   };
 }
 
+const PROJECTION_RELEVANT_EVIDENCE_COLUMNS = [
+  "connector_id",
+  "display_name",
+  "status",
+  "source_kind",
+  "revoked_at",
+  "total_records",
+  "stream_count",
+  "last_record_updated_at",
+  "stream_records_json",
+  "retained_bytes_json",
+  "total_retained_bytes",
+  "record_checkpoint_json",
+  "manifest_fingerprint",
+  "record_snapshot_state",
+  "record_snapshot_reason_code",
+  "manifest_declaration_state",
+  "manifest_declaration_reason_code",
+  "retained_bytes_state",
+  "retained_bytes_reason_code",
+  "terminal_facts_state",
+  "terminal_facts_reason_code",
+  "stream_latest_facts_json",
+  "stream_facts_event_seq",
+  "manifest_generation",
+  "schedule_checkpoint",
+  "run_lifecycle_event_seq",
+  "source_revision",
+] as const;
+
+function projectionRelevantEvidenceChanged(dialect: "postgres" | "sqlite"): string {
+  const excluded = dialect === "postgres" ? "EXCLUDED" : "excluded";
+  const distinctOperator = dialect === "postgres" ? "IS DISTINCT FROM" : "IS NOT";
+  return PROJECTION_RELEVANT_EVIDENCE_COLUMNS.map(
+    (column) => `connector_summary_evidence.${column} ${distinctOperator} ${excluded}.${column}`
+  ).join("\n            OR ");
+}
+
+const SQLITE_PROJECTION_RELEVANT_EVIDENCE_CHANGED = projectionRelevantEvidenceChanged("sqlite");
+const POSTGRES_PROJECTION_RELEVANT_EVIDENCE_CHANGED = projectionRelevantEvidenceChanged("postgres");
+
 function upsertSqliteEvidenceRow(db: Db, row: Row): void {
   const existing = db
     .prepare(
@@ -1820,8 +1870,12 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        schedule_checkpoint = excluded.schedule_checkpoint,
        run_lifecycle_event_seq = excluded.run_lifecycle_event_seq,
        source_revision = excluded.source_revision,
-       list_summary_projection_state = 'stale',
-       list_summary_projection_reason_code = 'canonical_evidence_rebuilt'`,
+       list_summary_projection_state = CASE
+         WHEN ${SQLITE_PROJECTION_RELEVANT_EVIDENCE_CHANGED}
+         THEN 'stale' ELSE list_summary_projection_state END,
+       list_summary_projection_reason_code = CASE
+         WHEN ${SQLITE_PROJECTION_RELEVANT_EVIDENCE_CHANGED}
+         THEN 'canonical_evidence_rebuilt' ELSE list_summary_projection_reason_code END`,
     [
       row.connector_instance_id,
       row.connector_id,
@@ -1920,8 +1974,12 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
        schedule_checkpoint = EXCLUDED.schedule_checkpoint,
        run_lifecycle_event_seq = EXCLUDED.run_lifecycle_event_seq,
        source_revision = EXCLUDED.source_revision,
-       list_summary_projection_state = 'stale',
-       list_summary_projection_reason_code = 'canonical_evidence_rebuilt'`,
+       list_summary_projection_state = CASE
+         WHEN ${POSTGRES_PROJECTION_RELEVANT_EVIDENCE_CHANGED}
+         THEN 'stale' ELSE list_summary_projection_state END,
+       list_summary_projection_reason_code = CASE
+         WHEN ${POSTGRES_PROJECTION_RELEVANT_EVIDENCE_CHANGED}
+         THEN 'canonical_evidence_rebuilt' ELSE list_summary_projection_reason_code END`,
     [
       row.connector_instance_id,
       row.connector_id,

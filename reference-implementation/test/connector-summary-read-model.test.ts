@@ -9,6 +9,7 @@ import test from "node:test";
 
 import { createResumableConnectorMaintenanceSweep } from "../server/connector-maintenance-sweep.ts";
 import {
+  foldConnectorSummaryStreamFacts,
   getConnectorListSummaryTerminalProjection,
   getConnectorListSummaryTerminalProjectionBatch,
   getConnectorSummaryEvidence,
@@ -97,6 +98,72 @@ function seedInstanceSqlite({
       NOW,
       NOW,
       revokedAt
+    );
+}
+
+let terminalEventSeq = 0;
+
+function seedOrderedTerminalRunSqlite({
+  connectorInstanceId,
+  connectorId,
+  completedAt,
+  eventType,
+  recordsEmitted,
+  runId,
+  status,
+}: {
+  connectorInstanceId: string;
+  connectorId: string;
+  completedAt: string;
+  eventType: "run.cancelled" | "run.completed";
+  recordsEmitted: number;
+  runId: string;
+  status: "cancelled" | "succeeded";
+}): void {
+  terminalEventSeq += 1;
+  const facts = {
+    collection_facts: {
+      streams: [{ checkpoint: "committed", collected: recordsEmitted, considered: recordsEmitted, stream: "items" }],
+    },
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO run_history(
+         run_id, connector_instance_id, connector_id, source_json, status,
+         records_emitted, known_gaps_json, started_at, completed_at, attempt,
+         facts_json, scheduler_managed
+       ) VALUES (?, ?, ?, '{}', ?, ?, '[]', ?, ?, 1, ?, 0)`
+    )
+    .run(
+      runId,
+      connectorInstanceId,
+      connectorId,
+      status,
+      recordsEmitted,
+      completedAt,
+      completedAt,
+      JSON.stringify(facts)
+    );
+  getDb()
+    .prepare(
+      `INSERT INTO spine_events(
+         event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id,
+         trace_id, actor_type, actor_id, object_type, object_id, status, run_id,
+         connector_instance_id, data_json, version
+       ) VALUES (?, ?, ?, ?, ?, 'test', ?, 'runtime', 'test', 'run', ?, ?, ?, ?, ?, '1')`
+    )
+    .run(
+      `evt_${runId}`,
+      terminalEventSeq,
+      eventType,
+      completedAt,
+      completedAt,
+      `trace_${runId}`,
+      runId,
+      runId,
+      status,
+      connectorInstanceId,
+      JSON.stringify({ ...facts, connection_id: connectorInstanceId, connector_instance_id: connectorInstanceId })
     );
 }
 
@@ -1363,4 +1430,236 @@ test("maintenance automatically heals invalidated list projections across restar
 
     await restarted.runEvidenceSweepRound({ maxDurationMs: 60_000, pageSize: 1 });
     assert.equal((await getConnectorListSummaryTerminalProjection(instanceIds[1] as string)).state, "current");
+  }));
+
+test("a stale clean row republishes the newer ordered terminal run", () =>
+  withTempDb(async () => {
+    const connectorId = "terminal_projection_convergence";
+    const connectorInstanceId = "cin_terminal_projection_convergence";
+    seedInstanceSqlite({ connectorId, connectorInstanceId });
+    seedRetainedSizeConnectionSqlite({ connectorId, connectorInstanceId });
+    getDb()
+      .prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?")
+      .run(
+        JSON.stringify({
+          connector_id: connectorId,
+          streams: [{ name: "items", primary_key: ["id"] }],
+        }),
+        connectorId
+      );
+
+    seedOrderedTerminalRunSqlite({
+      completedAt: "2026-08-12T23:20:00.000Z",
+      connectorId,
+      connectorInstanceId,
+      eventType: "run.cancelled",
+      recordsEmitted: 0,
+      runId: "run_old_cancelled",
+      status: "cancelled",
+    });
+    await rebuildConnectorSummaryEvidence();
+    await rebuildConnectorListSummaryTerminalProjectionPage(null, [connectorInstanceId]);
+    const initial = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(initial.state, "current");
+    assert.ok(initial.projection);
+    assert.equal((initial.projection.summary.last_run as Record<string, unknown>).run_id, "run_old_cancelled");
+
+    // This is the exact UAT shape: canonical evidence was already rebuilt and
+    // left stale with no dirty acceleration marker. The old cancelled payload
+    // remains durable, but is not readable as current.
+    getDb()
+      .prepare(
+        `UPDATE connector_summary_evidence
+            SET dirty = 0,
+                state = 'stale',
+                list_summary_projection_state = 'stale',
+                list_summary_projection_reason_code = 'canonical_evidence_rebuilt'
+          WHERE connector_instance_id = ?`
+      )
+      .run(connectorInstanceId);
+    const exactUatState = await getConnectorSummaryEvidence(connectorInstanceId);
+    assert.ok(exactUatState);
+    assert.equal(exactUatState.dirty, false);
+    assert.equal(exactUatState.state, "stale");
+    const exactUatProjectionState = getDb()
+      .prepare(
+        `SELECT list_summary_projection_state, list_summary_projection_reason_code
+           FROM connector_summary_evidence
+          WHERE connector_instance_id = ?`
+      )
+      .get(connectorInstanceId) as Record<string, unknown>;
+    assert.equal(exactUatProjectionState.list_summary_projection_state, "stale");
+    assert.equal(exactUatProjectionState.list_summary_projection_reason_code, "canonical_evidence_rebuilt");
+
+    seedOrderedTerminalRunSqlite({
+      completedAt: "2026-08-12T23:23:48.777Z",
+      connectorId,
+      connectorInstanceId,
+      eventType: "run.completed",
+      recordsEmitted: 2520,
+      runId: "run_new_succeeded",
+      status: "succeeded",
+    });
+    // The lifecycle checkpoint is already caught up in the deployed shape;
+    // the missing work is the terminal fold plus publication. Keep this
+    // authority aligned so the test cannot pass through the unrelated
+    // lifecycle-lag repair candidate.
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET run_lifecycle_event_seq = ? WHERE connector_instance_id = ?")
+      .run(terminalEventSeq, connectorInstanceId);
+    getDb()
+      .prepare("UPDATE connector_instances SET source_revision = 3 WHERE connector_instance_id = ?")
+      .run(connectorInstanceId);
+    await foldConnectorSummaryStreamFacts([connectorInstanceId]);
+
+    const foldedButUnpublished = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(
+      foldedButUnpublished.state,
+      "stale",
+      "the newer terminal fold must not make the old payload readable before maintenance publishes it"
+    );
+    assert.equal(foldedButUnpublished.reason_code, "canonical_evidence_rebuilt");
+
+    // Fail-before oracle: before the stale/dirty=0 candidate fix, this
+    // ordinary bounded maintenance leaves the row stale because discovery
+    // returns no candidate and the publisher requires state='fresh'.
+
+    await runBoundedSummaryEvidenceSweep({
+      maxDurationMs: 60_000,
+      onPageConverged: async (ids, maintenanceLease) => {
+        await rebuildConnectorListSummaryTerminalProjectionPage(
+          null,
+          ids,
+          maintenanceLease ? { maintenanceLease } : {}
+        );
+      },
+      pageSize: 1,
+    });
+
+    const converged = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(converged.state, "current");
+    assert.ok(converged.projection);
+    const lastRun = converged.projection.summary.last_run as Record<string, unknown>;
+    assert.equal(lastRun.run_id, "run_new_succeeded");
+    assert.equal(lastRun.status, "succeeded");
+  }));
+
+test("an idle no-op repair and sweep preserve a current projection", () =>
+  withTempDb(async () => {
+    const connectorId = "terminal_projection_noop_repair";
+    const connectorInstanceId = "cin_terminal_projection_noop_repair";
+    seedInstanceSqlite({ connectorId, connectorInstanceId });
+    seedRetainedSizeConnectionSqlite({ connectorId, connectorInstanceId });
+    getDb()
+      .prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?")
+      .run(
+        JSON.stringify({ connector_id: connectorId, streams: [{ name: "items", primary_key: ["id"] }] }),
+        connectorId
+      );
+    seedOrderedTerminalRunSqlite({
+      completedAt: "2026-08-12T23:20:00.000Z",
+      connectorId,
+      connectorInstanceId,
+      eventType: "run.cancelled",
+      recordsEmitted: 0,
+      runId: "run_noop_cancelled",
+      status: "cancelled",
+    });
+    await rebuildConnectorSummaryEvidence();
+    await rebuildConnectorListSummaryTerminalProjectionPage(null, [connectorInstanceId]);
+    const before = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(before.state, "current");
+    assert.ok(before.computed_at);
+
+    // Force only the generic evidence envelope stale. All projection-relevant
+    // canonical values remain unchanged, so the ordinary repair is a no-op
+    // from the projection's point of view.
+    getDb()
+      .prepare(
+        `UPDATE connector_summary_evidence
+            SET dirty = 0, state = 'stale'
+          WHERE connector_instance_id = ?`
+      )
+      .run(connectorInstanceId);
+    const repaired = await reconcileDirtyConnectorSummaryEvidence([connectorInstanceId]);
+    assert.equal(repaired.reconciled, 1);
+
+    const afterRepair = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(afterRepair.state, "current");
+    assert.equal(afterRepair.computed_at, before.computed_at);
+
+    await runBoundedSummaryEvidenceSweep({
+      maxDurationMs: 60_000,
+      onPageConverged: async (ids, maintenanceLease) => {
+        await rebuildConnectorListSummaryTerminalProjectionPage(
+          null,
+          ids,
+          maintenanceLease ? { maintenanceLease } : {}
+        );
+      },
+      pageSize: 1,
+    });
+    const afterSweep = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(afterSweep.state, "current");
+    assert.equal(afterSweep.computed_at, before.computed_at);
+  }));
+
+test("bounded maintenance resumes after an expected projection CAS race", () =>
+  withTempDb(async () => {
+    const connectorId = "terminal_projection_cas_resume";
+    const connectorInstanceId = "cin_terminal_projection_cas_resume";
+    seedInstanceSqlite({ connectorId, connectorInstanceId });
+    seedRetainedSizeConnectionSqlite({ connectorId, connectorInstanceId });
+    getDb()
+      .prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?")
+      .run(
+        JSON.stringify({ connector_id: connectorId, streams: [{ name: "items", primary_key: ["id"] }] }),
+        connectorId
+      );
+    seedOrderedTerminalRunSqlite({
+      completedAt: "2026-08-12T23:20:00.000Z",
+      connectorId,
+      connectorInstanceId,
+      eventType: "run.cancelled",
+      recordsEmitted: 0,
+      runId: "run_cas_cancelled",
+      status: "cancelled",
+    });
+    await rebuildConnectorSummaryEvidence();
+    await rebuildConnectorListSummaryTerminalProjectionPage(null, [connectorInstanceId]);
+    getDb()
+      .prepare(
+        `UPDATE connector_summary_evidence
+            SET list_summary_projection_state = 'stale',
+                list_summary_projection_reason_code = 'canonical_evidence_changed'
+          WHERE connector_instance_id = ?`
+      )
+      .run(connectorInstanceId);
+
+    let race = true;
+    const runSweep = () =>
+      runBoundedSummaryEvidenceSweep({
+        maxDurationMs: 60_000,
+        onPageConverged: async (ids, maintenanceLease) => {
+          if (race) {
+            race = false;
+            const expected = new Error("simulated expected projection CAS race");
+            expected.name = "ConnectorListSummaryProjectionRace";
+            throw expected;
+          }
+          await rebuildConnectorListSummaryTerminalProjectionPage(
+            null,
+            ids,
+            maintenanceLease ? { maintenanceLease } : {}
+          );
+        },
+        pageSize: 1,
+      });
+
+    const first = await runSweep();
+    assert.equal(first.incomplete, true);
+    assert.equal((await getConnectorListSummaryTerminalProjection(connectorInstanceId)).state, "stale");
+    const second = await runSweep();
+    assert.equal(second.incomplete, false);
+    assert.equal((await getConnectorListSummaryTerminalProjection(connectorInstanceId)).state, "current");
   }));
