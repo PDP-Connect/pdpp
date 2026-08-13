@@ -610,7 +610,19 @@ test("collectGroupMessages: a group's backward walk pages past 200 full pages wi
 
 test("collectDirectChats: clean pass reports failed: false and considered === listed chats", async () => {
   const restore = stubFetch({
-    response: [directChat({ id: undefined }), directChat({ id: undefined, other_user: { id: "user-3" } })],
+    response: [
+      directChat({
+        id: undefined,
+        last_message: { created_at: 1_700_000_200, text: "nested message" },
+        last_message_at: undefined,
+      }),
+      directChat({
+        id: undefined,
+        last_message: { created_at: 0, text: null },
+        last_message_at: undefined,
+        other_user: { id: "user-3" },
+      }),
+    ],
   });
   try {
     const cursor = openFingerprintCursor(new Map());
@@ -624,6 +636,11 @@ test("collectDirectChats: clean pass reports failed: false and considered === li
       ["user-2", "user-3"],
       "live /chats responses use the other user as the stable one-to-one conversation identity"
     );
+    const directRecords = emitted.filter((r) => r.stream === "direct_messages").map((r) => r.data);
+    assert.equal(directRecords[0]?.last_message, "nested message");
+    assert.equal(directRecords[0]?.last_message_at, "2023-11-14T22:16:40.000Z");
+    assert.equal(directRecords[1]?.last_message, null);
+    assert.equal(directRecords[1]?.last_message_at, null, "provider timestamp 0 is absence, never ingest time");
   } finally {
     restore();
   }

@@ -71,7 +71,7 @@ export const DirectChatSchema = z.object({
   other_user_name: z.string().nullable(),
   avatar_url: z.string().nullable(),
   last_message: z.string().nullable(),
-  last_message_at: z.string().datetime(),
+  last_message_at: z.string().datetime().nullable(),
 });
 
 export const DirectChatMessageSchema = z.object({

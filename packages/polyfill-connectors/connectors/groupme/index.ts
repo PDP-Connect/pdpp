@@ -160,7 +160,13 @@ interface GroupMeDirectChat {
   avatar_url?: string | null;
   created_at?: number | null;
   id?: string | null;
-  last_message?: string | null;
+  last_message?:
+    | string
+    | {
+        created_at?: number | null;
+        text?: string | null;
+      }
+    | null;
   last_message_at?: number | null;
   messages_count?: number | null;
   muted?: boolean | null;
@@ -362,12 +368,16 @@ export async function fetchAttachmentBlob(
 }
 
 function convertTimestamp(unixSeconds: number | undefined | null, context = "unknown"): string {
-  if (!unixSeconds) {
-    // eslint-disable-next-line no-console
-    console.warn(`groupme: missing timestamp in ${context}; using current time (indicates API change)`);
-    return new Date().toISOString();
+  if (!(unixSeconds && Number.isFinite(unixSeconds) && unixSeconds > 0)) {
+    throw new Error(`groupme_missing_timestamp: ${context}`);
   }
   return new Date(unixSeconds * 1000).toISOString();
+}
+
+function convertOptionalTimestamp(unixSeconds: number | undefined | null): string | null {
+  return unixSeconds && Number.isFinite(unixSeconds) && unixSeconds > 0
+    ? new Date(unixSeconds * 1000).toISOString()
+    : null;
 }
 
 interface NormalizedAttachment {
@@ -684,13 +694,16 @@ function directChatIdentity(chat: GroupMeDirectChat): string {
 
 function toDirectChatRecord(chat: GroupMeDirectChat): RecordData {
   const chatId = directChatIdentity(chat);
+  const lastMessage = chat.last_message;
+  const lastMessageText = typeof lastMessage === "string" ? lastMessage : (lastMessage?.text ?? null);
+  const lastMessageAt = chat.last_message_at ?? (typeof lastMessage === "object" ? lastMessage?.created_at : null);
   return {
     id: chatId,
     other_user_id: chat.other_user?.id ?? null,
     other_user_name: chat.other_user?.name ?? null,
     avatar_url: chat.avatar_url ?? chat.other_user?.avatar_url ?? null,
-    last_message: chat.last_message ?? null,
-    last_message_at: convertTimestamp(chat.last_message_at, `direct chat ${chatId}`),
+    last_message: lastMessageText,
+    last_message_at: convertOptionalTimestamp(lastMessageAt),
   };
 }
 

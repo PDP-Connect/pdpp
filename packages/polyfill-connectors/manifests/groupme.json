@@ -243,7 +243,7 @@
             "x_pdpp_role": "primary-title"
           },
           "last_message_at": {
-            "type": "string",
+            "type": ["string", "null"],
             "format": "date-time",
             "x_pdpp_role": "event-time"
           }
