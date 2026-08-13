@@ -2128,7 +2128,6 @@ function scheduleToApi(
     return null;
   }
   const effectiveMode = computeEffectiveMode(schedule, runtimeProjection);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const humanAttentionNeeded = runtimeProjection?.human_attention_needed ?? false;
   const automationPolicy = projectRunAutomationPolicy({
     humanAttentionNeeded,
@@ -3210,7 +3209,6 @@ export function createController(opts: ControllerOptions = {}): Controller {
   async function probeForwardEvidenceDebt(connectorId: string, connectorInstanceId: string): Promise<boolean> {
     try {
       const schedule = await getScheduleRecord(connectorInstanceId);
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       const scheduleIntervalMs = Math.max(1, schedule?.interval_seconds ?? 1) * 1000;
       await reconcileDirtyConnectorSummaryEvidence([connectorInstanceId]);
       const evidence = await getConnectorSummaryEvidence(connectorInstanceId);

@@ -1880,7 +1880,6 @@ function reportRuntimeStart(
   }
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This runtime launch boundary owns ordered admission, child-env policy, stream validation, and terminalization invariants that must remain together.
 export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<RuntimeRunConnectorResult> {
   const defaultOnProgress =
     process.env.PDPP_RUNTIME_QUIET === "1"

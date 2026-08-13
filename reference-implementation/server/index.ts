@@ -6913,7 +6913,6 @@ export async function startServer(opts: ServerOpts = {}) {
     webPushConfig,
     webPushSubscriptionStore: webPushStore,
     ...(browserSurfaceControllerOptions as Record<string, unknown>),
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     cancelScheduledRun: (runId: string) => schedulerManager?.cancelRun?.(runId) ?? null,
     configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
     logger,
@@ -7229,13 +7228,18 @@ export async function startServer(opts: ServerOpts = {}) {
     await Promise.allSettled(clientEventEnqueueTasks);
     await Promise.all(deliveryWorkerLeases.map(({ release }) => release()));
   };
+  function releaseDeliveryWorkerLease(index: number): void {
+    const lease = deliveryWorkerLeases[index];
+    if (lease) {
+      // biome-ignore lint/complexity/noVoid: The side effect is intentionally fire-and-forget by this runtime contract.
+      void lease.release();
+    }
+  }
   asServer.once("close", () => {
-    // biome-ignore lint/complexity/noVoid: The side effect is intentionally fire-and-forget by this runtime contract.
-    void deliveryWorkerLeases[0]?.release();
+    releaseDeliveryWorkerLease(0);
   });
   rsServer.once("close", () => {
-    // biome-ignore lint/complexity/noVoid: The side effect is intentionally fire-and-forget by this runtime contract.
-    void deliveryWorkerLeases[1]?.release();
+    releaseDeliveryWorkerLease(1);
   });
   return {
     abortStartupBackfill: (reason: unknown) => startupBackfillAbortController.abort(reason),

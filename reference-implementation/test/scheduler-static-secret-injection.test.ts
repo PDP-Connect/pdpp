@@ -672,7 +672,10 @@ test("scheduled runs inject store credentials env-absent for every static-secret
 test("startServer controller and scheduler-manager pass operator policy into spawned connector children", async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-prod-env-policy-"));
   const providerManifest = JSON.parse(
-    readFileSync(new URL("../../packages/polyfill-connectors/manifests/google_maps_data_portability.json", import.meta.url), "utf8")
+    readFileSync(
+      new URL("../../packages/polyfill-connectors/manifests/google_maps_data_portability.json", import.meta.url),
+      "utf8"
+    )
   );
   const manualManifest = JSON.parse(
     readFileSync(new URL("../../packages/polyfill-connectors/manifests/whatsapp.json", import.meta.url), "utf8")
@@ -706,8 +709,7 @@ test("startServer controller and scheduler-manager pass operator policy into spa
   );
   process.env.GOOGLE_DATAPORTABILITY_CLIENT_ID = "operator-google-dataportability-client-id";
   process.env.GOOGLE_DATAPORTABILITY_CLIENT_SECRET = "operator-google-dataportability-client-secret";
-  process.env.GOOGLE_DATAPORTABILITY_REDIRECT_URI =
-    "https://operator.example/oauth/google-dataportability/callback";
+  process.env.GOOGLE_DATAPORTABILITY_REDIRECT_URI = "https://operator.example/oauth/google-dataportability/callback";
   process.env.HTTP_PROXY = "http://operator:proxy-password@proxy.example";
   process.env.NESTED_PRIMARY_TOKEN = "operator-nested-primary";
   process.env.NESTED_SECONDARY_TOKEN = "operator-nested-secondary";

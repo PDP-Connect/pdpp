@@ -253,5 +253,10 @@
     "allowed_mass": 4,
     "date": "2026-08-11",
     "reason": "PR #105 follow-up adversarial oracle: validates malformed authority sources, duplicate/case-colliding targets, Windows alias ambiguity, connector-scoped proxy authorization, and real shipped static/provider/manual/connection declaration forms. The four-point test mass is the discriminating matrix, including resolver-owned connection-target identity, closed-fragment collision/proxy fail-closed coverage, and real production-child evidence for approved inputs; it is test oracle mass, not production control flow."
+  },
+  "runtime/index.ts": {
+    "allowed_mass": 408,
+    "date": "2026-08-12",
+    "reason": "PR #105 retarget to current main: runConnector owns the ordered launch boundary for admission, connector-scoped child-environment composition, progress redaction, stream validation, and terminalization. The retarget adds explicit connector-environment policy inputs and a tagged connection-fragment boundary at this single launch seam so controller and scheduler paths share the same fail-closed isolation behavior. Keeping this orchestration together preserves the tested ordering invariants; extracting shallow helpers would obscure the child-spawn authority boundary without reducing semantic complexity."
   }
 }
