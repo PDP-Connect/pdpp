@@ -588,7 +588,7 @@ export function runConsentDeviceAuthConformance({
   });
 
   // 10. Denial terminates the row. After denial, lookup MUST return null,
-  //     approval MUST throw `not_found`, and exchange MUST throw
+  //     approval MUST throw `approval_conflict`, and exchange MUST throw
   //     `access_denied`. This pins the denied-vs-approved distinction
   //     surfaced to the polling client.
   t("owner device auth: denial is terminal — exchange throws access_denied", async () => {
@@ -612,8 +612,8 @@ export function runConsentDeviceAuthConformance({
       assert.ok(approveErr, "approve after deny MUST throw");
       assert.equal(
         errorCode(approveErr),
-        "not_found",
-        `approve-after-deny MUST throw code='not_found'; got '${errorCode(approveErr)}'`
+        "approval_conflict",
+        `approve-after-deny MUST throw code='approval_conflict'; got '${errorCode(approveErr)}'`
       );
 
       // biome-ignore lint/suspicious/noEvolvingTypes: localized test assertion preserves its explicit contract.
