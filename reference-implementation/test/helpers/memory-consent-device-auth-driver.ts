@@ -185,7 +185,7 @@ export function createMemoryConsentDeviceAuthDriver() {
       }
       if (row.status !== "pending") {
         const err = codedError("Owner device authorization is not available");
-        err.code = "not_found";
+        err.code = "approval_conflict";
         throw err;
       }
       if (isPast(row.expires_at)) {
