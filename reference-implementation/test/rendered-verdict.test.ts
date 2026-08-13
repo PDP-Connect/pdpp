@@ -630,7 +630,7 @@ test("coverage: optional stale stream annotates but does not downgrade the pill"
   assert.equal(v.pill.tone, "green", "optional partial must not amber the pill");
 });
 
-test("coverage: a terminal optional stream is still red (a lost stream is lost)", () => {
+test("coverage: a terminal optional stream stays visible without downgrading required coverage", () => {
   const snap = snapshot({ forward_disposition: "complete", state: "healthy" });
   const v = synthesizeRenderedVerdict(
     snap,
@@ -638,7 +638,10 @@ test("coverage: a terminal optional stream is still red (a lost stream is lost)"
     null,
     true
   );
-  assert.equal(v.pill.tone, "red");
+  assert.equal(v.pill.tone, "green");
+  assert.equal(v.pill.label, "Healthy");
+  assert.equal(v.streams[0]?.stream_id, "opt");
+  assert.equal(v.streams[0]?.coverage, "terminal_gap");
 });
 
 // ─── 3.3 collected clamp ──────────────────────────────────────────────────────
