@@ -32,7 +32,11 @@ import type { RunRecord } from "../runtime/scheduler-domain-types.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { closeDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
-import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import {
+  admitOwnerRunConnection,
+  createSqliteConnectorInstanceStore,
+} from "../server/stores/connector-instance-store.ts";
 import type { ActiveRunRecord, SchedulerRunHistoryRecord } from "../server/stores/scheduler-store.ts";
 import { getDefaultSchedulerStore } from "../server/stores/scheduler-store.ts";
 
@@ -360,6 +364,15 @@ function fakeAdmitRunConnection(): (input: {
       connectorInstanceId: connectorInstanceId ?? connectorId,
       ownerSubjectId: ownerSubjectId ?? "owner_local",
     });
+}
+
+async function materializeRunConnection(connectorId: string, ownerSubjectId: string): Promise<string> {
+  const namespace = await admitOwnerRunConnection({
+    connectorId,
+    connectorInstanceStore: createRequestConnectorInstanceStore(),
+    ownerSubjectId,
+  });
+  return namespace.connectorInstanceId;
 }
 
 test("server-owned scheduler starts persisted enabled schedules after startup", async () => {
@@ -710,12 +723,13 @@ test("scheduler history records checkpoint summaries from runConnector results",
     assert.equal(registerResp.status, 201);
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_user");
+    const connectorInstanceId = await materializeRunConnection(spotifyManifest.connector_key, "scheduler_user");
     const scheduler = createScheduler({
       admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: spotifyManifest.connector_key,
-          connectorInstanceId: spotifyManifest.connector_key,
+          connectorInstanceId,
           connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
           intervalMs: 60_000,
           manifest: spotifyManifest,
@@ -764,7 +778,7 @@ test("scheduler history records checkpoint summaries from runConnector results",
     assert.deepEqual(historyRecord.checkpointSummary, record.checkpointSummary);
 
     const stats = scheduler.getStats();
-    const connectorStats = stats[spotifyManifest.connector_key];
+    const connectorStats = stats[connectorInstanceId];
     assert.ok(connectorStats, "expected stats for the connector");
     assert.deepEqual(connectorStats.lastRun?.source, record.source);
     assert.deepEqual(connectorStats.lastRun?.checkpointSummary, record.checkpointSummary);
@@ -1495,12 +1509,16 @@ rl.on('line', (line) => {
     assert.equal(registerResp.status, 201);
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_terminal_counter_mismatch_user");
+    const connectorInstanceId = await materializeRunConnection(
+      manifest.connector_id,
+      "scheduler_terminal_counter_mismatch_user"
+    );
     const scheduler = createScheduler({
       admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
-          connectorInstanceId: manifest.connector_id,
+          connectorInstanceId,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -1548,7 +1566,7 @@ rl.on('line', (line) => {
     assert.deepEqual(historyRecord.checkpointSummary, record.checkpointSummary);
 
     const stats = scheduler.getStats();
-    const connectorStats = stats[manifest.connector_id];
+    const connectorStats = stats[connectorInstanceId];
     assert.ok(connectorStats, "expected stats for the connector");
     assert.equal(connectorStats.failed, 1);
     assert.equal(connectorStats.lastRun?.recordsEmitted, 1);
@@ -2112,12 +2130,16 @@ rl.on('line', (line) => {
     assert.equal(registerResp.status, 201);
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_retryable_terminal_error_user");
+    const connectorInstanceId = await materializeRunConnection(
+      manifest.connector_id,
+      "scheduler_retryable_terminal_error_user"
+    );
     const scheduler = createScheduler({
       admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: manifest.connector_id,
-          connectorInstanceId: manifest.connector_id,
+          connectorInstanceId,
           connectorPath,
           intervalMs: 60_000,
           manifest,
@@ -3426,12 +3448,16 @@ test("scheduler start is idempotent and does not launch a second immediate run",
     assert.equal(registerResp.status, 201);
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_idempotent_start_user");
+    const connectorInstanceId = await materializeRunConnection(
+      spotifyManifest.connector_key,
+      "scheduler_idempotent_start_user"
+    );
     const scheduler = createScheduler({
       admitRunConnection: fakeAdmitRunConnection(),
       connectors: [
         {
           connectorId: spotifyManifest.connector_key,
-          connectorInstanceId: spotifyManifest.connector_key,
+          connectorInstanceId,
           connectorPath: join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts"),
           intervalMs: 10_000,
           manifest: spotifyManifest,

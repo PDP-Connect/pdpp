@@ -3002,6 +3002,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     if (connectorInstanceEnv.PDPP_CONNECTOR_INSTANCE_ID) {
       ingestUrl.searchParams.set("connector_instance_id", connectorInstanceEnv.PDPP_CONNECTOR_INSTANCE_ID);
     }
+    ingestUrl.searchParams.set("run_id", runId);
     const resp = await fetch(ingestUrl.toString(), {
       body: ndjson,
       headers: {

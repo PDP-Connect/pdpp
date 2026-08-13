@@ -617,11 +617,12 @@ function readPendingConsentTraceContext(requestUri: string): Promise<PendingCons
 // Real ingest (`resolveOwnerConnectorNamespace` in server/index.ts) resolves
 // the acting owner subject from the REQUEST'S bearer token
 // (`getOwnerTokenSubjectId(req)`), independent of `runConnector`'s own
-// `ownerSubjectId` option. Every direct `runConnector` call below in this
-// file mints its owner token via `issueOwnerToken(asUrl, "cli_owner")` and
-// omits `connectorInstanceId`, so admission must materialize/resolve that
-// same subject's default-account binding through the real store — mirrors
-// the production wiring in server/index.ts's
+// `ownerSubjectId` option. Direct calls use owner tokens minted by
+// `issueOwnerToken(asUrl, "cli_owner")`. Most omit `connectorInstanceId`, so
+// this admission callback materializes/resolves that subject's default-account
+// binding through the real store. Run-fence scenarios may materialize the same
+// binding first and pass its exact id explicitly. This mirrors the production
+// wiring in server/index.ts's
 // `createController({ admitRunConnection: ... })` and the identical fixture
 // already applied in event-spine.test.ts/collection-profile.test.ts.
 function fakeAdmitRunConnection(
@@ -641,6 +642,16 @@ function fakeAdmitRunConnection(
     });
     return { connectorId: namespace.connectorId, connectorInstanceId: namespace.connectorInstanceId, ownerSubjectId };
   };
+}
+
+async function materializeCliRunConnection(connectorId: string, ownerSubjectId = "cli_owner"): Promise<string> {
+  const canonicalConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
+  const namespace = await admitOwnerRunConnection({
+    connectorId: canonicalConnectorId,
+    connectorInstanceStore: createRequestConnectorInstanceStore(),
+    ownerSubjectId,
+  });
+  return namespace.connectorInstanceId;
 }
 
 function seedSpotify(rsUrl: string, manifest: TestManifest, ownerToken: string, ownerSubjectId = "cli_owner") {
@@ -5812,12 +5823,13 @@ rl.on('line', (line) => {
   await t.test("run timeline keeps failed checkpoint artifacts inspectable", async () => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
       const ownerToken = await issueOwnerToken(asUrl, "cli_owner");
+      const connectorInstanceId = await materializeCliRunConnection(spotifyManifest.connector_id);
       const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-cli-run-failed-"));
       const connectorPath = join(tmpDir, "connector.mjs");
       writeFileSync(
         connectorPath,
         `
-        console.log(JSON.stringify({ type: 'RECORD', stream: 'top_artists', record: { key: 'cli_run_failed', data: { id: 'cli_run_failed', name: 'CLI Failed Artist' }, emitted_at: '2026-04-18T00:00:00Z' } }));
+        console.log(JSON.stringify({ type: 'RECORD', stream: 'top_artists', key: 'cli_run_failed', data: { id: 'cli_run_failed', name: 'CLI Failed Artist' }, emitted_at: '2026-04-18T00:00:00Z' }));
         console.log(JSON.stringify({ type: 'STATE', stream: 'top_artists', value: { cursor: 'cli_failed_cursor' } }));
         process.exit(1);
       `
@@ -5827,6 +5839,7 @@ rl.on('line', (line) => {
         admitRunConnection: fakeAdmitRunConnection(),
         collectionMode: "incremental",
         connectorId: spotifyManifest.connector_id,
+        connectorInstanceId,
         connectorPath,
         manifest: spotifyManifest,
         ownerToken,

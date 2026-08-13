@@ -37,6 +37,7 @@ import {
   getOne,
   iterate,
   iterateDynamicSqlAcknowledged,
+  type ReadOneQuery,
   referenceQueries,
   writeTransaction,
 } from "../lib/db.ts";
@@ -209,6 +210,12 @@ export interface RecordIngestOptions {
    * primitive behavior used by repair and compatibility paths.
    */
   requireConnectionAdmission?: boolean;
+  /**
+   * The run this write belongs to, when known. Present values are checked
+   * inside the durable write transaction and fail closed unless the matching
+   * run_history row for this connector instance is still running.
+   */
+  runId?: string | null;
 }
 interface CurrentRecordRow {
   deleted: boolean | number;
@@ -236,6 +243,11 @@ interface RecordIngestOutcome {
   };
   self_healed?: boolean;
   version?: number;
+}
+export interface ClassifiedIngestFailure {
+  code: string;
+  message: string;
+  retryable: boolean;
 }
 type DeviceRecordPlanEntry = { inputIndex: number; record: RecordEnvelope } & Record<string, unknown>;
 interface JsonSchema {
@@ -773,6 +785,32 @@ export class RecordIndexAdmissionError extends Error {
   }
 }
 
+const PERMANENT_INGEST_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "connector_instance_not_found",
+  "connector_instance_not_writable",
+  "invalid_record_identity",
+]);
+
+export function classifyIngestFailure(err: unknown): ClassifiedIngestFailure {
+  const message = err instanceof Error ? err.message : String(err);
+  const codeField = (err as { code?: unknown } | null)?.code;
+  const code = typeof codeField === "string" ? codeField : null;
+  if (code && PERMANENT_INGEST_FAILURE_CODES.has(code)) {
+    return { code, message, retryable: false };
+  }
+  return { code: code || "ingest_storage_error", message, retryable: true };
+}
+
+export class RecordIngestRunTerminalError extends Error {
+  code: string;
+
+  constructor(runId: string) {
+    super(`run ${runId} is already terminal; refusing to commit an ingest write admitted before cancellation`);
+    this.name = "RecordIngestRunTerminalError";
+    this.code = "run_terminal";
+  }
+}
+
 let activeIndexWork = 0;
 const indexWorkWaiters: IndexWorkWaiter[] = [];
 
@@ -1064,6 +1102,17 @@ async function maybeAfterAdmissionPreCheckPhase(point: string, context: HookCont
   await admissionPreCheckPhaseHook?.(point, context);
 }
 
+function assertSqliteRunStillAdmitted(runId: string | null | undefined, connectorInstanceId: string): void {
+  if (!runId) {
+    return;
+  }
+  const query = referenceQueries.controllerGetRunHistoryStatusForRun as ReadOneQuery;
+  const runStatus = getOne<{ status: string }>(query, [runId, connectorInstanceId]);
+  if (runStatus?.status !== "running") {
+    throw new RecordIngestRunTerminalError(runId);
+  }
+}
+
 function maybeFault(point: string, ctx: HookContext): void {
   if (ingestFaultHook) {
     ingestFaultHook(point, ctx);
@@ -1211,6 +1260,7 @@ function toPostgresIngestOptions(options: RecordIngestOptions) {
     ...(attemptContext ? { attemptContext } : {}),
     ...(options.deviceReservation ? { deviceReservation: options.deviceReservation } : {}),
     ...(options.requireConnectionAdmission ? { requireConnectionAdmission: true } : {}),
+    ...(options.runId ? { runId: options.runId } : {}),
   };
 }
 
@@ -1439,6 +1489,7 @@ async function ingestSqliteRecord(
     if (options.requireConnectionAdmission) {
       assertSqliteConnectorInstanceWritableWithinTransaction(connectorInstanceId);
     }
+    assertSqliteRunStillAdmitted(options.runId, connectorInstanceId);
     const finishDurableOutcome = (value: DurableIngestOutcome): DurableIngestOutcome => {
       if (options.deviceReservation) {
         advanceSqliteDeviceIngestPrefix(options.deviceReservation, options.deviceReservation.inputIndex);

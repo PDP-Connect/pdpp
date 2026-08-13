@@ -150,7 +150,7 @@
     "server/routes/ref-static-secret-draft-connection.ts": 21,
     "server/routes/ref-static-secret-setup-status.ts": 9,
     "server/routes/root-and-discovery.ts": 27,
-    "server/routes/rs-mutation.ts": 87,
+    "server/routes/rs-mutation.ts": 82,
     "server/routes/rs-read.ts": 119,
     "server/routes/run-cancel.ts": 7,
     "server/routes/run-interaction.ts": 29,
@@ -201,7 +201,7 @@
     "server/version-disposition.ts": 6,
     "server/web-push-notifications.ts": 11
   },
-  "total": 7334,
+  "total": 7329,
   "meta": {
     "biomeVersion": "2.5.7",
     "maxAllowedComplexity": 5
