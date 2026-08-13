@@ -354,7 +354,11 @@ export interface MountRsMutationContext {
 
   // Capability: error handler for untyped errors
   readonly handleError: (res: RouteResponse, err: unknown) => void;
-  readonly ingestRecord: (target: StorageTargetLike, record: unknown) => Promise<unknown>;
+  readonly ingestRecord: (
+    target: StorageTargetLike,
+    record: unknown,
+    options?: { requireConnectionAdmission?: boolean }
+  ) => Promise<unknown>;
   // Every other owner-connection mutation route (revoke, reactivate,
   // schedule, run, rename, delete — see routes/owner-connection-*.ts,
   // ref-connectors.ts) invalidates the dashboard/Sources/Syncs summary cache
@@ -1028,7 +1032,9 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
               ...draftAdmission(cin),
               connectorInstanceId: cin,
             }));
-          const result = await ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record);
+          const result = await ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record, {
+            requireConnectionAdmission: Boolean(namespace.connectorInstanceId),
+          });
           if (ctx.getLatestAcquisitionBatchForConnection && namespace.connectorInstanceId) {
             acquisitionBatchPromise ??= Promise.resolve(
               ctx.getLatestAcquisitionBatchForConnection(namespace.connectorInstanceId)
