@@ -263,15 +263,14 @@ export function google_contactsPacingProfile(): ProviderPacingProfile {
 }
 
 /**
- * GroupMe — 10000ms (6 req/min). GroupMe's API v3 documentation does not publish
- * exact rate limits. Community reports indicate 429 responses occur under sustained
- * abuse; the connector uses a conservative 10s floor between requests (~6 req/min)
- * to remain well below any observed abuse thresholds. This is undocumented pacing,
- * derived from "be gentle" rather than a published quota.
+ * GroupMe — 1000ms (60 req/min). GroupMe's API v3 documentation does not publish
+ * exact rate limits. A one-second floor avoids bursts without turning a 41-chat
+ * account into a half-hour scan. The shared governor still honors Retry-After and
+ * backs off on 429/5xx responses, so provider feedback remains authoritative.
  * Doc: https://dev.groupme.com/docs/v3 (rate limits not specified)
  */
 export function groupmePacingProfile(): ProviderPacingProfile {
-  return { pacingMinIntervalMs: 10_000 };
+  return { pacingMinIntervalMs: 1000 };
 }
 
 /**

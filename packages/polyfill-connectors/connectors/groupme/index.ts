@@ -10,7 +10,7 @@
  *
  * API: GroupMe v3 API at https://api.groupme.com/v3/
  * - Groups: GET /groups (list all), GET /groups/{id}/messages (messages)
- * - Direct messages: GET /chats (list conversations), GET /chats/{id}/messages
+ * - Direct messages: GET /chats (list conversations), GET /direct_messages
  * - Rate limits: Undocumented; conservative pacing (10s+ between requests).
  * - Response wrappers: messages use { count, messages/direct_messages };
  *   groups/chats use direct array.
@@ -48,8 +48,8 @@
  * NOT automatic under ordinary incremental resume — see the design note at
  * the bottom of this file for the honest accounting of that gap and what a
  * generic fix would require. direct_chat_messages has NO documented
- * ordering guarantee (GroupMe publishes no contract for GET
- * /chats/:id/messages), so it deliberately walks every chat to its natural
+ * ordering guarantee (the current GroupMe docs omit the direct-message index
+ * contract), so it deliberately walks every chat to its natural
  * end every run — an honest full scan, not a pretend incremental walk — but
  * like every other pagination walk in this connector (group messages,
  * direct chats list, groups list) it has NO page-count ceiling either; its
@@ -91,8 +91,8 @@ let httpGovernor = createConnectorHttpGovernor({
  * Test-only escape hatch: swap the module-level governor for one with pacing
  * disabled (`pacingInitialIntervalMs: 0`, zero-delay `sleep`), so unit tests
  * that exercise real multi-page/multi-group walks (the incremental-anchor
- * tests walk many pages by construction) don't pay GroupMe's real ~10s+
- * production pacing interval per request. Production `collect()` never calls
+ * tests walk many pages by construction) don't pay GroupMe's production
+ * pacing interval per request. Production `collect()` never calls
  * this — only test files import it. Restores the real, paced governor via
  * `resetHttpGovernorForTests()` so tests remain isolated from each other.
  */
@@ -1419,7 +1419,7 @@ interface DirectMessagesResponse {
  * now does with `after_id`. GroupMe's official docs make an explicit
  * ordering + pagination-adjacency contract for the GROUP messages endpoint
  * (`GET /groups/:id/messages`), but document no equivalent guarantee for
- * this DIRECT-message endpoint (`GET /chats/:id/messages`) — no
+ * this DIRECT-message endpoint (`GET /direct_messages`) — no
  * `before_id`/`after_id` ordering claim exists to build a resumable cursor
  * on. Absent that authority, out-of-scope rows are filtered from
  * counting/emission (so `considered`/`covered` stay honest for a declared
@@ -1448,6 +1448,10 @@ async function collectDirectChatMessagesForChat(
   let beforeId: string | undefined;
   let totalSeen = 0;
   const usedCursors = new Set<string>();
+  const otherUserId = chat.other_user?.id;
+  if (!otherUserId) {
+    throw new Error(`groupme_direct_chat_missing_other_user: ${chat.id}`);
+  }
 
   for (;;) {
     const pageExtra: ProgressExtra = {
@@ -1458,7 +1462,8 @@ async function collectDirectChatMessagesForChat(
     };
     await progressWithSignals("Fetching direct messages", pageExtra);
 
-    const resp = await makeRequest<DirectMessagesResponse>(token, `/chats/${chat.id}/messages`, {
+    const resp = await makeRequest<DirectMessagesResponse>(token, "/direct_messages", {
+      other_user_id: otherUserId,
       limit: PAGE_SIZE,
       ...(beforeId ? { before_id: beforeId } : {}),
     });

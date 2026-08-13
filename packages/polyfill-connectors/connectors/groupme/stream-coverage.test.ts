@@ -720,6 +720,33 @@ test("collectDirectChatMessages: clean pass across multiple chats sums considere
   }
 });
 
+test("collectDirectChatMessages: uses the direct-message endpoint keyed by the other user", async () => {
+  const original = globalThis.fetch;
+  const urls: URL[] = [];
+  globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    urls.push(url);
+    const response =
+      url.pathname === "/v3/chats"
+        ? [directChat({ id: "conversation-1", other_user: { id: "user-2", name: "Bob" } })]
+        : { count: 0, direct_messages: [] };
+    return Promise.resolve(new Response(JSON.stringify({ response }), { status: 200 }));
+  }) as typeof globalThis.fetch;
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord } = makeHarness();
+    const outcome = await collectDirectChatMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
+
+    assert.deepEqual(outcome, { considered: 0, failed: false });
+    assert.equal(urls[1]?.pathname, "/v3/direct_messages");
+    assert.equal(urls[1]?.searchParams.get("other_user_id"), "user-2");
+    assert.equal(urls[1]?.searchParams.get("limit"), String(PAGE_SIZE));
+    assert.ok(!urls.some((url) => url.pathname === "/v3/chats/conversation-1/messages"));
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("collectDirectChatMessages: a declared since bound filters out-of-scope rows from considered/emitted, without an early stop", async () => {
   const restore = stubFetchSequence([
     { body: { response: [directChat({ id: "chat-1" })] } }, // /chats

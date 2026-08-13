@@ -94,7 +94,7 @@ const DIRECT_MESSAGE = {
 /**
  * Route `globalThis.fetch` by request path (ignoring query params), so a
  * single stub can answer `collect()`'s real fan-out across `/groups`,
- * `/chats`, `/groups/{id}/messages`, and `/chats/{id}/messages` — the
+ * `/chats`, `/groups/{id}/messages`, and `/direct_messages` — the
  * per-call-order stub used elsewhere in this suite can't express this
  * because `collect()` does not call these endpoints in a single fixed
  * sequence. A route value of `{ status, body }` answers with that HTTP
@@ -176,7 +176,7 @@ test("collect(): two real runs through the runtime's STATE projection suppress a
     "/v3/groups": [GROUP],
     "/v3/chats": [CHAT],
     "/v3/groups/group-1/messages": { count: 1, messages: [GROUP_MESSAGE] },
-    "/v3/chats/chat-1/messages": { count: 1, direct_messages: [DIRECT_MESSAGE] },
+    "/v3/direct_messages": { count: 1, direct_messages: [DIRECT_MESSAGE] },
   });
   try {
     // Run 1: fresh state, everything is new.
@@ -239,7 +239,7 @@ test("collect(): a failed stream's prior cursor survives untouched into the next
     "/v3/groups": [GROUP],
     "/v3/chats": [CHAT],
     "/v3/groups/group-1/messages": { count: 1, messages: [GROUP_MESSAGE] },
-    "/v3/chats/chat-1/messages": { count: 1, direct_messages: [DIRECT_MESSAGE] },
+    "/v3/direct_messages": { count: 1, direct_messages: [DIRECT_MESSAGE] },
   });
   const run1 = makeCtx({});
   try {

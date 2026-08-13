@@ -226,7 +226,7 @@ test("collect(): zero attachments across both parent streams proves a verified-e
         },
       ],
     },
-    "/v3/chats/chat-1/messages": {
+    "/v3/direct_messages": {
       count: 1,
       direct_messages: [
         {
@@ -266,7 +266,7 @@ test("collect(): nonzero attachments with no blob-upload backend configured prov
     "/v3/groups": [GROUP],
     "/v3/chats": [CHAT],
     "/v3/groups/group-1/messages": { count: 1, messages: [groupMessageWithAttachment("gmsg-1")] },
-    "/v3/chats/chat-1/messages": { count: 1, direct_messages: [directMessageWithAttachment("dmsg-1")] },
+    "/v3/direct_messages": { count: 1, direct_messages: [directMessageWithAttachment("dmsg-1")] },
   });
   try {
     const { ctx, messages } = makeCtx();
@@ -294,7 +294,7 @@ test("collect(): a failed REQUESTED parent stream (group_messages) withholds att
     "/v3/groups": [GROUP],
     "/v3/chats": [CHAT],
     "/v3/groups/group-1/messages": { status: 500, body: { error: "server error" } },
-    "/v3/chats/chat-1/messages": { count: 1, direct_messages: [directMessageWithAttachment("dmsg-1")] },
+    "/v3/direct_messages": { count: 1, direct_messages: [directMessageWithAttachment("dmsg-1")] },
   });
   try {
     const { ctx, messages } = makeCtx({ attachments: { fingerprints: "prior-state" } });
