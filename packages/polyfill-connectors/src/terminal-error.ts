@@ -14,7 +14,7 @@ export interface TerminalErrorDetails {
   code?: string;
   message: string;
   /** Provider-neutral action for the runtime to preserve on DONE.error. */
-  recovery_hint?: string | { action?: string; retryable?: boolean };
+  recovery_hint?: string | { action: string; retryable?: boolean };
   retryable: boolean;
 }
 

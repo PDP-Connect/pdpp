@@ -576,7 +576,7 @@ async function collectFriends(
         stream: "friends",
         reason: "steam_optional_resource_unavailable",
         message: "Steam friends are unavailable because this account restricts the friends list.",
-        recovery_hint: { retryable: false },
+        recovery_hint: { action: "manual_action_required", retryable: false },
       });
       return;
     }

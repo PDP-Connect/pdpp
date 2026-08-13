@@ -29,7 +29,7 @@ interface DoneErrorInput {
 interface DoneError {
   code?: string;
   message: string;
-  recovery_hint?: string | { action?: string; retryable?: boolean };
+  recovery_hint?: string | { action: string; retryable?: boolean };
   retryable: boolean | null;
 }
 

@@ -82,7 +82,7 @@ export interface SkipResultMessage {
   diagnostics?: unknown;
   message: string;
   reason: string;
-  recovery_hint?: string | { action?: string; retryable?: boolean };
+  recovery_hint?: string | { action: string; retryable?: boolean };
   stream: string;
   type: "SKIP_RESULT";
 }

@@ -388,7 +388,8 @@ For a certified stream-scoped failure, the runtime MAY persist staged STATE for 
 
 `SKIP_RESULT.recovery_hint` and `DONE.error.recovery_hint` share one bounded, provider-neutral shape and vocabulary:
 
-- `recovery_hint` is either a bare string from the closed action vocabulary below, or an object `{ action?: string, retryable?: boolean }` where `action`, if present, MUST also be from that vocabulary and `retryable`, if present, MUST be a boolean.
+- `recovery_hint` is either a bare string from the closed action vocabulary below, or an object `{ action: string, retryable?: boolean }` where `action` MUST be present and from that vocabulary, and `retryable`, if present, MUST be a boolean.
+- An empty object `{}` or an object with only `retryable` field is a **protocol violation**: if a connector supplies a recovery hint as an object, the `action` field is mandatory.
 - Action vocabulary: `retry_by_runtime`, `retry_on_connector_upgrade`, `refresh_credentials`, `manual_action_required`, `update_selector`, `upstream_unblock`, `not_retriable`, `unknown`.
 - A connector requests a specific owner-facing recovery action **only** through `recovery_hint`. A present, valid `recovery_hint` is authoritative: a runtime MUST NOT override it, and MUST NOT treat `code`, `message`, or any other connector-authored free-form text as the connector's requested action.
 - A runtime MUST treat an absent `recovery_hint` as "no hint declared," and MAY fall through to its own generic, connector-neutral policy for choosing a default action — for example from the `retryable` flag, or from bounded, provider-neutral classification of the error text (such as recognizing generic authentication or browser-infrastructure failures). That fallback MUST NOT infer provider-specific intent, and MUST NOT be, or become, a connector-specific text/identity heuristic.
@@ -513,5 +514,5 @@ type RecoveryAction =
   | 'not_retriable'
   | 'unknown';
 
-type RecoveryHint = RecoveryAction | { action?: RecoveryAction; retryable?: boolean };
+type RecoveryHint = RecoveryAction | { action: RecoveryAction; retryable?: boolean };
 ```

@@ -474,7 +474,7 @@ export type EmittedMessage =
       message: string;
       diagnostics?: unknown;
       continuation?: RuntimeContinuationFact;
-      recovery_hint?: string | { action?: string; retryable?: boolean };
+      recovery_hint?: string | { action: string; retryable?: boolean };
     }
   | DetailGapMessage
   | DetailGapAttemptedMessage
@@ -488,7 +488,7 @@ export type EmittedMessage =
       error?: {
         code?: string;
         message: string;
-        recovery_hint?: string | { action?: string; retryable?: boolean };
+        recovery_hint?: string | { action: string; retryable?: boolean };
         retryable: boolean;
       };
     }

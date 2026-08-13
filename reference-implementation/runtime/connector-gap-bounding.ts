@@ -127,11 +127,13 @@ export const RECOVERY_ACTIONS = new Set([
 
 /**
  * Shared shape check for a connector-declared recovery hint: either a bare
- * string from `RECOVERY_ACTIONS`, or `{ action?, retryable? }` with the same
- * constraints. One vocabulary and one validator for every wire location a
- * connector may declare a recovery hint (`SKIP_RESULT.recovery_hint`,
- * `DONE.error.recovery_hint`) — a connector requests an ACTION this way; it
- * never gets to pick one by shaping its `code` or free-form `message` text.
+ * string from `RECOVERY_ACTIONS`, or `{ action, retryable? }` with the same
+ * constraints. When the hint is an object, `action` is mandatory; empty objects
+ * and objects containing only `retryable` are protocol violations. One
+ * vocabulary and one validator for every wire location a connector may declare
+ * a recovery hint (`SKIP_RESULT.recovery_hint`, `DONE.error.recovery_hint`) —
+ * a connector requests an ACTION this way; it never gets to pick one by shaping
+ * its `code` or free-form `message` text.
  */
 export function isValidRecoveryHintShape(value: unknown): boolean {
   if (isNullish(value)) {
@@ -146,7 +148,8 @@ export function isValidRecoveryHintShape(value: unknown): boolean {
   const hint = value as { action?: unknown; retryable?: unknown };
   return (
     Object.keys(value).every((key) => key === "action" || key === "retryable") &&
-    (isNullish(hint.action) || RECOVERY_ACTIONS.has(hint.action as string)) &&
+    typeof hint.action === "string" &&
+    RECOVERY_ACTIONS.has(hint.action) &&
     (isNullish(hint.retryable) || typeof hint.retryable === "boolean")
   );
 }

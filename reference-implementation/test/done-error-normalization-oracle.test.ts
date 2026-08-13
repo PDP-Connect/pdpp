@@ -111,13 +111,113 @@ test("validateDoneError rejects an out-of-vocabulary recovery_hint", () => {
   assert.match(result.message, INVALID_RECOVERY_HINT_MESSAGE_PATTERN);
 });
 
-test("recovery_hint objects reject unknown keys while preserving the bounded shape", () => {
+test("Steam case: owner-required privacy action maps to manual_action_required", () => {
+  // Steam friends list is unavailable because the account owner has restricted
+  // the friends list in their privacy settings. The owner must change that
+  // setting; retries will not help. This is semantically a manual_action_required
+  // case, not not_retriable (connector defect).
+  const result = validateDoneError("failed", {
+    message: "Steam friends are unavailable because this account restricts the friends list.",
+    recovery_hint: { action: "manual_action_required", retryable: false },
+  });
+  assert.ok(!(result instanceof Error));
+  assert.deepEqual(result?.recovery_hint, { action: "manual_action_required", retryable: false });
+});
+
+test("validateDoneError rejects empty object and retryable-only object recovery hints", () => {
+  const emptyObject = validateDoneError("failed", { message: "failed", recovery_hint: {} });
+  assert.ok(emptyObject instanceof Error);
+  assert.match(emptyObject.message, INVALID_RECOVERY_HINT_MESSAGE_PATTERN);
+
+  const retryableOnly = validateDoneError("failed", { message: "failed", recovery_hint: { retryable: true } });
+  assert.ok(retryableOnly instanceof Error);
+  assert.match(retryableOnly.message, INVALID_RECOVERY_HINT_MESSAGE_PATTERN);
+});
+
+test("recovery_hint discriminating cases: valid shapes accepted and normalized", () => {
+  // Case 1: bare action string (most common)
+  const bareAction = validateDoneError("failed", { message: "failed", recovery_hint: "retry_by_runtime" });
+  assert.ok(!(bareAction instanceof Error));
+  assert.equal(bareAction?.recovery_hint, "retry_by_runtime");
+
+  // Case 2: object with action (required)
+  const objectWithAction = validateDoneError("failed", {
+    message: "failed",
+    recovery_hint: { action: "refresh_credentials" },
+  });
+  assert.ok(!(objectWithAction instanceof Error));
+  assert.deepEqual(objectWithAction?.recovery_hint, { action: "refresh_credentials" });
+
+  // Case 3: object with action + retryable
+  const objectWithBoth = validateDoneError("failed", {
+    message: "failed",
+    recovery_hint: { action: "retry_on_connector_upgrade", retryable: false },
+  });
+  assert.ok(!(objectWithBoth instanceof Error));
+  assert.deepEqual(objectWithBoth?.recovery_hint, { action: "retry_on_connector_upgrade", retryable: false });
+});
+
+test("recovery_hint discriminating cases: invalid shapes rejected", () => {
+  // Case 1: retryable-only object (no action)
+  const retryableOnly = validateDoneError("failed", { message: "failed", recovery_hint: { retryable: true } });
+  assert.ok(retryableOnly instanceof Error);
+
+  // Case 2: empty object
+  const empty = validateDoneError("failed", { message: "failed", recovery_hint: {} });
+  assert.ok(empty instanceof Error);
+
+  // Case 3: unknown action
+  const unknownAction = validateDoneError("failed", { message: "failed", recovery_hint: "unknown_action_value" });
+  assert.ok(unknownAction instanceof Error);
+
+  // Case 4: wrong retryable type
+  const wrongRetryableType = validateDoneError("failed", {
+    message: "failed",
+    recovery_hint: { action: "refresh_credentials", retryable: "true" as unknown as boolean },
+  });
+  assert.ok(wrongRetryableType instanceof Error);
+
+  // Case 5: missing action in object form
+  const missingAction = validateDoneError("failed", {
+    message: "failed",
+    recovery_hint: { retryable: false } as unknown as { action: string },
+  });
+  assert.ok(missingAction instanceof Error);
+});
+
+test("recovery_hint objects require action when they are objects; empty and retryable-only objects are protocol violations", () => {
+  // Valid: bare action string
+  assert.equal(isValidRecoveryHintShape("refresh_credentials"), true);
+
+  // Valid: object with required action field
+  assert.equal(isValidRecoveryHintShape({ action: "refresh_credentials" }), true);
+  assert.equal(isValidRecoveryHintShape({ action: "refresh_credentials", retryable: false }), true);
+  assert.equal(isValidRecoveryHintShape({ action: "manual_action_required", retryable: true }), true);
+
+  // Invalid: empty object (no action)
+  assert.equal(isValidRecoveryHintShape({}), false);
+
+  // Invalid: retryable-only object (no action)
+  assert.equal(isValidRecoveryHintShape({ retryable: true }), false);
+  assert.equal(isValidRecoveryHintShape({ retryable: false }), false);
+
+  // Invalid: unknown keys alongside action
   assert.equal(
     isValidRecoveryHintShape({ action: "refresh_credentials", connector_detail: "private", retryable: false }),
     false
   );
-  assert.equal(isValidRecoveryHintShape({ action: "refresh_credentials", retryable: false }), true);
-  assert.equal(isValidRecoveryHintShape({ retryable: true }), true);
-  assert.equal(isValidRecoveryHintShape("refresh_credentials"), true);
+
+  // Invalid: wrong type for action
+  assert.equal(isValidRecoveryHintShape({ action: 123, retryable: false }), false);
+  assert.equal(isValidRecoveryHintShape({ action: null, retryable: false }), false);
+
+  // Invalid: unknown action
+  assert.equal(isValidRecoveryHintShape({ action: "made_up_action", retryable: false }), false);
+
+  // Invalid: wrong type for retryable
+  assert.equal(isValidRecoveryHintShape({ action: "refresh_credentials", retryable: "false" }), false);
+
+  // Valid: absent (null/undefined)
   assert.equal(isValidRecoveryHintShape(undefined), true);
+  assert.equal(isValidRecoveryHintShape(null), true);
 });
