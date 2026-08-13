@@ -520,6 +520,31 @@ function platformValues(
   return out;
 }
 
+function declaredLocalPathValues(
+  manifest: unknown,
+  source: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform
+): Record<string, string> {
+  const runtime = record(record(manifest).runtime_requirements);
+  const localPaths = record(runtime.local_paths);
+  const keys: unknown[] = [localPaths.home_env_override];
+  for (const path of Array.isArray(localPaths.paths) ? localPaths.paths : []) {
+    keys.push(record(path).env_override);
+  }
+  const out: Record<string, string> = {};
+  for (const rawKey of keys) {
+    const key = name(rawKey);
+    if (!key || reserved(key)) {
+      continue;
+    }
+    const value = sourceValue(source, key, platform);
+    if (value !== undefined) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 function sourceValue(source: NodeJS.ProcessEnv, key: string, platform: NodeJS.Platform): string | undefined {
   const resolvedKey = sourceKey(source, key, platform);
   return resolvedKey === undefined ? undefined : source[resolvedKey];
@@ -582,6 +607,7 @@ export function composeConnectorChildEnvironment(input: ConnectorChildEnvironmen
     input.connectorId !== undefined && policy.approvedProxyConnectorIds.includes(input.connectorId);
   const connectionEnv = connectionValues(input.connectionEnv, input.connectorId, proxyAuthorized);
   apply(env, platformValues(source, platform, proxyAuthorized), platform, false);
+  apply(env, declaredLocalPathValues(input.manifest, source, platform), platform, false);
   apply(
     env,
     approvedBindingValues(

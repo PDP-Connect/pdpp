@@ -546,3 +546,20 @@ test("legacy string declarations and credential aliases cannot opt into ambient 
 
   assert.deepEqual(env, {});
 });
+
+test("manifest-declared local path overrides cross the child boundary without ambient env", () => {
+  const env = compose(
+    {
+      runtime_requirements: {
+        local_paths: {
+          home_env_override: "CLAUDE_CODE_HOME",
+          paths: [{ env_override: "CLAUDE_CODE_PROJECTS_DIR" }],
+        },
+      },
+    },
+    { CLAUDE_CODE_HOME: "/fixture/home", CLAUDE_CODE_PROJECTS_DIR: "/fixture/projects", SECRET: "hidden" }
+  );
+  assert.equal(env.CLAUDE_CODE_HOME, "/fixture/home");
+  assert.equal(env.CLAUDE_CODE_PROJECTS_DIR, "/fixture/projects");
+  assert.equal(env.SECRET, undefined);
+});
