@@ -40,6 +40,7 @@ import type {
   ConnectorIdentityPageBoundary,
   ConnectorSummaryPageProfile,
 } from "../operations/ref-connectors-list/pagination.ts";
+import { SourceWebhookError } from "../operations/ref-source-webhook-ingest/index.ts";
 import { deriveClientEventsFromRecordChange } from "../operations/rs-client-event-derive/index.ts";
 import { isHealthRelevant as isAttentionHealthRelevant } from "../runtime/attention.ts";
 import { createOptionalBrowserSurfaceLeaseManager } from "../runtime/browser-surface/remote-surface-optional.ts";
@@ -449,6 +450,7 @@ import {
 import {
   admitOwnerBrowserEnrollmentRunConnection,
   admitOwnerRunConnection,
+  ConnectorInstanceResolutionError,
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
   makeConnectorInstanceSourceBindingKey,
@@ -2033,7 +2035,55 @@ function toPublicConnectorStateProjection(state: Record<string, unknown> | null 
   };
 }
 
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function structuredSourceWebhookEntries(parsed: unknown): unknown[] {
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+  if (!parsed || typeof parsed !== "object") {
+    return [];
+  }
+  return Object.entries(parsed as Record<string, unknown>).map(([sourceId, value]) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return { source_id: sourceId, ...(value as Record<string, unknown>) };
+    }
+    return { secret: value, source_id: sourceId };
+  });
+}
+
+function parseStructuredSourceWebhookSecrets(raw: string) {
+  const parsed: unknown = JSON.parse(raw);
+  const map = new Map();
+  for (const entry of structuredSourceWebhookEntries(parsed)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const sourceId = stringValue(record.source_id) ?? stringValue(record.sourceId);
+    const secret = stringValue(record.secret);
+    const connectorId = stringValue(record.connector_id) ?? stringValue(record.connectorId) ?? sourceId;
+    const ownerSubjectId = stringValue(record.owner_subject_id) ?? stringValue(record.ownerSubjectId);
+    const connectorInstanceId = stringValue(record.connector_instance_id) ?? stringValue(record.connectorInstanceId);
+    if (sourceId && secret && connectorId) {
+      map.set(sourceId, {
+        connectorId,
+        ...(connectorInstanceId ? { connectorInstanceId } : {}),
+        ...(ownerSubjectId ? { ownerSubjectId } : {}),
+        secret,
+      });
+    }
+  }
+  return map;
+}
+
 function parseSourceWebhookSecrets(raw = process.env.PDPP_SOURCE_WEBHOOK_SECRETS || "") {
+  const trimmedRaw = raw.trim();
+  if (trimmedRaw.startsWith("{") || trimmedRaw.startsWith("[")) {
+    return parseStructuredSourceWebhookSecrets(trimmedRaw);
+  }
   const map = new Map();
   for (const entry of raw.split(",")) {
     const trimmed = entry.trim();
@@ -2054,6 +2104,17 @@ function parseSourceWebhookSecrets(raw = process.env.PDPP_SOURCE_WEBHOOK_SECRETS
     }
   }
   return map;
+}
+
+function sourceWebhookResolutionError(err: unknown) {
+  let code = "invalid_source_target";
+  if (err instanceof ConnectorInstanceResolutionError && err.code === "ambiguous_connector_instance") {
+    code = "ambiguous_source_target";
+  }
+  const message = err instanceof Error ? err.message : "source webhook target is not writable";
+  const status =
+    err instanceof ConnectorInstanceResolutionError && err.code === "ambiguous_connector_instance" ? 409 : 404;
+  return new SourceWebhookError(code, message, status);
 }
 
 async function resolveOwnerReadScope(req: ReqLike, opts: ServerOpts = {}) {
@@ -5591,6 +5652,7 @@ function buildRsApp(opts: ServerOpts = {}) {
   // behavior). startServer intentionally does NOT pass the bare default here.
   // Spec: openspec/changes/route-hosted-mcp-adapter-self-calls-internally/
   const internalResource = opts.rsInternalUrl ?? null;
+  const rsOwnerSubjectId = resolveOwnerAuthPlaceholderConfig(opts).subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
   const trustedMetadataHosts =
     opts.trustedMetadataHosts ?? (opts.ignoreAmbientPublicUrls ? null : process.env.PDPP_TRUSTED_HOSTS);
 
@@ -6344,12 +6406,44 @@ function buildRsApp(opts: ServerOpts = {}) {
       getSchedulerStore: getDefaultSchedulerStore,
       getSourceWebhookEventStore: getDefaultSourceWebhookEventStore,
       handleError,
-      ingestRecord: (connectorId: unknown, record: unknown) =>
-        ingestRecord(connectorId as Parameters<typeof ingestRecord>[0], record as Parameters<typeof ingestRecord>[1]),
+      ingestRecord: (target: unknown, record: unknown, options: unknown) =>
+        ingestRecord(
+          target as Parameters<typeof ingestRecord>[0],
+          record as Parameters<typeof ingestRecord>[1],
+          options as Parameters<typeof ingestRecord>[2]
+        ),
+      ownerSubjectId: rsOwnerSubjectId,
       parseSourceWebhookSecrets,
       pdppError,
       projectRunAutomationPolicy,
       resolveRegisteredConnectorManifest,
+      resolveSourceWebhookTarget: async ({
+        connectorId,
+        connectorInstanceId,
+        ownerSubjectId,
+      }: {
+        connectorId: string;
+        connectorInstanceId?: string | null;
+        ownerSubjectId: string;
+        sourceId: string;
+      }) => {
+        try {
+          const resolvedConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
+          const namespace = await resolveOwnerConnectorInstanceNamespace({
+            connectorId: resolvedConnectorId,
+            connectorInstanceId: connectorInstanceId ?? null,
+            connectorInstanceStore: createRequestConnectorInstanceStore(),
+            ownerSubjectId,
+          });
+          return {
+            connectorId: namespace.connectorId,
+            connectorInstanceId: namespace.connectorInstanceId,
+            ownerSubjectId: namespace.ownerSubjectId,
+          };
+        } catch (err) {
+          throw sourceWebhookResolutionError(err);
+        }
+      },
     } as unknown as Parameters<typeof mountRefSourceWebhooks>[1]);
 
     // DELETE /v1/streams/:stream/records, DELETE /v1/streams/:stream/records/:id,

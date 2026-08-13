@@ -14,6 +14,11 @@ import {
 
 const NOW_MS = Date.parse("2026-05-15T12:00:00.000Z");
 const SECRET = "source_secret";
+const TARGET = {
+  connectorId: "gmail",
+  connectorInstanceId: "cin_gmail_owner_custom_second",
+  ownerSubjectId: "owner_custom",
+};
 
 function sign(body: string, timestamp = String(Math.floor(NOW_MS / 1000)), eventId = "evt_1"): string {
   return `sha256=${createHmac("sha256", SECRET).update(`${eventId}.${timestamp}.${body}`).digest("hex")}`;
@@ -30,6 +35,7 @@ function deps(overrides: Partial<SourceWebhookDependencies> = {}): SourceWebhook
     }),
     nowMs: () => NOW_MS,
     resolveSecret: () => SECRET,
+    resolveTarget: () => TARGET,
     signalScheduler: () => undefined,
     ...overrides,
   };
@@ -84,18 +90,60 @@ test("ref.source-webhook rejects stale timestamps", async () => {
   );
 });
 
+test("ref.source-webhook resolves target after HMAC and before claim", async () => {
+  let claimed = false;
+  let ingested = false;
+  const body = JSON.stringify({
+    action: "ingest_records",
+    records: [{ id: "m1" }],
+    stream: "messages",
+  });
+  await assert.rejects(
+    () =>
+      executeSourceWebhook(
+        input(body),
+        deps({
+          claimEvent: () => {
+            claimed = true;
+            return true;
+          },
+          ingestRecords: () => {
+            ingested = true;
+            return Promise.resolve({ errors: [], records_accepted: 1, records_rejected: 0, stream: "messages" });
+          },
+          resolveTarget: () => {
+            throw new SourceWebhookError("invalid_source_target", "source webhook target is not writable", 404);
+          },
+        })
+      ),
+    (err: unknown) => {
+      assert.ok(err instanceof SourceWebhookError);
+      assert.equal(err.code, "invalid_source_target");
+      return true;
+    }
+  );
+  assert.equal(claimed, false);
+  assert.equal(ingested, false);
+});
+
 test("ref.source-webhook returns duplicate without applying action", async () => {
   let signaled = false;
+  let ingested = false;
   const result = await executeSourceWebhook(
-    input('{"action":"schedule_run"}'),
+    input('{"action":"ingest_records","records":[{"id":"m1"}],"stream":"messages"}'),
     deps({
       claimEvent: () => false,
+      ingestRecords: () => {
+        ingested = true;
+        return Promise.resolve({ errors: [], records_accepted: 1, records_rejected: 0, stream: "messages" });
+      },
       signalScheduler: () => {
         signaled = true;
       },
     })
   );
   assert.equal(result.duplicate, true);
+  assert.equal(ingested, false);
   assert.equal(signaled, false);
 });
 
@@ -120,6 +168,8 @@ test("ref.source-webhook maps records into ingest operation shape", async () => 
   assert.deepEqual(captured, {
     body: '{"id":"m1"}\n{"id":"m2"}',
     connectorId: "gmail",
+    connectorInstanceId: "cin_gmail_owner_custom_second",
+    ownerSubjectId: "owner_custom",
     streamName: "messages",
   });
   assert.ok(result.ingest);
@@ -147,7 +197,9 @@ test("ref.source-webhook maps run trigger to scheduler signal only", async () =>
   assert.equal(result.automation_policy.trigger_kind, "webhook");
   assert.equal(result.automation_policy.automation_mode, "assisted");
   assert.equal(captured.connectorId, "gmail");
+  assert.equal(captured.connectorInstanceId, "cin_gmail_owner_custom_second");
   assert.equal(captured.eventId, "evt_1");
+  assert.equal(captured.ownerSubjectId, "owner_custom");
 });
 
 test("ref.source-webhook starts webhook-classified run when run dependency is available", async () => {
@@ -179,6 +231,8 @@ test("ref.source-webhook starts webhook-classified run when run dependency is av
 
   assert.equal(signaled, false);
   assert.ok(capturedRunRequest && result.run);
+  assert.equal(capturedRunRequest.connectorInstanceId, "cin_gmail_owner_custom_second");
+  assert.equal(capturedRunRequest.ownerSubjectId, "owner_custom");
   assert.equal(capturedRunRequest.triggerKind, "webhook");
   assert.equal(capturedRunRequest.automationPolicy.trigger_kind, "webhook");
   assert.equal(result.run.run_id, "run_webhook");
@@ -200,12 +254,17 @@ test("ref.source-webhook canonicalizes a URL-shaped configured connector id for 
         captured = payload;
         return { errors: [], records_accepted: 1, records_rejected: 0, stream: payload.streamName };
       },
-      resolveConnectorId: () => "https://registry.pdpp.dev/connectors/gmail",
+      resolveTarget: () => ({
+        connectorId: "https://registry.pdpp.dev/connectors/gmail",
+        connectorInstanceId: "cin_url_gmail",
+        ownerSubjectId: "owner_custom",
+      }),
     })
   );
   assert.equal(result.action, "ingest_records");
   assert.ok(captured);
   assert.equal(captured.connectorId, "gmail");
+  assert.equal(captured.connectorInstanceId, "cin_url_gmail");
 });
 
 test("ref.source-webhook canonicalizes a legacy-alias configured connector id for scheduler signal", async () => {
@@ -213,7 +272,11 @@ test("ref.source-webhook canonicalizes a legacy-alias configured connector id fo
   const result = await executeSourceWebhook(
     input('{"action":"schedule_run"}'),
     deps({
-      resolveConnectorId: () => "claude_code",
+      resolveTarget: () => ({
+        connectorId: "claude_code",
+        connectorInstanceId: "cin_claude_code",
+        ownerSubjectId: "owner_custom",
+      }),
       signalScheduler: (payload) => {
         captured = payload;
       },
@@ -222,6 +285,7 @@ test("ref.source-webhook canonicalizes a legacy-alias configured connector id fo
   assert.equal(result.action, "schedule_run");
   assert.ok(captured);
   assert.equal(captured.connectorId, "claude-code");
+  assert.equal(captured.connectorInstanceId, "cin_claude_code");
 });
 
 test("ref.source-webhook canonicalizes a URL-shaped configured connector id for run request", async () => {
@@ -238,13 +302,18 @@ test("ref.source-webhook canonicalizes a URL-shaped configured connector id for 
         capturedRunRequest = payload;
         return { run_id: "run_1", status: "started", trace_id: "trc_1", trigger_kind: "webhook" };
       },
-      resolveConnectorId: () => "https://registry.pdpp.dev/connectors/slack",
+      resolveTarget: () => ({
+        connectorId: "https://registry.pdpp.dev/connectors/slack",
+        connectorInstanceId: "cin_slack_webhook",
+        ownerSubjectId: "owner_custom",
+      }),
     })
   );
   assert.equal(result.action, "schedule_run");
   assert.ok(capturedPolicy && capturedRunRequest);
   assert.equal(capturedPolicy.connectorId, "slack");
   assert.equal(capturedRunRequest.connectorId, "slack");
+  assert.equal(capturedRunRequest.connectorInstanceId, "cin_slack_webhook");
 });
 
 test("ref.source-webhook does not start webhook run when automation policy blocks it", async () => {
