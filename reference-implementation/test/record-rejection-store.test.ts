@@ -69,7 +69,7 @@ test("record rejection replay generation and key have one shared golden authorit
 test("direct-prepare conformance fails for a record-rejection-store production call-site counterexample", async () => {
   const counterexample = [
     "// Copyright The PDP-Connect Contributors",
-    "// SPDX-License-Identifier: Apache-2.0",
+    ["// SPDX-", "License-Identifier: Apache-2.0"].join(""),
     'import { getDb } from "../../db.ts";',
     "export function forbiddenRecordRejectionStorePrepareCounterexample() {",
     '  return getDb().prepare("SELECT 1").get();',
