@@ -8,6 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 
 import { postgresQuery, withPostgresTransaction } from "../server/postgres-storage.ts";
 import {
@@ -22,7 +23,7 @@ type QueryParameter = string | number | string[] | null;
 type CorrelationKind = "grant" | "run" | "trace";
 type CorrelationColumn = "grant_id" | "run_id" | "trace_id";
 
-interface SpineEventInput {
+export interface PostgresSpineEventInput {
   readonly actor_id?: string | null;
   readonly actor_type?: string | null;
   readonly client_id?: string | null;
@@ -46,6 +47,11 @@ interface SpineEventInput {
   readonly token_id?: string | null;
   readonly trace_id?: string | null;
   readonly version?: string | null;
+}
+
+export interface PostgresSpineTransactionHooks {
+  readonly afterEventInsert?: () => Promise<void> | void;
+  readonly afterRunHistoryWrite?: () => Promise<void> | void;
 }
 
 interface SourceObject {
@@ -320,7 +326,7 @@ function normalizeSourceObject(value: unknown): SourceObject | null {
   return null;
 }
 
-function deriveSource(input: SpineEventInput, actorType: string, actorId: string): SourceObject | null {
+function deriveSource(input: PostgresSpineEventInput, actorType: string, actorId: string): SourceObject | null {
   const explicitKind = isSourceKind(input.source_kind) ? input.source_kind : null;
   const explicitId = nonEmptyString(input.source_id);
   if (explicitKind && explicitId) {
@@ -362,7 +368,7 @@ function serializeData(inputData: unknown, source: SourceObject | null): string 
  * `deriveConnectorInstanceIdFromEventInput` exactly (same field precedence)
  * — all three must agree on where connection identity lives in the payload.
  */
-function deriveConnectorInstanceId(input: SpineEventInput): string | null {
+function deriveConnectorInstanceId(input: PostgresSpineEventInput): string | null {
   const data = asObject(input.data);
   return nonEmptyString(data.connector_instance_id) || nonEmptyString(data.connection_id);
 }
@@ -371,7 +377,7 @@ function sourceColumns(source: SourceObject | null): Pick<NormalizedSpineEvent, 
   return source ? { source_id: source.id, source_kind: source.kind } : { source_id: null, source_kind: null };
 }
 
-function normalize(input: SpineEventInput = {}): NormalizedSpineEvent {
+function normalize(input: PostgresSpineEventInput = {}): NormalizedSpineEvent {
   const at = defaultString(input.occurred_at, nowIso);
   const actorType = defaultString(input.actor_type, "system");
   const actorId = defaultString(input.actor_id, "system");
@@ -1144,7 +1150,7 @@ function toRunHistorySpineEvent(event: NormalizedSpineEvent, rawData: unknown): 
   };
 }
 
-export async function postgresEmitSpineEvent(input: SpineEventInput = {}): Promise<SpineEventRecord | null> {
+export async function postgresEmitSpineEvent(input: PostgresSpineEventInput = {}): Promise<SpineEventRecord | null> {
   const event = normalize(input);
 
   if (!isRunHistoryRelevantEventType(event.event_type)) {
@@ -1155,11 +1161,37 @@ export async function postgresEmitSpineEvent(input: SpineEventInput = {}): Promi
   // Run/terminal events also write run_history (Authority Slice A): wrap
   // both writes in one transaction so the spine event and its run-history
   // row cannot diverge. See server/stores/run-history-writer.ts.
-  return withPostgresTransaction(async (client) => {
-    const result = await client.query<SpineEventRow>(SPINE_INSERT_EVENT_SQL, spineInsertEventParams(event));
-    await writePostgresRunHistoryForSpineEvent(client, toRunHistorySpineEvent(event, input.data));
-    return hydrate(result.rows[0]);
-  });
+  return withPostgresTransaction(async (client) =>
+    appendNormalizedPostgresSpineEventInTransaction(client, event, input.data)
+  );
+}
+
+/**
+ * Append one spine event and its run_history projection on an existing
+ * PostgreSQL transaction client. It never opens or commits a transaction.
+ */
+export async function appendPostgresSpineEventInTransaction(
+  client: PoolClient,
+  input: PostgresSpineEventInput,
+  hooks: PostgresSpineTransactionHooks = {}
+): Promise<SpineEventRecord | null> {
+  const event = normalize(input);
+  return await appendNormalizedPostgresSpineEventInTransaction(client, event, input.data, hooks);
+}
+
+async function appendNormalizedPostgresSpineEventInTransaction(
+  client: PoolClient,
+  event: NormalizedSpineEvent,
+  rawData: unknown,
+  hooks: PostgresSpineTransactionHooks = {}
+): Promise<SpineEventRecord | null> {
+  const result = await client.query<SpineEventRow>(SPINE_INSERT_EVENT_SQL, spineInsertEventParams(event));
+  await hooks.afterEventInsert?.();
+  if (isRunHistoryRelevantEventType(event.event_type)) {
+    await writePostgresRunHistoryForSpineEvent(client, toRunHistorySpineEvent(event, rawData));
+    await hooks.afterRunHistoryWrite?.();
+  }
+  return hydrate(result.rows[0]);
 }
 
 export async function postgresListSpineEventsPage(

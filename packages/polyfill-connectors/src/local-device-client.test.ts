@@ -5,13 +5,91 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { test } from "node:test";
+import { canonicalTerminalRunCommitEnvelope } from "@pdpp/reference-contract/common";
 import { COLLECTOR_PROTOCOL_VERSION } from "./collector-protocol.ts";
 import {
   LOCAL_DEVICE_ENDPOINTS,
   LocalDeviceClient,
   LocalDeviceHttpError,
+  LocalDeviceReceiptValidationError,
   LocalDeviceRequestTimeoutError,
+  type TerminalRunCommitRequest,
 } from "./local-device-client.ts";
+import { hashCanonicalJson } from "./local-device-envelope.ts";
+
+function terminalRequest(): TerminalRunCommitRequest {
+  return {
+    collection_boundary: "unscoped",
+    commit_id: "commit-1",
+    connector_id: "codex",
+    connector_instance_id: "cin-1",
+    device_id: "device-1",
+    run_id: "run-1",
+    source_instance_id: "source-1",
+    state_delta: { sessions: { cursor: "c1" } },
+    terminal_facts: [{ coverage_statuses: ["collected"], stream: "sessions" }],
+    version: 1,
+  };
+}
+
+test("LocalDeviceClient accepts only the exact canonical terminal receipt", async () => {
+  const request = terminalRequest();
+  const expectedHash = hashCanonicalJson(canonicalTerminalRunCommitEnvelope(request));
+  const client = new LocalDeviceClient({
+    baseUrl: "http://127.0.0.1:1",
+    deviceId: "device-1",
+    deviceToken: "device-token",
+    fetchImpl: () =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            commit_id: request.commit_id,
+            envelope_hash: expectedHash,
+            object: "device_terminal_run_commit",
+            run_id: request.run_id,
+            terminal_event_id: "evt-1",
+          }),
+          { status: 200 }
+        )
+      ),
+  });
+  assert.equal((await client.commitTerminalRun(request)).envelope_hash, expectedHash);
+});
+
+for (const invalid of [
+  {
+    commit_id: "wrong",
+    envelope_hash: "x",
+    object: "device_terminal_run_commit",
+    run_id: "run-1",
+    terminal_event_id: "evt",
+  },
+  {
+    commit_id: "commit-1",
+    envelope_hash: "wrong",
+    object: "device_terminal_run_commit",
+    run_id: "run-1",
+    terminal_event_id: "evt",
+  },
+  {
+    commit_id: "commit-1",
+    envelope_hash: "x",
+    object: "device_terminal_run_commit",
+    run_id: "wrong",
+    terminal_event_id: "evt",
+  },
+  { ok: true },
+] as const) {
+  test(`LocalDeviceClient rejects an invalid terminal receipt: ${JSON.stringify(invalid)}`, async () => {
+    const client = new LocalDeviceClient({
+      baseUrl: "http://127.0.0.1:1",
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      fetchImpl: () => Promise.resolve(new Response(JSON.stringify(invalid), { status: 200 })),
+    });
+    await assert.rejects(client.commitTerminalRun(terminalRequest()), LocalDeviceReceiptValidationError);
+  });
+}
 
 test("LocalDeviceClient sends enrollment exchange without bearer token", async () => {
   const seen: SeenRequest[] = [];

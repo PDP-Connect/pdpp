@@ -37,7 +37,11 @@ import {
   type HeartbeatLastError,
   type HeartbeatOutboxDiagnostics,
   LocalDeviceClient,
+  LocalDeviceHttpError,
+  LocalDeviceReceiptValidationError,
+  LocalDeviceRequestTimeoutError,
   type TerminalCollectionFact,
+  type TerminalRunCommitRequest,
 } from "./local-device-client.ts";
 import {
   buildLocalDeviceIngestBatchRequest,
@@ -89,6 +93,35 @@ const SCAN_BATCH_LIMIT_DETAIL_RE =
 const CONNECTOR_PROTOCOL_DEBUG_DIR_ENV = "PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR";
 const TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE =
   /^(?:local device request failed: (?:408|429|5\d\d)(?:\b|$)|local device request timed out after\b|fetch failed\b|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND)/i;
+const TRANSIENT_NETWORK_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EAI_AGAIN",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+function classifyLocalDeviceFailure(error: unknown): boolean {
+  if (error instanceof LocalDeviceHttpError) {
+    return error.status === 408 || error.status === 429 || (error.status >= 500 && error.status < 600);
+  }
+  if (error instanceof LocalDeviceRequestTimeoutError) {
+    return true;
+  }
+  let cause: unknown = error instanceof Error ? error.cause : null;
+  for (let depth = 0; depth < 3 && cause instanceof Error; depth += 1) {
+    const { code } = cause as Error & { code?: unknown };
+    if (typeof code === "string" && TRANSIENT_NETWORK_ERROR_CODES.has(code)) {
+      return true;
+    }
+    ({ cause } = cause);
+  }
+  return false;
+}
 
 /**
  * Default policy bounds for durable outbox drains. These are intentionally
@@ -734,7 +767,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       return skipResult;
     }
 
-    const priorState = await readPriorStateOrBlock({
+    const priorStateProjection = await readPriorStateOrBlock({
       client,
       config,
       recordsPending: pendingOutboxWorkCount(postDrainSummary),
@@ -742,6 +775,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
         definitiveBlockedHeartbeatSent = true;
       },
     });
+    const priorState = priorStateProjection.state;
 
     await client.heartbeat({
       agent_version: COLLECTOR_AGENT_VERSION,
@@ -781,6 +815,13 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     });
 
     const afterRecordsSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
+    const terminalFacts =
+      done?.status === "succeeded" &&
+      !streamResult.scanBudgetExceeded &&
+      streamResult.coverageByStore &&
+      Object.hasOwn(bufferedState, COVERAGE_DIAGNOSTICS_STREAM)
+        ? buildTerminalCollectionFacts(streamResult.coverageByStore)
+        : null;
     const checkpointResult = await maybeCommitCheckpoint({
       afterRecordsSummary,
       bufferedState,
@@ -789,6 +830,9 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       holderId,
       outbox,
       policy,
+      terminalFacts,
+      terminalRunBoundary: "unscoped",
+      terminalRunConnectorInstanceId: priorStateProjection.connectorInstanceId,
     });
 
     await recoverResolvedLocalCollectorGaps({
@@ -829,23 +873,6 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     const recordsPending = pendingOutboxWorkCount(finalSummary);
 
     if (!checkpointResult.statePutFailed) {
-      // This is the only point at which a local run may claim terminal
-      // per-stream evidence: its child succeeded, all record work drained,
-      // and the coverage checkpoint was acknowledged. Batches/heartbeats by
-      // themselves deliberately never establish this boundary.
-      if (
-        done?.status === "succeeded" &&
-        !streamResult.scanBudgetExceeded &&
-        Object.hasOwn(checkpointResult.flushedState ?? {}, COVERAGE_DIAGNOSTICS_STREAM) &&
-        streamResult.coverageByStore
-      ) {
-        await client.reportTerminalCollection({
-          connector_id: config.connector.connector_id,
-          run_id: config.runId ?? randomUUID(),
-          source_instance_id: config.sourceInstanceId,
-          streams: buildTerminalCollectionFacts(streamResult.coverageByStore),
-        });
-      }
       const finalDeadLetterError = buildHeartbeatDeadLetterError(outbox, config.sourceInstanceId);
       await client.heartbeat({
         agent_version: COLLECTOR_AGENT_VERSION,
@@ -1032,13 +1059,17 @@ async function readPriorStateOrBlock(input: {
   config: CollectorRunConfig;
   onBlocked?: () => void;
   recordsPending: number;
-}): Promise<Readonly<Record<string, unknown>>> {
+}): Promise<{ connectorInstanceId: string; state: Readonly<Record<string, unknown>> }> {
   try {
     throwIfAborted(input.config.abortSignal);
     const projection = await input.client.getSourceInstanceState({ sourceInstanceId: input.config.sourceInstanceId });
-    return projection.state && typeof projection.state === "object"
-      ? Object.freeze({ ...projection.state })
-      : Object.freeze({});
+    return {
+      connectorInstanceId: projection.connector_instance_id,
+      state:
+        projection.state && typeof projection.state === "object"
+          ? Object.freeze({ ...projection.state })
+          : Object.freeze({}),
+    };
   } catch (error) {
     await safeHeartbeat(input.client, {
       connector_id: input.config.connector.connector_id,
@@ -1586,29 +1617,53 @@ function recordConnectorChildFailureGap(input: {
 async function maybeCommitCheckpoint(input: {
   afterRecordsSummary: LocalDeviceOutboxSummary;
   bufferedState: Readonly<Record<string, unknown>>;
-  client: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "heartbeat" | "ingestBatch" | "putSourceInstanceState">;
+  client: Pick<
+    LocalDeviceClient,
+    "ackLocalCollectorGap" | "commitTerminalRun" | "heartbeat" | "ingestBatch" | "putSourceInstanceState"
+  >;
   config: CollectorRunConfig;
   holderId: string;
   outbox: LocalDeviceOutbox;
   policy: CollectorOutboxPolicy;
+  terminalFacts: readonly TerminalCollectionFact[] | null;
+  terminalRunBoundary: string;
+  terminalRunConnectorInstanceId: string;
 }): Promise<{ flushedState: Readonly<Record<string, unknown>> | null; statePutFailed: boolean }> {
-  if (Object.keys(input.bufferedState).length === 0) {
+  if (Object.keys(input.bufferedState).length === 0 && !input.terminalFacts) {
     return { flushedState: null, statePutFailed: false };
   }
 
+  const runId = input.config.runId ?? randomUUID();
+  const terminalCommitIdentity = input.terminalFacts
+    ? {
+        collection_boundary: input.terminalRunBoundary,
+        connector_id: input.config.connector.connector_id,
+        connector_instance_id: input.terminalRunConnectorInstanceId,
+        device_id: input.config.deviceId,
+        run_id: runId,
+        source_instance_id: input.config.sourceInstanceId,
+        state_delta: input.bufferedState,
+        terminal_facts: input.terminalFacts,
+        version: 1 as const,
+      }
+    : null;
+  const commitId = terminalCommitIdentity ? `terminal-commit:${hashCanonicalJson(terminalCommitIdentity)}` : null;
+  const kind = terminalCommitIdentity ? "terminal_run_commit" : "checkpoint";
   const checkpointId = buildLocalDeviceOutboxId({
-    kind: "checkpoint",
-    parts: [input.config.connector.connector_id, input.bufferedState],
+    kind,
+    parts: terminalCommitIdentity ? [commitId] : [input.config.connector.connector_id, input.bufferedState],
     sourceInstanceId: input.config.sourceInstanceId,
   });
   input.outbox.enqueue({
     id: checkpointId,
-    kind: "checkpoint",
-    payload: {
-      connectorId: input.config.connector.connector_id,
-      sourceInstanceId: input.config.sourceInstanceId,
-      state: input.bufferedState,
-    } satisfies CheckpointPayload,
+    kind,
+    payload: terminalCommitIdentity
+      ? ({ ...terminalCommitIdentity, commit_id: commitId as string } satisfies TerminalRunCommitPayload)
+      : ({
+          connectorId: input.config.connector.connector_id,
+          sourceInstanceId: input.config.sourceInstanceId,
+          state: input.bufferedState,
+        } satisfies CheckpointPayload),
     sourceInstanceId: input.config.sourceInstanceId,
   });
 
@@ -1629,17 +1684,19 @@ async function maybeCommitCheckpoint(input: {
     return { flushedState: null, statePutFailed: false };
   }
 
+  const afterCommitSummary = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
   await safeHeartbeat(input.client, {
     connector_id: input.config.connector.connector_id,
-    outbox: buildHeartbeatOutboxDiagnostics(input.afterRecordsSummary, {
+    ...(kind === "terminal_run_commit" ? { last_error: { kind: "terminal_run_commit_unacknowledged" as const } } : {}),
+    outbox: buildHeartbeatOutboxDiagnostics(afterCommitSummary, {
       backlogOpen: countOpenBacklogGaps(input.outbox, input.config.sourceInstanceId),
     }),
-    records_pending: pendingOutboxWorkCount(input.afterRecordsSummary),
+    records_pending: pendingOutboxWorkCount(afterCommitSummary),
     source_instance_id: input.config.sourceInstanceId,
     status: "retrying",
   });
   process.stderr.write(
-    `${input.config.connector.connector_id} checkpoint not yet committed (drained ${checkpointDrain.sent} this pass; ${checkpointAfter?.last_error ?? "no error"})\n`
+    `${input.config.connector.connector_id} ${kind} not yet committed (drained ${checkpointDrain.sent} this pass; ${checkpointAfter?.last_error ?? "no error"})\n`
   );
   return { flushedState: null, statePutFailed: true };
 }
@@ -1776,6 +1833,8 @@ export interface CheckpointPayload {
   sourceInstanceId: string;
   state: Record<string, unknown>;
 }
+
+export type TerminalRunCommitPayload = TerminalRunCommitRequest;
 
 /**
  * Machine-readable reason taxonomy for `gap` outbox rows. Kept narrow to
@@ -1928,7 +1987,8 @@ function sanitizeCollectorGapDetails(value: string): string {
 
 export interface DrainCollectorOutboxInput {
   abortSignal?: AbortSignal;
-  client: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "ingestBatch" | "putSourceInstanceState">;
+  client: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "ingestBatch" | "putSourceInstanceState"> &
+    Partial<Pick<LocalDeviceClient, "commitTerminalRun">>;
   connectorId: string;
   holderId: string;
   outbox: LocalDeviceOutbox;
@@ -1988,18 +2048,16 @@ export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Pr
 }
 
 function claimReadyOutboxItems(input: DrainCollectorOutboxInput): LocalDeviceOutboxItem[] {
-  const nextReady = nextReadyOutboxItem(input);
+  const nextReady = claimableReadyOutboxItem(input);
   if (!nextReady) {
     return [];
   }
-  if (nextReady.kind === "checkpoint" && hasCheckpointPredecessorBlockingWork(input.outbox, nextReady)) {
-    return [];
-  }
+  const isCommitBoundary = nextReady.kind === "checkpoint" || nextReady.kind === "terminal_run_commit";
   const claimInput: Parameters<LocalDeviceOutbox["claimReady"]>[0] = {
-    excludeKinds: nextReady.kind === "checkpoint" ? [] : ["checkpoint"],
+    excludeKinds: isCommitBoundary ? [] : ["checkpoint", "terminal_run_commit"],
     holder: input.holderId,
     leaseMs: input.policy.leaseMs,
-    limit: nextReady.kind === "checkpoint" ? 1 : input.policy.drainBatchSize,
+    limit: isCommitBoundary ? 1 : input.policy.drainBatchSize,
   };
   if (input.sourceInstanceId) {
     claimInput.sourceInstanceId = input.sourceInstanceId;
@@ -2009,6 +2067,20 @@ function claimReadyOutboxItems(input: DrainCollectorOutboxInput): LocalDeviceOut
 
 function nextReadyOutboxItem(input: DrainCollectorOutboxInput): LocalDeviceOutboxItem | null {
   return input.outbox.peekReady(input.sourceInstanceId ? { sourceInstanceId: input.sourceInstanceId } : {});
+}
+
+function claimableReadyOutboxItem(input: DrainCollectorOutboxInput): LocalDeviceOutboxItem | null {
+  const nextReady = nextReadyOutboxItem(input);
+  if (!nextReady) {
+    return null;
+  }
+  if (
+    (nextReady.kind === "checkpoint" || nextReady.kind === "terminal_run_commit") &&
+    hasCheckpointPredecessorBlockingWork(input.outbox, nextReady)
+  ) {
+    return null;
+  }
+  return nextReady;
 }
 
 function hasCheckpointPredecessorBlockingWork(outbox: LocalDeviceOutbox, checkpoint: LocalDeviceOutboxItem): boolean {
@@ -2057,7 +2129,20 @@ function failOutboxItem(
   // regardless of which error reached this path.
   const message = sanitizeCollectorGapDetails(error instanceof Error ? error.message : String(error));
   try {
-    if (error instanceof OutboxPayloadShapeError || item.attempt_count + 1 >= input.policy.maxAttempts) {
+    const isExplicitTransient = !(error instanceof OutboxPayloadShapeError) && classifyLocalDeviceFailure(error);
+    const isTerminalCommitRejection =
+      item.kind === "terminal_run_commit" &&
+      ((error instanceof LocalDeviceHttpError &&
+        error.status >= 400 &&
+        error.status < 500 &&
+        error.status !== 408 &&
+        error.status !== 429) ||
+        error instanceof LocalDeviceReceiptValidationError);
+    const isTerminal =
+      error instanceof OutboxPayloadShapeError ||
+      isTerminalCommitRejection ||
+      (!isExplicitTransient && item.attempt_count + 1 >= input.policy.maxAttempts);
+    if (isTerminal) {
       input.outbox.deadLetter({
         error: message,
         holder: input.holderId,
@@ -2105,7 +2190,8 @@ class OutboxPayloadShapeError extends Error {
 const DEFAULT_GAP_RETRY_BACKOFF_MS = 15 * 60_000;
 
 async function sendOutboxItem(
-  client: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "ingestBatch" | "putSourceInstanceState">,
+  client: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "ingestBatch" | "putSourceInstanceState"> &
+    Partial<Pick<LocalDeviceClient, "commitTerminalRun">>,
   item: LocalDeviceOutboxItem
 ): Promise<void> {
   if (item.kind === "record_batch") {
@@ -2131,6 +2217,13 @@ async function sendOutboxItem(
       sourceInstanceId: payload.sourceInstanceId,
       state: payload.state,
     });
+    return;
+  }
+  if (item.kind === "terminal_run_commit") {
+    if (!client.commitTerminalRun) {
+      throw new OutboxPayloadShapeError("collector client does not support terminal_run_commit; upgrade required");
+    }
+    await client.commitTerminalRun(assertTerminalRunCommitPayload(item.payload, item.id));
     return;
   }
   if (item.kind === "gap") {
@@ -2237,6 +2330,52 @@ function assertCheckpointPayload(payload: unknown, id: string): CheckpointPayloa
     sourceInstanceId: payload.sourceInstanceId,
     state: payload.state,
   };
+}
+
+function assertTerminalRunCommitPayload(payload: unknown, id: string): TerminalRunCommitPayload {
+  if (!isRecord(payload)) {
+    throw new OutboxPayloadShapeError(`terminal_run_commit payload is not an object: ${id}`);
+  }
+  if (
+    payload.version !== 1 ||
+    typeof payload.commit_id !== "string" ||
+    typeof payload.run_id !== "string" ||
+    typeof payload.device_id !== "string" ||
+    typeof payload.connector_id !== "string" ||
+    typeof payload.connector_instance_id !== "string" ||
+    typeof payload.source_instance_id !== "string" ||
+    typeof payload.collection_boundary !== "string" ||
+    !isRecord(payload.state_delta) ||
+    !Array.isArray(payload.terminal_facts) ||
+    payload.terminal_facts.length === 0 ||
+    !payload.terminal_facts.every(isTerminalCollectionFact)
+  ) {
+    throw new OutboxPayloadShapeError(`terminal_run_commit payload missing or invalid fields: ${id}`);
+  }
+  return {
+    collection_boundary: payload.collection_boundary,
+    commit_id: payload.commit_id,
+    connector_id: payload.connector_id,
+    connector_instance_id: payload.connector_instance_id,
+    device_id: payload.device_id,
+    run_id: payload.run_id,
+    source_instance_id: payload.source_instance_id,
+    state_delta: payload.state_delta,
+    terminal_facts: payload.terminal_facts.filter(isTerminalCollectionFact),
+    version: 1,
+  };
+}
+
+function isTerminalCollectionFact(value: unknown): value is TerminalCollectionFact {
+  return (
+    isRecord(value) &&
+    typeof value.stream === "string" &&
+    value.stream.length > 0 &&
+    Array.isArray(value.coverage_statuses) &&
+    value.coverage_statuses.length > 0 &&
+    value.coverage_statuses.every((status) => typeof status === "string" && status.length > 0) &&
+    (value.scoped === undefined || typeof value.scoped === "boolean")
+  );
 }
 
 function isLocalDeviceRecordEnvelope(value: unknown): value is LocalDeviceRecordEnvelope {

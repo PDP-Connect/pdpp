@@ -2,9 +2,9 @@
   "name": "@pdpp/reference-contract",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "description": "JSON-Schema-first route manifests, validators, OpenAPI artifacts, and typed helpers for the PDPP reference implementation.",
-  "main": "./src/index.ts",
+  "license": "Apache-2.0",
+  "type": "module",
   "exports": {
     ".": "./src/index.ts",
     "./common": "./src/common/index.ts",
@@ -15,15 +15,16 @@
     "./openapi": "./src/openapi/index.ts",
     "./validate": "./src/validate.ts"
   },
+  "main": "./src/index.ts",
   "scripts": {
-    "generate:openapi": "node ./src/openapi/generate.ts",
-    "generate:docs": "node ./src/docs/generate.ts",
-    "generate:all": "node ./src/openapi/generate.ts && node ./src/docs/generate.ts",
+    "check": "ultracite check",
     "check:generated": "pnpm run generate:all && node ./scripts/check-generated.ts",
+    "fix": "ultracite fix",
+    "generate:all": "node ./src/openapi/generate.ts && node ./src/docs/generate.ts",
+    "generate:docs": "node ./src/docs/generate.ts",
+    "generate:openapi": "node ./src/openapi/generate.ts",
     "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- node ../../scripts/run-node-tests.mjs --test --import tsx \"test/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "check": "ultracite check",
-    "fix": "ultracite fix",
     "verify": "pnpm typecheck && pnpm check && pnpm test"
   },
   "dependencies": {
@@ -33,6 +34,5 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.7",
     "ultracite": "7.10.2"
-  },
-  "license": "Apache-2.0"
+  }
 }

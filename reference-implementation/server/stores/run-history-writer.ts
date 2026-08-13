@@ -51,7 +51,7 @@
 // avoid transaction overhead on the hot non-run path).
 
 import type { PoolClient } from "pg";
-import { exec, referenceQueries } from "../../lib/db.ts";
+import { exec, execOn, referenceQueries } from "../../lib/db.ts";
 
 const RUN_STARTED_EVENT_TYPE = "run.started";
 // Keep this in lock-step with Spine's canonical terminal set. In particular,
@@ -82,6 +82,10 @@ export interface RunHistorySpineEvent {
   readonly occurredAt: string;
   readonly runId: string | null;
   readonly status: string;
+}
+
+export interface SqliteRunHistoryDatabase {
+  prepare: (sql: string) => { run: (...params: unknown[]) => unknown };
 }
 
 function toTerminalStatus(eventType: string, status: string): string {
@@ -199,7 +203,23 @@ function collectionRateMergeJson(data: Record<string, unknown>): string | null {
   return JSON.stringify({ collection_rate: data.collection_rate });
 }
 
+type SqliteRunHistoryExecute = (
+  query: Parameters<typeof exec>[0],
+  params: Parameters<typeof exec>[1]
+) => ReturnType<typeof exec>;
+
 export function writeSqliteRunHistoryForSpineEvent(event: RunHistorySpineEvent): void {
+  writeSqliteRunHistoryWith(event, exec);
+}
+
+export function writeSqliteRunHistoryForSpineEventOn(
+  event: RunHistorySpineEvent,
+  dbHandle: SqliteRunHistoryDatabase
+): void {
+  writeSqliteRunHistoryWith(event, (query, params) => execOn(dbHandle, query, params));
+}
+
+function writeSqliteRunHistoryWith(event: RunHistorySpineEvent, execute: SqliteRunHistoryExecute): void {
   if (!(event.runId && event.connectorInstanceId && event.connectorId)) {
     // A run event with no connector_instance_id is rejected upstream in
     // emitSpineEvent (assertRunEventHasConnectorInstanceId) for
@@ -216,7 +236,7 @@ export function writeSqliteRunHistoryForSpineEvent(event: RunHistorySpineEvent):
     // in-flight progress snapshot.
     const mergeJson = collectionRateMergeJson(event.data);
     if (mergeJson !== null) {
-      exec(referenceQueries.controllerMergeRunHistoryCollectionRate, [
+      execute(referenceQueries.controllerMergeRunHistoryCollectionRate, [
         mergeJson,
         event.runId,
         event.connectorInstanceId,
@@ -226,7 +246,7 @@ export function writeSqliteRunHistoryForSpineEvent(event: RunHistorySpineEvent):
   }
 
   if (event.eventType === RUN_STARTED_EVENT_TYPE) {
-    exec(referenceQueries.controllerStartRunHistory, [
+    execute(referenceQueries.controllerStartRunHistory, [
       event.runId,
       event.connectorInstanceId,
       event.connectorId,
@@ -251,7 +271,7 @@ export function writeSqliteRunHistoryForSpineEvent(event: RunHistorySpineEvent):
   const factsJson = factsJsonFromTerminalData(event.data);
   const recordsEmitted = typeof event.data.records_emitted === "number" ? event.data.records_emitted : 0;
 
-  const finalizeResult = exec(referenceQueries.controllerFinalizeRunHistory, [
+  const finalizeResult = execute(referenceQueries.controllerFinalizeRunHistory, [
     terminalStatus,
     event.occurredAt,
     recordsEmitted,
@@ -266,7 +286,7 @@ export function writeSqliteRunHistoryForSpineEvent(event: RunHistorySpineEvent):
     return;
   }
 
-  exec(referenceQueries.controllerInsertFinalizedRunHistory, [
+  execute(referenceQueries.controllerInsertFinalizedRunHistory, [
     event.runId,
     event.connectorInstanceId,
     event.connectorId,

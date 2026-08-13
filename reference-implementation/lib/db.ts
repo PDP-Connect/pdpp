@@ -226,6 +226,15 @@ export function getOne<R>(query: ReadOneQuery, params: BindParams = []): R | nul
   return (row ?? null) as R | null;
 }
 
+/** Execute a registered single-row read on an explicit SQLite handle. */
+export function getOneOn<R>(
+  db: { prepare: (sql: string) => { get: (...params: unknown[]) => unknown } },
+  query: ReadOneQuery,
+  params: BindParams = []
+): R | null {
+  return (db.prepare(query.sql).get(...params) ?? null) as R | null;
+}
+
 // ---------------------------------------------------------------------------
 // Primitive: getMany
 // ---------------------------------------------------------------------------
@@ -334,6 +343,15 @@ export function exec(query: MutationQuery, params: BindParams = []): ExecResult 
     changes: result.changes,
     lastInsertRowid: result.lastInsertRowid,
   };
+}
+
+/** Execute a registered positional mutation on an explicit SQLite handle. */
+export function execOn(
+  db: { prepare: (sql: string) => { run: (...params: unknown[]) => unknown } },
+  query: MutationQuery,
+  params: BindParams = []
+): ExecResult {
+  return normalizeExecResult(db.prepare(query.sql).run(...params));
 }
 
 function normalizeExecResult(result: unknown): ExecResult {
