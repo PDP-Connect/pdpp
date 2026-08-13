@@ -158,16 +158,7 @@ test("makeReferenceBlobUploader: transports exact bytes separately from their de
       const url = new URL(String(input));
       assert.equal(url.searchParams.get("mime_type"), "text/plain");
       assert.equal(new Headers(init?.headers).get("content-type"), "application/octet-stream");
-      const reader = requestBody(init).getReader();
-      const chunks: Uint8Array[] = [];
-      for (;;) {
-        const step = await reader.read();
-        if (step.done) {
-          break;
-        }
-        chunks.push(step.value);
-      }
-      const received = Buffer.concat(chunks);
+      const received = Buffer.from(await new Response(requestBody(init)).arrayBuffer());
       assert.deepEqual(received, bytes);
       const sha256 = createHash("sha256").update(received).digest("hex");
       return new Response(
