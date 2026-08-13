@@ -22,7 +22,7 @@
     "build": "node --experimental-strip-types scripts/build.ts",
     "prepare": "pnpm build",
     "prepack": "pnpm build",
-    "test": "node --experimental-strip-types scripts/run-tests.ts",
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- node --experimental-strip-types scripts/run-tests.ts",
     "validate-package": "pnpm build && node --experimental-strip-types scripts/validate-package.ts",
     "pack-install-test": "pnpm build && node --experimental-strip-types scripts/pack-install-test.ts",
     "verify:node-22.14": "pnpm build && node --experimental-strip-types scripts/verify-node-22.14.ts",

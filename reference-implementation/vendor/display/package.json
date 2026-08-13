@@ -9,7 +9,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test --import tsx \"src/**/*.test.ts\"",
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- bash -c 'node --test --import tsx \"src/**/*.test.ts\"'",
     "verify": "pnpm typecheck && pnpm test"
   },
   "devDependencies": {

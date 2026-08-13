@@ -10,6 +10,7 @@ const AUDIT_WRITE_FAILURE = /test audit write failure/;
 
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { Pool } from "pg";
@@ -1029,7 +1030,7 @@ test("SQLite replacement ledger is append-only, redacted, idempotent, and genera
 });
 
 test("SQLite scoped pending lookup survives a store/controller restart", async () => {
-  const directory = mkdtempSync("/tmp/pdpp-replacement-ledger-restart-");
+  const directory = mkdtempSync(join(tmpdir(), "pdpp-replacement-ledger-restart-"));
   const databasePath = join(directory, "ledger.sqlite");
   const pending = receiptSequence("connection-restart-scope", "subject-restart-scope").started;
   try {

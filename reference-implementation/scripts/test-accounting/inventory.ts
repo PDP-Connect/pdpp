@@ -13,6 +13,19 @@ export const MANIFEST_SCHEMA = "pdpp.test-accounting/v3";
 export const RECEIPT_SCHEMA = "pdpp.test-receipt/v3";
 export const RUN_AUTHORITY_SCHEMA = "pdpp.test-run-authority/v1";
 export const RUN_COMPLETION_SCHEMA = "pdpp.test-run-completion/v1";
+/** Capability variables that make a nested scratch wrapper a participant. */
+export const TEST_SCRATCH_CAPABILITY_ENVIRONMENT = [
+  "PDPP_TEST_SCRATCH_ROOT",
+  "PDPP_TEST_SCRATCH_SCHEMA",
+  "PDPP_TEST_SCRATCH_MARKER",
+  "PDPP_TEST_SCRATCH_NONCE",
+  "PDPP_TEST_SCRATCH_OWNER_PID",
+] as const;
+const TEST_SCRATCH_CAPABILITY_ENVIRONMENT_SET = new Set<string>(TEST_SCRATCH_CAPABILITY_ENVIRONMENT);
+const SCRATCH_LIFECYCLE_ORACLE_PATHS = [
+  "scripts/test-scratch/canonical-entrypoints.test.ts",
+  "scripts/test-scratch/run-command.test.ts",
+] as const;
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 function compareStrings(a: string, b: string): number {
   if (a < b) {
@@ -43,6 +56,7 @@ export interface Suite {
   command: string[] | null;
   cwd: string;
   environment?: Record<string, string>;
+  environment_unset?: string[];
   execution?: string;
   id: string;
   include: string[];
@@ -337,6 +351,37 @@ function suiteProfiles(suite: Suite): (string | undefined)[] {
 function zeroTestSuite(suite: Suite): boolean {
   return suite.zero_tests === true;
 }
+function validateSuiteEnvironment(suite: Suite): void {
+  if (
+    suite.environment !== undefined &&
+    (!suite.environment ||
+      typeof suite.environment !== "object" ||
+      Array.isArray(suite.environment) ||
+      Object.values(suite.environment).some((value) => typeof value !== "string"))
+  ) {
+    fail(`${suite.id} environment must map names to strings`);
+  }
+  const ownsScratchOracle =
+    Array.isArray(suite.include) &&
+    SCRATCH_LIFECYCLE_ORACLE_PATHS.some((path) => suite.include.some((glob) => matchesGlob(path, glob)));
+  if (suite.environment_unset === undefined && !ownsScratchOracle) {
+    return;
+  }
+  if (
+    !Array.isArray(suite.environment_unset) ||
+    suite.environment_unset.some(
+      (name) => typeof name !== "string" || !TEST_SCRATCH_CAPABILITY_ENVIRONMENT_SET.has(name)
+    ) ||
+    new Set(suite.environment_unset).size !== suite.environment_unset.length ||
+    suite.environment_unset.length !== TEST_SCRATCH_CAPABILITY_ENVIRONMENT.length ||
+    TEST_SCRATCH_CAPABILITY_ENVIRONMENT.some((name) => !suite.environment_unset?.includes(name))
+  ) {
+    fail(`${suite.id} environment_unset must list every scratch capability exactly once`);
+  }
+  if (suite.environment_unset.some((name) => suite.environment?.[name] !== undefined)) {
+    fail(`${suite.id} cannot set an environment variable it unsets`);
+  }
+}
 function validateSkipReasons(reasons: unknown, label: string): void {
   if (!reasons || typeof reasons !== "object" || Array.isArray(reasons)) {
     fail(`${label} skip_reasons must be an object`);
@@ -382,6 +427,7 @@ export async function readManifest(
     }
     ids.add(suite.id);
     suiteProfiles(suite);
+    validateSuiteEnvironment(suite);
     if (
       !Array.isArray(suite.include) ||
       (!zeroTestSuite(suite) && suite.include.length === 0) ||

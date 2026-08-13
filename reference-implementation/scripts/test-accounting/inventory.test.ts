@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { storageProfileEnvironment } from "../../reference-implementation/scripts/test-profile-env.ts";
-import { runAuthority } from "./authority.ts";
+import { runAuthority, suiteEnvironment } from "./authority.ts";
 import {
   checkInventory,
   classifyTrackedPath,
@@ -24,6 +24,7 @@ import {
   readManifest,
   receiptBinding,
   selectedRuns,
+  TEST_SCRATCH_CAPABILITY_ENVIRONMENT,
   trackedFiles,
   treeDigest,
   verifyReceipts,
@@ -65,6 +66,8 @@ const TEST_SCRIPT_NAME_PATTERN = /^test(?::|$)/;
 const OPTIONAL_ENVIRONMENT_PREDICATE_PATTERN = /optional environment predicate/;
 const AUTHORITY_OR_ADAPTER_PATTERN = /authority|adapter/;
 const UNRECOGNIZED_RI_DEFAULT_PROFILE_PATTERN = /unrecognized ri-default profile/;
+const COMPLETE_SCRATCH_CAPABILITY_BOUNDARY_PATTERN =
+  /environment_unset must list every scratch capability exactly once/;
 
 const digest = async (path: string) => contentDigest(await readFile(path));
 const files = [
@@ -891,12 +894,90 @@ test("the current inventory has exact one-owner coverage and site is a real acco
   const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
   const tracked = trackedFiles(root);
   const result = checkInventory(manifestValue, tracked, [], { failOnUnknown: true, failOnEmpty: true });
-  const excluded = manifestValue.exclusions.length;
+  const excluded = manifestValue.exclusions?.length ?? 0;
   const planned = Object.values(result.plans).reduce((sum, paths) => sum + paths.length, 0);
   assert.equal(result.executable.length, planned + excluded);
   const site = manifestValue.suites.find((suite) => suite.id === "site");
   assert.equal(site?.zero_tests, undefined);
   assert.ok((result.plans.site?.length ?? 0) > 0);
+});
+test("the dedicated scratch lifecycle suite owns both oracles exactly once", async () => {
+  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
+  const result = checkInventory(manifestValue, trackedFiles(root), [], { failOnUnknown: true, failOnEmpty: true });
+  assert.deepEqual(result.plans["scratch-lifecycle"], [
+    "scripts/test-scratch/canonical-entrypoints.test.ts",
+    "scripts/test-scratch/run-command.test.ts",
+  ]);
+  assert.ok(
+    !result.plans["root-node"]?.some((path) => path.startsWith("scripts/test-scratch/")),
+    "root-node must not inherit lifecycle-oracle ownership"
+  );
+});
+test("the dedicated scratch lifecycle leaf removes every inherited capability variable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pdpp-authority-scratch-boundary-"));
+  await mkdir(join(root, "scripts", "test-scratch"), { recursive: true });
+  await writeFile(join(root, "scripts", "test-scratch", "run-command.test.ts"), "export {};\n");
+  await writeFile(
+    join(root, "boundary.mjs"),
+    `const names = ${JSON.stringify(TEST_SCRATCH_CAPABILITY_ENVIRONMENT)}; const present = names.filter((name) => process.env[name] !== undefined); if (present.length) { console.error(present.join(",")); process.exitCode = 1; }\n`
+  );
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "fixture@example.test"], { cwd: root });
+  execFileSync("git", ["config", "user.name", "fixture"], { cwd: root });
+  const localManifest: Manifest = {
+    schema: "pdpp.test-accounting/v3",
+    inventory_base_sha: "0000000000000000000000000000000000000000",
+    suites: [
+      {
+        id: "renamed-lifecycle",
+        cwd: ".",
+        loader: "shell",
+        authority_argument: null,
+        command: [process.execPath, "boundary.mjs"],
+        environment_unset: [...TEST_SCRATCH_CAPABILITY_ENVIRONMENT],
+        profiles: [{ id: "default", required: true, skip_reasons: {} }],
+        include: ["scripts/test-scratch/run-command.test.ts"],
+      },
+    ],
+    exclusions: [],
+  };
+  await writeFile(join(root, "test-accounting.manifest.json"), `${JSON.stringify(localManifest)}\n`);
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync("git", ["commit", "-qm", "fixture"], { cwd: root });
+  localManifest.inventory_base_sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  await writeFile(join(root, "test-accounting.manifest.json"), `${JSON.stringify(localManifest)}\n`);
+  execFileSync("git", ["add", "test-accounting.manifest.json"], { cwd: root });
+  execFileSync("git", ["commit", "-qm", "base"], { cwd: root });
+  const partialBoundary = structuredClone(localManifest);
+  const [partialSuite] = partialBoundary.suites;
+  assert.ok(partialSuite);
+  partialSuite.environment_unset = [TEST_SCRATCH_CAPABILITY_ENVIRONMENT[0]];
+  await writeFile(join(root, "test-accounting.manifest.json"), `${JSON.stringify(partialBoundary)}\n`);
+  await assert.rejects(
+    readManifest(join(root, "test-accounting.manifest.json"), { root }),
+    COMPLETE_SCRATCH_CAPABILITY_BOUNDARY_PATTERN
+  );
+  const missingBoundary = structuredClone(localManifest);
+  const [missingSuite] = missingBoundary.suites;
+  assert.ok(missingSuite);
+  missingSuite.environment_unset = undefined;
+  await writeFile(join(root, "test-accounting.manifest.json"), `${JSON.stringify(missingBoundary)}\n`);
+  await assert.rejects(
+    readManifest(join(root, "test-accounting.manifest.json"), { root }),
+    COMPLETE_SCRATCH_CAPABILITY_BOUNDARY_PATTERN
+  );
+  await writeFile(join(root, "test-accounting.manifest.json"), `${JSON.stringify(localManifest)}\n`);
+  const inherited = Object.fromEntries(TEST_SCRATCH_CAPABILITY_ENVIRONMENT.map((name) => [name, "outer-capability"]));
+  const [suite] = localManifest.suites;
+  assert.ok(suite);
+  const environment = suiteEnvironment(inherited, "default", suite);
+  for (const name of TEST_SCRATCH_CAPABILITY_ENVIRONMENT) {
+    assert.equal(environment[name], undefined);
+  }
+  assert.deepEqual((await runAuthority({ root, suites: ["renamed-lifecycle"], env: inherited })).result.verified, [
+    "renamed-lifecycle/default",
+  ]);
 });
 test("the PostgreSQL profile declares its exact live-gate skip baseline", async () => {
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
@@ -913,17 +994,16 @@ test("the PostgreSQL profile declares its exact live-gate skip baseline", async 
   });
 });
 // FIFTH-PASS GATE FIX (2026-07-30): this hardcoded literal must track
-// test-accounting.manifest.json's memory-default "PDPP_TEST_POSTGRES_URL
-// unset" count exactly. The integration branch already carried a verified
-// baseline of 135; interrupted-migration reconciliation adds three more
-// PostgreSQL-only tests, for a final baseline of 138.
+// test-accounting.manifest.json's memory-default skip map exactly. The current
+// branch carries six additional PostgreSQL-only tests plus two self-describing
+// PostgreSQL skips, for a final baseline of 167 skips.
 test("the memory-default profile declares the exact current skip baseline", async () => {
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
   const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
   const memoryDefault = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "memory-default");
   assert.deepEqual(typeof memoryDefault === "string" ? undefined : memoryDefault?.skip_reasons, {
-    "PDPP_TEST_POSTGRES_URL unset": 138,
+    "PDPP_TEST_POSTGRES_URL unset": 144,
     "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
     "dedicated disposable URL not selected": 1,
     "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
@@ -932,6 +1012,8 @@ test("the memory-default profile declares the exact current skip baseline", asyn
     "set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run": 1,
     "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
     "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
+    "Skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
+    "Postgres parity check skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
   });
 });
 test("the optional PostgreSQL profile is not selected by the required default and rejects implicit execution", async () => {

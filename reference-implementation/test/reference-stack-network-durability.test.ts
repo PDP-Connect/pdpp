@@ -18,7 +18,8 @@ const TOP_LEVEL_REGEX_6 = /network create/;
 const TOP_LEVEL_REGEX_7 = /SHOULD_NOT_PRINT/;
 const TOP_LEVEL_REGEX_8 = /label=org\.pdpp\.reference\.neko\.deployment_id=pdppnetdurasmoke-/;
 const TOP_LEVEL_REGEX_9 = /label=org\.pdpp\.reference\.neko\.surface_id=net-durability-smoke-surface$/;
-const TOP_LEVEL_REGEX_10 = /PROFILE_ROOT="\/tmp\/pdpp-neko-profiles-\$\{PROJECT_NAME\}"/;
+const TOP_LEVEL_REGEX_10 =
+  /SCRATCH_BASE="\$\{PDPP_TEST_SCRATCH_ROOT:-\$\{TMPDIR:-\/tmp\}\}"[\s\S]*PROFILE_ROOT="\$\{SCRATCH_BASE%\/\}\/pdpp-neko-profiles-\$\{PROJECT_NAME\}"/;
 const TOP_LEVEL_REGEX_11 = /PROFILE_ROOT="\$\{PDPP_NEKO_PROFILE_STORAGE_ROOT/;
 const TOP_LEVEL_REGEX_12 = /export NEKO_IMAGE="\$\{PROJECT_NAME\}-neko:local"/;
 const TOP_LEVEL_REGEX_13 = /export NEKO_ALLOCATOR_IMAGE="\$\{PROJECT_NAME\}-neko-allocator:local"/;
@@ -27,7 +28,8 @@ const TOP_LEVEL_REGEX_15 = /assert_surface_continuity "after forced allocator re
 const TOP_LEVEL_REGEX_16 = /before_chromium_epoch="\$\(chromium_epoch\)"/;
 const TOP_LEVEL_REGEX_17 = /\[\[ "\$after_chromium_epoch" == "\$before_chromium_epoch" \]\]/;
 const TOP_LEVEL_REGEX_18 = /after_allocator_id[\s\S]*!= "\$before_allocator_id"/;
-const TOP_LEVEL_REGEX_19 = /PROFILE_ROOT="\/tmp\/pdpp-neko-profiles-\$\{PROJECT_NAME\}"/;
+const TOP_LEVEL_REGEX_19 =
+  /SCRATCH_BASE="\$\{PDPP_TEST_SCRATCH_ROOT:-\$\{TMPDIR:-\/tmp\}\}"[\s\S]*PROFILE_ROOT="\$\{SCRATCH_BASE%\/\}\/pdpp-neko-profiles-\$\{PROJECT_NAME\}"/;
 const TOP_LEVEL_REGEX_20 = /PROFILE_ROOT="\$\{PDPP_NEKO_PROFILE_STORAGE_ROOT/;
 const TOP_LEVEL_REGEX_21 = /REGRESSION_TEST_ENSURE_NETWORK_OK/;
 const TOP_LEVEL_REGEX_22 = /network inspect/;
@@ -291,17 +293,16 @@ exit 0`
   rmSync(fakeDockerDir, { force: true, recursive: true });
 });
 
-test("docker-neko-network-durability-smoke.sh uses a project-scoped PROFILE_ROOT, not a fixed shared path", () => {
+test("docker-neko-network-durability-smoke.sh uses the invocation scratch root and project identity", () => {
   // Owner static-read finding: a fixed default PROFILE_ROOT
-  // (/tmp/pdpp-neko-profiles-net-durability-smoke) meant two concurrent
-  // invocations of this script would write to the SAME host directory,
+  // meant two concurrent invocations of this script would write to the SAME host directory,
   // risking corrupted or racing Chromium profile state. The fix makes the
-  // default path include this run's own synthesized PROJECT_NAME.
+  // path include this run's own synthesized PROJECT_NAME below the wrapper-owned root.
   const scriptSource = readFileSync(SMOKE_SCRIPT, "utf8");
   assert.match(
     scriptSource,
     TOP_LEVEL_REGEX_10,
-    "default PROFILE_ROOT must be scoped by this run's own synthesized PROJECT_NAME, not a fixed shared path"
+    "PROFILE_ROOT must be below the inherited invocation root and scoped by this synthesized PROJECT_NAME"
   );
   assert.doesNotMatch(
     scriptSource,
@@ -399,12 +400,12 @@ test("docker-neko-network-durability-smoke.sh never honors an inherited PDPP_NEK
   rmSync(dirname(poisonedProfileRoot), { force: true, recursive: true });
 });
 
-test("docker-neko-network-migration-smoke.sh uses a project-scoped PROFILE_ROOT, not a fixed shared path", () => {
+test("docker-neko-network-migration-smoke.sh uses the invocation scratch root and project identity", () => {
   const scriptSource = readFileSync(MIGRATION_SMOKE_SCRIPT, "utf8");
   assert.match(
     scriptSource,
     TOP_LEVEL_REGEX_19,
-    "default PROFILE_ROOT must be scoped by this run's own synthesized PROJECT_NAME, not a fixed shared path"
+    "PROFILE_ROOT must be below the inherited invocation root and scoped by this synthesized PROJECT_NAME"
   );
   assert.doesNotMatch(
     scriptSource,
