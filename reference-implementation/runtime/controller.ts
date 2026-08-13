@@ -3495,8 +3495,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!manifest) {
       throw new ControllerError(`Unknown connector: ${connectorId}`, "not_found");
     }
-    assertNoConflictingActiveRun(key);
     if (!options.sourceWebhookEvent) {
+      assertNoConflictingActiveRun(key);
       await assertNoConflictingDurableActiveRun(key);
     }
 
