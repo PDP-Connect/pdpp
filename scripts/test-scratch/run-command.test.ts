@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   access,
   chmod,
@@ -240,6 +240,20 @@ test("cleanup refuses a swapped root identity", async () => {
     reason: "identity-mismatch",
   });
   assert.equal(await readFile(victim, "utf8"), "do not delete");
+  await rm(parent, { force: true, recursive: true });
+});
+
+test("cleanup refuses a live recorded process group before quarantine", async () => {
+  const parent = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  const pgid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).trim());
+  assert.ok(Number.isSafeInteger(pgid) && pgid > 0);
+  await oldMarker(ownership, { pgid, state: "running" });
+  await assert.rejects(cleanupScratchOwnership(ownership), {
+    name: "ScratchOwnershipError",
+    reason: "group-live",
+  });
+  await access(ownership.allocation.root);
   await rm(parent, { force: true, recursive: true });
 });
 
@@ -857,6 +871,21 @@ test("a durable lexical cursor eventually reaches a stale candidate beyond an in
   } finally {
     await rm(parent, { force: true, recursive: true });
   }
+});
+
+test("recovery fails closed when its cursor cannot be replaced", async () => {
+  const parent = await temporaryParent();
+  const cursor = join(parent, ".scratch-recovery-cursor.json");
+  await mkdir(cursor, { mode: 0o700 });
+  const inspected: string[] = [];
+  const recovered = await recoverStaleScratch({
+    hooks: { onInspect: (path) => inspected.push(path) },
+    limits: { maxInspectedEntries: 1 },
+    parent,
+  });
+  assert.deepEqual(inspected, []);
+  assert.deepEqual(recovered, [{ path: cursor, reason: "recovery-cursor-write-failed", removed: false }]);
+  await rm(parent, { force: true, recursive: true });
 });
 
 test("startup recovery quarantines a large verified root when recursive removal is budgeted out", async () => {

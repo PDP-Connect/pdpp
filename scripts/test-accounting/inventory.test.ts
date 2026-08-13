@@ -916,8 +916,8 @@ test("the dedicated scratch lifecycle suite owns both oracles exactly once", asy
 });
 test("the dedicated scratch lifecycle leaf removes every inherited capability variable", async () => {
   const root = await mkdtemp(join(tmpdir(), "pdpp-authority-scratch-boundary-"));
-  await mkdir(join(root, "test"));
-  await writeFile(join(root, "test", "lifecycle.test.js"), "module.exports = {};\n");
+  await mkdir(join(root, "scripts", "test-scratch"), { recursive: true });
+  await writeFile(join(root, "scripts", "test-scratch", "run-command.test.ts"), "export {};\n");
   await writeFile(
     join(root, "boundary.mjs"),
     `const names = ${JSON.stringify(TEST_SCRATCH_CAPABILITY_ENVIRONMENT)}; const present = names.filter((name) => process.env[name] !== undefined); if (present.length) { console.error(present.join(",")); process.exitCode = 1; }\n`
@@ -930,14 +930,14 @@ test("the dedicated scratch lifecycle leaf removes every inherited capability va
     inventory_base_sha: "0000000000000000000000000000000000000000",
     suites: [
       {
-        id: "scratch-lifecycle",
+        id: "renamed-lifecycle",
         cwd: ".",
         loader: "shell",
         authority_argument: null,
         command: [process.execPath, "boundary.mjs"],
         environment_unset: [...TEST_SCRATCH_CAPABILITY_ENVIRONMENT],
         profiles: [{ id: "default", required: true, skip_reasons: {} }],
-        include: ["test/lifecycle.test.js"],
+        include: ["scripts/test-scratch/run-command.test.ts"],
       },
     ],
     exclusions: [],
@@ -975,8 +975,8 @@ test("the dedicated scratch lifecycle leaf removes every inherited capability va
   for (const name of TEST_SCRATCH_CAPABILITY_ENVIRONMENT) {
     assert.equal(environment[name], undefined);
   }
-  assert.deepEqual((await runAuthority({ root, suites: ["scratch-lifecycle"], env: inherited })).result.verified, [
-    "scratch-lifecycle/default",
+  assert.deepEqual((await runAuthority({ root, suites: ["renamed-lifecycle"], env: inherited })).result.verified, [
+    "renamed-lifecycle/default",
   ]);
 });
 test("the PostgreSQL profile declares its exact live-gate skip baseline", async () => {

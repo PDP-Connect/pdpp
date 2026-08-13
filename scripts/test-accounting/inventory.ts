@@ -22,7 +22,10 @@ export const TEST_SCRATCH_CAPABILITY_ENVIRONMENT = [
   "PDPP_TEST_SCRATCH_OWNER_PID",
 ] as const;
 const TEST_SCRATCH_CAPABILITY_ENVIRONMENT_SET = new Set<string>(TEST_SCRATCH_CAPABILITY_ENVIRONMENT);
-const SCRATCH_LIFECYCLE_SUITE_ID = "scratch-lifecycle";
+const SCRATCH_LIFECYCLE_ORACLE_PATHS = [
+  "scripts/test-scratch/canonical-entrypoints.test.ts",
+  "scripts/test-scratch/run-command.test.ts",
+] as const;
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 function compareStrings(a: string, b: string): number {
   if (a < b) {
@@ -358,7 +361,10 @@ function validateSuiteEnvironment(suite: Suite): void {
   ) {
     fail(`${suite.id} environment must map names to strings`);
   }
-  if (suite.environment_unset === undefined && suite.id !== SCRATCH_LIFECYCLE_SUITE_ID) {
+  const ownsScratchOracle =
+    Array.isArray(suite.include) &&
+    SCRATCH_LIFECYCLE_ORACLE_PATHS.some((path) => suite.include.some((glob) => matchesGlob(path, glob)));
+  if (suite.environment_unset === undefined && !ownsScratchOracle) {
     return;
   }
   if (

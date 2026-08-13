@@ -492,10 +492,22 @@ async function quarantineAndRemove(
   budget?: CleanupBudget,
   hooks?: CleanupHooks
 ): Promise<void> {
+  const quarantine = quarantinePath(allocation.canonicalParent, allocation.nonce);
   if (!(await matchesAllocation(allocation))) {
     throw new ScratchOwnershipError("identity-mismatch");
   }
-  const quarantine = quarantinePath(allocation.canonicalParent, allocation.nonce);
+  const marker = await readMarker(allocation.markerPath);
+  if (!(marker && markerMatchesAllocation(marker, allocation))) {
+    throw new ScratchOwnershipError("marker-mismatch");
+  }
+  if (marker.state === "running") {
+    if (typeof marker.pgid !== "number" || !Number.isSafeInteger(marker.pgid) || marker.pgid <= 0) {
+      throw new ScratchOwnershipError("malformed-marker");
+    }
+    if (!groupAbsent(marker.pgid)) {
+      throw new ScratchOwnershipError("group-live");
+    }
+  }
   const journalPath = await createCleanupJournal(allocation, budget);
   await hooks?.afterJournal?.();
   await requireAbsent(quarantine);
@@ -823,6 +835,14 @@ async function readRecoveryCursor(cursorPath: string): Promise<string | undefine
   }
 }
 
+async function recoveryCursorCanAdvance(cursorPath: string): Promise<boolean> {
+  try {
+    return isOwnedPrivateFile(await lstat(cursorPath));
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
 async function advanceRecoveryCursor(cursorPath: string, after: string): Promise<void> {
   await replaceJson(cursorPath, { after, schema: RECOVERY_CURSOR_SCHEMA } satisfies RecoveryCursor);
 }
@@ -862,6 +882,7 @@ function rotateRecoveryEntries(names: readonly string[], after: string | undefin
 }
 
 /** Recover a bounded number of verified candidates. It never signals candidates. */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the bounded recovery state machine is intentionally kept in one auditable loop; the cursor-writability gate is fail-closed state, not a separate policy.
 export async function recoverStaleScratch(options: RecoverStaleScratchOptions = {}): Promise<RecoveryResult[]> {
   const canonicalParent = await validatedParent(options.parent);
   const now = options.now ?? Date.now();
@@ -869,6 +890,9 @@ export async function recoverStaleScratch(options: RecoverStaleScratchOptions = 
   const limits = boundedLimits(options.limits);
   const results: RecoveryResult[] = [];
   const cursorPath = join(canonicalParent, RECOVERY_CURSOR_NAME);
+  if (!(await recoveryCursorCanAdvance(cursorPath))) {
+    return [{ path: cursorPath, reason: "recovery-cursor-write-failed", removed: false }];
+  }
   const cursor = await readRecoveryCursor(cursorPath);
   const candidates = rotateRecoveryEntries(await recoveryEntryNames(canonicalParent), cursor);
   let inspected = 0;
