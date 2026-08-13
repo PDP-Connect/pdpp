@@ -300,6 +300,8 @@ import { defaultReadinessChecker } from "./scheduler-readiness.ts";
  */
 export function createScheduler(opts: SchedulerOptions): Scheduler {
   const {
+    approvedEnvironmentBindings,
+    approvedProxyConnectorIds,
     admitRunConnection = null,
     connectors,
     rsUrl = process.env.RS_URL || "http://localhost:7663",
@@ -402,6 +404,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
 
   const runExecutor = createRunExecutor({
     admitRunConnection,
+    ...(approvedEnvironmentBindings ? { approvedEnvironmentBindings } : {}),
+    ...(approvedProxyConnectorIds ? { approvedProxyConnectorIds } : {}),
     getState,
     handleGrantFailureDisable,
     isManagedConnector,

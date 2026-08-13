@@ -10,7 +10,8 @@
       "filesystem": {
         "required": true
       }
-    }
+    },
+    "environment_variables": ["APPLE_HEALTH_EXPORT_DIR"]
   },
   "capabilities": {
     "human_interaction": [],

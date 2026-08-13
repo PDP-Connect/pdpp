@@ -110,12 +110,15 @@ export async function buildStaticSecretCredentialProber() {
 // Builds the controller's connection-scoped static-secret resolver (design
 // Decision 5). For a static-secret connector that HAS an active stored
 // credential, it returns the env fragment carrying only that connection's
-// secret; the run then authenticates with exactly that secret, overriding any
-// process-global one. It returns `null` for non-static-secret connectors and
+// secret; the run then authenticates with that explicit per-connection
+// capability. It returns `null` for non-static-secret connectors,
 // for browser-session source bindings that have no optional stored login
-// credential. A missing/revoked/deleted credential on a true static-secret
+// credential, AND for any connector whose manifest declares
+// `credential_capture.required: false` regardless of its
+// connection's `sourceBinding.kind` - see `resolveStaticSecretRunEnv`'s doc.
+// A missing/revoked/deleted credential on a true REQUIRED static-secret
 // connection still fails closed: the run seam throws and the run is refused
-// before any child can use a stale or deployment-wide provider-account secret.
+// before any child can use an undeclared provider-account secret.
 function buildControllerStaticSecretRunEnvResolver({
   createConnectorInstanceStore,
   createConnectorInstanceCredentialStore,

@@ -13,7 +13,8 @@
       "filesystem": {
         "required": true
       }
-    }
+    },
+    "environment_variables": ["GOOGLE_TAKEOUT_DIR"]
   },
   "capabilities": {
     "human_interaction": [],

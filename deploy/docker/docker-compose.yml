@@ -22,6 +22,7 @@ services:
       # For anything beyond a local trial, set this to your HTTPS domain.
       PDPP_REFERENCE_MODE: composed
       PDPP_REFERENCE_ORIGIN: ${PDPP_REFERENCE_ORIGIN:-http://localhost:3000}
+      PDPP_CONNECTOR_ENVIRONMENT_POLICY: ${PDPP_CONNECTOR_ENVIRONMENT_POLICY:-}
       # Postgres is the storage backend; the runtime selects it because this
       # database URL is present. Credentials live on the compose-private
       # network only (no published Postgres port).

@@ -10,7 +10,8 @@
       "filesystem": {
         "required": true
       }
-    }
+    },
+    "environment_variables": ["TWITTER_ARCHIVE_DIR"]
   },
   "capabilities": {
     "human_interaction": [],

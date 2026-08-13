@@ -103,6 +103,11 @@ rest. The setup form blocks before asking for a provider credential if neither
 that env var nor `PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE` is configured. It is not
 a per-mailbox or per-account variable.
 
+If a deployment intentionally runs a connector from operator-managed
+installation inputs or a proxy, configure the explicit, fail-closed policy
+described in [`connector-environment-policy.md`](connector-environment-policy.md).
+Connector manifests never select ambient process environment names.
+
 ### Optional: "no domain, no open ports" with Cloudflare Tunnel
 
 If your Docker host is not publicly reachable — home server behind NAT, VPS

@@ -25,6 +25,11 @@ import type { AttentionWriterOptions } from "./attention-writer.ts";
 import { createAttentionWriter } from "./attention-writer.ts";
 import { classifyRuntimeFailure } from "./classify-runtime-failure.ts";
 import {
+  type ConnectorConnectionEnvironment,
+  type ConnectorEnvironmentBinding,
+  composeConnectorChildEnvironment,
+} from "./connector-child-environment.ts";
+import {
   boundConnectorErrorMessage,
   boundConsideredCount,
   boundGapString,
@@ -393,6 +398,10 @@ export interface RuntimeRunConnectorOptions {
     connectorInstanceId: string | null;
     ownerSubjectId: string | null;
   }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>;
+  /** Operator-owned logical connector-input bindings. */
+  approvedEnvironmentBindings?: readonly ConnectorEnvironmentBinding[];
+  /** Operator-authorized connector IDs that may receive ambient proxy aliases. */
+  approvedProxyConnectorIds?: readonly string[];
   automationMode?: RuntimeRunAutomationMode | null;
   /**
    * Explicit browser-surface child env override for tests and integration
@@ -459,12 +468,10 @@ export interface RuntimeRunConnectorOptions {
   scope?: { streams?: unknown } | null;
   state?: Record<string, unknown> | null;
   /**
-   * Connection-scoped static-secret env fragment (Gmail app password /
-   * GitHub PAT) resolved by the controller from the per-connection encrypted
-   * credential store. Carries ONLY this one connection's secret env var(s)
-   * and is merged LAST over `process.env` at spawn, so a stored credential
-   * overrides any process-global provider secret. Null/absent means no stored
-   * credential applies and the legacy process-env path is used.
+   * Connection-scoped environment fragment from the resolver: stored
+   * credentials, provider authorization, or manual-upload/local-path state.
+   * It overrides only current-manifest ambient fallback values. Platform and
+   * run-control names are rejected, and explicit run controls retain priority.
    * See add-static-secret-owner-connect-primitive design Decision 5.
    */
   staticSecretEnv?: Record<string, string> | null;
@@ -1882,6 +1889,8 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       : (msg: unknown) => safeStderrWrite(`[runtime] ${JSON.stringify(msg)}\n`);
   const {
     admitRunConnection,
+    approvedEnvironmentBindings,
+    approvedProxyConnectorIds,
     connectorPath,
     connectorId: rawConnectorId,
     connectorInstanceId = null,
@@ -1912,14 +1921,11 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     referenceBaseUrl = null,
     browserSurfaceLease = null,
     browserSurfaceEnv = null,
-    // Connection-scoped static-secret injection (Gmail app password / GitHub
-    // PAT). The controller resolves this fragment from the per-connection
-    // encrypted credential store and threads it here; it carries ONLY this one
-    // connection's secret env var(s). It is merged LAST over `process.env` at
-    // spawn so a stored credential overrides any process-global secret the
-    // operator may still have set — making two mailboxes two distinct runs
-    // rather than a collision on one global. Configured reference-server
-    // static-secret runs fail closed before spawn when this fragment is absent;
+    // The controller resolves this connection-scoped fragment from credentials,
+    // provider authorization, or manual-upload/local-path state. The child
+    // receives only reviewed platform values, current-manifest declarations,
+    // this fragment, and explicit run controls. Configured reference-server
+    // static-secret runs fail closed before spawn when their fragment is absent;
     // direct standalone connector execution may still rely on process env.
     // See add-static-secret-owner-connect-primitive design Decision 5.
     staticSecretEnv = null,
@@ -2013,44 +2019,6 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     streamingRegistrationEnv,
   } = launchConfig;
 
-  /*
-  // Streaming registration env block (Mode A). Only emitted when BOTH the
-  // bearer token and the reference base URL are present — the registration
-  // client requires both. We do NOT pass a partial env: the child's
-  // resolveStreamingRegistrationFromEnv warns when one piece is missing,
-  // and we want that warning to fire only when the operator has wired up
-  // streaming and something else is wrong, not just because the spawn path
-  // routinely omits these.
-  const streamingRegistrationEnv =
-    streamingRegistrationToken && referenceBaseUrl
-      ? {
-          PDPP_REFERENCE_BASE_URL: referenceBaseUrl,
-          PDPP_RUN_ID: spawnRunId,
-          PDPP_STREAMING_REGISTRATION_TOKEN: streamingRegistrationToken,
-        }
-      : {};
-  const browserSurfaceLaunchEnv = buildBrowserSurfaceLaunchEnv({ browserSurfaceEnv, browserSurfaceLease });
-  // Connection-scoped static-secret env fragment, merged LAST at spawn so a
-  // stored credential takes precedence over any process-global provider secret.
-  const staticSecretLaunchEnv = staticSecretEnv && typeof staticSecretEnv === "object" ? staticSecretEnv : {};
-  const normalizedConnectorInstanceId = optionalNonEmptyEnv(connectorInstanceId);
-  const connectorInstanceEnv = normalizedConnectorInstanceId
-    ? { PDPP_CONNECTOR_INSTANCE_ID: normalizedConnectorInstanceId }
-    : {};
-  const runAutomationEnv = {
-    ...(triggerKind ? { PDPP_RUN_TRIGGER_KIND: triggerKind } : {}),
-    ...(automationMode ? { PDPP_RUN_AUTOMATION_MODE: automationMode } : {}),
-  };
-
-  // Spawn connector process. Connectors may be .ts (source-only) or .js
-  // (migrated or third-party). For .ts, use `node --import tsx/esm`, which
-  // loads tsx as a module hook into the normal Node runtime — no extra
-  // subprocess hop, signal handling works normally, and it's within a few
-  // ms of plain `node` on cached runs. Once Node's --strip-types is
-  // stable for our syntax subset, drop tsx entirely.
-  const isTsConnector = connectorPath.endsWith(".ts");
-  const args = isTsConnector ? ["--import", "tsx/esm", connectorPath] : [connectorPath];
-  */
   // `detached: true` puts the connector child into its OWN process group
   // (POSIX setsid), with the child's PID as the group leader. This is the
   // load-bearing half of the run-lifecycle lease invariant: a descendant
@@ -2069,18 +2037,27 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // support anywhere in the tree), so the POSIX process-group semantics hold.
   const proc = spawn(process.execPath, args, {
     detached: true,
-    env: {
-      ...process.env,
-      PDPP_CONNECTOR_ID: connectorId,
-      ...connectorInstanceEnv,
-      PDPP_OWNER_TOKEN: ownerToken,
-      PDPP_RS_URL: rsUrl,
-      ...streamingRegistrationEnv,
-      ...browserSurfaceLaunchEnv,
-      ...runAutomationEnv,
-      // LAST: a connection's own static secret overrides any process-global one.
-      ...staticSecretLaunchEnv,
-    },
+    env: composeConnectorChildEnvironment({
+      ...(approvedEnvironmentBindings ? { approvedBindings: approvedEnvironmentBindings } : {}),
+      approvedProxyConnectorIds: approvedProxyConnectorIds ?? [],
+      connectionEnv: {
+        allowedKeys: Object.keys(staticSecretLaunchEnv),
+        connectorId,
+        kind: "connection",
+        values: staticSecretLaunchEnv,
+      } satisfies ConnectorConnectionEnvironment,
+      connectorId,
+      explicitRunEnv: {
+        PDPP_CONNECTOR_ID: connectorId,
+        ...connectorInstanceEnv,
+        PDPP_OWNER_TOKEN: ownerToken,
+        PDPP_RS_URL: rsUrl,
+        ...streamingRegistrationEnv,
+        ...browserSurfaceLaunchEnv,
+        ...runAutomationEnv,
+      },
+      manifest,
+    }),
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -4782,7 +4759,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       clearTerminateTimer();
       const stderrTailRaw = stderrTail.finalize();
       if (stderrTailRaw.text) {
-        onProgress({ text: stderrTailRaw.text, type: "stderr" });
+        onProgress({ text: redactStderrTail(stderrTailRaw.text).text, type: "stderr" });
       }
       // Connector stderr is untrusted; redact recognized secret markers before
       // retaining the bounded diagnostic for owner/control-plane evidence.

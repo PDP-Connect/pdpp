@@ -13,7 +13,8 @@
       "local_device": {
         "required": true
       }
-    }
+    },
+    "environment_variables": ["IMESSAGE_DB_PATH", "IMESSAGE_ATTACHMENTS_ROOT"]
   },
   "capabilities": {
     "human_interaction": [],

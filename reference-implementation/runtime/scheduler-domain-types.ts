@@ -18,6 +18,7 @@
  */
 
 import type { SchedulerStore } from "../server/stores/scheduler-store.ts";
+import type { ConnectorEnvironmentBinding } from "./connector-child-environment.ts";
 import type { PendingPressureGap } from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
@@ -350,7 +351,22 @@ export interface SchedulerOptions {
     connectorInstanceId: string | null;
     ownerSubjectId: string | null;
   }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }>;
+  /** Operator-owned logical connector-input bindings for direct scheduled runs. */
+  approvedEnvironmentBindings?: readonly ConnectorEnvironmentBinding[];
+  /** Operator-authorized connector IDs that may receive ambient proxy aliases. */
+  approvedProxyConnectorIds?: readonly string[];
   connectors: readonly ConnectorSchedule[];
+  /**
+   * Deadline on `executeRun`'s pre-run gate (`readinessChecker`/`getState`),
+   * which runs BEFORE `runExecutor.launchRun` and has no built-in timeout of
+   * its own. On timeout, `executeRun` emits one typed
+   * `scheduler_dispatch_wedged` failed record and returns; its `finally`
+   * clears `runtime.activeRuns` normally.
+   *
+   * Defaults to `PDPP_DISPATCH_LIVENESS_CEILING_MS` when set, otherwise 30
+   * minutes. `0` or `Infinity` disables the deadline.
+   */
+  dispatchLivenessCeilingMs?: number;
   /**
    * Durable cross-path "latest successful run at" projection. Lets the back-off
    * gate clear a stale failure streak when a genuine success (any trigger,
