@@ -81,6 +81,7 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "Postgres preserves new run identity and rejects an unbound writer",
   "Postgres replacement ledger matches SQLite append/order/selection contract",
   "Postgres retained-size reads shape identically to SQLite for global/connection/stream/record-family/top grains",
+  "Postgres retained-size top rows preserve rejection byte and count measures after reconcile",
   "Postgres revokeDevice cascades revoked status when PDPP_TEST_POSTGRES_URL is set",
   "Postgres revokeDevice spares shared connector_instance when PDPP_TEST_POSTGRES_URL is set",
   "Postgres simultaneous empty public bootstraps use polling without concurrent-index deadlock",

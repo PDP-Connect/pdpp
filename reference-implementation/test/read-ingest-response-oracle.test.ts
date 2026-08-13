@@ -23,14 +23,66 @@ function isIngestFailure(value: unknown): value is IngestFailure & { ingest_fail
 }
 
 test("readIngestResponse returns accepted and rejected counts from an ok JSON response", async () => {
-  const resp = new Response(JSON.stringify({ records_accepted: 3, records_rejected: 1 }), {
+  const resp = new Response(
+    JSON.stringify({
+      records_accepted: 3,
+      records_attempted: 4,
+      records_rejected: 1,
+      rejections: [{ code: "invalid_record_identity", input_index: 2, receipt_id: "rr_one" }],
+    }),
+    {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    }
+  );
+
+  const result = await readIngestResponse(resp, "orders", 4, deps());
+
+  assert.deepEqual(result, {
+    records_accepted: 3,
+    records_attempted: 4,
+    records_rejected: 1,
+    rejections: [{ code: "invalid_record_identity", input_index: 2, receipt_id: "rr_one" }],
+  });
+});
+
+test("readIngestResponse accepts duplicate receipt ids at distinct rejected input indexes", async () => {
+  const resp = new Response(
+    JSON.stringify({
+      records_accepted: 0,
+      records_attempted: 2,
+      records_rejected: 2,
+      rejections: [
+        { code: "invalid_record_identity", input_index: 0, receipt_id: "rr_same" },
+        { code: "invalid_record_identity", input_index: 1, receipt_id: "rr_same" },
+      ],
+    }),
+    {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    }
+  );
+
+  const result = await readIngestResponse(resp, "orders", 2, deps());
+
+  assert.deepEqual(
+    result.rejections.map((rejection) => rejection.receipt_id),
+    ["rr_same", "rr_same"]
+  );
+});
+
+test("readIngestResponse rejects prior count-only 2xx responses", async () => {
+  const resp = new Response(JSON.stringify({ records_accepted: 2, records_rejected: 0 }), {
     headers: { "content-type": "application/json" },
     status: 200,
   });
 
-  const result = await readIngestResponse(resp, "orders", 4, deps());
-
-  assert.deepEqual(result, { records_accepted: 3, records_rejected: 1 });
+  await assert.rejects(readIngestResponse(resp, "orders", 2, deps()), (err: unknown) => {
+    assert.ok(isIngestFailure(err));
+    assert.equal(err.failure_reason, "ingest_response_invalid");
+    assert.equal(err.ingest_failure.phase, "validate_response");
+    return true;
+  });
 });
 
 test("readIngestResponse annotates non-ok responses with HTTP ingest failure details", async () => {
@@ -78,10 +130,164 @@ test("readIngestResponse reports invalid JSON as a parse_response failure", asyn
 });
 
 test("readIngestResponse reports missing numeric counts as a validate_response failure", async () => {
-  const resp = new Response(JSON.stringify({ records_accepted: "3", records_rejected: 0 }), {
-    headers: { "content-type": "application/json" },
-    status: 200,
+  const resp = new Response(
+    JSON.stringify({ records_accepted: "3", records_attempted: 2, records_rejected: 0, rejections: [] }),
+    {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    }
+  );
+
+  await assert.rejects(readIngestResponse(resp, "orders", 2, deps()), (err: unknown) => {
+    assert.ok(isIngestFailure(err));
+    assert.equal(err.failure_reason, "ingest_response_invalid");
+    assert.equal(err.ingest_failure.phase, "validate_response");
+    return true;
   });
+});
+
+test("readIngestResponse rejects unbalanced attempted counts", async () => {
+  const resp = new Response(
+    JSON.stringify({ records_accepted: 1, records_attempted: 3, records_rejected: 1, rejections: [] }),
+    {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    }
+  );
+
+  await assert.rejects(readIngestResponse(resp, "orders", 2, deps()), (err: unknown) => {
+    assert.ok(isIngestFailure(err));
+    assert.equal(err.failure_reason, "ingest_response_invalid");
+    assert.equal(err.ingest_failure.phase, "validate_response");
+    return true;
+  });
+});
+
+test("readIngestResponse rejects negative and non-integer counts", async () => {
+  const resp = new Response(
+    JSON.stringify({ records_accepted: 1.5, records_attempted: 2, records_rejected: -1, rejections: [] }),
+    {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    }
+  );
+
+  await assert.rejects(readIngestResponse(resp, "orders", 2, deps()), (err: unknown) => {
+    assert.ok(isIngestFailure(err));
+    assert.equal(err.failure_reason, "ingest_response_invalid");
+    assert.equal(err.ingest_failure.phase, "validate_response");
+    return true;
+  });
+});
+
+test("readIngestResponse rejects missing rejection receipt entries", async () => {
+  const resp = new Response(
+    JSON.stringify({ records_accepted: 1, records_attempted: 2, records_rejected: 1, rejections: [] }),
+    {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    }
+  );
+
+  await assert.rejects(readIngestResponse(resp, "orders", 2, deps()), (err: unknown) => {
+    assert.ok(isIngestFailure(err));
+    assert.equal(err.failure_reason, "ingest_response_invalid");
+    assert.equal(err.ingest_failure.phase, "validate_response");
+    return true;
+  });
+});
+
+test("readIngestResponse rejects duplicate rejection input indexes", async () => {
+  const resp = new Response(
+    JSON.stringify({
+      records_accepted: 0,
+      records_attempted: 2,
+      records_rejected: 2,
+      rejections: [
+        { code: "invalid_record_identity", input_index: 1, receipt_id: "rr_one" },
+        { code: "invalid_record_identity", input_index: 1, receipt_id: "rr_two" },
+      ],
+    }),
+    {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    }
+  );
+
+  await assert.rejects(readIngestResponse(resp, "orders", 2, deps()), (err: unknown) => {
+    assert.ok(isIngestFailure(err));
+    assert.equal(err.failure_reason, "ingest_response_invalid");
+    assert.equal(err.ingest_failure.phase, "validate_response");
+    return true;
+  });
+});
+
+test("readIngestResponse rejects out-of-range rejection input indexes", async () => {
+  const resp = new Response(
+    JSON.stringify({
+      records_accepted: 1,
+      records_attempted: 2,
+      records_rejected: 1,
+      rejections: [{ code: "invalid_record_identity", input_index: 2, receipt_id: "rr_one" }],
+    }),
+    {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    }
+  );
+
+  await assert.rejects(readIngestResponse(resp, "orders", 2, deps()), (err: unknown) => {
+    assert.ok(isIngestFailure(err));
+    assert.equal(err.failure_reason, "ingest_response_invalid");
+    assert.equal(err.ingest_failure.phase, "validate_response");
+    return true;
+  });
+});
+
+test("readIngestResponse rejects malformed rejection receipt fields", async () => {
+  const resp = new Response(
+    JSON.stringify({
+      records_accepted: 1,
+      records_attempted: 2,
+      records_rejected: 1,
+      rejections: [{ code: "", input_index: 1, receipt_id: "" }],
+    }),
+    {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    }
+  );
+
+  await assert.rejects(readIngestResponse(resp, "orders", 2, deps()), (err: unknown) => {
+    assert.ok(isIngestFailure(err));
+    assert.equal(err.failure_reason, "ingest_response_invalid");
+    assert.equal(err.ingest_failure.phase, "validate_response");
+    return true;
+  });
+});
+
+test("readIngestResponse accepts all-accepted responses with an empty rejection vector", async () => {
+  const resp = new Response(
+    JSON.stringify({ records_accepted: 2, records_attempted: 2, records_rejected: 0, rejections: [] }),
+    {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    }
+  );
+
+  const result = await readIngestResponse(resp, "orders", 2, deps());
+
+  assert.deepEqual(result, { records_accepted: 2, records_attempted: 2, records_rejected: 0, rejections: [] });
+});
+
+test("readIngestResponse rejects non-array rejection vectors", async () => {
+  const resp = new Response(
+    JSON.stringify({ records_accepted: 2, records_attempted: 2, records_rejected: 0, rejections: {} }),
+    {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    }
+  );
 
   await assert.rejects(readIngestResponse(resp, "orders", 2, deps()), (err: unknown) => {
     assert.ok(isIngestFailure(err));

@@ -20,7 +20,14 @@ import {
   makeConnectorInstanceSourceBindingKey,
   nonEmptyString,
 } from "./connector-instance-utils.ts";
+import {
+  ConnectorInstanceAdmissionError,
+  connectorInstanceAdvisoryLockKey,
+  connectorInstanceLockWaitMs,
+} from "./connector-instance-write-coordinator.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
+import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "./record-rejection-replay-key.ts";
+import { bumpStorageGeneration } from "./storage-generation.ts";
 
 const VALID_BACKENDS = new Set(["sqlite", "postgres"]);
 const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = "owner_local";
@@ -185,11 +192,45 @@ function normalizeBackend(value: unknown): StorageBackend {
   return normalized as StorageBackend;
 }
 
+/**
+ * The env var by which a deployment ARTIFACT asserts "records for this
+ * deployment live in Postgres". It is an assertion about the surrounding
+ * deployment that the runtime cannot observe for itself, in the same vein as
+ * `PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT` — and like that flag it
+ * is set by the artifact itself, never by the operator-supplied env file whose
+ * absence is the failure being guarded against.
+ *
+ * Deliberately NOT inferred. A `postgres` service sitting in the same compose
+ * file, or a `depends_on` on it, does not declare storage intent: the root
+ * compose brings that service up for env-gated conformance proofs and its own
+ * comment says the reference "falls back to the SQLite default" without the
+ * backend vars. Only this explicit declaration counts.
+ */
+const DEPLOYMENT_STORAGE_CONTRACT_ENV = "PDPP_DEPLOYMENT_STORAGE_CONTRACT";
+
 export function resolveStorageBackend({ env = process.env, opts = {} }: StorageOptions = {}) {
   const databaseUrl = opts.databaseUrl ?? env.PDPP_DATABASE_URL ?? env.DATABASE_URL;
   const explicitBackend = nonEmptyString(opts.storageBackend ?? env.PDPP_STORAGE_BACKEND);
   const backend = normalizeBackend(explicitBackend ?? (nonEmptyString(databaseUrl) ? "postgres" : "sqlite"));
   if (backend === "sqlite") {
+    // A deployment whose own artifact declares Postgres must never be served
+    // from SQLite. Reaching here with that contract set means the config the
+    // contract promised did not arrive — most often a hand-rolled
+    // `docker compose up` without the `--env-file` that supplies it. Serving
+    // anyway creates an EMPTY database behind the deployment's real URL and
+    // returns HTTP 200 over it while the actual records sit untouched in
+    // Postgres, which is worse than not starting.
+    //
+    // Only an explicit contract fails closed. With no contract at all this
+    // returns SQLite exactly as before: the single-container product is a
+    // legitimate deployment that runs with no storage config, and treating an
+    // unset backend as fatal would break it.
+    // `explicitBackend` is the operator answering the question deliberately —
+    // that is a choice, not the silent fallback. Only ABSENT config trips the
+    // guard, which is exactly the ruling's boundary.
+    if (!explicitBackend) {
+      assertDeploymentStorageContractSatisfied(env);
+    }
     return { backend };
   }
 
@@ -197,6 +238,22 @@ export function resolveStorageBackend({ env = process.env, opts = {} }: StorageO
     throw new Error("PDPP_STORAGE_BACKEND=postgres requires PDPP_DATABASE_URL or DATABASE_URL.");
   }
   return { backend, databaseUrl };
+}
+
+/**
+ * Fail closed when the deployment's artifact declared Postgres but the config
+ * that declaration promised is absent. Names the two vars that were expected,
+ * because the operator's next action is to supply them (or the `--env-file`
+ * carrying them), not to debug the runtime.
+ */
+function assertDeploymentStorageContractSatisfied(env: NodeJS.ProcessEnv): void {
+  const declared = nonEmptyString(env[DEPLOYMENT_STORAGE_CONTRACT_ENV])?.trim().toLowerCase();
+  if (declared !== "postgres") {
+    return;
+  }
+  throw new Error(
+    `Refusing to start: ${DEPLOYMENT_STORAGE_CONTRACT_ENV}=postgres declares this deployment stores records in Postgres, but neither PDPP_STORAGE_BACKEND=postgres nor PDPP_DATABASE_URL/DATABASE_URL is set, so the runtime would silently fall back to SQLite and serve an empty database behind this deployment's URL. Supply the backend configuration (for the reference stack, that is the '--env-file .env.docker' the canonical 'scripts/reference-stack.sh up' always passes), or remove ${DEPLOYMENT_STORAGE_CONTRACT_ENV} if this deployment really is SQLite-backed.`
+  );
 }
 
 export function getStorageBackendKind() {
@@ -221,7 +278,7 @@ export function getPostgresLockPool(): PgPool {
   return lockPool;
 }
 
-export function getPostgresLockPoolCapacity() {
+export function getPostgresLockPoolCapacity(): number {
   if (lockPoolCapacity <= 0) {
     throw new Error("Postgres lock pool capacity has not been initialized.");
   }
@@ -418,8 +475,143 @@ async function ensurePostgresBrowserSurfaceLeaseColumnsAndIndexes(client: PoolCl
   }
 }
 
+async function migratePostgresRetainedSizeRejectionColumns(client: PoolClient): Promise<void> {
+  const existingColumn = await client.query(
+    `SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'retained_size_global'
+        AND column_name = 'record_rejection_payload_bytes'`
+  );
+  for (const table of [
+    "retained_size_global",
+    "retained_size_connection",
+    "retained_size_stream",
+    "retained_size_record_family",
+    "retained_size_top_rows",
+  ]) {
+    // biome-ignore lint/performance/noAwaitInLoops: one PoolClient is already inside bootstrap transaction scope; pg warns on concurrent queries on the same client.
+    await client.query(
+      `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0`
+    );
+    await client.query(
+      `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS record_rejection_count BIGINT NOT NULL DEFAULT 0`
+    );
+  }
+  if ((existingColumn.rowCount ?? 0) > 0) {
+    return;
+  }
+  await client.query(`
+    INSERT INTO retained_size_stream(connector_instance_id, connector_id, stream, dirty)
+    SELECT connector_instance_id, MAX(connector_id), stream, 1
+      FROM record_rejections
+     GROUP BY connector_instance_id, stream
+    ON CONFLICT(connector_instance_id, stream) DO UPDATE SET dirty = 1;
+    INSERT INTO retained_size_connection(connector_instance_id, connector_id, dirty)
+    SELECT connector_instance_id, MAX(connector_id), 1
+      FROM record_rejections
+     GROUP BY connector_instance_id
+    ON CONFLICT(connector_instance_id) DO UPDATE SET dirty = 1;
+    UPDATE retained_size_global
+       SET dirty = 1
+     WHERE EXISTS (SELECT 1 FROM record_rejections)
+  `);
+}
+
 export function postgresQuery<Row extends QueryResultRow = QueryResultRow>(sql: string, params: unknown[] = []) {
   return getPostgresPool().query<Row>(sql, params);
+}
+
+async function migratePostgresRecordRejectionBytePayload(client: PoolClient): Promise<void> {
+  await client.query("BEGIN");
+  try {
+    await client.query(`
+    ALTER TABLE record_rejection_quota
+      ADD COLUMN IF NOT EXISTS pending_receipt_count BIGINT NOT NULL DEFAULT 0 CHECK (pending_receipt_count >= 0)
+  `);
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS payload BYTEA");
+    await client.query(
+      "ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS rejection_generation TEXT NOT NULL DEFAULT 'record-rejection-v1'"
+    );
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS first_run_id TEXT");
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS latest_run_id TEXT");
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS accepted_run_id TEXT");
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS accepted_record_key TEXT");
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS accepted_at TEXT");
+    await client.query(
+      "UPDATE record_rejections SET first_run_id = COALESCE(first_run_id, run_id), latest_run_id = COALESCE(latest_run_id, run_id)"
+    );
+    await client.query("ALTER TABLE record_rejections DROP CONSTRAINT IF EXISTS record_rejections_status_check");
+    await client.query(
+      "ALTER TABLE record_rejections ADD CONSTRAINT record_rejections_status_check CHECK (status IN ('pending', 'stale_after_acceptance'))"
+    );
+    const legacyTextColumn = await client.query(
+      `SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'record_rejections'
+        AND column_name = 'payload_text'
+      LIMIT 1`
+    );
+    if ((legacyTextColumn.rowCount ?? 0) > 0) {
+      await client.query(
+        "UPDATE record_rejections SET payload = convert_to(payload_text, 'UTF8') WHERE payload IS NULL"
+      );
+    }
+    await client.query(`
+    UPDATE record_rejection_quota
+       SET pending_payload_bytes = counts.payload_bytes,
+           pending_receipt_count = counts.receipt_count
+      FROM (
+        SELECT owner_subject_id,
+               COALESCE(SUM(payload_bytes), 0)::bigint AS payload_bytes,
+               COUNT(*)::bigint AS receipt_count
+          FROM record_rejections
+         GROUP BY owner_subject_id
+      ) counts
+     WHERE record_rejection_quota.owner_subject_id = counts.owner_subject_id
+       AND (
+         record_rejection_quota.pending_payload_bytes IS DISTINCT FROM counts.payload_bytes
+         OR record_rejection_quota.pending_receipt_count IS DISTINCT FROM counts.receipt_count
+       )
+  `);
+    await client.query("ALTER TABLE record_rejections ALTER COLUMN payload SET NOT NULL");
+    if ((legacyTextColumn.rowCount ?? 0) > 0) {
+      await client.query("ALTER TABLE record_rejections DROP COLUMN payload_text");
+    }
+    const rows = await client.query<{
+      connector_instance_id: string;
+      owner_subject_id: string;
+      payload: Buffer;
+      reason_code: string;
+      receipt_id: string;
+      stream: string;
+    }>(
+      `SELECT receipt_id, owner_subject_id, connector_instance_id, stream, payload, reason_code
+         FROM record_rejections
+        WHERE rejection_generation <> $1`,
+      [RECORD_REJECTION_GENERATION]
+    );
+    for (const row of rows.rows) {
+      // biome-ignore lint/performance/noAwaitInLoops: Migration updates stay ordered inside the explicit transaction.
+      await client.query(
+        "UPDATE record_rejections SET replay_key = $1, rejection_generation = $2 WHERE receipt_id = $3",
+        [
+          recordRejectionReplayKey({
+            connectorInstanceId: row.connector_instance_id,
+            ownerSubjectId: row.owner_subject_id,
+            payload: row.payload,
+            reasonCode: row.reason_code,
+            stream: row.stream,
+          }),
+          RECORD_REJECTION_GENERATION,
+          row.receipt_id,
+        ]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
 }
 
 // ─── Physical storage footprint (read-only operator diagnostics) ─────────────
@@ -524,10 +716,89 @@ function coerceByteCount(value: unknown): number | null {
   return n;
 }
 
-export async function withPostgresTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+// Postgres SQLSTATE raised when `SET LOCAL lock_timeout` expires waiting on
+// any lock, including `pg_advisory_xact_lock` — see acquireConnectorInstanceXactLock.
+const POSTGRES_LOCK_NOT_AVAILABLE_SQLSTATE = "55P03";
+
+/**
+ * Acquires a TRANSACTION-scoped connector-instance advisory lock
+ * (`pg_advisory_xact_lock`) as the first statement inside an open
+ * transaction. Unlike the session-scoped `pg_try_advisory_lock` this
+ * subsystem used before, the lock releases itself automatically at this
+ * transaction's COMMIT or ROLLBACK — no separate unlock call, no dedicated
+ * connection, no risk of leaking a lock if the process holding it dies
+ * mid-callback. It rides the SAME connection `withPostgresTransaction`
+ * already checked out, so a caller acquiring this lock costs zero additional
+ * Postgres pool connections.
+ *
+ * Bounded wait: `SET LOCAL lock_timeout` (scoped to this transaction only)
+ * makes the subsequent blocking `pg_advisory_xact_lock` call fail fast with
+ * SQLSTATE 55P03 instead of queuing indefinitely at the Postgres lock
+ * manager. Translated to `ConnectorInstanceAdmissionError` so callers keep
+ * today's external contract (HTTP 503, `connector_instance_busy`).
+ *
+ * Concurrent transactions locking the SAME connector instance serialize FIFO
+ * at the Postgres lock manager — identical ordering guarantee to the prior
+ * session-scoped design, just transaction-scoped instead of session-scoped.
+ * See harden-connector-instance-write-fence-transaction-native.
+ */
+async function acquireConnectorInstanceXactLock(client: PoolClient, connectorInstanceId: string): Promise<void> {
+  const key = connectorInstanceAdvisoryLockKey(connectorInstanceId);
+  await client.query(`SET LOCAL lock_timeout = '${connectorInstanceLockWaitMs()}ms'`);
+  try {
+    await client.query("SELECT pg_advisory_xact_lock($1::bigint)", [key]);
+  } catch (err) {
+    if ((err as { code?: string } | null)?.code === POSTGRES_LOCK_NOT_AVAILABLE_SQLSTATE) {
+      // ConnectorInstanceAdmissionError's constructor takes no arguments
+      // (matching its every other throw site in
+      // connector-instance-write-coordinator.ts), so the original
+      // lock_timeout error is not chained via `cause` — it carries no
+      // information beyond the SQLSTATE already checked above.
+      // biome-ignore lint/style/useErrorCause: matches ConnectorInstanceAdmissionError's existing no-arg constructor contract.
+      throw new ConnectorInstanceAdmissionError();
+    }
+    throw err;
+  }
+}
+
+/**
+ * Test-only direct-invocation seam for `acquireConnectorInstanceXactLock`
+ * (2026-08-10 red-team follow-up): the prior dedicated-lock-pool design had
+ * a deterministic default-CI test (`__setConnectorInstancePostgresLockPoolForTest`)
+ * proving exactly-once advisory-lock acquisition against a fake pool/client.
+ * That whole mechanism was removed with the dedicated pool itself, leaving
+ * NO default-CI coverage of this module's real acquisition sequence (the
+ * `SET LOCAL lock_timeout` statement, the `pg_advisory_xact_lock` call with
+ * the derived key, and the `55P03` -> `ConnectorInstanceAdmissionError`
+ * translation) — only the dedicated-Postgres-gated tests in
+ * connector-instance-write-coordinator.test.ts exercise it, and those are
+ * skipped by default. Exporting the function itself (rather than an
+ * injectable fake pool) lets a test drive it directly against a fake
+ * `PoolClient`-shaped object with no real Postgres connection at all, which
+ * is both simpler than resurrecting a fake-pool seam and more precisely
+ * targeted at the one thing this module actually still does: the per-call
+ * (not per-batch) lock statement sequence.
+ */
+export function __acquireConnectorInstanceXactLockForTest(
+  client: PoolClient,
+  connectorInstanceId: string
+): Promise<void> {
+  return acquireConnectorInstanceXactLock(client, connectorInstanceId);
+}
+
+/** The client type `withPostgresTransaction`'s callback receives — shared so callers that thread a client through several functions (e.g. version-gated derived-index publish) don't each redeclare it. */
+export type PostgresTransactionClient = PoolClient;
+
+export async function withPostgresTransaction<T>(
+  fn: (client: PoolClient) => Promise<T>,
+  options?: { lockConnectorInstanceId?: string }
+): Promise<T> {
   const client = await getPostgresPool().connect();
   try {
     await client.query("BEGIN");
+    if (options?.lockConnectorInstanceId) {
+      await acquireConnectorInstanceXactLock(client, options.lockConnectorInstanceId);
+    }
     const value = await fn(client);
     await client.query("COMMIT");
     return value;
@@ -583,6 +854,8 @@ export async function initExistingPostgresRepairStorage(config: StorageConfig | 
     await closePostgresStorage();
   }
   pool = new Pool({ connectionString: config.databaseUrl });
+  lockPoolCapacity = 1;
+  lockPool = new Pool({ connectionString: config.databaseUrl, max: lockPoolCapacity });
   activeBackend = "postgres";
   try {
     const result = await pool.query<{ table_name: string }>(
@@ -617,12 +890,15 @@ export async function initPostgresStorage(
     await closePostgresStorage();
   }
 
-  const lockPoolMax = Number.parseInt(process.env.PDPP_PG_INGEST_LOCK_POOL_SIZE || "", 10);
-  const max = Number.isInteger(lockPoolMax) && lockPoolMax > 0 ? lockPoolMax : 4;
   pool = new Pool({ connectionString: config.databaseUrl });
-  lockPool = new Pool({ connectionString: config.databaseUrl, max });
-  lockPoolCapacity = max;
+  lockPoolCapacity = 1;
+  lockPool = new Pool({ connectionString: config.databaseUrl, max: lockPoolCapacity });
   activeBackend = "postgres";
+  // Storage-lifecycle fence (server/storage-generation.ts): a fresh pool
+  // means any deferred work scheduled against a prior pool (this function's
+  // own closePostgresStorage() call above, or a prior SQLite epoch) must
+  // never touch this new one.
+  bumpStorageGeneration();
 
   await bootstrapPostgresSchema({ log });
   return pool;
@@ -638,6 +914,10 @@ export async function closePostgresStorage() {
   semanticEmbeddingColumnMode = "jsonb";
   semanticIterativeScanSupported = false;
   lexicalPgSearchAvailability = "unavailable";
+  // Storage-lifecycle fence: any deferred index-maintenance work scheduled
+  // against the pool this just closed must never run against whatever pool
+  // a later initPostgresStorage() creates.
+  bumpStorageGeneration();
   if (current) {
     await current.end();
   }
@@ -701,6 +981,43 @@ export async function bootstrapPostgresSchema({
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instances_owner_identity_page
         ON connector_instances(owner_subject_id, connector_id, created_at, connector_instance_id);
 
+      CREATE TABLE IF NOT EXISTS record_rejection_quota (
+        owner_subject_id TEXT PRIMARY KEY,
+        pending_payload_bytes BIGINT NOT NULL DEFAULT 0 CHECK (pending_payload_bytes >= 0),
+        pending_receipt_count BIGINT NOT NULL DEFAULT 0 CHECK (pending_receipt_count >= 0),
+        updated_at TEXT NOT NULL DEFAULT (now() AT TIME ZONE 'utc')::text
+      );
+
+      CREATE TABLE IF NOT EXISTS record_rejections (
+        receipt_id TEXT PRIMARY KEY,
+        owner_subject_id TEXT NOT NULL REFERENCES record_rejection_quota(owner_subject_id) ON DELETE RESTRICT,
+        connector_instance_id TEXT NOT NULL REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+        connector_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        run_id TEXT,
+        first_input_index BIGINT NOT NULL CHECK (first_input_index >= 0),
+        latest_input_index BIGINT NOT NULL CHECK (latest_input_index >= 0),
+        first_run_id TEXT,
+        latest_run_id TEXT,
+        reason_code TEXT NOT NULL,
+        payload BYTEA NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        payload_bytes BIGINT NOT NULL CHECK (payload_bytes >= 0),
+        rejection_generation TEXT NOT NULL DEFAULT '${RECORD_REJECTION_GENERATION}',
+        replay_key TEXT NOT NULL UNIQUE,
+        replay_count BIGINT NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'stale_after_acceptance')),
+        accepted_run_id TEXT,
+        accepted_record_key TEXT,
+        accepted_at TEXT,
+        created_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_record_rejections_connection_page
+        ON record_rejections(owner_subject_id, connector_instance_id, created_at, receipt_id);
+      CREATE INDEX IF NOT EXISTS idx_pg_record_rejections_connection_receipt
+        ON record_rejections(owner_subject_id, connector_instance_id, receipt_id);
+
       -- Durable record that a connector-instance IDENTITY was owner-deleted.
       -- See the SQLite arm (server/db.js) for the full rationale: the
       -- deterministic connector_instance_id/binding key would otherwise let a
@@ -727,6 +1044,12 @@ export async function bootstrapPostgresSchema({
         ADD COLUMN IF NOT EXISTS record_reset_generation BIGINT NOT NULL DEFAULT 0;
       ALTER TABLE connector_instances
         ADD COLUMN IF NOT EXISTS manifest_generation BIGINT NOT NULL DEFAULT 0;
+      -- Generic, connector-agnostic record-identity-generation checkpoint:
+      -- see ensureRecordIdentityGenerationColumn's doc comment in db.ts for
+      -- the full design (compared against a manifest's own declared
+      -- capabilities.record_identity.generation at reconcile time).
+      ALTER TABLE connector_instances
+        ADD COLUMN IF NOT EXISTS record_identity_generation BIGINT NOT NULL DEFAULT 0;
 
       -- Existing Postgres deployments may have been bootstrapped before the
       -- static-secret draft lifecycle existed. Widen the status CHECK in place
@@ -769,7 +1092,7 @@ export async function bootstrapPostgresSchema({
         connector_instance_id TEXT PRIMARY KEY
           REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
         owner_subject_id TEXT NOT NULL,
-        credential_kind TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
+        credential_kind TEXT NOT NULL CHECK (credential_kind IN ('access_token', 'api_key', 'app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
         sealed_secret TEXT NOT NULL,
         fingerprint TEXT,
         status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
@@ -877,6 +1200,43 @@ export async function bootstrapPostgresSchema({
           ALTER TABLE connector_instance_credentials
             ADD CONSTRAINT connector_instance_credentials_credential_kind_check
             CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password'));
+        END IF;
+      END $$;
+
+      -- Widen again for 'access_token' / 'api_key' — the credential_capture.kind
+      -- shapes declared by GroupMe, Steam, and Jellyfin's manifests.
+      DO $$
+      DECLARE
+        credential_kind_constraint_name TEXT;
+        credential_kind_constraint_def TEXT;
+      BEGIN
+        FOR credential_kind_constraint_name, credential_kind_constraint_def IN
+          SELECT conname, pg_get_constraintdef(oid)
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instance_credentials'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%credential_kind%'
+             AND pg_get_constraintdef(oid) LIKE '%secret_bundle%'
+             AND pg_get_constraintdef(oid) LIKE '%username_password%'
+        LOOP
+          IF credential_kind_constraint_def NOT LIKE '%access_token%'
+             OR credential_kind_constraint_def NOT LIKE '%api_key%' THEN
+            EXECUTE format('ALTER TABLE connector_instance_credentials DROP CONSTRAINT %I', credential_kind_constraint_name);
+          END IF;
+        END LOOP;
+
+        IF NOT EXISTS (
+          SELECT 1
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instance_credentials'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%credential_kind%'
+             AND pg_get_constraintdef(oid) LIKE '%access_token%'
+             AND pg_get_constraintdef(oid) LIKE '%api_key%'
+        ) THEN
+          ALTER TABLE connector_instance_credentials
+            ADD CONSTRAINT connector_instance_credentials_credential_kind_check
+            CHECK (credential_kind IN ('access_token', 'api_key', 'app_password', 'personal_access_token', 'secret_bundle', 'username_password'));
         END IF;
       END $$;
 
@@ -1158,7 +1518,8 @@ export async function bootstrapPostgresSchema({
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         consumed_at TEXT,
-        revoked_at TEXT
+        revoked_at TEXT,
+        collection_scope_json JSONB
       );
       CREATE INDEX IF NOT EXISTS idx_pg_device_enrollment_codes_owner_status
         ON device_enrollment_codes(owner_subject_id, status, expires_at);
@@ -1812,9 +2173,11 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         metadata_json             JSONB
@@ -1826,9 +2189,11 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT
       );
@@ -1842,9 +2207,11 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         PRIMARY KEY(connector_instance_id, stream)
@@ -1858,9 +2225,11 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         PRIMARY KEY(connector_instance_id, stream, record_family)
@@ -1879,10 +2248,12 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         total_retained_bytes      BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         metadata_json             JSONB,
@@ -1945,6 +2316,26 @@ export async function bootstrapPostgresSchema({
         observed_at TEXT NOT NULL,
         PRIMARY KEY(connector_instance_id, stream, manifest_generation)
       );
+
+      -- Scope-keyed (never per-record) dirty flag for lexical+semantic
+      -- derived index maintenance. See server/db.ts for the SQLite mirror
+      -- and full rationale.
+      CREATE TABLE IF NOT EXISTS search_index_dirty (
+        connector_instance_id TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        dirty INTEGER NOT NULL DEFAULT 1,
+        marked_at TEXT NOT NULL,
+        reconciled_at TEXT,
+        last_error TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT,
+        PRIMARY KEY(connector_instance_id, stream)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_search_index_dirty_pending
+        ON search_index_dirty(dirty);
+      ALTER TABLE search_index_dirty ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE search_index_dirty ADD COLUMN IF NOT EXISTS next_attempt_at TEXT;
 
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS last_record_updated_at TEXT;
@@ -2177,9 +2568,26 @@ export async function bootstrapPostgresSchema({
       CREATE INDEX IF NOT EXISTS idx_pg_client_event_attempts_queue
         ON client_event_attempts(queue_id, attempt_id);
     `);
+
+    // Deployment-scoped provider app config (e.g. a shared OAuth client
+    // id/secret), keyed generically by (identity_group, logical_key) --
+    // never by an env-var literal. Mirrors the SQLite `provider_app_config`
+    // table (server/db.ts). See provider-app-config-store.ts.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS provider_app_config (
+        identity_group TEXT NOT NULL,
+        logical_key    TEXT NOT NULL,
+        sealed_value   TEXT NOT NULL,
+        updated_at     TEXT NOT NULL,
+        PRIMARY KEY (identity_group, logical_key)
+      );
+    `);
+
     await ensurePostgresBrowserSurfaceLeaseColumnsAndIndexes(client);
     await migratePostgresBrowserSurfaceLeaseLifecycleChecks(client);
     await migratePostgresBrowserSurfaceLeasePriority(client);
+    await migratePostgresRecordRejectionBytePayload(client);
+    await migratePostgresRetainedSizeRejectionColumns(client);
     await migratePostgresSpineSourceColumns(client);
     await migratePostgresDeviceExporterColumns(client);
     await migratePostgresManifestWriteViolations(client);
@@ -4408,7 +4816,8 @@ async function migratePostgresDeviceExporterColumns(client: PoolClient): Promise
     ALTER TABLE device_enrollment_codes
       ADD COLUMN IF NOT EXISTS connector_id TEXT NOT NULL DEFAULT 'unknown',
       ADD COLUMN IF NOT EXISTS local_binding_id TEXT NOT NULL DEFAULT 'default',
-      ADD COLUMN IF NOT EXISTS display_name TEXT
+      ADD COLUMN IF NOT EXISTS display_name TEXT,
+      ADD COLUMN IF NOT EXISTS collection_scope_json JSONB
   `);
   await client.query(`
     ALTER TABLE device_source_instances

@@ -77,6 +77,8 @@ try {
       now: goPayload.now,
       ownerSubjectId: goPayload.ownerSubjectId,
       purge: {
+        deleteRecordRejectionsPostgres: () => Promise.resolve(0),
+        deleteRecordRejectionsSqlite: () => 0,
         deleteRecordRowsPostgres: () => Promise.resolve(0),
         deleteRecordRowsSqlite: () => 0,
         enumerateStreams: () =>

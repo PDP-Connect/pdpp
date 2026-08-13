@@ -32,6 +32,10 @@ services:
       # credentials you store, so back it up with the database.
       PDPP_OWNER_PASSWORD: ${PDPP_OWNER_PASSWORD:?generate into .env — see deploy/docker/README.md}
       PDPP_CREDENTIAL_ENCRYPTION_KEY: ${PDPP_CREDENTIAL_ENCRYPTION_KEY:?generate into .env — see deploy/docker/README.md}
+      # Pending rejected source lines remain recoverable until their connection
+      # is deleted. Bound their aggregate bytes per owner; leave blank for the
+      # reference server's 10 MiB default.
+      PDPP_RECORD_REJECTION_OWNER_QUOTA_BYTES: ${PDPP_RECORD_REJECTION_OWNER_QUOTA_BYTES:-}
       # Semantic search: allow the one-time embedding-model download and cache
       # it on a volume. Set to 0 for a leaner, lexical-only node.
       PDPP_EMBEDDING_DOWNLOAD_ALLOWED: ${PDPP_EMBEDDING_DOWNLOAD_ALLOWED:-1}

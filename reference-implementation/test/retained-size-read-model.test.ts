@@ -118,6 +118,51 @@ test("retained-size rebuild derives global, connection, stream, and top rows fro
     assert.equal(mustExist(topRecords[0], "record top row must exist").record_key, "two");
   }));
 
+test("SQLite retained-size top rows preserve rejection byte and count measures after reconcile", () =>
+  withTempDb(async () => {
+    const payloadBytes = 11;
+    getDb()
+      .prepare(
+        `INSERT INTO retained_size_connection(
+           connector_instance_id, connector_id, record_rejection_payload_bytes,
+           record_rejection_count, dirty
+         )
+         VALUES(?, ?, ?, ?, 0)`
+      )
+      .run("cin_rejection_top", "test.connector", payloadBytes, 1);
+    getDb()
+      .prepare(
+        `INSERT INTO retained_size_stream(
+           connector_instance_id, connector_id, stream, record_rejection_payload_bytes,
+           record_rejection_count, dirty
+         )
+         VALUES(?, ?, ?, ?, ?, 0)`
+      )
+      .run("cin_rejection_top", "test.connector", "items", payloadBytes, 1);
+
+    await reconcileDirtyRetainedSize();
+
+    const [topConnection] = await listRetainedSizeTop({
+      limit: 1,
+      measure: "record_rejection_payload_bytes",
+      scope: "connection",
+    });
+    const connectionTop = mustExist(topConnection, "connection rejection top row must exist");
+    assert.equal(connectionTop.record_rejection_payload_bytes, 11);
+    assert.equal(connectionTop.record_rejection_count, 1);
+    assert.equal(connectionTop.total_retained_bytes, 11);
+
+    const [topStream] = await listRetainedSizeTop({
+      limit: 1,
+      measure: "record_rejection_payload_bytes",
+      scope: "stream",
+    });
+    const streamTop = mustExist(topStream, "stream rejection top row must exist");
+    assert.equal(streamTop.record_rejection_payload_bytes, 11);
+    assert.equal(streamTop.record_rejection_count, 1);
+    assert.equal(streamTop.total_retained_bytes, 11);
+  }));
+
 test("retained-size record deltas update exact rows and mark top-N rows stale", () =>
   withTempDb(async () => {
     await ingestRecord(storage, {
@@ -521,18 +566,27 @@ const PG_CONNECTOR_ID = "pg_retained_size_connector";
 const PG_INSTANCE_ID = "cin_pg_retained_size_a";
 const PG_INSTANCE_ID_B = "cin_pg_retained_size_b";
 
+interface RetainedSizeFixtureIds {
+  readonly connectorId?: string;
+  readonly instanceId?: string;
+  readonly instanceIdB?: string;
+}
+
 // A self-contained fixture covering every read grain. The same numbers are
 // written to SQLite and to Postgres so a passing assertion means the two
 // dialects produced byte-identical shaped reads.
-function retainedSizeFixture() {
+function retainedSizeFixture(ids: RetainedSizeFixtureIds = {}) {
+  const connectorId = ids.connectorId ?? PG_CONNECTOR_ID;
+  const instanceId = ids.instanceId ?? PG_INSTANCE_ID;
+  const instanceIdB = ids.instanceIdB ?? PG_INSTANCE_ID_B;
   return {
     connections: [
       {
         blob_bytes: 600,
         blob_count: 1,
         computed_at: PG_NOW,
-        connector_id: PG_CONNECTOR_ID,
-        connector_instance_id: PG_INSTANCE_ID,
+        connector_id: connectorId,
+        connector_instance_id: instanceId,
         current_record_json_bytes: 310,
         dirty: 0,
         record_count: 3,
@@ -543,8 +597,8 @@ function retainedSizeFixture() {
         blob_bytes: 300,
         blob_count: 1,
         computed_at: PG_NOW,
-        connector_id: PG_CONNECTOR_ID,
-        connector_instance_id: PG_INSTANCE_ID_B,
+        connector_id: connectorId,
+        connector_instance_id: instanceIdB,
         current_record_json_bytes: 200,
         dirty: 0,
         record_count: 2,
@@ -568,8 +622,8 @@ function retainedSizeFixture() {
         blob_bytes: 400,
         blob_count: 1,
         computed_at: PG_NOW,
-        connector_id: PG_CONNECTOR_ID,
-        connector_instance_id: PG_INSTANCE_ID,
+        connector_id: connectorId,
+        connector_instance_id: instanceId,
         current_record_json_bytes: 210,
         dirty: 0,
         record_count: 2,
@@ -584,8 +638,8 @@ function retainedSizeFixture() {
         blob_bytes: 400,
         blob_count: 1,
         computed_at: PG_NOW,
-        connector_id: PG_CONNECTOR_ID,
-        connector_instance_id: PG_INSTANCE_ID,
+        connector_id: connectorId,
+        connector_instance_id: instanceId,
         current_record_json_bytes: 210,
         dirty: 0,
         record_count: 2,
@@ -597,8 +651,8 @@ function retainedSizeFixture() {
         blob_bytes: 200,
         blob_count: 0,
         computed_at: PG_NOW,
-        connector_id: PG_CONNECTOR_ID,
-        connector_instance_id: PG_INSTANCE_ID,
+        connector_id: connectorId,
+        connector_instance_id: instanceId,
         current_record_json_bytes: 100,
         dirty: 0,
         record_count: 1,
@@ -613,11 +667,11 @@ function retainedSizeFixture() {
         blob_count: 1,
         blob_id: null,
         computed_at: PG_NOW,
-        connector_id: PG_CONNECTOR_ID,
-        connector_instance_id: PG_INSTANCE_ID,
+        connector_id: connectorId,
+        connector_instance_id: instanceId,
         current_record_json_bytes: 310,
         dirty: 0,
-        grain_key: PG_INSTANCE_ID,
+        grain_key: instanceId,
         measure: "total_retained_bytes",
         metadata: { last_error: null, rebuild_status: "idle", stale_since: null, state: "fresh" },
         rank: 1,
@@ -634,11 +688,11 @@ function retainedSizeFixture() {
         blob_count: 1,
         blob_id: null,
         computed_at: PG_NOW,
-        connector_id: PG_CONNECTOR_ID,
-        connector_instance_id: PG_INSTANCE_ID_B,
+        connector_id: connectorId,
+        connector_instance_id: instanceIdB,
         current_record_json_bytes: 200,
         dirty: 0,
-        grain_key: PG_INSTANCE_ID_B,
+        grain_key: instanceIdB,
         measure: "total_retained_bytes",
         metadata: { last_error: null, rebuild_status: "idle", stale_since: null, state: "fresh" },
         rank: 2,
@@ -923,35 +977,94 @@ async function seedRetainedSizeTopRowPostgres(row: ReturnType<typeof retainedSiz
   );
 }
 
-async function cleanupRetainedSizePostgres() {
+async function cleanupRetainedSizePostgres(connectorId = PG_CONNECTOR_ID) {
   await postgresQuery(`DELETE FROM retained_size_global WHERE projection_key = 'global'`);
-  await postgresQuery("DELETE FROM retained_size_connection WHERE connector_id = $1", [PG_CONNECTOR_ID]);
-  await postgresQuery("DELETE FROM retained_size_stream WHERE connector_id = $1", [PG_CONNECTOR_ID]);
-  await postgresQuery("DELETE FROM retained_size_record_family WHERE connector_id = $1", [PG_CONNECTOR_ID]);
-  await postgresQuery("DELETE FROM retained_size_top_rows WHERE connector_id = $1", [PG_CONNECTOR_ID]);
+  await postgresQuery("DELETE FROM retained_size_top_rows");
+  await postgresQuery("DELETE FROM retained_size_connection WHERE connector_id = $1", [connectorId]);
+  await postgresQuery("DELETE FROM retained_size_stream WHERE connector_id = $1", [connectorId]);
+  await postgresQuery("DELETE FROM retained_size_record_family WHERE connector_id = $1", [connectorId]);
 }
+
+test("Postgres retained-size top rows preserve rejection byte and count measures after reconcile", {
+  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+}, async () => {
+  const payloadBytes = 17_000;
+  const databaseUrl = mustExist(
+    process.env.PDPP_TEST_POSTGRES_URL,
+    "Postgres test URL must be configured when test runs"
+  );
+  const connectorId = `pg_retained_size_rejection_${process.pid}_${Date.now()}`;
+  const instanceId = `cin_${connectorId}`;
+  await initPostgresStorage({ backend: "postgres", databaseUrl });
+  try {
+    await cleanupRetainedSizePostgres(connectorId);
+    await postgresQuery(
+      `INSERT INTO retained_size_connection(
+         connector_instance_id, connector_id, record_rejection_payload_bytes,
+         record_rejection_count, dirty
+       )
+       VALUES($1, $2, $3, $4, 0)`,
+      [instanceId, connectorId, payloadBytes, 2]
+    );
+    await postgresQuery(
+      `INSERT INTO retained_size_stream(
+         connector_instance_id, connector_id, stream, record_rejection_payload_bytes,
+         record_rejection_count, dirty
+       )
+       VALUES($1, $2, $3, $4, $5, 0)`,
+      [instanceId, connectorId, "items", payloadBytes, 2]
+    );
+
+    await reconcileDirtyRetainedSize();
+
+    const [topConnection] = await listRetainedSizeTop({
+      limit: 1,
+      measure: "record_rejection_payload_bytes",
+      scope: "connection",
+    });
+    const connectionTop = mustExist(topConnection, "connection rejection top row must exist");
+    assert.equal(connectionTop.record_rejection_payload_bytes, payloadBytes);
+    assert.equal(connectionTop.record_rejection_count, 2);
+    assert.equal(connectionTop.total_retained_bytes, payloadBytes);
+
+    const [topStream] = await listRetainedSizeTop({
+      limit: 1,
+      measure: "record_rejection_payload_bytes",
+      scope: "stream",
+    });
+    const streamTop = mustExist(topStream, "stream rejection top row must exist");
+    assert.equal(streamTop.record_rejection_payload_bytes, payloadBytes);
+    assert.equal(streamTop.record_rejection_count, 2);
+    assert.equal(streamTop.total_retained_bytes, payloadBytes);
+  } finally {
+    await cleanupRetainedSizePostgres(connectorId);
+    await closePostgresStorage();
+  }
+});
 
 // Read every grain through the real production read functions. Backend is
 // selected by isPostgresStorageBackend() inside those functions, so calling
 // this on SQLite vs Postgres exercises both dialect arms with no test-side
 // branching.
-async function readAllRetainedSizeGrains() {
-  const fixture = retainedSizeFixture();
+async function readAllRetainedSizeGrains(ids: RetainedSizeFixtureIds = {}) {
+  const fixture = retainedSizeFixture(ids);
+  const connectorId = ids.connectorId ?? PG_CONNECTOR_ID;
+  const instanceId = ids.instanceId ?? PG_INSTANCE_ID;
   return {
     connections: await listRetainedSizeConnections(),
     connectionsFiltered: await listRetainedSizeConnections({
-      connectorInstanceId: PG_INSTANCE_ID,
+      connectorInstanceId: instanceId,
     }),
     fixture,
     global: await getRetainedSizeGlobal(),
     recordFamilies: await listRetainedSizeRecordFamilies({
-      connectorInstanceId: PG_INSTANCE_ID,
+      connectorInstanceId: instanceId,
       stream: "messages",
     }),
-    streams: await listRetainedSizeStreams({ connectorInstanceId: PG_INSTANCE_ID }),
-    streamsByConnector: await listRetainedSizeStreams({ connectorId: PG_CONNECTOR_ID }),
+    streams: await listRetainedSizeStreams({ connectorInstanceId: instanceId }),
+    streamsByConnector: await listRetainedSizeStreams({ connectorId }),
     streamsComposed: await listRetainedSizeStreams({
-      connectorId: PG_CONNECTOR_ID,
+      connectorId,
       stream: "messages",
     }),
     top: await listRetainedSizeTop({
@@ -965,6 +1078,10 @@ async function readAllRetainedSizeGrains() {
 test("Postgres retained-size reads shape identically to SQLite for global/connection/stream/record-family/top grains", {
   skip: !process.env.PDPP_TEST_POSTGRES_URL,
 }, async () => {
+  const connectorId = `pg_retained_size_parity_${process.pid}_${Date.now()}`;
+  const instanceId = `cin_${connectorId}_a`;
+  const instanceIdB = `cin_${connectorId}_b`;
+  const fixtureIds = { connectorId, instanceId, instanceIdB };
   // 1. Compute the SQLite-shaped reads from a temp DB FIRST, while the
   //    backend is still SQLite.
   const dir = mkdtempSync(join(tmpdir(), "pdpp-retained-size-pg-parity-"));
@@ -973,13 +1090,13 @@ test("Postgres retained-size reads shape identically to SQLite for global/connec
   let sqliteReads;
   try {
     initDb(join(dir, "pdpp.sqlite"));
-    const fx = retainedSizeFixture();
+    const fx = retainedSizeFixture(fixtureIds);
     seedRetainedSizeGlobalSqlite(fx.global);
     fx.connections.forEach(seedRetainedSizeConnectionSqlite);
     fx.streams.forEach(seedRetainedSizeStreamSqlite);
     fx.recordFamilies.forEach(seedRetainedSizeRecordFamilySqlite);
     fx.topRows.forEach(seedRetainedSizeTopRowSqlite);
-    sqliteReads = await readAllRetainedSizeGrains();
+    sqliteReads = await readAllRetainedSizeGrains(fixtureIds);
   } finally {
     closeDb();
     rmSync(dir, { force: true, recursive: true });
@@ -993,8 +1110,8 @@ test("Postgres retained-size reads shape identically to SQLite for global/connec
   );
   await initPostgresStorage({ backend: "postgres", databaseUrl });
   try {
-    await cleanupRetainedSizePostgres();
-    const fx = retainedSizeFixture();
+    await cleanupRetainedSizePostgres(connectorId);
+    const fx = retainedSizeFixture(fixtureIds);
     await seedRetainedSizeGlobalPostgres(fx.global);
     for (const row of fx.connections) {
       // biome-ignore lint/performance/noAwaitInLoops: Sequential test setup and assertion order is intentional.
@@ -1013,7 +1130,7 @@ test("Postgres retained-size reads shape identically to SQLite for global/connec
       await seedRetainedSizeTopRowPostgres(row);
     }
 
-    const pgReads = await readAllRetainedSizeGrains();
+    const pgReads = await readAllRetainedSizeGrains(fixtureIds);
 
     // Global grain: full shaped row including parsed metadata.
     assert.deepEqual(pgReads.global, sqliteReads.global);
@@ -1028,7 +1145,7 @@ test("Postgres retained-size reads shape identically to SQLite for global/connec
     assert.equal(pgReads.connectionsFiltered.length, 1);
     assert.equal(
       mustExist(pgReads.connectionsFiltered[0], "filtered connection row must exist").connector_instance_id,
-      PG_INSTANCE_ID
+      instanceId
     );
 
     // Stream grain: connectorInstanceId, connectorId, and composed filters
@@ -1050,7 +1167,7 @@ test("Postgres retained-size reads shape identically to SQLite for global/connec
     assert.deepEqual(pgReads.top, sqliteReads.top);
     assert.equal(pgReads.top.length, 2);
     const topConnection = mustExist(pgReads.top[0], "top connection row must exist");
-    assert.equal(topConnection.connector_instance_id, PG_INSTANCE_ID);
+    assert.equal(topConnection.connector_instance_id, instanceId);
     assert.equal(topConnection.total_retained_bytes, 1230);
 
     // 3. Exercise a marker: markRetainedSizeDirty must flip the Postgres
@@ -1061,7 +1178,7 @@ test("Postgres retained-size reads shape identically to SQLite for global/connec
     assert.equal(dirtied.metadata.state, "stale");
     assert.equal(dirtied.metadata.last_error, "parity test bulk write");
   } finally {
-    await cleanupRetainedSizePostgres();
+    await cleanupRetainedSizePostgres(connectorId);
     await closePostgresStorage();
   }
 });

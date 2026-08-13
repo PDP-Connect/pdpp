@@ -1,76 +1,78 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
-### Requirement: Runtime SHALL maintain checkpointed streaming integrity
-The reference runtime SHALL stream records to the resource server in batches, flush a stream before staging that stream's `STATE`, and commit staged state only after terminal validation succeeds and state persistence is enabled. A hosted batch SHALL be progress-complete only when every submitted record is durably accepted or has a complete durable rejection receipt from the admitted destination. The runtime SHALL validate balanced attempted, accepted, and rejected counts and exactly one unique in-range input-index entry per rejected record before clearing the batch or staging later state; duplicate exact inputs MAY share a receipt id. The reference runtime SHALL NOT commit staged state when a run is cancelled. When a record-batch ingest is rejected as `not_found` for a stream that is present in the run's START scope, the reference runtime SHALL treat it as a transient per-stream gap rather than a terminal run failure: it SHALL NOT stage or commit that stream's cursor, it SHALL record a transient known gap and a stream-skipped timeline event for that stream, and it SHALL continue collecting and committing the run's other in-scope streams.
+### Requirement: Hosted record ingest SHALL preserve permanent rejection evidence before success
 
-#### Scenario: Successful persistent run
-- **WHEN** a connector emits scoped records, scoped state, and `DONE status="succeeded"` with a matching `records_emitted` count and compatible exit code
-- **AND** every submitted record is durably accepted or represented by a complete durable rejection receipt
-- **THEN** the reference runtime SHALL flush buffered records
-- **AND** it SHALL persist staged state for each staged stream
-- **AND** it SHALL report a checkpoint summary with `commit_status: "committed"`
+The reference hosted record ingest path SHALL persist owner-bound durable receipts for permanent per-line record rejections before returning a successful response that counts those rejections. Each receipt SHALL bind the owner, connection, connector instance, stream, exact rejected line bytes, typed rejection reason, and opaque receipt id. The successful response SHALL include attempted, accepted, rejected, and metadata-only rejection-vector evidence sufficient for the runtime to identify every rejected input index without exposing rejected payload bytes.
 
-#### Scenario: State persistence is disabled
-- **WHEN** a connector run starts with `persistState` disabled
-- **THEN** the reference runtime SHALL send `START.state` as null
-- **AND** it SHALL NOT persist staged state
-- **AND** it SHALL report a checkpoint summary with `commit_status: "disabled"`
+#### Scenario: Permanent line rejection is acknowledged
+- **WHEN** hosted ingestion permanently rejects one non-empty input line in a batch
+- **THEN** the reference implementation SHALL commit a durable rejection receipt for that exact line before returning a 2xx response
+- **AND** the response SHALL include a metadata-only rejection vector entry for the rejected input index
+- **AND** the response SHALL NOT include rejected payload bytes or parser/storage exception text
 
-#### Scenario: Checkpoint commit partially fails
-- **WHEN** record ingest succeeds but committing one or more staged stream states fails after terminal success
-- **THEN** the reference runtime SHALL fail the run as a runtime error
-- **AND** it SHALL report how many state streams were staged and committed
-- **AND** it SHALL include a known gap for the partial or missing checkpoint commit
+#### Scenario: Rejection persistence fails
+- **WHEN** hosted ingestion cannot commit the durable rejection receipt for a permanently rejected line
+- **THEN** the reference implementation SHALL return a non-2xx retryable failure
+- **AND** it SHALL NOT claim the line as receipt-backed rejected
+- **AND** the runtime SHALL NOT treat the batch as complete for cursor checkpoint progress
 
-#### Scenario: Terminal validation fails
-- **WHEN** terminal exit code or `DONE.records_emitted` validation fails
-- **THEN** the reference runtime SHALL fail the run as a connector protocol violation
-- **AND** it SHALL report observed and reported record counts when they differ
-- **AND** it SHALL NOT commit staged state
+### Requirement: Hosted record ingest SHALL keep durable-prefix replay safe
 
-#### Scenario: Run is cancelled before terminal success
-- **WHEN** a run is cancelled and its connector child exits without emitting `DONE status="succeeded"`
-- **THEN** the reference runtime SHALL preserve records already flushed to the resource server
-- **AND** it SHALL NOT commit staged cursor state for that run
+The reference hosted record ingest path SHALL allow accepted sibling records and already committed rejection receipts to remain durable when a later sibling fails systemically, but it SHALL make exact replay idempotent for both accepted records and rejection receipts. A failed response SHALL NOT expose a successful receipt claim or cursor-commit claim for an uncompleted batch.
 
-#### Scenario: Permanent rejection receipts are complete
-- **WHEN** a hosted batch response balances every attempted record as accepted or rejected and provides one valid durable receipt for each rejected input index
-- **THEN** the runtime MAY clear that batch and stage later state
-- **AND** it SHALL count rejected records separately from accepted records
+#### Scenario: Later systemic sibling failure follows durable prefix effects
+- **WHEN** a hosted batch accepts one sibling record and commits one permanent-rejection receipt before a later sibling fails systemically
+- **THEN** the accepted record and rejection receipt MAY remain durable
+- **AND** the response SHALL be non-2xx
+- **AND** the response SHALL NOT claim the batch as successfully receipted or cursor-committable
+- **AND** an exact replay SHALL reuse the existing receipt and SHALL NOT duplicate the already accepted sibling
 
-#### Scenario: Permanent rejection receipts are incomplete or malformed
-- **WHEN** a hosted batch response has unbalanced counts, a missing or duplicate input-index entry, an out-of-range input index, or a receipt-entry count different from `records_rejected`
-- **THEN** the runtime SHALL fail the run as an invalid ingest response
-- **AND** it SHALL NOT clear the batch, stage that stream's later state, or commit that stream's cursor
+#### Scenario: Response is lost after receipt commit
+- **WHEN** the server commits a permanent-rejection receipt but the successful response is lost before the runtime observes it
+- **THEN** an exact retry SHALL return the same receipt handle for the same rejected line
+- **AND** the retry SHALL NOT consume duplicate quota for the replayed receipt
 
-#### Scenario: Ingest is rejected as not_found for a stream in the run's START scope
-- **WHEN** a record-batch ingest returns HTTP 404 `not_found` for a stream that is present in the run's START scope
-- **THEN** the reference runtime SHALL NOT fail the run for that rejection
-- **AND** it SHALL drop that stream's buffered batch without treating it as flushed
-- **AND** it SHALL NOT stage or commit that stream's cursor, so a later run re-collects it
-- **AND** it SHALL record a transient known gap and a `run.stream_skipped` timeline event for that stream
-- **AND** it SHALL continue to collect, flush, and commit the run's other in-scope streams
+### Requirement: Hosted rejection receipt transactions SHALL re-check connection and run authority
 
-#### Scenario: Ingest is rejected for a reason other than a scope-stream not_found
-- **WHEN** a record-batch ingest is rejected with any status other than a 404 `not_found`, or with a `not_found` for a stream not present in the run's START scope
-- **THEN** the reference runtime SHALL fail the run as it does today
-- **AND** it SHALL NOT reclassify the rejection as a transient per-stream gap
+The reference implementation SHALL re-check connection writability and the exact run/connection fence inside the backend transaction that inserts or replays a hosted rejection receipt. Cancellation, revocation, deletion, terminalization, quota exhaustion, and injected transaction failures that win before receipt admission SHALL produce non-2xx failure without creating receipt, quota, or audit effects.
 
-#### Scenario: Device-exporter batch uses the existing contract
-- **WHEN** a local device-exporter ingest encounters a per-record defect in this tranche
-- **THEN** it SHALL retain its current all-or-retry and checkpoint-blocking behavior
-- **AND** it SHALL NOT infer hosted rejection-receipt semantics from this reference-only hosted contract
+#### Scenario: Connection or run authority changes before receipt admission
+- **WHEN** cancellation, revocation, deletion, or terminalization wins before the hosted rejection receipt transaction admits the write
+- **THEN** the receipt transaction SHALL fail without creating or replaying a receipt
+- **AND** it SHALL leave no receipt, quota, or audit mutation for the losing ingest attempt
 
-### Requirement: Runtime SHALL account for hosted ingest outcomes honestly
-Runtime progress, batch timeline events, terminal events, and run history SHALL distinguish connector-emitted records, ingest attempts, acceptances confirmed by complete successful responses, durable permanent rejections confirmed by receipts, and epistemically unresolved retryable records. A submitted or permanently rejected record SHALL NOT be labeled flushed or accepted. Attempted SHALL equal confirmed accepted plus receipt-backed permanently rejected plus unresolved retryable records at each terminal boundary. When transport fails before a complete response, the runtime SHALL conservatively count that batch as unresolved even if the server may already have committed prefix effects.
+#### Scenario: Quota is exhausted
+- **WHEN** durable rejection receipt quota would be exceeded by a new pending receipt
+- **THEN** hosted ingestion SHALL fail non-2xx
+- **AND** it SHALL NOT acknowledge the rejected line as receipt-backed
+- **AND** exact replay of an existing receipt SHALL remain allowed without duplicate quota consumption
 
-#### Scenario: Successful run contains permanent rejections
-- **WHEN** a run commits progress after one or more records receive durable rejection receipts
-- **THEN** its terminal evidence SHALL report those records as permanently rejected and recoverable from quarantine
-- **AND** accepted-record totals SHALL exclude them
+### Requirement: Owner inspection of hosted rejection receipts SHALL be bounded and private
 
-#### Scenario: Batch fails after partial durable effects
-- **WHEN** a hosted ingest attempt durably accepts or quarantines some records and then returns a retryable systemic failure
-- **THEN** runtime evidence SHALL classify the batch as epistemically unresolved unless a complete successful response confirmed individual outcomes
-- **AND** server-side quarantine evidence SHALL remain independently inspectable for any committed rejection receipts
-- **AND** the runtime SHALL NOT commit the stream cursor for that failed run
+The reference implementation SHALL expose hosted rejection receipts only through owner-session, connection-scoped, read-only inspection routes. List responses SHALL be paginated with a bounded page size and SHALL expose metadata only. Detail responses SHALL require the owner to prove access through the owning connection before returning bounded payload data. Cross-owner, missing, and unauthorized receipt lookups SHALL use non-disclosing error surfaces. Connection deletion SHALL remove associated pending rejection receipt state and quota accounting on SQLite and PostgreSQL.
+
+#### Scenario: Owner lists rejection receipts
+- **WHEN** an owner lists rejection receipts for a connection they own
+- **THEN** the response SHALL enforce the maximum page size and stable cursor pagination
+- **AND** it SHALL return metadata only
+- **AND** it SHALL NOT include rejected payload bytes, payload text, or parser/storage exception text
+
+#### Scenario: Retained-size accounting includes rejected payload bytes
+- **WHEN** a hosted rejection receipt is committed for a rejected input line
+- **THEN** owner-facing retained-size global, connection, and stream accounting SHALL include that receipt's rejected payload byte count exactly once
+- **AND** exact replay of the same rejected input SHALL NOT increase retained-size byte or count measures
+- **AND** audit events, quota rows, hashes, and receipt metadata SHALL NOT be double-counted as retained payload bytes
+
+#### Scenario: Owner fetches rejection receipt detail
+- **WHEN** an owner fetches a rejection receipt detail through its owning connection
+- **THEN** the response MAY include bounded payload retrieval data for that receipt
+- **AND** a fresh server process SHALL be able to retrieve the committed payload from durable storage
+
+#### Scenario: Non-owner or wrong-connection lookup occurs
+- **WHEN** a caller requests a receipt through a connection they do not own or through the wrong connection
+- **THEN** the reference implementation SHALL reject the request without disclosing whether the receipt exists
+
+#### Scenario: Connection is deleted
+- **WHEN** the owning connection is deleted
+- **THEN** SQLite and PostgreSQL storage SHALL remove the associated pending rejection receipts
+- **AND** associated quota accounting SHALL no longer retain those deleted receipts

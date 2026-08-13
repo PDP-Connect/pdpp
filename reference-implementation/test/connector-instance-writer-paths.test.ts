@@ -316,6 +316,10 @@ test("SQLite connection purge is fenced through its durable delete and post-comm
       now: "2026-07-16T00:00:01.000Z",
       ownerSubjectId: "owner_writer_paths",
       purge: {
+        deleteRecordRejectionsPostgres: () => {
+          throw new Error("unreachable: the SQLite connection-purge path never calls deleteRecordRejectionsPostgres");
+        },
+        deleteRecordRejectionsSqlite: () => 0,
         // This SQLite-backend test's delete path never reaches the Postgres
         // row-delete arm (`deleteConnection`'s SQLite implementation calls
         // only `deleteRecordRowsSqlite`) — a throwing stub documents that
@@ -466,6 +470,10 @@ test("Postgres sort repair fences all manifest streams for an instance and blob 
       now: "2026-07-16T00:00:01.000Z",
       ownerSubjectId: "owner_writer_paths",
       purge: {
+        deleteRecordRejectionsPostgres: () => Promise.resolve(0),
+        deleteRecordRejectionsSqlite: () => {
+          throw new Error("unreachable: the Postgres connection-purge path never calls deleteRecordRejectionsSqlite");
+        },
         deleteRecordRowsPostgres: (client, id) => deleteConnectionRecordRowsPostgres(client, id),
         // This Postgres-backend test's delete path never reaches the SQLite
         // row-delete arm (`deleteConnection`'s Postgres implementation calls
