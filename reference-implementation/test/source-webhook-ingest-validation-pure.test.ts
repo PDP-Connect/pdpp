@@ -42,8 +42,12 @@ function makeDeps(overrides: Partial<SourceWebhookDependencies> = {}): SourceWeb
     claimEvent: async () => true,
     ingestRecords: async () => ({ errors: [], records_accepted: 1, records_rejected: 0, stream: "s" }),
     nowMs: () => NOW,
-    resolveConnectorId: () => null,
     resolveSecret: () => SECRET,
+    resolveTarget: () => ({
+      connectorId: "my-source",
+      connectorInstanceId: "cin_my_source_owner_custom",
+      ownerSubjectId: "owner_custom",
+    }),
     signalScheduler: () => Promise.resolve(),
     ...overrides,
   };
@@ -131,7 +135,9 @@ test("source-webhook: ingest_records requires a stream and a records array", asy
 
 test("source-webhook: a valid ingest_records call ingests and reports the ingest result", async () => {
   const body = JSON.stringify({ action: "ingest_records", records: [{ id: 1 }, { id: 2 }], stream: "receipts" });
-  let ingestArgs: { connectorId: string; streamName: string; body: string } | undefined;
+  let ingestArgs:
+    | { connectorId: string; connectorInstanceId: string; ownerSubjectId: string; streamName: string; body: string }
+    | undefined;
   const out = await executeSourceWebhook(
     freshInput(body),
     makeDeps({
@@ -145,6 +151,8 @@ test("source-webhook: a valid ingest_records call ingests and reports the ingest
   assert.equal(out.duplicate, false);
   assert.deepEqual(out.ingest, { errors: [], records_accepted: 2, records_rejected: 0, stream: "receipts" });
   assert.ok(ingestArgs, "expected ingestRecords to have been called");
+  assert.equal(ingestArgs.connectorInstanceId, "cin_my_source_owner_custom");
+  assert.equal(ingestArgs.ownerSubjectId, "owner_custom");
   assert.equal(ingestArgs.streamName, "receipts");
   assert.equal(ingestArgs.body, '{"id":1}\n{"id":2}', "records are newline-joined JSON");
 });

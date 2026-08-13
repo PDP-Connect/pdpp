@@ -8,7 +8,11 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { canonicalConnectorKey } from "../server/connector-key.ts";
+import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 type TestServer = Awaited<ReturnType<typeof startServer>>;
 type JsonObject = Record<string, unknown>;
@@ -61,6 +65,13 @@ async function withHarness(
       method: "POST",
     });
     assert.equal(registerResp.status, 201);
+    await seedConnectorInstance({
+      connectorId: sourceId,
+      connectorInstanceId: "cin_spotify_legacy_webhook",
+      displayName: "Legacy webhook",
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      sourceBindingKey: "legacy-webhook@example.com",
+    });
     await fn({ asUrl, rsUrl, secret, sourceId: "spotify" });
   } finally {
     if (oldSecrets === undefined) {
@@ -70,6 +81,70 @@ async function withHarness(
     }
     await closeServer(server);
   }
+}
+
+async function withRegisteredServer(
+  input: {
+    ownerSubjectId?: string;
+    secrets: string;
+  },
+  fn: (input: { asUrl: string; rsUrl: string; spotifyConnectorId: string }) => Promise<void>
+): Promise<void> {
+  const oldSecrets = process.env.PDPP_SOURCE_WEBHOOK_SECRETS;
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  process.env.PDPP_SOURCE_WEBHOOK_SECRETS = input.secrets;
+  const serverOpts: Parameters<typeof startServer>[0] = {
+    asPort: 0,
+    dbPath: ":memory:",
+    quiet: true,
+    rsPort: 0,
+  };
+  if (input.ownerSubjectId) {
+    serverOpts.ownerAuthSubjectId = input.ownerSubjectId;
+  }
+  const server = await startServer(serverOpts);
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  try {
+    const registerResp = await fetch(`${asUrl}/connectors`, {
+      body: JSON.stringify(spotifyManifest),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(registerResp.status, 201);
+    await fn({ asUrl, rsUrl, spotifyConnectorId: spotifyManifest.connector_id });
+  } finally {
+    if (oldSecrets === undefined) {
+      delete process.env.PDPP_SOURCE_WEBHOOK_SECRETS;
+    } else {
+      process.env.PDPP_SOURCE_WEBHOOK_SECRETS = oldSecrets;
+    }
+    await closeServer(server);
+  }
+}
+
+async function seedConnectorInstance(input: {
+  connectorId: string;
+  connectorInstanceId: string;
+  displayName: string;
+  ownerSubjectId: string;
+  sourceBindingKey: string;
+}): Promise<void> {
+  const now = new Date().toISOString();
+  const store = createSqliteConnectorInstanceStore();
+  const connectorId = canonicalConnectorKey(input.connectorId) ?? input.connectorId;
+  await store.upsert({
+    connectorId,
+    connectorInstanceId: input.connectorInstanceId,
+    createdAt: now,
+    displayName: input.displayName,
+    ownerSubjectId: input.ownerSubjectId,
+    sourceBinding: { account: input.sourceBindingKey },
+    sourceBindingKey: input.sourceBindingKey,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
 }
 
 async function waitForRunTerminal(asUrl: string, runId: string, timeoutMs = 5000): Promise<JsonObject> {
@@ -186,4 +261,147 @@ test("source webhook route accepts schedule_run as a webhook-classified run requ
     assert.ok(started && typeof started === "object");
     assert.equal(objectField(started as JsonObject, "data").trigger_kind, "webhook");
   });
+});
+
+test("source webhook route resolves structured config to exact real owner connection", async () => {
+  const ownerSubjectId = "owner_custom_source_webhook";
+  const secret = "structured_source_secret";
+  const selectedInstanceId = "cin_spotify_structured_selected";
+  const siblingInstanceId = "cin_spotify_structured_sibling";
+  const sourceId = "spotify-structured";
+
+  await withRegisteredServer(
+    {
+      ownerSubjectId,
+      secrets: JSON.stringify([
+        {
+          connector_id: "https://registry.pdpp.dev/connectors/spotify",
+          connector_instance_id: selectedInstanceId,
+          owner_subject_id: ownerSubjectId,
+          secret,
+          source_id: sourceId,
+        },
+      ]),
+    },
+    async ({ rsUrl, spotifyConnectorId }) => {
+      await seedConnectorInstance({
+        connectorId: spotifyConnectorId,
+        connectorInstanceId: siblingInstanceId,
+        displayName: "Structured sibling",
+        ownerSubjectId,
+        sourceBindingKey: "structured-sibling@example.com",
+      });
+      await seedConnectorInstance({
+        connectorId: spotifyConnectorId,
+        connectorInstanceId: selectedInstanceId,
+        displayName: "Structured selected",
+        ownerSubjectId,
+        sourceBindingKey: "structured-selected@example.com",
+      });
+
+      const body = JSON.stringify({
+        action: "ingest_records",
+        records: [
+          {
+            data: { id: "artist_structured_selected", name: "Structured Artist" },
+            emitted_at: new Date().toISOString(),
+            key: "artist_structured_selected",
+          },
+        ],
+        stream: "top_artists",
+      });
+      const first = await postWebhook(rsUrl, sourceId, secret, "evt_structured_selected", body);
+      assert.equal(first.status, 200);
+      assert.equal(objectField(first.body, "ingest").records_accepted, 1);
+
+      const rows = getDb()
+        .prepare(
+          `SELECT connector_instance_id, record_key
+             FROM records
+            WHERE connector_id = ?
+              AND stream = ?
+              AND record_key = ?
+            ORDER BY connector_instance_id`
+        )
+        .all("spotify", "top_artists", "artist_structured_selected");
+      assert.deepEqual(rows, [{ connector_instance_id: selectedInstanceId, record_key: "artist_structured_selected" }]);
+    }
+  );
+});
+
+test("source webhook route rejects bad structured target before claim or mutation", async () => {
+  const ownerSubjectId = "owner_custom_source_webhook_retry";
+  const secret = "structured_retry_secret";
+  const selectedInstanceId = "cin_spotify_structured_retry";
+  const sourceId = "spotify-structured-retry";
+  const eventId = "evt_structured_retry";
+  const body = JSON.stringify({
+    action: "ingest_records",
+    records: [
+      {
+        data: { id: "artist_structured_retry", name: "Structured Retry Artist" },
+        emitted_at: new Date().toISOString(),
+        key: "artist_structured_retry",
+      },
+    ],
+    stream: "top_artists",
+  });
+
+  await withRegisteredServer(
+    {
+      ownerSubjectId,
+      secrets: JSON.stringify([
+        {
+          connector_id: "https://registry.pdpp.dev/connectors/spotify",
+          connector_instance_id: "cin_spotify_missing_target",
+          owner_subject_id: ownerSubjectId,
+          secret,
+          source_id: sourceId,
+        },
+      ]),
+    },
+    async ({ rsUrl, spotifyConnectorId }) => {
+      await seedConnectorInstance({
+        connectorId: spotifyConnectorId,
+        connectorInstanceId: selectedInstanceId,
+        displayName: "Structured retry selected",
+        ownerSubjectId,
+        sourceBindingKey: "structured-retry@example.com",
+      });
+
+      const rejected = await postWebhook(rsUrl, sourceId, secret, eventId, body);
+      assert.equal(rejected.status, 404);
+      assert.equal(
+        (
+          getDb()
+            .prepare("SELECT COUNT(*) AS n FROM source_webhook_events WHERE source_id = ? AND event_id = ?")
+            .get(sourceId, eventId) as { n: number }
+        ).n,
+        0
+      );
+      assert.equal(
+        (
+          getDb()
+            .prepare("SELECT COUNT(*) AS n FROM records WHERE connector_instance_id = ?")
+            .get(selectedInstanceId) as {
+            n: number;
+          }
+        ).n,
+        0
+      );
+
+      process.env.PDPP_SOURCE_WEBHOOK_SECRETS = JSON.stringify([
+        {
+          connector_id: "https://registry.pdpp.dev/connectors/spotify",
+          connector_instance_id: selectedInstanceId,
+          owner_subject_id: ownerSubjectId,
+          secret,
+          source_id: sourceId,
+        },
+      ]);
+      const accepted = await postWebhook(rsUrl, sourceId, secret, eventId, body);
+      assert.equal(accepted.status, 200);
+      assert.equal(objectField(accepted.body, "ingest").records_accepted, 1);
+    }
+  );
 });
