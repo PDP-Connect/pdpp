@@ -1233,9 +1233,7 @@ test("agent-connect: registration rechecks durable pending consent after approva
 });
 
 test("agent-connect: live Postgres approved handoff survives AS restart before polling", async (t) => {
-  const baseUrl = dedicatedPostgresTestUrl(
-    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
-  );
+  const baseUrl = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
   if (!baseUrl) {
     t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
     return;
@@ -1288,9 +1286,7 @@ test("agent-connect: live Postgres approved handoff survives AS restart before p
 });
 
 test("agent-connect: live Postgres response-loss retry survives unrelated registration", async (t) => {
-  const baseUrl = dedicatedPostgresTestUrl(
-    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
-  );
+  const baseUrl = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
   if (!baseUrl) {
     t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
     return;
@@ -1334,9 +1330,7 @@ test("agent-connect: live Postgres response-loss retry survives unrelated regist
 });
 
 test("agent-connect: live Postgres crash-completed expiry and prune revoke committed tokens", async (t) => {
-  const baseUrl = dedicatedPostgresTestUrl(
-    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
-  );
+  const baseUrl = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
   if (!baseUrl) {
     t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
     return;
@@ -1422,9 +1416,7 @@ test("agent-connect: live Postgres crash-completed expiry and prune revoke commi
 });
 
 test("agent-connect: live Postgres cleanup miss racing approval commit revokes committed token", async (t) => {
-  const baseUrl = dedicatedPostgresTestUrl(
-    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
-  );
+  const baseUrl = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
   if (!baseUrl) {
     t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
     return;
@@ -1473,9 +1465,7 @@ test("agent-connect: live Postgres cleanup miss racing approval commit revokes c
 });
 
 test("agent-connect: live Postgres expiry CAS interleavings revoke committed tokens", async (t) => {
-  const baseUrl = dedicatedPostgresTestUrl(
-    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
-  );
+  const baseUrl = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
   if (!baseUrl) {
     t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
     return;
@@ -1553,9 +1543,7 @@ test("agent-connect: live Postgres expiry CAS interleavings revoke committed tok
 });
 
 test("agent-connect: live Postgres tombstone GC and staggered same-request delivery", async (t) => {
-  const baseUrl = dedicatedPostgresTestUrl(
-    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
-  );
+  const baseUrl = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
   if (!baseUrl) {
     t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
     return;
@@ -1947,9 +1935,7 @@ test("agent-connect: expired consent projects to bounded expired_token polling",
 });
 
 test("agent-connect: live Postgres denial projects and recovers after completion failure", async (t) => {
-  const baseUrl = dedicatedPostgresTestUrl(
-    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
-  );
+  const baseUrl = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
   if (!baseUrl) {
     t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
     return;
@@ -2100,9 +2086,7 @@ test("agent-connect: approved attempt fails closed when the grant is revoked bef
 });
 
 test("agent-connect: live Postgres approved expiry and revocation fail closed before delivery", async (t) => {
-  const baseUrl = dedicatedPostgresTestUrl(
-    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
-  );
+  const baseUrl = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
   if (!baseUrl) {
     t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
     return;
