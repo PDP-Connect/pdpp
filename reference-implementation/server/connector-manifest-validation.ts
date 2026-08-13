@@ -16,6 +16,7 @@ import {
   type StaticSecretCredentialCaptureLike,
 } from "../../packages/polyfill-connectors/src/static-secret-credential-capture.ts";
 import { canonicalConnectorKey, isConnectorKey } from "./connector-key.ts";
+import { publicListingTierError } from "./public-listing-tier.ts";
 
 // Inline copy — isNonEmptyString is used 30+ times in auth.js so moving it
 // would create a back-edge import; a verbatim 1-liner copy is the cleanest
@@ -218,6 +219,14 @@ export const REFRESH_POLICY_INTERACTION_POSTURES = new Set([
   "manual_action_likely",
 ]);
 export const REFRESH_POLICY_SENSITIVITY_LEVELS = new Set(["low", "medium", "high"]);
+export function validatePublicListingTier(manifest: Record<string, unknown>, code: string): void {
+  const { capabilities } = manifest;
+  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) return;
+  const { public_listing: listing } = capabilities as Record<string, unknown>;
+  if (listing === undefined || listing === null) return;
+  const error = publicListingTierError(listing);
+  if (error) throw invalidConnectorManifest(error, code);
+}
 export const REFRESH_POLICY_ALLOWED_KEYS = new Set([
   "recommended_mode",
   "recommended_interval_seconds",
@@ -698,6 +707,7 @@ function validateRefreshPolicyFields(pol: Record<string, unknown>, code: string)
 }
 
 export function validateRefreshPolicyCapability(manifest: Record<string, unknown>, code: string): void {
+  validatePublicListingTier(manifest, code);
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const capabilities = manifest.capabilities;
   if (capabilities === undefined || capabilities === null) {

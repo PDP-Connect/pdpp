@@ -27,8 +27,7 @@
       "rationale": "Claude.ai conversations are browser-scraped behind a login wall; background polling risks lockouts."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [

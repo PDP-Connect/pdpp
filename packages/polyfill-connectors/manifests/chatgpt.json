@@ -62,8 +62,7 @@
       "rationale": "ChatGPT requires owner-authenticated browser state. Automatic refresh is session-reuse-only; owner-mediated repair handles provider login challenges through runtime assistance evidence."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "tier": "supported"
     }
   },
   "streams": [

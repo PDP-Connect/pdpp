@@ -29,8 +29,7 @@
       "rationale": "Google Takeout requires the user to request and download a fresh archive; refresh cannot run in the background."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [

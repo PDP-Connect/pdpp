@@ -27,8 +27,7 @@
       "rationale": "Shopify Shop order history requires a logged-in browser session; refresh manually."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [

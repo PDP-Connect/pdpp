@@ -46,8 +46,7 @@ interface ConnectorManifestLike {
       readonly type?: string | null;
     } | null;
     readonly public_listing?: {
-      readonly listed?: boolean | null;
-      readonly status?: string | null;
+      readonly tier?: "supported" | "preview" | "development" | null;
     } | null;
   } | null;
   readonly connector_id?: string | null;
@@ -145,7 +144,6 @@ function projectConnectionSummary(
   };
 }
 
-const ACTIONABLE_PUBLIC_LISTING_STATUSES = new Set(["proven", "needs_human_auth"]);
 // These are the dispositions with a supported owner-agent REST intent. Browser
 // setup is intentionally handled by the separate owner-session projection
 // below, because the REST intent route cannot launch interactive login.
@@ -163,11 +161,7 @@ function isActionablePublicListing(manifest: ConnectorManifestLike): boolean {
   // `needs_human_auth` is an explicitly actionable listing state for sources
   // whose owner-mediated setup still requires an interactive provider step.
   const listing = manifest.capabilities?.public_listing;
-  return (
-    listing?.listed === true &&
-    typeof listing.status === "string" &&
-    ACTIONABLE_PUBLIC_LISTING_STATUSES.has(listing.status)
-  );
+  return listing?.tier !== undefined && listing.tier !== "development";
 }
 
 export function isSupportedOwnerActionPlan(plan: ReturnType<typeof buildConnectionSetupPlan>): boolean {
@@ -310,7 +304,7 @@ function projectTemplate(
   // Explicit UAT exposure fact: true only when deployment opts in, AND connector is unproven unlisted,
   // AND the plan is owner-actionable (passes existing setup/proof/support checks).
   const listing = manifest.capabilities?.public_listing;
-  const isUnproven = listing?.listed === false && typeof listing?.status === "string" && listing.status === "unproven";
+  const isUnproven = listing?.tier === "preview";
   const uatExposeUnlistedConnectors =
     ctx.uatExposeUnlistedConnectors === true && isUnproven && isUatExposablePlan(plan, manifest);
   return {

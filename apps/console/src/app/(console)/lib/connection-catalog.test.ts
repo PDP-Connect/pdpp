@@ -35,6 +35,8 @@ import {
   unsupportedNetworkEntries,
 } from "./connection-catalog.ts";
 import {
+  isRunnableAddOffer,
+  publicTierLabel,
   sourceSetupAction,
   sourceSetupAvailability,
   sourceSetupContext,
@@ -42,6 +44,32 @@ import {
   sourceSetupSecondaryAction,
   sourceSetupStatus,
 } from "./source-setup-presentation.ts";
+
+test("public connector tiers use the manifest declaration and exact public labels", () => {
+  assert.deepEqual(["supported", "preview", "development"].map((tier) => publicTierLabel(tier as "supported" | "preview" | "development")), [
+    "Supported",
+    "Preview",
+    "Development",
+  ]);
+});
+
+test("generic catalog tier code contains no connector names", async () => {
+  const source = await readFile(new URL("./connection-catalog.ts", import.meta.url), "utf8");
+  for (const connectorName of ["amazon", "google_calendar", "google_contacts", "jellyfin", "notion", "spotify", "steam"]) {
+    assert.doesNotMatch(source, new RegExp(`(?:===|includes|has|case)\\s*[\\(]?['\"]${connectorName}['\"]`));
+  }
+});
+
+test("development and unavailable entries cannot become runnable add offers", () => {
+  const catalog = buildConnectorCatalog([
+    { connector_id: "https://registry.pdpp.org/connectors/development", connector_key: "development", capabilities: { public_listing: { tier: "development" } } },
+    { connector_id: "https://registry.pdpp.org/connectors/supported", connector_key: "supported", capabilities: { public_listing: { tier: "supported" } }, runtime_requirements: { bindings: { network: {} } } },
+  ]);
+  const development = catalog.find((entry) => entry.connectorKey === "development");
+  assert.ok(development);
+  assert.equal(development.publicTier, "development");
+  assert.equal(isRunnableAddOffer(development), false);
+});
 
 const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
 const TRAILING_SLASH_RE = /\/$/;
@@ -90,6 +118,7 @@ function ownerTemplate(
     enrollmentKey?: string | null;
     listed?: boolean;
     listingStatus?: string;
+    tier?: "supported" | "preview" | "development";
     nextStepKind?: string;
     ownerActionable?: boolean;
     proofGate?: string | null;
@@ -103,7 +132,9 @@ function ownerTemplate(
     connector_key: connectorKey,
     connector_modality: args.connectorModality ?? "api_network",
     display_name: connectorKey,
-    public_listing: { listed: args.listed ?? true, status: args.listingStatus ?? "proven" },
+    public_listing: {
+      tier: args.tier ?? "supported",
+    },
     registration_status: "registered",
     setup_plan: {
       catalog_disposition: args.disposition ?? "provider_auth_connect",
@@ -254,9 +285,9 @@ test("non-browser static-secret connectors keep the existing single capture path
   assert.equal(entry.modality, "api_network");
   assert.equal(entry.setupModality, "static_secret");
   assert.equal(entry.disposition, "static_secret_connect");
-  assert.equal(sourceSetupAction(entry)?.href, "/connect/static-secret/gmail");
+  assert.equal(sourceSetupAction(entry), null);
   assert.equal(sourceSetupSecondaryAction(entry), null);
-  assert.equal(sourceSetupStatus(entry).label, "Supported");
+  assert.equal(sourceSetupStatus(entry).label, "Development");
 });
 
 test("YNAB static-secret entry shows as actionable with draft-create path", async () => {
@@ -604,7 +635,7 @@ test("provider-authorization deployment blockers are separate from unsupported n
   assert.deepEqual(deploymentBlockedEntries(catalog), [entry]);
   assert.deepEqual(unsupportedNetworkEntries(catalog), []);
   assert.equal(sourceSetupAction(entry), null);
-  assert.equal(sourceSetupAvailability(entry), "requires_server_setup");
+  assert.equal(sourceSetupAvailability(entry), "not_available_here");
   assert.equal(entry.enrollmentKey, undefined);
 });
 
@@ -653,19 +684,16 @@ test("configured Google provider readiness exposes the existing owner authorizat
   assert.equal(entry.nextStepKind, "open_provider_auth");
   assert.equal(entry.supportState, "supported");
   assert.equal(entry.disposition, "provider_auth_connect");
-  assert.equal(sourceSetupStatus(entry).label, "Supported");
+  assert.equal(sourceSetupStatus(entry).label, "Development");
   assert.match(sourceSetupGuidance(entry), PROVIDER_BROWSER_GUIDANCE_RE);
-  assert.deepEqual(sourceSetupAction(entry), {
-    href: "/connect/provider-auth/google-maps-data-portability",
-    label: "Authorize account",
-  });
-  assert.equal(sourceSetupAvailability(entry), "available_now");
+  assert.equal(sourceSetupAction(entry), null);
+  assert.equal(sourceSetupAvailability(entry), "not_available_here");
   assert.deepEqual(providerAuthConnectEntries(catalog), [entry]);
 });
 
 test("owner catalog fails closed for local-only, listed-unproven, and proof-gated static-secret entries", () => {
   const staleLocalManifest: CatalogManifestLike = {
-    capabilities: { public_listing: { listed: true, status: "proven" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: "stale-local-only",
     display_name: "Stale local-only",
     runtime_requirements: { bindings: { network: {} } },
@@ -896,7 +924,7 @@ test("filesystem connectors outside the proven set are local-collector-unproven,
   }
 });
 
-test("owner catalog never offers an unlisted (listed:false) template, whatever its support_state", () => {
+test("owner catalog never offers a development template, whatever its setup state", () => {
   // An unlisted connector must not be offered or addable on the OFFER surface,
   // and `experimental` is not an exception: the Experimental section presents
   // what is already offered rather than acting as a second door into the
@@ -908,7 +936,7 @@ test("owner catalog never offers an unlisted (listed:false) template, whatever i
       ownerTemplate({
         connectorKey: "unlisted-experimental",
         disposition: "static_secret_experimental",
-        listed: false,
+        tier: "development",
         nextStepKind: "capture_static_secret",
         ownerActionable: false,
         setupModality: "static_secret",
@@ -920,7 +948,7 @@ test("owner catalog never offers an unlisted (listed:false) template, whatever i
       ownerTemplate({
         connectorKey: "unlisted-proof-gated",
         disposition: "static_secret_connect",
-        listed: false,
+        tier: "development",
         nextStepKind: "capture_static_secret",
         ownerActionable: false,
         setupModality: "static_secret",
@@ -932,7 +960,7 @@ test("owner catalog never offers an unlisted (listed:false) template, whatever i
       ownerTemplate({
         connectorKey: "listed-experimental",
         disposition: "static_secret_experimental",
-        listed: true,
+        tier: "preview",
         nextStepKind: "capture_static_secret",
         ownerActionable: false,
         setupModality: "static_secret",
@@ -956,7 +984,7 @@ test("owner catalog never offers an unlisted (listed:false) template, whatever i
   // The listing gate must not swallow the Experimental section itself: a
   // connector the operator HAS listed still reaches it.
   const listedExperimental = catalog.find((e) => e.connectorKey === "listed-experimental");
-  assert.ok(listedExperimental, "a listed experimental template must still be offered");
+  assert.ok(listedExperimental, "a preview experimental template must still be offered");
   assert.equal(sourceSetupAvailability(listedExperimental), "experimental_opt_in");
   assert.ok(sourceSetupAction(listedExperimental), "a listed experimental template keeps its add action");
 });
@@ -1049,7 +1077,7 @@ test("presentation consistency: helper functions agree with ownerActionable auth
 
     if (entry.supportState === "experimental") {
       assert.equal(isActionable, false, `${entry.connectorKey}: experimental must not be owner-actionable`);
-      assert.equal(hasAction, true, `${entry.connectorKey}: experimental must still expose its opt-in action`);
+      assert.equal(hasAction, entry.publicTier !== "development", `${entry.connectorKey}: only preview experimental entries expose an opt-in action`);
       continue;
     }
 
@@ -1057,7 +1085,7 @@ test("presentation consistency: helper functions agree with ownerActionable auth
     // must have a non-null result. Mutations to either would break this.
     assert.equal(
       hasAction,
-      isActionable,
+      isActionable && entry.publicTier !== "development",
       `${entry.connectorKey}: sourceSetupAction must match isOwnerActionableEntry. ` +
         `Helper says ${isActionable}, action is ${hasAction ? "set" : "null"}`
     );
@@ -1190,7 +1218,7 @@ test("deployment readiness is measured from manifest-declared settings against t
   const manifest: CatalogManifestLike = {
     capabilities: {
       auth: { deployment_config: ["ACME_OAUTH_CLIENT_ID", "ACME_OAUTH_CLIENT_SECRET"], kind: "oauth" },
-      public_listing: { listed: true, status: "needs_human_auth" },
+      public_listing: { tier: "supported" },
     },
     connector_id: "acme-widgets",
     display_name: "Acme Widgets",
@@ -1251,7 +1279,7 @@ test("a connector-key allowlist cannot declare readiness a deployment has not su
   const manifest: CatalogManifestLike = {
     capabilities: {
       auth: { deployment_config: ["ACME_OAUTH_CLIENT_ID"], kind: "oauth" },
-      public_listing: { listed: true, status: "needs_human_auth" },
+      public_listing: { tier: "supported" },
     },
     connector_id: "acme-widgets",
     display_name: "Acme Widgets",
@@ -1269,27 +1297,21 @@ test("a connector-key allowlist cannot declare readiness a deployment has not su
   );
 });
 
-test("console catalog respects uat_expose_unlisted_connectors server fact", () => {
-  // Unproven connector WITHOUT the UAT fact → filtered out
+test("console catalog uses the manifest tier as its sole listing authority", () => {
   const uatFalseTemplate = ownerTemplate({
     connectorKey: "test-unproven",
-    listed: false,
-    listingStatus: "unproven",
+    tier: "development",
     uat_expose_unlisted_connectors: false,
   });
   let catalog = buildOwnerConnectorCatalog([], [uatFalseTemplate]);
-  assert.equal(catalog.length, 0, "unproven connector with uat_expose_unlisted_connectors=false should be filtered");
+  assert.equal(catalog.length, 0, "development must be filtered from Add Source");
 
-  // Unproven connector WITH the UAT fact → included
+  // The obsolete UAT exposure fact cannot override a development tier.
   const uatTrueTemplate = ownerTemplate({
     connectorKey: "test-unproven",
-    listed: false,
-    listingStatus: "unproven",
+    tier: "development",
     uat_expose_unlisted_connectors: true,
   });
   catalog = buildOwnerConnectorCatalog([], [uatTrueTemplate]);
-  assert.equal(catalog.length, 1, "unproven connector with uat_expose_unlisted_connectors=true should be included");
-  const [exposedConnector] = catalog;
-  assert.ok(exposedConnector);
-  assert.equal(exposedConnector.connectorKey, "test-unproven");
+  assert.equal(catalog.length, 0, "UAT exposure must not override development");
 });

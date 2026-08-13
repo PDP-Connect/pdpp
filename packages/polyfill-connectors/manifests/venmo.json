@@ -60,8 +60,7 @@
       "rationale": "Manual only while this connector stays unproven and unlisted. Once proven, the session persists in the profile after first login, so background scheduling can be revisited then."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [

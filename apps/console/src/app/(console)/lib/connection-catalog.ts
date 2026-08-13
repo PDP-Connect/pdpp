@@ -49,8 +49,7 @@ export interface CatalogManifestLike {
       rationale?: string | null;
     } | null;
     public_listing?: {
-      listed?: boolean | null;
-      status?: string | null;
+      tier?: "supported" | "preview" | "development" | null;
     } | null;
   } | null;
   connector_id: string;
@@ -110,8 +109,7 @@ export interface OwnerConnectorTemplateLike {
     svg?: string | null;
   } | null;
   public_listing?: {
-    listed?: boolean | null;
-    status?: string | null;
+    tier?: "supported" | "preview" | "development" | null;
   } | null;
   registration_status?: string | null;
   setup_plan?: {
@@ -139,6 +137,8 @@ export interface OwnerConnectorTemplateLike {
 
 /** Binding-derived modality, matching the backend intent route's taxonomy. */
 export type CatalogModality = ConnectorIntentModality;
+
+export type PublicConnectorTier = "supported" | "preview" | "development";
 
 /**
  * What the console can honestly do with this connector today:
@@ -220,7 +220,7 @@ export interface ConnectorCatalogEntry {
   /** Proof gate blocking support, if any. */
   proofGate: string | null;
   /** Server-owned public-listing state. */
-  publicListingStatus?: string | null;
+  publicTier: PublicConnectorTier;
   /** Existing capability rationale used for owner context where no setup copy exists. */
   refreshPolicyRationale: string | null;
   /** Server-owned registration state. */
@@ -338,6 +338,7 @@ export function buildConnectorCatalog(
       modality: plan.connectorModality,
       nextStepKind: plan.nextStepKind,
       proofGate: plan.proofGate,
+      publicTier: manifest.capabilities?.public_listing?.tier ?? "development",
       refreshPolicyRationale: cleanManifestText(manifest.capabilities?.refresh_policy?.rationale),
       runbookPath: plan.runbookPath,
       setupDescription: setupCopy.description,
@@ -356,7 +357,6 @@ export function buildConnectorCatalog(
   return entries;
 }
 
-const OWNER_ACTIONABLE_PUBLIC_LISTING_STATUSES = new Set(["proven", "needs_human_auth"]);
 const CATALOG_INTENT_MODALITIES = new Set<ConnectorIntentModality>([
   "local_collector",
   "browser_bound",
@@ -431,9 +431,7 @@ function actionableOwnerActionFromTemplate(
   const url = typeof action?.url === "string" && action.url.trim() ? action.url : null;
   const authority =
     template.registration_status === "registered" &&
-    template.public_listing?.listed === true &&
-    typeof template.public_listing.status === "string" &&
-    OWNER_ACTIONABLE_PUBLIC_LISTING_STATUSES.has(template.public_listing.status) &&
+    template.public_listing?.tier !== "development" &&
     template.setup_plan?.owner_actionable === true &&
     entry.nextStepKind === template.setup_plan?.next_step_kind;
   const ownerAgentActionable =
@@ -477,14 +475,9 @@ export function buildOwnerConnectorCatalog(
   for (const template of templates) {
     const connectorKey = cleanManifestText(template.connector_key);
     const setupPlan = template.setup_plan;
-    // Every offered entry requires an explicit operator opt-in into public
-    // listing (`listed === true`), whatever its support_state. UAT mode can
-    // temporarily expose unlisted connectors via the `uat_expose_unlisted_connectors`
-    // flag, which the server sets only when PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1.
-    // The public_listing remains byte-faithful; the UAT fact is explicit and separate.
-    const isListed = template.public_listing?.listed === true;
-    const isUatExposed = template.uat_expose_unlisted_connectors === true;
-    if (!connectorKey || template.registration_status !== "registered" || (!isListed && !isUatExposed)) {
+    // Development remains visible for diagnostics, but never becomes an Add
+    // Source offer. The manifest tier is the sole listing authority.
+    if (!connectorKey || template.registration_status !== "registered" || template.public_listing?.tier === "development") {
       continue;
     }
     const disposition = setupPlan?.catalog_disposition;
@@ -535,7 +528,7 @@ export function buildOwnerConnectorCatalog(
       ownerActionMethod: capability.method,
       ownerActionUrl: capability.url,
       proofGate,
-      publicListingStatus: cleanManifestText(template.public_listing?.status),
+      publicTier: template.public_listing?.tier ?? "development",
       refreshPolicyRationale: cleanManifestText(localManifest?.capabilities?.refresh_policy?.rationale),
       registrationStatus: template.registration_status,
       runbookPath: cleanManifestText(setupPlan.runbook_path),

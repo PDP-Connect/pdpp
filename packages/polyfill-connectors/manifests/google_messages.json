@@ -39,8 +39,7 @@
       "rationale": "Google Messages access requires a one-time QR pairing (`gmcli auth`, run manually by the user outside this connector) with an Android phone that must stay online and reachable for gmcli to sync. Pairing/session tokens require full manual re-pairing after roughly 14 days of inactivity, so an unattended background schedule cannot be relied on to keep working."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven",
+      "tier": "development",
       "rationale": "Requires a real gmcli binary (github.com/johnlindquist/gmkit, beta, single maintainer, AGPL-3.0) and a real QR-paired Google Messages account; not yet proven against a live paired device."
     }
   },

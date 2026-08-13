@@ -76,8 +76,7 @@
       "rationale": "Calendar API syncToken incremental sync is a lightweight per-calendar delta; hourly refresh stays well inside the documented 600 req/min/user quota. Automatic refresh is session-reuse-only against a stored refresh token; the owner completes the one-time OAuth grant that this needs_human_auth status reflects."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "tier": "development"
     }
   },
   "external_docs": [

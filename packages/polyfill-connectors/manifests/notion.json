@@ -48,8 +48,7 @@
       "rationale": "Notion is unproven pending credentialed live testing; scheduled background runs are deferred until owner validation completes."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "preview"
     },
     "auth": {
       "kind": "env",

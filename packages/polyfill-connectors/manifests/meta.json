@@ -27,8 +27,7 @@
       "rationale": "Instagram (Meta) blocks repeated automated access; refresh manually."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [

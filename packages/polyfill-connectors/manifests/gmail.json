@@ -67,8 +67,7 @@
       "rationale": "Gmail uses durable IMAP credentials and tolerates frequent background polling."
     },
     "public_listing": {
-      "listed": true,
-      "status": "proven"
+      "tier": "supported"
     }
   },
   "streams": [

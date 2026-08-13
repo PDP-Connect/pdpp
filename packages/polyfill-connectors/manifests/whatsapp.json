@@ -72,8 +72,7 @@
       "rationale": "WhatsApp data comes from a manual chat export; refresh requires a new export."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "tier": "supported"
     },
     "record_identity": {
       "generation": 1

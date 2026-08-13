@@ -56,8 +56,7 @@
       "rationale": "YNAB API uses a long-lived token and documents a rolling 200-request-per-hour access-token budget; budgets do not change minute-to-minute, so hourly is enough."
     },
     "public_listing": {
-      "listed": true,
-      "status": "proven"
+      "tier": "supported"
     }
   },
   "streams": [

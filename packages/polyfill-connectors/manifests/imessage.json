@@ -18,8 +18,7 @@
       "local_collector": true
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven",
+      "tier": "development",
       "rationale": "Hidden from the reference dashboard catalog until an operator proves a local macOS Messages database run on this deployment and explicitly opts it into listing."
     },
     "refresh_policy": {

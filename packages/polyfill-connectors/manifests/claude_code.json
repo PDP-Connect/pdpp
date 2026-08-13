@@ -41,8 +41,7 @@
       "rationale": "Claude Code session logs live on local disk; re-reading them is cheap and has no platform cost."
     },
     "public_listing": {
-      "listed": true,
-      "status": "proven"
+      "tier": "supported"
     }
   },
   "streams": [

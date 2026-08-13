@@ -159,8 +159,7 @@ export interface ConnectorManifest {
       type?: string | null;
     } | null;
     public_listing?: {
-      listed?: boolean | null;
-      status?: string | null;
+      tier?: "supported" | "preview" | "development" | null;
     } | null;
   } | null;
   connector_id: string;

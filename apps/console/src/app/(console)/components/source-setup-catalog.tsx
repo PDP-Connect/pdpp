@@ -11,6 +11,7 @@ import {
   sourceSetupAvailability,
   sourceSetupContext,
   sourceSetupGuidance,
+  isRunnableAddOffer,
   sourceSetupRank,
   sourceSetupSecondaryAction,
   sourceSetupStatus,
@@ -390,8 +391,8 @@ export function SourceSetupCatalog({
   query: string;
 }) {
   const filtered = filterSourceCatalog(catalog, query);
-  const available = filtered.filter((entry) => sourceSetupAvailability(entry) === "available_now");
-  const experimental = filtered.filter((entry) => sourceSetupAvailability(entry) === "experimental_opt_in");
+  const available = filtered.filter((entry) => entry.publicTier === "supported" && isRunnableAddOffer(entry));
+  const experimental = filtered.filter((entry) => entry.publicTier === "preview" && isRunnableAddOffer(entry));
   const actionable = [...available, ...experimental];
   return (
     <Section description="Add sources this dashboard can set up now." title="Add data">

@@ -932,6 +932,12 @@ test("duplicate source review ignores revoked fallback sources", () => {
   assert.equal(buildDuplicateSourceReview(views).length, 0);
 });
 
+test("existing source visibility is independent of public catalog tier", () => {
+  const view = toSourceInstanceView(summary({ connector_id: "spotify", status: "active", revoked_at: null }));
+  assert.equal(view.connectorId, "spotify");
+  assert.equal(view.revoked, false);
+});
+
 test("duplicate fallback collapse keeps named sources visible and groups 3+ unnamed active sources", () => {
   const views = toSourcesView([
     summary({

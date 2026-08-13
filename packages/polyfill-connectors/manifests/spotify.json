@@ -37,8 +37,7 @@
   "capabilities": {
     "human_interaction": ["credentials"],
     "public_listing": {
-      "listed": false,
-      "status": "unproven",
+      "tier": "development",
       "rationale": "Hidden from the reference dashboard catalog until a credentialed run proves useful records in the deployment."
     },
     "refresh_policy": {

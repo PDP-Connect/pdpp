@@ -59,8 +59,7 @@
       "rationale": "Apple does not publish a CardDAV rate limit. Contacts change infrequently for most owners; a 6-hour cadence is conservative given the undocumented ceiling, and sync-collection (when supported) makes repeat runs cheap regardless of cadence."
     },
     "public_listing": {
-      "listed": true,
-      "status": "unproven"
+      "tier": "preview"
     }
   },
   "streams": [

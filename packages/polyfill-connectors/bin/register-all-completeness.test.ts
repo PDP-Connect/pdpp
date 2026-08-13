@@ -30,11 +30,11 @@ import { KNOWN_CONNECTOR_NAMES, MANIFEST_DIR, selectRegisterAllConnectors } from
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-function manifestStatus(name: string): string | undefined {
+function manifestTier(name: string): string | undefined {
   const manifest = JSON.parse(readFileSync(join(MANIFEST_DIR, `${name}.json`), "utf8")) as {
-    capabilities?: { public_listing?: { status?: string } };
+    capabilities?: { public_listing?: { tier?: string } };
   };
-  return manifest.capabilities?.public_listing?.status;
+  return manifest.capabilities?.public_listing?.tier;
 }
 
 function readManifestStub(name: string) {
@@ -45,9 +45,7 @@ test("selectRegisterAllConnectors equals KNOWN_CONNECTOR_NAMES minus deprecated_
   const actual = selectRegisterAllConnectors(KNOWN_CONNECTOR_NAMES, readManifestStub).sort((a, b) =>
     a.localeCompare(b)
   );
-  const expected = KNOWN_CONNECTOR_NAMES.filter((name) => manifestStatus(name) !== "deprecated_upstream").sort((a, b) =>
-    a.localeCompare(b)
-  );
+  const expected = [...KNOWN_CONNECTOR_NAMES].sort((a, b) => a.localeCompare(b));
 
   assert.deepEqual(
     actual,
@@ -61,7 +59,7 @@ test("selectRegisterAllConnectors equals KNOWN_CONNECTOR_NAMES minus deprecated_
       `${advertised} is a known, non-deprecated connector and must be onboarded by register-all's smoke sweep`
     );
   }
-  assert.ok(!actual.includes("pocket"), "pocket is deprecated_upstream and must stay excluded");
+  assert.ok(actual.includes("pocket"), "development manifests remain registered; tier controls public offers");
 
   // Preserve manual/local-device/unlisted categories exactly: unaffected by
   // the deprecated_upstream filter, they must remain included as before.
@@ -71,6 +69,12 @@ test("selectRegisterAllConnectors equals KNOWN_CONNECTOR_NAMES minus deprecated_
       `${preserved} (manual/local-device/unlisted category) must stay included in register-all's smoke sweep`
     );
   }
+});
+
+test("every registered manifest declares an authoritative lifecycle tier", () => {
+  const allowed = new Set(["supported", "preview", "development"]);
+  const missing = KNOWN_CONNECTOR_NAMES.filter((name) => !allowed.has(manifestTier(name) ?? ""));
+  assert.deepEqual(missing, [], "registered manifests must declare tier=supported|preview|development");
 });
 
 test("register-all.ts wires CONNECTORS from selectRegisterAllConnectors, not a hand-maintained array", () => {

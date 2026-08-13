@@ -76,8 +76,7 @@
       "rationale": "People API syncToken deltas are lightweight; six-hourly refresh keeps well within the syncToken's 7-day validity window so the connector rarely needs a full resync. Automatic refresh is session-reuse-only against a stored refresh token; the owner completes the one-time OAuth grant that this needs_human_auth status reflects."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "tier": "development"
     }
   },
   "external_docs": [

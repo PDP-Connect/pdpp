@@ -23,8 +23,7 @@
       "rationale": "Calendar imports come from .ics exports the owner provides; refresh requires a new file."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [

@@ -26,8 +26,7 @@
       "rationale": "Apple Photos imports require the user to manually export files from Photos.app (File → Export → Export Unmodified Originals) into the import directory; there is no API or background-refreshable path — PhotoKit requires a signed app bundle and is not reachable from this connector, and the reverse-engineered Photos.sqlite path is out of scope by design."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [

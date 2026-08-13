@@ -37,6 +37,10 @@ export interface SourceSetupAction {
   label: string;
 }
 
+export function publicTierLabel(tier: ConnectorCatalogEntry["publicTier"]): string {
+  return tier.charAt(0).toUpperCase() + tier.slice(1);
+}
+
 /**
  * Owner context projected from manifest setup/capability metadata. The
  * fallback is intentionally setup-modality based: it keeps provider auth
@@ -137,6 +141,12 @@ export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
 
 /** The owner-facing status label + tone for first-account setup. */
 export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStatus {
+  if (entry.publicTier === "development") {
+    return { label: publicTierLabel(entry.publicTier), tone: "border-border bg-muted/30 text-muted-foreground" };
+  }
+  if (entry.publicTier === "preview") {
+    return { label: publicTierLabel(entry.publicTier), tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg" };
+  }
   if (isUnavailableSetupEntry(entry)) {
     return { label: "Not available here", tone: "border-border bg-muted/30 text-muted-foreground" };
   }
@@ -295,7 +305,7 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
 
 /** The primary next action for first-account setup, or null when none exists. */
 export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupAction | null {
-  if (!(isOwnerActionableEntry(entry) || isExperimentalEntry(entry))) {
+  if (entry.publicTier === "development" || !(isOwnerActionableEntry(entry) || isExperimentalEntry(entry))) {
     return null;
   }
   // Browser-bound connectors that also declare credential capture still start
@@ -351,6 +361,9 @@ export function sourceSetupSecondaryAction(_entry: ConnectorCatalogEntry): Sourc
 }
 
 export function sourceSetupAvailability(entry: ConnectorCatalogEntry): SourceSetupAvailability {
+  if (entry.publicTier === "development") {
+    return "not_available_here";
+  }
   if (isUnavailableSetupEntry(entry)) {
     return "not_available_here";
   }
@@ -368,6 +381,14 @@ export function sourceSetupAvailability(entry: ConnectorCatalogEntry): SourceSet
     default:
       return "not_available_here";
   }
+}
+
+/** Only runnable actions belong in /sources/add; server-setting and runbook cards do not. */
+export function isRunnableAddOffer(entry: ConnectorCatalogEntry): boolean {
+  return (
+    (entry.publicTier === "supported" && sourceSetupAvailability(entry) === "available_now") ||
+    (entry.publicTier === "preview" && sourceSetupAvailability(entry) === "experimental_opt_in")
+  );
 }
 
 /**

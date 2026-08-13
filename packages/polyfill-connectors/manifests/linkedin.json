@@ -27,8 +27,7 @@
       "rationale": "LinkedIn aggressively blocks automated access; profile refresh is manual-only."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [

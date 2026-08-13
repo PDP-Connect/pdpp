@@ -57,8 +57,7 @@
       "rationale": "H-E-B is fronted by Imperva Incapsula and supports passkeys plus verification codes; manual by default because sign-in and bot challenges are common. Parsers are verified against real logged-in heb.com DOM (order list + order detail). background_safe:true makes background scheduling available once the owner opts in after authenticating; recommended_mode stays manual so it never auto-runs unattended."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "tier": "supported"
     }
   },
   "streams": [

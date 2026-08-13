@@ -27,8 +27,7 @@
       "rationale": "DoorDash order history is browser-scraped; treat as manual to avoid bot-detection signals."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [

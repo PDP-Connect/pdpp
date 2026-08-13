@@ -27,8 +27,7 @@
       "rationale": "Uber trip history is browser-scraped behind a login wall; refresh manually."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [

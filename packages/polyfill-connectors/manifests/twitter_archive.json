@@ -23,8 +23,7 @@
       "rationale": "Twitter/X archive must be requested from the platform; refresh cannot run in the background."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [
