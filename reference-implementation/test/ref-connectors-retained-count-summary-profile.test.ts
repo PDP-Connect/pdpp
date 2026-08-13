@@ -137,7 +137,7 @@ function withBothBackends(name: string, fn: () => Promise<void>): void {
 
 async function seedConnector(connectorId: string, streams: readonly string[] = ["messages"]): Promise<void> {
   const manifest = {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: connectorId,
     display_name: `Retained Count Test ${connectorId}`,
     protocol_version: "0.1.0",

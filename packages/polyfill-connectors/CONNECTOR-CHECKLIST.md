@@ -14,9 +14,9 @@ and what promotion between levels requires beyond them.
 every mechanical check means "nothing mechanical is wrong" — it does not
 mean the connector works against a real account. Only an operator running
 it against a real account, once, proves that. `conformance` composes
-evidence; a human still edits the manifest's `public_listing.status`.
+evidence; a human still assigns the manifest's `public_listing.tier`.
 
-## Level 1 — scaffold
+## Development — scaffold
 
 The floor. A connector directory exists and the runtime can start it, even
 if it only emits `SKIP_RESULT`.
@@ -25,9 +25,9 @@ if it only emits `SKIP_RESULT`.
 |---|---|
 | Manifest exists, declares ≥1 stream | `conformance <connector>` → `manifest` step |
 | Connector directory + entry point exist | `conformance <connector>` → `tests` step |
-| If not yet collecting, listed in `KNOWN_SCAFFOLD_CONNECTORS` (`src/connector-conformance-roster.ts`) and `public_listing.listed: false` | manual roster edit — `connector-conformance.test.ts` enforces the two stay consistent |
+| If not yet collecting, listed in `KNOWN_SCAFFOLD_CONNECTORS` (`src/connector-conformance-roster.ts`) and assigned `public_listing.tier: "development"` | manual roster edit — `connector-conformance.test.ts` enforces the two stay consistent |
 
-## Level 2 — unproven (real collector, unverified against a live account)
+## Development — real collector, unverified against a live account
 
 Real collection logic exists — no unconditional `SKIP_RESULT`. This is
 where most of this repo's connectors sit today.
@@ -37,9 +37,9 @@ where most of this repo's connectors sit today.
 | Test file exists and its suite passes | `conformance <connector>` → `tests` step |
 | Emitted records validate against `schemas.ts` | covered by the connector's own test suite via `validateRecord` |
 | Roster entry in `PRODUCTION_READY_CONNECTORS` or `REAL_UNLISTED_CONNECTORS`, `testFile` points at a real test | `connector-conformance.test.ts` |
-| Manifest `public_listing.status: "unproven"` (or `needs_human_auth` if it needs an interactive login) | manual — this IS the honesty claim, not machine-derived |
+| Manifest `public_listing.tier: "development"` | manual — this is the honesty claim, not machine-derived |
 
-## Level 3 — path-verified (unproven + independently sourced evidence the code hits the right endpoint)
+## Preview — independently verified setup and collection path
 
 The level this task's work targets. Two independent, non-mock sources of
 evidence, neither authored by the connector's own author in the same
@@ -59,12 +59,12 @@ comment and in `docs/inbox/report-connector-coverage.md`'s classification
 table. `UNKNOWN` with a written reason is a legitimate resting state, not a
 failure to fix later.
 
-## Level 4 — proven (a real account run has recorded real data end-to-end)
+## Supported — a real account run has recorded real data end-to-end
 
 | Rule | Check |
 |---|---|
 | An operator ran this connector against their own real account and it collected real data with no errors | no automated check exists or ever will — this is the Jellyfin-class limit: only a live run proves a live provider actually serves what the code expects |
-| Manifest `public_listing.status: "proven"` | manual — a deliberate human edit after the run above, never inferred |
+| Manifest `public_listing.tier: "supported"` | manual — a deliberate human edit after the run above, never inferred |
 
 ## Anti-patterns this checklist exists to prevent
 
@@ -80,6 +80,6 @@ failure to fix later.
   mock-mutation is the permanently correct answer. Read
   `docs/inbox/report-connector-coverage.md`'s (a)/(b)/(c) classification
   before assuming a connector's `UNKNOWN` is fixable.
-- **Bumping `public_listing.status` because every mechanical check went
+- **Promoting `public_listing.tier` because every mechanical check went
   green.** It doesn't mean the connector works. It means nothing
   *mechanical* is wrong. Promotion needs a real run.

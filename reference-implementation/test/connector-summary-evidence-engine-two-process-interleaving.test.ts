@@ -70,7 +70,7 @@ const ATTEMPTS = 6;
 function seedManifestConnector(connectorId: string, streams: string[]): void {
   const manifest = {
     capabilities: {
-      public_listing: { listed: true, status: "test" },
+      public_listing: { tier: "supported" },
     },
     connector_id: connectorId,
     display_name: connectorId,

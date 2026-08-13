@@ -30,7 +30,7 @@ import test from "node:test";
 import { mountOwnerConnectorTemplates } from "../server/routes/owner-connector-templates.ts";
 
 const VALID_MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "proven" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: "valid-one",
   connector_key: "valid-one",
   display_name: "Valid One",
@@ -39,7 +39,7 @@ const VALID_MANIFEST = {
 };
 
 const OTHER_VALID_MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "proven" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: "valid-two",
   connector_key: "valid-two",
   display_name: "Valid Two",
@@ -51,7 +51,7 @@ const OTHER_VALID_MANIFEST = {
 // no label. This manifest reaches `staticSecretCredentialCaptureFromManifest`
 // unvalidated here on purpose, to prove the projection loop's own isolation.
 const MALFORMED_MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "proven" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: "malformed-one",
   connector_key: "malformed-one",
   display_name: "Malformed One",

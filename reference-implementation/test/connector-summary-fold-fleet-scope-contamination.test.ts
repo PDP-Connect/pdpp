@@ -57,7 +57,7 @@ const POLLUTER_EVENT_SEQ = 999_999;
 
 function manifest(connectorId: string, displayName: string) {
   return {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: connectorId,
     display_name: displayName,
     protocol_version: "0.1.0",

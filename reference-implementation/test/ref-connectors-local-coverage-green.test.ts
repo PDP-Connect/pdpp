@@ -134,7 +134,7 @@ function withTmpDb(fn: () => Promise<void>) {
 }
 
 interface TestManifestCapabilities {
-  public_listing: { listed: boolean; status: string };
+  public_listing: { tier: "supported" };
   refresh_policy?: { maximum_staleness_seconds: number };
 }
 
@@ -143,7 +143,7 @@ function seedConnector({
 }: {
   refreshPolicy?: { maximum_staleness_seconds: number } | null;
 } = {}) {
-  const capabilities: TestManifestCapabilities = { public_listing: { listed: true, status: "test" } };
+  const capabilities: TestManifestCapabilities = { public_listing: { tier: "supported" } };
   if (refreshPolicy) {
     capabilities.refresh_policy = refreshPolicy;
   }
@@ -714,7 +714,7 @@ test(
     const deviceId = "dev_unsupported_local_proof";
     const sourceInstanceId = "src_unsupported_local_proof";
     const manifest = {
-      capabilities: { public_listing: { listed: true, status: "test" } },
+      capabilities: { public_listing: { tier: "supported" } },
       connector_id: connectorId,
       display_name: "Unsupported local proof",
       protocol_version: "0.1.0",

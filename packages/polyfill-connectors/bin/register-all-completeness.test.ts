@@ -10,7 +10,7 @@
  * `selectRegisterAllConnectors` (src/orchestrator.ts) is the actual
  * selection logic register-all.ts calls in production. This test calls that
  * same function directly and asserts full equality against
- * KNOWN_CONNECTOR_NAMES minus manifest-declared deprecated_upstream entries
+ * KNOWN_CONNECTOR_NAMES
  * — a behavioral test of the real function, not a parse of register-all.ts's
  * source text. A stale hardcoded array in register-all.ts previously omitted
  * groupme, jellyfin, chase, netflix_export, and steam with no CI signal.
@@ -18,7 +18,7 @@
  * Scope note: this does not assert anything about fresh-instance/first-boot
  * registration. That path is independent —
  * `reference-implementation/server/polyfill-manifest-reconcile.ts`, driven
- * by `manifests/*.json` + `capabilities.public_listing.listed` — and was
+ * by `manifests/*.json` + the authoritative lifecycle tier — and was
  * already correct; register-all.ts is a developer smoke-test/seed utility.
  */
 import assert from "node:assert/strict";

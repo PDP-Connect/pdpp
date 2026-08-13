@@ -120,12 +120,10 @@ export function readManifest(name: string): Manifest {
 
 /**
  * The connector set `bin/register-all.ts`'s smoke test registers: every
- * connector in the registry except manifests whose upstream is permanently
- * gone (`capabilities.public_listing.status === "deprecated_upstream"`,
- * e.g. Pocket — shut down 2025-07-08, no upstream remains to smoke-test
- * against). Side-effect-free and takes `readManifest` as a parameter so it
- * can be exercised directly in tests without filesystem I/O of its own;
- * production callers pass the real `readManifest` above.
+ * connector in the registry. Lifecycle tier controls what the owner is
+ * offered; it does not remove a manifest from developer registration smoke
+ * tests. Registering a Development manifest does not call its provider or
+ * claim that its upstream remains available.
  *
  * This is the ONLY filter — manual-upload, local-device, and unlisted
  * connectors stay included, matching prior behavior: register-all's job is
@@ -134,14 +132,9 @@ export function readManifest(name: string): Manifest {
  */
 export function selectRegisterAllConnectors(
   connectorNames: readonly string[],
-  readManifestFn: (name: string) => Manifest
+  _readManifestFn: (name: string) => Manifest
 ): string[] {
-  return connectorNames.filter((name) => {
-    const manifest = readManifestFn(name) as {
-      capabilities?: { public_listing?: { status?: string } };
-    };
-    return manifest.capabilities?.public_listing?.status !== "deprecated_upstream";
-  });
+  return [...connectorNames];
 }
 
 interface AsFetchResult {

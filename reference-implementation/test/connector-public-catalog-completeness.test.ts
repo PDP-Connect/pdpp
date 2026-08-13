@@ -8,7 +8,7 @@
  * The honesty contract from
  * `openspec/changes/add-connector-public-listing-honesty/` says any
  * first-party manifest under `packages/polyfill-connectors/manifests/`
- * that declares `capabilities.public_listing.listed: true` SHALL be
+ * that declares an owner-visible lifecycle tier SHALL be
  * visible in the reference connector catalog after the reference starts up —
  * even on a fresh database, before any schedule, run, or connection row
  * exists.
@@ -66,7 +66,7 @@ function listFirstPartyManifestNames() {
 }
 
 interface FirstPartyManifestFixture {
-  capabilities?: { public_listing?: { listed?: boolean } };
+  capabilities?: { public_listing?: { tier?: string } };
   connector_id?: unknown;
 }
 
@@ -79,12 +79,13 @@ function readManifest(filename: string): FirstPartyManifestFixture {
 // URL-shaped connector_id to its canonical key before comparing against the
 // surface output. canonicalConnectorKey(x) ?? x leaves non-first-party shapes
 // untouched, matching the runtime's own identity function.
-function listedConnectorIds(): string[] {
+function ownerVisibleConnectorIds(): string[] {
   const ids: string[] = [];
   for (const filename of listFirstPartyManifestNames()) {
     const manifest = readManifest(filename);
     // biome-ignore lint/suspicious/noUnnecessaryConditions: Runtime guard protects an untyped external/test boundary.
-    if (manifest?.capabilities?.public_listing?.listed === true && typeof manifest.connector_id === "string") {
+    const tier = manifest?.capabilities?.public_listing?.tier;
+    if ((tier === "supported" || tier === "preview") && typeof manifest.connector_id === "string") {
       ids.push(canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id);
     }
   }
@@ -92,12 +93,12 @@ function listedConnectorIds(): string[] {
   return ids.sort();
 }
 
-function unlistedConnectorIds(): string[] {
+function developmentConnectorIds(): string[] {
   const ids: string[] = [];
   for (const filename of listFirstPartyManifestNames()) {
     const manifest = readManifest(filename);
     // biome-ignore lint/suspicious/noUnnecessaryConditions: Runtime guard protects an untyped external/test boundary.
-    if (manifest?.capabilities?.public_listing?.listed !== true && typeof manifest.connector_id === "string") {
+    if (manifest?.capabilities?.public_listing?.tier === "development" && typeof manifest.connector_id === "string") {
       ids.push(canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id);
     }
   }
@@ -138,12 +139,12 @@ test("every shipped first-party manifest passes the live registration validator"
 });
 
 test(
-  "every listed=true first-party manifest is catalog-visible after startup reconciliation, with no connection row",
+  "every owner-visible first-party manifest is catalog-visible after startup reconciliation, with no connection row",
   withTmpDb(async () => {
-    const expectedListed = listedConnectorIds();
+    const expectedListed = ownerVisibleConnectorIds();
     assert.ok(
       expectedListed.length > 0,
-      "first-party manifest set must contain at least one listed=true manifest for this test to be meaningful"
+      "first-party manifest set must contain at least one owner-visible manifest for this test to be meaningful"
     );
 
     const summary = await reconcilePolyfillManifests({
@@ -214,9 +215,9 @@ test(
 );
 
 test(
-  "hidden / unproven first-party manifests stay out of the public catalog",
+  "Development first-party manifests stay out of the public catalog",
   withTmpDb(async () => {
-    const hidden = unlistedConnectorIds();
+    const hidden = developmentConnectorIds();
     assert.ok(
       hidden.length > 0,
       "first-party manifest set must contain at least one hidden manifest for this test to be meaningful"

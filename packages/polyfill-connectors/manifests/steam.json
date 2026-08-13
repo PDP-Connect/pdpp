@@ -58,7 +58,7 @@
       "rate_limit_sensitivity": "high",
       "bot_detection_sensitivity": "low",
       "background_safe": false,
-      "rationale": "Steam Web API does not publish rate limits. PDPP policy: start at a 250ms per-request floor, honor Retry-After when supplied, and preserve 429/throttled transient failures for recovery; 403 is treated as an authorization or visibility failure. 1-hour polling is conservative to avoid community-reported multi-hour lockouts. recommended_mode stays manual and background_safe stays false while listed:false/status:unproven — an unlisted connector must not be scheduled unattended before an operator has proven a live run."
+      "rationale": "Steam Web API does not publish rate limits. PDPP policy: start at a 250ms per-request floor, honor Retry-After when supplied, and preserve 429/throttled transient failures for recovery; 403 is treated as an authorization or visibility failure. One-hour polling is conservative to avoid community-reported multi-hour lockouts. Preview remains manual and background_safe stays false until repeated live runs support unattended collection."
     },
     "public_listing": {
       "tier": "preview"

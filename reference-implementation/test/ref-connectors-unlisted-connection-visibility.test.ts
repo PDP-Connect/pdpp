@@ -6,7 +6,7 @@
  * connections holding records while `/sources` showed neither.
  *
  * Root cause: `projectConnectorSummaryForInstance` dropped any connection whose
- * manifest declares `capabilities.public_listing.listed: false`, and the nulls
+ * manifest declares `capabilities.public_listing.tier: "development"`, and the nulls
  * were filtered out inside `projectConnectorSummaryIdentityPage`. `/sources/add`
  * uses the `retained_count_summary` profile, a different projection that never
  * consults the flag — which is why the same data appeared there.
@@ -62,15 +62,13 @@ function withTmpDb(fn: () => Promise<void>): () => Promise<void> {
   };
 }
 
-function seedConnector(connectorId: string, listed: boolean): void {
+function seedConnector(connectorId: string, ownerVisible: boolean): void {
   const manifest = {
     capabilities: {
-      // The live shape: an unlisted connector declares `listed: false`
-      // explicitly, keeping it out of the Add Source catalog.
-      public_listing: { listed, status: listed ? "test" : "unproven" },
+      public_listing: { tier: ownerVisible ? "supported" : "development" },
     },
     connector_id: connectorId,
-    display_name: listed ? "Listed Source" : "Unlisted Source",
+    display_name: ownerVisible ? "Listed Source" : "Unlisted Source",
     protocol_version: "0.1.0",
     streams: [{ name: "items", primary_key: ["id"] }],
     version: "1.0.0",

@@ -541,13 +541,11 @@ function isFixtureToPolyfillTransition(
 }
 
 /**
- * A shipped first-party manifest is "publicly listed" when it explicitly
- * declares `capabilities.public_listing.listed === true`. That is the same
- * boolean the reference catalog filter (`isPublicReferenceConnector` in
- * `ref-control.ts`) requires for a manifest to surface in the registered
- * connector catalog / add-connection surface.
+ * Supported and Preview manifests are owner-visible and therefore need to be
+ * registered on a fresh instance. Development manifests remain absent from
+ * the add-connection catalog unless an explicit UAT reconciliation opts in.
  *
- * Catalog honesty: listed=true manifests must be visible in the catalog
+ * Catalog honesty: owner-visible manifests must be visible in the catalog
  * even on a fresh database, before any schedule or run row exists. Hidden
  * or unproven manifests stay opaque to the operator until they are
  * explicitly promoted by a manifest edit. See
@@ -562,7 +560,8 @@ function isPubliclyListedShippedManifest(manifest: PolyfillManifest): boolean {
   if (!publicListingRaw || typeof publicListingRaw !== "object" || Array.isArray(publicListingRaw)) {
     return false;
   }
-  return (publicListingRaw as { listed?: unknown }).listed === true;
+  const tier = (publicListingRaw as { tier?: unknown }).tier;
+  return tier === "supported" || tier === "preview";
 }
 
 function isUnprovenShippedManifest(manifest: PolyfillManifest): boolean {
@@ -574,8 +573,7 @@ function isUnprovenShippedManifest(manifest: PolyfillManifest): boolean {
   if (!listing || typeof listing !== "object" || Array.isArray(listing)) {
     return false;
   }
-  const record = listing as { listed?: unknown; status?: unknown };
-  return record.listed === false && record.status === "unproven";
+  return (listing as { tier?: unknown }).tier === "development";
 }
 
 type ManifestEntryBranch =

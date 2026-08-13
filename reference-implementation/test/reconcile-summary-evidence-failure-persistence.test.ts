@@ -54,7 +54,7 @@ interface JsonRecord {
 
 const MANIFEST = {
   capabilities: {
-    public_listing: { listed: true, status: "test" },
+    public_listing: { tier: "supported" },
   },
   connector_id: CONNECTOR_ID,
   display_name: "Failure Persistence Probe",

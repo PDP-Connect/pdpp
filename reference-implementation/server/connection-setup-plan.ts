@@ -339,7 +339,7 @@ export type BrowserBoundConnector = (typeof BROWSER_BOUND_CONNECTORS)[number];
  * Browser enrollment is available when the shipped manifest/runtime pair is
  * both browser-bound and production-ready. The conformance roster is the
  * connector package's authority for the latter: it is checked against
- * `capabilities.public_listing.listed` and each entry names a real collection
+ * an owner-visible lifecycle tier and each entry names a real collection
  * oracle. Deriving this intersection keeps a scaffold such as Anthropic out
  * without maintaining a second browser setup allowlist.
  */
@@ -405,13 +405,9 @@ export function isStaticSecretLiveProven(connectorKey: string): boolean {
  * completed a live run yet, which `STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS`
  * still tracks.
  *
- * This check does NOT consult `capabilities.public_listing` — that flag is a
- * separate, console-side gate (see `buildOwnerConnectorCatalog` in
- * apps/console/.../connection-catalog.ts): normal ("supported") entries still
- * require `listed === true`, but an `experimental` support_state is admitted
- * into the console's Experimental section even when `listed === false` (e.g.
- * Steam ships `listed: false` today). The Experimental section is itself the
- * explicit opt-in; the listing flag is not a second gate on top of it.
+ * This check does NOT consult `capabilities.public_listing`: lifecycle tier
+ * controls offering, while this function answers whether the generic static-
+ * secret path is technically available. The console combines both facts.
  */
 export function isStaticSecretExperimentalEligible(manifest: ConnectorManifestLike | null): boolean {
   return staticSecretCredentialCaptureFromManifest(manifest) !== null;

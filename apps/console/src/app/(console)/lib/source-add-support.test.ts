@@ -18,6 +18,8 @@ import test from "node:test";
 import type { CatalogManifestLike } from "./connection-catalog.ts";
 import { buildSourceAddSupport, resolveSourceAddSupport } from "./source-add-support.ts";
 
+const SUPPORTED_LISTING = { public_listing: { tier: "supported" as const } };
+
 const ADD_ANOTHER_ACCOUNT_LABEL_RE = /add another account/i;
 const CONNECT_BROWSER_SESSION_ROUTE_RE = /\/connect\/browser-session\/amazon/;
 const STATIC_SECRET_ROUTE_RE = /\/connect\/static-secret\/gmail/;
@@ -38,6 +40,7 @@ const DEV_JARGON_RE = /pnpm --dir|packages\/|monorepo|env var|connector_instance
  */
 function staticSecretManifest(connectorId: string): CatalogManifestLike {
   return {
+    capabilities: SUPPORTED_LISTING,
     connector_id: connectorId,
     display_name: connectorId,
     runtime_requirements: { bindings: { network: {} } },
@@ -56,6 +59,7 @@ function staticSecretManifest(connectorId: string): CatalogManifestLike {
 /** A browser-bound connector manifest (no manual collector proof path). */
 function browserBoundManifest(connectorId: string): CatalogManifestLike {
   return {
+    capabilities: SUPPORTED_LISTING,
     connector_id: connectorId,
     display_name: connectorId,
     runtime_requirements: { bindings: { browser: {} } },
@@ -70,6 +74,7 @@ function browserCollectorManifest(connectorId: string): CatalogManifestLike {
 /** A local-collector connector manifest (filesystem-class). */
 function localCollectorManifest(connectorId: string): CatalogManifestLike {
   return {
+    capabilities: SUPPORTED_LISTING,
     connector_id: connectorId,
     display_name: connectorId,
     runtime_requirements: { bindings: { filesystem: {} } },
@@ -79,6 +84,7 @@ function localCollectorManifest(connectorId: string): CatalogManifestLike {
 /** A manifest-declared manual/upload connector (filesystem runtime, import setup). */
 function manualUploadManifest(connectorId: string): CatalogManifestLike {
   return {
+    capabilities: SUPPORTED_LISTING,
     connector_id: connectorId,
     display_name: connectorId,
     runtime_requirements: { bindings: { filesystem: {} } },
@@ -96,6 +102,7 @@ function manualUploadManifest(connectorId: string): CatalogManifestLike {
 /** A manifest-declared manual/upload connector with no packaged upload path yet. */
 function manualUploadPendingManifest(connectorId: string): CatalogManifestLike {
   return {
+    capabilities: SUPPORTED_LISTING,
     connector_id: connectorId,
     display_name: connectorId,
     runtime_requirements: { bindings: { filesystem: {} } },
@@ -107,6 +114,7 @@ function manualUploadPendingManifest(connectorId: string): CatalogManifestLike {
 
 function providerAuthManifest(connectorId: string): CatalogManifestLike {
   return {
+    capabilities: SUPPORTED_LISTING,
     connector_id: connectorId,
     display_name: connectorId,
     runtime_requirements: { bindings: { network: {} } },

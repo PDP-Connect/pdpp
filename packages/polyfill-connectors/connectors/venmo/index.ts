@@ -53,9 +53,8 @@
  * Tested surfaces: fixture-driven only (pilot-fixture.test.ts,
  * parsers.test.ts, schemas.test.ts, integration.test.ts,
  * src/auto-login/venmo.test.ts). No live network call has proven this
- * redesign against a real account yet — see the manifest's
- * `public_listing.status: "unproven"`. This connector stays unlisted
- * until a live run is verified.
+ * redesign against a real account yet. The manifest therefore keeps the
+ * connector in Development until a live run is verified.
  *
  * CHANGES
  *   v0.2.0 (2026-08-10) — browser-session redesign; removed

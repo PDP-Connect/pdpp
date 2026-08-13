@@ -52,7 +52,7 @@ const EMPTY_STREAM = "empty_stream";
 const UNEXPECTED_STREAM = "legacy_stream";
 const MANIFEST: any = {
   capabilities: {
-    public_listing: { listed: true, status: "test" },
+    public_listing: { tier: "supported" },
     refresh_policy: {
       maximum_staleness_seconds: 3_153_600_000,
       rationale: "Dedicated evidence-oracle fixture has no automatic refresh.",

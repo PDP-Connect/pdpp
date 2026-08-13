@@ -38,7 +38,7 @@ const LIVE_WRITER_FIXTURE = new URL("./fixtures/summary-source-revision-live-wri
 const FAILURE_FIXTURE = new URL("./fixtures/summary-evidence-failure-publication-fixture.mjs", import.meta.url);
 
 const MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "test" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: CONNECTOR_ID,
   display_name: "Source Revision Probe",
   protocol_version: "0.1.0",

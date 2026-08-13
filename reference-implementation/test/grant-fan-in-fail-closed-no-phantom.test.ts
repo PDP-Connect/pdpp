@@ -35,7 +35,7 @@ const STREAM = "messages";
 const listedManifest = {
   // listed:true so it would have been materialized by the old read-time
   // catalog fan-out — the exact shape that produced phantom bindings.
-  capabilities: { public_listing: { listed: true, status: "test" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: CONNECTOR_ID,
   display_name: "Grant Fail-Closed Connector",
   protocol_version: "0.1.0",

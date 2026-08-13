@@ -23,7 +23,7 @@ const CONNECTOR_ID = "test-manual-artifact";
 
 const manualArtifactManifest = {
   capabilities: {
-    public_listing: { listed: true, status: "test" },
+    public_listing: { tier: "supported" },
     refresh_policy: {
       background_safe: false,
       interaction_posture: "manual_action_likely",

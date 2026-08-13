@@ -37,7 +37,7 @@ function testManifest(recommendedMode: "automatic" | "manual" = "automatic"): Re
   return {
     capabilities: {
       auth: { kind: "env", required: [TEST_ENV_KEY] },
-      public_listing: { listed: true, status: "proven" },
+      public_listing: { tier: "supported" },
       refresh_policy: {
         background_safe: true,
         rationale: "Synthetic manifest for the scheduler integration contract.",

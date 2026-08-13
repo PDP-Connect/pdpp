@@ -239,7 +239,7 @@ test(
   "a scoped reconcile for connection A does not read or repair sibling connection B, even when B also needs repair",
   withTempDb(async () => {
     const manifest = {
-      capabilities: { public_listing: { listed: true, status: "test" } },
+      capabilities: { public_listing: { tier: "supported" } },
       connector_id: "c1",
       display_name: "Sibling Isolation Test Connector",
       protocol_version: "0.1.0",

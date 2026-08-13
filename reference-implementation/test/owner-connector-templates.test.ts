@@ -228,7 +228,7 @@ test("owner-agent bearer lists connector templates with related connection summa
     const listedUnprovenManifest = loadManifest("doordash");
     listedUnprovenManifest.capabilities = {
       ...asRecord(listedUnprovenManifest.capabilities),
-      public_listing: { listed: true, status: "unproven" },
+      public_listing: { tier: "preview" },
     };
     await registerConnector(asUrl, listedUnprovenManifest);
     const amazonKey = canonicalConnectorKey(amazonManifest.connector_id);
@@ -254,7 +254,7 @@ test("owner-agent bearer lists connector templates with related connection summa
     assert.equal(amazon.display_name, "Amazon");
     assert.equal(amazon.connector_modality, "browser_bound");
     assert.equal(amazon.registration_status, "registered");
-    assert.deepEqual(amazon.public_listing, { listed: true, status: "needs_human_auth" });
+    assert.deepEqual(amazon.public_listing, { tier: "supported" });
     const amazonSetupPlan = asRecord(amazon.setup_plan);
     assert.equal(amazonSetupPlan.setup_modality, "static_secret");
     assert.equal(amazonSetupPlan.support_state, "proof_gated");
@@ -288,7 +288,7 @@ test("owner-agent bearer lists connector templates with related connection summa
     );
 
     const doordash = byConnector(body, "doordash");
-    assert.deepEqual(doordash.public_listing, { listed: true, status: "unproven" });
+    assert.deepEqual(doordash.public_listing, { tier: "preview" });
     const doordashSetupPlan = asRecord(doordash.setup_plan);
     assert.equal(doordashSetupPlan.owner_actionable, false);
     const doordashInitiate = actionByFamily(doordash, "initiate_connection");
@@ -307,7 +307,7 @@ test("owner-template projection separates browser owner-session setup from owner
     const browserRunbookManifest = loadManifest("doordash");
     browserRunbookManifest.capabilities = {
       ...asRecord(browserRunbookManifest.capabilities),
-      public_listing: { listed: true, status: "proven" },
+      public_listing: { tier: "supported" },
     };
     await registerConnector(asUrl, browserRunbookManifest);
 
@@ -374,8 +374,7 @@ test("owner-template readiness reflects configured provider authorization", asyn
 
         const google = byConnector(body, "google-maps-data-portability");
         const publicListing = asRecord(google.public_listing);
-        assert.equal(publicListing.listed, false);
-        assert.equal(publicListing.status, "unproven");
+        assert.equal(publicListing.tier, "development");
         const setupPlan = asRecord(google.setup_plan);
         assert.equal(setupPlan.catalog_disposition, "provider_auth_connect");
         const deploymentReadiness = asRecord(setupPlan.deployment_readiness);
@@ -468,8 +467,7 @@ test("UAT-exposed experimental static-secret connector is visible without claimi
       assert.equal(steamRec.uat_expose_unlisted_connectors, true);
       assert.equal(setup.catalog_disposition, "static_secret_experimental");
       assert.equal(setup.owner_actionable, false, "UAT exposure must not promote production support");
-      assert.equal(listing.listed, false);
-      assert.equal(listing.status, "unproven");
+      assert.equal(listing.tier, "preview");
       assert.equal(actionByFamily(steamRec, "initiate_connection").status, "unsupported");
     });
   } finally {
@@ -592,10 +590,14 @@ test("UAT-exposed unproven connectors from real manifests prove no allowlist", a
   }
 });
 
-test("without PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT, unproven connectors have uat_expose_unlisted_connectors=false", async () => {
+test("without legacy UAT exposure, Preview and Development tiers stay authoritative", async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const manifestIds = ["steam", "netflix_export"];
     const connectorKeys = ["steam", "netflix-export"];
+    const expectedTiers = new Map([
+      ["steam", "preview"],
+      ["netflix-export", "development"],
+    ]);
 
     for (const manifestId of manifestIds) {
       const manifest = loadManifest(manifestId);
@@ -617,8 +619,7 @@ test("without PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT, unproven connectors have uat_
 
       // public_listing is honest
       const listing = asRecord(asRecord(template).public_listing);
-      assert.equal(listing.listed, false, `${connectorKey}: public_listing.listed stays false`);
-      assert.equal(listing.status, "unproven", `${connectorKey}: public_listing.status stays unproven`);
+      assert.equal(listing.tier, expectedTiers.get(connectorKey), `${connectorKey}: lifecycle tier is unchanged`);
 
       // UAT exposure fact is false (flag not set)
       assert.equal(
@@ -647,7 +648,7 @@ test("without PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT flag set, unproven connectors 
   });
 });
 
-test("Venmo stays hidden by default and is exposed through its manifest setup in UAT", async () => {
+test("Development Venmo stays unavailable even when legacy UAT exposure is enabled", async () => {
   const previous = process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
   try {
     delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
@@ -672,9 +673,8 @@ test("Venmo stays hidden by default and is exposed through its manifest setup in
       const venmo = byConnector(exposed.body, "venmo");
       const listing = asRecord(venmo.public_listing);
       const setup = asRecord(venmo.setup_plan);
-      assert.equal(listing.listed, false);
-      assert.equal(listing.status, "unproven");
-      assert.equal(venmo.uat_expose_unlisted_connectors, true);
+      assert.equal(listing.tier, "development");
+      assert.equal(venmo.uat_expose_unlisted_connectors, false);
       assert.equal(setup.setup_modality, "static_secret");
       assert.equal(setup.next_step_kind, "capture_static_secret");
     });
@@ -696,7 +696,7 @@ test("unproven with recognized modality but non-actionable plan is not UAT-expos
       const doorDashManifest = loadManifest("doordash");
       doorDashManifest.capabilities = {
         ...asRecord(doorDashManifest.capabilities),
-        public_listing: { listed: false, status: "unproven" },
+        public_listing: { tier: "development" },
       };
       await registerConnector(asUrl, doorDashManifest);
 

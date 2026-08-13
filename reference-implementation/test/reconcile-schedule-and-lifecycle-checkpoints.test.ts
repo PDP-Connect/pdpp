@@ -59,7 +59,7 @@ function requirePostgresUrl(): string {
 }
 
 const MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "test" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: CONNECTOR_ID,
   display_name: "Schedule/Lifecycle Checkpoint Probe",
   protocol_version: "0.1.0",

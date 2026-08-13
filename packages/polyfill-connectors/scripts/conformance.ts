@@ -75,7 +75,7 @@ export function checkManifest(connector: string): Step {
   }
   try {
     const manifest = JSON.parse(readFileSync(file, "utf8")) as {
-      capabilities?: { public_listing?: { status?: string } };
+      capabilities?: { public_listing?: { tier?: string } };
       streams?: unknown;
     };
     const streams = Array.isArray(manifest.streams) ? manifest.streams.length : 0;
@@ -87,8 +87,8 @@ export function checkManifest(connector: string): Step {
         verdict: "FAIL",
       };
     }
-    const status = manifest.capabilities?.public_listing?.status ?? "unset";
-    return { detail: `${streams} stream(s), evidence level "${status}"`, name: "manifest", verdict: "PASS" };
+    const tier = manifest.capabilities?.public_listing?.tier ?? "unset";
+    return { detail: `${streams} stream(s), lifecycle tier "${tier}"`, name: "manifest", verdict: "PASS" };
   } catch (err) {
     return {
       detail: `manifest is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,

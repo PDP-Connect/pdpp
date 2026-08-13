@@ -48,7 +48,7 @@ interface JsonRecord {
 
 function manifestFor(connectorId: string): JsonRecord {
   return {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: connectorId,
     display_name: "Total Records State Probe",
     protocol_version: "0.1.0",

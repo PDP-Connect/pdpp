@@ -1038,6 +1038,9 @@ export const KNOWN_UNEXERCISED_COVERAGE: ReadonlySet<string> = new Set([
   "google_takeout.youtube_watch_history",
   "google_takeout.search_history",
   "google_takeout.photos",
+  // Pocket is retained as a Development parser, but Mozilla shut down the
+  // upstream API; no live driver can exercise a collection boundary.
+  "pocket.items",
   "heb.orders",
   "heb.order_items",
   // iCal / iMessage (REAL_UNLISTED_CONNECTORS): file-based import receipts, no

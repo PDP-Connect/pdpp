@@ -254,7 +254,7 @@ function credentialOf(body: Record<string, unknown>): { present: unknown } {
 // self-reports `skipped`, so the credential is stored without an identity echo.
 function syntheticNoProbeStaticSecretManifest() {
   return {
-    capabilities: { public_listing: { listed: true, status: "proven" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: "https://registry.pdpp.org/connectors/ynab",
     connector_key: "ynab",
     display_name: "YNAB",

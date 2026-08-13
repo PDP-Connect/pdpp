@@ -84,7 +84,7 @@ function withTmpDb(fn: () => Promise<void>): () => Promise<void> {
 function seedConnector() {
   const manifest = {
     capabilities: {
-      public_listing: { listed: true, status: "test" },
+      public_listing: { tier: "supported" },
     },
     connector_id: CONNECTOR_ID,
     display_name: "Connection First Records",
@@ -106,7 +106,7 @@ function seedConnector() {
 function seedStaticSecretConnector() {
   const manifest = {
     capabilities: {
-      public_listing: { listed: true, status: "test" },
+      public_listing: { tier: "supported" },
     },
     connector_id: STATIC_SECRET_CONNECTOR_ID,
     display_name: "Connection First Static Secret",
@@ -1603,7 +1603,7 @@ const CHATGPT_SHAPED_INSTANCE_ID = "cin_browser_static_secret";
 
 function seedBrowserBoundStaticSecretConnector({ browserRequired = true } = {}) {
   const manifest = {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: CHATGPT_SHAPED_CONNECTOR_ID,
     display_name: "Browser + Static Secret",
     protocol_version: "0.1.0",

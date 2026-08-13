@@ -46,7 +46,7 @@ const REGEXP_3 = /seed-flip/;
 // rather than mirroring the full protocol schema.
 interface Manifest {
   capabilities?: {
-    public_listing?: { listed?: boolean; status?: string };
+    public_listing?: { tier?: "supported" | "preview" | "development" };
     [key: string]: unknown;
   };
   connector_id: string;
@@ -830,7 +830,7 @@ test(
   "reconciliation skips unlisted connectors that are not yet registered (no record invalidation, no auto-seed)",
   withTmpDb(async ({ dir }) => {
     // The shipped fixture used here does not declare
-    // `capabilities.public_listing.listed: true`, so reconciliation MUST
+    // `capabilities.public_listing.tier: "supported"`, so reconciliation MUST
     // NOT auto-seed it. This preserves the long-standing "don't surprise
     // owners with a custom-looking connector_id" guarantee for unlisted /
     // unproven manifests and keeps the destructive invalidation path
@@ -863,14 +863,14 @@ test(
   "reconciliation auto-registers listed=true first-party manifests so the operator catalog can show them on a fresh DB",
   withTmpDb(async ({ dir }) => {
     // Catalog completeness: a first-party manifest that declares
-    // `capabilities.public_listing.listed: true` must be present in the
+    // `capabilities.public_listing.tier: "supported"` must be present in the
     // connectors table on startup so `GET /_ref/connectors` and the
     // reference dashboard can surface it before the first schedule or run
     // row exists. See
     // openspec/changes/add-connector-public-listing-honesty/.
     const listedManifest = shippedPolyfillManifest({
       capabilities: {
-        public_listing: { listed: true, status: "proven" },
+        public_listing: { tier: "supported" },
         refresh_policy: {
           background_safe: false,
           rationale: "Listed first-party manifest must be visible on the operator catalog even with no schedule.",
@@ -899,7 +899,7 @@ test(
     const persisted = await mustGetConnectorManifest(CONNECTOR_ID);
     assert.ok(persisted, "connector is persisted in the DB after reconciliation");
     assert.equal(persisted.connector_id, CONNECTOR_ID);
-    assert.equal(persisted.capabilities?.public_listing?.listed, true);
+    assert.equal(persisted.capabilities?.public_listing?.tier, "supported");
 
     const registeredLine = lines.find((line) => line.includes("registered listed first-party manifest"));
     assert.ok(registeredLine, "reconciliation emits a register log line");
@@ -912,7 +912,7 @@ test(
   withTmpDb(async ({ dir }) => {
     const manifestsDir = writeManifestsDir(dir, "polyfill", {
       "seed-flip.json": shippedPolyfillManifest({
-        capabilities: { public_listing: { listed: false, status: "unproven" } },
+        capabilities: { public_listing: { tier: "development" } },
       }),
     });
     const referenceFixturesDir = writeManifestsDir(dir, "reference", {});
@@ -931,11 +931,11 @@ test(
 );
 
 test(
-  "UAT reconciliation does not register a hidden manifest that is not an unproven candidate",
+  "explicit UAT reconciliation registers any valid Development manifest",
   withTmpDb(async ({ dir }) => {
     const manifestsDir = writeManifestsDir(dir, "polyfill", {
       "seed-flip.json": shippedPolyfillManifest({
-        capabilities: { public_listing: { listed: false, status: "internal" } },
+        capabilities: { public_listing: { tier: "development" } },
       }),
     });
     const summary = await reconcilePolyfillManifests({
@@ -945,9 +945,9 @@ test(
       referenceFixturesDir: writeManifestsDir(dir, "reference", {}),
     });
 
-    assert.equal(summary.registered, 0);
-    assert.equal(summary.skipped, 1);
-    assert.equal(await getConnectorManifest(CONNECTOR_ID), null);
+    assert.equal(summary.registered, 1);
+    assert.equal(summary.skipped, 0);
+    assert.ok(await getConnectorManifest(CONNECTOR_ID));
   })
 );
 
@@ -959,7 +959,7 @@ test(
     // listed=false stays invisible to the operator catalog on a fresh DB.
     const hiddenManifest = shippedPolyfillManifest({
       capabilities: {
-        public_listing: { listed: false, status: "unproven" },
+        public_listing: { tier: "development" },
         refresh_policy: {
           background_safe: false,
           rationale: "Unproven; hidden from the operator catalog until a credentialed run.",

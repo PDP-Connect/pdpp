@@ -1963,13 +1963,8 @@ export function isPublicReferenceConnector(row: ConnectorRow, manifest: Connecto
 
   const publicListing = manifest.capabilities?.public_listing;
   if (publicListing && typeof publicListing === "object" && !Array.isArray(publicListing)) {
-    const listing = publicListing as { listed?: unknown; status?: unknown };
-    if (listing.listed === true) {
-      return true;
-    }
-    if (listing.listed === false || listing.status === "unproven") {
-      return false;
-    }
+    const tier = (publicListing as { tier?: unknown }).tier;
+    return tier === "supported" || tier === "preview";
   }
 
   const localDeviceBinding = manifest.runtime_requirements?.bindings?.local_device;
@@ -1982,8 +1977,8 @@ export function isPublicReferenceConnector(row: ConnectorRow, manifest: Connecto
     return false;
   }
 
-  // Catalog visibility is explicit opt-in only. A connector without
-  // capabilities.public_listing.listed === true is hidden by default.
+  // Catalog visibility is explicit opt-in only. A connector without a valid
+  // owner-visible lifecycle tier is hidden by default.
   return false;
 }
 

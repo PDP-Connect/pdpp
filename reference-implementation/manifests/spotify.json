@@ -12,7 +12,7 @@
   },
   "capabilities": {
     "human_interaction": ["credentials"],
-    "public_listing": { "listed": true }
+    "public_listing": { "tier": "development" }
   },
   "streams": [
     {

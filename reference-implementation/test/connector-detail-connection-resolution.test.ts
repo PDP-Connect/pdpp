@@ -79,7 +79,7 @@ function manifestStream(name: string) {
 function seedConnector() {
   const manifest = {
     capabilities: {
-      public_listing: { listed: true, status: "test" },
+      public_listing: { tier: "supported" },
     },
     connector_id: CONNECTOR_ID,
     display_name: "Detail Connection Resolution",

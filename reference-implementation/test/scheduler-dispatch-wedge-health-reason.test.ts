@@ -67,7 +67,7 @@ const NOW = "2026-08-11T00:00:00.000Z";
 
 function connectorManifest(connectorId: string): Record<string, unknown> {
   return {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: connectorId,
     display_name: connectorId,
     protocol_version: "0.1.0",

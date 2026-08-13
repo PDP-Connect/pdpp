@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { checkManifest } from "../scripts/conformance.ts";
 
-test("conformance reports the manifest's nested public-listing evidence status", () => {
+test("conformance reports the manifest's lifecycle tier", () => {
   const step = checkManifest("google_maps");
   assert.equal(step.verdict, "PASS");
-  assert.match(step.detail, /evidence level "needs_human_auth"/);
+  assert.match(step.detail, /lifecycle tier "supported"/);
 });
