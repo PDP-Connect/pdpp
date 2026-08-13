@@ -5,7 +5,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  type AuthorizationDecisionFaultHook,
   approveOwnerDeviceAuthorization,
+  denyOwnerDeviceAuthorization,
   exchangeOwnerDeviceCode,
   initiateOwnerDeviceAuthorization,
   introspect,
@@ -18,6 +20,7 @@ import { closeDb, getDb, initDb } from "../server/db.ts";
 const CLIENT_ID = "owner_device_atomicity_client";
 const FORCED_AFTER_TOKEN_INSERT_RE = /forced after_token_insert/;
 const FORCED_BEFORE_TOKEN_INSERT_RE = /forced before_token_insert/;
+const FORCED_DENIAL_EVENT_RE = /forced denial event rollback/;
 
 interface StartedOwnerDeviceAuth {
   device_code: string;
@@ -88,6 +91,25 @@ function throwingHook(stageToThrow: Parameters<OwnerDeviceApprovalFaultHook>[0])
     if (stage === stageToThrow) {
       throw Object.assign(new Error(`forced ${stage}`), { code: `forced_${stage}` });
     }
+  };
+}
+
+function createPause(): { paused: Promise<void>; release: () => void; hook: () => Promise<void> } {
+  let release: () => void = () => undefined;
+  let markPaused: () => void = () => undefined;
+  const paused = new Promise<void>((resolve) => {
+    markPaused = resolve;
+  });
+  const resumed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    hook: async () => {
+      markPaused();
+      await resumed;
+    },
+    paused,
+    release,
   };
 }
 
@@ -269,4 +291,63 @@ test("owner-device approval rejects expired rows before owner token issuance", a
 
   assert.deepEqual(ownerDeviceRow(started.device_code), { status: "expired", subject_id: null, token_id: null });
   assert.equal(countOwnerTokensForClient(), 0, "expired approval does not mint");
+});
+
+test("owner-device denial persists one rejection event and is terminal", async () => {
+  await setupSqliteAuth();
+  const started = await startOwnerDeviceAuth();
+
+  await denyOwnerDeviceAuthorization(started.user_code);
+
+  assert.deepEqual(ownerDeviceRow(started.device_code), { status: "denied", subject_id: null, token_id: null });
+  assert.equal(countOwnerTokensForClient(), 0, "denial does not mint an owner token");
+  assert.equal(countOwnerDeviceEvents(started.device_code, "request.rejected"), 1);
+  assert.equal(countOwnerDeviceEvents(started.device_code, "consent.approved"), 0);
+});
+
+test("owner-device approval wins a denial race without contradictory rejection", async () => {
+  await setupSqliteAuth();
+  const started = await startOwnerDeviceAuth();
+  const pause = createPause();
+  const denial = denyOwnerDeviceAuthorization(started.user_code, "owner_local", {
+    beforeCasHook: pause.hook,
+  });
+  await pause.paused;
+  const approved = await approveOwnerDeviceAuthorization(started.user_code, "owner_local");
+  pause.release();
+
+  await assert.rejects(
+    denial,
+    (err: unknown) => err instanceof Error && "code" in err && err.code === "approval_conflict"
+  );
+  assert.equal((await introspect(approved.access_token)).active, true);
+  assert.equal(countOwnerTokensForClient(), 1);
+  assert.equal(countOwnerDeviceEvents(started.device_code, "consent.approved"), 1);
+  assert.equal(countOwnerDeviceEvents(started.device_code, "request.rejected"), 0);
+});
+
+test("owner-device denial wins before approval and denial event rolls back on failure", async () => {
+  await setupSqliteAuth();
+  const rollback = await startOwnerDeviceAuth();
+  const faultHook: AuthorizationDecisionFaultHook = (stage) => {
+    if (stage === "after_event_before_commit") {
+      throw new Error("forced denial event rollback");
+    }
+  };
+  await assert.rejects(
+    denyOwnerDeviceAuthorization(rollback.user_code, "owner_local", { faultHook }),
+    FORCED_DENIAL_EVENT_RE
+  );
+  assert.equal(ownerDeviceRow(rollback.device_code).status, "pending");
+  assert.equal(countOwnerDeviceEvents(rollback.device_code, "request.rejected"), 0);
+
+  const denied = await startOwnerDeviceAuth();
+  await denyOwnerDeviceAuthorization(denied.user_code, "owner_local");
+  await assert.rejects(
+    approveOwnerDeviceAuthorization(denied.user_code, "owner_local"),
+    (err: unknown) => err instanceof Error && "code" in err && err.code === "approval_conflict"
+  );
+  assert.equal(countOwnerTokensForClient(), 0);
+  assert.equal(countOwnerDeviceEvents(denied.device_code, "request.rejected"), 1);
+  assert.equal(countOwnerDeviceEvents(denied.device_code, "consent.approved"), 0);
 });

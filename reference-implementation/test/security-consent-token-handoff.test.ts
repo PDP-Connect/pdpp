@@ -2,6 +2,7 @@ const TOP_LEVEL_REGEX_1 = /cex_[0-9a-f]{64}/;
 const TOP_LEVEL_REGEX_2 = /cex_[0-9a-f]{64}/;
 const APPROVAL_REVIEW_REVISION_PATTERN = /name="approval_review_revision" value="([^"]+)"/;
 const GRANT_ID_RE = /grt_[a-zA-Z0-9]+/;
+const FORCED_ORDINARY_DENIAL_ROLLBACK_RE = /forced ordinary denial rollback/;
 
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
@@ -28,10 +29,13 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  type AuthorizationDecisionFaultHook,
   approveGrant,
   consumeConsentExchangeCode,
   createConsentExchangeCode,
+  denyGrant,
   getPendingConsent,
+  introspect,
   parsePendingConsentRequestUri,
   revokeGrant,
 } from "../server/auth.ts";
@@ -185,6 +189,34 @@ async function approveReviewedJson(asUrl: string, requestUri: string): Promise<R
 interface HarnessContext {
   asUrl: string;
   spotifyManifest: SpotifyManifest;
+}
+
+function createDecisionPause(): { paused: Promise<void>; release: () => void; hook: () => Promise<void> } {
+  let release: () => void = () => undefined;
+  let markPaused: () => void = () => undefined;
+  const paused = new Promise<void>((resolve) => {
+    markPaused = resolve;
+  });
+  const resumed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    hook: async () => {
+      markPaused();
+      await resumed;
+    },
+    paused,
+    release,
+  };
+}
+
+function countConsentEvents(deviceCode: string, eventType: string): number {
+  const row = getDb()
+    .prepare(
+      "SELECT COUNT(*) AS count FROM spine_events WHERE object_id = ? AND object_type = 'grant' AND event_type = ?"
+    )
+    .get(deviceCode, eventType) as { count: number };
+  return row.count;
 }
 
 async function withHarness(fn: (ctx: HarnessContext) => Promise<void>): Promise<void> {
@@ -645,5 +677,65 @@ test("security: harden consent token handoff", async (t) => {
       closeDb();
       rmSync(directory, { force: true, recursive: true });
     }
+  });
+
+  await t.test("ordinary approval wins a paused denial without contradictory denial evidence", async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const initiated = await initiateGrantRequest(asUrl, spotifyManifest);
+      const deviceCode = parsePendingConsentRequestUri(initiated.request_uri);
+      assert.ok(deviceCode);
+      const pending = await getPendingConsent(deviceCode, {
+        finalizeReview: true,
+        subjectId: OWNER_SUBJECT_ID,
+      });
+      assert.ok(pending?.reviewRevision);
+      const pause = createDecisionPause();
+      const denial = denyGrant(deviceCode, { beforeCasHook: pause.hook });
+      await pause.paused;
+      const approved = await approveGrant(deviceCode, OWNER_SUBJECT_ID, {
+        approval_review_revision: pending.reviewRevision,
+      });
+      pause.release();
+
+      await assert.rejects(
+        denial,
+        (err: unknown) => err instanceof Error && "code" in err && err.code === "approval_conflict"
+      );
+      assert.equal((await introspect(approved.token)).active, true);
+      assert.equal(countConsentEvents(deviceCode, "consent.approved"), 1);
+      assert.equal(countConsentEvents(deviceCode, "consent.denied"), 0);
+    });
+  });
+
+  await t.test("ordinary denial is terminal and rolls back its event on transaction failure", async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const rollbackInitiated = await initiateGrantRequest(asUrl, spotifyManifest);
+      const rollbackCode = parsePendingConsentRequestUri(rollbackInitiated.request_uri);
+      assert.ok(rollbackCode);
+      const faultHook: AuthorizationDecisionFaultHook = (stage) => {
+        if (stage === "after_event_before_commit") {
+          throw new Error("forced ordinary denial rollback");
+        }
+      };
+      await assert.rejects(denyGrant(rollbackCode, { faultHook }), FORCED_ORDINARY_DENIAL_ROLLBACK_RE);
+      assert.ok(await getPendingConsent(rollbackCode), "rolled-back denial remains pending");
+      assert.equal(countConsentEvents(rollbackCode, "consent.denied"), 0);
+
+      const deniedInitiated = await initiateGrantRequest(asUrl, spotifyManifest);
+      const deniedCode = parsePendingConsentRequestUri(deniedInitiated.request_uri);
+      assert.ok(deniedCode);
+      const pending = await getPendingConsent(deniedCode, {
+        finalizeReview: true,
+        subjectId: OWNER_SUBJECT_ID,
+      });
+      assert.ok(pending?.reviewRevision);
+      assert.equal(await denyGrant(deniedCode), true);
+      await assert.rejects(
+        approveGrant(deniedCode, OWNER_SUBJECT_ID, { approval_review_revision: pending.reviewRevision }),
+        (err: unknown) => err instanceof Error && "code" in err && err.code === "approval_conflict"
+      );
+      assert.equal(countConsentEvents(deniedCode, "consent.denied"), 1);
+      assert.equal(countConsentEvents(deniedCode, "consent.approved"), 0);
+    });
   });
 });

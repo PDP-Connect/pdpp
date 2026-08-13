@@ -439,6 +439,9 @@ interface OwnerDeviceAuthRow extends DbRow {
 
 export type OwnerDeviceApprovalFaultHook = (stage: "before_token_insert" | "after_token_insert") => void;
 
+export type AuthorizationDecisionFaultStage = "after_cas_before_event" | "after_event_before_commit";
+export type AuthorizationDecisionFaultHook = (stage: AuthorizationDecisionFaultStage) => void;
+
 interface OwnerDeviceApprovalInput {
   clientId: string;
   consentApprovedEvent: AuthSpineEventInput;
@@ -590,7 +593,12 @@ interface PendingConsentStore {
     aiTrainingConsented: boolean | null | undefined;
     approvedAt: string;
   }) => MaybePromise<StoreWriteResult>;
-  markDenied: (input: { deviceCode: string; deniedAt: string }) => MaybePromise<StoreWriteResult>;
+  markDeniedAtomically: (input: {
+    deviceCode: string;
+    deniedAt: string;
+    event: AuthSpineEventInput;
+    faultHook?: AuthorizationDecisionFaultHook;
+  }) => MaybePromise<StoreWriteResult>;
   markExpired: (input: { deviceCode: string }) => MaybePromise<StoreWriteResult>;
   updateLastPolled: (input: { deviceCode: string; polledAt: string }) => MaybePromise<StoreWriteResult>;
 }
@@ -618,7 +626,12 @@ interface OwnerDeviceAuthStore {
     tokenId: string;
     approvedAt: string;
   }) => MaybePromise<StoreWriteResult>;
-  markDenied: (input: { deviceCode: string; deniedAt: string }) => MaybePromise<StoreWriteResult>;
+  markDeniedAtomically: (input: {
+    deviceCode: string;
+    deniedAt: string;
+    event: AuthSpineEventInput;
+    faultHook?: AuthorizationDecisionFaultHook;
+  }) => MaybePromise<StoreWriteResult>;
   markExpired: (input: { deviceCode: string }) => MaybePromise<StoreWriteResult>;
   updateLastPolled: (input: { deviceCode: string; polledAt: string }) => MaybePromise<StoreWriteResult>;
 }
@@ -2615,13 +2628,25 @@ const postgresPendingConsentStore: PendingConsentStore = {
        WHERE device_code = $6`,
       [subjectId, grantId, tokenId, aiTrainingConsented ? true : null, approvedAt, deviceCode]
     ),
-  markDenied: ({ deviceCode, deniedAt }) =>
-    pgExec(
-      `UPDATE pending_consents
-       SET status = 'denied', denied_at = $1
-       WHERE device_code = $2 AND status = 'pending'`,
-      [deniedAt, deviceCode]
-    ),
+  markDeniedAtomically: ({ deviceCode, deniedAt, event, faultHook }) =>
+    withPostgresTransaction(async (client) => {
+      const result = await client.query(
+        `UPDATE pending_consents
+         SET status = 'denied', denied_at = $1
+         WHERE device_code = $2 AND status = 'pending'
+         RETURNING device_code`,
+        [deniedAt, deviceCode]
+      );
+      if (result.rowCount !== 1) {
+        const err: AuthError = new Error("Pending consent approval conflict");
+        err.code = "approval_conflict";
+        throw err;
+      }
+      await faultHook?.("after_cas_before_event");
+      await postgresEmitSpineEventInTransaction(client, event as SpineEventInput);
+      await faultHook?.("after_event_before_commit");
+      return { changes: 1 };
+    }),
   markExpired: ({ deviceCode }) =>
     pgExec("UPDATE pending_consents SET status = 'expired' WHERE device_code = $1 AND status = 'pending'", [
       deviceCode,
@@ -2656,8 +2681,19 @@ const sqlitePendingConsentStore: PendingConsentStore = {
       approvedAt,
       deviceCode,
     ]),
-  markDenied: ({ deviceCode, deniedAt }) =>
-    exec(referenceQueries.authPendingConsentsMarkDenied, [deniedAt, deviceCode]),
+  markDeniedAtomically: ({ deviceCode, deniedAt, event, faultHook }) =>
+    writeTransaction(() => {
+      const result = exec(referenceQueries.authPendingConsentsMarkDenied, [deniedAt, deviceCode]);
+      if (result.changes !== 1) {
+        const err: AuthError = new Error("Pending consent approval conflict");
+        err.code = "approval_conflict";
+        throw err;
+      }
+      faultHook?.("after_cas_before_event");
+      emitRawSpineEvent(event as SpineEventInput, getDb());
+      faultHook?.("after_event_before_commit");
+      return result;
+    }),
   markExpired: ({ deviceCode }) => exec(referenceQueries.authPendingConsentsMarkExpired, [deviceCode]),
   updateLastPolled: ({ deviceCode, polledAt }) => {
     const query = requireMutationQuery(
@@ -2676,6 +2712,15 @@ function buildOwnerDeviceUnavailableError(row: OwnerDeviceAuthRow): AuthError {
   return attachOwnerDeviceTraceContext(
     Object.assign(new Error("Owner device authorization is not available"), {
       code: "not_found",
+    }),
+    row
+  );
+}
+
+function buildOwnerDeviceApprovalConflictError(row: OwnerDeviceAuthRow): AuthError {
+  return attachOwnerDeviceTraceContext(
+    Object.assign(new Error("Pending consent approval conflict"), {
+      code: "approval_conflict",
     }),
     row
   );
@@ -2742,6 +2787,9 @@ const postgresOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
       if (row.status === "approved" && row.token_id) {
         requireOwnerDeviceApprovedSubject(row, input.subjectId);
         return row;
+      }
+      if (row.status === "denied") {
+        throw buildOwnerDeviceApprovalConflictError(row);
       }
       if (row.status !== "pending") {
         throw buildOwnerDeviceUnavailableError(row);
@@ -2860,13 +2908,25 @@ const postgresOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
        WHERE device_code = $4`,
       [subjectId, tokenId, approvedAt, deviceCode]
     ),
-  markDenied: ({ deviceCode, deniedAt }) =>
-    pgExec(
-      `UPDATE owner_device_auth
-       SET status = 'denied', denied_at = $1
-       WHERE device_code = $2 AND status = 'pending'`,
-      [deniedAt, deviceCode]
-    ),
+  markDeniedAtomically: ({ deviceCode, deniedAt, event, faultHook }) =>
+    withPostgresTransaction(async (client) => {
+      const result = await client.query(
+        `UPDATE owner_device_auth
+         SET status = 'denied', denied_at = $1
+         WHERE device_code = $2 AND status = 'pending'
+         RETURNING device_code`,
+        [deniedAt, deviceCode]
+      );
+      if (result.rowCount !== 1) {
+        const err: AuthError = new Error("Pending consent approval conflict");
+        err.code = "approval_conflict";
+        throw err;
+      }
+      await faultHook?.("after_cas_before_event");
+      await postgresEmitSpineEventInTransaction(client, event as SpineEventInput);
+      await faultHook?.("after_event_before_commit");
+      return { changes: 1 };
+    }),
   markExpired: ({ deviceCode }) =>
     pgExec("UPDATE owner_device_auth SET status = 'expired' WHERE device_code = $1 AND status = 'pending'", [
       deviceCode,
@@ -2887,6 +2947,9 @@ const sqliteOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
       if (row.status === "approved" && row.token_id) {
         requireOwnerDeviceApprovedSubject(row, input.subjectId);
         return row;
+      }
+      if (row.status === "denied") {
+        throw buildOwnerDeviceApprovalConflictError(row);
       }
       if (row.status !== "pending") {
         throw buildOwnerDeviceUnavailableError(row);
@@ -2963,8 +3026,19 @@ const sqliteOwnerDeviceAuthStore: OwnerDeviceAuthStore = {
     ]),
   markApproved: ({ deviceCode, subjectId, tokenId, approvedAt }) =>
     exec(referenceQueries.authOwnerDeviceAuthMarkApproved, [subjectId, tokenId, approvedAt, deviceCode]),
-  markDenied: ({ deviceCode, deniedAt }) =>
-    exec(referenceQueries.authOwnerDeviceAuthMarkDenied, [deniedAt, deviceCode]),
+  markDeniedAtomically: ({ deviceCode, deniedAt, event, faultHook }) =>
+    writeTransaction(() => {
+      const result = exec(referenceQueries.authOwnerDeviceAuthMarkDenied, [deniedAt, deviceCode]);
+      if (result.changes !== 1) {
+        const err: AuthError = new Error("Pending consent approval conflict");
+        err.code = "approval_conflict";
+        throw err;
+      }
+      faultHook?.("after_cas_before_event");
+      emitRawSpineEvent(event as SpineEventInput, getDb());
+      faultHook?.("after_event_before_commit");
+      return result;
+    }),
   markExpired: ({ deviceCode }) => exec(referenceQueries.authOwnerDeviceAuthMarkExpired, [deviceCode]),
   updateLastPolled: ({ deviceCode, polledAt }) =>
     exec(referenceQueries.authOwnerDeviceAuthUpdateLastPolled, [polledAt, deviceCode]),
@@ -4105,10 +4179,6 @@ async function persistApprovedSingleGrantAtomically({
   });
 }
 
-async function markPendingConsentDenied(deviceCode: string): Promise<void> {
-  await getPendingConsentStore().markDenied({ deniedAt: nowIso(), deviceCode });
-}
-
 async function markPendingConsentExpired(deviceCode: string): Promise<void> {
   await getPendingConsentStore().markExpired({ deviceCode });
 }
@@ -4173,10 +4243,6 @@ export async function getOwnerDeviceAuthRowByApprovalId(approvalId: unknown): Pr
     return null;
   }
   return await getOwnerDeviceAuthStore().getByApprovalId(approvalId);
-}
-
-async function markOwnerDeviceAuthDenied(deviceCode: string): Promise<void> {
-  await getOwnerDeviceAuthStore().markDenied({ deniedAt: nowIso(), deviceCode });
 }
 
 async function markOwnerDeviceAuthExpired(deviceCode: string): Promise<void> {
@@ -10265,7 +10331,10 @@ export async function consumeConsentExchangeCode(
 /**
  * Deny and clear a pending grant request
  */
-export async function denyGrant(deviceCode: string): Promise<boolean> {
+export async function denyGrant(
+  deviceCode: string,
+  opts: { beforeCasHook?: () => void | Promise<void>; faultHook?: AuthorizationDecisionFaultHook } = {}
+): Promise<boolean> {
   const pending = await getPendingConsentRow(deviceCode);
   if (pending?.status !== "pending") {
     return false;
@@ -10274,14 +10343,12 @@ export async function denyGrant(deviceCode: string): Promise<boolean> {
     await markPendingConsentExpired(deviceCode);
     return false;
   }
-  await markPendingConsentDenied(deviceCode);
-
   const request: unknown = JSON.parse(pending.params_json);
   requireStructuredPendingRequestShape(request);
   const traceContext = requirePersistedPendingTraceContext(pending);
   request.trace_context = traceContext;
   const { sourceBinding } = requireStructuredPendingRequestBindings(request);
-  await emitSpineEvent({
+  const deniedEvent: AuthSpineEventInput = {
     actor_id: pending.subject_id || "owner_local",
     actor_type: "subject",
     client_id: request.client?.client_id || null,
@@ -10296,6 +10363,13 @@ export async function denyGrant(deviceCode: string): Promise<boolean> {
     scenario_id: traceContext.scenario_id,
     status: "denied",
     trace_id: traceContext.trace_id,
+  };
+  await opts.beforeCasHook?.();
+  await getPendingConsentStore().markDeniedAtomically({
+    deniedAt: nowIso(),
+    deviceCode,
+    event: deniedEvent,
+    ...(opts.faultHook ? { faultHook: opts.faultHook } : {}),
   });
 
   return true;
@@ -10494,7 +10568,11 @@ export async function approveOwnerDeviceAuthorization(
   return ownerDeviceApprovalResponse(approved, subjectId);
 }
 
-export async function denyOwnerDeviceAuthorization(userCode: unknown, subjectId = "owner_local"): Promise<void> {
+export async function denyOwnerDeviceAuthorization(
+  userCode: unknown,
+  subjectId = "owner_local",
+  opts: { beforeCasHook?: () => void | Promise<void>; faultHook?: AuthorizationDecisionFaultHook } = {}
+): Promise<void> {
   const pending = await getOwnerDeviceAuthRowByUserCode(userCode);
   if (!pending) {
     const err: AuthError = new Error("Unknown user code");
@@ -10528,8 +10606,7 @@ export async function denyOwnerDeviceAuthorization(userCode: unknown, subjectId 
         }
       : null;
 
-  await markOwnerDeviceAuthDenied(pending.device_code);
-  await emitSpineEvent({
+  const rejectedEvent: AuthSpineEventInput = {
     actor_id: subjectId,
     actor_type: "subject",
     client_id: pending.client_id,
@@ -10550,7 +10627,21 @@ export async function denyOwnerDeviceAuthorization(userCode: unknown, subjectId 
     subject_id: subjectId,
     subject_type: "subject",
     trace_id: traceContext?.trace_id || undefined,
-  });
+  };
+  await opts.beforeCasHook?.();
+  try {
+    await getOwnerDeviceAuthStore().markDeniedAtomically({
+      deniedAt: nowIso(),
+      deviceCode: pending.device_code,
+      event: rejectedEvent,
+      ...(opts.faultHook ? { faultHook: opts.faultHook } : {}),
+    });
+  } catch (err: unknown) {
+    if (isAuthError(err) && err.code === "approval_conflict") {
+      throw attachOwnerDeviceTraceContext(err, pending);
+    }
+    throw err;
+  }
 }
 
 function ownerDeviceExchangeError(row: OwnerDeviceAuthRow, code: string, message: string): AuthError {

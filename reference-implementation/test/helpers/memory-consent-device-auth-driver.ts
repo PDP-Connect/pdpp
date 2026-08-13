@@ -262,7 +262,7 @@ export function createMemoryConsentDeviceAuthDriver() {
         err.code = "not_found";
         throw err;
       }
-      // Mirror SQLite's `markOwnerDeviceAuthDenied`: flip status to `denied`
+      // Mirror SQLite's `markDeniedAtomically`: flip status to `denied`
       // so polling exchange returns `access_denied`, not
       // `authorization_pending`. This is the invariant break-2 in the broken
       // driver — keep it correct here.
