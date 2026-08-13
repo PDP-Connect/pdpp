@@ -14,6 +14,7 @@
 
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
+import type { RuntimeContinuationFact } from "../../packages/polyfill-connectors/src/connector-runtime-protocol.ts";
 import { allowUnboundedReadAcknowledged, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { isNullish } from "../lib/nullish.ts";
 import type { SpineSummary } from "../lib/spine.ts";
@@ -115,8 +116,8 @@ import {
   readFreshnessEvidenceStrategy,
 } from "./connector-coverage-policy.ts";
 import {
-  firstDegradingKnownGapReason,
   filterRunCoverageEvidence,
+  firstDegradingKnownGapReason,
   firstPendingDetailGapReason,
   hasDegradingKnownGap,
   hasTerminalKnownGap,
@@ -135,6 +136,7 @@ import {
   publishConnectorListSummaryTerminalProjection,
   TERMINAL_PROJECTION_PUBLICATION_RACE,
 } from "./connector-summary-read-model.ts";
+import { filterRunGapsProvenCompleteByReport } from "./continuation-proof.ts";
 import { getSqliteStoreCacheIdentity } from "./db.ts";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { readStoredCollectionScope } from "./local-collection-scope.ts";
@@ -163,7 +165,6 @@ import {
   readCollectionFactsFromTerminalData,
   readRuntimeCollectionFact,
 } from "./runtime-collection-facts.ts";
-import type { RuntimeContinuationFact } from "../../packages/polyfill-connectors/src/connector-runtime-protocol.ts";
 import {
   asBackoffRecord,
   asScheduleRecord,
@@ -469,6 +470,8 @@ export interface RuntimeCollectionFactSkip {
 export interface RuntimeCollectionFact {
   readonly checkpoint: string | null;
   readonly collected: number;
+  /** Declared boundary fingerprint measured by this stream. */
+  readonly collection_scope?: string;
   readonly considered: number | null;
   /** Raw local-collector coverage statuses; policy is derived on read. */
   readonly coverage_statuses?: readonly string[];
@@ -482,8 +485,6 @@ export interface RuntimeCollectionFact {
    * neither count, so a real shortfall still reads `partial`.
    */
   readonly covered: number | null;
-  /** Declared boundary fingerprint measured by this stream. */
-  readonly collection_scope?: string;
   readonly pending_detail_gaps: number;
   /**
    * Whether the run's declared collection boundary was actually enforceable on
@@ -1963,7 +1964,7 @@ export function isPublicReferenceConnector(row: ConnectorRow, manifest: Connecto
 
   const publicListing = manifest.capabilities?.public_listing;
   if (publicListing && typeof publicListing === "object" && !Array.isArray(publicListing)) {
-    const tier = (publicListing as { tier?: unknown }).tier;
+    const { tier } = publicListing as { tier?: unknown };
     return tier === "supported" || tier === "preview";
   }
 
@@ -2630,17 +2631,27 @@ export function refineConnectionHealthWithCollectionReport(
   initialConnectionHealth: ConnectionHealthSnapshot,
   collectionReport: readonly CollectionReportEntry[]
 ): ConnectionHealthSnapshot {
+  const lastRun = filterRunGapsProvenCompleteByReport(healthInput.lastRun ?? null, collectionReport);
+  const lastSuccessfulRun = filterRunGapsProvenCompleteByReport(
+    healthInput.lastSuccessfulRun ?? null,
+    collectionReport
+  );
+  const runEvidenceRefined = lastRun !== healthInput.lastRun || lastSuccessfulRun !== healthInput.lastSuccessfulRun;
+  const refinedHealthInput = runEvidenceRefined ? { ...healthInput, lastRun, lastSuccessfulRun } : healthInput;
+  const reportAlignedHealth = runEvidenceRefined
+    ? projectConnectorSummaryConnectionHealth(refinedHealthInput)
+    : initialConnectionHealth;
   const coverageOverride = rollupCollectionReportCoverageOverride(
-    initialConnectionHealth.axes.coverage,
+    reportAlignedHealth.axes.coverage,
     collectionReport,
     healthInput.manifestStreams
   );
-  const freshnessOverride = proofAgeFreshnessOverride(healthInput, collectionReport);
+  const freshnessOverride = proofAgeFreshnessOverride(refinedHealthInput, collectionReport);
   if (coverageOverride === null && freshnessOverride === null) {
-    return initialConnectionHealth;
+    return reportAlignedHealth;
   }
   return projectConnectorSummaryConnectionHealth({
-    ...healthInput,
+    ...refinedHealthInput,
     ...(freshnessOverride ? { freshness: freshnessOverride } : {}),
     ...(coverageOverride ? { coverageOverride: { axis: coverageOverride } } : {}),
   });

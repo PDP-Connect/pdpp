@@ -639,8 +639,8 @@ test("acceptance 7.1: every canonical headline state is reachable through projec
     {
       input: {
         freshness: FRESH,
-        lastRun: succeededRun({ last_at: RUN_AT, finished_at: RUN_AT }),
-        lastSuccessfulRun: succeededRun({ last_at: RUN_AT, finished_at: RUN_AT }),
+        lastRun: succeededRun({ finished_at: RUN_AT, last_at: RUN_AT }),
+        lastSuccessfulRun: succeededRun({ finished_at: RUN_AT, last_at: RUN_AT }),
         nowIso: NOW,
         schedule: {
           ...backoffSchedule({ failures: 2 }),
@@ -1588,6 +1588,144 @@ test("unscoped terminal evidence still blocks alongside an optional terminal rep
     collectionReportEntry({ coverage_condition: "terminal_gap", required: false, stream: "optional_stream" }),
   ]);
   assert.equal(refined.axes.coverage, "terminal_gap");
+  assert.equal(refined.state, "degraded");
+});
+
+test("a bounded continuation proven complete by the stream report does not degrade connection health", () => {
+  const continuation = {
+    boundary: "uidvalidity:1",
+    considered: 20,
+    covered: 20,
+    owner: "runtime" as const,
+    remaining: true as const,
+    slice_end: 500,
+    slice_start: 1,
+  };
+  const gap = {
+    continuation,
+    kind: "skip_result",
+    reason: "historical_backfill_pending",
+    recovery_hint: { action: "retry_by_runtime", retryable: true },
+    severity: "transient",
+    stream: "messages",
+  };
+  const run = succeededRun({ known_gaps: [gap] });
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [{ coverage_strategy: "checkpoint_window", name: "messages" }],
+    nowIso: NOW,
+    schedule: { enabled: true },
+  };
+  const initial = projectConnectorSummaryConnectionHealth(healthInput);
+  assert.equal(initial.axes.coverage, "retryable_gap", "premise: the raw known-gap rollup degrades");
+
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initial, [
+    collectionReportEntry({
+      considered: 20,
+      covered: 20,
+      skipped: { continuation, reason: "historical_backfill_pending", recovery_action: "retry_by_runtime" },
+      stream: "messages",
+    }),
+  ]);
+  assert.equal(refined.axes.coverage, "complete");
+  assert.equal(refined.state, "healthy");
+});
+
+test("a different continuation cannot be hidden by a complete stream report", () => {
+  const run = succeededRun({
+    known_gaps: [
+      {
+        continuation: {
+          boundary: "uidvalidity:old",
+          considered: 20,
+          covered: 20,
+          owner: "runtime",
+          remaining: true,
+          slice_end: 500,
+          slice_start: 1,
+        },
+        kind: "skip_result",
+        reason: "historical_backfill_pending",
+        recovery_hint: { action: "retry_by_runtime", retryable: true },
+        severity: "transient",
+        stream: "messages",
+      },
+    ],
+  });
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [{ coverage_strategy: "checkpoint_window", name: "messages" }],
+    nowIso: NOW,
+    schedule: { enabled: true },
+  };
+  const initial = projectConnectorSummaryConnectionHealth(healthInput);
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initial, [
+    collectionReportEntry({
+      skipped: {
+        continuation: {
+          boundary: "uidvalidity:current",
+          considered: 20,
+          covered: 20,
+          owner: "runtime",
+          remaining: true,
+          slice_end: 1000,
+          slice_start: 501,
+        },
+        reason: "historical_backfill_pending",
+        recovery_action: "retry_by_runtime",
+      },
+      stream: "messages",
+    }),
+  ]);
+  assert.equal(refined.axes.coverage, "retryable_gap");
+  assert.equal(refined.state, "degraded");
+});
+
+test("an exact continuation match cannot hide an unproven stream report", () => {
+  const continuation = {
+    boundary: "uidvalidity:1",
+    considered: 20,
+    covered: 20,
+    owner: "runtime" as const,
+    remaining: true as const,
+    slice_end: 500,
+    slice_start: 1,
+  };
+  const run = succeededRun({
+    known_gaps: [
+      {
+        continuation,
+        kind: "skip_result",
+        reason: "historical_backfill_pending",
+        recovery_hint: { action: "retry_by_runtime", retryable: true },
+        severity: "transient",
+        stream: "messages",
+      },
+    ],
+  });
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [{ coverage_strategy: "checkpoint_window", name: "messages" }],
+    nowIso: NOW,
+    schedule: { enabled: true },
+  };
+  const initial = projectConnectorSummaryConnectionHealth(healthInput);
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initial, [
+    collectionReportEntry({
+      considered: 20,
+      coverage_condition: "unknown",
+      covered: 20,
+      skipped: { continuation, reason: "historical_backfill_pending", recovery_action: "retry_by_runtime" },
+      stream: "messages",
+    }),
+  ]);
+  assert.equal(refined.axes.coverage, "retryable_gap");
   assert.equal(refined.state, "degraded");
 });
 
