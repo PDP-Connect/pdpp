@@ -309,7 +309,7 @@ test("shipped gmail manifest: bounded pages stay retryable until final per-run c
         stream: "messages",
       },
     ]),
-  ];
+  ] as const;
   assert.equal(condition(boundedPages[0], "messages"), "retryable_gap");
   assert.equal(condition(boundedPages[1], "messages"), "complete");
 
