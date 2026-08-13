@@ -34,7 +34,7 @@ import { createRequestConnectorInstanceStore } from "../server/request-store-fac
 import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
 const CONNECTOR_KEY = "codex";
-const CONNECTOR_ID = `https://registry.pdpp.org/connectors/${CONNECTOR_KEY}`;
+const CONNECTOR_ID = `https://registry.pdpp.dev/connectors/${CONNECTOR_KEY}`;
 const STREAM = "transactions";
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = "pdpp-reference-test-initial-access-token";

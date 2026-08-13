@@ -1625,7 +1625,7 @@ export function renderPendingGrantConsentHtml(
   const actions = buildSingleConsentActions({
     csrfFieldName,
     csrfToken,
-    isAiTraining: selection.purpose_code === "https://pdpp.org/purpose/ai_training",
+    isAiTraining: selection.purpose_code === "https://pdpp.dev/purpose/ai_training",
     pending,
     requestUri,
     ui,

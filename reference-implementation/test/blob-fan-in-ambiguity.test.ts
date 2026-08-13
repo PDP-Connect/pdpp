@@ -29,7 +29,7 @@ import { ingestRecord } from "../server/records.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const CONNECTOR_ID = "spotify";
-const SOURCE_ID = "https://registry.pdpp.org/connectors/spotify";
+const SOURCE_ID = "https://registry.pdpp.dev/connectors/spotify";
 const STREAM_A = "photos";
 const STREAM_B = "videos";
 const INSTANCE_A = "cin_blob_account_a";
@@ -563,7 +563,7 @@ test("client blob reads fail closed for an ungranted stream and an inactive gran
       access_mode: "continuous",
       client_id: "longview",
       connector_id: CONNECTOR_ID,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "ungranted stream blob test",
       streams: [{ fields: ["id", "received_at"], instance_ids: [INSTANCE_A], name: STREAM_B }],
     });
@@ -576,7 +576,7 @@ test("client blob reads fail closed for an ungranted stream and an inactive gran
       access_mode: "continuous",
       client_id: "longview",
       connector_id: CONNECTOR_ID,
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "inactive instance blob test",
       streams: [{ fields: ["id", "received_at"], instance_ids: [INSTANCE_A], name: STREAM_A }],
     });

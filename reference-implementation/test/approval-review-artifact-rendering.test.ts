@@ -181,7 +181,7 @@ function selection(purposeDescription: string, claims?: { commitments: string[] 
   return {
     access_mode: "continuous",
     ...(claims ? { client_claims: claims } : {}),
-    purpose_code: "https://pdpp.org/purpose/personalization",
+    purpose_code: "https://pdpp.dev/purpose/personalization",
     purpose_description: purposeDescription,
     retention: { max_duration: "P30D", on_expiry: "delete" },
     source: { id: SOURCE_ID, kind: "connector" },
@@ -194,7 +194,7 @@ function selection(purposeDescription: string, claims?: { commitments: string[] 
         time_range: { since: "2026-01-01T00:00:00Z", until: "2026-07-01T00:00:00Z" },
       },
     ],
-    type: "https://pdpp.org/data-access",
+    type: "https://pdpp.dev/data-access",
   };
 }
 

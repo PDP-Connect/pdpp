@@ -263,7 +263,7 @@ test("security: consent-risk disclosure invariants", async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const par = await initiate(asUrl, spotifyManifest, {
         access_mode: "continuous",
-        purpose_code: "https://pdpp.org/purpose/ai_training",
+        purpose_code: "https://pdpp.dev/purpose/ai_training",
         purpose_description: "Training a recommendation model",
         streams: [{ name: "top_artists" }],
       });
@@ -292,7 +292,7 @@ test("security: consent-risk disclosure invariants", async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const par = await initiate(asUrl, spotifyManifest, {
         access_mode: "continuous",
-        purpose_code: "https://pdpp.org/purpose/ai_training",
+        purpose_code: "https://pdpp.dev/purpose/ai_training",
         purpose_description: "Training a recommendation model",
         streams: [{ name: "top_artists" }],
       });

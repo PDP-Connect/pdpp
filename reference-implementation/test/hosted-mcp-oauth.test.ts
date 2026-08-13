@@ -231,7 +231,7 @@ function publicSourceIdForManifest(manifest: ConnectorManifest): string {
   try {
     return new URL(manifest.connector_id).href;
   } catch {
-    return `https://registry.pdpp.org/connectors/${encodeURIComponent(manifest.connector_id)}`;
+    return `https://registry.pdpp.dev/connectors/${encodeURIComponent(manifest.connector_id)}`;
   }
 }
 
@@ -3137,7 +3137,7 @@ test("hosted MCP picker excludes internal/test/stub connectors", async () => {
     const stubManifest = {
       connector_id: "stream-test-stub-picker-regression",
       display_name: "Stream Test Stub",
-      manifest_uri: "https://registry.pdpp.org/connectors/stream-test-stub-picker-regression",
+      manifest_uri: "https://registry.pdpp.dev/connectors/stream-test-stub-picker-regression",
       protocol_version: "0.1.0",
       streams: [
         {
@@ -3483,7 +3483,7 @@ test("picker hides URL-shaped default connection labels from owner-visible copy"
 // spotify/github fixtures (no ingestible records) cannot.
 
 const PIN_CONNECTOR_ID = "pin-fixture";
-const PIN_SOURCE_ID = "https://registry.pdpp.org/connectors/pin-fixture";
+const PIN_SOURCE_ID = "https://registry.pdpp.dev/connectors/pin-fixture";
 const PIN_STREAM = "messages";
 
 function pinConnectorManifest(): ConnectorManifest {
