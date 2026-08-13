@@ -2183,7 +2183,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/steam/index.ts",
-    line: 412,
+    line: 424,
     column: 7,
     category: "ordered_protocol_emission",
     note: "emitRecord(): Collection Profile protocol emission requiring in-order delivery",
