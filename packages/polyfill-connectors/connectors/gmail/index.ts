@@ -53,6 +53,7 @@ import {
 } from "../../src/reference-blob-uploader.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { requireCredentialsOrAsk, resourceSet } from "../../src/scope-filters.ts";
+import { isImapTransientError } from "./imap-error-classification.ts";
 import {
   type BodyPartSelection,
   bigintToCursor,
@@ -100,7 +101,6 @@ import type {
 // ─── Module-scoped regexes (Biome useTopLevelRegex) ─────────────────────
 
 const EMAIL_AT_RE = /@/;
-const RETRYABLE_ERROR_RE = /ECONN|ETIMEDOUT|fetch failed|EPIPE|timeout/i;
 // Splits an address into [local-part, domain] for progress redaction. Only the
 // last `@` is treated as the domain delimiter so quoted local-parts that embed
 // an `@` still redact (the domain is whatever follows the final `@`).
@@ -2435,7 +2435,7 @@ class AttachmentTooLargeError extends Error {
 /**
  * Raised when an attachment transfer goes silent (no chunk received) for
  * longer than the stall budget. The message deliberately contains "timeout"
- * so `RETRYABLE_ERROR_RE` (and `handleMainRejection`'s classification) marks
+ * so `isImapTransientError` (and `handleMainRejection`'s classification) marks
  * the resulting run failure retryable without a second keyword list to keep
  * in sync.
  */
@@ -3162,7 +3162,7 @@ export async function runAllMailPasses(
     // doc comment): the only way to unblock a stalled FETCH is to close the
     // whole connection. That's a whole-run failure, not a per-attachment one
     // — but it's a RETRYABLE one (message contains "timeout", matched by
-    // `RETRYABLE_ERROR_RE` in `handleMainRejection`), and every record this
+    // `isImapTransientError` in `handleMainRejection`), and every record this
     // run already emitted (labels/threads/prior attachments) is durable, and
     // the messages STATE cursor only commits at the very end of
     // `runAllMailPasses` — so the next run resumes cleanly rather than
@@ -3588,7 +3588,7 @@ function handleMainRejection(e: unknown): void {
   // directly, so it has to do that extraction itself rather than inheriting the
   // runtime's.
   const msg = describeUnexpectedFailure(e);
-  const retryable = RETRYABLE_ERROR_RE.test(msg);
+  const retryable = isImapTransientError(e);
   const trace = e instanceof Error ? (e.stack ?? msg) : msg;
   process.stderr.write(`[gmail] main rejected: ${trace}\n`);
   emit({
