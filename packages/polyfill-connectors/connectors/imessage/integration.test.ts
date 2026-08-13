@@ -455,8 +455,9 @@ test("iMessage hydrates a local attachment through the reference blob endpoint",
     await withBlobServer(
       async (req) => {
         assert.equal(req.headers.authorization, "Bearer owner-token");
-        assert.equal(req.headers["content-type"], "image/jpeg");
+        assert.equal(req.headers["content-type"], "application/octet-stream");
         const url = new URL(req.url ?? "", "http://127.0.0.1");
+        assert.equal(url.searchParams.get("mime_type"), "image/jpeg");
         assert.equal(url.searchParams.get("connector_id"), "https://registry.pdpp.org/connectors/imessage");
         assert.equal(url.searchParams.get("stream"), "attachments");
         assert.match(url.searchParams.get("record_key") ?? "", /^[0-9a-f]{64}$/);
@@ -465,7 +466,7 @@ test("iMessage hydrates a local attachment through the reference blob endpoint",
         return {
           body: {
             blob_id: `blob_sha256_${sha256}`,
-            mime_type: req.headers["content-type"],
+            mime_type: url.searchParams.get("mime_type"),
             object: "blob",
             sha256,
             size_bytes: body.byteLength,
@@ -886,12 +887,15 @@ test("iMessage's production hydration path routes the fd-based read through read
 
     await withBlobServer(
       async (req) => {
+        assert.equal(req.headers["content-type"], "application/octet-stream");
+        const url = new URL(req.url ?? "", "http://127.0.0.1");
+        assert.equal(url.searchParams.get("mime_type"), "image/jpeg");
         const body = await readRequestBody(req);
         const uploadedSha256 = createHash("sha256").update(body).digest("hex");
         return {
           body: {
             blob_id: `blob_sha256_${uploadedSha256}`,
-            mime_type: req.headers["content-type"],
+            mime_type: url.searchParams.get("mime_type"),
             object: "blob",
             sha256: uploadedSha256,
             size_bytes: body.byteLength,

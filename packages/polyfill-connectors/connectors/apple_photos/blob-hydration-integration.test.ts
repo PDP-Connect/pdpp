@@ -103,13 +103,15 @@ test("photos stream hydrates bytes through the reference blob endpoint", async (
     await withBlobServer(
       async (req) => {
         assert.equal(req.headers.authorization, "Bearer owner-token");
-        assert.equal(req.headers["content-type"], "image/jpeg");
+        assert.equal(req.headers["content-type"], "application/octet-stream");
+        const url = new URL(req.url ?? "", "http://127.0.0.1");
+        assert.equal(url.searchParams.get("mime_type"), "image/jpeg");
         const body = await readRequestBody(req);
         const sha256 = createHash("sha256").update(body).digest("hex");
         return {
           body: {
             blob_id: `blob_sha256_${sha256}`,
-            mime_type: req.headers["content-type"],
+            mime_type: url.searchParams.get("mime_type"),
             object: "blob",
             sha256,
             size_bytes: body.byteLength,

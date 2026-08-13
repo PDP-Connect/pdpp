@@ -358,9 +358,10 @@ test("WhatsApp connector hydrates zip media through the reference blob endpoint"
     await withBlobServer(
       async (req) => {
         assert.equal(req.headers.authorization, "Bearer owner-token");
-        assert.equal(req.headers["content-type"], "image/jpeg");
+        assert.equal(req.headers["content-type"], "application/octet-stream");
         assert.equal(req.url?.startsWith("/v1/blobs?"), true);
         const url = new URL(req.url ?? "", "http://127.0.0.1");
+        assert.equal(url.searchParams.get("mime_type"), "image/jpeg");
         assert.equal(url.searchParams.get("connector_id"), "https://registry.pdpp.org/connectors/whatsapp");
         assert.equal(url.searchParams.get("connector_instance_id"), "cin_whatsapp_media");
         assert.equal(url.searchParams.get("stream"), "attachments");
@@ -370,7 +371,7 @@ test("WhatsApp connector hydrates zip media through the reference blob endpoint"
         return {
           body: {
             blob_id: `blob_sha256_${sha256}`,
-            mime_type: req.headers["content-type"],
+            mime_type: url.searchParams.get("mime_type"),
             object: "blob",
             sha256,
             size_bytes: body.byteLength,
