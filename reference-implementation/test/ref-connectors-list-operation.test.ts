@@ -626,11 +626,17 @@ test("connector summary connection health treats owner-cancelled runs as neutral
     freshness: { captured_at: "2026-05-19T11:55:00.000Z", status: "current" },
     lastRun: cancelledRun,
     lastSuccessfulRun: successfulRun,
-    schedule: null,
+    schedule: {
+      enabled: true,
+      last_error_code: "scheduler_error",
+      last_finished_at: cancelledRun.last_at,
+      last_successful_at: successfulRun.last_at,
+    },
   });
   const collection = snapshot.conditions.find((condition) => condition.type === "CollectionSucceeded");
 
-  assert.equal(collection?.status, "unknown");
+  assert.equal(collection?.status, "true");
+  assert.equal(snapshot.state, "healthy");
   assert.equal(snapshot.axes.coverage, "complete");
   assert.notEqual(snapshot.forward_disposition, "terminal");
   assert.equal(snapshot.reason_code, null);
@@ -827,6 +833,42 @@ test("buildConnectorFreshness does not let manual no-policy hide a latest failed
     refreshPolicy: { background_safe: false, recommended_mode: "manual" },
   });
   assert.equal(freshness.status, "stale");
+});
+
+test("buildConnectorFreshness keeps prior success authoritative after owner cancellation", () => {
+  const successfulRun = connectorRunSummary({
+    event_count: 1,
+    finished_at: "2026-05-19T12:00:00.000Z",
+    first_at: "2026-05-19T11:59:00.000Z",
+    known_gaps: [],
+    last_at: "2026-05-19T12:00:00.000Z",
+    run_id: "run_manual_success",
+    started_at: "2026-05-19T11:59:00.000Z",
+    status: "succeeded",
+  });
+  const cancelledRun = connectorRunSummary({
+    event_count: 1,
+    finished_at: "2026-05-19T12:30:00.000Z",
+    first_at: "2026-05-19T12:29:00.000Z",
+    known_gaps: [],
+    last_at: "2026-05-19T12:30:00.000Z",
+    run_id: "run_owner_cancelled",
+    started_at: "2026-05-19T12:29:00.000Z",
+    status: "cancelled",
+    terminal_reason: "owner_cancelled",
+  });
+  const freshness = buildConnectorFreshness({
+    lastRun: cancelledRun,
+    lastSuccessfulRun: successfulRun,
+    live: liveRecordProjection(),
+    refreshPolicy: { background_safe: false, recommended_mode: "manual" },
+  });
+
+  assert.deepEqual(freshness, {
+    captured_at: successfulRun.last_at,
+    last_attempted_at: successfulRun.last_at,
+    status: "current",
+  });
 });
 
 test("connector summary connection health keeps failed collection degraded during durable scheduler backoff", () => {

@@ -2135,8 +2135,17 @@ function isSchedulerSkippedRun(run: ConnectorRunSummary | null): boolean {
   return run?.status === "skipped";
 }
 
-function healthClassifyingRun(run: ConnectorRunSummary | null): ConnectorRunSummary | null {
-  return isOwnerCancelledRun(run) || isSchedulerSkippedRun(run) ? null : run;
+// Owner cancellation controls work; it is not provider or coverage evidence.
+// Preserve the prior success as health authority while keeping the cancelled
+// attempt visible in run history. Scheduler skips never contacted the provider.
+function healthClassifyingRun(
+  run: ConnectorRunSummary | null,
+  lastSuccessfulRun: ConnectorRunSummary | null = null
+): ConnectorRunSummary | null {
+  if (isOwnerCancelledRun(run)) {
+    return lastSuccessfulRun;
+  }
+  return isSchedulerSkippedRun(run) ? null : run;
 }
 
 /**
@@ -2182,8 +2191,7 @@ function coverageClassifyingRun(
   if (lastRun && lastRun.status === "succeeded" && lastRun.recovery_only) {
     return lastSuccessfulRun ?? lastRun;
   }
-  const latest = healthClassifyingRun(lastRun);
-  return latest ?? (isOwnerCancelledRun(lastRun) ? lastSuccessfulRun : null);
+  return healthClassifyingRun(lastRun, lastSuccessfulRun);
 }
 
 /**
@@ -4515,13 +4523,13 @@ export function projectConnectorSummaryConnectionHealth(input: {
   const authoritativeEphemeralBrowserRuntime = localDeviceBacked ? null : input.ephemeralBrowserRuntime;
   const authoritativeRemoteSurface = localDeviceBacked ? null : input.remoteSurface;
   const schedule = localDeviceBacked ? null : asScheduleRecord(input.schedule);
+  const latestRunForHealth = healthClassifyingRun(authoritativeLastRun, authoritativeLastSuccessfulRun);
   const scheduleEvidence = projectConnectionHealthScheduleEvidence(
     schedule,
     authoritativeLastRun,
     authoritativeActiveRun ? authoritativeActiveRun.run_id : null
   );
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
-  const latestRunForHealth = healthClassifyingRun(authoritativeLastRun);
   const coverageRunForHealth = coverageClassifyingRun(authoritativeLastRun, authoritativeLastSuccessfulRun);
   const nowIso = input.nowIso ?? new Date().toISOString();
   const attention = selectAttentionEvidence({
@@ -4662,10 +4670,11 @@ export function buildConnectorFreshness({
   lastHeartbeatAt?: string | null;
 }): Freshness {
   const localProgressAt = lastHeartbeatAt ?? null;
+  const latestRun = healthClassifyingRun(lastRun, lastSuccessfulRun);
   const maximumStalenessSeconds = getMaximumStalenessSeconds(refreshPolicy);
   const freshness = deriveReferenceFreshness({
-    lastAttemptedAt: lastRun ? lastRun.last_at : null,
-    lastAttemptStatus: lastRun ? lastRun.status : null,
+    lastAttemptedAt: latestRun ? latestRun.last_at : null,
+    lastAttemptStatus: latestRun ? latestRun.status : null,
     lastSuccessfulRunAt: localProgressAt ?? (lastSuccessfulRun ? lastSuccessfulRun.last_at : null),
     maximumStalenessSeconds,
     recordLastUpdatedAt: localProgressAt ?? live.freshness.captured_at ?? null,
