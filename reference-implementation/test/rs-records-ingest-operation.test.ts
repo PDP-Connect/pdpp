@@ -24,9 +24,11 @@ import {
   parseLines,
   RecordsIngestInvalidRequestError,
   RecordsIngestNotFoundError,
+  RecordsIngestSystemicFailureError,
 } from "../operations/rs-records-ingest/index.ts";
 
 const REGEXP_1 = /store down/;
+const DRIVER_CONNECTION_RESET_RE = /driver connection reset/;
 
 function defaultDeps(overrides: Partial<RecordsIngestDependencies> = {}): RecordsIngestDependencies {
   return {
@@ -118,7 +120,9 @@ test("rs.records.ingest counts accepted vs rejected and collects error messages"
       // biome-ignore lint/suspicious/useAwait: Async callback preserves the dependency contract and rejection timing.
       ingestRecord: async (_cid, _cin, record) => {
         if (record.id === "r3") {
-          throw new Error("store down");
+          const err = new Error("store down");
+          (err as Error & { retryable?: boolean }).retryable = false;
+          throw err;
         }
       },
     })
@@ -156,7 +160,9 @@ test("rs.records.ingest does not halt on a failing line; subsequent lines still 
       // biome-ignore lint/suspicious/useAwait: Async callback preserves the dependency contract and rejection timing.
       ingestRecord: async (_cid, _cin, record) => {
         if (record.id === "r1") {
-          throw new Error("first failed");
+          const err = new Error("first failed");
+          (err as Error & { retryable?: boolean }).retryable = false;
+          throw err;
         }
         lateCalled = true;
       },
@@ -165,4 +171,43 @@ test("rs.records.ingest does not halt on a failing line; subsequent lines still 
   assert.equal(lateCalled, true, "second line must still be attempted after first fails");
   assert.equal(out.envelope.records_accepted, 1);
   assert.equal(out.envelope.records_rejected, 1);
+});
+
+test("rs.records.ingest returns 2xx envelope when every rejection is permanent", async () => {
+  const out = await executeRecordsIngest(
+    defaultInput({ body: '{"id":"r1"}\n{"id":"r2"}' }),
+    defaultDeps({
+      ingestRecord: (_cid, _cin, record) => {
+        const err = new Error(`invalid ${String(record.id)}`);
+        (err as Error & { retryable?: boolean }).retryable = false;
+        throw err;
+      },
+    })
+  );
+  assert.equal(out.envelope.records_accepted, 0);
+  assert.equal(out.envelope.records_rejected, 2);
+  assert.deepEqual(out.envelope.errors, ["invalid r1", "invalid r2"]);
+});
+
+test("rs.records.ingest throws typed systemic failure when any line is retryable", async () => {
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({ body: '{"id":"r1"}\n{"id":"r2"}' }),
+        defaultDeps({
+          ingestRecord: (_cid, _cin, record) => {
+            if (record.id === "r2") {
+              throw new Error("driver connection reset");
+            }
+          },
+        })
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsIngestSystemicFailureError);
+      assert.equal(err.code, "ingest_batch_storage_error");
+      assert.equal(err.retryableFailureCount, 1);
+      assert.match(err.message, DRIVER_CONNECTION_RESET_RE);
+      return true;
+    }
+  );
 });

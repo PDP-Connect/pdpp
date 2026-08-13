@@ -15,14 +15,14 @@
  * - the public `{ stream, records_accepted, records_rejected, errors }`
  *   response envelope.
  *
- * Per-line ingest order is preserved exactly: the operation iterates lines
- * sequentially and awaits each `ingestRecord` call before advancing. It MUST
+ * The capability is deliberately per-line and ordered: the operation parses
+ * one line, awaits that line's `ingestRecord` call, then advances. It MUST
  * NOT parallelize ingest, batch ingests, or coalesce errors.
  *
  * Atomicity and durable write ordering for each record remain the
- * responsibility of the underlying `ingestRecord` capability. A failure on
- * one line increments `records_rejected` and continues; it MUST NOT roll back
- * earlier accepted records (matches the previous native route behavior).
+ * responsibility of the underlying ingest capability. A failure on one line
+ * increments `records_rejected` and continues; it MUST NOT roll back earlier
+ * accepted records (matches the previous native route behavior).
  *
  * Boundary rules:
  * - This module SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL
@@ -42,13 +42,34 @@ export interface RecordsIngestInput {
   readonly streamName: string;
 }
 
+/**
+ * A single record's ingest failure, classified by the host's own typed error
+ * shape (never by matching `.message` text). `retryable: false` is the
+ * intentional per-record isolation contract this operation has always
+ * supported — a malformed/invalid record, same input fails identically on
+ * every retry. `retryable: true` means the record's OWN data was never
+ * proven bad; a storage/coordination failure (or an error the host's
+ * classifier does not recognize — see the "unknown defaults to retryable"
+ * rule in `server/records.ts`'s `classifyIngestFailure`) prevented the
+ * durable write from being confirmed. At least one `retryable: true` line
+ * anywhere in the batch makes the whole HTTP response non-2xx (see
+ * `executeRecordsIngest`), even if other lines in the same request
+ * genuinely and permanently failed or committed durably — a systemic
+ * failure must never be reported as an ordinary partial-rejection success.
+ */
+export interface IngestLineFailure {
+  readonly message: string;
+  readonly retryable: boolean;
+}
+
 export interface RecordsIngestDependencies {
   hasManifestStream: (connectorId: string, streamName: string) => boolean | Promise<boolean>;
   /**
    * Ingest a single parsed record under the connector instance + stream.
    * Hosts wire the existing durable ingest capability after resolving
    * connector-only compatibility to a connector instance. Throws on failure;
-   * the operation increments `records_rejected` and collects the message.
+   * the operation classifies the thrown error (via the host's own typed
+   * shape) and increments `records_rejected`.
    */
   ingestRecord: (
     connectorId: string,
@@ -97,6 +118,31 @@ export class RecordsIngestNotFoundError extends Error {
 }
 
 /**
+ * At least one record in this batch failed with a systemic/retryable
+ * classification (see `IngestLineFailure`) — a storage or coordination
+ * failure that never proved the record's own data invalid. The route maps
+ * this to a non-2xx response so the runtime's ingest transport (which trusts
+ * `resp.ok` as its success signal) fails the run and retries instead of
+ * reading a 200 envelope that would otherwise read as an ordinary partial
+ * per-record rejection. This is deliberately thrown even when OTHER records
+ * in the same batch committed durably or failed permanently — a durable
+ * write is never rolled back, and retrying the same batch is safe because
+ * ingest is idempotent per the manifest's primary_key/upsert semantics, so
+ * an accepted-prefix does not duplicate on retry.
+ */
+export class RecordsIngestSystemicFailureError extends Error {
+  readonly code: "ingest_batch_storage_error";
+  readonly retryableFailureCount: number;
+
+  constructor(message: string, retryableFailureCount: number) {
+    super(message);
+    this.name = "RecordsIngestSystemicFailureError";
+    this.code = "ingest_batch_storage_error";
+    this.retryableFailureCount = retryableFailureCount;
+  }
+}
+
+/**
  * Split a raw NDJSON body into non-empty lines. The matching split rule is
  * exposed so hosts can compute `submitted_record_count` for the
  * `mutation.requested` event before invoking the operation, without
@@ -107,6 +153,56 @@ export function parseLines(body: string | null | undefined): string[] {
     return [];
   }
   return body.split("\n").filter((line) => line.trim().length > 0);
+}
+
+/**
+ * Classify an error thrown directly by the single-record `ingestRecord`
+ * dependency. Reads the SAME typed `.retryable` boolean a host's storage
+ * layer already attaches to its own classified failures (see
+ * `server/records.ts`'s `classifyIngestFailure`) when present; falls back to
+ * retryable/systemic for any error the host did not classify (an
+ * unrecognized shape thrown before classification could run, or a host that
+ * doesn't classify at all). Never inspects `.message`.
+ */
+function classifyThrownIngestError(err: unknown): IngestLineFailure {
+  const message = err instanceof Error ? err.message : String(err);
+  const retryableField = (err as { retryable?: unknown } | null)?.retryable;
+  const retryable = typeof retryableField === "boolean" ? retryableField : true;
+  return { message, retryable };
+}
+
+function buildIngestEnvelope(stream: string, lineErrors: readonly (IngestLineFailure | null)[]): RecordsIngestEnvelope {
+  let recordsAccepted = 0;
+  let recordsRejected = 0;
+  const errors: string[] = [];
+  for (const error of lineErrors) {
+    if (error === null) {
+      recordsAccepted += 1;
+    } else {
+      recordsRejected += 1;
+      errors.push(error.message);
+    }
+  }
+  return { errors, records_accepted: recordsAccepted, records_rejected: recordsRejected, stream };
+}
+
+function countRetryableFailures(lineErrors: readonly (IngestLineFailure | null)[]): number {
+  let count = 0;
+  for (const error of lineErrors) {
+    if (error?.retryable) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function firstRetryableFailureMessage(lineErrors: readonly (IngestLineFailure | null)[]): string | null {
+  for (const error of lineErrors) {
+    if (error?.retryable) {
+      return error.message;
+    }
+  }
+  return null;
 }
 
 /**
@@ -138,32 +234,51 @@ export async function executeRecordsIngest(
     throw new RecordsIngestNotFoundError(`Stream '${input.streamName}' not found for connector ${connectorId}`);
   }
 
-  let recordsAccepted = 0;
-  let recordsRejected = 0;
-  const errors: string[] = [];
+  const lineErrors = new Array<IngestLineFailure | null>(lines.length).fill(null);
 
-  for (const line of lines) {
+  for (const [lineIndex, line] of lines.entries()) {
+    let parsed: Record<string, unknown>;
     try {
-      const parsed = JSON.parse(line) as Record<string, unknown>;
-      // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+      parsed = JSON.parse(line) as Record<string, unknown>;
+    } catch (err) {
+      lineErrors[lineIndex] = { message: err instanceof Error ? err.message : String(err), retryable: false };
+      continue;
+    }
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior and mutation timing.
       await dependencies.ingestRecord(connectorId, input.connectorInstanceId ?? null, {
         ...parsed,
         stream: input.streamName,
       });
-      recordsAccepted += 1;
     } catch (err) {
-      recordsRejected += 1;
-      errors.push(err instanceof Error ? err.message : String(err));
+      lineErrors[lineIndex] = classifyThrownIngestError(err);
     }
   }
 
+  // At least one line failed systemically (retryable: true) — a storage or
+  // coordination failure that never proved that line's OWN data invalid.
+  // This is thrown AFTER every per-record write already ran to completion
+  // (each record's durable write is its own independent transaction; a later
+  // record's failure never rolls back an earlier one), so any records that
+  // committed durably or failed permanently in the SAME batch stay exactly
+  // as they are — this only changes what the HTTP RESPONSE reports. A caller
+  // that trusts a 2xx status as its success signal (the runtime's ingest
+  // transport does) must never read this batch as ordinary partial-rejection
+  // success: retrying the identical batch is safe (idempotent per the
+  // manifest's primary_key/upsert semantics), so surfacing it as a non-2xx,
+  // retryable failure is strictly safer than the 200 envelope this replaces.
+  const retryableFailureCount = countRetryableFailures(lineErrors);
+  if (retryableFailureCount > 0) {
+    const firstMessage = firstRetryableFailureMessage(lineErrors);
+    throw new RecordsIngestSystemicFailureError(
+      `Ingest for stream '${input.streamName}' had ${retryableFailureCount} systemic/retryable record failure(s) ` +
+        `out of ${lines.length} submitted; first: ${firstMessage ?? "(no message)"}`,
+      retryableFailureCount
+    );
+  }
+
   return {
-    envelope: {
-      errors,
-      records_accepted: recordsAccepted,
-      records_rejected: recordsRejected,
-      stream: input.streamName,
-    },
+    envelope: buildIngestEnvelope(input.streamName, lineErrors),
     submittedRecordCount,
   };
 }

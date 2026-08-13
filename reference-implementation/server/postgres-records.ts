@@ -255,6 +255,7 @@ interface IngestOptions {
   attemptContext?: DeviceAttemptContext | null;
   deviceReservation?: JsonObject & { inputIndex: number };
   requireConnectionAdmission?: boolean;
+  runId?: string | null;
 }
 
 interface IngestOutcome {
@@ -1777,6 +1778,28 @@ async function writePostgresIngestMutation({
   return nextRecordJsonBytes;
 }
 
+async function assertPostgresRunStillAdmitted(
+  client: PgClient,
+  runId: string | null | undefined,
+  connectorInstanceId: string
+): Promise<void> {
+  if (!runId) {
+    return;
+  }
+  const runStatusResult = await client.query(
+    "SELECT status FROM run_history WHERE run_id = $1 AND connector_instance_id = $2 FOR UPDATE",
+    [runId, connectorInstanceId]
+  );
+  const runStatus = (runStatusResult.rows[0] as { status?: unknown } | undefined)?.status;
+  if (runStatus !== "running") {
+    const err = new Error(
+      `run ${runId} is already terminal; refusing to commit an ingest write admitted before cancellation`
+    );
+    (err as Error & { code?: string }).code = "run_terminal";
+    throw err;
+  }
+}
+
 export async function postgresIngestRecord(
   storageTarget: StorageTarget,
   record: IngestRecord,
@@ -1824,6 +1847,7 @@ export async function postgresIngestRecord(
       assertConnectorInstanceWritableStatus(admission.rows[0]?.status ?? null, connectorInstanceId);
       await maybePostgresAdmissionLockedPhase("after-connector-instance-admission-lock", { connectorInstanceId });
     }
+    await assertPostgresRunStillAdmitted(client, options.runId, connectorInstanceId);
     const finishDurableOutcome = async (value: DurableIngestOutcome): Promise<DurableIngestOutcome> => {
       if (options.deviceReservation) {
         await advancePostgresDeviceIngestPrefix(
