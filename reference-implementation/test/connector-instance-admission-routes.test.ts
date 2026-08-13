@@ -8,6 +8,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+// biome-ignore lint/performance/noNamespaceImport: test drives the admission-race seam on the production route.
+import * as recordsModule from "../server/records.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -25,7 +27,9 @@ interface StateBody {
 
 interface IngestBody {
   connector_instance_id?: string;
+  errors?: readonly string[];
   records_accepted: number;
+  records_rejected?: number;
 }
 
 interface StreamRecordBody {
@@ -389,6 +393,75 @@ test("owner-auth ingest route stores same record key under explicit connector in
     assert.equal(workRecord.body.connector_instance_id, "cin_spotify_work");
     assert.equal(workRecord.body.data.name, "work artist");
   } finally {
+    await closeServer(server);
+  }
+});
+
+test("owner-auth ingest reports a post-resolution revoke as a 200 rejected line", async () => {
+  const server = (await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 })) as TestServer;
+  let releaseWriter: (() => void) | undefined;
+  try {
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const manifest = await registerSpotify(asUrl);
+    const connectorId = manifest.connector_id;
+    await seedTwoSpotifyInstances(connectorId);
+    const store = createSqliteConnectorInstanceStore();
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorInstanceId = "cin_spotify_personal";
+    let resolveAdmissionPreCheck: (() => void) | undefined;
+    const admissionPreCheckReached = new Promise<void>((resolve) => {
+      resolveAdmissionPreCheck = resolve;
+    });
+    recordsModule.__setAdmissionPreCheckPhaseHookForTest(async (point: string, context: Record<string, unknown>) => {
+      if (point !== "after-admission-pre-check" || context.connectorInstanceId !== connectorInstanceId) {
+        return;
+      }
+      resolveAdmissionPreCheck?.();
+      await new Promise<void>((resume) => {
+        releaseWriter = resume;
+      });
+    });
+
+    const ingest = fetchJson<IngestBody>(
+      `${rsUrl}/v1/ingest/top_artists?connector_id=${encodeURIComponent(connectorId)}&connector_instance_id=${connectorInstanceId}`,
+      {
+        body: `${JSON.stringify({ data: { id: "artist_revoked_race", name: "revoked race" }, key: "artist_revoked_race" })}\n`,
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          "Content-Type": "application/x-ndjson",
+        },
+        method: "POST",
+      }
+    );
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        admissionPreCheckReached,
+        new Promise<void>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error("owner route did not opt into connection admission")), 1000);
+        }),
+      ]);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+    await store.updateStatus(connectorInstanceId, { revokedAt: NOW, status: "revoked", updatedAt: NOW });
+    assert.ok(releaseWriter, "the owner route must reach its transaction-native admission check");
+    releaseWriter();
+
+    const response = await ingest;
+    assert.equal(response.status, 200);
+    assert.ok(response.body, "expected the batch rejection envelope");
+    assert.equal(response.body.records_accepted, 0);
+    assert.equal(response.body.records_rejected, 1);
+    assert.deepEqual(response.body.errors, [
+      `Connector instance '${connectorInstanceId}' is revoked; it may have been revoked concurrently with this write.`,
+    ]);
+  } finally {
+    releaseWriter?.();
+    recordsModule.__setAdmissionPreCheckPhaseHookForTest(null);
     await closeServer(server);
   }
 });
