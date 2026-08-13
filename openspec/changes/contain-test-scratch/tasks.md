@@ -67,9 +67,25 @@
 - [x] 4.1 Document `pnpm test:scratch -- <command> [args...]`, its canonical
       containment promise, infrastructure-failure behavior, and raw-command
       bypass boundary in `CONTRIBUTING.md`.
-- [ ] 4.2 Run focused lifecycle and static-ratchet tests, affected script and
+- [x] 4.2 Run focused lifecycle and static-ratchet tests, affected script and
       package tests, RI tests, accounting checks, formatter/typecheck, and
-      `openspec validate contain-test-scratch --strict`.
-- [ ] 4.3 Inspect the final diff; read every touched file; grep migrated old
+      `openspec validate contain-test-scratch --strict`. Evidence at final
+      head `f98cf3f0e`: the combined focused run passed 80/80; the affected
+      importer/Railway tests passed 58/58; Biome, the scratch TypeScript
+      project, `git diff --check`, and strict OpenSpec validation passed; the
+      RI authority profile recorded 7,682 assertions with 0 failures; and
+      exact-head CI attempt 2 passed its full reference suite and all required
+      workflow checks. The all-suite local accounting run completed and its
+      unrelated baseline failures are recorded in 4.3.
+- [x] 4.3 Inspect the final diff; read every touched file; grep migrated old
       paths and every reviewed exception pattern; record unrelated baseline
-      failures separately with command evidence.
+      failures separately with command evidence. Final diff inspection covered
+      the 21 changed files from `7459e011d..f98cf3f0e`, `git diff --check`,
+      the repository-derived canonical-entrypoint/host-writer ratchets, and
+      the exact reviewed-exception inventory. The local all-suite authority
+      completed at final head but retained these unrelated baseline failures:
+      `root-node/default` run `764cd72f` (4 authority-closure fixture commits
+      rejected by the repository DCO hook because the fixture commits omit
+      `Signed-off-by`), and `cli/default` run `b3b6729e` (2 package smoke tests
+      could not parse a trailing `npm pack` JSON payload). Neither failure
+      exercises the scratch owner or its lifecycle tests; exact-head CI passed.
