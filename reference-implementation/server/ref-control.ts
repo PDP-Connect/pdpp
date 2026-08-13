@@ -2145,6 +2145,9 @@ function healthClassifyingRun(
   if (isOwnerCancelledRun(run)) {
     return lastSuccessfulRun;
   }
+  if (run && isActiveRunSummaryStatus(run.status)) {
+    return lastSuccessfulRun ?? null;
+  }
   return isSchedulerSkippedRun(run) ? null : run;
 }
 

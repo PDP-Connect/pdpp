@@ -713,6 +713,53 @@ test("acceptance 7.2: active scheduled run surfaces a syncing badge without repl
   assert.notEqual(snap.state, "syncing", "syncing is never a headline state");
 });
 
+test("acceptance 7.2: active latest run preserves prior terminal success and collection proof", () => {
+  const priorSuccess = succeededRun({ run_id: "run_prior_success" });
+  const snap = projectConnectorSummaryConnectionHealth({
+    activeRun: {
+      connector_id: "chase",
+      connector_instance_id: "cin_chase",
+      run_generation: 2,
+      run_id: "run_inflight",
+      scenario_id: "default",
+      started_at: NOW,
+      trace_id: "trace_inflight",
+    },
+    freshness: FRESH,
+    lastRun: succeededRun({
+      collection_facts: null,
+      finished_at: null,
+      last_at: NOW,
+      run_id: "run_inflight",
+      status: "in_progress",
+    }),
+    lastSuccessfulRun: priorSuccess,
+    outbox: { axis: "idle" },
+    schedule: { active_run_id: "run_inflight", enabled: true },
+  });
+
+  assert.equal(snap.state, "healthy");
+  assert.equal(snap.badges.syncing, true);
+  assert.equal(snap.conditions?.find((condition) => condition.type === "CollectionSucceeded")?.status, "true");
+  assert.equal(
+    snap.conditions?.find((condition) => condition.type === "CollectionSucceeded")?.reason,
+    "collection_succeeded"
+  );
+});
+
+test("acceptance 7.2: terminal failure still supersedes prior terminal success", () => {
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: failedRun({ run_id: "run_new_failure" }),
+    lastSuccessfulRun: succeededRun({ run_id: "run_prior_success" }),
+    outbox: { axis: "idle" },
+    schedule: { enabled: true },
+  });
+
+  assert.equal(snap.state, "degraded");
+  assert.equal(snap.conditions?.find((condition) => condition.type === "CollectionSucceeded")?.status, "false");
+});
+
 test("acceptance 7.2: durable active-run row surfaces syncing when schedule metadata is absent", () => {
   const snap = projectConnectorSummaryConnectionHealth({
     activeRun: {
