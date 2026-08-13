@@ -26,6 +26,7 @@ import test from "node:test";
 
 import {
   executeSourceWebhook,
+  SOURCE_WEBHOOK_MAX_RECORDS,
   type SourceWebhookDependencies,
   type SourceWebhookInput,
 } from "../operations/ref-source-webhook-ingest/index.ts";
@@ -155,6 +156,76 @@ test("source-webhook: a valid ingest_records call ingests and reports the ingest
   assert.equal(ingestArgs.ownerSubjectId, "owner_custom");
   assert.equal(ingestArgs.streamName, "receipts");
   assert.equal(ingestArgs.body, '{"id":1}\n{"id":2}', "records are newline-joined JSON");
+});
+
+test("source-webhook: accepts exactly 500 records and maps them once", async () => {
+  let claimed = false;
+  let ingestedBody = "";
+  const body = JSON.stringify({
+    action: "ingest_records",
+    records: Array.from({ length: SOURCE_WEBHOOK_MAX_RECORDS }, (_, id) => ({ id })),
+    stream: "receipts",
+  });
+  const out = await executeSourceWebhook(
+    freshInput(body),
+    makeDeps({
+      claimEvent: () => {
+        claimed = true;
+        return true;
+      },
+      ingestRecords: ({ body: mappedBody }) => {
+        ingestedBody = mappedBody;
+        return Promise.resolve({
+          errors: [],
+          records_accepted: SOURCE_WEBHOOK_MAX_RECORDS,
+          records_rejected: 0,
+          stream: "receipts",
+        });
+      },
+    })
+  );
+  assert.equal(out.accepted, true);
+  assert.equal(claimed, true);
+  assert.equal(ingestedBody.split("\n").length, SOURCE_WEBHOOK_MAX_RECORDS);
+});
+
+test("source-webhook: rejects record 501 before idempotency claim or serialization", async () => {
+  let claimed = false;
+  let resolved = false;
+  let ingested = false;
+  const body = JSON.stringify({
+    action: "ingest_records",
+    records: Array.from({ length: SOURCE_WEBHOOK_MAX_RECORDS + 1 }, (_, id) => ({ id })),
+    stream: "receipts",
+  });
+  await expectCode(
+    executeSourceWebhook(
+      freshInput(body),
+      makeDeps({
+        claimEvent: () => {
+          claimed = true;
+          return true;
+        },
+        ingestRecords: () => {
+          ingested = true;
+          return Promise.resolve({ errors: [], records_accepted: 0, records_rejected: 0, stream: "receipts" });
+        },
+        resolveTarget: () => {
+          resolved = true;
+          return {
+            connectorId: "my-source",
+            connectorInstanceId: "cin_my_source_owner_custom",
+            ownerSubjectId: "owner_custom",
+          };
+        },
+      })
+    ),
+    "resource_limit",
+    413
+  );
+  assert.equal(resolved, false);
+  assert.equal(claimed, false);
+  assert.equal(ingested, false);
 });
 
 test("source-webhook: an unsupported action is invalid_payload", async () => {

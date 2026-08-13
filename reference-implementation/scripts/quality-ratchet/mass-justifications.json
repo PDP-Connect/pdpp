@@ -224,6 +224,11 @@
     "reason": "Bounded evidence phase-progress fix (2026-07-30): the reconcile receipt serializes aggregate terminal-fold progress dimensions independently, preserving null for no participant/checkpoint while clamping numeric fields and retaining the existing allowlisted, payload-free telemetry boundary. The explicit null-versus-number branches distinguish an absent fold from checkpoint zero; no fold-duration field is emitted because bounded maintenance has one cooperative absolute deadline rather than a synthetic phase timeout. SQLite and real disposable-PostgreSQL starvation regressions assert the values, and the observability suite asserts the structured output.",
     "date": "2026-07-30"
   },
+  "server/routes/ref-error-status.ts": {
+    "allowed_mass": 3,
+    "date": "2026-08-11",
+    "reason": "Bounded source-webhook resources (2026-08-11): typeFor gains the explicit HTTP 413 branch required to map Fastify's route-local body-limit rejection to the repository's standard request_entity_too_large_error envelope. The source-webhook route and operation boundary tests prove oversized wire bodies and record arrays return the typed 413 response while bounded requests preserve existing behavior."
+  },
   "server/stores/browser-surface-replacement-ledger-store.ts": {
     "allowed_mass": 48,
     "reason": "Reviewed replacement episode correction (2026-07-30): atomic correction must fail closed on a complete exact-scope immutable set, a named failed predecessor, unresolved membership, and no intervening competing starts, while retaining parity for SQLite and PostgreSQL transactions. The additional branches are the validation boundary and idempotent/reversible persistence checks; collapsing them into a generic override helper would weaken the intentionally stricter batch contract or hide backend transaction semantics. Proven by mutation-grade omission, mixed-scope, altered-fingerprint, resolved/unrelated member, partial-apply, retry, revoke, and non-target-isolation tests.",

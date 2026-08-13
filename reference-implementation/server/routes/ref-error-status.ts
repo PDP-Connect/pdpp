@@ -34,6 +34,9 @@ export function typeFor(status: number): string {
   if (status === 410) {
     return "gone_error";
   }
+  if (status === 413) {
+    return "request_entity_too_large_error";
+  }
   if (status === 429) {
     return "rate_limit_error";
   }
@@ -137,6 +140,7 @@ export const codeToStatus: Readonly<Record<string, number>> = {
   // status for "this request is valid but the server is not ready to act yet."
   provider_pressure_cooldown: 425,
   query_not_found: 404,
+  resource_limit: 413,
   run_already_active: 409,
   run_owner_mismatch: 403,
   unknown_field: 400,
