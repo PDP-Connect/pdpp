@@ -2221,6 +2221,28 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     stdio: ["pipe", "pipe", "pipe"],
   });
 
+  // Register terminal observation immediately after spawn, before any of the
+  // asynchronous pre-START work below. A fast connector can consume START,
+  // emit DONE, and exit before runConnector reaches its terminal handlers;
+  // listening only at the end of setup loses Node's one-shot `close` event and
+  // leaves the run pending forever. Buffer the first terminal event now and
+  // process it once the run-scoped state machine is ready.
+  type ConnectorChildTerminalEvent =
+    | { readonly code: number | null; readonly kind: "close" }
+    | { readonly error: Error; readonly kind: "error" };
+  const childTerminalEvent = new Promise<ConnectorChildTerminalEvent>((resolve) => {
+    let observed = false;
+    const observe = (event: ConnectorChildTerminalEvent) => {
+      if (observed) {
+        return;
+      }
+      observed = true;
+      resolve(event);
+    };
+    proc.once("error", (error) => observe({ error, kind: "error" }));
+    proc.once("close", (code) => observe({ code, kind: "close" }));
+  });
+
   // Group-aware termination. Because the child leads its own process group
   // (see `detached: true` above), signalling the NEGATIVE pid delivers to
   // every process in that group — the connector and any descendants it
@@ -5233,41 +5255,44 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       await rejectAfterLeaseAccounting(err);
     }
 
-    proc.on("close", async (code) => {
-      clearTerminateTimer();
-      const stderrTailRaw = stderrTail.finalize();
-      if (stderrTailRaw.text) {
-        onProgress({ text: stderrTailRaw.text, type: "stderr" });
-      }
-      // Connector stderr is untrusted; redact recognized secret markers before
-      // retaining the bounded diagnostic for owner/control-plane evidence.
-      const stderrTailDiagnostic = buildStderrTailDiagnostic(stderrTailRaw);
-
-      try {
-        await waitForQueueDrain();
-        if (!terminalEventRecorded) {
-          if (runTimedOut) {
-            await recordRunTimedOutTerminal(code);
-          } else if (ownerCancelRequested) {
-            await handleOwnerCancellationClose(code);
-          } else if (doneMessage) {
-            if (await handleDoneClose(code)) {
-              return;
-            }
-          } else {
-            await handleConnectorExitClose(code, stderrTailDiagnostic);
-          }
-          terminalEventRecorded = true;
+    childTerminalEvent
+      .then(async (terminalEvent) => {
+        if (terminalEvent.kind === "error") {
+          await rejectAfterLeaseAccounting(terminalEvent.error);
+          return;
         }
-        await resolveClosedRun(code, stderrTailDiagnostic);
-      } catch (caught) {
-        await handleCloseFailure(code, caught);
-      }
-    });
+        const { code } = terminalEvent;
+        clearTerminateTimer();
+        const stderrTailRaw = stderrTail.finalize();
+        if (stderrTailRaw.text) {
+          onProgress({ text: stderrTailRaw.text, type: "stderr" });
+        }
+        // Connector stderr is untrusted; redact recognized secret markers before
+        // retaining the bounded diagnostic for owner/control-plane evidence.
+        const stderrTailDiagnostic = buildStderrTailDiagnostic(stderrTailRaw);
 
-    proc.on("error", async (err) => {
-      await rejectAfterLeaseAccounting(err);
-    });
+        try {
+          await waitForQueueDrain();
+          if (!terminalEventRecorded) {
+            if (runTimedOut) {
+              await recordRunTimedOutTerminal(code);
+            } else if (ownerCancelRequested) {
+              await handleOwnerCancellationClose(code);
+            } else if (doneMessage) {
+              if (await handleDoneClose(code)) {
+                return;
+              }
+            } else {
+              await handleConnectorExitClose(code, stderrTailDiagnostic);
+            }
+            terminalEventRecorded = true;
+          }
+          await resolveClosedRun(code, stderrTailDiagnostic);
+        } catch (caught) {
+          await handleCloseFailure(code, caught);
+        }
+      })
+      .catch((error: unknown) => reject(error));
   });
 }
 

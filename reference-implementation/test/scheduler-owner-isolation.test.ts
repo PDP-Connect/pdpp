@@ -238,7 +238,18 @@ async function runSchedules({
 
   try {
     scheduler.start();
-    await waitFor(() => records.length >= connectors.length);
+    try {
+      await waitFor(() => records.length >= connectors.length);
+    } catch (error) {
+      throw new Error(
+        `scheduled runs did not complete: ${JSON.stringify({
+          completed: records.length,
+          expected: connectors.length,
+          resolverCalls,
+        })}`,
+        { cause: error }
+      );
+    }
     return { records, resolverCalls };
   } finally {
     scheduler.stop();
