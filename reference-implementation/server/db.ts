@@ -878,6 +878,28 @@ CREATE TABLE IF NOT EXISTS source_webhook_events (
   PRIMARY KEY(source_id, event_id)
 );
 
+-- Controller dispatch receipts outlive controller_active_runs. A webhook
+-- retry can therefore recover the original run handle after terminal active
+-- run cleanup or a lost HTTP response, without admitting a second run.
+CREATE TABLE IF NOT EXISTS source_webhook_run_receipts (
+  source_id             TEXT NOT NULL,
+  event_id              TEXT NOT NULL,
+  body_hash             TEXT NOT NULL,
+  connector_id          TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
+  owner_subject_id      TEXT NOT NULL,
+  action                TEXT NOT NULL CHECK (action = 'schedule_run'),
+  run_id                TEXT NOT NULL,
+  trace_id              TEXT NOT NULL,
+  automation_mode       TEXT,
+  automation_summary    TEXT,
+  started_at            TEXT NOT NULL,
+  PRIMARY KEY(source_id, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_webhook_run_receipts_run
+  ON source_webhook_run_receipts(run_id, connector_instance_id);
+
 -- Outbound event subscriptions (reference-only). Each subscription is bound
 -- either to a single client + grant or to a trusted owner-agent client +
 -- owner subject. The persisted scope_json is an authority snapshot so

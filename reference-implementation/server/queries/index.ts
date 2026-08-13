@@ -438,6 +438,9 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly searchSnapshotsGetById: ReadOneQuery;
   // Lexical retrieval — opaque-cursor snapshots.
   readonly searchSnapshotsInsert: MutationQuery;
+  // Source-webhook run dispatch — durable controller receipt.
+  readonly sourceWebhookRunsGetReceipt: ReadOneQuery;
+  readonly sourceWebhookRunsInsertReceipt: MutationQuery;
   // Source webhooks — replay/idempotency guard.
   readonly sourceWebhooksClaimEvent: MutationQuery;
   // Spine — controller-side terminal-event existence probe.
@@ -832,6 +835,9 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "controllerUpsertSchedulerLastRunTime",
     // Source webhooks — replay/idempotency guard.
     "sourceWebhooksClaimEvent",
+    // Source-webhook run dispatch — durable controller receipt.
+    "sourceWebhookRunsGetReceipt",
+    "sourceWebhookRunsInsertReceipt",
     // Client event subscriptions (outbound, reference-only).
     "clientEventSubscriptionsInsertSubscription",
     "clientEventSubscriptionsGetSubscriptionById",
