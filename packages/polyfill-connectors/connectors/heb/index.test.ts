@@ -258,7 +258,7 @@ function makeSessionRepairPageStub(opts: { detailHtmlAfterRepair?: string; htmlS
 
 // ─── #2: malformed order dates still classify into detail coverage ───────
 
-test("processListOrder: a malformed order date records a 'skipped' coverage outcome, not silence", async () => {
+test("processListOrder: a malformed order date records a 'gap' coverage outcome backed by DETAIL_GAP when order_items is in scope", async () => {
   const coverage = newOrderItemsCoverage();
   const { deps, emitted, protocolMessages } = makeRecordingDeps({ orderItemsCoverage: coverage });
   const listOrder = makeListOrder({ orderDateRaw: "not a real date" });
@@ -266,28 +266,52 @@ test("processListOrder: a malformed order date records a 'skipped' coverage outc
   await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), listOrder);
 
   assert.deepEqual(coverage.required, ["HEB1000000001"], "the order must still join the required denominator");
-  assert.deepEqual(coverage.optionalSkip, ["HEB1000000001"]);
+  assert.deepEqual(coverage.gap, ["HEB1000000001"], "parse failure is an actionable gap");
   assert.deepEqual(coverage.hydrated, []);
-  assert.deepEqual(coverage.gap, [], "a date-parse failure is a policy skip, not a degraded gap");
   assert.equal(emitted.length, 0, "no order/item record can emit without a parsed order_date");
   assert.ok(
     protocolMessages.some((m) => m.type === "SKIP_RESULT" && m.reason === "unparseable_order_date"),
-    "the existing SKIP_RESULT diagnostic must still fire"
+    "the SKIP_RESULT diagnostic at the order level fires"
   );
+  const gaps = protocolMessages.filter((m) => m.type === "DETAIL_GAP");
+  assert.equal(gaps.length, 1, "a DETAIL_GAP backs the coverage gap");
+  assert.equal(gaps[0]?.stream, "order_items");
+  assert.equal(gaps[0]?.last_error?.class, "transient_no_progress");
 });
 
-test("emitOrderItemsCoverage: a skipped order counts toward covered (it's a policy skip, not a gap)", async () => {
+test("processListOrder: a malformed order date emits no DETAIL_GAP when order_items is out of scope (wantsItems: false)", async () => {
+  const coverage = newOrderItemsCoverage();
+  const { deps, protocolMessages } = makeRecordingDeps({
+    orderItemsCoverage: coverage,
+    wantsItems: false,
+    wantsOrders: true,
+  });
+  const listOrder = makeListOrder({ orderDateRaw: "not a real date" });
+
+  await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), listOrder);
+
+  assert.deepEqual(coverage.required, [], "orderItemsCoverage is not written when wantsItems: false");
+  assert.deepEqual(coverage.gap, []);
+  assert.deepEqual(coverage.hydrated, []);
+  assert.ok(
+    protocolMessages.some((m) => m.type === "SKIP_RESULT" && m.reason === "unparseable_order_date"),
+    "the SKIP_RESULT diagnostic at the order level still fires"
+  );
+  const gaps = protocolMessages.filter((m) => m.type === "DETAIL_GAP");
+  assert.equal(gaps.length, 0, "no DETAIL_GAP when order_items is out of scope");
+});
+
+test("emitOrderItemsCoverage: gap marks an actionable degradation (not optional skip)", async () => {
   const { deps, protocolMessages } = makeRecordingDeps();
-  const coverage: OrderItemsCoverage = { required: ["a", "b"], hydrated: ["a"], gap: [], optionalSkip: ["b"] };
+  const coverage: OrderItemsCoverage = { required: ["a", "b"], hydrated: ["a"], gap: ["b"] };
   await emitOrderItemsCoverage(deps, coverage);
 
   const msg = findDetailCoverage(protocolMessages);
   assert.ok(msg);
   assert.deepEqual(msg.required_keys, ["a", "b"]);
-  assert.deepEqual(msg.optional_skip_keys, ["b"]);
+  assert.deepEqual(msg.gap_keys, ["b"]);
   assert.equal(msg.considered, 2);
-  assert.equal(msg.covered, 2, "hydrated + optional_skip both count as covered");
-  assert.equal(msg.gap_keys, undefined);
+  assert.equal(msg.covered, 1, "only hydrated counts as covered");
 });
 
 // ─── orders list-stream coverage evidence ─────────────────────────────────
@@ -1392,13 +1416,11 @@ test("reasonForDetailFailure and classifyHebDetailFailure cover every current De
   }
 });
 
-test("recordDetailOutcome: hydrated/gap/skipped each land in the right accumulator set", () => {
+test("recordDetailOutcome: hydrated/gap each land in the right accumulator set", () => {
   const coverage = newOrderItemsCoverage();
   recordDetailOutcome(coverage, "ord-h", "hydrated");
   recordDetailOutcome(coverage, "ord-g", "gap");
-  recordDetailOutcome(coverage, "ord-s", "skipped");
-  assert.deepEqual(coverage.required, ["ord-h", "ord-g", "ord-s"]);
+  assert.deepEqual(coverage.required, ["ord-h", "ord-g"]);
   assert.deepEqual(coverage.hydrated, ["ord-h"]);
   assert.deepEqual(coverage.gap, ["ord-g"]);
-  assert.deepEqual(coverage.optionalSkip, ["ord-s"]);
 });

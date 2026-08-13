@@ -371,12 +371,11 @@ async function reportEmptyPageDiagnostics(
 export interface OrderItemsCoverage {
   gap: string[];
   hydrated: string[];
-  optionalSkip: string[];
   required: string[];
 }
 
 export function newOrderItemsCoverage(): OrderItemsCoverage {
-  return { gap: [], hydrated: [], optionalSkip: [], required: [] };
+  return { gap: [], hydrated: [], required: [] };
 }
 
 /**
@@ -408,25 +407,19 @@ export function newOrdersCoverage(): OrdersCoverage {
 /**
  * The detail-hydration outcome for one considered order.
  *  - `hydrated` — the detail page fetched and parsed.
- *  - `gap`      — the detail fetch was attempted but degraded.
- *  - `skipped`  — the order was never enumerable for detail hydration by an
- *                 explicit policy reason (currently: its list-page order date
- *                 did not parse, so it never reaches the detail lane). This is
- *                 still recorded in `required` — the order WAS enumerated by
- *                 the parent list scan — so it never silently vanishes from
- *                 the coverage denominator (mirrors Amazon's
- *                 classifyDetailOutcome `optional_skip` accounting).
+ *  - `gap`      — the detail fetch was attempted but degraded, or the order
+ *                 never reached the detail lane (e.g., unparseable order date).
+ * Both outcomes remain in the required denominator — the order was enumerated
+ * by the parent list scan and must not silently vanish from coverage.
  */
-export type DetailOutcome = "hydrated" | "gap" | "skipped";
+export type DetailOutcome = "hydrated" | "gap";
 
 export function recordDetailOutcome(coverage: OrderItemsCoverage, orderId: string, outcome: DetailOutcome): void {
   coverage.required.push(orderId);
   if (outcome === "hydrated") {
     coverage.hydrated.push(orderId);
-  } else if (outcome === "gap") {
-    coverage.gap.push(orderId);
   } else {
-    coverage.optionalSkip.push(orderId);
+    coverage.gap.push(orderId);
   }
 }
 
@@ -801,16 +794,19 @@ export async function processListOrder(
       message: `Order ${listOrder.orderId}: order date "${listOrder.orderDateRaw ?? ""}" did not parse.`,
       diagnostics: { order_id: listOrder.orderId },
     });
-    // The order was enumerated by the parent list scan, so it must still be
-    // classified — an unparseable date never reaches the detail lane, but it
-    // must not vanish from the required/coverage denominator (design doc:
-    // every order classifies hydrated | gap | skipped).
-    if (deps.orderItemsCoverage) {
-      recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, "skipped");
+    // Unparseable order dates cannot reach the detail hydration lane. When
+    // order_items are in scope, emit a DETAIL_GAP (not a policy skip) backed
+    // by actionable evidence; the order was enumerated by the list scan, so
+    // it must still join the required denominator.
+    if (deps.wantsItems && deps.orderItemsCoverage) {
+      recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, "gap");
+      await deps.emit(
+        buildHebDetailGap(listOrder.orderId, "temporary_unavailable", "parse_missing", undefined)
+      );
     }
     // The list scan still enumerated this order, so the `orders` denominator
-    // must not silently drop it either: considered, but not covered (no
-    // accounting decision was made for its `orders` record).
+    // must not silently drop it: considered, but not covered (no accounting
+    // decision was made for its `orders` record).
     if (deps.ordersCoverage) {
       deps.ordersCoverage.considered.push(listOrder.orderId);
       deps.ordersCoverage.dateDropped.push(listOrder.orderId);
@@ -985,9 +981,8 @@ export async function emitOrderItemsCoverage(deps: EmitDeps, coverage: OrderItem
     requiredKeys: coverage.required,
     hydratedKeys: coverage.hydrated,
     gapKeys: coverage.gap,
-    optionalSkipKeys: coverage.optionalSkip,
     considered: coverage.required.length,
-    covered: coverage.hydrated.length + coverage.optionalSkip.length,
+    covered: coverage.hydrated.length,
   });
 }
 
