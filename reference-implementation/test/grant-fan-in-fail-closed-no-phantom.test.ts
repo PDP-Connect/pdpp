@@ -33,7 +33,7 @@ const CONNECTOR_ID = "https://test.pdpp.dev/connectors/grant-fail-closed";
 const STREAM = "messages";
 
 const listedManifest = {
-  // listed:true so it would have been materialized by the old read-time
+  // Supported so it would have been materialized by the old read-time
   // catalog fan-out — the exact shape that produced phantom bindings.
   capabilities: { public_listing: { tier: "supported" } },
   connector_id: CONNECTOR_ID,

@@ -1377,8 +1377,7 @@ test("schedule upsert permits assisted-after-owner-auth schedules as unattended 
   const manifest = {
     capabilities: {
       public_listing: {
-        listed: true,
-        status: "needs_human_auth",
+        tier: "preview",
       },
       refresh_policy: {
         assisted_after_owner_auth: true,

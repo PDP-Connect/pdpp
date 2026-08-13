@@ -345,15 +345,14 @@ test("ref.connectors.list carries optional complete-page fleet health without in
   assert.equal("fleet_health" in incomplete, false, "incomplete pages must omit rather than infer fleet health");
 });
 
-test("reference connector catalog hides manifest opt-outs", () => {
+test("reference connector catalog hides Development connectors", () => {
   assert.equal(
     isPublicReferenceConnector(
       { connector_id: "https://registry.pdpp.dev/connectors/spotify", manifest: "{}" },
       {
         capabilities: {
           public_listing: {
-            listed: false,
-            status: "unproven",
+            tier: "development",
           },
         },
         connector_id: "https://registry.pdpp.dev/connectors/spotify",
@@ -363,14 +362,14 @@ test("reference connector catalog hides manifest opt-outs", () => {
   );
 });
 
-test("reference connector catalog hides unproven connectors by default", () => {
+test("reference connector catalog hides connectors without an owner-visible tier", () => {
   assert.equal(
     isPublicReferenceConnector(
       { connector_id: "https://registry.pdpp.dev/connectors/unproven-source", manifest: "{}" },
       {
         capabilities: {
           public_listing: {
-            status: "unproven",
+            tier: "development",
           },
         },
         connector_id: "https://registry.pdpp.dev/connectors/unproven-source",
@@ -380,7 +379,7 @@ test("reference connector catalog hides unproven connectors by default", () => {
   );
 });
 
-test("reference connector catalog hides local-device connectors unless explicitly listed", () => {
+test("reference connector catalog uses lifecycle tier rather than runtime placement", () => {
   const imessageManifest = {
     connector_id: "https://registry.pdpp.dev/connectors/imessage",
     runtime_requirements: {
@@ -411,14 +410,13 @@ test("reference connector catalog hides local-device connectors unless explicitl
         ...imessageManifest,
         capabilities: {
           public_listing: {
-            listed: true,
-            status: "operator_enabled",
+            tier: "preview",
           },
         },
       }
     ),
     true,
-    "local-device connectors can be surfaced only after an explicit manifest opt-in"
+    "a Preview local-device connector is owner-visible despite its placement requirements"
   );
 });
 
