@@ -2620,9 +2620,10 @@ function proofAgeFreshnessOverride(
     return null;
   }
   const current = healthInput.freshness;
+  const classifyingRun = coverageClassifyingRun(healthInput.lastRun ?? null, healthInput.lastSuccessfulRun ?? null);
   const recomputed = deriveReferenceFreshness({
-    lastAttemptedAt: healthInput.lastRun?.last_at ?? null,
-    lastAttemptStatus: healthInput.lastRun?.status ?? null,
+    lastAttemptedAt: classifyingRun ? classifyingRun.last_at : null,
+    lastAttemptStatus: classifyingRun ? classifyingRun.status : null,
     lastSuccessfulRunAt: capIsoAnchor(healthInput.lastSuccessfulRun?.last_at ?? null, proofAnchor),
     maximumStalenessSeconds,
     now: healthInput.nowIso ?? new Date().toISOString(),

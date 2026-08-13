@@ -1763,6 +1763,36 @@ test("proof-age anchor: a recent omitted-stream proof preserves Healthy (no fals
   assert.equal(refined.state, "healthy", "recent full-scope proof + recent scoped run stays Healthy");
 });
 
+test("proof-age anchor: owner cancellation does not stale a recent successful proof", () => {
+  const successAt = "2026-05-19T11:55:00.000Z";
+  const successfulRun = succeededRun({ finished_at: successAt, last_at: successAt, started_at: successAt });
+  const cancelledRun = {
+    ...succeededRun({
+      finished_at: NOW,
+      last_at: NOW,
+      started_at: NOW,
+      status: "cancelled",
+    }),
+    terminal_reason: "owner_cancelled",
+  };
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: { captured_at: successAt, last_attempted_at: successAt, status: "current" },
+    lastRun: cancelledRun,
+    lastSuccessfulRun: successfulRun,
+    nowIso: NOW,
+    outbox: { axis: "idle" },
+    refreshPolicy: STALENESS_REFRESH_POLICY,
+    schedule: { enabled: true },
+  };
+  const initialConnectionHealth = projectConnectorSummaryConnectionHealth(healthInput);
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initialConnectionHealth, [
+    collectionReportEntry({ evidence_as_of: successAt, required: true, stream: "messages" }),
+  ]);
+
+  assert.equal(refined.axes.freshness, "fresh");
+  assert.equal(refined.state, "healthy");
+});
+
 test("proof-age anchor: a required stream with NO evidence at all (window exceeded) blocks Healthy via coverage, never silently green", () => {
   const { healthInput, initialConnectionHealth } = baselineHealthyRefineInputs(NOW);
 
