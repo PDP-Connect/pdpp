@@ -136,7 +136,7 @@ test("Postgres SourceWebhookEventStore claims each source event once when PDPP_T
 });
 
 test("Postgres source-webhook generic claim and receipt admission share one atomic identity", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: process.env.PDPP_TEST_POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;
   assert.ok(databaseUrl, "Postgres URL is configured when this test runs");
