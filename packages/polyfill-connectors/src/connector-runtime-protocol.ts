@@ -273,22 +273,15 @@ export function selectAuthoritativeContinuation<T extends { kind?: string; strea
   gaps: readonly T[],
   stream: string
 ): T | undefined {
-  return gaps.findLast(
-    (candidate) =>
-      candidate.kind === "skip_result" &&
-      candidate.stream === stream &&
-      readRuntimeContinuationFact(candidate.continuation) !== undefined
-  );
+  const latest = selectAuthoritativeSkip(gaps, stream);
+  return latest && readRuntimeContinuationFact(latest.continuation) !== undefined ? latest : undefined;
 }
 
 export function selectAuthoritativeSkip<T extends { kind?: string; stream?: string; continuation?: unknown }>(
   gaps: readonly T[],
   stream: string
 ): T | undefined {
-  return (
-    selectAuthoritativeContinuation(gaps, stream) ??
-    gaps.findLast((candidate) => candidate.kind === "skip_result" && candidate.stream === stream)
-  );
+  return gaps.findLast((candidate) => candidate.kind === "skip_result" && candidate.stream === stream);
 }
 
 export function readOptionalText(value: unknown): string | undefined {
