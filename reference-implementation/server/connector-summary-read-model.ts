@@ -3151,6 +3151,19 @@ async function runCursorWalk(args: {
     skipped += pageResult.skipped;
     emitScopedObservationUnit(pageResult, pageIds.length, pageStartedAt);
     if (pageResult.incomplete) {
+      // Evidence folding and terminal projection publication are separate
+      // convergence axes. A page may have more terminal history to fold, yet
+      // already contain clean rows whose captured terminal facts are ready to
+      // publish. Give the bounded publisher that page before resuming the
+      // fold; otherwise one fold-heavy connection can indefinitely suppress
+      // publication for every unrelated stale-clean row on the page.
+      try {
+        await args.onPageConverged?.(pageIds, args.maintenanceLease);
+      } catch (error) {
+        if (!isExpectedProjectionRace(error)) {
+          throw error;
+        }
+      }
       // This page's fold did not fully converge within its budget — the
       // sweep as a whole is incomplete regardless of how many pages
       // followed, and the resume point is BEFORE this page (not past it).
@@ -3296,20 +3309,18 @@ async function runDirtyPriorityAcceleration(args: {
     ...args.foldEventCap,
   });
   emitScopedObservationUnit(result, dirtyIds.length, startedAt);
-  if (!result.incomplete) {
-    try {
-      await args.onPageConverged?.(dirtyIds, args.maintenanceLease);
-    } catch (error) {
-      if (!isExpectedProjectionRace(error)) {
-        throw error;
-      }
-      return {
-        discovered: dirtyIds.length,
-        incomplete: true,
-        repaired: result.reconciled,
-        skipped: result.skipped,
-      };
+  try {
+    await args.onPageConverged?.(dirtyIds, args.maintenanceLease);
+  } catch (error) {
+    if (!isExpectedProjectionRace(error)) {
+      throw error;
     }
+    return {
+      discovered: dirtyIds.length,
+      incomplete: true,
+      repaired: result.reconciled,
+      skipped: result.skipped,
+    };
   }
   return {
     discovered: dirtyIds.length,

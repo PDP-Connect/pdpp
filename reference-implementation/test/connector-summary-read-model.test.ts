@@ -1594,6 +1594,11 @@ test("a stale clean row republishes the newer ordered terminal run", () =>
 
     await runBoundedSummaryEvidenceSweep({
       maxDurationMs: 60_000,
+      // Force the evidence barrier to report an incomplete terminal fold.
+      // Publication must still run for this page: the target's clean
+      // canonical evidence is already publishable even while another fold
+      // unit remains resumable.
+      maxEventsPerFold: 1,
       onPageConverged: async (ids, maintenanceLease) => {
         await rebuildConnectorListSummaryTerminalProjectionPage(
           null,
