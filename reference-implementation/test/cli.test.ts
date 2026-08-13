@@ -643,6 +643,16 @@ function fakeAdmitRunConnection(
   };
 }
 
+async function materializeCliRunConnection(connectorId: string, ownerSubjectId = "cli_owner"): Promise<string> {
+  const canonicalConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
+  const namespace = await admitOwnerRunConnection({
+    connectorId: canonicalConnectorId,
+    connectorInstanceStore: createRequestConnectorInstanceStore(),
+    ownerSubjectId,
+  });
+  return namespace.connectorInstanceId;
+}
+
 function seedSpotify(rsUrl: string, manifest: TestManifest, ownerToken: string, ownerSubjectId = "cli_owner") {
   const connectorPath = join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts");
   return runConnector({
@@ -5812,12 +5822,13 @@ rl.on('line', (line) => {
   await t.test("run timeline keeps failed checkpoint artifacts inspectable", async () => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
       const ownerToken = await issueOwnerToken(asUrl, "cli_owner");
+      const connectorInstanceId = await materializeCliRunConnection(spotifyManifest.connector_id);
       const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-cli-run-failed-"));
       const connectorPath = join(tmpDir, "connector.mjs");
       writeFileSync(
         connectorPath,
         `
-        console.log(JSON.stringify({ type: 'RECORD', stream: 'top_artists', record: { key: 'cli_run_failed', data: { id: 'cli_run_failed', name: 'CLI Failed Artist' }, emitted_at: '2026-04-18T00:00:00Z' } }));
+        console.log(JSON.stringify({ type: 'RECORD', stream: 'top_artists', key: 'cli_run_failed', data: { id: 'cli_run_failed', name: 'CLI Failed Artist' }, emitted_at: '2026-04-18T00:00:00Z' }));
         console.log(JSON.stringify({ type: 'STATE', stream: 'top_artists', value: { cursor: 'cli_failed_cursor' } }));
         process.exit(1);
       `
@@ -5827,6 +5838,7 @@ rl.on('line', (line) => {
         admitRunConnection: fakeAdmitRunConnection(),
         collectionMode: "incremental",
         connectorId: spotifyManifest.connector_id,
+        connectorInstanceId,
         connectorPath,
         manifest: spotifyManifest,
         ownerToken,
