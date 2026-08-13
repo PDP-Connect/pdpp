@@ -1872,10 +1872,10 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        source_revision = excluded.source_revision,
        list_summary_projection_state = CASE
          WHEN ${SQLITE_PROJECTION_RELEVANT_EVIDENCE_CHANGED}
-         THEN 'stale' ELSE list_summary_projection_state END,
+         THEN 'stale' ELSE connector_summary_evidence.list_summary_projection_state END,
        list_summary_projection_reason_code = CASE
          WHEN ${SQLITE_PROJECTION_RELEVANT_EVIDENCE_CHANGED}
-         THEN 'canonical_evidence_rebuilt' ELSE list_summary_projection_reason_code END`,
+         THEN 'canonical_evidence_rebuilt' ELSE connector_summary_evidence.list_summary_projection_reason_code END`,
     [
       row.connector_instance_id,
       row.connector_id,
@@ -1976,10 +1976,10 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
        source_revision = EXCLUDED.source_revision,
        list_summary_projection_state = CASE
          WHEN ${POSTGRES_PROJECTION_RELEVANT_EVIDENCE_CHANGED}
-         THEN 'stale' ELSE list_summary_projection_state END,
+         THEN 'stale' ELSE connector_summary_evidence.list_summary_projection_state END,
        list_summary_projection_reason_code = CASE
          WHEN ${POSTGRES_PROJECTION_RELEVANT_EVIDENCE_CHANGED}
-         THEN 'canonical_evidence_rebuilt' ELSE list_summary_projection_reason_code END`,
+         THEN 'canonical_evidence_rebuilt' ELSE connector_summary_evidence.list_summary_projection_reason_code END`,
     [
       row.connector_instance_id,
       row.connector_id,

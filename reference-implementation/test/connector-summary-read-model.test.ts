@@ -29,6 +29,7 @@ import { createConnectorMaintenanceCursorStore } from "../server/stores/connecto
 const OWNER = "owner_local";
 const NOW = "2026-06-17T12:00:00.000Z";
 const SIMULATED_WORKER_RESTART = /simulated worker restart/;
+const UNEXPECTED_PUBLICATION_FAILURE = /unexpected publication failure/;
 
 // `stream_records` on a shaped evidence row is parsed from durable JSON
 // (`parseEvidenceJson`), so `shapeEvidenceRow`'s inferred return type carries
@@ -1216,6 +1217,71 @@ test("Postgres terminal LIST projection rejects late canonical snapshots", {
   }
 });
 
+test("Postgres conditional projection invalidation preserves no-op and rejects real mutation", {
+  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+}, async () => {
+  const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;
+  assert.ok(databaseUrl, "Postgres URL is configured when this test runs");
+  await initPostgresStorage({ backend: "postgres", databaseUrl });
+  const connectorId = "pg_terminal_conditional_invalidation";
+  const connectorInstanceId = "cin_pg_terminal_conditional_invalidation";
+  try {
+    await cleanupPostgres(connectorId, connectorInstanceId);
+    await postgresQuery(
+      `INSERT INTO connectors(connector_id, manifest, created_at)
+       VALUES($1, $2::jsonb, $3)`,
+      [
+        connectorId,
+        JSON.stringify({ connector_id: connectorId, streams: [{ name: "items", primary_key: ["id"] }] }),
+        NOW,
+      ]
+    );
+    await postgresQuery(
+      `INSERT INTO connector_instances(
+         connector_instance_id, owner_subject_id, connector_id, display_name, status,
+         source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+       ) VALUES($1, $2, $3, $4, 'active', 'account', $1, '{}'::jsonb, $5, $5, NULL)`,
+      [connectorInstanceId, OWNER, connectorId, "PG conditional summary", NOW]
+    );
+    await rebuildConnectorSummaryEvidence();
+    await rebuildConnectorListSummaryTerminalProjectionPage(null, [connectorInstanceId]);
+    const initial = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(initial.state, "current");
+    const initialPayload = await postgresQuery<{ list_summary_projection_json: unknown }>(
+      "SELECT list_summary_projection_json FROM connector_summary_evidence WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.equal(initialPayload.rows.length, 1);
+
+    await postgresQuery("UPDATE connector_summary_evidence SET state = 'stale' WHERE connector_instance_id = $1", [
+      connectorInstanceId,
+    ]);
+    await reconcileDirtyConnectorSummaryEvidence([connectorInstanceId]);
+    const afterNoop = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(afterNoop.state, "current");
+    const afterNoopPayload = await postgresQuery<{ list_summary_projection_json: unknown }>(
+      "SELECT list_summary_projection_json FROM connector_summary_evidence WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.deepEqual(
+      afterNoopPayload.rows[0]?.list_summary_projection_json,
+      initialPayload.rows[0]?.list_summary_projection_json
+    );
+
+    await postgresQuery("UPDATE connector_instances SET display_name = $1 WHERE connector_instance_id = $2", [
+      "PG changed display name",
+      connectorInstanceId,
+    ]);
+    await reconcileDirtyConnectorSummaryEvidence([connectorInstanceId]);
+    const afterMutation = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(afterMutation.state, "stale");
+    assert.equal(afterMutation.reason_code, "canonical_evidence_rebuilt");
+  } finally {
+    await cleanupPostgres(connectorId, connectorInstanceId);
+    await closePostgresStorage();
+  }
+});
+
 async function seedRetainedSizeStreamPostgres(
   instanceId: string,
   connectorId: string,
@@ -1570,6 +1636,11 @@ test("an idle no-op repair and sweep preserve a current projection", () =>
     const before = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
     assert.equal(before.state, "current");
     assert.ok(before.computed_at);
+    const serializedBefore = (
+      getDb()
+        .prepare("SELECT list_summary_projection_json FROM connector_summary_evidence WHERE connector_instance_id = ?")
+        .get(connectorInstanceId) as { list_summary_projection_json: string }
+    ).list_summary_projection_json;
 
     // Force only the generic evidence envelope stale. All projection-relevant
     // canonical values remain unchanged, so the ordinary repair is a no-op
@@ -1587,6 +1658,16 @@ test("an idle no-op repair and sweep preserve a current projection", () =>
     const afterRepair = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
     assert.equal(afterRepair.state, "current");
     assert.equal(afterRepair.computed_at, before.computed_at);
+    assert.equal(
+      (
+        getDb()
+          .prepare(
+            "SELECT list_summary_projection_json FROM connector_summary_evidence WHERE connector_instance_id = ?"
+          )
+          .get(connectorInstanceId) as { list_summary_projection_json: string }
+      ).list_summary_projection_json,
+      serializedBefore
+    );
 
     await runBoundedSummaryEvidenceSweep({
       maxDurationMs: 60_000,
@@ -1602,6 +1683,41 @@ test("an idle no-op repair and sweep preserve a current projection", () =>
     const afterSweep = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
     assert.equal(afterSweep.state, "current");
     assert.equal(afterSweep.computed_at, before.computed_at);
+    assert.equal(
+      (
+        getDb()
+          .prepare(
+            "SELECT list_summary_projection_json FROM connector_summary_evidence WHERE connector_instance_id = ?"
+          )
+          .get(connectorInstanceId) as { list_summary_projection_json: string }
+      ).list_summary_projection_json,
+      serializedBefore
+    );
+  }));
+
+test("a projection-relevant canonical repair invalidates a current projection", () =>
+  withTempDb(async () => {
+    const connectorId = "terminal_projection_relevant_mutation";
+    const connectorInstanceId = "cin_terminal_projection_relevant_mutation";
+    seedInstanceSqlite({ connectorId, connectorInstanceId });
+    seedRetainedSizeConnectionSqlite({ connectorId, connectorInstanceId });
+    getDb()
+      .prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?")
+      .run(
+        JSON.stringify({ connector_id: connectorId, streams: [{ name: "items", primary_key: ["id"] }] }),
+        connectorId
+      );
+    await rebuildConnectorSummaryEvidence();
+    await rebuildConnectorListSummaryTerminalProjectionPage(null, [connectorInstanceId]);
+    assert.equal((await getConnectorListSummaryTerminalProjection(connectorInstanceId)).state, "current");
+
+    getDb()
+      .prepare("UPDATE connector_instances SET display_name = ? WHERE connector_instance_id = ?")
+      .run("changed display name", connectorInstanceId);
+    await reconcileDirtyConnectorSummaryEvidence([connectorInstanceId]);
+    const invalidated = await getConnectorListSummaryTerminalProjection(connectorInstanceId);
+    assert.equal(invalidated.state, "stale");
+    assert.equal(invalidated.reason_code, "canonical_evidence_rebuilt");
   }));
 
 test("bounded maintenance resumes after an expected projection CAS race", () =>
@@ -1662,4 +1778,39 @@ test("bounded maintenance resumes after an expected projection CAS race", () =>
     const second = await runSweep();
     assert.equal(second.incomplete, false);
     assert.equal((await getConnectorListSummaryTerminalProjection(connectorInstanceId)).state, "current");
+  }));
+
+test("bounded maintenance propagates unexpected publication errors", () =>
+  withTempDb(async () => {
+    const connectorId = "terminal_projection_unexpected_error";
+    const connectorInstanceId = "cin_terminal_projection_unexpected_error";
+    seedInstanceSqlite({ connectorId, connectorInstanceId });
+    seedRetainedSizeConnectionSqlite({ connectorId, connectorInstanceId });
+    getDb()
+      .prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?")
+      .run(
+        JSON.stringify({ connector_id: connectorId, streams: [{ name: "items", primary_key: ["id"] }] }),
+        connectorId
+      );
+    await rebuildConnectorSummaryEvidence();
+    await rebuildConnectorListSummaryTerminalProjectionPage(null, [connectorInstanceId]);
+    getDb()
+      .prepare(
+        `UPDATE connector_summary_evidence
+            SET list_summary_projection_state = 'stale',
+                list_summary_projection_reason_code = 'canonical_evidence_changed'
+          WHERE connector_instance_id = ?`
+      )
+      .run(connectorInstanceId);
+
+    await assert.rejects(
+      runBoundedSummaryEvidenceSweep({
+        maxDurationMs: 60_000,
+        onPageConverged: () => {
+          throw new Error("unexpected publication failure");
+        },
+        pageSize: 1,
+      }),
+      UNEXPECTED_PUBLICATION_FAILURE
+    );
   }));
