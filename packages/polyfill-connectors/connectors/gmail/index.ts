@@ -386,39 +386,25 @@ export function formatAttachmentBackfillSummary(summary: AttachmentBackfillSumma
  *
  * Every attachment decoded from a message's BODYSTRUCTURE during the run is
  * a key we attempted to hydrate, so it lands in `requiredKeys` (the
- * denominator). Each attempted hydration then lands in exactly one outcome
- * bucket by its `hydration_status`:
- *   - `hydrated`  → `hydratedKeys` (the numerator: blob bytes committed).
- *   - `failed`    → `gapKeys` (a retryable detail gap to re-attempt next run).
- *   - `too_large` → `optionalSkipKeys` (a permanent, by-policy skip — NOT a
- *                   gap, because the next run will skip it again on the same
- *                   size cap; counting it as a gap would falsely report the
- *                   stream as never-complete).
- *
- * This is the real `considered` axis the progress-evidence contract asks for:
- * the count is observed from the run, never inferred. Streams without an
- * attempt-per-key denominator (threads, labels, message_bodies) emit no
- * coverage rather than a fabricated one.
+ * denominator). Each attempt lands in exactly one outcome by `hydration_status`:
+ *   - `hydrated` → `hydratedKeys` (the numerator: blob bytes committed).
+ *   - `failed`   → `gapKeys` (a retryable detail gap to re-attempt next run).
+ *   - `too_large` or `deferred` → unaccounted (required denominator only).
  */
 export interface AttachmentDetailCoverage {
   /**
    * Failed attachment records, retained so the run can emit one matching
-   * DETAIL_GAP per `gapKeys` entry. The host commit-gate credits a missing
-   * required key only when it is hydrated, optional-skipped, or backed by a
-   * durable pending DETAIL_GAP — `gap_keys` alone do not satisfy it. Each
-   * record's `id` is exactly the value that landed in `gapKeys`, keeping the
-   * gap's `record_key` and the coverage key a single source of truth.
+   * DETAIL_GAP per `gapKeys` entry.
    */
   failedRecords: AttachmentRecord[];
   gapKeys: string[];
   hydratedKeys: string[];
-  optionalSkipKeys: string[];
   requiredKeys: string[];
 }
 
 /** Fresh, empty accumulator for one attachments detail pass. */
 export function makeAttachmentDetailCoverage(): AttachmentDetailCoverage {
-  return { failedRecords: [], gapKeys: [], hydratedKeys: [], optionalSkipKeys: [], requiredKeys: [] };
+  return { failedRecords: [], gapKeys: [], hydratedKeys: [], requiredKeys: [] };
 }
 
 /**
@@ -435,16 +421,13 @@ export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, rec
       return;
     case "failed":
       coverage.gapKeys.push(record.id);
-      // Retain the record so a matching DETAIL_GAP is emitted for this key.
-      // `gap_keys` on DETAIL_COVERAGE are not enough on their own: the host
-      // commit-gate requires a durable pending DETAIL_GAP to credit the key.
       coverage.failedRecords.push(record);
       return;
     case "too_large":
-      coverage.optionalSkipKeys.push(record.id);
-      return;
-    default:
-      // `deferred`: considered but not hydrated this run; denominator only.
+    case "deferred":
+      // Unaccounted: required-only outcomes that stay in denominator but no
+      // outcome bucket. too_large is a deployment cap (may change); deferred is
+      // not attempted this run. Neither justifies permanent skip or gap claim.
       return;
   }
 }
@@ -468,9 +451,8 @@ export function buildAttachmentDetailCoverageMessage(coverage: AttachmentDetailC
     requiredKeys: coverage.requiredKeys,
     hydratedKeys: coverage.hydratedKeys,
     gapKeys: coverage.gapKeys,
-    optionalSkipKeys: coverage.optionalSkipKeys,
     considered: coverage.requiredKeys.length,
-    covered: coverage.hydratedKeys.length + coverage.optionalSkipKeys.length,
+    covered: coverage.hydratedKeys.length,
   });
 }
 
@@ -605,17 +587,9 @@ async function emitAttachmentRecords(
       recordAttachmentCoverage(deps.attachmentCoverage, hydrated);
     }
     const emitted = await deps.emitRecord("attachments", { ...hydrated });
-    // `emitted` only proves the record landed, not that hydration succeeded —
-    // a `failed` (and `deferred`) attachment still emits a record so the
-    // coverage denominator is honest. Only `hydrated` (a real blob fill) may
-    // acknowledge a served gap as recovered. `too_large` is deliberately
-    // excluded even though the commit-gate already treats it as covered via
-    // `optionalSkipKeys`: it is a permanent by-policy skip, never the subject
-    // of a durable DETAIL_GAP in the first place (gaps are only ever created
-    // for `failed`, see `emitAttachmentDetailGaps`), so there is nothing to
-    // recover — the pre-existing pending row (from an earlier `failed`
-    // attempt, before a size cap started applying) is already harmless and
-    // left to age/terminalize on its own.
+    // Only `hydrated` may acknowledge a served gap as recovered. Unaccounted
+    // statuses (too_large, deferred) have no durable DETAIL_GAP, so there is
+    // nothing to recover.
     if (!emitted || hydrated.hydration_status !== "hydrated") {
       continue;
     }

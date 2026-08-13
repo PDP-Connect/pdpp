@@ -42,7 +42,7 @@ import type {
   MessageStructureObject,
 } from "imapflow";
 import type { DetailGapStartEntry } from "../../src/connector-runtime.ts";
-import { buildDetailCoverageMessage, buildFullScanCoverageMessage } from "../../src/connector-runtime.ts";
+import { buildFullScanCoverageMessage } from "../../src/connector-runtime.ts";
 import { ReferenceBlobUploadFailure, runtimeBlobUploadAvailable } from "../../src/reference-blob-uploader.ts";
 import { type EmittedRecord, makeRecordingEmit, type RecordedEvent } from "../../src/test-harness.ts";
 import {
@@ -4005,19 +4005,10 @@ test("recordAttachmentCoverage: routes each hydration status into the honest buc
   recordAttachmentCoverage(coverage, { ...base, id: "c:1", hydration_status: "too_large" });
   recordAttachmentCoverage(coverage, { ...base, id: "d:1", hydration_status: "deferred" });
 
-  // Every attempt counts toward the denominator.
   assert.deepEqual(coverage.requiredKeys, ["a:1", "b:1", "c:1", "d:1"]);
-  // hydrated → numerator; failed → retryable gap; too_large → permanent skip.
   assert.deepEqual(coverage.hydratedKeys, ["a:1"]);
   assert.deepEqual(coverage.gapKeys, ["b:1"]);
-  assert.deepEqual(coverage.optionalSkipKeys, ["c:1"]);
-  // `deferred` is considered-but-not-attempted: denominator only, no outcome.
-  assert.ok(!coverage.hydratedKeys.includes("d:1"));
-  assert.ok(!coverage.gapKeys.includes("d:1"));
-  assert.ok(!coverage.optionalSkipKeys.includes("d:1"));
-  // The failed record is retained so a matching DETAIL_GAP can be emitted; its
-  // id is exactly the gap_keys entry, keeping the gap's record_key and the
-  // coverage key a single source of truth. Only `failed` is retained.
+  // too_large and deferred stay required, unaccounted (not in hydrated/gap).
   assert.deepEqual(
     coverage.failedRecords.map((r) => r.id),
     ["b:1"]
@@ -4131,7 +4122,6 @@ test("processMessage: records an attempted attachment into the coverage accumula
   assert.deepEqual(coverage.requiredKeys, ["gmmsgid-1111:2"]);
   assert.deepEqual(coverage.hydratedKeys, ["gmmsgid-1111:2"]);
   assert.deepEqual(coverage.gapKeys, []);
-  assert.deepEqual(coverage.optionalSkipKeys, []);
 });
 
 test("processMessage: leaves no coverage trace and still emits when no accumulator is wired", async () => {
@@ -4153,11 +4143,11 @@ test("processMessage: leaves no coverage trace and still emits when no accumulat
   );
 });
 
-test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and skip outcomes", async () => {
+test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and unaccounted outcomes", async () => {
   const coverage = makeAttachmentDetailCoverage();
   const { deps, emitted } = makeHarness({
     attachmentCoverage: coverage,
-    // ok:1 hydrates, bad:1 fails (retryable gap), big:1 is too_large (policy skip).
+    // ok:1 hydrates, bad:1 fails (gap), big:1 is too_large (unaccounted).
     hydrateAttachment: statusStampingHydrator({
       "ok:1": "hydrated",
       "bad:1": "failed",
@@ -4174,31 +4164,15 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and sk
     makeSingleAttachmentMsg("big"),
   ]);
 
-  // Three attachments attempted → three keys in the denominator.
   assert.deepEqual(coverage.requiredKeys, ["ok:1", "bad:1", "big:1"]);
   assert.deepEqual(coverage.hydratedKeys, ["ok:1"]);
-  // failed is a retryable gap; too_large is a permanent by-policy skip.
   assert.deepEqual(coverage.gapKeys, ["bad:1"]);
-  assert.deepEqual(coverage.optionalSkipKeys, ["big:1"]);
-
-  // Sanity: every attachment record still emitted (coverage is reference-only,
-  // it does not gate record emission).
+  // too_large stays required, unaccounted.
   assert.equal(emitted.filter((r) => r.stream === "attachments").length, 3);
 
-  // The honest DETAIL_COVERAGE wire shape the connector builds from this
-  // accumulator: required = denominator, hydrated = numerator, gaps retryable,
-  // skips by-policy, anchored to the `messages` list cursor. reference_only.
+  // DETAIL_COVERAGE: covered = hydrated only (no unaccounted keys claimed).
   assert.deepEqual(
-    buildDetailCoverageMessage({
-      stream: "attachments",
-      stateStream: "messages",
-      requiredKeys: coverage.requiredKeys,
-      hydratedKeys: coverage.hydratedKeys,
-      gapKeys: coverage.gapKeys,
-      optionalSkipKeys: coverage.optionalSkipKeys,
-      considered: coverage.requiredKeys.length,
-      covered: coverage.hydratedKeys.length + coverage.optionalSkipKeys.length,
-    }),
+    buildAttachmentDetailCoverageMessage(coverage),
     {
       type: "DETAIL_COVERAGE",
       reference_only: true,
@@ -4207,9 +4181,8 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and sk
       required_keys: ["ok:1", "bad:1", "big:1"],
       hydrated_keys: ["ok:1"],
       gap_keys: ["bad:1"],
-      optional_skip_keys: ["big:1"],
       considered: 3,
-      covered: 2,
+      covered: 1,
     }
   );
 
