@@ -44,6 +44,9 @@
       ]
     }
   },
+  "reason_display_messages": {
+    "steam_optional_resource_unavailable": "Steam did not make this optional account data available"
+  },
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
