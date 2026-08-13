@@ -319,6 +319,36 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
       undefined
     );
   };
+  const getPendingConsentStatus = async (requestUri: string): Promise<string | null> => {
+    const deviceCode = parsePendingConsentRequestUri(requestUri);
+    if (!deviceCode) {
+      return null;
+    }
+    if (isPostgresStorageBackend()) {
+      const result = await postgresQuery<{ status?: string | null }>(
+        "SELECT status FROM pending_consents WHERE device_code = $1",
+        [deviceCode]
+      );
+      return result.rows[0]?.status ?? null;
+    }
+    return (
+      getOne<{ status?: string | null }>(referenceQueries.authPendingConsentsGetByDeviceCode, [deviceCode])?.status ??
+      null
+    );
+  };
+  const markAttemptDenied = async (requestUri: string): Promise<void> => {
+    const completedAt = new Date().toISOString();
+    if (isPostgresStorageBackend()) {
+      await postgresQuery(
+        `UPDATE agent_connect_attempts
+            SET status = 'denied', completed_at = $2
+          WHERE request_uri = $1 AND status = 'pending'`,
+        [requestUri, completedAt]
+      );
+      return;
+    }
+    exec(referenceQueries.authAgentConnectAttemptsMarkFailed, ["denied", completedAt, requestUri]);
+  };
   const recoverApprovedAttempt = async (attempt: AgentConnectAttempt, now: number): Promise<AgentConnectAttempt> => {
     if (attempt.status !== "pending" || attempt.expiresAt <= now) {
       return attempt;
@@ -332,6 +362,21 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
       return attempt;
     }
     await markAttemptApproved(attempt.requestUri, recovered.token_id, grant, recovered.grant_id ?? null);
+    return (await getRow(attempt.id)) ?? attempt;
+  };
+  const reconcilePendingConsent = async (attempt: AgentConnectAttempt, now: number): Promise<AgentConnectAttempt> => {
+    if (attempt.status !== "pending") {
+      return attempt;
+    }
+    const consentStatus = await getPendingConsentStatus(attempt.requestUri);
+    if (consentStatus === "approved") {
+      return recoverApprovedAttempt(attempt, now);
+    }
+    if (consentStatus === "denied") {
+      await markAttemptDenied(attempt.requestUri);
+    } else if (consentStatus === "expired") {
+      await markAttemptExpired(attempt.id);
+    }
     return (await getRow(attempt.id)) ?? attempt;
   };
   const markAttemptExpired = async (id: string): Promise<boolean> => {
@@ -665,7 +710,7 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
       if (!(attempt?.pollingCodeHash && pollingCodeMatches(attempt.pollingCodeHash, pollingCode))) {
         return { outcome: "missing" };
       }
-      attempt = await recoverApprovedAttempt(attempt, now);
+      attempt = await reconcilePendingConsent(attempt, now);
       if (attempt.expiresAt <= now) {
         await cleanupExpiredAttempt(attempt, now);
         return { outcome: "failed", status: "expired" };

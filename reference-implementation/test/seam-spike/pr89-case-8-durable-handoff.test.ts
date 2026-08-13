@@ -126,6 +126,21 @@ test("agent-connect: denial response is bounded", async () => {
   await assertFocusedTestsPass("test/agent-cli.test.ts", ["agent-connect: owner denial returns bounded access_denied"]);
 });
 
+test("agent-connect: denial is durable across approval_id and completion failure", async () => {
+  await assertFocusedTestsPass("test/agent-cli.test.ts", [
+    "agent-connect: approval_id denial projects to polling",
+    "agent-connect: denial completion failure is reconciled during polling",
+    "agent-connect: expired consent projects to bounded expired_token polling",
+  ]);
+});
+
+test("agent-connect: live PostgreSQL denial is durable across approval_id and restart", async () => {
+  assert.ok(process.env.PDPP_TEST_POSTGRES_URL, "live PostgreSQL is required");
+  await assertFocusedTestsPass("test/agent-cli.test.ts", [
+    "agent-connect: live Postgres denial projects and recovers after completion failure",
+  ]);
+});
+
 test("agent-cli: crash-completed expiry and prune revoke committed approvals", async () => {
   await assertFocusedTestsPass("test/agent-cli.test.ts", [
     "agent-connect: crash-completed approval that expires before poll revokes committed token",

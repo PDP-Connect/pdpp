@@ -236,6 +236,28 @@ function sqliteCommittedTokenForRequestUri(requestUri: string): string {
   return row.token_id;
 }
 
+function sqliteApprovalIdForRequestUri(requestUri: string): string {
+  const deviceCode = parsePendingConsentRequestUri(requestUri);
+  assert.ok(deviceCode, "request_uri should parse to device code");
+  const row = getOne<{ approval_id?: string | null }>(referenceQueries.authPendingConsentsGetByDeviceCode, [
+    deviceCode,
+  ]);
+  assert.ok(row?.approval_id, "pending consent should expose approval_id");
+  return row.approval_id;
+}
+
+async function postgresApprovalIdForRequestUri(requestUri: string): Promise<string> {
+  const deviceCode = parsePendingConsentRequestUri(requestUri);
+  assert.ok(deviceCode, "request_uri should parse to device code");
+  const result = await postgresQuery<{ approval_id?: string | null }>(
+    "SELECT approval_id FROM pending_consents WHERE device_code = $1",
+    [deviceCode]
+  );
+  const approvalId = result.rows[0]?.approval_id;
+  assert.ok(approvalId, "pending consent should expose approval_id");
+  return approvalId;
+}
+
 async function postgresCommittedTokenForRequestUri(requestUri: string): Promise<string> {
   const deviceCode = parsePendingConsentRequestUri(requestUri);
   assert.ok(deviceCode, "request_uri should parse to device code");
@@ -1827,6 +1849,185 @@ test("agent-connect: owner denial returns bounded access_denied", async () => {
   } finally {
     await closeServer(server);
   }
+});
+
+test("agent-connect: approval_id denial projects to polling", async () => {
+  const { server, asUrl } = await spinUpServer();
+  try {
+    const { staged, start } = await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Approval ID Deny" });
+    const approvalId = sqliteApprovalIdForRequestUri(staged.request_uri);
+    const denyResp = await fetch(`${asUrl}/consent/deny`, {
+      body: new URLSearchParams({ approval_id: approvalId }).toString(),
+      headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(denyResp.status, 200);
+    const deniedPoll = await pollAgentConnectToken({
+      pollingCode: start.polling_code,
+      tokenUrl: start.token_url,
+    });
+    assert.equal(deniedPoll.resp.status, 403);
+    assert.equal(errorCode(deniedPoll.body), "access_denied");
+    assert.doesNotMatch(JSON.stringify(deniedPoll.body), DENIED_POLL_SECRET_PATTERN);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("agent-connect: denial completion failure is reconciled during polling", async () => {
+  const dbPath = join(makeTemporaryDir("pdpp-agent-connect-denial-restart-"), "reference.sqlite");
+  const first = await spinUpServer({ dbPath });
+  let restarted: Awaited<ReturnType<typeof spinUpServer>> | null = null;
+  try {
+    const { staged, start } = await createAgentConnectRequest({
+      asUrl: first.asUrl,
+      clientName: "Agent Connect Deny Recovery",
+    });
+    __setAgentConnectCompleteFailureForTest(() => {
+      throw new Error("denial completion seam crash");
+    });
+    try {
+      const denyResp = await fetch(`${first.asUrl}/consent/deny`, {
+        body: new URLSearchParams({ request_uri: staged.request_uri }).toString(),
+        headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+      assert.equal(denyResp.status, 500);
+    } finally {
+      __setAgentConnectCompleteFailureForTest(null);
+    }
+    const deviceCode = parsePendingConsentRequestUri(staged.request_uri);
+    assert.ok(deviceCode);
+    assert.equal(
+      getOne<{ token_id?: string | null }>(referenceQueries.authPendingConsentsGetByDeviceCode, [deviceCode])?.token_id,
+      null
+    );
+    await closeServer(first.server);
+    restarted = await spinUpServer({ dbPath });
+    const retryDeny = await fetch(`${restarted.asUrl}/consent/deny`, {
+      body: new URLSearchParams({ request_uri: staged.request_uri }).toString(),
+      headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(retryDeny.status, 404, "a committed denial is not duplicated after restart");
+    const deniedPoll = await pollAgentConnectToken({
+      pollingCode: start.polling_code,
+      tokenUrl: rewriteUrlOrigin(start.token_url, restarted.asUrl),
+    });
+    assert.equal(deniedPoll.resp.status, 403);
+    assert.equal(errorCode(deniedPoll.body), "access_denied");
+    assert.doesNotMatch(JSON.stringify(deniedPoll.body), DENIED_POLL_SECRET_PATTERN);
+  } finally {
+    __setAgentConnectCompleteFailureForTest(null);
+    if (restarted) {
+      await closeServer(restarted.server);
+    } else {
+      await closeServer(first.server);
+    }
+  }
+});
+
+test("agent-connect: expired consent projects to bounded expired_token polling", async () => {
+  const { server, asUrl } = await spinUpServer();
+  try {
+    const { staged, start } = await createAgentConnectRequest({ asUrl, clientName: "Agent Connect Consent Expiry" });
+    const deviceCode = parsePendingConsentRequestUri(staged.request_uri);
+    assert.ok(deviceCode);
+    dbExec(referenceQueries.authPendingConsentsMarkExpired, [deviceCode]);
+    const expiredPoll = await pollAgentConnectToken({
+      pollingCode: start.polling_code,
+      tokenUrl: start.token_url,
+    });
+    assert.equal(expiredPoll.resp.status, 400);
+    assert.equal(errorCode(expiredPoll.body), "expired_token");
+    assert.doesNotMatch(JSON.stringify(expiredPoll.body), EXPIRED_POLL_SECRET_PATTERN);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("agent-connect: live Postgres denial projects and recovers after completion failure", async (t) => {
+  const baseUrl = dedicatedPostgresTestUrl(
+    process.env.PDPP_TEST_POSTGRES_URL ?? "postgresql://postgres:postgres@127.0.0.1:55447/pdpp_test"
+  );
+  if (!baseUrl) {
+    t.skip("PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener");
+    return;
+  }
+
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: baseUrl,
+      databaseName: "pdpp_test_agent_connect_denial_recovery",
+    },
+    async (databaseUrl) => {
+      const first = await spinUpServer({ databaseUrl, storageBackend: "postgres" });
+      let restarted: Awaited<ReturnType<typeof spinUpServer>> | null = null;
+      try {
+        const approvalCase = await createAgentConnectRequest({
+          asUrl: first.asUrl,
+          clientName: "Agent Connect PG Approval ID Deny",
+        });
+        const approvalId = await postgresApprovalIdForRequestUri(approvalCase.staged.request_uri);
+        const approvalDeny = await fetch(`${first.asUrl}/consent/deny`, {
+          body: new URLSearchParams({ approval_id: approvalId }).toString(),
+          headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+          method: "POST",
+        });
+        assert.equal(approvalDeny.status, 200);
+        const approvalPoll = await pollAgentConnectToken({
+          pollingCode: approvalCase.start.polling_code,
+          tokenUrl: approvalCase.start.token_url,
+        });
+        assert.equal(approvalPoll.resp.status, 403);
+        assert.equal(errorCode(approvalPoll.body), "access_denied");
+        assert.doesNotMatch(JSON.stringify(approvalPoll.body), DENIED_POLL_SECRET_PATTERN);
+
+        const recoveryCase = await createAgentConnectRequest({
+          asUrl: first.asUrl,
+          clientName: "Agent Connect PG Denial Recovery",
+        });
+        __setAgentConnectCompleteFailureForTest(() => {
+          throw new Error("denial completion seam crash");
+        });
+        try {
+          const failedDeny = await fetch(`${first.asUrl}/consent/deny`, {
+            body: new URLSearchParams({ request_uri: recoveryCase.staged.request_uri }).toString(),
+            headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+            method: "POST",
+          });
+          assert.equal(failedDeny.status, 500);
+        } finally {
+          __setAgentConnectCompleteFailureForTest(null);
+        }
+        await closeServer(first.server);
+        await closePostgresStorage();
+        restarted = await spinUpServer({ databaseUrl, storageBackend: "postgres" });
+        const retryDeny = await fetch(`${restarted.asUrl}/consent/deny`, {
+          body: new URLSearchParams({ request_uri: recoveryCase.staged.request_uri }).toString(),
+          headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+          method: "POST",
+        });
+        assert.equal(retryDeny.status, 404);
+        const recoveryPoll = await pollAgentConnectToken({
+          pollingCode: recoveryCase.start.polling_code,
+          tokenUrl: rewriteUrlOrigin(recoveryCase.start.token_url, restarted.asUrl),
+        });
+        assert.equal(recoveryPoll.resp.status, 403);
+        assert.equal(errorCode(recoveryPoll.body), "access_denied");
+        assert.doesNotMatch(JSON.stringify(recoveryPoll.body), DENIED_POLL_SECRET_PATTERN);
+      } finally {
+        __setAgentConnectCompleteFailureForTest(null);
+        if (restarted) {
+          await closeServer(restarted.server);
+        } else {
+          await closeServer(first.server);
+        }
+        await closePostgresStorage();
+      }
+    }
+  );
 });
 
 test("agent-connect: expired polling handle returns bounded expired_token", async () => {

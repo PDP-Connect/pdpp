@@ -104,6 +104,8 @@ export interface AsConsentDecisionApproveSuccessOutcome {
 export interface AsConsentDecisionDenySuccessOutcome {
   readonly action: "deny";
   readonly outcome: "success";
+  /** Canonical request URI, including when the caller supplied approval_id. */
+  readonly requestUri: string;
   readonly traceContext: { request_id?: string | null; trace_id?: string | null } | null;
 }
 
@@ -182,6 +184,7 @@ export async function executeAsConsentDecision(
   return {
     action: "deny",
     outcome: "success",
+    requestUri,
     traceContext,
   };
 }

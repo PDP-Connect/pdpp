@@ -884,11 +884,11 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
         if (outcome.traceContext?.trace_id) {
           ctx.setReferenceTraceId(res, outcome.traceContext.trace_id);
         }
-        await ctx.agentConnectAttemptStore.fail(
-          // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-          (req.body?.request_uri || req.query?.request_uri) as string | undefined,
-          "denied"
-        );
+        if (outcome.action !== "deny") {
+          ctx.pdppError(res, 500, "server_error", "Consent denial returned an invalid outcome");
+          return;
+        }
+        await ctx.agentConnectAttemptStore.fail(outcome.requestUri, "denied");
         res.send(
           ctx.consentUi.renderHostedDocument({
             body: [
