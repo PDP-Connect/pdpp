@@ -1,4 +1,29 @@
 {
+  "server/source-declaration-trust/live-retrieval.ts": {
+    "allowed_mass": 6,
+    "reason": "Discovery RI (2026-08-11): this is the production send-time DNS-rebinding boundary. It must reject an invalid address set, create a fresh pinned dispatcher per hop, bound the streamed body, and close the dispatcher on fetch failure, EOF, cancellation, and stream error. Those branches are the transport ownership contract proven by live TLS, redirect, late-response, and byte-limit regressions.",
+    "date": "2026-08-11"
+  },
+  "server/source-declaration-trust/retrieval.ts": {
+    "allowed_mass": 34,
+    "reason": "Discovery RI (2026-08-11): bounded declaration retrieval must independently distinguish URL policy, fresh per-hop DNS/address approval, manual redirect limits, absolute deadline, streamed byte cap, late-response cleanup, schema validation, and source identity. These are the fail-closed trust predicates; collapsing them would conflate security outcomes or leave an owned response transport open. Deterministic retrieval and real pinned-socket regressions cover the paths.",
+    "date": "2026-08-11"
+  },
+  "server/source-declaration-trust/revision-store.ts": {
+    "allowed_mass": 4,
+    "reason": "Discovery RI (2026-08-11): immutable accepted-revision storage must canonicalize parsed content, distinguish first acceptance from identical replay, and reject equivocation for the same authority/source/opaque-version key on both SQLite and PostgreSQL. The small branch set is the durable trust invariant proven by backend parity tests.",
+    "date": "2026-08-11"
+  },
+  "server/metadata.ts": {
+    "allowed_mass": 40,
+    "reason": "Discovery RI (2026-08-11): provider-native declaration-pointer emission must validate the exact protected-resource binding before it advertises the pointer. The added conditional keeps this native-only trust assertion at the metadata wire boundary; moving it to a generic helper or caller would either permit invalid metadata emission or split the request resource from the declaration-pointer contract. Focused metadata route coverage proves both native emission and hosted-MCP omission.",
+    "date": "2026-08-11"
+  },
+  "server/routes/root-and-discovery.ts": {
+    "allowed_mass": 29,
+    "reason": "Discovery RI (2026-08-11): the protected-resource route must supply the configured declaration pointer only for provider-native metadata and omit it from the separate hosted-MCP resource. The two explicit route branches preserve resource-scoped advertisement rather than broadening the pointer to every metadata document. Focused native-route coverage proves the distinction.",
+    "date": "2026-08-11"
+  },
   "server/routes/run-interaction.ts": {
     "allowed_mass": 29,
     "reason": "Direct-CDP terminal-barrier closure (2026-08-05): run-final cleanup must invoke the presentation terminal barrier for every run, including direct-CDP runs without a managed n.eko lease, before clearing the run nonce. The added hook is the single lifecycle seam that prevents a connector finalization path from skipping target purge; extracting it would obscure the required ordering.",
@@ -120,8 +145,8 @@
     "date": "2026-07-30"
   },
   "server/auth.ts": {
-    "allowed_mass": 441,
-    "reason": "PR114 approval-review authority (2026-08-12): single and batch consent now have an explicit two-phase state machine. The authorization server must distinguish unreviewed, reviewed, stale, malformed, terminal, and transaction-time-ineligible states; bind a canonical artifact digest and revision; and issue the pending-row CAS, grants, tokens, packages, and events atomically on both SQLite and PostgreSQL. These branches are the security boundary that prevents post-review widening and partial issuance, not extraction opportunities: artifact construction/parsing remains separate from persistence, while the backend transaction adapters must retain explicit parity and failure ordering. Focused exact-artifact HTML/JSON, stale-revision, concurrent approval, injected rollback, SQLite, and live-PostgreSQL regressions prove the states.",
+    "allowed_mass": 467,
+    "reason": "PR114 approval-review authority and PR116 accepted-revision handoff (2026-08-12): single and batch consent have an explicit two-phase state machine. The authorization server distinguishes unreviewed, reviewed, stale, malformed, terminal, and transaction-time-ineligible states; binds a canonical artifact digest and revision; and issues the pending-row CAS, grants, tokens, packages, and events atomically on SQLite and PostgreSQL. PR116 adds a fail-closed provider-native trust boundary: exact accepted-revision lookup, separate verified resource authority and unverified publisher attribution, explicit local-operator provisioning, source-bound fulfillment, and retained evidence validation. These branches prevent authority substitution, post-review widening, and partial issuance. Artifact construction, trust lookup, and persistence remain separate, while backend transaction adapters retain explicit parity and failure ordering. Focused HTTP PAR/review/HTML/approval, stale/tampered evidence, pointer drift/offline retrieval, SQLite, and live-PostgreSQL regressions prove the states.",
     "date": "2026-08-12"
   },
   "runtime/detail-gap-paging.ts": {

@@ -421,6 +421,7 @@ import {
   supportsDeviceSemanticAttemptDeadline,
 } from "./search-semantic.ts";
 import { requireSourceDeclaration } from "./source-declaration.ts";
+import type { AcceptedSourceDeclarationRevisionStore } from "./source-declaration-trust/revision-store.ts";
 import {
   createPostgresAcquisitionBatchStore,
   createSqliteAcquisitionBatchStore,
@@ -634,6 +635,12 @@ interface MutationContext {
 
 interface ServerOpts {
   acceptedCollectorProtocolVersions?: readonly string[];
+  /** Internal onboarding handoff. This value is never accepted from the PAR request. */
+  acceptedProviderNativeRevision?: {
+    acceptedRevisionReference: string;
+    revisionStore: AcceptedSourceDeclarationRevisionStore;
+    sourceId: string;
+  } | null;
   agentConnectTtlMs?: number;
   agentDiscoveryOrigin?: string | null;
   asIssuer?: string | null;
@@ -655,6 +662,7 @@ interface ServerOpts {
   connectorInstanceId?: string;
   connectorPathResolver?: ((connectorId: string, manifest?: ConnectorManifest) => string | null) | null;
   controller?: Controller | null;
+  databaseUrl?: string;
   dbPath?: string;
   deviceExporterStore?: unknown;
   dynamicClientRegistrationInitialAccessTokens?: readonly string[];
@@ -717,10 +725,12 @@ interface ServerOpts {
   semanticRetrievalBackend?: unknown;
   semanticRetrievalCapability?: unknown;
   semanticRetrievalSupported?: boolean;
+  sourceDeclarationUri?: string | null;
   sqliteBusyTimeoutMs?: number;
   startClientEventDeliveryWorker?: boolean;
   staticSecretAutoResume?: boolean;
   staticSecretCredentialProber?: unknown;
+  storageBackend?: "postgres" | "sqlite";
   streamingClearTimeout?: ((handle: unknown) => void) | null;
   streamingCompanionFactory?: StreamingCompanionFactory | null;
   streamingLogger?: LoggerLike | null;
@@ -732,6 +742,32 @@ interface ServerOpts {
   trustedMetadataHosts?: string | null;
   webPushConfig?: WebPushConfig | null;
   webPushSubscriptionStore?: WebPushSubscriptionStore | null;
+}
+
+function requestSelectsSource(body: unknown, sourceId: string): boolean {
+  if (!(body && typeof body === "object" && "authorization_details" in body)) {
+    return false;
+  }
+  const details = (body as { authorization_details?: unknown }).authorization_details;
+  return (
+    Array.isArray(details) &&
+    details.some(
+      (detail) =>
+        detail !== null &&
+        typeof detail === "object" &&
+        "source" in detail &&
+        (detail as { source?: { id?: unknown } }).source?.id === sourceId
+    )
+  );
+}
+
+function configuredNativeSourceId(opts: ServerOpts): string | null {
+  const declaration = opts.nativeManifest?.source_declaration;
+  if (!(declaration && typeof declaration === "object" && "source" in declaration)) {
+    return null;
+  }
+  const { source } = declaration as { source?: { id?: unknown } };
+  return typeof source?.id === "string" && source.id ? source.id : null;
 }
 
 interface OwnerDeviceAuthStore {
@@ -5425,7 +5461,22 @@ export function buildAsApp(opts: ServerOpts = {}) {
     handleError,
     initiateGrant: (body: unknown, opts2: unknown) =>
       // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-      (consentStore as unknown as Record<string, (...args: unknown[]) => unknown>).initiateGrant?.(body, opts2),
+      (consentStore as unknown as Record<string, (...args: unknown[]) => unknown>).initiateGrant?.(body, {
+        ...(opts2 && typeof opts2 === "object" ? opts2 : {}),
+        ...(opts.acceptedProviderNativeRevision &&
+        requestSelectsSource(body, opts.acceptedProviderNativeRevision.sourceId)
+          ? {
+              acceptedRevisionReference: opts.acceptedProviderNativeRevision.acceptedRevisionReference,
+              acceptedRevisionStore: opts.acceptedProviderNativeRevision.revisionStore,
+              nativeManifestMode: "fulfillment_only",
+            }
+          : {}),
+        ...(!opts.acceptedProviderNativeRevision &&
+        configuredNativeSourceId(opts) &&
+        requestSelectsSource(body, configuredNativeSourceId(opts) as string)
+          ? { nativeManifestMode: "local_operator_provisioning" }
+          : {}),
+      }),
     nativeManifest: resolveNativeManifest(opts),
     resolveBaseUrl: (req: unknown) =>
       resolvePublicUrl(req as Parameters<typeof resolvePublicUrl>[0], explicitAsBaseUrl),
@@ -5866,6 +5917,7 @@ function buildRsApp(opts: ServerOpts = {}) {
       }) || null) as { primary: string; note?: string } | null;
     },
     resolveSiblingPublicUrl,
+    resolveSourceDeclarationUri: () => opts.sourceDeclarationUri ?? null,
     shouldUseDirectRequestOrigin,
     trustedMetadataHosts,
   };
@@ -6909,6 +6961,7 @@ export async function startServer(opts: ServerOpts = {}) {
 
   const asApp = buildAsApp({
     acceptedCollectorProtocolVersions: opts.acceptedCollectorProtocolVersions,
+    acceptedProviderNativeRevision: opts.acceptedProviderNativeRevision,
     agentConnectTtlMs: opts.agentConnectTtlMs,
     asIssuer: configuredAsIssuer,
     asPublicUrl: configuredAsPublicUrl,
@@ -7037,6 +7090,7 @@ export async function startServer(opts: ServerOpts = {}) {
     // configs reach both the route registration gate and the advertisement
     // builder.
     semanticRetrievalSupported: opts.semanticRetrievalSupported,
+    sourceDeclarationUri: opts.sourceDeclarationUri,
     trustedMetadataHosts,
   } as unknown as ServerOpts);
   const rsServer = await rsApp.listen(requestedRsPort, bindHost);

@@ -35,12 +35,34 @@
   well-known URI transformation including root-slash forms, and exact
   returned-resource mismatches.
 
-## Deferred implementation
+## Standalone reference implementation
 
-Reference-server metadata emission, retrieval, onboarding adapters,
-persistence, consent integration, local blocking, and lifecycle behavior are
-out of scope for this specification PR. Their implementation changes must
-consume this contract and add focused runtime, SQLite, and PostgreSQL tests.
+- [x] Emit a configured provider-native declaration pointer only in native
+  metadata, and reject an invalid pointer before response emission.
+- [x] Add credential-free, bounded declaration retrieval with injected
+  fetch/DNS/address/URL/schema-validation policy, per-hop fresh address
+  validation, manual redirects, and source-ID validation.
+- [x] Persist accepted revision content immutably by authority binding, source
+  ID, and opaque declaration version on SQLite and PostgreSQL; reject parsed
+  content equivocation without version ordering.
+- [x] Add deterministic retrieval, metadata, SQLite, and real PostgreSQL
+  parity coverage for this standalone boundary.
+
+Onboarding adapters, local blocking, and lifecycle behavior remain outside
+this standalone implementation slice.
+
+## Accepted revision consent handoff
+
+- [x] Resolve one internal source-bound accepted-revision reference from the
+  accepted store and retain its exact declaration in consent without refetch.
+- [x] Retain the accepted reference, resource authority, and separate
+  unverified publisher attribution in immutable review and audit evidence,
+  but not in resolved grant rights.
+- [x] Label direct provider-native configuration as local operator
+  provisioning and fail closed on missing, mismatched, stale, or tampered
+  accepted-revision evidence.
+- [x] Prove the HTTP PAR, review, HTML resume, approval, and audit path on
+  SQLite and live PostgreSQL, including pointer drift and offline retrieval.
 
 ## Validation
 

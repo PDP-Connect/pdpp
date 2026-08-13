@@ -17,6 +17,7 @@ import {
 const SOURCE = { id: "https://sources.example/core/github", kind: "connector" } as const;
 const INSTANCE_A = "opaque-github-account-a";
 const INSTANCE_B = "opaque-github-account-b";
+const NOT_DERIVABLE_RE = /not derivable/;
 
 function declaration() {
   return {
@@ -212,4 +213,36 @@ test("Core retained consent rejects malformed resolved streams and sensitivity w
         error instanceof CoreSourceAuthorizationError && error.code === "source.authorization_details_invalid"
     );
   }
+});
+
+test("Core retained consent survives declaration object-key reordering but not resolved array drift", () => {
+  const requestSelection = validateCoreSelectionRequest({
+    ...selection(),
+    source: SOURCE,
+    streams: [{ instance_ids: [INSTANCE_A], name: "issues" }],
+  });
+  const snapshot = createRetainedCoreConsentSnapshot({
+    declaration: declaration(),
+    selection: requestSelection,
+    source: SOURCE,
+    sourceSensitivity: "sensitive",
+  });
+  const roundTripped = JSON.parse(JSON.stringify(snapshot)) as typeof snapshot;
+  const [roundTrippedStream] = roundTripped.declaration.streams;
+  const properties = roundTrippedStream?.schema.properties;
+  assert.ok(properties);
+  assert.ok(roundTrippedStream);
+  roundTrippedStream.schema.properties = Object.fromEntries(Object.entries(properties).reverse());
+  assert.doesNotThrow(() =>
+    readRetainedCoreConsentSnapshot({ selection: requestSelection, snapshot: roundTripped, source: SOURCE })
+  );
+
+  const changedArray = structuredClone(roundTripped);
+  const [changedStream] = changedArray.resolved_streams;
+  assert.ok(changedStream);
+  changedStream.fields?.reverse();
+  assert.throws(
+    () => readRetainedCoreConsentSnapshot({ selection: requestSelection, snapshot: changedArray, source: SOURCE }),
+    NOT_DERIVABLE_RE
+  );
 });

@@ -1188,6 +1188,72 @@ const ReviewRetentionSchema = {
   oneOf: [GrantSchema.properties.retention, { type: "null" }],
 };
 
+const ReviewSourceDeclarationSchema = {
+  oneOf: [
+    {
+      additionalProperties: false,
+      properties: {
+        digest: NonEmptyStringSchema,
+        version: NonEmptyStringSchema,
+      },
+      required: ["digest", "version"],
+      type: "object",
+    },
+    {
+      additionalProperties: false,
+      properties: {
+        digest: NonEmptyStringSchema,
+        publisher_attribution: {
+          additionalProperties: false,
+          properties: {
+            id: NonEmptyStringSchema,
+            status: { const: "unverified" },
+          },
+          required: ["id", "status"],
+          type: "object",
+        },
+        resource_authority: {
+          additionalProperties: false,
+          properties: { status: { const: "local_operator_provisioned" } },
+          required: ["status"],
+          type: "object",
+        },
+        version: NonEmptyStringSchema,
+      },
+      required: ["digest", "publisher_attribution", "resource_authority", "version"],
+      type: "object",
+    },
+    {
+      additionalProperties: false,
+      properties: {
+        accepted_revision_reference: NonEmptyStringSchema,
+        digest: NonEmptyStringSchema,
+        publisher_attribution: {
+          additionalProperties: false,
+          properties: {
+            id: NonEmptyStringSchema,
+            status: { const: "unverified" },
+          },
+          required: ["id", "status"],
+          type: "object",
+        },
+        resource_authority: {
+          additionalProperties: false,
+          properties: {
+            authority_binding: NonEmptyStringSchema,
+            status: { const: "verified" },
+          },
+          required: ["authority_binding", "status"],
+          type: "object",
+        },
+        version: NonEmptyStringSchema,
+      },
+      required: ["accepted_revision_reference", "digest", "publisher_attribution", "resource_authority", "version"],
+      type: "object",
+    },
+  ],
+};
+
 const ReviewClientClaimsSchema = {
   oneOf: [
     {
@@ -1221,15 +1287,7 @@ const SingleApprovalReviewArtifactSchema = {
     retention: ReviewRetentionSchema,
     selection_preset: { type: ["string", "null"] },
     source: GrantSchema.properties.source,
-    source_declaration: {
-      additionalProperties: false,
-      properties: {
-        digest: NonEmptyStringSchema,
-        version: NonEmptyStringSchema,
-      },
-      required: ["digest", "version"],
-      type: "object",
-    },
+    source_declaration: ReviewSourceDeclarationSchema,
     subject: {
       additionalProperties: false,
       properties: { id: NonEmptyStringSchema },
@@ -1283,15 +1341,7 @@ const BatchApprovalReviewArtifactSchema = {
           retention: ReviewRetentionSchema,
           selection_preset: { type: ["string", "null"] },
           source: GrantSchema.properties.source,
-          source_declaration: {
-            additionalProperties: false,
-            properties: {
-              digest: NonEmptyStringSchema,
-              version: NonEmptyStringSchema,
-            },
-            required: ["digest", "version"],
-            type: "object",
-          },
+          source_declaration: ReviewSourceDeclarationSchema,
         },
         required: [
           "access_mode",

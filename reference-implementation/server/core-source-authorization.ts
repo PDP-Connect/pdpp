@@ -71,6 +71,24 @@ interface PrecollectedRecord {
   stream: string;
 }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
+      .join(",")}}`;
+  }
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) {
+    fail("Retained consent evidence must contain only JSON values");
+  }
+  return encoded;
+}
+
 const requireFromContract = createRequire(import.meta.resolve("@pdpp/reference-contract"));
 const Ajv2020 = requireFromContract("ajv/dist/2020.js") as new (options?: JsonObject) => AjvInstance;
 const addFormats = requireFromContract("ajv-formats") as (ajv: AjvInstance) => void;
@@ -159,7 +177,10 @@ function resolveFields(
   }
   const properties = isObject(stream.schema.properties) ? stream.schema.properties : {};
   if (!request.fields) {
-    const fields = Object.keys(properties);
+    // JSONB does not preserve object-key insertion order. Field sets must
+    // resolve identically after a pending snapshot round-trips through either
+    // persistence backend.
+    const fields = Object.keys(properties).sort();
     if (fields.length === 0) {
       fail(`Stream '${stream.name}' snapshot has no fields to authorize`);
     }
@@ -401,7 +422,7 @@ export function readRetainedCoreConsentSnapshot({
   }
   const retainedStreams = snapshot.resolved_streams.map((stream) => projectResolvedStream(stream, false));
   const derivedStreams = resolveCoreSelection(selection, declaration);
-  if (JSON.stringify(retainedStreams) !== JSON.stringify(derivedStreams)) {
+  if (canonicalJson(retainedStreams) !== canonicalJson(derivedStreams)) {
     fail("Resolved streams are not derivable from the retained declaration and request");
   }
   return cloneJson({

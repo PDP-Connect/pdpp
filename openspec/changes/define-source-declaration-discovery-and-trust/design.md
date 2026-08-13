@@ -91,6 +91,15 @@ rejected by `declaration_version`; accepting it requires explicit publisher or
 local policy. A different parsed document under the same revision is
 equivocation and is rejected.
 
+Consent resolves that reference from the accepted-revision store once and
+uses the exact retained declaration without a network refetch. The immutable
+consent snapshot, approval review, and audit events retain the reference,
+verified resource-authority binding, and separate unverified publisher
+attribution. Direct local operator provisioning carries no accepted-revision
+reference and is labeled `local_operator_provisioned`, not verified discovery.
+The fulfillment manifest may still supply local sensitivity policy, but no
+Source Declaration fact.
+
 Display values are untrusted and must be escaped for their output context.
 The implementation defines configured whole-response, parser, and display
 maxima. Values over a configured maximum are rejected before consent rendering
