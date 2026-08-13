@@ -598,9 +598,7 @@ const GROUPME_GROUP = {
 };
 
 const GROUPME_CHAT = {
-  id: "chat-1",
-  last_message: "hey",
-  last_message_at: 1_700_000_000,
+  last_message: { created_at: 1_700_000_000, text: "hey" },
   other_user: { id: "user-2", name: "Fixture Friend", avatar_url: null },
   avatar_url: null,
 };
@@ -691,7 +689,7 @@ const GROUPME_NORMAL_ROUTES: Record<string, GroupMeRoute> = {
   "/v3/groups": [GROUPME_GROUP],
   "/v3/chats": [GROUPME_CHAT],
   "/v3/groups/group-1/messages": { count: 1, messages: [groupMessageWithAttachment("gmsg-1")] },
-  "/v3/chats/chat-1/messages": { count: 0, direct_messages: [] },
+  "/v3/direct_messages": { count: 0, direct_messages: [] },
 };
 
 /** The required-stream driver: all four required GroupMe streams run through
@@ -793,7 +791,7 @@ export const GROUPME_ATTACHMENTS_WITHHELD_DRIVER: ConnectorDriver = {
       "/v3/groups": [GROUPME_GROUP],
       "/v3/chats": [GROUPME_CHAT],
       "/v3/groups/group-1/messages": { status: 500, body: { error: "server error" } },
-      "/v3/chats/chat-1/messages": { count: 1, direct_messages: [groupMessageWithAttachment("dmsg-1")] },
+      "/v3/direct_messages": { count: 1, direct_messages: [groupMessageWithAttachment("dmsg-1")] },
     }),
 };
 
