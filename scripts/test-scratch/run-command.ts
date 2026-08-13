@@ -4,6 +4,7 @@
 import { spawn } from "node:child_process";
 import {
   allocateScratchOwnership,
+  type CleanupHooks,
   cleanupScratchOwnership,
   inheritedScratchOwnership,
   markScratchLaunching,
@@ -117,19 +118,23 @@ function runParticipant(command: string[]): Promise<CommandResult> {
 async function cleanupWithResult(
   ownership: ScratchOwnership,
   result: CommandResult,
-  groupStopped = true
+  groupStopped = true,
+  control?: SignalControl,
+  cleanupHooks?: CleanupHooks
 ): Promise<CommandResult> {
   if (!groupStopped) {
     process.stderr.write("test scratch cleanup failed: group-still-live\n");
-    return result.code === 0 ? { code: INFRASTRUCTURE_EXIT_CODE, signal: null } : result;
+    const signalResult = control && latchedSignalResult(control);
+    return signalResult ?? (result.code === 0 ? { code: INFRASTRUCTURE_EXIT_CODE, signal: null } : result);
   }
   try {
-    await cleanupScratchOwnership(ownership);
-    return result;
+    await cleanupScratchOwnership(ownership, cleanupHooks);
+    return (control && latchedSignalResult(control)) ?? result;
   } catch (error) {
     const reason = error instanceof ScratchOwnershipError ? error.reason : "cleanup-failed";
     process.stderr.write(`test scratch cleanup failed: ${reason}\n`);
-    return result.code === 0 ? { code: INFRASTRUCTURE_EXIT_CODE, signal: null } : result;
+    const signalResult = control && latchedSignalResult(control);
+    return signalResult ?? (result.code === 0 ? { code: INFRASTRUCTURE_EXIT_CODE, signal: null } : result);
   }
 }
 
@@ -140,6 +145,8 @@ export interface RunScratchCommandOptions {
   afterSignalHandlersInstalled?: () => Promise<void>;
   /** Test seam after spawn and before the running PGID becomes durable. */
   afterSpawnBeforeRunning?: () => Promise<void>;
+  /** Test seam for signals arriving during asynchronous cleanup. */
+  cleanupHooks?: CleanupHooks;
   /** Fixed startup-recovery limits, exposed only for deterministic lifecycle tests. */
   recoveryLimits?: Partial<RecoveryLimits>;
   /** Test seam for the fail-closed path after a process-group shutdown attempt. */
@@ -239,7 +246,13 @@ async function runLaunchedCommand(
   try {
     const [file, ...args] = command;
     if (!file) {
-      return cleanupWithResult(ownership, { code: INFRASTRUCTURE_EXIT_CODE, signal: null });
+      return cleanupWithResult(
+        ownership,
+        { code: INFRASTRUCTURE_EXIT_CODE, signal: null },
+        true,
+        control,
+        options.cleanupHooks
+      );
     }
     const child = spawn(file, args, {
       cwd: process.cwd(),
@@ -266,7 +279,7 @@ async function runLaunchedCommand(
     }
     const groupStopped = await stopTrackedGroupSafely(control, stopGroup);
     const signalResult = latchedSignalResult(control);
-    return cleanupWithResult(ownership, signalResult ?? result, groupStopped);
+    return cleanupWithResult(ownership, signalResult ?? result, groupStopped, control, options.cleanupHooks);
   } catch (error) {
     const reason = error instanceof ScratchOwnershipError ? error.reason : "spawn-failed";
     process.stderr.write(`test scratch command failed: ${reason}\n`);
@@ -279,13 +292,21 @@ async function runLaunchedCommand(
         return signalResult;
       }
       return pgid === undefined
-        ? cleanupWithResult(ownership, { code: INFRASTRUCTURE_EXIT_CODE, signal: null })
+        ? cleanupWithResult(
+            ownership,
+            { code: INFRASTRUCTURE_EXIT_CODE, signal: null },
+            true,
+            control,
+            options.cleanupHooks
+          )
         : { code: INFRASTRUCTURE_EXIT_CODE, signal: null };
     }
     return cleanupWithResult(
       ownership,
       signalResult ?? result ?? { code: INFRASTRUCTURE_EXIT_CODE, signal: null },
-      groupStopped
+      groupStopped,
+      control,
+      options.cleanupHooks
     );
   }
 }
@@ -303,19 +324,19 @@ async function runAllocatedCommand(
   try {
     const signalBeforeLaunch = latchedSignalResult(control);
     if (signalBeforeLaunch) {
-      return cleanupWithResult(ownership, signalBeforeLaunch);
+      return cleanupWithResult(ownership, signalBeforeLaunch, true, control, options.cleanupHooks);
     }
     await options.afterAllocationBeforeSpawn?.();
     const signalBeforeSpawn = latchedSignalResult(control);
     if (signalBeforeSpawn) {
-      return cleanupWithResult(ownership, signalBeforeSpawn);
+      return cleanupWithResult(ownership, signalBeforeSpawn, true, control, options.cleanupHooks);
     }
     launchTransitionAttempted = true;
     await markScratchLaunching(ownership);
     const signalAfterLaunching = latchedSignalResult(control);
     if (signalAfterLaunching) {
       await markScratchUnlaunched(ownership);
-      return cleanupWithResult(ownership, signalAfterLaunching);
+      return cleanupWithResult(ownership, signalAfterLaunching, true, control, options.cleanupHooks);
     }
     return await runLaunchedCommand(command, ownership, control, options, stopGroup);
   } catch (error) {
@@ -323,9 +344,17 @@ async function runAllocatedCommand(
     process.stderr.write(`test scratch launch failed: ${reason}\n`);
     const signalResult = latchedSignalResult(control);
     if (signalResult) {
-      return launchTransitionAttempted ? signalResult : cleanupWithResult(ownership, signalResult);
+      return launchTransitionAttempted
+        ? signalResult
+        : cleanupWithResult(ownership, signalResult, true, control, options.cleanupHooks);
     }
-    return cleanupWithResult(ownership, { code: INFRASTRUCTURE_EXIT_CODE, signal: null });
+    return cleanupWithResult(
+      ownership,
+      { code: INFRASTRUCTURE_EXIT_CODE, signal: null },
+      true,
+      control,
+      options.cleanupHooks
+    );
   }
 }
 

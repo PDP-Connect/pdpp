@@ -678,6 +678,32 @@ test("SIGTERM during allocation cleanup prevents spawn", async () => {
   }
 });
 
+test("SIGTERM during cleanup remains observable after the root is removed", async () => {
+  const runnerTemp = await temporaryParent();
+  const parent = join(runnerTemp, "pdpp-test-scratch");
+  const previousRunnerTemp = process.env.RUNNER_TEMP;
+  process.env.RUNNER_TEMP = runnerTemp;
+  try {
+    const result = await runScratchCommand(command(["--exit=0"]), {
+      cleanupHooks: {
+        afterJournal: async () => {
+          process.kill(process.pid, "SIGTERM");
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        },
+      },
+    });
+    assert.deepEqual(result, { code: null, signal: "SIGTERM" });
+    assert.deepEqual(await readdir(parent), []);
+  } finally {
+    if (previousRunnerTemp === undefined) {
+      delete process.env.RUNNER_TEMP;
+    } else {
+      process.env.RUNNER_TEMP = previousRunnerTemp;
+    }
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
 test("a latched signal plus a pre-launch error cleans the provably allocated root", async () => {
   const runnerTemp = await temporaryParent();
   const parent = join(runnerTemp, "pdpp-test-scratch");
