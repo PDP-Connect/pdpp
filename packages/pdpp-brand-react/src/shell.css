@@ -24,6 +24,15 @@
   color: var(--foreground);
   background: var(--background);
 }
+/* The sidebar brand block and the main header both draw a bottom rule, and
+   they meet at the sidebar's right border. They only read as ONE line when
+   they are the same height, so both derive from this single token rather
+   than from independently-tuned padding. The drawer is portaled to body, so
+   it must share this shell-owned value explicitly. */
+.rr-app,
+.pdpp-dialog.rr-drawer {
+  --rr-masthead-height: 52px;
+}
 
 /* ─── Sidebar — the rack ──────────────────────────────────────────── */
 .rr-side {
@@ -51,13 +60,15 @@
   height: 18px;
 }
 /* Light surface — standard hues. */
-.rr-app {
+.rr-app,
+.pdpp-dialog.rr-drawer {
   --pdpp-mark-warm: oklch(0.52 0.11 45);
   --pdpp-mark-cool: oklch(0.58 0.18 253);
   --pdpp-mark-counter: oklch(0.985 0.005 85);
 }
 /* Dark surface — the elevated "night" pair. */
-[data-theme="dark"] .rr-app {
+[data-theme="dark"] .rr-app,
+[data-theme="dark"] .pdpp-dialog.rr-drawer {
   --pdpp-mark-warm: oklch(0.72 0.12 45);
   --pdpp-mark-cool: oklch(0.74 0.16 253);
   --pdpp-mark-counter: oklch(0.16 0.01 60);
@@ -239,7 +250,7 @@
    a containing block for fixed. Use position:fixed with explicit 100vw/100dvh
    to guarantee full-viewport coverage regardless of the parent grid sizing
    (the 1fr column at mobile can be a subpixel narrower than 100vw). */
-.rr-drawer-overlay {
+.pdpp-dialog-backdrop.rr-drawer-overlay {
   position: fixed;
   top: 0;
   right: 0;
@@ -249,40 +260,46 @@
   width: 100vw;
   height: 100dvh;
   overflow: hidden;
-}
-/* The backdrop is a real button (focusable close affordance), filling the
-   overlay behind the drawer. */
-.rr-drawer-scrim {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  padding: 0;
-  margin: 0;
-  cursor: pointer;
   background: oklch(0 0 0 / 0.5);
-  border: 0;
 }
 @media (prefers-reduced-motion: no-preference) {
-  .rr-drawer-scrim {
+  .pdpp-dialog-backdrop.rr-drawer-overlay {
     animation: rr-fade-in var(--duration-fast) ease both;
   }
 }
-.rr-drawer {
-  position: absolute;
+.pdpp-dialog.rr-drawer {
+  position: fixed;
   top: 0;
+  right: auto;
   bottom: 0;
   left: 0;
+  z-index: 71;
   display: flex;
   flex-direction: column;
+  gap: 0;
   width: min(300px, 84vw);
+  max-width: none;
   padding: 18px 0 14px;
+  margin: 0;
   overflow-y: auto;
+  color: var(--foreground);
   background: color-mix(in oklab, var(--background) 88%, oklch(0 0 0));
+  border: 0;
   border-right: 1px solid var(--border-strong);
+  border-radius: 0;
+  box-shadow: none;
+  transform: none;
+}
+.pdpp-dialog.rr-drawer > nav {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.pdpp-dialog.rr-drawer .rr-drawer__close {
+  margin-left: auto;
 }
 @media (prefers-reduced-motion: no-preference) {
-  .rr-drawer {
+  .pdpp-dialog.rr-drawer {
     animation: rr-drawer-in var(--duration-base) ease both;
   }
 }
@@ -293,14 +310,14 @@
   gap: 2px;
   padding: 10px;
 }
-.rr-drawer .rr-nav-item {
+.pdpp-dialog.rr-drawer .rr-nav-item {
   padding: 12px;
   font-size: 15px;
 }
-.rr-drawer .rr-side__group {
+.pdpp-dialog.rr-drawer .rr-side__group {
   padding: 16px 12px 5px;
 }
-.rr-drawer .rr-side__foot {
+.pdpp-dialog.rr-drawer .rr-side__foot {
   margin-top: auto;
 }
 
