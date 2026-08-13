@@ -503,7 +503,7 @@ export interface ControllerOptions {
    * exactly that connection's provider secret (Gmail app password / GitHub
    * PAT), recovered from the per-connection encrypted credential store. The
    * fragment is threaded to `runConnector` as `staticSecretEnv` and merged
-   * LAST over `process.env` at spawn (design Decision 5).
+   * into a fresh child environment; runtime controls retain precedence.
    *
    * Contract:
    *   - Return a non-empty env fragment when the connection has an active
@@ -512,7 +512,7 @@ export interface ControllerOptions {
    *     or another connection-scoped setup family should handle the run.
    *   - Throw (fail closed) when a configured static-secret connection has no
    *     active recoverable credential — the run is refused rather than started
-   *     with a stale or deployment-wide provider-account secret.
+   *     with an undeclared provider-account secret.
    *
    * Injected (not imported) so the controller stays decoupled from the
    * credential store and the connector package, matching `runConnectorImpl`.
@@ -3525,7 +3525,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // Resolve connection-scoped static-secret credentials before acquiring any
     // managed runtime resources. A resolver throw is fail-closed for true
     // static-secret sources, refusing the run before it can fall through to a
-    // deployment-wide provider-account secret. A `null` return means either the
+    // undeclared provider-account secret. A `null` return means either the
     // connector is not static-secret-backed or this browser-session source has
     // no optional stored login credential.
     const staticSecretEnv = opts.resolveStaticSecretRunEnv

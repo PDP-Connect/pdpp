@@ -37,11 +37,15 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { configuredBrowserChannel } from "../../packages/polyfill-connectors/src/browser-launch.ts";
+import { resolveBrowserRuntimeVisibility } from "../../packages/polyfill-connectors/src/connector-runtime.ts";
+import { isRunningInContainer } from "../../packages/polyfill-connectors/src/runtime-environment.ts";
 import {
   buildConnectionScopedSecretEnv,
   type RecoveredStaticSecret,
   STATIC_SECRET_CONNECTOR_REGISTRY,
 } from "../../packages/polyfill-connectors/src/static-secret-injection.ts";
+import { composeConnectorChildEnvironment } from "../runtime/connector-child-environment.ts";
 import { runConnector } from "../runtime/index.ts";
 import { createScheduler } from "../runtime/scheduler.ts";
 import type { RunRecord } from "../runtime/scheduler-domain-types.ts";
@@ -54,6 +58,15 @@ const BACKGROUND_SAFE_MANIFEST = {
   },
   streams: [{ name: "items" }],
 };
+
+function composePlatformEnvironment(sourceEnv: NodeJS.ProcessEnv): Record<string, string> {
+  return composeConnectorChildEnvironment({
+    explicitRunEnv: {},
+    manifest: {},
+    platform: "win32",
+    sourceEnv,
+  });
+}
 
 interface ClosableServer {
   asPort: number;
@@ -171,6 +184,82 @@ rl.on('line', (line) => {
   );
   return { connectorPath, snapshotPath };
 }
+
+test("connector platform env keeps cross-host execution inputs without ambient secrets", () => {
+  assert.deepEqual(
+    composePlatformEnvironment({
+      APPDATA: "C:\\Users\\pdpp\\AppData\\Roaming",
+      ComSpec: "C:\\Windows\\System32\\cmd.exe",
+      HOME: "/home/pdpp",
+      HTTPS_PROXY: "http://proxy.internal:8080",
+      LOCALAPPDATA: "C:\\Users\\pdpp\\AppData\\Local",
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+      Path: "C:\\PDPP\\bin;C:\\Windows\\System32",
+      PDPP_BROWSER_CHANNEL: "chrome",
+      PDPP_BROWSER_HEADLESS: "1",
+      PDPP_CAPTURE_ARIA_DEPTH: "12",
+      PDPP_CAPTURE_FIXTURES: "1",
+      PDPP_CAPTURE_ON_FAILURE: "1",
+      PDPP_CAPTURE_ROOT_DIR: "/captures",
+      PDPP_FORCE_CONTAINER: "1",
+      PDPP_OWNER_PASSWORD: "must-not-cross",
+      PDPP_REFERENCE_ORIGIN: "https://reference.example",
+      PDPP_SESSION_ESTABLISH_WATCHDOG_MS: "45000",
+      PDPP_TRACE: "1",
+      PDPP_WEB_BASE_URL: "https://console.example",
+      SystemRoot: "C:\\Windows",
+      TMPDIR: "/tmp/pdpp",
+      USERPROFILE: "C:\\Users\\pdpp",
+    }),
+    {
+      APPDATA: "C:\\Users\\pdpp\\AppData\\Roaming",
+      ComSpec: "C:\\Windows\\System32\\cmd.exe",
+      HOME: "/home/pdpp",
+      HTTPS_PROXY: "http://proxy.internal:8080",
+      LOCALAPPDATA: "C:\\Users\\pdpp\\AppData\\Local",
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+      Path: "C:\\PDPP\\bin;C:\\Windows\\System32",
+      PDPP_BROWSER_CHANNEL: "chrome",
+      PDPP_BROWSER_HEADLESS: "1",
+      PDPP_CAPTURE_ARIA_DEPTH: "12",
+      PDPP_CAPTURE_FIXTURES: "1",
+      PDPP_CAPTURE_ON_FAILURE: "1",
+      PDPP_CAPTURE_ROOT_DIR: "/captures",
+      PDPP_FORCE_CONTAINER: "1",
+      PDPP_REFERENCE_ORIGIN: "https://reference.example",
+      PDPP_SESSION_ESTABLISH_WATCHDOG_MS: "45000",
+      PDPP_TRACE: "1",
+      PDPP_WEB_BASE_URL: "https://console.example",
+      SystemRoot: "C:\\Windows",
+      TMPDIR: "/tmp/pdpp",
+      USERPROFILE: "C:\\Users\\pdpp",
+    }
+  );
+  const childEnv = composePlatformEnvironment({
+    PDPP_BROWSER_CHANNEL: "chrome",
+    PDPP_BROWSER_HEADLESS: "1",
+    PDPP_FORCE_CONTAINER: "1",
+  });
+  assert.equal(resolveBrowserRuntimeVisibility({}, "browser", childEnv).headless, true);
+  assert.equal(configuredBrowserChannel(childEnv), "chrome");
+  assert.equal(isRunningInContainer(childEnv, { fileExists: () => false }), true);
+});
+
+test("connector fragments reject platform and run controls in every casing", () => {
+  for (const name of ["PATH", "PDPP_OWNER_TOKEN", "PDPP_RS_URL", "PDPP_CONNECTOR_ID"]) {
+    for (const variant of [name, name.toLowerCase(), `${name.slice(0, 1)}${name.slice(1).toLowerCase()}`]) {
+      const env = composeConnectorChildEnvironment({
+        connectionEnv: { [variant]: "must-not-cross", CONNECTION_SECRET: "allowed" },
+        explicitRunEnv: {},
+        manifest: {},
+        platform: "linux",
+        sourceEnv: {},
+      });
+      assert.equal(env[variant], undefined);
+      assert.equal(env.CONNECTION_SECRET, "allowed");
+    }
+  }
+});
 
 /**
  * Connector child that mimics `packages/polyfill-connectors/src/auth.ts`:
@@ -516,6 +605,150 @@ test("manual run forwards bounded trigger and automation metadata to connector c
   } finally {
     closeDb();
     rmSync(tmpDir, { force: true, recursive: true });
+  }
+});
+
+test("connector children receive run-scoped capabilities without unrelated parent secrets", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-run-env-isolation-"));
+  const connectionSecretName = "PDPP_TEST_CONNECTION_SCOPED_SECRET";
+  const operatorSecretName = "PDPP_TEST_UNRELATED_OPERATOR_SECRET";
+  const ownerPasswordName = "PDPP_OWNER_PASSWORD";
+  const otherProviderSecretName = "STRAVA_ACCESS_TOKEN";
+  const declaredEnvName = "CURRENT_CONNECTOR_DECLARED_ENV";
+  const parentEnv = {
+    [declaredEnvName]: "ambient-current-connector-value",
+    [operatorSecretName]: "must-not-cross-the-connector-boundary",
+    [ownerPasswordName]: "must-not-cross-the-connector-boundary",
+    [otherProviderSecretName]: "must-not-cross-the-connector-boundary",
+    PDPP_BROWSER_CHANNEL: "chrome",
+    PDPP_BROWSER_HEADLESS: "1",
+    PDPP_BROWSER_SURFACE_REQUIRED: "stale-parent-browser-control",
+    PDPP_CAPTURE_ARIA_DEPTH: "12",
+    PDPP_CAPTURE_FIXTURES: "1",
+    PDPP_CAPTURE_ON_FAILURE: "1",
+    PDPP_CAPTURE_ROOT_DIR: "/captures",
+    PDPP_FORCE_CONTAINER: "1",
+    PDPP_OWNER_TOKEN: "stale-parent-owner-token",
+    PDPP_RUN_ID: "stale-parent-run-id",
+    PDPP_TRACE: "1",
+  };
+  const previousParentEnv = new Map(Object.keys(parentEnv).map((name) => [name, process.env[name]]));
+  const observedNames = [
+    connectionSecretName,
+    operatorSecretName,
+    ownerPasswordName,
+    otherProviderSecretName,
+    "PDPP_CONNECTOR_ID",
+    "PDPP_CONNECTOR_INSTANCE_ID",
+    "PDPP_OWNER_TOKEN",
+    "PDPP_RS_URL",
+    "PDPP_REFERENCE_BASE_URL",
+    "PDPP_RUN_ID",
+    "PDPP_STREAMING_REGISTRATION_TOKEN",
+    declaredEnvName,
+    "PDPP_BROWSER_CHANNEL",
+    "PDPP_BROWSER_HEADLESS",
+    "PDPP_CAPTURE_ARIA_DEPTH",
+    "PDPP_CAPTURE_FIXTURES",
+    "PDPP_CAPTURE_ON_FAILURE",
+    "PDPP_CAPTURE_ROOT_DIR",
+    "PDPP_FORCE_CONTAINER",
+    "PDPP_TRACE",
+    "PDPP_BROWSER_SURFACE_REQUIRED",
+    "pdpp_owner_token",
+    "Pdpp_Run_Id",
+    "pAtH",
+    "pdpp_browser_headless",
+  ];
+  const { connectorPath, snapshotPath } = writeEnvSnapshotConnector(tmpDir, "env-isolation", observedNames);
+  Object.assign(process.env, parentEnv);
+
+  try {
+    const result = await runConnector({
+      admitRunConnection: (input) =>
+        Promise.resolve({
+          connectorId: input.connectorId,
+          connectorInstanceId: input.connectorInstanceId ?? "cin_env_isolation",
+          ownerSubjectId: input.ownerSubjectId ?? "owner_local",
+        }),
+      connectorId: "env-isolation-test",
+      connectorInstanceId: "cin_env_isolation",
+      connectorPath,
+      detailGapStore: {
+        listPendingGaps() {
+          return Promise.resolve([]);
+        },
+        reclaimStrandedInProgressGaps() {
+          return Promise.resolve();
+        },
+        upsertPendingGap() {
+          return Promise.resolve(null);
+        },
+      },
+      manifest: {
+        ...BACKGROUND_SAFE_MANIFEST,
+        setup: { credential_capture: { fields: [{ env: [declaredEnvName] }] } },
+      },
+      ownerToken: "run-scoped-owner-token",
+      rsUrl: "http://127.0.0.1:7663",
+      staticSecretEnv: {
+        [connectionSecretName]: "connection-scoped-secret",
+        [declaredEnvName]: "connection-scoped-value",
+        PDPP_CONNECTOR_ID: "fragment-must-not-override-connector-id",
+        PDPP_CONNECTOR_INSTANCE_ID: "fragment-must-not-override-instance-id",
+        PDPP_OWNER_TOKEN: "fragment-must-not-override-owner-token",
+        PDPP_REFERENCE_BASE_URL: "http://fragment-must-not-enable-streaming.invalid",
+        PDPP_RS_URL: "http://fragment-must-not-override-rs-url.invalid",
+        PDPP_RUN_ID: "fragment-must-not-enable-streaming",
+        PDPP_STREAMING_REGISTRATION_TOKEN: "fragment-must-not-enable-streaming",
+        Pdpp_Run_Id: "mixed-case-run-control-must-not-cross",
+        pAtH: "mixed-case-platform-must-not-cross",
+        pdpp_browser_headless: "mixed-case-platform-must-not-cross",
+        pdpp_owner_token: "mixed-case-owner-token-must-not-cross",
+      },
+    });
+
+    assert.equal(result.status, "succeeded");
+    assert.deepEqual(JSON.parse(readFileSync(snapshotPath, "utf8")), {
+      [connectionSecretName]: "connection-scoped-secret",
+      [operatorSecretName]: null,
+      [ownerPasswordName]: null,
+      [otherProviderSecretName]: null,
+      PDPP_CONNECTOR_ID: "env-isolation-test",
+      PDPP_CONNECTOR_INSTANCE_ID: "cin_env_isolation",
+      [declaredEnvName]: "connection-scoped-value",
+      PDPP_BROWSER_CHANNEL: "chrome",
+      PDPP_BROWSER_HEADLESS: "1",
+      PDPP_BROWSER_SURFACE_REQUIRED: null,
+      PDPP_CAPTURE_ARIA_DEPTH: "12",
+      PDPP_CAPTURE_FIXTURES: "1",
+      PDPP_CAPTURE_ON_FAILURE: "1",
+      PDPP_CAPTURE_ROOT_DIR: "/captures",
+      PDPP_FORCE_CONTAINER: "1",
+      PDPP_OWNER_TOKEN: "run-scoped-owner-token",
+      PDPP_REFERENCE_BASE_URL: null,
+      PDPP_RS_URL: "http://127.0.0.1:7663",
+      PDPP_RUN_ID: null,
+      PDPP_STREAMING_REGISTRATION_TOKEN: null,
+      PDPP_TRACE: "1",
+      Pdpp_Run_Id: null,
+      pAtH: null,
+      pdpp_browser_headless: null,
+      pdpp_owner_token: null,
+    });
+  } finally {
+    for (const [name, previous] of previousParentEnv) {
+      if (previous === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = previous;
+      }
+    }
+    closeDb();
+    rmSync(tmpDir, { force: true, recursive: true });
+  }
+  for (const [name, previous] of previousParentEnv) {
+    assert.equal(process.env[name], previous);
   }
 });
 

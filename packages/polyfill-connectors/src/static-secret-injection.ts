@@ -13,8 +13,7 @@
  * This module is the construction that escapes that limit. Given a connector id
  * and a credential recovered from the per-connection encrypted store, it returns
  * an env fragment carrying ONLY that one connection's secret. The orchestrator
- * sets this fragment on the per-run `connector.env`, which the collector runner
- * merges LAST over `process.env` when it spawns the child — so each run receives
+ * sets this fragment on the per-run child environment — so each run receives
  * exactly its own connection's secret, scoped to that one subprocess, never the
  * shared process environment. Two connections for the same connector therefore
  * run as two addressable `connection_id`s with two distinct secrets.
@@ -358,12 +357,13 @@ function injectSetupFields(
  * Build the connection-scoped env fragment for one connector run.
  *
  * The returned object carries ONLY the secret env var(s) for this one
- * connection. It is intended to be spread into the per-run `connector.env`:
+ * connection. It is intended for the per-run child environment:
  *
- *   const env = { ...connector.env, ...buildConnectionScopedSecretEnv(id, cred) };
+ *   const env = { ...declaredConnectorEnv, ...buildConnectionScopedSecretEnv(id, cred) };
  *
  * Never mutate `process.env` with the result. The fragment's lifetime is the one
- * run; nothing here logs or returns the secret outside the fragment.
+ * run; runtime-owned platform and protocol controls retain precedence, and
+ * nothing here logs or returns the secret outside the fragment.
  *
  * Throws when the connector is not a known static-secret connector, or when the
  * recovered credential's kind does not match the connector's expectation (a
