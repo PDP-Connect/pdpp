@@ -4332,6 +4332,8 @@ async function migratePostgresLocalDeviceConnectorInstances(client: PoolClient):
         [connectorKey, JSON.stringify(manifest), row.created_at || now]
       );
 
+      // Existing connector lifecycle is owner authority. The device row is
+      // migration input only and may remain active after a zero-cascade revoke.
       await client.query(
         `INSERT INTO connector_instances(
            connector_instance_id, owner_subject_id, connector_id, display_name, status,
@@ -4342,12 +4344,10 @@ async function migratePostgresLocalDeviceConnectorInstances(client: PoolClient):
            SET owner_subject_id = EXCLUDED.owner_subject_id,
                connector_id = EXCLUDED.connector_id,
                display_name = EXCLUDED.display_name,
-               status = EXCLUDED.status,
                source_kind = EXCLUDED.source_kind,
                source_binding_key = EXCLUDED.source_binding_key,
                source_binding_json = EXCLUDED.source_binding_json,
-               updated_at = EXCLUDED.updated_at,
-               revoked_at = EXCLUDED.revoked_at`,
+               updated_at = GREATEST(connector_instances.updated_at, EXCLUDED.updated_at)`,
         [
           connectorInstanceId,
           row.owner_subject_id,

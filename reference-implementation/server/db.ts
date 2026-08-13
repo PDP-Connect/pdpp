@@ -3174,6 +3174,8 @@ function migrateLocalDeviceConnectorInstances(raw: SqliteDatabase, opts: Migrati
           AND source_binding_key = ?
         LIMIT 1`
     );
+    // Existing connector lifecycle is owner authority. The device row is
+    // migration input only and may remain active after a zero-cascade revoke.
     const upsertInstance = raw.prepare(
       `INSERT INTO connector_instances(
          connector_instance_id, owner_subject_id, connector_id, display_name, status,
@@ -3184,12 +3186,13 @@ function migrateLocalDeviceConnectorInstances(raw: SqliteDatabase, opts: Migrati
          owner_subject_id = excluded.owner_subject_id,
          connector_id = excluded.connector_id,
          display_name = excluded.display_name,
-         status = excluded.status,
          source_kind = excluded.source_kind,
          source_binding_key = excluded.source_binding_key,
          source_binding_json = excluded.source_binding_json,
-         updated_at = excluded.updated_at,
-         revoked_at = excluded.revoked_at`
+         updated_at = CASE
+           WHEN excluded.updated_at > connector_instances.updated_at THEN excluded.updated_at
+           ELSE connector_instances.updated_at
+         END`
     );
     const updateSourceInstance = raw.prepare(
       `UPDATE device_source_instances
