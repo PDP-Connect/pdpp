@@ -3,8 +3,10 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
+import { ynabPacingProfile } from "../../src/provider-profile.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { type BudgetCtx, collectCategoriesAndGroups, errorDetail, ynab } from "./index.ts";
+import { type BudgetCtx, collectCategoriesAndGroups, createYnabRequest, errorDetail } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
 // Regression proof for live run_1786288330250, whose terminal row read
@@ -30,6 +32,14 @@ import { validateRecord } from "./schemas.ts";
 // run terminaled as permanently failed.
 
 const BUDGET_ID = "44444444-4444-4444-8444-444444444444";
+const testYnab = createYnabRequest(
+  createConnectorHttpGovernor({
+    maxAttempts: 1,
+    name: "ynab",
+    pacingInitialIntervalMs: 0,
+    profile: ynabPacingProfile(),
+  })
+);
 
 const CATEGORIES_RESPONSE = {
   data: {
@@ -75,7 +85,7 @@ function makeCtx(requestedStreams: readonly string[]): {
     emit: harness.emit as BudgetCtx["emit"],
     newState: {},
     progress: (): Promise<void> => Promise.resolve(),
-    request: ynab,
+    request: testYnab,
     requested: new Map(requestedStreams.map((name) => [name, {}])),
     state: {},
     token: "test-token",

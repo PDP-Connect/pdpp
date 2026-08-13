@@ -31,7 +31,7 @@
  * and most-recent month).
  */
 
-import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
+import { type ConnectorHttpGovernor, createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import {
   type CollectContext,
   emitDetailCoverage,
@@ -366,69 +366,81 @@ interface YnabRawResponse {
   status: number;
 }
 
-export async function ynab<T>(
+export type YnabRequest = <T>(
   path: string,
   token: string,
-  { knowledge, sinceDate }: YnabFetchOptions = {},
+  options?: YnabFetchOptions,
   progress?: ProgressFn,
   extra?: Parameters<ProgressFn>[1]
-): Promise<T> {
-  const url = new URL(`${API_BASE}${path}`);
-  if (knowledge !== undefined) {
-    url.searchParams.set("last_knowledge_of_server", String(knowledge));
-  }
-  if (sinceDate) {
-    url.searchParams.set("since_date", sinceDate);
-  }
-  let result: YnabRawResponse;
-  try {
-    const r = await httpGovernor.request<YnabRawResponse, YnabRawResponse>(
-      async () => {
-        const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-        const retryAfter = res.headers.get("retry-after");
-        return {
-          body: await res.text().catch((): string => ""),
-          ...(retryAfter === null ? {} : { headers: { "retry-after": retryAfter } }),
-          status: res.status,
-        };
-      },
-      (raw) => ({
-        status: raw.status,
-        ...(raw.headers === undefined ? {} : { headers: raw.headers }),
-        value: raw,
-      })
-    );
-    result = r.value;
-  } catch (error) {
-    // Terminal rate-limit: emit the same progress side-effect the hand-rolled
-    // path did, then rethrow `ynab_rate_limited` for the cross-run contract.
-    // The message is the whole contract here — the runtime pattern-matches it —
-    // so it is rethrown untouched.
-    if (error instanceof Error && error.message === "ynab_rate_limited") {
-      await progress?.("YNAB request rate limited", { ...extra, phase: "rate_limit", rate_limit_pressure: 1 });
+) => Promise<T>;
+
+export function createYnabRequest(governor: Pick<ConnectorHttpGovernor, "request">): YnabRequest {
+  return async function request<T>(
+    path: string,
+    token: string,
+    { knowledge, sinceDate }: YnabFetchOptions = {},
+    progress?: ProgressFn,
+    extra?: Parameters<ProgressFn>[1]
+  ): Promise<T> {
+    const url = new URL(`${API_BASE}${path}`);
+    if (knowledge !== undefined) {
+      url.searchParams.set("last_knowledge_of_server", String(knowledge));
+    }
+    if (sinceDate) {
+      url.searchParams.set("since_date", sinceDate);
+    }
+    let result: YnabRawResponse;
+    try {
+      const r = await governor.request<YnabRawResponse, YnabRawResponse>(
+        async () => {
+          const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+          const retryAfter = res.headers.get("retry-after");
+          return {
+            body: await res.text().catch((): string => ""),
+            ...(retryAfter === null ? {} : { headers: { "retry-after": retryAfter } }),
+            status: res.status,
+          };
+        },
+        (raw) => ({
+          status: raw.status,
+          ...(raw.headers === undefined ? {} : { headers: raw.headers }),
+          value: raw,
+        })
+      );
+      result = r.value;
+    } catch (error) {
+      // Terminal rate-limit: emit the same progress side-effect the hand-rolled
+      // path did, then rethrow `ynab_rate_limited` for the cross-run contract.
+      // The message is the whole contract here — the runtime pattern-matches it —
+      // so it is rethrown untouched.
+      if (error instanceof Error && error.message === "ynab_rate_limited") {
+        await progress?.("YNAB request rate limited", { ...extra, phase: "rate_limit", rate_limit_pressure: 1 });
+        throw error;
+      }
+      // Every other governor throw (transport fault, exhausted retryable status)
+      // reaches the owner as the terminal error. The retry layer folds in the
+      // transport cause; only this frame knows WHICH endpoint failed, so it is
+      // attached here. `endpointLabel` is the templated path — never the resolved
+      // URL, which carries no token today but would silently start leaking one if
+      // YNAB ever moved to a query-string credential.
+      if (error instanceof Error) {
+        throw new Error(`${error.message} [endpoint ${endpointLabel(path)}]`, { cause: error });
+      }
       throw error;
     }
-    // Every other governor throw (transport fault, exhausted retryable status)
-    // reaches the owner as the terminal error. The retry layer folds in the
-    // transport cause; only this frame knows WHICH endpoint failed, so it is
-    // attached here. `endpointLabel` is the templated path — never the resolved
-    // URL, which carries no token today but would silently start leaking one if
-    // YNAB ever moved to a query-string credential.
-    if (error instanceof Error) {
-      throw new Error(`${error.message} [endpoint ${endpointLabel(path)}]`, { cause: error });
+    if (result.status === 401) {
+      throw new Error("ynab_auth_failed");
     }
-    throw error;
-  }
-  if (result.status === 401) {
-    throw new Error("ynab_auth_failed");
-  }
-  if (result.status < 200 || result.status >= 300) {
-    throw new Error(
-      `ynab_http_${String(result.status)} [endpoint ${endpointLabel(path)}]: ${errorDetail(result.body)}`
-    );
-  }
-  return JSON.parse(result.body) as T;
+    if (result.status < 200 || result.status >= 300) {
+      throw new Error(
+        `ynab_http_${String(result.status)} [endpoint ${endpointLabel(path)}]: ${errorDetail(result.body)}`
+      );
+    }
+    return JSON.parse(result.body) as T;
+  };
 }
+
+export const ynab = createYnabRequest(httpGovernor);
 
 /**
  * The shape of `ynab<T>()`, extracted so `ynabCollect` and every per-budget
@@ -438,14 +450,6 @@ export async function ynab<T>(
  * synchronously, never touching `httpGovernor` or `fetch` — so a test run
  * incurs none of `ynabPacingProfile()`'s real per-request pacing floor.
  */
-type YnabRequest = <T>(
-  path: string,
-  token: string,
-  options?: YnabFetchOptions,
-  progress?: ProgressFn,
-  extra?: Parameters<ProgressFn>[1]
-) => Promise<T>;
-
 const YNAB_RETRYABLE_PATTERN = /rate_limited|ECONN|ETIMEDOUT|fetch failed|retryable status \d+/i;
 
 /**
