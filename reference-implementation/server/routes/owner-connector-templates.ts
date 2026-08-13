@@ -96,10 +96,23 @@ export interface MountOwnerConnectorTemplatesContext {
   requireToken: MiddlewareHandler;
   resolveResource: (req: unknown) => string;
   uatExposeUnlistedConnectors?: boolean;
+  uatConnectorAllowlist?: ReadonlySet<string>;
 }
 
 function stripTrailingSlash(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+export function parseUatConnectorAllowlist(input: string | undefined): ReadonlySet<string> {
+  if (!input || typeof input !== "string") {
+    return new Set();
+  }
+  return new Set(
+    input
+      .split(",")
+      .map((k) => k.trim())
+      .filter((k) => k.length > 0 && /^[a-z0-9_-]+$/.test(k))
+  );
 }
 
 function connectorKeyFromManifest(
@@ -202,15 +215,37 @@ function isOwnerActionablePlan(plan: ReturnType<typeof buildConnectionSetupPlan>
 
 function isUatExposablePlan(
   plan: ReturnType<typeof buildConnectionSetupPlan>,
-  manifest: ConnectorManifestLike
+  manifest: ConnectorManifestLike,
+  connectorKey?: string | null,
+  allowlist?: ReadonlySet<string>
 ): boolean {
-  return [
+  const basePlan = [
     isOwnerActionablePlan(plan),
     plan.catalogDisposition === "static_secret_experimental",
     plan.catalogDisposition === "static_secret_connect" &&
       plan.setupModality === "static_secret" &&
       staticSecretCredentialCaptureFromManifest(manifest) !== null,
   ].includes(true);
+
+  if (basePlan) {
+    return true;
+  }
+
+  // Allowlist-based UAT exposure: development connectors explicitly listed
+  // can be exposed when they have a valid setup path
+  if (allowlist && connectorKey && allowlist.has(connectorKey)) {
+    const listing = manifest.capabilities?.public_listing;
+    const isDevelopment = listing?.tier === "development";
+    if (isDevelopment) {
+      const hasValidSetup =
+        plan.catalogDisposition === "static_secret_connect" &&
+        plan.setupModality === "static_secret" &&
+        staticSecretCredentialCaptureFromManifest(manifest) !== null;
+      return hasValidSetup;
+    }
+  }
+
+  return false;
 }
 
 function buildTemplateSupportedActions(args: {
@@ -258,13 +293,14 @@ function buildTemplateSupportedActions(args: {
 
 function projectSetupPlan(
   manifest: ConnectorManifestLike,
-  plan: ReturnType<typeof buildConnectionSetupPlan>,
-  uatExposeUnlistedConnectors?: boolean
+  plan: ReturnType<typeof buildConnectionSetupPlan>
 ): Record<string, unknown> {
-  // Owner-facing actionability: manifest is listed AND actionable, OR UAT is exposing an actionable plan
+  // Owner-facing actionability: manifest is listed AND plan is actionable (lifecycle authority unchanged).
+  // UAT exposure via uat_expose_unlisted_connectors does not modify setup_plan; it is a separate flag
+  // for the console to enable testing without claiming Supported or Preview tier.
   const isActionableManifest = isActionablePublicListing(manifest);
   const isActionablePlan = isOwnerActionablePlan(plan);
-  const ownerActionable = (isActionableManifest || uatExposeUnlistedConnectors) && isActionablePlan;
+  const ownerActionable = isActionableManifest && isActionablePlan;
   return {
     catalog_disposition: plan.catalogDisposition,
     deployment_readiness: plan.deploymentReadiness,
@@ -301,12 +337,19 @@ function projectTemplate(
   const connections = (connectionsByConnector.get(connectorKey) ?? []).map((instance) =>
     projectConnectionSummary(ctx, instance)
   );
-  // Explicit UAT exposure fact: true only when deployment opts in, AND connector is unproven unlisted,
-  // AND the plan is owner-actionable (passes existing setup/proof/support checks).
+  // Explicit UAT exposure fact: true only when deployment opts in, AND
+  // (connector is preview tier unproven OR development tier on allowlist),
+  // AND the plan is UAT-exposable (has a valid setup path).
   const listing = manifest.capabilities?.public_listing;
   const isUnproven = listing?.tier === "preview";
+  const isDevelopment = listing?.tier === "development";
+  const isAllowlisted = ctx.uatConnectorAllowlist && ctx.uatConnectorAllowlist.has(connectorKey);
+
   const uatExposeUnlistedConnectors =
-    ctx.uatExposeUnlistedConnectors === true && isUnproven && isUatExposablePlan(plan, manifest);
+    ctx.uatExposeUnlistedConnectors === true &&
+    ((isUnproven && isUatExposablePlan(plan, manifest, connectorKey, ctx.uatConnectorAllowlist)) ||
+      (isDevelopment && isAllowlisted && isUatExposablePlan(plan, manifest, connectorKey, ctx.uatConnectorAllowlist)));
+
   return {
     connection_count: connections.length,
     connections,
@@ -318,7 +361,7 @@ function projectTemplate(
     object: "owner_connector_template",
     public_listing: manifest.capabilities?.public_listing ?? null,
     registration_status: "registered",
-    setup_plan: projectSetupPlan(manifest, plan, uatExposeUnlistedConnectors),
+    setup_plan: projectSetupPlan(manifest, plan),
     stream_count: Array.isArray(manifest.streams) ? manifest.streams.length : 0,
     supported_actions: buildTemplateSupportedActions({ manifest, plan, resource, uatExposeUnlistedConnectors }),
     uat_expose_unlisted_connectors: uatExposeUnlistedConnectors,

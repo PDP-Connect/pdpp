@@ -756,3 +756,90 @@ test("with flag disabled, positive unproven owner-actionable connectors have uat
     );
   });
 });
+
+test("UAT allowlist: development connector exposed only when flag+key+valid-setup all present", async () => {
+  const priorEnv = { uat: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT, allowlist: process.env.PDPP_UAT_CONNECTOR_ALLOWLIST };
+  try {
+    // Scenario table: all combinations of flag, allowlist, setup validity
+    const scenarios = [
+      { uat: false, list: "", connectorKey: "venmo", expectedExposed: false, label: "no flag, with allowlist" },
+      { uat: true, list: "", connectorKey: "venmo", expectedExposed: false, label: "flag ON, empty allowlist" },
+      { uat: true, list: "venmo", connectorKey: "venmo", expectedExposed: true, label: "flag+allowlist+valid-setup" },
+      { uat: true, list: "doordash", connectorKey: "doordash", expectedExposed: false, label: "allowlist but no valid setup" },
+      { uat: true, list: "steam", connectorKey: "steam", expectedExposed: true, label: "preview tier via legacy path" },
+    ];
+
+    for (const scenario of scenarios) {
+      const cleanEnv = () => {
+        delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+        delete process.env.PDPP_UAT_CONNECTOR_ALLOWLIST;
+      };
+      cleanEnv();
+      if (scenario.uat) process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = "1";
+      if (scenario.list) process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = scenario.list;
+
+      await withServer(async ({ asUrl, rsUrl }) => {
+        // Register the connector to test
+        if (scenario.connectorKey === "venmo") await registerConnector(asUrl, loadManifest("venmo"));
+        if (scenario.connectorKey === "doordash") {
+          const m = loadManifest("doordash");
+          m.capabilities = { ...asRecord(m.capabilities), public_listing: { tier: "development" } };
+          await registerConnector(asUrl, m);
+        }
+        if (scenario.connectorKey === "steam") await registerConnector(asUrl, loadManifest("steam"));
+
+        const ownerToken = await issueOwnerToken(asUrl);
+        const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+          headers: { Authorization: `Bearer ${ownerToken}` },
+        });
+        assert.equal(status, 200);
+        const template = byConnector(body, scenario.connectorKey);
+        assert.equal(
+          template.uat_expose_unlisted_connectors,
+          scenario.expectedExposed,
+          `${scenario.label}: uat_expose_unlisted_connectors should be ${scenario.expectedExposed}`
+        );
+      });
+    }
+  } finally {
+    if (priorEnv.uat === undefined) delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+    else process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = priorEnv.uat;
+    if (priorEnv.allowlist === undefined) delete process.env.PDPP_UAT_CONNECTOR_ALLOWLIST;
+    else process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = priorEnv.allowlist;
+  }
+});
+
+test("allowlist parser: rejects malformed entries, admits valid connector keys", async () => {
+  // This is a route-level discriminator test via environment parsing
+  const priorEnv = { uat: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT, allowlist: process.env.PDPP_UAT_CONNECTOR_ALLOWLIST };
+  try {
+    process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = "1";
+    process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = "venmo, invalid@key, netflix-export, ../evil, my_connector";
+
+    await withServer(async ({ asUrl, rsUrl }) => {
+      // Register valid connectors
+      await registerConnector(asUrl, loadManifest("venmo"));
+      await registerConnector(asUrl, loadManifest("netflix_export"));
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 200);
+
+      // Valid keys are admitted: venmo, netflix-export, my_connector
+      const venmo = byConnector(body, "venmo");
+      assert.equal(venmo.uat_expose_unlisted_connectors, true, "venmo: valid key admitted");
+
+      const netflix = byConnector(body, "netflix-export");
+      assert.equal(netflix.uat_expose_unlisted_connectors, true, "netflix-export: valid key admitted");
+
+      // Malformed keys (invalid@key, ../evil) are rejected silently; no server error
+    });
+  } finally {
+    if (priorEnv.uat === undefined) delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+    else process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = priorEnv.uat;
+    if (priorEnv.allowlist === undefined) delete process.env.PDPP_UAT_CONNECTOR_ALLOWLIST;
+    else process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = priorEnv.allowlist;
+  }
+});

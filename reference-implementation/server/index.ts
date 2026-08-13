@@ -306,7 +306,7 @@ import { mountOwnerConnectionRevoke } from "./routes/owner-connection-revoke.ts"
 import { mountOwnerConnectionRun } from "./routes/owner-connection-run.ts";
 import { mountOwnerConnectionSchedule } from "./routes/owner-connection-schedule.ts";
 import { mountOwnerConnectionRename, mountOwnerConnectionsList } from "./routes/owner-connections.ts";
-import { mountOwnerConnectorTemplates } from "./routes/owner-connector-templates.ts";
+import { mountOwnerConnectorTemplates, parseUatConnectorAllowlist } from "./routes/owner-connector-templates.ts";
 import { mountOwnerControl } from "./routes/owner-control.ts";
 import {
   mountRefApprovals,
@@ -6849,6 +6849,7 @@ function buildRsApp(opts: ServerOpts = {}) {
     resolveResource: (req: unknown) =>
       resolvePublicUrl(req as Parameters<typeof resolvePublicUrl>[0], explicitResource),
     uatExposeUnlistedConnectors: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT === "1",
+    uatConnectorAllowlist: parseUatConnectorAllowlist(process.env.PDPP_UAT_CONNECTOR_ALLOWLIST),
   } as unknown as Parameters<typeof mountOwnerConnectorTemplates>[1]);
 
   // GET /v1/owner/control is the bearer-authed owner-agent control entrypoint:
