@@ -111,6 +111,10 @@ function resolveLastRunEpochMs(lastRunTimeMs: number | undefined, history: reado
   return newestHistoryEpochMs(history);
 }
 
+function resolveScheduleAnchor(lastRun: number, lastSuccessAtMs: number | null, now: number): number {
+  return lastSuccessAtMs !== null && lastSuccessAtMs <= now ? Math.max(lastRun, lastSuccessAtMs) : lastRun;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -658,6 +662,7 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     // otherwise-immortal failure streak so automation resumes — the live wedge.
     const lastSuccessAtMs = await probeLastSuccessfulRunAt(connectorId, key);
     const decision = computeNextRunWithBackoff(history, scheduleIntervalMs, lastRun, { lastSuccessAtMs });
+    const scheduleAnchor = resolveScheduleAnchor(lastRun, lastSuccessAtMs, now);
 
     // Cross-run source-pressure cooldown. Independent of failure back-off: a
     // connection that *succeeded* but deferred work under upstream pressure
@@ -680,12 +685,12 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
       connectorId,
       freshPressureGaps,
       scheduleIntervalMs,
-      lastRun,
+      scheduleAnchor,
       { consecutiveCooldownCycles }
     );
     const cooldownDefers = isSourcePressureCooldownDeferring(cooldown, now);
 
-    const elapsed = now - lastRun;
+    const elapsed = now - scheduleAnchor;
     const intervalElapsed = elapsed >= decision.effectiveIntervalMs;
     // Forward-walk eligibility: gated by BOTH the failure-backoff interval AND
     // the source-pressure cooldown. New source-touching work (the forward walk

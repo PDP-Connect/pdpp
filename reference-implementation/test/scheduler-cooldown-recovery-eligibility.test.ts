@@ -540,6 +540,48 @@ test("a genuine cross-path success NEWER than the streak clears the stale back-o
   }
 });
 
+test("a recent manual success postpones ordinary scheduled work until the configured interval elapses", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-manual-success-schedule-anchor-"));
+  const { attemptsPath, connectorPath } = writeUnusedConnector(tmpDir, "manual-success-anchor.mjs");
+  const completedRuns: RunRecord[] = [];
+  const connectorId = "manual-success-schedule-anchor";
+  const now = Date.now();
+
+  const scheduler = createScheduler({
+    connectors: [
+      {
+        connectorId,
+        connectorInstanceId: connectorId,
+        connectorPath,
+        intervalMs: 5000,
+        manifest: POLICY_BLOCKED_MANIFEST,
+        maxRetries: 0,
+        ownerSubjectId: "owner-schedule-anchor",
+        ownerToken: "owner-token",
+      },
+    ],
+    getLastSuccessfulRunAt: () => now,
+    getNonPressureRecoverableCount: () => 0,
+    getSourcePressureGaps: () => [],
+    onInteraction: cancelledInteractionResponse,
+    onRunComplete: (record) => completedRuns.push(record),
+    rsUrl: "http://localhost.invalid",
+    schedulerStore: backoffWedgeStore(connectorId, { failures: 0, lastFailAt: now - 3_600_000 }),
+  });
+
+  try {
+    scheduler.start();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    scheduler.stop();
+
+    assert.equal(policySkips(completedRuns).length, 0, "the manual success resets the ordinary schedule clock");
+    assert.equal(readAttempts(attemptsPath).length, 0, "the connector is not relaunched before its interval");
+  } finally {
+    scheduler.stop();
+    rmSync(tmpDir, { force: true, recursive: true });
+  }
+});
+
 test("a STALE cross-path success (older than the streak) does NOT clear the back-off → still defers", async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-backoff-stale-"));
   const { attemptsPath, connectorPath } = writeUnusedConnector(tmpDir, "recovery-stale.mjs");
