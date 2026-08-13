@@ -109,8 +109,16 @@ async function runCancelQueueScenario(
           resolveFirstIngest();
         }
         setTimeout(() => {
+          const recordsAccepted = body.split("\\n").filter(Boolean).length;
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ records_accepted: body.split("\\n").filter(Boolean).length, records_rejected: 0 }));
+          res.end(
+            JSON.stringify({
+              records_accepted: recordsAccepted,
+              records_attempted: recordsAccepted,
+              records_rejected: 0,
+              rejections: [],
+            })
+          );
         }, 20).unref();
         return;
       }

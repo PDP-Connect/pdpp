@@ -52,7 +52,6 @@ import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.
 
 const STREAM = "items";
 const RUN_TERMINAL_RE = /run .* is already terminal/;
-const IDENTITY_MISMATCH_RE = /key and data\.id disagree/;
 const FIXED_TEMPLATE_RE = /systemic\/retryable record failure/;
 const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
 
@@ -157,6 +156,7 @@ function mountRealIngestRoute(opts: {
     classifyIngestFailure,
     emitMutationEvent: async () => undefined,
     emitMutationRequested: async () => undefined,
+    getOwnerTokenSubjectId: () => "owner",
     handleError: (_res: unknown, err: unknown) => {
       throw err;
     },
@@ -177,6 +177,11 @@ function mountRealIngestRoute(opts: {
             ),
         }
       : {}),
+    insertOrReplayRecordRejection: (input: { code: string; inputIndex: number }) => ({
+      code: input.code,
+      input_index: input.inputIndex,
+      receipt_id: `rr_${input.inputIndex}_${input.code}`,
+    }),
     rejectMutation: (_res: unknown, _req: unknown, _mctx: unknown, err: Error) => Promise.reject(err),
     requireOwner: (_req: unknown, _res: unknown, next: () => unknown) => next(),
     requireToken: (_req: unknown, _res: unknown, next: () => unknown) => next(),
@@ -227,14 +232,23 @@ test("ALL records failing PERMANENTLY (invalid_record_identity) resolves the 200
   const body = '{"key":"not_p1","data":{"id":"p1"}}\n{"key":"not_p2","data":{"id":"p2"}}';
   await handler(ingestRequest(body, { connectorId, connectorInstanceId }), res);
 
-  const envelope = jsonBody() as { errors: readonly string[]; records_accepted: number; records_rejected: number };
+  const envelope = jsonBody() as {
+    errors: readonly string[];
+    records_accepted: number;
+    records_attempted: number;
+    records_rejected: number;
+    rejections: readonly { code: string; input_index: number; receipt_id: string }[];
+  };
   assert.equal(envelope.records_accepted, 0);
+  assert.equal(envelope.records_attempted, 2);
   assert.equal(envelope.records_rejected, 2);
-  assert.equal(envelope.errors.length, 2);
-  assert.ok(
-    envelope.errors.every((e) => IDENTITY_MISMATCH_RE.test(e)),
-    "both rejections must be the real permanent identity-mismatch error, not a generic message"
-  );
+  assert.deepEqual(envelope.rejections, [
+    { code: "invalid_record_identity", input_index: 0, receipt_id: "rr_0_invalid_record_identity" },
+    { code: "invalid_record_identity", input_index: 1, receipt_id: "rr_1_invalid_record_identity" },
+  ]);
+  assert.deepEqual(envelope.errors, []);
+  assert.equal(JSON.stringify(envelope).includes("not_p1"), false);
+  assert.equal(JSON.stringify(envelope).includes('"p1"'), false);
   assert.equal(
     readCommittedRecordSqlite(connectorInstanceId, "p1"),
     undefined,
@@ -498,14 +512,20 @@ if (POSTGRES_URL) {
           const envelope = jsonBody() as {
             errors: readonly string[];
             records_accepted: number;
+            records_attempted: number;
             records_rejected: number;
+            rejections: readonly { code: string; input_index: number; receipt_id: string }[];
           };
           assert.equal(envelope.records_accepted, 0);
+          assert.equal(envelope.records_attempted, 2);
           assert.equal(envelope.records_rejected, 2);
-          assert.ok(
-            envelope.errors.every((e) => IDENTITY_MISMATCH_RE.test(e)),
-            "both rejections must be the real permanent identity-mismatch error on Postgres, not a generic message"
-          );
+          assert.deepEqual(envelope.rejections, [
+            { code: "invalid_record_identity", input_index: 0, receipt_id: "rr_0_invalid_record_identity" },
+            { code: "invalid_record_identity", input_index: 1, receipt_id: "rr_1_invalid_record_identity" },
+          ]);
+          assert.deepEqual(envelope.errors, []);
+          assert.equal(JSON.stringify(envelope).includes("not_pg2"), false);
+          assert.equal(JSON.stringify(envelope).includes('"pg2"'), false);
           assert.equal(await readCommittedRecordPostgres(connectorInstanceId, "pg2"), undefined);
         } finally {
           await closePostgresStorage();

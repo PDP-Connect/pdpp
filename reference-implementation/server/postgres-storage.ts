@@ -26,6 +26,7 @@ import {
   connectorInstanceLockWaitMs,
 } from "./connector-instance-write-coordinator.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
+import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "./record-rejection-replay-key.ts";
 import { bumpStorageGeneration } from "./storage-generation.ts";
 
 const VALID_BACKENDS = new Set(["sqlite", "postgres"]);
@@ -458,8 +459,143 @@ async function ensurePostgresBrowserSurfaceLeaseColumnsAndIndexes(client: PoolCl
   }
 }
 
+async function migratePostgresRetainedSizeRejectionColumns(client: PoolClient): Promise<void> {
+  const existingColumn = await client.query(
+    `SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'retained_size_global'
+        AND column_name = 'record_rejection_payload_bytes'`
+  );
+  for (const table of [
+    "retained_size_global",
+    "retained_size_connection",
+    "retained_size_stream",
+    "retained_size_record_family",
+    "retained_size_top_rows",
+  ]) {
+    // biome-ignore lint/performance/noAwaitInLoops: one PoolClient is already inside bootstrap transaction scope; pg warns on concurrent queries on the same client.
+    await client.query(
+      `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0`
+    );
+    await client.query(
+      `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS record_rejection_count BIGINT NOT NULL DEFAULT 0`
+    );
+  }
+  if ((existingColumn.rowCount ?? 0) > 0) {
+    return;
+  }
+  await client.query(`
+    INSERT INTO retained_size_stream(connector_instance_id, connector_id, stream, dirty)
+    SELECT connector_instance_id, MAX(connector_id), stream, 1
+      FROM record_rejections
+     GROUP BY connector_instance_id, stream
+    ON CONFLICT(connector_instance_id, stream) DO UPDATE SET dirty = 1;
+    INSERT INTO retained_size_connection(connector_instance_id, connector_id, dirty)
+    SELECT connector_instance_id, MAX(connector_id), 1
+      FROM record_rejections
+     GROUP BY connector_instance_id
+    ON CONFLICT(connector_instance_id) DO UPDATE SET dirty = 1;
+    UPDATE retained_size_global
+       SET dirty = 1
+     WHERE EXISTS (SELECT 1 FROM record_rejections)
+  `);
+}
+
 export function postgresQuery<Row extends QueryResultRow = QueryResultRow>(sql: string, params: unknown[] = []) {
   return getPostgresPool().query<Row>(sql, params);
+}
+
+async function migratePostgresRecordRejectionBytePayload(client: PoolClient): Promise<void> {
+  await client.query("BEGIN");
+  try {
+    await client.query(`
+    ALTER TABLE record_rejection_quota
+      ADD COLUMN IF NOT EXISTS pending_receipt_count BIGINT NOT NULL DEFAULT 0 CHECK (pending_receipt_count >= 0)
+  `);
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS payload BYTEA");
+    await client.query(
+      "ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS rejection_generation TEXT NOT NULL DEFAULT 'record-rejection-v1'"
+    );
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS first_run_id TEXT");
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS latest_run_id TEXT");
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS accepted_run_id TEXT");
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS accepted_record_key TEXT");
+    await client.query("ALTER TABLE record_rejections ADD COLUMN IF NOT EXISTS accepted_at TEXT");
+    await client.query(
+      "UPDATE record_rejections SET first_run_id = COALESCE(first_run_id, run_id), latest_run_id = COALESCE(latest_run_id, run_id)"
+    );
+    await client.query("ALTER TABLE record_rejections DROP CONSTRAINT IF EXISTS record_rejections_status_check");
+    await client.query(
+      "ALTER TABLE record_rejections ADD CONSTRAINT record_rejections_status_check CHECK (status IN ('pending', 'stale_after_acceptance'))"
+    );
+    const legacyTextColumn = await client.query(
+      `SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'record_rejections'
+        AND column_name = 'payload_text'
+      LIMIT 1`
+    );
+    if ((legacyTextColumn.rowCount ?? 0) > 0) {
+      await client.query(
+        "UPDATE record_rejections SET payload = convert_to(payload_text, 'UTF8') WHERE payload IS NULL"
+      );
+    }
+    await client.query(`
+    UPDATE record_rejection_quota
+       SET pending_payload_bytes = counts.payload_bytes,
+           pending_receipt_count = counts.receipt_count
+      FROM (
+        SELECT owner_subject_id,
+               COALESCE(SUM(payload_bytes), 0)::bigint AS payload_bytes,
+               COUNT(*)::bigint AS receipt_count
+          FROM record_rejections
+         GROUP BY owner_subject_id
+      ) counts
+     WHERE record_rejection_quota.owner_subject_id = counts.owner_subject_id
+       AND (
+         record_rejection_quota.pending_payload_bytes IS DISTINCT FROM counts.payload_bytes
+         OR record_rejection_quota.pending_receipt_count IS DISTINCT FROM counts.receipt_count
+       )
+  `);
+    await client.query("ALTER TABLE record_rejections ALTER COLUMN payload SET NOT NULL");
+    if ((legacyTextColumn.rowCount ?? 0) > 0) {
+      await client.query("ALTER TABLE record_rejections DROP COLUMN payload_text");
+    }
+    const rows = await client.query<{
+      connector_instance_id: string;
+      owner_subject_id: string;
+      payload: Buffer;
+      reason_code: string;
+      receipt_id: string;
+      stream: string;
+    }>(
+      `SELECT receipt_id, owner_subject_id, connector_instance_id, stream, payload, reason_code
+         FROM record_rejections
+        WHERE rejection_generation <> $1`,
+      [RECORD_REJECTION_GENERATION]
+    );
+    for (const row of rows.rows) {
+      // biome-ignore lint/performance/noAwaitInLoops: Migration updates stay ordered inside the explicit transaction.
+      await client.query(
+        "UPDATE record_rejections SET replay_key = $1, rejection_generation = $2 WHERE receipt_id = $3",
+        [
+          recordRejectionReplayKey({
+            connectorInstanceId: row.connector_instance_id,
+            ownerSubjectId: row.owner_subject_id,
+            payload: row.payload,
+            reasonCode: row.reason_code,
+            stream: row.stream,
+          }),
+          RECORD_REJECTION_GENERATION,
+          row.receipt_id,
+        ]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
 }
 
 // ─── Physical storage footprint (read-only operator diagnostics) ─────────────
@@ -818,6 +954,43 @@ export async function bootstrapPostgresSchema({
         ON connector_instances(owner_subject_id, connector_id, status);
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instances_owner_identity_page
         ON connector_instances(owner_subject_id, connector_id, created_at, connector_instance_id);
+
+      CREATE TABLE IF NOT EXISTS record_rejection_quota (
+        owner_subject_id TEXT PRIMARY KEY,
+        pending_payload_bytes BIGINT NOT NULL DEFAULT 0 CHECK (pending_payload_bytes >= 0),
+        pending_receipt_count BIGINT NOT NULL DEFAULT 0 CHECK (pending_receipt_count >= 0),
+        updated_at TEXT NOT NULL DEFAULT (now() AT TIME ZONE 'utc')::text
+      );
+
+      CREATE TABLE IF NOT EXISTS record_rejections (
+        receipt_id TEXT PRIMARY KEY,
+        owner_subject_id TEXT NOT NULL REFERENCES record_rejection_quota(owner_subject_id) ON DELETE RESTRICT,
+        connector_instance_id TEXT NOT NULL REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+        connector_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        run_id TEXT,
+        first_input_index BIGINT NOT NULL CHECK (first_input_index >= 0),
+        latest_input_index BIGINT NOT NULL CHECK (latest_input_index >= 0),
+        first_run_id TEXT,
+        latest_run_id TEXT,
+        reason_code TEXT NOT NULL,
+        payload BYTEA NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        payload_bytes BIGINT NOT NULL CHECK (payload_bytes >= 0),
+        rejection_generation TEXT NOT NULL DEFAULT '${RECORD_REJECTION_GENERATION}',
+        replay_key TEXT NOT NULL UNIQUE,
+        replay_count BIGINT NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'stale_after_acceptance')),
+        accepted_run_id TEXT,
+        accepted_record_key TEXT,
+        accepted_at TEXT,
+        created_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_record_rejections_connection_page
+        ON record_rejections(owner_subject_id, connector_instance_id, created_at, receipt_id);
+      CREATE INDEX IF NOT EXISTS idx_pg_record_rejections_connection_receipt
+        ON record_rejections(owner_subject_id, connector_instance_id, receipt_id);
 
       -- Durable record that a connector-instance IDENTITY was owner-deleted.
       -- See the SQLite arm (server/db.js) for the full rationale: the
@@ -1974,9 +2147,11 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         metadata_json             JSONB
@@ -1988,9 +2163,11 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT
       );
@@ -2004,9 +2181,11 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         PRIMARY KEY(connector_instance_id, stream)
@@ -2020,9 +2199,11 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         PRIMARY KEY(connector_instance_id, stream, record_family)
@@ -2041,10 +2222,12 @@ export async function bootstrapPostgresSchema({
         current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
         record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
         blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_rejection_payload_bytes BIGINT NOT NULL DEFAULT 0,
         total_retained_bytes      BIGINT NOT NULL DEFAULT 0,
         record_count              BIGINT NOT NULL DEFAULT 0,
         record_history_count      BIGINT NOT NULL DEFAULT 0,
-        blob_count                BIGINT NOT NULL DEFAULT 0,
+        blob_count                    BIGINT NOT NULL DEFAULT 0,
+  record_rejection_count       BIGINT NOT NULL DEFAULT 0,
         dirty                     INTEGER NOT NULL DEFAULT 1,
         computed_at               TEXT,
         metadata_json             JSONB,
@@ -2377,6 +2560,8 @@ export async function bootstrapPostgresSchema({
     await ensurePostgresBrowserSurfaceLeaseColumnsAndIndexes(client);
     await migratePostgresBrowserSurfaceLeaseLifecycleChecks(client);
     await migratePostgresBrowserSurfaceLeasePriority(client);
+    await migratePostgresRecordRejectionBytePayload(client);
+    await migratePostgresRetainedSizeRejectionColumns(client);
     await migratePostgresSpineSourceColumns(client);
     await migratePostgresDeviceExporterColumns(client);
     await migratePostgresManifestWriteViolations(client);

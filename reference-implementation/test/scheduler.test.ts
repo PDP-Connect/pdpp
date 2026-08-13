@@ -786,7 +786,11 @@ test("scheduler history records checkpoint summaries from runConnector results",
       buffered_records_dropped: 0,
       commit_status: "committed",
       mode: "checkpointed_streaming",
+      records_accepted: 21,
+      records_attempted: 21,
       records_flushed: 21,
+      records_permanently_rejected: 0,
+      records_unresolved_retryable: 0,
       state_streams_committed: 2,
       state_streams_staged: 2,
     });
@@ -1236,7 +1240,11 @@ rl.on('line', (line) => {
       buffered_records_dropped: 0,
       commit_status: "not_committed",
       mode: "checkpointed_streaming",
+      records_accepted: 0,
+      records_attempted: 0,
       records_flushed: 0,
+      records_permanently_rejected: 0,
+      records_unresolved_retryable: 0,
       state_streams_committed: 0,
       state_streams_staged: 0,
     });
@@ -1350,7 +1358,7 @@ rl.on('line', (line) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (req.method === "POST" && url.pathname.startsWith("/v1/ingest/")) {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+      res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
       return;
     }
 
@@ -1430,7 +1438,11 @@ rl.on('line', (line) => {
       buffered_records_dropped: 0,
       commit_status: "partially_committed",
       mode: "checkpointed_streaming",
+      records_accepted: 2,
+      records_attempted: 2,
       records_flushed: 2,
+      records_permanently_rejected: 0,
+      records_unresolved_retryable: 0,
       state_streams_committed: 1,
       state_streams_staged: 2,
     });
@@ -1576,7 +1588,11 @@ rl.on('line', (line) => {
       buffered_records_dropped: 0,
       commit_status: "not_committed",
       mode: "checkpointed_streaming",
+      records_accepted: 1,
+      records_attempted: 1,
       records_flushed: 1,
+      records_permanently_rejected: 0,
+      records_unresolved_retryable: 0,
       state_streams_committed: 0,
       state_streams_staged: 1,
     });
@@ -1707,7 +1723,11 @@ rl.on('line', (line) => {
       buffered_records_dropped: 1,
       commit_status: "not_committed",
       mode: "checkpointed_streaming",
+      records_accepted: 0,
+      records_attempted: 0,
       records_flushed: 0,
+      records_permanently_rejected: 0,
+      records_unresolved_retryable: 0,
       state_streams_committed: 0,
       state_streams_staged: 0,
     });
@@ -1943,7 +1963,11 @@ rl.on('line', (line) => {
       buffered_records_dropped: 1,
       commit_status: "not_committed",
       mode: "checkpointed_streaming",
+      records_accepted: 0,
+      records_attempted: 0,
       records_flushed: 0,
+      records_permanently_rejected: 0,
+      records_unresolved_retryable: 0,
       state_streams_committed: 0,
       state_streams_staged: 0,
     });
@@ -2427,7 +2451,11 @@ rl.on('line', (line) => {
       buffered_records_dropped: 1,
       commit_status: "not_committed",
       mode: "checkpointed_streaming",
+      records_accepted: 0,
+      records_attempted: 1,
       records_flushed: 0,
+      records_permanently_rejected: 0,
+      records_unresolved_retryable: 1,
       state_streams_committed: 0,
       state_streams_staged: 0,
     });
@@ -2521,7 +2549,7 @@ rl.on('line', (line) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (req.method === "POST" && url.pathname === "/v1/ingest/items") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+      res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
       return;
     }
 
@@ -2582,7 +2610,11 @@ rl.on('line', (line) => {
       buffered_records_dropped: 0,
       commit_status: "not_committed",
       mode: "checkpointed_streaming",
+      records_accepted: 1,
+      records_attempted: 1,
       records_flushed: 1,
+      records_permanently_rejected: 0,
+      records_unresolved_retryable: 0,
       state_streams_committed: 0,
       state_streams_staged: 1,
     });
@@ -2728,7 +2760,11 @@ rl.on('line', (line) => {
       buffered_records_dropped: 1,
       commit_status: "not_committed",
       mode: "checkpointed_streaming",
+      records_accepted: 0,
+      records_attempted: 1,
       records_flushed: 0,
+      records_permanently_rejected: 0,
+      records_unresolved_retryable: 1,
       state_streams_committed: 0,
       state_streams_staged: 0,
     });
@@ -2835,7 +2871,7 @@ rl.on('line', (line) => {
       }
 
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+      res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
       return;
     }
 
@@ -2883,7 +2919,11 @@ rl.on('line', (line) => {
       buffered_records_dropped: 0,
       commit_status: "committed",
       mode: "checkpointed_streaming",
+      records_accepted: 1,
+      records_attempted: 1,
       records_flushed: 1,
+      records_permanently_rejected: 0,
+      records_unresolved_retryable: 0,
       state_streams_committed: 0,
       state_streams_staged: 0,
     });
@@ -2970,7 +3010,7 @@ rl.on('line', (line) => {
       }
 
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+      res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
       return;
     }
 
@@ -3018,7 +3058,11 @@ rl.on('line', (line) => {
       buffered_records_dropped: 0,
       commit_status: "committed",
       mode: "checkpointed_streaming",
+      records_accepted: 1,
+      records_attempted: 1,
       records_flushed: 1,
+      records_permanently_rejected: 0,
+      records_unresolved_retryable: 0,
       state_streams_committed: 0,
       state_streams_staged: 0,
     });
@@ -3096,7 +3140,11 @@ test("scheduler treats single_use grants as one successful run followed by exhau
       buffered_records_dropped: 0,
       commit_status: "disabled",
       mode: "checkpointed_streaming",
+      records_accepted: 21,
+      records_attempted: 21,
       records_flushed: 21,
+      records_permanently_rejected: 0,
+      records_unresolved_retryable: 0,
       state_streams_committed: 0,
       state_streams_staged: 2,
     });
@@ -3327,7 +3375,11 @@ rl.on('line', (line) => {
       buffered_records_dropped: 0,
       commit_status: "disabled",
       mode: "checkpointed_streaming",
+      records_accepted: 0,
+      records_attempted: 0,
       records_flushed: 0,
+      records_permanently_rejected: 0,
+      records_unresolved_retryable: 0,
       state_streams_committed: 0,
       state_streams_staged: 0,
     });

@@ -75,13 +75,18 @@ import {
 import {
   executeRecordsIngest,
   type IngestLineFailure,
+  type InsertOrReplayRejectionInput,
+  parseLines as parseIngestLines,
   type RecordsIngestDependencies,
   RecordsIngestInvalidRequestError,
   RecordsIngestNotFoundError,
   type RecordsIngestOutput,
+  RecordsIngestResourceLimitError,
   RecordsIngestSystemicFailureError,
+  type RejectionReceipt,
 } from "../../operations/rs-records-ingest/index.ts";
 import { canonicalConnectorKey } from "../connector-key.ts";
+import { HOSTED_INGEST_MAX_LINE_BYTES } from "../hosted-ingest-limits.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -265,9 +270,13 @@ function batchOutcomeError(outcome: unknown): IngestLineFailure | null {
   }
   const result = outcome as { accepted?: unknown; error?: unknown };
   if (result.error && typeof result.error === "object") {
-    const structured = result.error as { message?: unknown; retryable?: unknown };
+    const structured = result.error as { code?: unknown; message?: unknown; retryable?: unknown };
     if (typeof structured.message === "string") {
-      return { message: structured.message, retryable: structured.retryable !== false };
+      return {
+        ...(typeof structured.code === "string" ? { code: structured.code } : {}),
+        message: structured.message,
+        retryable: structured.retryable !== false,
+      };
     }
   }
   if (typeof result.error === "string") {
@@ -425,6 +434,7 @@ export interface MountRsMutationContext {
   readonly getLatestAcquisitionBatchForConnection?: (
     connectorInstanceId: string
   ) => Promise<AcquisitionBatchLike | null> | AcquisitionBatchLike | null;
+  readonly getOwnerTokenSubjectId?: (req: RouteRequest) => string;
   readonly getSyncState: (target: StorageTargetLike, args: unknown) => Promise<unknown>;
 
   // Capability: error handler for untyped errors
@@ -445,6 +455,19 @@ export interface MountRsMutationContext {
     afterRecord?: (record: unknown, outcome: unknown) => Promise<void>,
     options?: { requireConnectionAdmission?: boolean; runId?: string | null }
   ) => Promise<readonly unknown[]>;
+  readonly insertOrReplayRecordRejection?: (input: {
+    auditActorId: string;
+    auditActorType: string;
+    auditTraceId: string | null;
+    code: string;
+    connectorId: string;
+    connectorInstanceId: string;
+    inputIndex: number;
+    ownerSubjectId: string;
+    rawLine: Buffer;
+    runId?: string | null;
+    stream: string;
+  }) => Promise<RejectionReceipt> | RejectionReceipt;
   // Every other owner-connection mutation route (revoke, reactivate,
   // schedule, run, rename, delete — see routes/owner-connection-*.ts,
   // ref-connectors.ts) invalidates the dashboard/Sources/Syncs summary cache
@@ -453,6 +476,18 @@ export interface MountRsMutationContext {
   // above is the same kind of mutation (draft -> active) and must invalidate
   // too — see `maybeActivateDraftAfterIngest`.
   readonly invalidateConnectorSummariesCache?: () => void;
+  readonly markAcceptedRecordRejectionsStale?: (input: {
+    auditActorId: string;
+    auditActorType: string;
+    auditTraceId: string | null;
+    connectorId: string;
+    connectorInstanceId: string;
+    ownerSubjectId: string;
+    rawLine: Buffer;
+    recordKey?: string | null;
+    runId?: string | null;
+    stream: string;
+  }) => Promise<unknown> | unknown;
   readonly markAcquisitionBatchCommitted?: (
     connectorInstanceId: string,
     counts: { acceptedCount?: number; failedCount?: number; updatedAt?: string }
@@ -519,6 +554,39 @@ export interface MountRsMutationContext {
 
   // Capability: format the state response
   readonly toPublicConnectorStateProjection: (state: unknown) => unknown;
+}
+
+function insertHostedRejectionReceipt(
+  ctx: MountRsMutationContext,
+  req: RouteRequest,
+  input: InsertOrReplayRejectionInput,
+  namespace: ConnectorNamespaceLike,
+  runId: string | null,
+  traceId: string | null
+): Promise<RejectionReceipt> | RejectionReceipt {
+  if (!ctx.insertOrReplayRecordRejection) {
+    throw new Error("hosted rejection receipt persistence is not configured");
+  }
+  const ownerSubjectId = ctx.getOwnerTokenSubjectId?.(req) ?? req.tokenInfo?.subject_id;
+  if (!ownerSubjectId) {
+    throw new Error("owner-token subject is not available for rejection receipt persistence");
+  }
+  if (!namespace.connectorInstanceId) {
+    throw new Error("connector instance is required for rejection receipt persistence");
+  }
+  return ctx.insertOrReplayRecordRejection({
+    auditActorId: ownerSubjectId,
+    auditActorType: "subject",
+    auditTraceId: traceId,
+    code: input.code,
+    connectorId: namespace.connectorId ?? input.connectorId,
+    connectorInstanceId: namespace.connectorInstanceId,
+    inputIndex: input.inputIndex,
+    ownerSubjectId,
+    rawLine: input.rawLine,
+    runId,
+    stream: input.stream,
+  });
 }
 
 // POST /v1/blobs
@@ -1068,6 +1136,16 @@ export function mountRsRecordsDelete(app: AppLike, ctx: MountRsMutationContext):
 // response writing. It MUST NOT recompute line splitting, connector_id
 // presence, manifest visibility, JSON parse handling, the
 // accepted/rejected counters, or the response envelope locally.
+function requestBodyBytes(body: unknown): Buffer {
+  if (Buffer.isBuffer(body)) {
+    return body;
+  }
+  if (typeof body === "string") {
+    return Buffer.from(body);
+  }
+  return Buffer.alloc(0);
+}
+
 export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext): void {
   app.post("/v1/ingest/:stream", ctx.requireToken, ctx.requireOwner, async (req: RouteRequest, res: RouteResponse) => {
     const connectorId = canonicalizeConnectorId(ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id));
@@ -1082,9 +1160,8 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
     // the mutation context must be computed here using the same parser.
     // Index.js imported `parseLines as parseIngestLines` from the operation
     // module and called it here. We replicate that call with the same body arg.
-    const rawBody = typeof req.body === "string" ? req.body : "";
-    // Inline line-count: split on newlines, filter empty — mirrors parseLines.
-    const lineCount = rawBody.split("\n").filter((l: string) => l.trim().length > 0).length;
+    const rawBody = requestBodyBytes(req.body);
+    const lineCount = parseIngestLines(rawBody, { maxLineBytes: HOSTED_INGEST_MAX_LINE_BYTES }).length;
     const mutationContext = ctx.buildMutationContext(req, res, {
       connectorId,
       connectorInstanceId,
@@ -1106,25 +1183,26 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
       // omitted (not set to undefined) so it doesn't trip exactOptionalPropertyTypes.
       const draftAdmission = (cin: string | null) => (cin ? { allowStatuses: ["active", "draft"] as const } : {});
       const { ingestRecords } = ctx;
+      const resolveAdmittedNamespace = async (
+        cid: string,
+        requestedConnectorInstanceId: string | null
+      ): Promise<ConnectorNamespaceLike> => {
+        storageNamespace ??= await ctx.resolveOwnerConnectorNamespace(req, cid, {
+          ...draftAdmission(requestedConnectorInstanceId),
+          connectorInstanceId: requestedConnectorInstanceId,
+        });
+        if (!storageNamespace.connectorInstanceId) {
+          throw new Error("connector instance is required for hosted ingest");
+        }
+        return storageNamespace;
+      };
       const dependencies: RecordsIngestDependencies = {
         hasManifestStream: async (cid: string, streamName: string) => {
           const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
-          const visible = Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
-          if (visible) {
-            storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, cid, {
-              ...draftAdmission(connectorInstanceId),
-              connectorInstanceId,
-            });
-          }
-          return visible;
+          return Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
         },
-        ingestRecord: async (cid: string, cin: string | null, record: Record<string, unknown>) => {
-          const namespace =
-            storageNamespace ??
-            (await ctx.resolveOwnerConnectorNamespace(req, cid, {
-              ...draftAdmission(cin),
-              connectorInstanceId: cin,
-            }));
+        ingestRecord: async (cid: string, _cin: string | null, record: Record<string, unknown>) => {
+          const namespace = storageNamespace ?? (await resolveAdmittedNamespace(cid, _cin));
           const result = await ingestRecordClassified(ctx, namespace, record, runId);
           if (ctx.getLatestAcquisitionBatchForConnection && namespace.connectorInstanceId) {
             acquisitionBatchPromise ??= Promise.resolve(
@@ -1145,15 +1223,10 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
           ? {
               ingestRecords: async (
                 cid: string,
-                cin: string | null,
+                _cin: string | null,
                 records: readonly Record<string, unknown>[]
               ): Promise<readonly (IngestLineFailure | null)[]> => {
-                const namespace =
-                  storageNamespace ??
-                  (await ctx.resolveOwnerConnectorNamespace(req, cid, {
-                    ...draftAdmission(cin),
-                    connectorInstanceId: cin,
-                  }));
+                const namespace = storageNamespace ?? (await resolveAdmittedNamespace(cid, _cin));
                 // biome-ignore lint/suspicious/noUnnecessaryConditions: Express route params are nullable at runtime even though the local adapter type narrows them.
                 const streamName = req.params.stream ?? "";
                 const getLatestAcquisitionBatch = ctx.getLatestAcquisitionBatchForConnection;
@@ -1196,6 +1269,33 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
               },
             }
           : {}),
+        insertOrReplayRejection: async (input) => {
+          const namespace =
+            storageNamespace ?? (await resolveAdmittedNamespace(input.connectorId, input.connectorInstanceId ?? null));
+          return insertHostedRejectionReceipt(ctx, req, input, namespace, runId, mutationContext.traceId);
+        },
+        markAcceptedRecordRejectionsStale: async (input) => {
+          const ownerSubjectId = ctx.getOwnerTokenSubjectId?.(req) ?? req.tokenInfo?.subject_id;
+          if (!(ctx.markAcceptedRecordRejectionsStale && ownerSubjectId)) {
+            return;
+          }
+          await ctx.markAcceptedRecordRejectionsStale({
+            auditActorId: ownerSubjectId,
+            auditActorType: "subject",
+            auditTraceId: mutationContext.traceId,
+            connectorId: input.connectorId,
+            connectorInstanceId: input.connectorInstanceId,
+            ownerSubjectId,
+            rawLine: input.rawLine,
+            recordKey: input.recordKey ?? null,
+            runId: input.runId ?? runId,
+            stream: input.stream,
+          });
+        },
+        resolveAdmittedConnectorInstance: async (cid: string, requestedConnectorInstanceId: string | null) => {
+          const namespace = await resolveAdmittedNamespace(cid, requestedConnectorInstanceId);
+          return namespace.connectorInstanceId;
+        },
       };
       let output: RecordsIngestOutput;
       try {
@@ -1209,6 +1309,9 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
             body: rawBody,
             connectorId,
             connectorInstanceId,
+            hostedRejectionReceipts: true,
+            maxLineBytes: HOSTED_INGEST_MAX_LINE_BYTES,
+            runId,
             // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
             streamName: req.params.stream ?? "",
           },
@@ -1218,6 +1321,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
         if (
           opErr instanceof RecordsIngestInvalidRequestError ||
           opErr instanceof RecordsIngestNotFoundError ||
+          opErr instanceof RecordsIngestResourceLimitError ||
           opErr instanceof RecordsIngestSystemicFailureError
         ) {
           const mapped = new Error((opErr as Error).message) as Error & {
@@ -1237,7 +1341,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
         recordsRejected: output.envelope.records_rejected,
       });
       await ctx.emitMutationEvent(req, mutationContext, "mutation.completed", "succeeded", {
-        error_count: output.envelope.errors.length,
+        error_count: output.envelope.records_rejected,
         records_accepted: output.envelope.records_accepted,
         records_rejected: output.envelope.records_rejected,
       });

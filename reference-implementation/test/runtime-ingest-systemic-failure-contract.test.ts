@@ -31,10 +31,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { classifyRuntimeFailure } from "../runtime/classify-runtime-failure.ts";
 import { loadSyncState, runConnector } from "../runtime/index.ts";
+import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
 import { writeSqliteRunHistoryForSpineEvent } from "../server/stores/run-history-writer.ts";
+
+const REJECTION_RECEIPT_ID_RE = /^rr_[A-Za-z0-9_-]{24}$/;
 
 function fakeAdmitRunConnection(): (input: {
   connectorId: string;
@@ -170,10 +173,213 @@ async function issueOwnerToken(asUrl: string, subjectId = "owner_local"): Promis
 const nowIso = () => new Date().toISOString();
 
 const SYSTEMIC_FAILURE_RE = /already terminal|ingest_batch_storage_error|systemic\/retryable/;
+const RECEIPT_REQUIRED_RE = /ingest response|records_attempted|rejection|receipt/i;
+const INGEST_FAILED_RE = /Ingest failed for items/;
 
 function validRecord(id: string) {
   return { data: { id, value: "ok" }, emitted_at: nowIso(), key: id, stream: "items", type: "RECORD" };
 }
+
+function sqliteRunHistoryFacts(runId: string): Record<string, unknown> {
+  const row = getDb().prepare("SELECT facts_json FROM run_history WHERE run_id = ?").get(runId) as
+    | { facts_json: string | null }
+    | undefined;
+  assert.ok(row, `expected run_history row for ${runId}`);
+  return JSON.parse(row.facts_json ?? "{}") as Record<string, unknown>;
+}
+
+function urlFromFetchInput(input: Parameters<typeof fetch>[0]): URL {
+  if (typeof input === "string") {
+    return new URL(input);
+  }
+  if (input instanceof URL) {
+    return input;
+  }
+  return new URL(input.url);
+}
+
+function withStubbedIngestResponse(responseForBody: (body: string) => Response): () => void {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input, init) => {
+    const url = urlFromFetchInput(input);
+    if (url.pathname === "/v1/ingest/items") {
+      return Promise.resolve(responseForBody(String(init?.body ?? "")));
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  return () => {
+    globalThis.fetch = originalFetch;
+  };
+}
+
+test("runtime accounting: all permanently rejected records are not reported as flushed or accepted", async () => {
+  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const { asPort, rsPort } = server;
+  const asUrl = `http://localhost:${asPort}`;
+  const rsUrl = `http://localhost:${rsPort}`;
+  const connectorId = "runtime-rejection-accounting-all";
+  const runId = "run_rejection_accounting_all";
+  await registerManifest(asUrl, manifest(connectorId));
+  const ownerToken = await issueOwnerToken(asUrl);
+  const progress: unknown[] = [];
+  const restoreFetch = withStubbedIngestResponse((body) => {
+    assert.equal(body.split("\n").filter(Boolean).length, 2, "test setup submits two non-empty lines");
+    return new Response(
+      JSON.stringify({
+        records_accepted: 0,
+        records_attempted: 2,
+        records_rejected: 2,
+        rejections: [
+          { code: "invalid_record_identity", input_index: 0, receipt_id: "rr_all_0" },
+          { code: "invalid_record_identity", input_index: 1, receipt_id: "rr_all_1" },
+        ],
+      }),
+      { headers: { "Content-Type": "application/json" }, status: 200 }
+    );
+  });
+  const { connectorPath, cleanup } = createTestConnector([
+    validRecord("rej1"),
+    validRecord("rej2"),
+    { cursor: { cursor: "all_rejected_committed" }, stream: "items", type: "STATE" },
+    { records_emitted: 2, status: "succeeded", type: "DONE" },
+  ]);
+
+  try {
+    const result = await runConnector({
+      admitRunConnection: fakeAdmitRunConnection(),
+      collectionMode: "full_refresh",
+      connectorId,
+      connectorPath,
+      manifest: manifest(connectorId),
+      onInteraction: async () => ({}),
+      onProgress: (message) => progress.push(message),
+      ownerToken,
+      persistState: true,
+      rsUrl,
+      runId,
+      scope: { streams: [{ name: "items" }] },
+      state: null,
+    });
+
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.records_emitted, 2);
+    assert.equal(result.records_attempted, 2);
+    assert.equal(result.records_accepted, 0);
+    assert.equal(result.records_permanently_rejected, 2);
+    assert.equal(result.records_unresolved_retryable, 0);
+    assert.equal(result.checkpoint_summary?.records_flushed, 0, "legacy flushed means confirmed accepted only");
+    assert.equal(result.checkpoint_summary?.records_attempted, 2);
+    assert.equal(result.checkpoint_summary?.records_permanently_rejected, 2);
+
+    const ingestProgress = progress.find(
+      (message) => (message as { type?: string; stream?: string }).type === "ingest"
+    ) as Record<string, unknown> | undefined;
+    assert.equal(ingestProgress?.records_attempted, 2);
+    assert.equal(ingestProgress?.records_accepted, 0);
+    assert.equal(ingestProgress?.records_permanently_rejected, 2);
+    assert.equal(ingestProgress?.total_records_flushed, 0);
+
+    const facts = sqliteRunHistoryFacts(runId);
+    assert.equal(facts.records_attempted, 2);
+    assert.equal(facts.records_accepted, 0);
+    assert.equal(facts.records_permanently_rejected, 2);
+    assert.equal(facts.records_unresolved_retryable, 0);
+    assert.equal(facts.records_flushed, 0);
+
+    const state = (await loadSyncState(connectorId, ownerToken, { rsUrl })) as Record<
+      string,
+      { cursor?: string } | undefined
+    > | null;
+    assert.equal(state?.items?.cursor, "all_rejected_committed", "complete receipts allow cursor commit");
+  } finally {
+    restoreFetch();
+    cleanup();
+    await closeServer(server);
+  }
+});
+
+test("runtime accounting: failed ingest attempts stay unresolved and do not commit cursor state", async () => {
+  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const { asPort, rsPort } = server;
+  const asUrl = `http://localhost:${asPort}`;
+  const rsUrl = `http://localhost:${rsPort}`;
+  const connectorId = "runtime-rejection-accounting-unresolved";
+  const runId = "run_rejection_accounting_unresolved";
+  await registerManifest(asUrl, manifest(connectorId));
+  const ownerToken = await issueOwnerToken(asUrl);
+  const progress: unknown[] = [];
+  const restoreFetch = withStubbedIngestResponse(
+    () =>
+      new Response(JSON.stringify({ error: "simulated retryable failure" }), {
+        headers: { "Content-Type": "application/json" },
+        status: 503,
+      })
+  );
+  const { connectorPath, cleanup } = createTestConnector([
+    validRecord("unresolved1"),
+    validRecord("unresolved2"),
+    { cursor: { cursor: "must_not_commit" }, stream: "items", type: "STATE" },
+    { records_emitted: 2, status: "succeeded", type: "DONE" },
+  ]);
+
+  try {
+    await assert.rejects(
+      () =>
+        runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
+          collectionMode: "full_refresh",
+          connectorId,
+          connectorPath,
+          manifest: manifest(connectorId),
+          onInteraction: async () => ({}),
+          onProgress: (message) => progress.push(message),
+          ownerToken,
+          persistState: true,
+          rsUrl,
+          runId,
+          scope: { streams: [{ name: "items" }] },
+          state: null,
+        }),
+      (err: unknown) => {
+        const typed = err as {
+          checkpoint_summary?: Record<string, unknown>;
+          message?: string;
+          records_emitted?: number;
+        };
+        assert.match(typed.message ?? "", INGEST_FAILED_RE);
+        assert.equal(typed.checkpoint_summary?.records_attempted, 2);
+        assert.equal(typed.checkpoint_summary?.records_accepted, 0);
+        assert.equal(typed.checkpoint_summary?.records_permanently_rejected, 0);
+        assert.equal(typed.checkpoint_summary?.records_unresolved_retryable, 2);
+        assert.equal(typed.checkpoint_summary?.records_flushed, 0);
+        return true;
+      }
+    );
+
+    const doneProgress = progress.findLast?.((message) => (message as { type?: string }).type === "done") as
+      | Record<string, unknown>
+      | undefined;
+    assert.equal(doneProgress?.records_attempted, 2);
+    assert.equal(doneProgress?.records_unresolved_retryable, 2);
+
+    const facts = sqliteRunHistoryFacts(runId);
+    assert.equal(facts.records_attempted, 2);
+    assert.equal(facts.records_accepted, 0);
+    assert.equal(facts.records_permanently_rejected, 0);
+    assert.equal(facts.records_unresolved_retryable, 2);
+    assert.equal(facts.records_flushed, 0);
+
+    const state = (await loadSyncState(connectorId, ownerToken, { rsUrl })) as Record<
+      string,
+      { cursor?: string } | undefined
+    > | null;
+    assert.ok(state?.items?.cursor !== "must_not_commit", "unresolved ingest attempts must block cursor commit");
+  } finally {
+    restoreFetch();
+    cleanup();
+    await closeServer(server);
+  }
+});
 
 test("runtime-level: a systemic failure (run_terminal) fails the run terminally and commits NO cursor", async () => {
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
@@ -424,6 +630,110 @@ test("runtime-level: a malformed RECORD is a protocol violation, rejected before
     const itemsRecords = (itemsBody as { data?: unknown[]; records?: unknown[] }).data || [];
     assert.equal(itemsRecords.length, 0, "the malformed record must never land in durable storage");
   } finally {
+    cleanup();
+    await closeServer(server);
+  }
+});
+
+test("runtime-level: a count-only permanent rejection cannot advance the cursor without receipt evidence", async () => {
+  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const { asPort, rsPort } = server;
+  const asUrl = `http://localhost:${asPort}`;
+  const rsUrl = `http://localhost:${rsPort}`;
+  const connectorId = "runtime-permanent-rejection-receipt-required";
+  await registerManifest(asUrl, manifest(connectorId));
+  const ownerToken = await issueOwnerToken(asUrl);
+
+  const { connectorPath, cleanup } = createTestConnector([
+    {
+      data: { id: "canonical-id", value: "must remain recoverable" },
+      emitted_at: nowIso(),
+      key: "mismatched-wire-key",
+      stream: "items",
+      type: "RECORD",
+    },
+    { cursor: { cursor: "must_not_commit_without_receipt" }, stream: "items", type: "STATE" },
+    { records_emitted: 1, status: "succeeded", type: "DONE" },
+  ]);
+
+  // Preserve the real route, classifier, and SQLite write path. Only remove
+  // the additive receipt proof from its successful response, exactly as an
+  // older resource server would respond. A new runtime must fail closed on
+  // this count-only 2xx instead of treating `records_rejected` as permission
+  // to clear the batch and stage the following STATE.
+  const realFetch = globalThis.fetch;
+  let observedDurableReceipt = false;
+  globalThis.fetch = async (input, init) => {
+    const response = await realFetch(input, init);
+    const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+    if (url.pathname !== "/v1/ingest/items" || !response.ok) {
+      return response;
+    }
+    const body = (await response.json()) as {
+      errors?: unknown;
+      records_accepted?: unknown;
+      records_attempted?: unknown;
+      records_rejected?: unknown;
+      rejections?: unknown;
+      stream?: unknown;
+    };
+    assert.equal(body.records_attempted, 1, "the real server must account for the submitted record");
+    assert.equal(body.records_rejected, 1, "the real invalid-identity write must be rejected permanently");
+    assert.ok(Array.isArray(body.rejections), "the real server must return durable rejection evidence");
+    assert.equal(body.rejections.length, 1);
+    const [rejection] = body.rejections as Record<string, unknown>[];
+    assert.equal(rejection?.code, "invalid_record_identity");
+    assert.equal(rejection?.input_index, 0);
+    assert.match(String(rejection?.receipt_id), REJECTION_RECEIPT_ID_RE);
+    observedDurableReceipt = true;
+    return new Response(
+      JSON.stringify({
+        errors: body.errors,
+        records_accepted: body.records_accepted,
+        records_rejected: body.records_rejected,
+        stream: body.stream,
+      }),
+      { headers: { "Content-Type": "application/json" }, status: response.status }
+    );
+  };
+
+  try {
+    await assert.rejects(
+      () =>
+        runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
+          collectionMode: "full_refresh",
+          connectorId,
+          connectorPath,
+          manifest: manifest(connectorId),
+          onInteraction: async () => ({}),
+          ownerToken,
+          persistState: true,
+          rsUrl,
+          scope: { streams: [{ name: "items" }] },
+          state: null,
+        }),
+      RECEIPT_REQUIRED_RE
+    );
+    assert.equal(observedDurableReceipt, true, "the production route/store seam must persist before responding");
+
+    const state = (await loadSyncState(connectorId, ownerToken, { rsUrl })) as Record<
+      string,
+      { cursor?: string } | undefined
+    > | null;
+    assert.ok(
+      state?.items?.cursor !== "must_not_commit_without_receipt",
+      "count-only rejection evidence must not authorize the following cursor"
+    );
+
+    const { body: itemsBody } = await fetchJson(
+      `${rsUrl}/v1/streams/items/records?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
+    );
+    const itemsRecords = (itemsBody as { data?: unknown[] }).data || [];
+    assert.equal(itemsRecords.length, 0, "the permanently rejected record must not appear as accepted data");
+  } finally {
+    globalThis.fetch = realFetch;
     cleanup();
     await closeServer(server);
   }

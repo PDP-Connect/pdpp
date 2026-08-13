@@ -1,0 +1,54 @@
+## 1. Lock the defect and wire contract
+
+- [x] 1.1 Commit the real SQLite regression oracle that proves a balanced `2xx` permanent rejection cannot advance state without a durable receipt, using the current invalid-record-identity case.
+- [x] 1.2 Add pure response-contract tests for non-empty-line indexing, balanced counts, complete unique in-range rejection indexes, duplicate receipt ids at distinct duplicate-input indexes, non-enumerable receipt shape, and fail-closed malformed envelopes.
+- [x] 1.3 Add mixed-version contract tests proving a new server is loss-safe with the prior runtime and a new runtime rejects a prior server's count-only response.
+
+## 2. Add the durable quarantine store
+
+- [x] 2.1 Add additive SQLite and PostgreSQL migrations for owner/connection-bound pending rejection metadata, exact bounded payload bytes, replay key, quota accounting, and indexes.
+- [x] 2.2 Implement the narrow backend-parity store for fenced insert-or-replay, lookup, bounded cursor-paginated listing, concurrency-safe byte-quota admission, and connection-delete cleanup.
+- [x] 2.3 Prove exact replay, byte accounting, quota refusal, concurrent duplicate admission, restart persistence, cross-owner isolation, and deletion on real SQLite.
+- [x] 2.4 Run the same store contract against real PostgreSQL when configured and record an explicit skip when it is unavailable.
+- [x] 2.5 Add migration-upgrade and retained-table rollback oracles; verify no existing owner records require or receive fabricated backfill receipts.
+
+## 3. Persist hosted ingest rejections before acknowledgement
+
+- [x] 3.1 Preserve `{inputIndex, rawLine, parsedRecord?}` through `executeRecordsIngest` and its batch capability so every terminal outcome maps to the zero-based non-empty NDJSON line sequence without reconstructing bytes from objects.
+- [x] 3.2 Add the narrow host `insertOrReplayRejection` dependency after owner/connection admission; route `malformed_ndjson` and only the existing typed storage permanent-error allowlist through it, refuse hosted-rejection mode for device reservations, and keep unknown/systemic failures non-2xx.
+- [x] 3.3 Return `records_attempted` and the complete metadata-only rejection vector on successful hosted ingest without repeating payloads or error messages.
+- [x] 3.4 Re-check connection writable state and the exact run/connection fence inside each quarantine transaction; add fault oracles for cancellation/revoke/delete races, before commit, after commit before response, quota exhaustion, and a later systemic sibling failure after durable prefix effects. (Covered by the live SQLite/PostgreSQL hosted rejection coordinator race suite for cancellation, revoke, delete, terminalization, before-commit, after-commit-before-response, and quota exhaustion paths, plus the runtime system journey oracle proving a later systemic sibling failure after durable prefix effects does not claim an uncommitted receipt.)
+- [x] 3.5 Prove on real SQLite and PostgreSQL that accepted sibling records and rejection receipts survive safely, exact request replay is idempotent, and no response claims an uncommitted receipt. (Covered by the real SQLite/PostgreSQL coordinator and runtime system journey suites: SQLite proves accepted sibling and receipt survival across replay and fresh-process receipt inspection; PostgreSQL proves same-process accepted-sibling durability and exact receipt replay for the systemic-sibling path, plus fresh-process receipt inspection through the owner route. Injected rollback/systemic failure cases return retryable failure rather than committed-receipt claims.)
+
+## 4. Gate runtime progress on complete destination evidence
+
+- [x] 4.1 Extend the hosted ingest response reader to validate attempted counts and the full rejection vector before the batch can clear.
+- [x] 4.2 Replace submitted-as-`totalFlushed` accounting with emitted, attempted, confirmed accepted, permanently rejected, and unresolved retryable counters in progress, spine events, terminal results, and run history; any retained legacy `records_flushed` fields count confirmed accepted records only.
+- [x] 4.3 Gate per-stream `STATE` staging and final checkpoint commit on complete accepted-or-receipted outcomes while preserving the existing transient-manifest-drift behavior.
+- [x] 4.4 Add runtime oracles for all-rejected, mixed accepted/rejected, missing/duplicate/out-of-range receipts, response loss after server commit, cancellation, and multi-stream isolation.
+- [x] 4.5 Re-run the confirmed invalid-identity system journey and prove the run may commit only when the quarantine payload survives a fresh server process and is queryable by its owner.
+
+## 5. Add bounded owner inspection and lifecycle cleanup
+
+- [x] 5.1 Add owner-session-only, connection-first read-only list and detail routes with a maximum page size, stable opaque cursor pagination, metadata-only lists, explicit bounded payload retrieval, and non-disclosing cross-owner rejection.
+- [x] 5.2 Add fixed-field quarantine audit evidence and prove payload bytes plus parser/storage exception text stay out of list, timeline, mutation, audit, health, and log surfaces.
+- [x] 5.3 Integrate rejection cleanup into the existing SQLite and PostgreSQL connection-deletion transaction or prove active foreign-key cascade parity.
+- [x] 5.4 Prove list/detail authorization, paging bounds, payload non-disclosure, fresh-process retrieval, and connection-deletion cleanup on both backends. (Covered by the SQLite/PostgreSQL owner inspection parity suite for owner-only list/detail access, page caps and cursors, metadata-only list responses, cross-owner non-disclosure, fresh-process payload retrieval, and connection-delete cleanup.)
+- [x] 5.5 Record atomic retry, discard, payload replacement, status resolution, and device-exporter adoption as explicit follow-up scope; add no mutation route or generic unit-of-work seam in this tranche.
+
+## 6. Verify, document, and stage rollout
+
+- [x] 6.1 Run focused tests, typecheck, formatter/linter, deterministic mass and diff checks, and strict OpenSpec validation; record unrelated failures separately.
+- [x] 6.2 Run a fresh-process hosted journey on SQLite and PostgreSQL when configured: reject, commit cursor only with a complete receipt, restart the server, and retrieve the exact pending payload through the owning connection.
+- [x] 6.3 Document the additive reference-hosted response, read-only owner inspection routes, non-empty-line indexing, quota configuration, privacy/retention behavior, server-first deployment, and server-rollback run-disable requirement.
+- [x] 6.4 Have a different agent review the implementation and evidence against the confirmed reproduction, backend parity, transaction boundaries, payload privacy, and heterogeneous-host constraints before landing.
+
+## 7. Independent-review follow-up corrections
+
+- [x] 7.1 Make hosted rejection identity byte-native from `application/x-ndjson` transport through LF slicing, strict UTF-8 classification, SHA-256 replay identity, SQLite `BLOB`, PostgreSQL `BYTEA`, and owner detail `payload_base64` retrieval.
+- [x] 7.2 Resolve connector-only hosted ingestion to one exact admitted connector instance before `executeRecordsIngest`, and use that instance for accepted writes and rejection receipts.
+- [x] 7.3 Add owner receipt-count and per-connection receipt-count limits, coalesce replay evidence into bounded receipt metadata, and expose near-limit owner observability.
+- [x] 7.4 Add explicit SQLite and PostgreSQL migrations from the first #123 `payload_text`/byte-only quota draft to byte-native payload storage with backfilled receipt counts and idempotent restart behavior.
+- [x] 7.5 Prove raw NUL, invalid UTF-8 distinct byte sequences, multibyte roundtrip, connector-only mixed accepted/rejected identity, tiny-unique amplification, replay storms across restart, and multi-owner/connection quota isolation on focused SQLite and live PostgreSQL tests.
+- [x] 7.6 Expose backend-local caller-owned insert/replay transaction seams for SQLite and PostgreSQL, with standalone wrappers delegating to those seams and rollback tests proving receipt, quota, and audit effects do not survive caller rollback. Wire the hosted ingest route through `withConnectorInstanceWrite` before the backend transaction and prove the actual `startServer` route rolls back joined rejection, quota, and audit effects and replays the exact receipt handle on SQLite and live PostgreSQL.
+- [ ] 7.7 Release gate: add first/latest run provenance or bounded occurrence facts, include quarantine payloads in retained-size accounting, resolve stale-pending semantics after later acceptance, keep larger buffered payload support behind materially higher memory evidence or a streaming follow-up, and rerun the #108 schema-derived backup inventory after the final schema shape. The hosted request and line ceiling is lowered to 50 MiB. The split-cgroup Docker oracle now records representative reference-container facts without closing the release gate: with `node:22-bookworm-slim` and server memory/swap capped at 512 MiB, an exact 50 MiB invalid-UTF-8 request body succeeds and a 50 MiB + 1 byte body returns exact 413 with `FST_ERR_CTP_BODY_TOO_LARGE`.

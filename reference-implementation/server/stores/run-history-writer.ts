@@ -128,6 +128,11 @@ const FACTS_JSON_KEYS = [
   // A missing runtime field is not evidence of zero yield.
   "records_emitted",
   "reported_records_emitted",
+  "records_attempted",
+  "records_accepted",
+  "records_permanently_rejected",
+  "records_unresolved_retryable",
+  "records_flushed",
   "browser_surface_lease_id",
   "browser_surface_profile_key",
   "browser_surface_status",

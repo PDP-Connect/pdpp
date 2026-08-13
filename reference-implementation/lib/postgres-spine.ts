@@ -1194,6 +1194,21 @@ async function appendNormalizedPostgresSpineEventInTransaction(
   return hydrate(result.rows[0]);
 }
 
+/**
+ * Write a spine event on a transaction already owned by the caller.
+ *
+ * Stateful stores use this seam when the domain write and its audit fact must
+ * commit or roll back together. The caller owns commit/rollback; this helper
+ * only normalizes and inserts the event, including the run-history projection
+ * when the event type requires one.
+ */
+export function postgresEmitSpineEventWithClient(
+  client: PoolClient,
+  input: PostgresSpineEventInput = {}
+): Promise<SpineEventRecord | null> {
+  return appendPostgresSpineEventInTransaction(client, input);
+}
+
 export async function postgresListSpineEventsPage(
   kind: string,
   id: string,

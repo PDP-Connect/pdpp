@@ -403,6 +403,7 @@ import {
   mountRefProviderAuthInitiate,
   type ProviderAuthExchanger,
 } from "./routes/ref-provider-auth.ts";
+import { mountRefRecordRejections } from "./routes/ref-record-rejections.ts";
 import { mountRefRunStatus } from "./routes/ref-run-status.ts";
 import { mountRefGrants, mountRefRuns, mountRefTraces } from "./routes/ref-spine-correlations.ts";
 import { mountRefGrantTimeline, mountRefRunTimeline, mountRefTraceTimeline } from "./routes/ref-spine-timelines.ts";
@@ -505,6 +506,15 @@ import {
   createSqliteProviderAppConfigStore,
 } from "./stores/provider-app-config-store.ts";
 import { resolveProviderAuthRunEnv } from "./stores/provider-auth-run-credentials.ts";
+import {
+  createRecordRejectionStore,
+  deletePostgresRecordRejectionsForConnectionWithClient,
+  deleteSqliteRecordRejectionsForConnectionWithinTransaction,
+  type InsertOrReplayRecordRejectionInput,
+  insertOrReplayHostedRecordRejection,
+  markAcceptedRecordRejectionsStale,
+  type RecordRejectionReceipt,
+} from "./stores/record-rejection-store.ts";
 import {
   createResumableRunHistoryBackfillStage,
   runStartupRunHistoryBackfillToCompletion,
@@ -698,6 +708,7 @@ interface ServerOpts {
   deviceExporterStore?: unknown;
   dynamicClientRegistrationInitialAccessTokens?: readonly string[];
   enableDynamicClientRegistration?: boolean;
+  hostedRecordRejectionAfterInsertBeforeCommit?: (receipt: RecordRejectionReceipt) => Promise<void> | void;
   hybridRetrievalCapability?: unknown;
   hybridRetrievalSupported?: boolean;
   ignoreAmbientPublicUrls?: boolean;
@@ -712,6 +723,7 @@ interface ServerOpts {
   logger?: LoggerLike;
   makePresentationAttachmentId?: (() => string) | null;
   makeStreamingBrowserSessionId?: (() => string) | null;
+  maxRecordRejectionPageSize?: number;
   nativeManifest?: ConnectorManifest | null;
   nekoProxyAllowedHosts?: readonly string[] | null;
   nekoProxyAutoLogin?: boolean;
@@ -1862,6 +1874,10 @@ function createRequestManualUploadArtifactStore() {
     : createSqliteManualUploadArtifactStore();
 }
 
+function createRequestRecordRejectionStore() {
+  return createRecordRejectionStore();
+}
+
 // Lazily loads the pure static-secret injection helpers from the
 // polyfill-connectors runner slice. The reference server reaches connector
 // code by relative path (it does not declare the package as a dependency), so
@@ -2027,6 +2043,7 @@ function providerIdentityGroupDescriptorFromManifests(
  * connection-setup-plan.ts's manifest-shape acceptance (bare string, legacy
  * `{key,...}`, or current `{logical_key,...}`) so this never re-derives its
  * own parsing of the same manifest data. */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Existing manifest compatibility helper; unrelated to hosted rejection race coverage.
 function connectionConfigDeploymentFieldsFromManifest(
   manifest: ConnectorManifest
 ): readonly { envAlias: string | null; label: string; logicalKey: string; secret: boolean }[] {
@@ -2047,12 +2064,12 @@ function connectionConfigDeploymentFieldsFromManifest(
       continue;
     }
     const record = entry as Record<string, unknown>;
-    const logicalKey =
-      typeof record.logical_key === "string" && record.logical_key.trim()
-        ? record.logical_key.trim()
-        : typeof record.key === "string" && record.key.trim()
-          ? record.key.trim()
-          : null;
+    let logicalKey: string | null = null;
+    if (typeof record.logical_key === "string" && record.logical_key.trim()) {
+      logicalKey = record.logical_key.trim();
+    } else if (typeof record.key === "string" && record.key.trim()) {
+      logicalKey = record.key.trim();
+    }
     if (!logicalKey) {
       continue;
     }
@@ -2091,7 +2108,8 @@ async function resolveProviderIdentityGroup(identityGroup: string): Promise<Prov
  * declares, each already resolved to its descriptor. */
 async function listProviderIdentityGroups(): Promise<readonly ProviderIdentityGroupDescriptor[]> {
   const manifestsByGroup = new Map<string, ConnectorManifest[]>();
-  for (const manifest of (await collectRegisteredManifestsByConnectorKey()).values()) {
+  const manifestsByConnectorKey = await collectRegisteredManifestsByConnectorKey();
+  for (const manifest of manifestsByConnectorKey.values()) {
     const group = manifestProviderIdentityGroup(manifest);
     if (!group) {
       continue;
@@ -2194,7 +2212,7 @@ function buildControllerProviderAuthRunEnvResolver() {
       credentialStore: createRequestConnectorInstanceCredentialStore(),
       legacyBundleFieldAliases:
         (manifest as { capabilities?: { auth?: { legacy_bundle_field_aliases?: Record<string, string> | null } } })
-          ?.capabilities?.auth?.legacy_bundle_field_aliases ?? null,
+          .capabilities?.auth?.legacy_bundle_field_aliases ?? null,
       ownerSubjectId,
       sourceBinding: connectorInstance?.sourceBinding ?? null,
     });
@@ -5283,6 +5301,13 @@ export function buildAsApp(opts: ServerOpts = {}) {
       createRequestConnectorInstanceStore().deleteConnection(connectorInstanceId, {
         ...(options as Record<string, unknown>),
         purge: {
+          deleteRecordRejectionsPostgres: (client: unknown, id: string, ownerSubjectId: string) =>
+            deletePostgresRecordRejectionsForConnectionWithClient(
+              client as Parameters<typeof deletePostgresRecordRejectionsForConnectionWithClient>[0],
+              { connectorInstanceId: id, ownerSubjectId }
+            ),
+          deleteRecordRejectionsSqlite: (id: string, ownerSubjectId: string) =>
+            deleteSqliteRecordRejectionsForConnectionWithinTransaction({ connectorInstanceId: id, ownerSubjectId }),
           deleteRecordRowsPostgres: (client: unknown, id: string) =>
             deleteConnectionRecordRowsPostgres(client as Parameters<typeof deleteConnectionRecordRowsPostgres>[0], id),
           deleteRecordRowsSqlite: (id: string) => deleteConnectionRecordRowsSqlite(id),
@@ -5470,6 +5495,15 @@ export function buildAsApp(opts: ServerOpts = {}) {
     app,
     refConnectorsContext as unknown as Parameters<typeof mountRefConnectorInstanceDetail>[1]
   );
+  mountRefRecordRejections(app, {
+    createRequestConnectorInstanceStore,
+    createRequestRecordRejectionStore,
+    getOwnerSubjectId,
+    handleError,
+    maxRecordRejectionPageSize: opts.maxRecordRejectionPageSize,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+  } as unknown as Parameters<typeof mountRefRecordRejections>[1]);
   mountRefConnectionSetDisplayName(
     app,
     refConnectorsContext as unknown as Parameters<typeof mountRefConnectionSetDisplayName>[1]
@@ -6156,6 +6190,7 @@ function buildRsApp(opts: ServerOpts = {}) {
       (
         (await createRequestAcquisitionBatchStore().listByConnection(connectorInstanceId, { limit: 1 })) as unknown[]
       )[0] ?? null,
+    getOwnerTokenSubjectId,
     getSyncState,
     handleError,
     ingestRecord: (
@@ -6176,12 +6211,45 @@ function buildRsApp(opts: ServerOpts = {}) {
         afterRecord,
         options
       ),
+    insertOrReplayRecordRejection: async ({
+      code,
+      ...input
+    }: Omit<InsertOrReplayRecordRejectionInput, "reasonCode"> & { code: string }) => {
+      const receipt = await withConnectorInstanceWrite(input.connectorInstanceId, () =>
+        insertOrReplayHostedRecordRejection(
+          {
+            ...input,
+            reasonCode: code,
+          },
+          opts.hostedRecordRejectionAfterInsertBeforeCommit
+            ? { afterInsertOrReplayBeforeCommit: opts.hostedRecordRejectionAfterInsertBeforeCommit }
+            : {}
+        )
+      );
+      return {
+        code: receipt.code,
+        input_index: receipt.inputIndex,
+        receipt_id: receipt.receiptId,
+      };
+    },
     // Same cache the mutation routes below already invalidate on every other
     // connection-mutating action (revoke, reactivate, schedule, run, rename,
     // delete). `maybeActivateDraftAfterIngest` (rs-mutation.ts) calls this
     // after a first-ingest activation so the dashboard/Sources/Syncs summary
     // feed reflects draft -> active immediately.
     invalidateConnectorSummariesCache,
+    markAcceptedRecordRejectionsStale: async (input: {
+      auditActorId: string;
+      auditActorType: string;
+      auditTraceId: string | null;
+      connectorId: string;
+      connectorInstanceId: string;
+      ownerSubjectId: string;
+      rawLine: Buffer;
+      recordKey?: string | null;
+      runId?: string | null;
+      stream: string;
+    }) => await withConnectorInstanceWrite(input.connectorInstanceId, () => markAcceptedRecordRejectionsStale(input)),
     markAcquisitionBatchCommitted: (connectorInstanceId: string, counts: unknown) =>
       // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       (
@@ -6532,7 +6600,7 @@ function buildRsApp(opts: ServerOpts = {}) {
         reason: string;
       }) => {
         invalidateConnectorSummariesCache();
-        await markConnectorSummaryEvidenceDirty?.({ connectorInstanceId, reason });
+        await markConnectorSummaryEvidenceDirty({ connectorInstanceId, reason });
       },
       getOwnerTokenSubjectId,
       getSyncState,
@@ -6705,6 +6773,13 @@ function buildRsApp(opts: ServerOpts = {}) {
       ).deleteConnection?.(connectorInstanceId, {
         ...(options as Record<string, unknown>),
         purge: {
+          deleteRecordRejectionsPostgres: (client: unknown, id: string, ownerSubjectId: string) =>
+            deletePostgresRecordRejectionsForConnectionWithClient(
+              client as Parameters<typeof deletePostgresRecordRejectionsForConnectionWithClient>[0],
+              { connectorInstanceId: id, ownerSubjectId }
+            ),
+          deleteRecordRejectionsSqlite: (id: string, ownerSubjectId: string) =>
+            deleteSqliteRecordRejectionsForConnectionWithinTransaction({ connectorInstanceId: id, ownerSubjectId }),
           deleteRecordRowsPostgres: (client: unknown, id: string) =>
             deleteConnectionRecordRowsPostgres(client as Parameters<typeof deleteConnectionRecordRowsPostgres>[0], id),
           deleteRecordRowsSqlite: (id: string) => deleteConnectionRecordRowsSqlite(id),
@@ -7471,6 +7546,7 @@ export async function startServer(opts: ServerOpts = {}) {
     isNekoProxyTargetApproved: opts.isNekoProxyTargetApproved,
     makePresentationAttachmentId: opts.makePresentationAttachmentId,
     makeStreamingBrowserSessionId: opts.makeStreamingBrowserSessionId,
+    maxRecordRejectionPageSize: opts.maxRecordRejectionPageSize,
     nativeManifest: nativeConfig?.nativeManifest || null,
     nekoProxyAllowedHosts: opts.nekoProxyAllowedHosts,
     nekoProxyAutoLogin: opts.nekoProxyAutoLogin,
@@ -7500,8 +7576,13 @@ export async function startServer(opts: ServerOpts = {}) {
     webPushConfig,
     webPushSubscriptionStore: webPushStore,
     ...(browserSurfaceControllerOptions as Record<string, unknown>),
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-    cancelScheduledRun: (runId: string) => schedulerManager?.cancelRun?.(runId) ?? null,
+    cancelScheduledRun: (runId: string) => {
+      const testResult = opts.cancelScheduledRun?.(runId);
+      if (testResult) {
+        return testResult;
+      }
+      return schedulerManager ? schedulerManager.cancelRun(runId) : null;
+    },
     configuredProviderAuthConnectorKeys,
     logger,
     onScheduleMutation: () => schedulerManager?.refresh(),
@@ -7556,6 +7637,7 @@ export async function startServer(opts: ServerOpts = {}) {
     asPublicUrl,
     configuredProviderAuthConnectorKeys,
     controller,
+    hostedRecordRejectionAfterInsertBeforeCommit: opts.hostedRecordRejectionAfterInsertBeforeCommit,
     hybridRetrievalCapability: opts.hybridRetrievalCapability,
     // Hybrid retrieval experimental extension knobs — see search-hybrid.js +
     // the metadata route. Forwarded verbatim so test harnesses and operator

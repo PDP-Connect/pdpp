@@ -320,6 +320,20 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly providerAppConfigGetByIdentityGroupAndLogicalKey: ReadOneQuery;
   readonly providerAppConfigListConfiguredKeysByIdentityGroup: SmallEnumerationQuery;
   readonly providerAppConfigUpsert: MutationQuery;
+  readonly recordRejectionsAdmitQuota: MutationQuery;
+  readonly recordRejectionsCountForConnection: ReadOneQuery;
+  readonly recordRejectionsDeleteForConnection: MutationQuery;
+  readonly recordRejectionsEnsureQuotaOwner: MutationQuery;
+  readonly recordRejectionsGetByReplayKey: ReadOneQuery;
+  readonly recordRejectionsGetConnectionStatus: ReadOneQuery;
+  readonly recordRejectionsGetDetail: ReadOneQuery;
+  readonly recordRejectionsInsert: MutationQuery;
+  readonly recordRejectionsListAfterCursor: ReadManyQuery;
+  readonly recordRejectionsListFirstPage: ReadManyQuery;
+  readonly recordRejectionsMarkAcceptedStale: MutationQuery;
+  readonly recordRejectionsReleaseQuota: MutationQuery;
+  readonly recordRejectionsSumPayloadBytesForConnection: ReadOneQuery;
+  readonly recordRejectionsUpdateReplay: MutationQuery;
   // Records — streaming aggregate scan over a single (connector, stream).
   readonly recordsAggregateIterateStreamRecordsForAggregation: IterateQuery;
   // Records — per-connector stream aggregate for `/_ref/connectors`.

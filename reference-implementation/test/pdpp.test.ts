@@ -9134,7 +9134,11 @@ test("PDPP reference implementation integration", async (t) => {
         buffered_records_dropped: 0,
         commit_status: "disabled",
         mode: "checkpointed_streaming",
+        records_accepted: 21,
+        records_attempted: 21,
         records_flushed: 21,
+        records_permanently_rejected: 0,
+        records_unresolved_retryable: 0,
         state_streams_committed: 0,
         state_streams_staged: 2,
       });
@@ -9158,7 +9162,11 @@ test("PDPP reference implementation integration", async (t) => {
         buffered_records_dropped: 0,
         commit_status: "committed",
         mode: "checkpointed_streaming",
+        records_accepted: 21,
+        records_attempted: 21,
         records_flushed: 21,
+        records_permanently_rejected: 0,
+        records_unresolved_retryable: 0,
         state_streams_committed: 2,
         state_streams_staged: 2,
       });

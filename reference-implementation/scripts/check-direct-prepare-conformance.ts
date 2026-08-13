@@ -34,26 +34,18 @@
  *      read so it can never be masked by a live hit count that happens to
  *      line up.
  *
- * Deterministic: exact (path, line) matching against the same regex the
- * policy has always used. No fuzzy or content-snapshot matching.
- *
- * NOTE (pre-existing, deliberately unchanged): the policy regex requires
- * `db.prepare(` / `getDb().prepare(` on ONE line, so a call split across
- * lines (`const rows = db\n  .prepare(`) is not matched — anywhere in the
- * codebase, and never has been. Two such sites exist in
- * record-version-stats.ts (lines 251, 303 at the time of writing). Widening
- * the regex would be a policy change, not an allowlist change, and is out of
- * scope here; it is recorded so the residual gap is visible rather than
- * mistaken for coverage.
+ * Deterministic: exact (path, line) matching against a narrow direct-prepare
+ * scanner. The scanner permits whitespace between `db` / `getDb()` and
+ * `.prepare(` so formatting cannot hide a production direct-prepare site.
  */
 
 import { readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DirectPrepareAllowlistEntry } from "./direct-prepare-allowlist.ts";
 import { DIRECT_PREPARE_ALLOWLIST } from "./direct-prepare-allowlist.ts";
 
-/** The policy regex, byte-identical to the one the lefthook job used inline. */
-const DIRECT_PREPARE_PATTERN = /(^|[^a-zA-Z_])(db|getDb\(\))\.prepare\(/;
+const DIRECT_PREPARE_PATTERN = /(^|[^a-zA-Z_])(db|getDb\(\))\s*\.\s*prepare\s*\(/g;
 
 /**
  * Whole-file exemptions: the wrapper, the engine bootstrap, and the query
@@ -67,8 +59,9 @@ const EXEMPT_PATHS: ReadonlySet<string> = new Set([
 
 /** The policy's scope, mirroring the lefthook `glob`. */
 const SCOPE_PATTERN = /^reference-implementation\/(lib|server|runtime|cli)\/.*\.(ts|js)$/;
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
-interface LiveHit {
+export interface DirectPrepareLiveHit {
   line: number;
   path: string;
   text: string;
@@ -96,27 +89,31 @@ export function selectInspectableFiles(paths: readonly string[]): string[] {
   return [...new Set(paths.filter((p) => p.length > 0 && SCOPE_PATTERN.test(p) && !EXEMPT_PATHS.has(p)))].sort();
 }
 
-function scanFile(path: string): LiveHit[] {
+export function scanDirectPrepareText(path: string, contents: string): DirectPrepareLiveHit[] {
+  const hits: DirectPrepareLiveHit[] = [];
+  const lines = contents.split("\n");
+  for (const match of contents.matchAll(DIRECT_PREPARE_PATTERN)) {
+    const index = match.index ?? 0;
+    const line = contents.slice(0, index).split("\n").length;
+    hits.push({ line, path, text: lines[line - 1]?.trim() ?? "" });
+  }
+  return hits;
+}
+
+function scanFile(path: string): DirectPrepareLiveHit[] {
   let contents: string;
   try {
-    contents = readFileSync(path, "utf8");
+    contents = readFileSync(resolve(REPO_ROOT, path), "utf8");
   } catch {
     // Staged deletions/renames can name a path that no longer exists on
     // disk. Nothing to scan; the allowlist's stale check will surface a
     // genuinely removed site on the next run that does include the file.
     return [];
   }
-  const hits: LiveHit[] = [];
-  const lines = contents.split("\n");
-  for (const [index, text] of lines.entries()) {
-    if (DIRECT_PREPARE_PATTERN.test(text)) {
-      hits.push({ line: index + 1, path, text: text.trim() });
-    }
-  }
-  return hits;
+  return scanDirectPrepareText(path, contents);
 }
 
-function reportUnlisted(unlisted: readonly LiveHit[]): void {
+function reportUnlisted(unlisted: readonly DirectPrepareLiveHit[]): void {
   console.error(`\n✗ ${unlisted.length} NEW direct .prepare(...) call site(s) — not in the reviewed allowlist:`);
   for (const hit of unlisted) {
     console.error(`    ${hit.path}:${hit.line}  ${hit.text}`);

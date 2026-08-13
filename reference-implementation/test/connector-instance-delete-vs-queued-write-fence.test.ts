@@ -164,6 +164,10 @@ function manifest() {
 
 function sqlitePurge() {
   return {
+    deleteRecordRejectionsPostgres: () => {
+      throw new Error("deleteRecordRejectionsPostgres must not be called by the SQLite store");
+    },
+    deleteRecordRejectionsSqlite: () => 0,
     deleteRecordRowsPostgres: () => {
       throw new Error("deleteRecordRowsPostgres must not be called by the SQLite store");
     },
@@ -181,6 +185,10 @@ function sqlitePurge() {
 
 function postgresPurge() {
   return {
+    deleteRecordRejectionsPostgres: () => Promise.resolve(0),
+    deleteRecordRejectionsSqlite: () => {
+      throw new Error("deleteRecordRejectionsSqlite must not be called by the Postgres store");
+    },
     deleteRecordRowsPostgres: (client: unknown, connectorInstanceId: string) =>
       recordsModule.deleteConnectionRecordRowsPostgres(client as never, connectorInstanceId),
     deleteRecordRowsSqlite: () => {
