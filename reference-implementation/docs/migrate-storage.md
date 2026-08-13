@@ -62,36 +62,29 @@ node scripts/migrate-storage/cli.ts plan \
 ```
 Plan for sqlite://./data/pdpp.sqlite -> postgres://user:password@localhost:5432/pdpp
 
-Non-derived tables (will be migrated):
+Non-derived tables (will be migrated; sample is abbreviated):
   connectors                        12 rows
+  connector_instances                8 rows
+  record_rejection_quota             1 row
+  record_rejections                  3 rows
+  ...
   oauth_clients                      4 rows
   grants                           218 rows
   tokens                          1843 rows
-  pending_consents                  42 rows
-  owner_device_auth                 0 rows
-  device_exporters                  8 rows
-  device_ingest_credentials        16 rows
-  device_enrollment_codes           0 rows
-  device_source_instances           8 rows
-  device_ingest_batch_outcomes      0 rows
-  source_webhook_events             0 rows
-  source_webhook_run_receipts        0 rows
-  connector_state                  12 rows
-  grant_connector_state             12 rows
-  connector_schedules               0 rows
-  controller_active_runs            0 rows
-  scheduler_run_history          4521 rows
-  scheduler_last_run_times         12 rows
-  version_counter                   1 row
   blobs                         18420 rows
-  blob_bindings                  12580 rows
   records                         9831 rows
   record_changes                 28194 rows
-  spine_events                      0 rows
+  ...
+  retained_size_global               1 row
+  retained_size_connection           8 rows
+  retained_size_stream              24 rows
+  connector_summary_evidence         8 rows
+  search_index_dirty                24 rows
+  provider_app_config                0 rows
 
-Subtotal (non-derived): 75,943 rows
+Subtotal (61 non-derived durable tables): 75,943 rows
 
-Derived tables (will be rebuilt by runtime on first boot):
+Derived tables (7 rebuilt by runtime on first boot):
   lexical_search_index
   lexical_search_snapshots
   lexical_search_meta
@@ -169,11 +162,11 @@ Result: INCOMPATIBLE. Schema differs on column type. See details above.
 
 ### execute
 
-**Purpose:** Perform the actual migration. Destructive on the target; reads all rows from source and inserts into target. Transactional per table; failures roll back that table's transaction and halt (migration is restartable but not resumable).
+**Purpose:** Perform the actual migration. Reads all rows from source and inserts into an empty target. Transactional per table; failures roll back that table's transaction and halt (migration is restartable but not resumable).
 
 **Reads:** Entire source database.
 
-**Writes:** Entire target database (clears existing data in migrated tables; leaves derived tables untouched).
+**Writes:** Empty target database. By default the command refuses a non-empty target. It leaves derived tables untouched.
 
 **Invocation:**
 
@@ -188,36 +181,29 @@ node scripts/migrate-storage/cli.ts execute \
 ```
 Executing sqlite://./data/pdpp.sqlite -> postgres://user:password@localhost:5432/pdpp
 
-Migrating non-derived tables (25 total):
+Migrating non-derived tables (61 total; sample is abbreviated):
   connectors                        12 rows → SUCCESS (45ms)
+  connector_instances                8 rows → SUCCESS (18ms)
+  record_rejection_quota             1 row → SUCCESS (5ms)
+  record_rejections                  3 rows → SUCCESS (6ms)
+  ...
   oauth_clients                      4 rows → SUCCESS (12ms)
   grants                           218 rows → SUCCESS (87ms)
   tokens                          1843 rows → SUCCESS (156ms)
-  pending_consents                  42 rows → SUCCESS (34ms)
-  owner_device_auth                 0 rows → SUCCESS (8ms)
-  device_exporters                  8 rows → SUCCESS (19ms)
-  device_ingest_credentials        16 rows → SUCCESS (24ms)
-  device_enrollment_codes           0 rows → SUCCESS (6ms)
-  device_source_instances           8 rows → SUCCESS (18ms)
-  device_ingest_batch_outcomes      0 rows → SUCCESS (7ms)
-  source_webhook_events             0 rows → SUCCESS (5ms)
-  source_webhook_run_receipts        0 rows → SUCCESS (5ms)
-  connector_state                  12 rows → SUCCESS (22ms)
-  grant_connector_state             12 rows → SUCCESS (26ms)
-  connector_schedules               0 rows → SUCCESS (5ms)
-  controller_active_runs            0 rows → SUCCESS (4ms)
-  scheduler_run_history          4521 rows → SUCCESS (289ms)
-  scheduler_last_run_times         12 rows → SUCCESS (34ms)
-  version_counter                   1 row → SUCCESS (8ms)
   blobs                         18420 rows → SUCCESS (1243ms)
-  blob_bindings                  12580 rows → SUCCESS (987ms)
   records                         9831 rows → SUCCESS (654ms)
   record_changes                 28194 rows → SUCCESS (1876ms)
-  spine_events                      0 rows → SUCCESS (3ms)
+  ...
+  retained_size_global               1 row → SUCCESS (4ms)
+  retained_size_connection           8 rows → SUCCESS (7ms)
+  retained_size_stream              24 rows → SUCCESS (9ms)
+  connector_summary_evidence         8 rows → SUCCESS (12ms)
+  search_index_dirty                24 rows → SUCCESS (8ms)
+  provider_app_config                0 rows → SUCCESS (3ms)
 
 Total: 75,943 rows migrated in 6.8 seconds.
 
-Skipping derived tables (rebuilt on first boot):
+Skipping derived tables (7 rebuilt on first boot):
   lexical_search_index
   lexical_search_snapshots
   lexical_search_meta
@@ -404,16 +390,33 @@ node scripts/migrate-storage/cli.ts plan \
 
 ## What gets migrated, what doesn't
 
-### Migrated tables (25 non-derived)
+### Migrated tables (61 non-derived)
 
-All owner/grant/connector/ingest/scheduling/runtime state:
+All owner/grant/connector/ingest/scheduling/runtime state is preserved. The
+inventory is schema-derived from the current PostgreSQL bootstrap DDL; every
+non-search table below remains conservative `backup_required` data for
+operator backup/restore and storage migration.
 
 - `connectors` — registered connectors and metadata
+- `connector_instances` — per-owner connector identities and lifecycle
+- `record_rejection_quota` — owner-level pending rejection byte/count quota
+- `record_rejections` — owner-bound durable hosted-ingest rejection payloads, replay facts, first/latest run provenance, and stale-after-acceptance status
+- `connector_instance_tombstones` — owner-deleted connector identity tombstones
+- `connector_instance_credentials` — per-connection sealed static-secret credentials
+- `acquisition_batches` — source acquisition batch provenance
+- `manual_upload_artifacts` — manual upload artifact metadata
+- `record_acquisition_provenance` — record acquisition provenance facts
 - `oauth_clients` — third-party OAuth client registrations
+- `cimd_client_documents` — CIMD client document registrations
+- `oauth_authorization_codes` — OAuth authorization code exchange state
+- `oauth_refresh_tokens` — hosted MCP durable OAuth sessions
 - `grants` — user grants to connectors (scopes, expiry, refresh tokens)
 - `tokens` — derived OAuth tokens; refreshed on access
+- `grant_packages` — grouped grant packages
+- `grant_package_members` — grant package membership
 - `pending_consents` — awaiting user signature/approval
 - `owner_device_auth` — device enrollment state for local exporters
+- `web_push_subscriptions` — owner notification subscriptions
 - `device_exporters` — remote ingest device registrations
 - `device_ingest_credentials` — short-lived device tokens
 - `device_enrollment_codes` — one-time codes for device bootstrap
@@ -423,16 +426,38 @@ All owner/grant/connector/ingest/scheduling/runtime state:
 - `source_webhook_run_receipts` — durable source-event-to-run handles; retain this table in every backup and restore so a replay cannot admit a second run
 - `connector_state` — per-connector key-value store (durable config, cursor)
 - `grant_connector_state` — per-grant connector runtime state
+- `connector_detail_gaps` — durable pending detail-gap recovery state
+- `connector_attention_records` — durable owner attention and notification state
 - `connector_schedules` — scheduled run timing
 - `controller_active_runs` — in-flight connector runs (if persistent across restarts)
-- `scheduler_run_history` — job queue history and statistics
+- `browser_surfaces` — managed browser surface inventory
+- `presentation_screen_states` — presentation restore obligations
+- `browser_surface_leases` — durable browser surface lease state
+- `browser_surface_replacement_receipts` — browser surface replacement audit receipts
+- `browser_surface_replacement_selection_overrides` — reviewed replacement selector overrides
+- `browser_surface_replacement_selection_override_batches` — selector override batch metadata
+- `browser_surface_replacement_selection_override_audit_outbox` — selector override audit outbox
+- `run_history` — job queue history and statistics
 - `scheduler_last_run_times` — scheduler checkpoints for resumption
-- `version_counter` — global migration/schema versioning
-- `blobs` — raw ingested data (PII, structured records)
-- `blob_bindings` — record→blob relationships
 - `records` — user-facing data (derived from blobs via connectors)
 - `record_changes` — change log for audit and replication
+- `version_counter` — global migration/schema versioning
+- `blobs` — raw ingested data (PII, structured records)
+- `blob_bindings` — record-to-blob relationships
 - `spine_events` — event sourcing backbone (optional; depends on PDPP profile)
+- `retained_size_global` — retained-size global projection rows
+- `retained_size_connection` — retained-size connection projection rows
+- `retained_size_stream` — retained-size stream projection rows
+- `retained_size_record_family` — retained-size record-family projection rows
+- `retained_size_top_rows` — retained-size ranked rows
+- `connector_summary_evidence` — durable connector summary evidence
+- `connector_maintenance_cursor` — bounded maintenance sweep cursors
+- `manifest_write_violations` — exact manifest-generation rejected-write provenance
+- `search_index_dirty` — same-transaction dirty markers for search-index repair
+- `client_event_subscriptions` — client event subscription state
+- `client_event_queue` — queued client events
+- `client_event_attempts` — client event delivery attempts
+- `provider_app_config` — provider app configuration
 
 ### Rebuilt tables (7 derived, not migrated)
 
@@ -458,9 +483,9 @@ These are reconstructed by the PDPP runtime on first boot after migration:
 
 **Recovery:**
 1. Identify the column and type mismatch from the error output.
-2. If target is stale: drop the target database and re-bootstrap:
+2. If target is stale: drop the target database and re-bootstrap. If you cannot drop the database, clear only empty target tables with explicit SQL such as `DELETE FROM "table_name";` after verifying each table is empty or disposable.
    ```shell
-   dropdb pdpp  # or DELETE FROM <table> IF EMPTY
+   dropdb pdpp
    node scripts/migrate-storage/cli.ts plan --from sqlite://... --to postgres://...
    ```
 3. If source is stale: ensure you are running the same PDPP version for both source and target. Upgrade the older instance and re-snapshot.
@@ -491,12 +516,21 @@ These are reconstructed by the PDPP runtime on first boot after migration:
 **Cause:** Target already contains data (partial migration, or reuse of an existing Postgres instance).
 
 **Options:**
-- **Safe:** Truncate the target and re-run:
+- **Safest:** Drop and recreate the target database, then let migration bootstrap the schema again:
   ```shell
-  # Connect to target Postgres
-  psql postgres://user:password@localhost:5432/pdpp -c "TRUNCATE connectors, oauth_clients, grants, tokens, pending_consents, owner_device_auth, device_exporters, device_ingest_credentials, device_enrollment_codes, device_source_instances, device_ingest_batch_outcomes, source_webhook_events, source_webhook_run_receipts, connector_state, grant_connector_state, connector_schedules, controller_active_runs, scheduler_run_history, scheduler_last_run_times, version_counter, blobs, blob_bindings, records, record_changes, spine_events CASCADE;"
+  dropdb pdpp
+  createdb pdpp
   ```
   Then re-run `execute`.
+- **Safe when the database itself must be kept:** Generate the truncation list from the current schema inventory instead of maintaining a hand-written table list:
+  ```shell
+  TABLES=$(
+    node --experimental-strip-types --input-type=module -e \
+      "import { TABLES } from './scripts/migrate-storage/schema.ts'; console.log(TABLES.filter((table) => !table.skipMigration).map((table) => '\"' + table.name + '\"').join(', '));"
+  )
+  psql postgres://user:password@localhost:5432/pdpp -c "TRUNCATE ${TABLES} CASCADE;"
+  ```
+  This command follows the same 61-table durable inventory as `execute`.
 - **Risky (if you know what you're doing):** Pass `--allow-non-empty` to `execute` and accept the risk of mixing old and new data:
   ```shell
   node scripts/migrate-storage/cli.ts execute \

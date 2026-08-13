@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -43,11 +43,24 @@ export interface TableMeta {
 const TABLE_ORDER = [
   "connectors",
   "connector_instances",
+  "record_rejection_quota",
+  "record_rejections",
+  "connector_instance_tombstones",
+  "connector_instance_credentials",
+  "acquisition_batches",
+  "manual_upload_artifacts",
+  "record_acquisition_provenance",
   "oauth_clients",
+  "cimd_client_documents",
+  "oauth_authorization_codes",
+  "oauth_refresh_tokens",
   "grants",
   "tokens",
+  "grant_packages",
+  "grant_package_members",
   "pending_consents",
   "owner_device_auth",
+  "web_push_subscriptions",
   "device_exporters",
   "device_ingest_credentials",
   "device_enrollment_codes",
@@ -57,15 +70,24 @@ const TABLE_ORDER = [
   "source_webhook_run_receipts",
   "connector_state",
   "grant_connector_state",
+  "connector_detail_gaps",
+  "connector_attention_records",
   "connector_schedules",
   "controller_active_runs",
+  "browser_surfaces",
+  "presentation_screen_states",
+  "browser_surface_leases",
+  "browser_surface_replacement_receipts",
+  "browser_surface_replacement_selection_overrides",
+  "browser_surface_replacement_selection_override_batches",
+  "browser_surface_replacement_selection_override_audit_outbox",
   "run_history",
   "scheduler_last_run_times",
+  "records",
+  "record_changes",
   "version_counter",
   "blobs",
   "blob_bindings",
-  "records",
-  "record_changes",
   "spine_events",
   "lexical_search_index",
   "lexical_search_snapshots",
@@ -74,6 +96,19 @@ const TABLE_ORDER = [
   "semantic_search_snapshots",
   "semantic_search_meta",
   "semantic_search_backfill_progress",
+  "retained_size_global",
+  "retained_size_connection",
+  "retained_size_stream",
+  "retained_size_record_family",
+  "retained_size_top_rows",
+  "connector_summary_evidence",
+  "connector_maintenance_cursor",
+  "manifest_write_violations",
+  "search_index_dirty",
+  "client_event_subscriptions",
+  "client_event_queue",
+  "client_event_attempts",
+  "provider_app_config",
 ];
 
 // Tables that are derived/rebuilt by the runtime; should not be migrated
@@ -362,7 +397,9 @@ export function loadSchemaFromSource(): TableMeta[] {
     return cachedSchema;
   }
 
-  const ddlPath = join(__dirname, "..", "..", "server", "postgres-storage.js");
+  const compiledDdlPath = join(__dirname, "..", "..", "server", "postgres-storage.js");
+  const sourceDdlPath = join(__dirname, "..", "..", "server", "postgres-storage.ts");
+  const ddlPath = existsSync(compiledDdlPath) ? compiledDdlPath : sourceDdlPath;
   const ddlContent = readFileSync(ddlPath, "utf-8");
 
   const tables: TableMeta[] = [];
