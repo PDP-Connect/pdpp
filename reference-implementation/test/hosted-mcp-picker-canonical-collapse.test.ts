@@ -38,6 +38,7 @@ function claudeCodeManifest(connectorId: string, displayName: string) {
     capabilities: { human_interaction: [] },
     connector_id: connectorId,
     display_name: displayName,
+    manifest_uri: connectorId.startsWith("http") ? connectorId : "https://registry.pdpp.org/connectors/claude-code",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -54,7 +55,8 @@ function claudeCodeManifest(connectorId: string, displayName: string) {
           required: ["id", "ts"],
           type: "object",
         },
-        selection: { fields: { mode: "explicit" } },
+        selection: { fields: true, resources: true },
+        semantics: "mutable_state",
       },
     ],
     version: "1.0.0",
@@ -136,7 +138,8 @@ test("registerConnector accepts connector_key plus manifest_uri manifests", asyn
             required: ["id", "updated_at"],
             type: "object",
           },
-          selection: { fields: { mode: "explicit" } },
+          selection: { fields: true, resources: true },
+          semantics: "mutable_state",
         },
       ],
       version: "1.0.0",

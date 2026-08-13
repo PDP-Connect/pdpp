@@ -16,8 +16,8 @@ import { strict as assert } from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  assertNonEmptyJsonField,
   assertRecordIdentity,
-  assertSafeJsonField,
   invalidQueryError,
   normalizePrimaryKey,
   parseIntegerValue,
@@ -113,15 +113,13 @@ test("parseIntegerValue rejects non-integers and non-numeric strings", () => {
   assert.equal(parseIntegerValue("12x"), null);
 });
 
-test("assertSafeJsonField accepts identifier-shaped field names", () => {
-  assert.doesNotThrow(() => assertSafeJsonField("body", "field"));
-  assert.doesNotThrow(() => assertSafeJsonField("_private0", "field"));
+test("assertNonEmptyJsonField accepts literal top-level JSON keys", () => {
+  for (const field of ["body", "has-dash", "has.dot", 'said "when"', "時刻"]) {
+    assert.doesNotThrow(() => assertNonEmptyJsonField(field, "field"));
+  }
 });
 
-test("assertSafeJsonField rejects unsafe field names", () => {
-  assert.throws(() => assertSafeJsonField("0leading", "field"));
-  assert.throws(() => assertSafeJsonField("has-dash", "field"));
-  assert.throws(() => assertSafeJsonField("has.dot", "field"));
-  assert.throws(() => assertSafeJsonField("", "field"));
-  assert.throws(() => assertSafeJsonField(null, "field"));
+test("assertNonEmptyJsonField rejects absent field names", () => {
+  assert.throws(() => assertNonEmptyJsonField("", "field"));
+  assert.throws(() => assertNonEmptyJsonField(null, "field"));
 });

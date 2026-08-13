@@ -11,8 +11,8 @@
  * - scoped to run against a local reference AS + RS (defaults:
  *   AS http://localhost:7662, RS http://localhost:7663)
  * - uses only the existing public reference endpoints:
- *     POST /oauth/register, POST /oauth/par, POST /consent/approve (inline
- *     JSON shortcut), GET /consent (hosted approval page), POST /introspect,
+ *     POST /oauth/register, POST /oauth/par, POST /consent/review,
+ *     POST /consent/approve, GET /consent (hosted approval page), POST /introspect,
  *     GET {rs}/v1/streams, GET {rs}/v1/streams/:stream/records
  *
  * What this is NOT:

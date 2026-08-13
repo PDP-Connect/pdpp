@@ -6,8 +6,8 @@
  * projection helpers in `server/connector-run-evidence.ts`. No test imports
  * this module by name.
  *
- *   - getConnectorRunEvidenceSource (returns the id only for a connector-kind
- *                                    source with a non-empty string id)
+ *   - getConnectorRunEvidenceConnectorId (returns the id only from a trusted
+ *                                         storage binding with a non-empty connector id)
  *   - getManifestRefreshPolicy      (reads capabilities.refresh_policy, with a
  *                                    strict object guard on capabilities)
  *   - getMaximumStalenessSeconds    (accepts a positive finite number only;
@@ -23,23 +23,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  getConnectorRunEvidenceSource,
+  getConnectorRunEvidenceConnectorId,
   getManifestRefreshPolicy,
   getMaximumStalenessSeconds,
 } from "../server/connector-run-evidence.ts";
 
-test("getConnectorRunEvidenceSource: connector-kind + non-empty string id -> id, else null", () => {
-  assert.equal(getConnectorRunEvidenceSource({ id: "github", kind: "connector" }), "github");
+test("getConnectorRunEvidenceConnectorId: storage connector id + non-empty string id -> id, else null", () => {
+  assert.equal(getConnectorRunEvidenceConnectorId({ connector_id: "github" }), "github");
 
-  // Wrong kind -> null.
-  assert.equal(getConnectorRunEvidenceSource({ id: "plaid", kind: "provider_native" }), null);
   // Missing / empty / non-string id -> null.
-  assert.equal(getConnectorRunEvidenceSource({ id: "", kind: "connector" }), null);
-  assert.equal(getConnectorRunEvidenceSource({ kind: "connector" }), null);
-  assert.equal(getConnectorRunEvidenceSource({ id: 42, kind: "connector" }), null);
-  // Null-ish source -> null (optional-chaining guard).
-  assert.equal(getConnectorRunEvidenceSource(null), null);
-  assert.equal(getConnectorRunEvidenceSource(undefined), null);
+  assert.equal(getConnectorRunEvidenceConnectorId({ connector_id: "" }), null);
+  assert.equal(getConnectorRunEvidenceConnectorId({}), null);
+  assert.equal(getConnectorRunEvidenceConnectorId({ connector_id: 42 }), null);
+  // Null-ish storage binding -> null (optional-chaining guard).
+  assert.equal(getConnectorRunEvidenceConnectorId(null), null);
+  assert.equal(getConnectorRunEvidenceConnectorId(undefined), null);
 });
 
 test("getManifestRefreshPolicy: reads capabilities.refresh_policy behind a strict object guard", () => {

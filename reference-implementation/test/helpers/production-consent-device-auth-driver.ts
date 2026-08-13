@@ -148,7 +148,21 @@ export function createProductionConsentDeviceAuthDriver() {
       if (!deviceCode) {
         throw new Error("pending consent request URI is invalid");
       }
-      return normalizeApprovalResult(await consentStore?.approveGrant(deviceCode));
+      const review = await consentStore?.getPendingConsentByDeviceCode(deviceCode, {
+        finalizeReview: true,
+        subjectId: "owner_local",
+      });
+      if (review === null) {
+        return normalizeApprovalResult(await consentStore?.approveGrant(deviceCode, "owner_local"));
+      }
+      if (typeof review?.reviewRevision !== "string") {
+        throw new Error("pending consent review revision was not materialized");
+      }
+      return normalizeApprovalResult(
+        await consentStore?.approveGrant(deviceCode, "owner_local", {
+          approval_review_revision: review.reviewRevision,
+        })
+      );
     },
 
     async denyOwnerDeviceAuth(userCode: string) {

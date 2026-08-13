@@ -37,7 +37,7 @@ import { createPackageRsClient as createPackageRsClientUntyped } from "../server
 // not a full protocol schema.
 interface PackageRsMember {
   connection_id: string;
-  grant?: { streams: { name: string }[] };
+  grant?: { streams: { instance_ids: string[]; name: string }[] };
   grant_id: string;
   source: { kind: string; id: string };
   token: string;
@@ -83,7 +83,7 @@ function createPackageRsClient(opts: Parameters<typeof createPackageRsClientUnty
     getRaw: async (path: string) => resultWithError(await client.getRaw(path)),
     patchJson: async (path: string, options: { body: Record<string, unknown> }) =>
       resultWithError(await client.patchJson(path, options)),
-    postJson: async (path: string, options: { body: Record<string, unknown> }) =>
+    postJson: async (path: string, options: Parameters<typeof client.postJson>[1]) =>
       resultWithError(await client.postJson(path, options)),
   };
 }
@@ -118,6 +118,12 @@ function makeRouter(routes: (req: FakeFetchRequest) => Promise<Response>): FakeF
 function memberA(): PackageRsMember {
   return {
     connection_id: "gh_main",
+    grant: {
+      streams: [
+        { instance_ids: ["gh_main"], name: "repos" },
+        { instance_ids: ["gh_main"], name: "issues" },
+      ],
+    },
     grant_id: "grant_A",
     source: { id: "github", kind: "connector" },
     token: "tok_A",
@@ -126,6 +132,12 @@ function memberA(): PackageRsMember {
 function memberB(): PackageRsMember {
   return {
     connection_id: "slack_main",
+    grant: {
+      streams: [
+        { instance_ids: ["slack_main"], name: "messages" },
+        { instance_ids: ["slack_main"], name: "repos" },
+      ],
+    },
     grant_id: "grant_B",
     source: { id: "slack", kind: "connector" },
     token: "tok_B",
@@ -276,7 +288,7 @@ test("schema fan-out understands the canonical { data: { connectors: [{ streams 
   assert.equal(body.data.granted_connections.length, 1);
 });
 
-test("schema scoped to connection_id calls only that child and strips the package selector", async () => {
+test("schema scoped to connection_id calls only that child and forwards the instance selector", async () => {
   const calls: { token: string; path: string; query: string }[] = [];
   // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
   const fetch = makeRouter(async (req) => {
@@ -300,7 +312,7 @@ test("schema scoped to connection_id calls only that child and strips the packag
   assert.equal(body.data.streams.length, 1);
   assert.equal(body.data.streams[0]?.name, "messages");
   assert.equal(body.data.streams[0]?.source?.connection_id, "slack_main");
-  assert.deepEqual(calls, [{ path: "/v1/schema", query: "stream=messages", token: "tok_B" }]);
+  assert.deepEqual(calls, [{ path: "/v1/schema", query: "connection_id=slack_main&stream=messages", token: "tok_B" }]);
 });
 
 test("schema with unknown connection_id returns not_found without fanout", async () => {
@@ -670,8 +682,8 @@ test("search fan-out intersects requested streams with each child grant", async 
     return jsonResponse(500, {});
   });
   const members = [
-    { ...memberA(), grant: { streams: [{ name: "conversations" }] } },
-    { ...memberB(), grant: { streams: [{ name: "messages" }] } },
+    { ...memberA(), grant: { streams: [{ instance_ids: ["gh_main"], name: "conversations" }] } },
+    { ...memberB(), grant: { streams: [{ instance_ids: ["slack_main"], name: "messages" }] } },
   ];
   const rs = createPackageRsClient({ fetch, members, providerUrl: PROVIDER });
 
@@ -709,8 +721,8 @@ test("search fan-out skips children with no requested streams in their grant", a
     return jsonResponse(500, {});
   });
   const members = [
-    { ...memberA(), grant: { streams: [{ name: "conversations" }] } },
-    { ...memberB(), grant: { streams: [{ name: "messages" }] } },
+    { ...memberA(), grant: { streams: [{ instance_ids: ["gh_main"], name: "conversations" }] } },
+    { ...memberB(), grant: { streams: [{ instance_ids: ["slack_main"], name: "messages" }] } },
   ];
   const rs = createPackageRsClient({ fetch, members, providerUrl: PROVIDER });
 
@@ -779,6 +791,172 @@ test("query_records with connection_id routes to one child only", async () => {
   assert.equal(out.ok, true);
   assert.equal(aCalled, 1);
   assert.equal(bCalled, 0);
+});
+
+test("package routing derives every authorized instance from the relevant child grant", async () => {
+  const tokensSeen: string[] = [];
+  // biome-ignore lint/suspicious/useAwait: localized test router preserves the Promise-based fetch contract.
+  const fetch = makeRouter(async (req) => {
+    tokensSeen.push(req.token);
+    return jsonResponse(200, { data: [] });
+  });
+  const multiInstanceMember = {
+    ...memberA(),
+    connection_id: "stale-display-only",
+    grant: {
+      streams: [
+        { instance_ids: ["gh_main", "gh_work"], name: "repos" },
+        { instance_ids: ["gh_messages"], name: "messages" },
+      ],
+    },
+  };
+  const rs = createPackageRsClient({ fetch, members: [multiInstanceMember, memberB()], providerUrl: PROVIDER });
+
+  const secondInstance = await rs.getJson("/v1/streams/repos/records", {
+    query: { connection_id: "gh_work" },
+  });
+  assert.equal(secondInstance.ok, true);
+  assert.deepEqual(tokensSeen, ["tok_A"]);
+
+  tokensSeen.length = 0;
+  const wrongStream = await rs.getJson("/v1/streams/messages/records", {
+    query: { connection_id: "gh_main" },
+  });
+  assert.equal(wrongStream.ok, false);
+  assert.equal(wrongStream.status, 404);
+  assert.deepEqual(tokensSeen, []);
+
+  const forgedMetadata = await rs.getJson("/v1/streams/repos/records", {
+    query: { connection_id: "stale-display-only" },
+  });
+  assert.equal(forgedMetadata.ok, false);
+  assert.equal(forgedMetadata.status, 404);
+  assert.deepEqual(tokensSeen, []);
+});
+
+test("package routing treats instance handles as source- and stream-scoped", async () => {
+  const calls: Array<{ path: string; query: string; token: string }> = [];
+  const observedCalls = () => calls;
+  // biome-ignore lint/suspicious/useAwait: localized test router preserves the Promise-based fetch contract.
+  const fetch = makeRouter(async (req) => {
+    calls.push({ path: req.path, query: req.query.toString(), token: req.token });
+    if (req.path === "/v1/schema") {
+      return jsonResponse(200, { data: { connectors: [], object: "schema" } });
+    }
+    if (req.path === "/v1/streams") {
+      return jsonResponse(200, { data: [] });
+    }
+    if (req.path === "/v1/search") {
+      return jsonResponse(200, { data: [], object: "list" });
+    }
+    if (req.path === "/v1/event-subscriptions") {
+      return jsonResponse(201, { subscription_id: "sub_shared" });
+    }
+    return jsonResponse(200, { data: [] });
+  });
+  const members = [
+    {
+      ...memberA(),
+      connection_id: "display-a",
+      grant: { streams: [{ instance_ids: ["shared"], name: "repos" }] },
+    },
+    {
+      ...memberB(),
+      connection_id: "display-b",
+      grant: { streams: [{ instance_ids: ["shared"], name: "repos" }] },
+    },
+  ];
+  const rs = createPackageRsClient({ fetch, members, providerUrl: PROVIDER });
+
+  const ambiguous = await rs.getJson("/v1/streams/repos/records", {
+    query: { connection_id: "shared" },
+  });
+  assert.equal(ambiguous.ok, false);
+  assert.equal(ambiguous.status, 409);
+  assert.equal((ambiguous.error as PackageRsErrorEnvelope).code, "ambiguous_connection");
+  assert.equal((ambiguous.error as PackageRsErrorEnvelope).retry_with, "source_id");
+  assert.deepEqual(calls, []);
+
+  await Promise.all(
+    (
+      [
+        ["/v1/schema", { connection_id: "shared", stream: "repos" }],
+        ["/v1/streams", { connection_id: "shared" }],
+        ["/v1/search", { connection_id: "shared", q: "term", streams: ["repos"] }],
+      ] as const
+    ).map(async ([path, query]) => {
+      const response = await rs.getJson(path, { query });
+      assert.equal(response.ok, false, path);
+      assert.equal(response.status, 409, path);
+      assert.equal((response.error as PackageRsErrorEnvelope).retry_with, "source_id", path);
+      assert.deepEqual(calls, [], path);
+    })
+  );
+  const ambiguousEvent = await rs.postJson("/v1/event-subscriptions", {
+    body: { callback_url: "https://x/y", connection_id: "shared" },
+  });
+  assert.equal(ambiguousEvent.ok, false);
+  assert.equal(ambiguousEvent.status, 409);
+  assert.equal((ambiguousEvent.error as PackageRsErrorEnvelope).retry_with, "source_id");
+  assert.deepEqual(calls, []);
+
+  const selected = await rs.getJson("/v1/streams/repos/records", {
+    query: { connection_id: "shared", source_id: "github" },
+  });
+  assert.equal(selected.ok, true);
+  assert.deepEqual(
+    (calls as Array<{ token: string }>).map((call) => call.token),
+    ["tok_A"]
+  );
+  assert.equal(
+    (calls as Array<{ query: string }>)[0]?.query,
+    "connection_id=shared",
+    "package-only source selector is not forwarded"
+  );
+
+  calls.length = 0;
+  const mismatch = await rs.getJson("/v1/streams/repos/records", {
+    query: { connection_id: "shared", source_id: "missing" },
+  });
+  assert.equal(mismatch.ok, false);
+  assert.equal(mismatch.status, 404);
+  assert.deepEqual(calls, []);
+
+  const assertSelectedSurface = async (path: string, query: Record<string, string | string[]>) => {
+    calls.length = 0;
+    const response = await rs.getJson(path, { query });
+    assert.equal(response.ok, true, `${path}: ${JSON.stringify(response.error)}`);
+    assert.deepEqual(
+      (calls as Array<{ token: string }>).map((call) => call.token),
+      ["tok_A"],
+      path
+    );
+    const [firstCall] = observedCalls();
+    assert.ok(firstCall);
+    assert.equal(firstCall.query.includes("source_id"), false, path);
+  };
+  await assertSelectedSurface("/v1/schema", {
+    connection_id: "shared",
+    source_id: "github",
+    stream: "repos",
+  });
+  await assertSelectedSurface("/v1/streams", { connection_id: "shared", source_id: "github" });
+  await assertSelectedSurface("/v1/search", {
+    connection_id: "shared",
+    q: "term",
+    source_id: "github",
+    streams: ["repos"],
+  });
+
+  calls.length = 0;
+  const event = await rs.postJson("/v1/event-subscriptions", {
+    body: { callback_url: "https://x/y", connection_id: "shared", source_id: "github" },
+  });
+  assert.equal(event.ok, true);
+  assert.deepEqual(
+    (calls as Array<{ token: string }>).map((call) => call.token),
+    ["tok_A"]
+  );
 });
 
 test("query_records ambiguity is fast and does not probe child health", async () => {

@@ -15,9 +15,8 @@
  * without pinning a `connector_instance_id` would resolve to that phantom
  * binding and read across a connection the owner never created.
  *
- * After the fix, a read persists nothing, so fan-in resolution for an
- * unconnected connector fails closed — it returns no binding (and reads zero
- * records) exactly as if the owner had never connected.
+ * After the fix, a read persists nothing. A resolved grant keeps its frozen
+ * instance handle without widening to a synthesized default connection.
  */
 
 import assert from "node:assert/strict";
@@ -50,6 +49,8 @@ const listedManifest = {
         required: ["id"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",
@@ -67,7 +68,7 @@ function withDb(fn: () => Promise<void>): () => Promise<void> {
 }
 
 test(
-  "a dashboard read of an unconnected listed connector persists no connection and grant fan-in fails closed",
+  "a dashboard read persists no phantom connection and resolved grant fan-in does not widen",
   withDb(async () => {
     await registerConnector(listedManifest);
 
@@ -88,8 +89,7 @@ test(
       "the read persisted no connector_instances row (no phantom connection)"
     );
 
-    // Grant fan-in for a grant that names the connector but does NOT pin a
-    // connector_instance_id must fail closed: no active binding, zero records.
+    // The owner has no current active binding for this connector.
     const active = await listActiveBindingsForGrant({
       connectorId: CONNECTOR_ID,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
@@ -97,13 +97,17 @@ test(
     assert.deepEqual(active, [], "no active binding exists for an unconnected connector");
 
     const { bindings } = await resolveFanInBindings({
+      authorizedInstanceIds: ["cin_unconnected"],
       connectorId: CONNECTOR_ID,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
     });
-    assert.deepEqual(
-      bindings,
-      [],
-      "fan-in resolution must NOT bind to a phantom default-account connection; it fails closed"
+    assert.equal(bindings.length, 1, "resolved grant retains its one frozen instance handle");
+    assert.equal(bindings[0]?.connectorId, CONNECTOR_ID);
+    assert.equal(bindings[0]?.connectorInstanceId, "cin_unconnected");
+    assert.equal(
+      store.listByOwner(OWNER_AUTH_DEFAULT_SUBJECT_ID).length,
+      0,
+      "resolution does not synthesize or persist a replacement default connection"
     );
   })
 );

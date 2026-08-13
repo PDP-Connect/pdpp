@@ -212,7 +212,12 @@ async function seedSpotify({
 }
 
 test("example client completes the current reference flow on the inline-approval path", async () => {
-  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const server = await startServer({
+    asPort: 0,
+    dbPath: ":memory:",
+    quiet: true,
+    rsPort: 0,
+  });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
 
@@ -263,7 +268,12 @@ test("example client completes the current reference flow on the inline-approval
 });
 
 test("example client denies a staged request on the inline path", async () => {
-  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const server = await startServer({
+    asPort: 0,
+    dbPath: ":memory:",
+    quiet: true,
+    rsPort: 0,
+  });
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
@@ -349,7 +359,12 @@ test("example client shipped defaults stage a PAR request and reach records agai
   // without editing it, after registering the reference Spotify manifest the
   // normal way. If the shipped connector id or stream name drifts out of
   // the manifest, this test fails loudly.
-  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const server = await startServer({
+    asPort: 0,
+    dbPath: ":memory:",
+    quiet: true,
+    rsPort: 0,
+  });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
 

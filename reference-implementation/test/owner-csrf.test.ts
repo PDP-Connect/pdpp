@@ -24,8 +24,10 @@ import {
   getOwnerDeviceAuthorizationByUserCode as getOwnerDeviceAuthorizationByUserCodeUntyped,
   initiateOwnerDeviceAuthorization as initiateOwnerDeviceAuthorizationUntyped,
 } from "../server/auth.ts";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer as startServerUntyped } from "../server/index.ts";
 import { deriveOwnerCsrfSecretFromString, issueOwnerCsrfToken } from "../server/owner-csrf.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 // server/index.js (startServer) and server/auth.ts (device authorization)
 // are untyped JS (allowJs, checkJs:false). Local interfaces model only
@@ -74,7 +76,10 @@ const SPOTIFY_MANIFEST: { connector_id: string; [key: string]: unknown } = JSON.
 );
 
 const TEST_PASSWORD = "csrf-regression-test-password";
+const OWNER_SUBJECT_ID = "owner_local";
+const NOW = "2026-05-31T00:00:00.000Z";
 const CSRF_FIELD_PATTERN = /<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/;
+const APPROVAL_REVIEW_REVISION_PATTERN = /name="approval_review_revision" value="([^"]+)"/;
 
 async function closeServer(server: ClosableServer): Promise<void> {
   server.asServer.closeAllConnections();
@@ -216,6 +221,7 @@ async function startPendingConsent(asUrl: string): Promise<string> {
   if (!registerResp.ok && registerResp.status !== 409) {
     throw new Error(`connector registration failed: ${registerResp.status} ${await registerResp.text()}`);
   }
+  await seedSpotifyInstance();
   const resp = await fetch(`${asUrl}/oauth/par`, {
     body: JSON.stringify({
       authorization_details: [
@@ -239,6 +245,42 @@ async function startPendingConsent(asUrl: string): Promise<string> {
   }
   const body = (await resp.json()) as { request_uri: string };
   return body.request_uri;
+}
+
+async function reviewPendingConsent(asUrl: string, requestUri: string, sessionCookie: string): Promise<string> {
+  const resp = await fetch(`${asUrl}/consent/review`, {
+    body: JSON.stringify({ request_uri: requestUri }),
+    headers: { Accept: "application/json", "Content-Type": "application/json", Cookie: sessionCookie },
+    method: "POST",
+  });
+  const text = await resp.text();
+  assert.equal(resp.status, 200, text);
+  const body = JSON.parse(text) as {
+    approval_review?: object;
+    approval_review_revision?: string;
+    request_uri?: string;
+  };
+  assert.ok(body.approval_review);
+  assert.ok(body.approval_review_revision);
+  assert.equal(body.request_uri, requestUri);
+  return body.approval_review_revision;
+}
+
+async function seedSpotifyInstance(): Promise<void> {
+  const connectorId = canonicalConnectorKey(SPOTIFY_MANIFEST.connector_id);
+  assert.ok(connectorId, "spotify manifest must resolve to a canonical connector key");
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId: "cin_owner_csrf_spotify",
+    createdAt: NOW,
+    displayName: "Owner CSRF Spotify",
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    sourceBinding: { account_hint: "owner-csrf@example.com" },
+    sourceBindingKey: "owner-csrf@example.com",
+    sourceKind: "account",
+    status: "active",
+    updatedAt: NOW,
+  });
 }
 
 // ── login: form POST without CSRF -> 403 + no session ────────────────────────
@@ -322,7 +364,6 @@ test("CSRF: form POST /consent/approve without _csrf is rejected with 403 even w
   await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
     const { sessionCookie } = await login(asUrl, TEST_PASSWORD);
     const requestUri = await startPendingConsent(asUrl);
-
     const resp = await fetch(`${asUrl}/consent/approve`, {
       body: new URLSearchParams({ request_uri: requestUri }).toString(),
       headers: {
@@ -410,9 +451,26 @@ test("CSRF: matching token from /consent GET allows /consent/approve form POST",
       sessionCookie
     );
     assert.ok(csrf.csrfField, "consent GET SHALL embed a CSRF token");
+    const reviewResp = await fetch(`${asUrl}/consent/review`, {
+      body: new URLSearchParams({ _csrf: csrf.csrfField, request_uri: requestUri }).toString(),
+      headers: {
+        Accept: "text/html",
+        "Content-Type": "application/x-www-form-urlencoded",
+        Cookie: `${sessionCookie}; ${csrf.csrfCookie}`,
+      },
+      method: "POST",
+    });
+    const reviewHtml = await reviewResp.text();
+    assert.equal(reviewResp.status, 200, reviewHtml);
+    const revisionMatch = reviewHtml.match(APPROVAL_REVIEW_REVISION_PATTERN);
+    assert.ok(revisionMatch?.[1], "review form SHALL carry an approval review revision");
 
     const resp = await fetch(`${asUrl}/consent/approve`, {
-      body: new URLSearchParams({ _csrf: csrf.csrfField, request_uri: requestUri }).toString(),
+      body: new URLSearchParams({
+        _csrf: csrf.csrfField,
+        approval_review_revision: revisionMatch[1],
+        request_uri: requestUri,
+      }).toString(),
       headers: {
         Accept: "text/html",
         "Content-Type": "application/x-www-form-urlencoded",
@@ -421,8 +479,8 @@ test("CSRF: matching token from /consent GET allows /consent/approve form POST",
       method: "POST",
       redirect: "manual",
     });
-    assert.equal(resp.status, 200);
     const text = await resp.text();
+    assert.equal(resp.status, 200, text);
     assert.ok(text.includes("Access approved"));
   });
 });
@@ -460,8 +518,9 @@ test("CSRF: JSON POST /consent/approve remains compatible without _csrf", async 
   await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
     const { sessionCookie } = await login(asUrl, TEST_PASSWORD);
     const requestUri = await startPendingConsent(asUrl);
+    const approvalReviewRevision = await reviewPendingConsent(asUrl, requestUri, sessionCookie ?? "");
     const resp = await fetch(`${asUrl}/consent/approve`, {
-      body: JSON.stringify({ request_uri: requestUri }),
+      body: JSON.stringify({ approval_review_revision: approvalReviewRevision, request_uri: requestUri }),
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
@@ -532,8 +591,9 @@ test("CSRF: text/plain POST /consent/approve without _csrf is rejected with 403 
     // Confirm no grant was actually issued: a fresh approval through
     // the JSON branch with the same pending request SHALL still
     // succeed (the pending row was not consumed).
+    const approvalReviewRevision = await reviewPendingConsent(asUrl, requestUri, sessionCookie ?? "");
     const recover = await fetch(`${asUrl}/consent/approve`, {
-      body: JSON.stringify({ request_uri: requestUri }),
+      body: JSON.stringify({ approval_review_revision: approvalReviewRevision, request_uri: requestUri }),
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",

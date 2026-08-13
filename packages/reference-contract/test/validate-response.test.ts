@@ -89,6 +89,41 @@ test("validateResponse fails closed when payload violates declared response sche
   }
 });
 
+test("approveConsent accepts the closed batch approval response", () => {
+  const result = validateResponse("approveConsent", {
+    body: {
+      grant: {
+        child_grants: [{ grant_id: "grant_child_1", source: { id: "spotify" } }],
+        grant_id: "grant_package",
+        package: true,
+        package_id: "package_1",
+      },
+      package_id: "package_1",
+      token: "token_1",
+    },
+    status: 200,
+  });
+  assert.deepEqual(result, { ok: true, skipped: false });
+});
+
+test("approveConsent rejects extra fields in a batch approval response", () => {
+  const result = validateResponse("approveConsent", {
+    body: {
+      grant: {
+        child_grants: [{ grant_id: "grant_child_1", source: { id: "spotify" } }],
+        grant_id: "grant_package",
+        package: true,
+        package_id: "package_1",
+      },
+      package_id: "package_1",
+      token: "token_1",
+      unexpected: true,
+    },
+    status: 200,
+  });
+  assert.equal(result.ok, false);
+});
+
 // `expand_capabilities` target-naming contract. Each entry SHALL carry both
 // `target_stream` (the related child stream) and `child_parent_key_field` (the
 // field on the child holding the parent's key). Pinned via getStreamMetadata's

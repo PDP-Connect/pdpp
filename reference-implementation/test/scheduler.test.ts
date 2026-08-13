@@ -1105,6 +1105,7 @@ test("scheduler preserves failure reasons and checkpoint summaries from failed r
   const manifest = {
     connector_id: "scheduler-failure-test",
     display_name: "Scheduler Failure Test Connector",
+    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-failure-test",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -1118,6 +1119,7 @@ test("scheduler preserves failure reasons and checkpoint summaries from failed r
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -1231,6 +1233,7 @@ test("scheduler preserves partial checkpoint commit summaries from state persist
   const manifest = {
     connector_id: "scheduler-partial-checkpoint-test",
     display_name: "Scheduler Partial Checkpoint Test Connector",
+    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-partial-checkpoint-test",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -1244,6 +1247,7 @@ test("scheduler preserves partial checkpoint commit summaries from state persist
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
       {
@@ -1257,6 +1261,7 @@ test("scheduler preserves partial checkpoint commit summaries from state persist
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -1429,6 +1434,7 @@ test("scheduler preserves terminal counter mismatch failures from runConnector r
   const manifest = {
     connector_id: "scheduler-terminal-counter-mismatch-test",
     display_name: "Scheduler Terminal Counter Mismatch Test Connector",
+    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-terminal-counter-mismatch-test",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -1442,6 +1448,7 @@ test("scheduler preserves terminal counter mismatch failures from runConnector r
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -1566,6 +1573,7 @@ test("scheduler preserves connector-declared terminal error details from failed 
   const manifest = {
     connector_id: "scheduler-terminal-error-test",
     display_name: "Scheduler Terminal Error Test Connector",
+    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-terminal-error-test",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -1579,6 +1587,7 @@ test("scheduler preserves connector-declared terminal error details from failed 
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -1695,6 +1704,7 @@ test("scheduler preserves known gaps from partial connector runs", async () => {
   const manifest = {
     connector_id: "scheduler-known-gap-test",
     display_name: "Scheduler Known Gap Test Connector",
+    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-known-gap-test",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -1707,6 +1717,7 @@ test("scheduler preserves known gaps from partial connector runs", async () => {
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -1802,6 +1813,7 @@ test("scheduler preserves connector-declared terminal error details from cancell
   const manifest = {
     connector_id: "scheduler-cancelled-terminal-error-test",
     display_name: "Scheduler Cancelled Terminal Error Test Connector",
+    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-cancelled-terminal-error-test",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -1815,6 +1827,7 @@ test("scheduler preserves connector-declared terminal error details from cancell
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -1931,6 +1944,7 @@ test("scheduler does not retry deterministic connector protocol violations", asy
   const manifest = {
     connector_id: "scheduler-no-retry-protocol-violation",
     display_name: "Scheduler No Retry Protocol Violation Connector",
+    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-no-retry-protocol-violation",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -1943,6 +1957,7 @@ test("scheduler does not retry deterministic connector protocol violations", asy
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -2034,6 +2049,7 @@ test("scheduler retries connector-declared retryable failures and records the su
   const manifest = {
     connector_id: "scheduler-retryable-terminal-error",
     display_name: "Scheduler Retryable Terminal Error Connector",
+    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-retryable-terminal-error",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -2047,6 +2063,7 @@ test("scheduler retries connector-declared retryable failures and records the su
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -2159,6 +2176,7 @@ test("scheduler does not retry connector-declared non-retryable failures", async
   const manifest = {
     connector_id: "scheduler-nonretryable-terminal-error",
     display_name: "Scheduler Nonretryable Terminal Error Connector",
+    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-nonretryable-terminal-error",
     protocol_version: "0.1.0",
     streams: [
       {
@@ -2172,6 +2190,7 @@ test("scheduler does not retry connector-declared non-retryable failures", async
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -4292,12 +4311,14 @@ test("scheduler marks connector as needs-human when automatic run triggers inter
   const manifest = {
     connector_id: "scheduler-interaction-test",
     display_name: "Interaction Test Connector",
+    manifest_uri: "https://registry.pdpp.org/connectors/scheduler-interaction-test",
     protocol_version: "0.1.0",
     streams: [
       {
         name: "items",
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],

@@ -137,12 +137,13 @@ interface CollapsedSemanticHit extends SemanticIndexHit {
 }
 
 interface SemanticGrant extends SearchSemanticGrant {
+  source?: { id?: string; kind?: string };
   streams?: Array<{
     name: string;
     fields?: string[];
-    connection_id?: string;
+    instance_ids?: string[];
     resources?: string[];
-    time_range?: unknown;
+    time_constraint?: { field: string; since?: string; until?: string } | null;
     [key: string]: unknown;
   }>;
   subject?: { id?: string };
@@ -3084,7 +3085,10 @@ function compileSingleStreamSearchFilter({
 }
 
 function hasGrantRecordConstraints(streamGrant: SemanticStreamGrant | null | undefined): boolean {
-  return !!(streamGrant?.time_range || (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0));
+  return !!(
+    streamGrant?.time_constraint ||
+    (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0)
+  );
 }
 
 function needsCandidateRecordScan(
@@ -3231,12 +3235,7 @@ function buildSemanticPlanEntryForGrant({
   if (!Array.isArray(declared) || declared.length === 0) {
     return null;
   }
-  if (
-    typeof streamGrant.connection_id === "string" &&
-    streamGrant.connection_id.length > 0 &&
-    connectorInstanceId &&
-    streamGrant.connection_id !== connectorInstanceId
-  ) {
+  if (connectorInstanceId && !streamGrant.instance_ids?.includes(connectorInstanceId)) {
     return null;
   }
   const grantedFields =
@@ -3425,7 +3424,6 @@ export async function runSemanticSearch({
       const typedGrant = grant as SemanticGrant;
       const connectorInstanceId: string | null =
         (typedManifest.storage_binding as { connector_instance_id?: string } | undefined)?.connector_instance_id ||
-        (typedManifest.connector_id as string | undefined) ||
         null;
       const compiledFilter = compileSingleStreamSearchFilter({
         filter,
@@ -3433,11 +3431,21 @@ export async function runSemanticSearch({
         manifest: typedManifest,
         streamName: filteredStream,
       });
+      const bindingScopedGrant =
+        tokenInfo.pdpp_token_kind === "owner" && connectorInstanceId
+          ? {
+              ...typedGrant,
+              streams: (typedGrant.streams ?? []).map((stream) => ({
+                ...stream,
+                instance_ids: [connectorInstanceId],
+              })),
+            }
+          : typedGrant;
       return buildSemanticSearchPlanForGrant({
         compiledFilter,
         connectorId,
         connectorInstanceId,
-        grant: typedGrant,
+        grant: bindingScopedGrant,
         manifest: typedManifest,
         streamsFilter,
       });
@@ -3472,27 +3480,24 @@ export async function runSemanticSearch({
       const ownerSubjectIdForGrant =
         (tokenInfo.grant?.subject?.id as string | undefined) || tokenInfo.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID;
       const grantStreams = clientActor?.grant?.streams || [];
-      let grantStreamConnectionId: string | null = null;
-      const pinned = grantStreams
-        .map((s) => s?.connection_id)
-        .filter((v): v is string => typeof v === "string" && v.length > 0);
-      if (pinned.length === grantStreams.length && pinned.length > 0) {
-        const unique = new Set(pinned);
-        if (unique.size === 1) {
-          grantStreamConnectionId = pinned[0] ?? null;
-        }
-      }
+      const authorizedInstanceIds = [
+        ...new Set(
+          grantStreams
+            .flatMap((stream) => stream.instance_ids || [])
+            .filter((value): value is string => typeof value === "string" && value.length > 0)
+        ),
+      ];
       const resolveSemanticFanInBindings = resolveFanInBindings as unknown as (args: {
+        authorizedInstanceIds: string[];
         connectorId: string;
         connectorInstanceIdHint: string | null;
-        grantStreamConnectionId: string | null;
         ownerSubjectId: string;
         requestConnectionId: string | null;
       }) => Promise<Awaited<ReturnType<typeof resolveFanInBindings>>>;
       const { bindings } = await resolveSemanticFanInBindings({
+        authorizedInstanceIds,
         connectorId,
         connectorInstanceIdHint: grantResolved.storageBinding?.connector_instance_id || null,
-        grantStreamConnectionId: grantStreamConnectionId || null,
         ownerSubjectId: ownerSubjectIdForGrant,
         requestConnectionId: connectionId,
       });
@@ -4081,7 +4086,11 @@ async function persistSemanticSnapshot(snapshot: SearchSemanticSnapshot): Promis
   // Store backend_hash alongside plan_hash so stale-cursor detection is
   // deterministic across restarts: the snapshot row is the source of truth
   // about what backend produced the cached distances.
-  const planHash = JSON.stringify({ backend: snapshot.backend_hash, plan: snapshot.plan_hash });
+  const planHash = JSON.stringify({
+    authority: snapshot.authority_key,
+    backend: snapshot.backend_hash,
+    plan: snapshot.plan_hash,
+  });
   const resultsJson = JSON.stringify(snapshot.results);
 
   await getSemanticSearchStore().persistSnapshot({
@@ -4105,13 +4114,14 @@ function materializeSemanticSnapshot(row: SemanticDbRow | null): SearchSemanticS
   if (Number.isFinite(createdAt) && Date.now() - createdAt > SNAPSHOT_TTL_MS) {
     return null;
   }
-  let planEnvelope: { backend?: string; plan?: string };
+  let planEnvelope: { authority?: string; backend?: string; plan?: string };
   try {
     planEnvelope = JSON.parse(String(row.plan_hash));
   } catch {
     return null;
   }
   return {
+    ...(planEnvelope.authority ? { authority_key: planEnvelope.authority } : {}),
     backend_hash: planEnvelope.backend ?? "",
     plan_hash: planEnvelope.plan ?? "",
     query: String(row.query),

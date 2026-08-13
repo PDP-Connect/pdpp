@@ -17,9 +17,12 @@ import { fileURLToPath } from "node:url";
 
 import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
+const OWNER_SUBJECT_ID = "owner_local";
+const NOW = "2026-05-31T00:00:00.000Z";
 
 interface CloseableServer {
   close: (callback?: (err?: Error) => void) => unknown;
@@ -73,16 +76,32 @@ interface Manifest {
 }
 
 async function registerSpotify(asUrl: string): Promise<Manifest> {
-  const raw = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")) as Manifest;
-  const canonical = canonicalConnectorKeyFromManifest(raw);
-  const manifest = canonical && canonical !== raw.connector_id ? { ...raw, connector_id: canonical } : raw;
+  const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")) as Manifest;
   const { status } = await fetchJson(`${asUrl}/connectors`, {
     body: JSON.stringify(manifest),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
   assert.equal(status, 201);
+  await seedSpotifyInstance(manifest);
   return manifest;
+}
+
+async function seedSpotifyInstance(manifest: Manifest): Promise<void> {
+  const connectorId = canonicalConnectorKeyFromManifest(manifest);
+  assert.ok(connectorId, "spotify manifest must resolve to a canonical connector key");
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId: "cin_mcp_event_subscription_spotify",
+    createdAt: NOW,
+    displayName: "MCP Event Subscription Spotify",
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    sourceBinding: { account_hint: "mcp-event-subscription@example.com" },
+    sourceBindingKey: "mcp-event-subscription@example.com",
+    sourceKind: "account",
+    status: "active",
+    updatedAt: NOW,
+  });
 }
 
 interface AuthCodeClient {
@@ -144,9 +163,21 @@ async function completeOauthCodeFlow({
   const requestUri = consentUrl.searchParams.get("request_uri");
   assert.ok(requestUri);
 
+  const reviewResp = await fetch(`${asUrl}/consent/review`, {
+    body: JSON.stringify({ request_uri: requestUri, subject_id: "owner_local" }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const reviewBody = (await reviewResp.json()) as { approval_review?: unknown; approval_review_revision?: unknown };
+  assert.equal(reviewResp.status, 200, JSON.stringify(reviewBody));
+  assert.ok(reviewBody.approval_review && typeof reviewBody.approval_review === "object");
+  assert.equal(typeof reviewBody.approval_review_revision, "string");
   const approveResp = await fetch(`${asUrl}/consent/approve`, {
-    body: new URLSearchParams({ request_uri: requestUri, subject_id: "owner_local" }).toString(),
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: JSON.stringify({
+      approval_review_revision: reviewBody.approval_review_revision,
+      request_uri: requestUri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
     redirect: "manual",
   });

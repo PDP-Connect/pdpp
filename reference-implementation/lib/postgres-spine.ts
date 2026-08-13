@@ -8,6 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 
 import { postgresQuery, withPostgresTransaction } from "../server/postgres-storage.ts";
 import {
@@ -1160,6 +1161,18 @@ export async function postgresEmitSpineEvent(input: SpineEventInput = {}): Promi
     await writePostgresRunHistoryForSpineEvent(client, toRunHistorySpineEvent(event, input.data));
     return hydrate(result.rows[0]);
   });
+}
+
+export async function postgresEmitSpineEventInTransaction(
+  client: PoolClient,
+  input: SpineEventInput = {}
+): Promise<SpineEventRecord | null> {
+  const event = normalize(input);
+  const result = await client.query<SpineEventRow>(SPINE_INSERT_EVENT_SQL, spineInsertEventParams(event));
+  if (isRunHistoryRelevantEventType(event.event_type)) {
+    await writePostgresRunHistoryForSpineEvent(client, toRunHistorySpineEvent(event, input.data));
+  }
+  return hydrate(result.rows[0]);
 }
 
 export async function postgresListSpineEventsPage(

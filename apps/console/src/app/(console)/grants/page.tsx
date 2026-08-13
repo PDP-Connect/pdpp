@@ -10,7 +10,7 @@ import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
-import { getOwnerLoginPath, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import { getOwnerLoginPath, getReferencePublicUrl, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type GrantSummary,
   getGrantTimeline,
@@ -116,6 +116,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
   }
 
   const ownerLoginUrl = getOwnerLoginPath();
+  const batchConsentUrl = await getReferencePublicUrl("/consent");
   const activeFilters = [
     params.status ? { label: "state", value: params.status } : null,
     params.q ? { label: "query", value: params.q } : null,
@@ -141,7 +142,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
           <DataList>
             {approvals.data.map((approval) => (
               <li key={approval.approval_id}>
-                <PendingApprovalRow approval={approval} />
+                <PendingApprovalRow approval={approval} batchConsentUrl={batchConsentUrl} />
               </li>
             ))}
           </DataList>
@@ -205,7 +206,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
   );
 }
 
-function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
+function PendingApprovalRow({ approval, batchConsentUrl }: { approval: PendingApproval; batchConsentUrl: string }) {
   const previewStreams = Array.isArray(approval.grant_preview?.streams)
     ? approval.grant_preview.streams.flatMap((stream) => {
         const name = typeof stream === "string" ? stream : stream?.name || "";
@@ -232,9 +233,18 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
       <form className="flex flex-wrap gap-2">
         <input name="kind" type="hidden" value={approval.kind} />
         <input name="approval_id" type="hidden" value={approval.approval_id} />
-        <IcButton formAction={approvePendingApprovalAction} size="sm" type="submit">
-          Approve
-        </IcButton>
+        {approval.kind === "consent" && approval.batch ? (
+          <a
+            className={buttonVariants({ size: "sm", variant: "default" })}
+            href={`${batchConsentUrl}?approval_id=${encodeURIComponent(approval.approval_id)}`}
+          >
+            Review sources
+          </a>
+        ) : (
+          <IcButton formAction={approvePendingApprovalAction} size="sm" type="submit">
+            Approve
+          </IcButton>
+        )}
         <IcButton formAction={denyPendingApprovalAction} size="sm" type="submit" variant="destructive">
           Deny
         </IcButton>

@@ -13,9 +13,10 @@ import { publicManifests as publicManifestsRaw } from "../src/public/index.ts";
 const publicManifests = publicManifestsRaw as readonly RouteManifest[];
 
 const FIELD_CAPABILITIES_OR_FILTER_RE = /field_capabilities|filter/i;
-const FIELD_CAPABILITIES_RE = /field_capabilities/;
+const CLIENT_TOKEN_V01_REJECTION_RE = /client-token v0\.1 reads reject/i;
 const HYBRID_PAGINATION_RE = /hybrid_pagination_supported/;
 const LEXICAL_FALLBACK_RE = /lexical|\/v1\/search\b/;
+const OWNER_TOKEN_CURRENT_CAPABILITY_RE = /owner-token current-capability/i;
 const STREAM_PARAMETER_RE = /stream=<name>/;
 const V1_SCHEMA_RE = /\/v1\/schema/;
 const VIEW_COMPACT_RE = /view=compact/;
@@ -77,12 +78,16 @@ test("searchRecordsHybrid summary references hybrid_pagination_supported and lex
   );
 });
 
-test("ListRecordsQuerySchema.filter description references field_capabilities and /v1/schema", () => {
+test("ListRecordsQuerySchema.filter description distinguishes owner and v0.1 client capabilities", () => {
   const listRecords = findOperation("listRecords");
   const filterSchema = listRecords.request?.query?.properties?.filter;
   assert.ok(filterSchema, "listRecords query must declare a filter property");
   const { description } = filterSchema;
   assert.equal(typeof description, "string");
-  assert.match(description ?? "", FIELD_CAPABILITIES_RE, "filter.description must name field_capabilities");
-  assert.match(description ?? "", V1_SCHEMA_RE, "filter.description must reference /v1/schema");
+  assert.match(description ?? "", OWNER_TOKEN_CURRENT_CAPABILITY_RE, "filter.description must preserve owner filters");
+  assert.match(
+    description ?? "",
+    CLIENT_TOKEN_V01_REJECTION_RE,
+    "filter.description must state that v0.1 client reads reject filters"
+  );
 });

@@ -83,6 +83,7 @@ export const CONFORMANCE_STREAM_B = "accounts";
 export const CONFORMANCE_MANIFEST = {
   connector_id: CONFORMANCE_CONNECTOR_ID,
   display_name: "Aggregation Rows Conformance",
+  manifest_uri: `https://sources.example/${CONFORMANCE_CONNECTOR_ID}`,
   protocol_version: "0.1.0",
   runtime_requirements: { bindings: { network: { required: false } } },
   streams: [
@@ -98,6 +99,7 @@ export const CONFORMANCE_MANIFEST = {
         required: ["id"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
       semantics: "mutable_state",
     },
     {
@@ -111,6 +113,7 @@ export const CONFORMANCE_MANIFEST = {
         required: ["id"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
       semantics: "mutable_state",
     },
   ],

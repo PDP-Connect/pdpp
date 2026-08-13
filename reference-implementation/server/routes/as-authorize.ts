@@ -35,6 +35,7 @@ import {
   renderHostedMcpSourceSelection,
   requireAuthorizeString,
   requireRegisteredRedirectUri,
+  resolveHostedMcpSourceDescriptor,
   validateAuthorizePkce,
 } from "./as-consent-ui-helpers.ts";
 
@@ -175,18 +176,15 @@ interface SourceEntryAccumulator {
   storageBindings: Array<{ connector_id: string }>;
 }
 
-// Decides whether the owner's selected connection should be pinned as an
-// enforceable `grant.streams[].connection_id` constraint on the issued child
-// grant, versus omitted to preserve fan-in.
+// Decides whether the owner's selected connection should be included as a
+// requested `streams[].instance_ids` constraint for the issued child grant.
 //
 // Pin iff the owner selected a specific connection AND the connector has more
 // than one active binding — i.e. the picker presented sibling connections and
 // the owner disambiguated among them. When the connector has exactly one active
-// binding (or none), "selecting" it is not a disambiguating choice: fan-in over
-// a set of one already resolves to that connection, auto-select covers it, and
-// stamping a `connection_id` would only add a brittle stored id that pressures
-// existing grants without changing what the read returns. This keeps
-// single-connection deployments and existing grants byte-for-byte unchanged.
+// binding (or none), "selecting" it is not a disambiguating choice: the AS can
+// resolve omission only when one eligible instance exists. Omission never means
+// fan-in.
 //
 // Pure and side-effect free so the pin policy is unit-testable in isolation.
 export function shouldPinSelectedConnection(
@@ -215,6 +213,11 @@ async function accumulateSourceEntry(
   const manifest = await caps.getConnectorManifest(connectorId).catch(() => null);
   if (!manifest) {
     oauthError(res, 400, "invalid_request", `Unknown connector: ${connectorId}`);
+    return "rejected";
+  }
+  const source = resolveHostedMcpSourceDescriptor(manifest);
+  if (!source) {
+    oauthError(res, 400, "invalid_request", `Connector ${connectorId} has no valid public source identity`);
     return "rejected";
   }
 
@@ -259,18 +262,16 @@ async function accumulateSourceEntry(
     return "skipped";
   }
 
-  // Pin the validated connection onto the issued child grant only when it
-  // disambiguates among sibling connections; otherwise omit it to preserve
-  // fan-in. The same value already flows to the package member audit metadata
-  // below via acc.connectionIds, so "what the owner saw" and "what is enforced"
-  // agree when pinned.
+  // Include the validated connection only when it disambiguates among sibling
+  // instances. Otherwise let the AS resolve the one eligible instance.
   const pinnedConnectionId = shouldPinSelectedConnection(connectionId, activeBindingCount) ? connectionId : null;
   acc.authorizationDetails.push(
     buildHostedMcpAuthorizationDetailForConnector(
       connectorId,
       narrowedStreamNames,
       packageAccessMode,
-      pinnedConnectionId
+      pinnedConnectionId,
+      source
     )
   );
   acc.storageBindings.push({ connector_id: connectorId });
@@ -294,7 +295,7 @@ function resolveNarrowedStreams(
   streamSelectionsBySource: Map<string, Set<string>>
 ): string[] | null | "deselected" {
   const manifestStreamNames = Array.isArray(manifest?.streams)
-    ? (manifest?.streams?.map((s) => s.name).filter((n): n is string => typeof n === "string") ?? [])
+    ? manifest.streams.map((s) => s.name).filter((n): n is string => typeof n === "string")
     : [];
   if (manifestStreamNames.length === 0) {
     return null; // (a)
@@ -330,7 +331,24 @@ async function initiateGrantAndRedirect(
   ctx: MountAsAuthorizeContext,
   req: RouteRequest
 ): Promise<unknown> {
-  const details = authorizationDetails || buildHostedMcpAuthorizationDetailsForConnector(selectedConnectorId as string);
+  let details = authorizationDetails;
+  if (!details) {
+    const connectorId = selectedConnectorId as string;
+    const manifest = await ctx.consentPickerCaps.getConnectorManifest(connectorId).catch(() => null);
+    if (!manifest) {
+      return ctx.oauthError(res, 400, "invalid_request", `Unknown connector: ${connectorId}`);
+    }
+    const source = resolveHostedMcpSourceDescriptor(manifest);
+    if (!source) {
+      return ctx.oauthError(
+        res,
+        400,
+        "invalid_request",
+        `Connector ${connectorId} has no valid public source identity`
+      );
+    }
+    details = buildHostedMcpAuthorizationDetailsForConnector(connectorId, source);
+  }
   const explicitBaseUrl = ctx.asPublicUrl || (ctx.ignoreAmbientPublicUrls ? null : (process.env.AS_PUBLIC_URL ?? null));
   const output = await ctx.consentStore.initiateGrant(
     { authorization_details: details, client_id: pkce.clientId },

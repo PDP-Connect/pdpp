@@ -123,6 +123,29 @@ interface ConsentApprovalBody {
   grant: { grant_id: string };
   token: string;
 }
+
+async function approveReviewedConsent(asUrl: string, requestUri: string, subjectId: string): Promise<Response> {
+  const reviewResp = await fetch(`${asUrl}/consent/review`, {
+    body: JSON.stringify({ request_uri: requestUri, subject_id: subjectId }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const reviewBody = (await reviewResp.json()) as {
+    approval_review?: unknown;
+    approval_review_revision?: unknown;
+  };
+  assert.equal(reviewResp.status, 200, JSON.stringify(reviewBody));
+  assert.ok(reviewBody.approval_review && typeof reviewBody.approval_review === "object");
+  assert.equal(typeof reviewBody.approval_review_revision, "string");
+  return fetch(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({
+      approval_review_revision: reviewBody.approval_review_revision,
+      request_uri: requestUri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+}
 interface StreamRecordsBody {
   data: unknown[];
 }
@@ -752,11 +775,7 @@ test("event spine", async (t) => {
       assert.ok(initiateTraceId?.startsWith("trc_"));
       const initiate = (await initiateResp.json()) as ParInitiateBody;
 
-      const approveResp = await fetch(`${asUrl}/consent/approve`, {
-        body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: "u1" }),
-        headers: { "Content-Type": "application/json" },
-        method: "POST",
-      });
+      const approveResp = await approveReviewedConsent(asUrl, initiate.request_uri, "u1");
       assert.equal(approveResp.status, 200);
       const approval = (await approveResp.json()) as ConsentApprovalBody;
 
@@ -824,7 +843,7 @@ test("event spine", async (t) => {
         const event = (traceTimeline.data || []).find((entry) => entry.event_type === eventType);
         assert.ok(event, `expected ${eventType} event`);
         assert.equal(event.data?.source?.kind, "connector");
-        assert.equal(event.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
+        assert.equal(event.data?.source?.id, spotifyManifest.connector_id);
         assert.ok(
           !("connector_id" in (event.data || {})),
           `${eventType} should use source descriptors instead of raw connector_id`
@@ -897,7 +916,7 @@ test("event spine", async (t) => {
       assert.equal(deniedEvent.object_type, "pending_consent");
       assert.equal(deniedEvent.status, "denied");
       assert.equal(deniedEvent.data?.source?.kind, "connector");
-      assert.equal(deniedEvent.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
+      assert.equal(deniedEvent.data?.source?.id, spotifyManifest.connector_id);
 
       const grantIssuedEvent = (traceTimeline.data || []).find((event) => event.event_type === "grant.issued");
       assert.equal(grantIssuedEvent, undefined, "denied consent should not issue a grant");
@@ -1094,11 +1113,7 @@ test("event spine", async (t) => {
         method: "POST",
       });
 
-      const approveResp = await fetch(`${asUrl}/consent/approve`, {
-        body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: "u1" }),
-        headers: { "Content-Type": "application/json" },
-        method: "POST",
-      });
+      const approveResp = await approveReviewedConsent(asUrl, initiate.request_uri, "u1");
       assert.equal(approveResp.status, 200);
       const approval = (await approveResp.json()) as ConsentApprovalBody;
 
@@ -1125,7 +1140,7 @@ test("event spine", async (t) => {
         assert.ok(queryReceived, "expected query.received for rejected connector grant read");
         assert.equal(queryReceived.data.query_shape, "record_list");
         assert.equal(queryReceived.data.source?.kind, "connector");
-        assert.equal(queryReceived.data.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
+        assert.equal(queryReceived.data.source?.id, spotifyManifest.connector_id);
         assert.ok(!("connector_id" in (queryReceived.data || {})));
 
         const rejected = (timeline.data || []).find(
@@ -1134,7 +1149,7 @@ test("event spine", async (t) => {
         assert.ok(rejected, "expected query.rejected for rejected connector grant read");
         assert.equal(rejected.data.query_shape, "record_list");
         assert.equal(rejected.data.source?.kind, "connector");
-        assert.equal(rejected.data.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
+        assert.equal(rejected.data.source?.id, spotifyManifest.connector_id);
         assert.equal(rejected.data.error?.code, "invalid_request");
         assert.match(rejected.data.error?.message || "", REGEXP_2);
         assert.ok(!("connector_id" in (rejected.data || {})));
@@ -1165,11 +1180,7 @@ test("event spine", async (t) => {
         method: "POST",
       });
 
-      const approveResp = await fetch(`${asUrl}/consent/approve`, {
-        body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: "u1" }),
-        headers: { "Content-Type": "application/json" },
-        method: "POST",
-      });
+      const approveResp = await approveReviewedConsent(asUrl, initiate.request_uri, "u1");
       assert.equal(approveResp.status, 200);
       const approval = (await approveResp.json()) as ConsentApprovalBody;
 
@@ -1196,7 +1207,7 @@ test("event spine", async (t) => {
         assert.ok(queryReceived, "expected query.received for rejected connector unknown-field read");
         assert.equal(queryReceived.data.query_shape, "record_list");
         assert.equal(queryReceived.data.source?.kind, "connector");
-        assert.equal(queryReceived.data.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
+        assert.equal(queryReceived.data.source?.id, spotifyManifest.connector_id);
         assert.ok(!("connector_id" in (queryReceived.data || {})));
 
         const rejected = (timeline.data || []).find(
@@ -1205,7 +1216,7 @@ test("event spine", async (t) => {
         assert.ok(rejected, "expected query.rejected for rejected connector unknown-field read");
         assert.equal(rejected.data.query_shape, "record_list");
         assert.equal(rejected.data.source?.kind, "connector");
-        assert.equal(rejected.data.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
+        assert.equal(rejected.data.source?.id, spotifyManifest.connector_id);
         assert.equal(rejected.data.error?.code, "unknown_field");
         assert.match(rejected.data.error?.message || "", REGEXP_3);
         assert.ok(!("connector_id" in (rejected.data || {})));
@@ -1237,11 +1248,7 @@ test("event spine", async (t) => {
       assert.equal(parResp.status, 201);
       const initiate = (await parResp.json()) as ParInitiateBody;
 
-      const consentResp = await fetch(`${asUrl}/consent/approve`, {
-        body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: "employee_1" }),
-        headers: { "Content-Type": "application/json" },
-        method: "POST",
-      });
+      const consentResp = await approveReviewedConsent(asUrl, initiate.request_uri, "employee_1");
       assert.equal(consentResp.status, 200);
       const approval = (await consentResp.json()) as ConsentApprovalBody;
 
@@ -1354,11 +1361,7 @@ test("event spine", async (t) => {
         assert.equal(parResp.status, 201);
         const initiate = (await parResp.json()) as ParInitiateBody;
 
-        const consentResp = await fetch(`${asUrl}/consent/approve`, {
-          body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: "employee_1" }),
-          headers: { "Content-Type": "application/json" },
-          method: "POST",
-        });
+        const consentResp = await approveReviewedConsent(asUrl, initiate.request_uri, "employee_1");
         assert.equal(consentResp.status, 200);
         const approval = (await consentResp.json()) as ConsentApprovalBody;
 
@@ -1640,6 +1643,7 @@ test("event spine", async (t) => {
   await t.test("captures grant-scoped state artifacts on grant timelines", async () => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
       const ownerToken = await issueOwnerToken(asUrl, "u1");
+      await seedSpotify(rsUrl, spotifyManifest, ownerToken, { ownerSubjectId: "u1" });
       const parResp = await fetch(`${asUrl}/oauth/par`, {
         body: JSON.stringify({
           authorization_details: [
@@ -1660,11 +1664,7 @@ test("event spine", async (t) => {
       assert.equal(parResp.status, 201);
       const initiate = (await parResp.json()) as ParInitiateBody;
 
-      const consentResp = await fetch(`${asUrl}/consent/approve`, {
-        body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: "u1" }),
-        headers: { "Content-Type": "application/json" },
-        method: "POST",
-      });
+      const consentResp = await approveReviewedConsent(asUrl, initiate.request_uri, "u1");
       assert.equal(consentResp.status, 200);
       const approval = (await consentResp.json()) as ConsentApprovalBody;
 
@@ -1928,6 +1928,16 @@ rl.on('line', (line) => {
       ],
       version: "0.1.0",
     };
+    Object.assign(manifest, {
+      source_declaration: {
+        declaration_version: "event-spine-multi-stream-checkpoint-test.v1",
+        display: { name: "Event Spine Multi-Stream Checkpoint Test" },
+        protocol_version: "0.1.0",
+        publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
+        source: { id: "https://registry.pdpp.dev/connectors/event-spine-multi-stream-checkpoint-test", kind: "connector" },
+        streams: manifest.streams,
+      },
+    });
 
     const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-event-spine-multi-stream-commit-"));
     const connectorPath = join(tmpDir, "connector.mjs");
@@ -2024,6 +2034,7 @@ rl.on('line', (line) => {
     const asUrl = `http://localhost:${server.asPort}`;
     const manifest = {
       connector_id: "https://registry.pdpp.dev/connectors/event-spine-partial-checkpoint-failure-test",
+      protocol_version: "0.1.0",
       streams: [
         {
           name: "items",
@@ -2052,6 +2063,19 @@ rl.on('line', (line) => {
       ],
       version: "0.1.0",
     };
+    Object.assign(manifest, {
+      source_declaration: {
+        declaration_version: "event-spine-partial-checkpoint-failure-test.v1",
+        display: { name: "Event Spine Partial Checkpoint Failure Test" },
+        protocol_version: "0.1.0",
+        publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
+        source: {
+          id: manifest.connector_id,
+          kind: "connector",
+        },
+        streams: manifest.streams,
+      },
+    });
 
     const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-event-spine-partial-checkpoint-failure-"));
     const connectorPath = join(tmpDir, "connector.mjs");

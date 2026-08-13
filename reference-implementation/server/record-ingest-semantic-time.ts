@@ -55,10 +55,6 @@ interface ParsedManifest {
 // ingest and search coerce timestamps identically.
 export const SEMANTIC_TIME_EPOCH_MS_THRESHOLD = 1e12;
 
-// A valid SQL/manifest field identifier: a letter or underscore followed by
-// word characters. Used to reject injection-shaped consent_time_field names.
-const FIELD_IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
 export function getManifestConsentTimeField(connectorId: string, streamName: string): string | null {
   const row = getOne<ManifestRow>(referenceQueries.authConnectorsGetManifestById, [connectorId]);
   if (!row?.manifest) {
@@ -79,7 +75,7 @@ export function getManifestConsentTimeField(connectorId: string, streamName: str
   if (typeof field !== "string" || !field) {
     return null;
   }
-  return FIELD_IDENTIFIER_PATTERN.test(field) ? field : null;
+  return field;
 }
 
 // Coerce a manifest-declared timestamp field value to a clean ISO-8601 string,

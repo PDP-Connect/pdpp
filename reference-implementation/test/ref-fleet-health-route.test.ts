@@ -194,7 +194,10 @@ test("production fleet wiring projects one custom-owner visible population witho
     });
   }
 
-  const app = buildAsApp({ ownerAuthPassword: "", ownerAuthSubjectId: CUSTOM_OWNER_SUBJECT_ID });
+  const app = buildAsApp({
+    ownerAuthPassword: "",
+    ownerAuthSubjectId: CUSTOM_OWNER_SUBJECT_ID,
+  });
   await app.fastify.ready();
   try {
     const response = await app.fastify.inject({ method: "GET", url: "/_ref/fleet-health" });

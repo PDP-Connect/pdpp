@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * `_ref/grant-packages` operator visibility surface — owner-session-gated
+ * `_ref/grant-packages` operator visibility surface: owner-session-gated
  * list, detail, and revoke endpoints introduced by the OpenSpec change
  * `add-grant-package-operator-visibility`.
  *
@@ -13,7 +13,7 @@
  *   1. `GET /_ref/grant-packages` lists the package with member count
  *      and exposes no token/secret material.
  *   2. `GET /_ref/grant-packages/:id` returns the child cascade with
- *      `grant_id`, `grant_status`, `source`, and timestamps — and never
+ *      `grant_id`, `grant_status`, `source`, and timestamps, and never
  *      includes secret fields.
  *   3. `GET /_ref/grant-packages/:id` returns a typed `not_found` 404
  *      envelope for unknown ids.
@@ -38,11 +38,13 @@ import { fileURLToPath } from "node:url";
 
 import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
-import { encodeHostedMcpSelection } from "../server/hosted-mcp-selection.ts";
 import { startServer as startServerUntyped } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
+const OWNER_SUBJECT_ID = "owner_local";
+const NOW = "2026-05-31T00:00:00.000Z";
 
 const SECRET_KEYS = new Set([
   "access_token",
@@ -59,7 +61,7 @@ const SECRET_KEYS = new Set([
  * TypeScript's `allowJs`-without-`checkJs` inference on `startServer`'s
  * default-valued `opts = {}` parameter collapses to `{}`, and its returned
  * `asServer`/`rsServer` infer as `Http2SecureServer` (missing
- * `closeAllConnections`) — both are inference artifacts of the untyped
+ * `closeAllConnections`), both are inference artifacts of the untyped
  * source, not the real runtime shape (real `http.Server` instances from
  * `asApp.listen(...)` / `rsApp.listen(...)`). Mirrors the same pattern used
  * in test/ref-client-event-subscriptions-routes.test.ts.
@@ -211,7 +213,7 @@ function assertNoSecretMaterial(value: unknown, path = "$"): void {
   for (const [key, v] of Object.entries(value)) {
     assert.ok(
       !SECRET_KEYS.has(key),
-      `secret-shaped field "${key}" surfaced at ${path}.${key} — operator surfaces must not leak token material`
+      `secret-shaped field "${key}" surfaced at ${path}.${key}: operator surfaces must not leak token material`
     );
     assertNoSecretMaterial(v, `${path}.${key}`);
   }
@@ -223,6 +225,16 @@ function renderedHostedMcpStreamValues(html: string): string[] {
   ].map((match) => {
     const [, value] = match;
     assert.ok(value, "stream checkbox input must carry a value attribute");
+    return value;
+  });
+}
+
+function renderedHostedMcpSourceValues(html: string): string[] {
+  return [
+    ...html.matchAll(/<input[^>]*name="selection"[^>]*value="([^"]+)"[^>]*data-hosted-mcp-source-checkbox[^>]*>/g),
+  ].map((match) => {
+    const [, value] = match;
+    assert.ok(value, "source checkbox input must carry a value attribute");
     return value;
   });
 }
@@ -267,7 +279,23 @@ async function registerConnector(asUrl: string, name: string): Promise<Connector
     method: "POST",
   });
   assert.equal(status, 201);
+  await seedConnectorInstance(manifest, name);
   return manifest;
+}
+
+async function seedConnectorInstance(manifest: ConnectorManifestFixture, name: string): Promise<void> {
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId: manifest.connector_id,
+    connectorInstanceId: `cin_ref_grant_packages_${name}`,
+    createdAt: NOW,
+    displayName: `Ref Grant Packages ${name}`,
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    sourceBinding: { account_hint: `${name}@ref-grant-packages.example.com` },
+    sourceBindingKey: `${name}@ref-grant-packages.example.com`,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: NOW,
+  });
 }
 
 async function registerAuthCodeClient(asUrl: string): Promise<RegisteredClient> {
@@ -321,8 +349,12 @@ async function completeMultiSourcePackageFlow({
   params.append("state", state);
   params.append("code_challenge", challenge);
   params.append("code_challenge_method", "S256");
-  for (const id of connectorIds) {
-    params.append("selection", encodeHostedMcpSelection({ connectionId: null, connectorId: id }));
+  const selectedConnectorIds = new Set(connectorIds);
+  for (const sourceValue of renderedHostedMcpSourceValues(pickerHtml)) {
+    const decoded = JSON.parse(Buffer.from(sourceValue, "base64url").toString("utf8")) as { connector_id?: string };
+    if (decoded.connector_id && selectedConnectorIds.has(decoded.connector_id)) {
+      params.append("selection", sourceValue);
+    }
   }
   // Mirror explicit whole-source approval: submit every stream value for the
   // selected sources. Narrowing cases construct their own form submissions.
@@ -336,7 +368,8 @@ async function completeMultiSourcePackageFlow({
     method: "POST",
     redirect: "manual",
   });
-  assert.equal(approveResp.status, 302);
+  const approveBody = await approveResp.clone().text();
+  assert.equal(approveResp.status, 302, approveBody);
   const location = approveResp.headers.get("location");
   assert.ok(location, "approve response must carry a redirect location");
   const callback = new URL(location);

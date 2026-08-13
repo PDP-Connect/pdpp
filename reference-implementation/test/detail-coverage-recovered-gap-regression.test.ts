@@ -224,12 +224,14 @@ async function issueOwnerToken(asUrl: string): Promise<string> {
 const MANIFEST = {
   connector_id: "chatgpt-recovered-regression",
   display_name: "ChatGPT Recovered-Gap Regression",
+  manifest_uri: "https://sources.example/chatgpt-recovered-regression",
   protocol_version: "0.1.0",
   streams: [
     {
       name: "conversations",
       primary_key: ["id"],
       schema: { properties: { id: { type: "string" }, title: { type: "string" } }, required: ["id"], type: "object" },
+      selection: { fields: true, resources: true },
       semantics: "append_only",
     },
     {
@@ -240,11 +242,27 @@ const MANIFEST = {
         required: ["id"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
       semantics: "append_only",
     },
   ],
   version: "1.0.0",
 };
+
+type RuntimeManifest = Parameters<typeof runConnector>[0]["manifest"];
+
+function runtimeManifest(manifest: {
+  streams: ReadonlyArray<{ name: string; selection?: unknown; [key: string]: unknown }>;
+  [key: string]: unknown;
+}): RuntimeManifest {
+  return {
+    ...manifest,
+    streams: manifest.streams.map((stream) => {
+      const { selection: _selection, ...withoutSelection } = stream;
+      return withoutSelection;
+    }),
+  };
+}
 
 function createCannedConnector(messages: readonly Record<string, unknown>[]): {
   connectorPath: string;
@@ -346,7 +364,7 @@ test("a recovered detail gap re-deferred with the same identity must not fail th
       connectorId,
       connectorPath,
       detailGapStore: store,
-      manifest: MANIFEST,
+      manifest: runtimeManifest(MANIFEST),
       onInteraction: async () => ({}),
       ownerToken,
       persistState: true,
@@ -449,7 +467,7 @@ test("run.detail_gap_recorded fires once at first sighting, NOT on a prior-run r
       connectorId,
       connectorPath,
       detailGapStore: store,
-      manifest: MANIFEST,
+      manifest: runtimeManifest(MANIFEST),
       onInteraction: async () => ({}),
       ownerToken,
       persistState: true,
@@ -583,7 +601,7 @@ test("a recovered gap re-deferred by a LATER run reopens to pending and surfaces
       connectorId,
       connectorPath,
       detailGapStore: store,
-      manifest: MANIFEST,
+      manifest: runtimeManifest(MANIFEST),
       onInteraction: async () => ({}),
       ownerToken,
       persistState: true,
@@ -706,7 +724,7 @@ test("a recovered gap re-deferred by the SAME run that recovered it stays recove
       connectorId,
       connectorPath,
       detailGapStore: store,
-      manifest: MANIFEST,
+      manifest: runtimeManifest(MANIFEST),
       onInteraction: async () => ({}),
       ownerToken,
       persistState: true,
@@ -782,7 +800,7 @@ test("a truly pending gap still surfaces as a retryable known_gap", async (t) =>
       connectorId,
       connectorPath,
       detailGapStore: store,
-      manifest: MANIFEST,
+      manifest: runtimeManifest(MANIFEST),
       onInteraction: async () => ({}),
       ownerToken,
       persistState: true,

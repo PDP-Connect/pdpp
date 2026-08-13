@@ -82,8 +82,11 @@ function actor(overrides: Partial<BearerActor> = {}): BearerActor {
     clientId: "client_alpha",
     grantId: "grant_1",
     grantScope: {
-      source: { id: "gmail", kind: "connector" },
-      streams: [{ name: "messages" }, { name: "contacts" }],
+      source: { connector_id: "gmail", id: "https://registry.pdpp.org/connectors/gmail", kind: "connector" },
+      streams: [
+        { instance_ids: ["gmail_default"], name: "messages" },
+        { instance_ids: ["gmail_default"], name: "contacts" },
+      ],
     },
     subjectId: "owner_local",
     ...overrides,

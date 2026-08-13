@@ -35,6 +35,7 @@ const EXPECTED_CODE_TO_STATUS = {
   ambiguous_connection: 409,
   ambiguous_connector_instance: 400,
   ambiguous_schema_detail: 409,
+  approval_conflict: 409,
   authentication_error: 401,
   blob_not_found: 404,
   browser_enrollment_shell_required: 400,
@@ -81,6 +82,8 @@ const EXPECTED_CODE_TO_STATUS = {
   query_not_found: 404,
   run_already_active: 409,
   run_owner_mismatch: 403,
+  "source.authorization_details_invalid": 400,
+  stream_not_declared: 404,
   unknown_field: 400,
   unsupported_version: 400,
 };

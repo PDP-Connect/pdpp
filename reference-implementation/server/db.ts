@@ -695,6 +695,9 @@ CREATE TABLE IF NOT EXISTS pending_consents (
   denied_at                TEXT,
   interval_seconds         INTEGER NOT NULL DEFAULT 2,
   last_polled_at           TEXT,
+  approval_review_revision TEXT,
+  approval_review_digest   TEXT,
+  approval_review_json     TEXT,
   -- approval_id is a non-redeemable opaque public id projected to operator
   -- read surfaces (/_ref/approvals) so callers cannot lift the live
   -- device_code (which is bearer-equivalent in the consent flow when
@@ -5007,6 +5010,9 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   // Adds the non-redeemable `approval_id` column on the consent + device
   // auth tables; see SCHEMA comment for rationale.
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "pending_consents", "approval_id", "TEXT"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "pending_consents", "approval_review_revision", "TEXT"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "pending_consents", "approval_review_digest", "TEXT"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "pending_consents", "approval_review_json", "TEXT"));
   runWithSqliteBusyRetrySync(() =>
     addColumnIfMissing(raw, "pending_consents", "interval_seconds", "INTEGER NOT NULL DEFAULT 2")
   );

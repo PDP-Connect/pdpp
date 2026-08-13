@@ -12,6 +12,8 @@ import { initiateGrant, registerConnector, registerDynamicClient } from "../serv
 import { initDb } from "../server/db.ts";
 
 const TOP_LEVEL_REGEX_1 = /purpose_code/;
+const CONNECTOR_ID = "demo";
+const SOURCE_ID = "https://registry.pdpp.org/connectors/demo";
 
 let registeredClientId: string | null = null;
 
@@ -20,7 +22,23 @@ function isCodedError(error: unknown): error is Error & { code?: string } {
 }
 
 const MANIFEST = {
-  connector_id: "demo",
+  connector_id: CONNECTOR_ID,
+  source_declaration: {
+    declaration_version: "purpose-code-test.v1",
+    display: { name: "Purpose Code Test" },
+    protocol_version: "0.1.0",
+    publisher: { id: "https://pdpp.dev/reference-implementation" },
+    source: { id: SOURCE_ID, kind: "connector" },
+    streams: [
+      {
+        name: "items",
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, type: "object" },
+        selection: { fields: true, resources: true },
+        semantics: "mutable_state",
+      },
+    ],
+  },
   streams: [
     {
       name: "items",
@@ -39,7 +57,7 @@ function baseRequest(purposeCode: string): Record<string, unknown> {
         access_mode: "single_use",
         purpose_code: purposeCode,
         purpose_description: "purpose-code syntax coverage",
-        source: { id: "demo", kind: "connector" },
+        source: { id: SOURCE_ID, kind: "connector" },
         streams: [{ fields: ["id"], name: "items" }],
         type: "https://pdpp.dev/data-access",
       },

@@ -15,9 +15,10 @@ the reference AS currently advertises:
 
 1. `POST /oauth/register` — public-client self-registration
 2. `POST /oauth/par` — PAR request staging
-3. Owner approval at `GET /consent?request_uri=...`
-   - and, when owner-auth is disabled, a reference-local inline JSON shortcut
-     at `POST /consent/approve`
+3. Review and owner approval:
+   - `POST /consent/review` returns the exact approval artifact and its revision
+   - `POST /consent/approve` accepts only the request URI and that revision
+   - `GET /consent?request_uri=...` provides the hosted approval page
 4. `POST /introspect` — RFC 7662-style introspection (optional)
 5. `GET {rs}/v1/streams` / `GET {rs}/v1/streams/:stream/records` — RS reads
 
@@ -57,17 +58,16 @@ the form can be submitted as-is once that manifest is registered.
 
 ## Approval modes
 
-- When `PDPP_OWNER_PASSWORD` is **unset** on the reference server, this app
-  can use the inline JSON approval shortcut (`POST /consent/approve` with
-  `Accept: application/json`) and capture the issued token directly.
-- When `PDPP_OWNER_PASSWORD` is **set**, the inline shortcut is rejected by
-  the reference server. This app surfaces that honestly, prompts you to open
-  the hosted `/consent` page, and then lets you paste the token back in.
+- The inline JSON path performs a review first. It receives the exact artifact,
+  keeps its revision, and submits that revision for final approval. The final
+  request does not submit stream or field choices again.
+- When `PDPP_OWNER_PASSWORD` is **set**, the inline path is rejected by the
+  reference server. This app prompts you to open the hosted `/consent` page.
 
 ## What this app proves — and does not prove
 
-This app proves that the current reference flow — register &rarr; PAR &rarr;
-owner approval &rarr; token &rarr; RS query — works end to end against a local
+This app proves that the current reference flow, from registration through PAR,
+review, owner approval, token, and RS query, works end to end against a local
 reference stack.
 
 It does **not** prove a full generic third-party authorization-code redirect

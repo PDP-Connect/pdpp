@@ -1,5 +1,3 @@
-const TOP_LEVEL_REGEX_1 = /ai_training/i;
-
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -27,14 +25,25 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
+const OWNER_SUBJECT_ID = "owner_local";
+const NOW = "2026-05-31T00:00:00.000Z";
+const AI_TRAINING_ERROR_RE = /ai_training/i;
+const AI_TRAINING_FIELD_RE = /name="ai_training_consented"/;
+const APPROVE_ACTION_RE = /action="\/consent\/approve"/;
+const APPROVAL_REVIEW_REVISION_FIELD_RE = /name="approval_review_revision"/;
+const REVIEW_ACTION_RE = /action="\/consent\/review"/;
+const REVIEW_ERROR_RE = /review|ai_training|consent/i;
+const REVIEW_REVISION_FIELD_RE = /name="approval_review_revision" value="([^"]+)"/;
 
 // `startServer`'s inferred asServer/rsServer type comes from a framework
 // `.listen()` call whose TS overload resolves to an http2-shaped type, but at
-// runtime these are plain node:http/https servers — so `closeAllConnections`
+// runtime these are plain node:http/https servers, so `closeAllConnections`
 // (added Node 18.2+) and the single-error-arg `close` callback genuinely
 // exist and are safe to declare here. Established pattern, see
 // connector-instance-admission-routes.test.ts.
@@ -46,10 +55,6 @@ type TestServer = Awaited<ReturnType<typeof startServer>> & {
 interface SpotifyManifest {
   connector_id: string;
   streams: { name: string }[];
-}
-
-interface ErrorBody {
-  error?: { code?: string; message?: string };
 }
 
 interface ParResponse {
@@ -79,20 +84,6 @@ async function closeServer(server: TestServer): Promise<void> {
   await Promise.allSettled([closeOne(server.asServer), closeOne(server.rsServer)]);
 }
 
-async function fetchJson<T = ErrorBody>(
-  url: string,
-  opts: RequestInit = {}
-): Promise<{ status: number; body: T | null }> {
-  const resp = await fetch(url, opts);
-  let body: T | null = null;
-  try {
-    body = (await resp.json()) as T;
-  } catch {
-    /* non-json */
-  }
-  return { body, status: resp.status };
-}
-
 async function withHarness(
   fn: (ctx: { asUrl: string; spotifyManifest: SpotifyManifest }) => Promise<void>
 ): Promise<void> {
@@ -108,10 +99,28 @@ async function withHarness(
       method: "POST",
     });
     assert.equal(registerResp.status, 201);
+    await seedSpotifyInstance(spotifyManifest);
     await fn({ asUrl, spotifyManifest });
   } finally {
     await closeServer(server);
   }
+}
+
+async function seedSpotifyInstance(spotifyManifest: SpotifyManifest): Promise<void> {
+  const connectorId = canonicalConnectorKey(spotifyManifest.connector_id);
+  assert.ok(connectorId, "spotify manifest must resolve to a canonical connector key");
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId: "cin_security_consent_risk_spotify",
+    createdAt: NOW,
+    displayName: "Security Consent Risk Spotify",
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    sourceBinding: { account_hint: "security-consent-risk@example.com" },
+    sourceBindingKey: "security-consent-risk@example.com",
+    sourceKind: "account",
+    status: "active",
+    updatedAt: NOW,
+  });
 }
 
 async function initiate(
@@ -126,7 +135,7 @@ async function initiate(
         purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "Consent risk disclosure regression",
         source: { id: spotifyManifest.connector_id, kind: "connector" },
-        streams: [{ name: "top_artists", view: "basic" }],
+        streams: [{ name: "top_artists" }],
         type: "https://pdpp.dev/data-access",
         ...overrides,
       },
@@ -190,8 +199,8 @@ test("security: consent-risk disclosure invariants", async (t) => {
       await withHarness(async ({ asUrl, spotifyManifest }) => {
         const par = await initiate(asUrl, spotifyManifest, {
           access_mode: "continuous",
-          // No retention block — this is the no-expiry case.
-          streams: [{ name: "top_artists", view: "basic" }],
+          // No retention block: this is the no-expiry case.
+          streams: [{ name: "top_artists" }],
         });
         const consentResp = await fetch(`${asUrl}/consent?request_uri=${encodeURIComponent(par.request_uri)}`);
         assert.equal(consentResp.status, 200);
@@ -215,24 +224,22 @@ test("security: consent-risk disclosure invariants", async (t) => {
     }
   );
 
-  await t.test("ai_training request without affirmative consent fails with a typed PDPP error envelope", async () => {
+  await t.test("ai_training review without affirmative consent fails with a typed PDPP error envelope", async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const par = await initiate(asUrl, spotifyManifest, {
         access_mode: "continuous",
         purpose_code: "https://pdpp.dev/purpose/ai_training",
         purpose_description: "Training a recommendation model",
-        streams: [{ name: "top_artists", view: "basic" }],
+        streams: [{ name: "top_artists" }],
       });
 
-      const resp = await fetchJson(`${asUrl}/consent/approve`, {
-        body: JSON.stringify({
-          request_uri: par.request_uri,
-          subject_id: "owner_local",
-          // Deliberately omit ai_training_consented.
-        }),
-        headers: { "Content-Type": "application/json" },
+      const reviewResp = await fetch(`${asUrl}/consent/review`, {
+        body: JSON.stringify({ request_uri: par.request_uri, subject_id: "owner_local" }),
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
         method: "POST",
       });
+      const reviewText = await reviewResp.text();
+      const resp = { body: JSON.parse(reviewText), status: reviewResp.status };
 
       assert.notEqual(resp.status, 500, "response SHALL NOT be a generic 500");
       assert.ok(resp.status >= 400 && resp.status < 500, `expected 4xx, got ${resp.status}`);
@@ -248,11 +255,80 @@ test("security: consent-risk disclosure invariants", async (t) => {
       if (!errorMessage) {
         throw new Error("expected resp.body.error.message to be set");
       }
-      assert.match(
-        errorMessage,
-        TOP_LEVEL_REGEX_1,
-        "PDPP error message SHALL identify the ai_training consent requirement"
-      );
+      assert.match(errorMessage, REVIEW_ERROR_RE, "PDPP error message SHALL identify the rejected consent review");
+    });
+  });
+
+  await t.test("ai_training review with explicit false affirmation fails at policy boundary", async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const par = await initiate(asUrl, spotifyManifest, {
+        access_mode: "continuous",
+        purpose_code: "https://pdpp.dev/purpose/ai_training",
+        purpose_description: "Training a recommendation model",
+        streams: [{ name: "top_artists" }],
+      });
+
+      const reviewResp = await fetch(`${asUrl}/consent/review`, {
+        body: JSON.stringify({
+          ai_training_consented: false,
+          request_uri: par.request_uri,
+          subject_id: "owner_local",
+        }),
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const reviewText = await reviewResp.text();
+      const resp = { body: JSON.parse(reviewText), status: reviewResp.status };
+
+      assert.notEqual(resp.status, 500, "response SHALL NOT be a generic 500");
+      assert.ok(resp.status >= 400 && resp.status < 500, `expected 4xx, got ${resp.status}`);
+      assert.equal(typeof resp.body?.error?.code, "string", "PDPP error envelope SHALL carry an error.code");
+      assert.equal(typeof resp.body?.error?.message, "string");
+      assert.match(String(resp.body?.error?.message), AI_TRAINING_ERROR_RE);
+    });
+  });
+
+  await t.test("ai_training HTML flow finalizes affirmation at review and final approve has no AI field", async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
+      const par = await initiate(asUrl, spotifyManifest, {
+        access_mode: "continuous",
+        purpose_code: "https://pdpp.dev/purpose/ai_training",
+        purpose_description: "Training a recommendation model",
+        streams: [{ name: "top_artists" }],
+      });
+
+      const initial = await fetch(`${asUrl}/consent?request_uri=${encodeURIComponent(par.request_uri)}`);
+      const initialHtml = await initial.text();
+      assert.equal(initial.status, 200, initialHtml);
+      assert.match(initialHtml, AI_TRAINING_FIELD_RE);
+      assert.match(initialHtml, REVIEW_ACTION_RE);
+      assert.doesNotMatch(initialHtml, APPROVAL_REVIEW_REVISION_FIELD_RE);
+
+      const review = await fetch(`${asUrl}/consent/review`, {
+        body: new URLSearchParams({
+          ai_training_consented: "1",
+          request_uri: par.request_uri,
+          subject_id: "owner_local",
+        }).toString(),
+        headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+      const reviewHtml = await review.text();
+      assert.equal(review.status, 200, reviewHtml);
+      const revisionMatch = REVIEW_REVISION_FIELD_RE.exec(reviewHtml);
+      assert.ok(revisionMatch?.[1], "reviewed HTML must carry approval_review_revision");
+      assert.doesNotMatch(reviewHtml, AI_TRAINING_FIELD_RE);
+      assert.match(reviewHtml, APPROVE_ACTION_RE);
+
+      const approved = await fetch(`${asUrl}/consent/approve`, {
+        body: new URLSearchParams({
+          approval_review_revision: revisionMatch[1],
+          request_uri: par.request_uri,
+        }).toString(),
+        headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+      assert.equal(approved.status, 200, await approved.text());
     });
   });
 });

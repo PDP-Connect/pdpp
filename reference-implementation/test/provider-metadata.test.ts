@@ -13,6 +13,29 @@ import { resolvePublicUrl, resolveSiblingPublicUrl } from "../server/metadata.ts
 import { PDPP_REFERENCE_REVISION_HEADER } from "../server/reference-revision.ts";
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = "pdpp-reference-test-initial-access-token";
+const NORTHSTAR_PROVIDER_ID = "https://northstar.example/pdpp";
+const NORTHSTAR_STORAGE_CONNECTOR_ID = "northstar_hr_native";
+const NORTHSTAR_SOURCE_DECLARATION = {
+  declaration_version: "reference.native-config.northstar-hr.test",
+  display: { name: "Northstar HR" },
+  protocol_version: "0.1.0",
+  publisher: { id: "https://pdpp.dev/reference-implementation" },
+  source: { id: NORTHSTAR_PROVIDER_ID, kind: "provider_native" },
+  streams: [
+    {
+      name: "pay_statements",
+      primary_key: ["statement_id"],
+      schema: {
+        properties: { statement_id: { type: "string" } },
+        required: ["statement_id"],
+        type: "object",
+      },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
+    },
+  ],
+};
+
 interface JsonObject {
   [key: string]: any;
 }
@@ -1165,7 +1188,7 @@ test("explicit browser-facing public urls drive metadata, device verification, a
             access_mode: "single_use",
             purpose_code: "https://pdpp.dev/purpose/recommendation",
             purpose_description: "Review top artists",
-            retention: "P30D",
+            retention: { max_duration: "P30D", on_expiry: "delete" },
             source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
             streams: [{ name: "top_artists" }],
             type: "https://pdpp.dev/data-access",
@@ -1456,9 +1479,10 @@ test("provider metadata omits registration endpoint when dynamic registration is
 test("native provider metadata surfaces the native provider name", async () => {
   const nativeManifest = {
     name: "Northstar HR",
-    provider_id: "northstar_hr",
-    storage_binding: { connector_id: "northstar_hr_native" },
-    streams: [],
+    provider_id: NORTHSTAR_PROVIDER_ID,
+    source_declaration: NORTHSTAR_SOURCE_DECLARATION,
+    storage_binding: { connector_id: NORTHSTAR_STORAGE_CONNECTOR_ID },
+    version: "0.1.0",
   };
   const server = await startServer({
     asPort: 0,
@@ -1484,21 +1508,23 @@ test("native provider metadata surfaces the native provider name", async () => {
   }
 });
 
-test("native startup rejects manifests missing provider_id", async () => {
+test("native startup rejects manifests missing SourceDeclaration source identity", async () => {
+  const { source: _source, ...sourceDeclarationWithoutSource } = NORTHSTAR_SOURCE_DECLARATION;
   await assert.rejects(
     startServer({
       asPort: 0,
       dbPath: ":memory:",
       nativeManifest: {
         name: "Northstar HR",
-        storage_binding: { connector_id: "northstar_hr_native" },
-        streams: [],
+        source_declaration: sourceDeclarationWithoutSource,
+        storage_binding: { connector_id: NORTHSTAR_STORAGE_CONNECTOR_ID },
+        version: "0.1.0",
       },
       quiet: true,
       rsPort: 0,
     }),
     // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
-    /Native manifest must include provider_id/
+    /Invalid SourceDeclaration/
   );
 });
 
@@ -1509,8 +1535,9 @@ test("native startup rejects manifests missing storage_binding.connector_id", as
       dbPath: ":memory:",
       nativeManifest: {
         name: "Northstar HR",
-        provider_id: "northstar_hr",
-        streams: [],
+        provider_id: NORTHSTAR_PROVIDER_ID,
+        source_declaration: NORTHSTAR_SOURCE_DECLARATION,
+        version: "0.1.0",
       },
       quiet: true,
       rsPort: 0,
@@ -1528,9 +1555,10 @@ test("native startup rejects manifests that include connector_id", async () => {
       nativeManifest: {
         connector_id: "https://registry.pdpp.dev/connectors/not-actually-native",
         name: "Northstar HR",
-        provider_id: "northstar_hr",
-        storage_binding: { connector_id: "northstar_hr_native" },
-        streams: [],
+        provider_id: NORTHSTAR_PROVIDER_ID,
+        source_declaration: NORTHSTAR_SOURCE_DECLARATION,
+        storage_binding: { connector_id: NORTHSTAR_STORAGE_CONNECTOR_ID },
+        version: "0.1.0",
       },
       quiet: true,
       rsPort: 0,
@@ -1547,12 +1575,13 @@ test("native startup rejects manifests whose storage_binding includes unsupporte
       dbPath: ":memory:",
       nativeManifest: {
         name: "Northstar HR",
-        provider_id: "northstar_hr",
+        provider_id: NORTHSTAR_PROVIDER_ID,
+        source_declaration: NORTHSTAR_SOURCE_DECLARATION,
         storage_binding: {
-          connector_id: "northstar_hr_native",
+          connector_id: NORTHSTAR_STORAGE_CONNECTOR_ID,
           debug_context: "should_not_be_accepted",
         },
-        streams: [],
+        version: "0.1.0",
       },
       quiet: true,
       rsPort: 0,
@@ -1776,9 +1805,10 @@ test("pdpp_discovery_hints omits owner_polyfill_requires_source_kind_connector w
   // hybrid_pagination_supported).
   const nativeManifest = {
     name: "Northstar HR",
-    provider_id: "northstar_hr",
-    storage_binding: { connector_id: "northstar_hr_native" },
-    streams: [],
+    provider_id: NORTHSTAR_PROVIDER_ID,
+    source_declaration: NORTHSTAR_SOURCE_DECLARATION,
+    storage_binding: { connector_id: NORTHSTAR_STORAGE_CONNECTOR_ID },
+    version: "0.1.0",
   };
   const server = await startServer({
     asPort: 0,

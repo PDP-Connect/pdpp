@@ -91,11 +91,11 @@ type LexicalManifest = SearchLexicalManifest & {
   streams: LexicalManifestStream[];
 };
 interface LexicalGrantStream {
-  connection_id?: string;
   fields?: string[];
+  instance_ids?: string[];
   name: string;
   resources?: string[];
-  time_range?: { since?: string; until?: string } | null;
+  time_constraint?: { field: string; since?: string; until?: string } | null;
   [key: string]: unknown;
 }
 type LexicalGrant = Omit<SearchLexicalGrant, "streams"> & { streams?: LexicalGrantStream[] };
@@ -207,7 +207,10 @@ interface SearchRequest {
 }
 interface SearchTokenInfo {
   client_id?: string | null;
-  grant?: LexicalGrant & { subject?: { id?: string | null } };
+  grant?: LexicalGrant & {
+    source?: { id?: string; kind?: string };
+    subject?: { id?: string | null };
+  };
   grant_id?: string | null;
   pdpp_token_kind: "owner" | "client";
   subject_id?: string | null;
@@ -1402,11 +1405,21 @@ function createLexicalSearchNativeDependencies({
         manifest: typedManifest,
         streamName: filteredStream,
       });
+      const bindingScopedGrant =
+        tokenInfo.pdpp_token_kind === "owner" && connectorInstanceId
+          ? {
+              ...typedGrant,
+              streams: (typedGrant.streams ?? []).map((stream) => ({
+                ...stream,
+                instance_ids: [connectorInstanceId],
+              })),
+            }
+          : typedGrant;
       return buildSearchPlanForGrant({
         compiledFilter,
         connectorId: effectiveConnectorId ?? null,
         connectorInstanceId,
-        grant: typedGrant,
+        grant: bindingScopedGrant,
         manifest: typedManifest,
         streamsFilter,
       });
@@ -1434,33 +1447,19 @@ function createLexicalSearchNativeDependencies({
       const connectorId = (baseManifest.storage_binding?.connector_id || baseManifest.connector_id) as string;
       const ownerSubjectIdForGrant =
         tokenInfo.grant?.subject?.id || tokenInfo.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID;
-      // Find a representative per-stream grant-scope connection_id if all
-      // grant streams pin to the same connection. Mixed-constraint grants
-      // (different per-stream connection_ids) are addressed in the grant
-      // evaluator via per-stream resolution; the search fan-in passes the
-      // single pin when all streams agree (or null otherwise).
       const grantStreams = clientActor?.grant?.streams || [];
-      let grantStreamConnectionId: string | null = null;
-      const pinned = grantStreams
-        .map((s) => s?.connection_id)
-        .filter((v): v is string => typeof v === "string" && v.length > 0);
-      if (pinned.length === grantStreams.length && pinned.length > 0) {
-        const unique = new Set(pinned);
-        if (unique.size === 1) {
-          grantStreamConnectionId = pinned[0] as string;
-        }
-      }
+      const authorizedInstanceIds = [...new Set(grantStreams.flatMap((stream) => stream.instance_ids || []))];
       const resolveLexicalFanInBindings = resolveFanInBindings as unknown as (args: {
+        authorizedInstanceIds: string[];
         connectorId: string;
         connectorInstanceIdHint: string | null;
-        grantStreamConnectionId: string | null;
         ownerSubjectId: string;
         requestConnectionId: string | null;
       }) => Promise<Awaited<ReturnType<typeof resolveFanInBindings>>>;
       const { bindings } = await resolveLexicalFanInBindings({
+        authorizedInstanceIds,
         connectorId,
         connectorInstanceIdHint: grantResolved.storageBinding?.connector_instance_id || null,
-        grantStreamConnectionId,
         ownerSubjectId: ownerSubjectIdForGrant,
         requestConnectionId: connectionId,
       });
@@ -1705,7 +1704,10 @@ function compileSingleStreamSearchFilter({
 }
 
 function hasGrantRecordConstraints(streamGrant: LexicalGrantStream | null | undefined): boolean {
-  return !!(streamGrant?.time_range || (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0));
+  return !!(
+    streamGrant?.time_constraint ||
+    (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0)
+  );
 }
 
 function needsCandidateRecordScan(
@@ -1744,6 +1746,14 @@ function allowedCandidateRecordKeysFromRows(
     allowed.push(row.record_key);
   }
   return allowed;
+}
+
+export function __filterLexicalCandidateRecordKeysForTest(
+  rows: Iterable<{ record_json: string | null; record_key: string }>,
+  streamGrant: LexicalGrantStream,
+  manifestStream: LexicalManifestStream
+): string[] {
+  return allowedCandidateRecordKeysFromRows(rows, { compiledFilters: [], manifestStream, streamGrant });
 }
 
 async function buildPostgresCandidateRecordKeys({
@@ -1861,10 +1871,7 @@ function decideSearchPlanStreamEligibility({
     return null;
   }
 
-  const hasConnectionPin = typeof streamGrant.connection_id === "string" && streamGrant.connection_id.length > 0;
-  const isPinnedToAnotherConnection =
-    hasConnectionPin && resolvedConnectorInstanceId && streamGrant.connection_id !== resolvedConnectorInstanceId;
-  if (isPinnedToAnotherConnection) {
+  if (resolvedConnectorInstanceId && !streamGrant.instance_ids?.includes(resolvedConnectorInstanceId)) {
     return null;
   }
 
@@ -2756,6 +2763,7 @@ function hashPlan({
  */
 function serializeSnapshotResultsJson(snapshot: SearchLexicalSnapshot): string {
   return JSON.stringify({
+    ...(snapshot.authority_key ? { authority_key: snapshot.authority_key } : {}),
     results: snapshot.results,
     ...(snapshot.recall_meta ? { recall_meta: snapshot.recall_meta } : {}),
   });
@@ -2795,6 +2803,7 @@ function materializeSnapshot(row: LexicalSnapshotRow | null): SearchLexicalSnaps
   const results = isWrapped ? parsed.results : parsed;
   const recallMeta = isWrapped && parsed.recall_meta ? parsed.recall_meta : undefined;
   return {
+    ...(isWrapped && typeof parsed.authority_key === "string" ? { authority_key: parsed.authority_key } : {}),
     plan_hash: row.plan_hash,
     query: row.query,
     results,

@@ -117,10 +117,16 @@ export function createSqliteConsentDeviceAuthDriver() {
       return approveOwnerDeviceAuthorization(userCode);
     },
 
-    // biome-ignore lint/suspicious/useAwait: mock preserves the production Promise contract and rejection timing
     async approvePendingConsent(requestUri: string) {
       const deviceCode = pendingConsentDeviceCode(requestUri);
-      return approveGrant(deviceCode);
+      const review = await getPendingConsent(deviceCode, { finalizeReview: true, subjectId: "owner_local" });
+      if (review === null) {
+        return approveGrant(deviceCode, "owner_local");
+      }
+      if (typeof review?.reviewRevision !== "string") {
+        throw new Error("pending consent review revision was not materialized");
+      }
+      return approveGrant(deviceCode, "owner_local", { approval_review_revision: review.reviewRevision });
     },
 
     // biome-ignore lint/suspicious/useAwait: mock preserves the production Promise contract and rejection timing

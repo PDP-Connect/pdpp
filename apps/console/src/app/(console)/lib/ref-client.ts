@@ -2463,18 +2463,32 @@ export async function refSearch(query: string): Promise<{
   };
 }
 
-export interface PendingApproval {
+export interface PendingConsentApproval {
   approval_id: string;
+  /** Batch requests require the hosted per-source review ceremony. */
+  batch: boolean;
   client_id?: string | null;
   created_at: string;
   grant_preview?: {
     source?: SourceObject | null;
     streams?: Array<{ name?: string } | string>;
   } | null;
-  kind: "consent" | "owner_device";
+  kind: "consent";
   object: "approval";
   user_code?: string | null;
 }
+
+export interface PendingOwnerDeviceApproval {
+  approval_id: string;
+  client_id?: string | null;
+  created_at: string;
+  grant_preview?: null;
+  kind: "owner_device";
+  object: "approval";
+  user_code?: string | null;
+}
+
+export type PendingApproval = PendingConsentApproval | PendingOwnerDeviceApproval;
 
 export async function listPendingApprovals(): Promise<ListResponse<PendingApproval>> {
   return (await refFetch("/_ref/approvals")) as ListResponse<PendingApproval>;

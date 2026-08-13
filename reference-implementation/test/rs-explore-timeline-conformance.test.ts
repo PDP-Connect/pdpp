@@ -43,12 +43,12 @@ const SUFFIX = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
 
 // Two (connector_instance_id, stream) partitions across two "connections".
 const PARTITION_A = {
-  connectorId: `explore_c1_${SUFFIX}`,
+  connectorId: `explore-c1-${SUFFIX}`,
   connectorInstanceId: `explore_cin1_${SUFFIX}`,
   stream: "orders",
 };
 const PARTITION_B = {
-  connectorId: `explore_c2_${SUFFIX}`,
+  connectorId: `explore-c2-${SUFFIX}`,
   connectorInstanceId: `explore_cin2_${SUFFIX}`,
   stream: "transactions",
 };
@@ -653,7 +653,9 @@ if (POSTGRES_URL) {
 // after. Runs on SQLite and (when PDPP_TEST_POSTGRES_URL is set) Postgres.
 
 const SEM_SUFFIX = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-const SEM_CONNECTOR_ID = `explore_sem_${SEM_SUFFIX}`;
+const SEM_CONNECTOR_ID = `explore-sem-${SEM_SUFFIX}`;
+const SEM_CONNECTOR_KEY = `explore-sem-${SEM_SUFFIX}`;
+const SEM_MANIFEST_URI = `https://test.pdpp.org/connectors/explore-sem-${SEM_SUFFIX}`;
 const SEM_INSTANCE_ID = `explore_sem_cin_${SEM_SUFFIX}`;
 const SEM_STREAM = "conversations";
 
@@ -662,7 +664,9 @@ const SEM_STREAM = "conversations";
 const SEM_MANIFEST = {
   capabilities: { human_interaction: [] },
   connector_id: SEM_CONNECTOR_ID,
+  connector_key: SEM_CONNECTOR_KEY,
   display_name: "Explore Semantic-Time Test Connector",
+  manifest_uri: SEM_MANIFEST_URI,
   protocol_version: "0.1.0",
   streams: [
     {
@@ -679,6 +683,8 @@ const SEM_MANIFEST = {
         required: ["id"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "append_only",
     },
   ],
   version: "1.0.0",

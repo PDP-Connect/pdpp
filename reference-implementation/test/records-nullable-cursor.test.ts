@@ -177,6 +177,7 @@ function nullableDateTimeManifest() {
   return {
     connector_id: "nullable-datetime",
     display_name: "Nullable DateTime Cursor",
+    manifest_uri: "https://sources.example/nullable-datetime",
     protocol_version: "0.1.0",
     runtime_requirements: { bindings: { network: { required: true } } },
     streams: [
@@ -211,6 +212,7 @@ function nullableIntegerManifest() {
   return {
     connector_id: "nullable-integer",
     display_name: "Nullable Integer Cursor",
+    manifest_uri: "https://sources.example/nullable-integer",
     protocol_version: "0.1.0",
     runtime_requirements: { bindings: { network: { required: true } } },
     streams: [
@@ -242,6 +244,7 @@ function unsupportedPlainStringManifest() {
   return {
     connector_id: "plain-string-cursor",
     display_name: "Plain String Cursor",
+    manifest_uri: "https://sources.example/plain-string-cursor",
     protocol_version: "0.1.0",
     runtime_requirements: { bindings: { network: { required: true } } },
     streams: [

@@ -23,7 +23,9 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const REGEXP_1 = /^urn:pdpp:pending-consent:/;
 const REGEXP_2 = /^urn:pdpp:pending-consent:/;
@@ -31,6 +33,8 @@ const REGEXP_3 = /^urn:pdpp:pending-consent:/;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
+const OWNER_SUBJECT_ID = "owner_local";
+const NOW = "2026-05-31T00:00:00.000Z";
 
 interface TestHttpServer {
   close: (callback: () => void) => void;
@@ -157,10 +161,28 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>): Promise<
       method: "POST",
     });
     assert.equal(registerResp.status, 201);
+    await seedSpotifyInstance(spotifyManifest);
     await fn({ asUrl, spotifyManifest });
   } finally {
     await closeServer(server);
   }
+}
+
+async function seedSpotifyInstance(spotifyManifest: SpotifyManifest): Promise<void> {
+  const connectorId = canonicalConnectorKey(spotifyManifest.connector_id);
+  assert.ok(connectorId, "spotify manifest must resolve to a canonical connector key");
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId: "cin_security_device_code_spotify",
+    createdAt: NOW,
+    displayName: "Security Device Code Spotify",
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    sourceBinding: { account_hint: "security-device-code@example.com" },
+    sourceBindingKey: "security-device-code@example.com",
+    sourceKind: "account",
+    status: "active",
+    updatedAt: NOW,
+  });
 }
 
 async function startConsentPar(asUrl: string, spotifyManifest: SpotifyManifest): Promise<ConsentPar> {
@@ -319,9 +341,22 @@ test("security: device-code exposure on _ref read surfaces", async (t) => {
         throw new Error("unreachable: assert.ok would have thrown");
       }
 
-      const approveResp = await fetch(`${asUrl}/consent/approve`, {
+      const reviewResp = await fetch(`${asUrl}/consent/review`, {
         body: JSON.stringify({ approval_id: consentEntry.approval_id, subject_id: "owner_local" }),
-        headers: { "Content-Type": "application/json" },
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const reviewText = await reviewResp.text();
+      assert.equal(reviewResp.status, 200, reviewText);
+      const review = JSON.parse(reviewText) as { approval_review_revision: string; request_uri: string };
+      assert.equal(review.request_uri, consentPar.request_uri);
+
+      const approveResp = await fetch(`${asUrl}/consent/approve`, {
+        body: JSON.stringify({
+          approval_review_revision: review.approval_review_revision,
+          request_uri: review.request_uri,
+        }),
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
         method: "POST",
       });
       assert.equal(approveResp.status, 200);
