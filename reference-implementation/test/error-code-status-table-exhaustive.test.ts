@@ -79,6 +79,7 @@ const EXPECTED_CODE_TO_STATUS = {
   owner_subject_required: 400,
   provider_pressure_cooldown: 425,
   query_not_found: 404,
+  resource_limit: 413,
   run_already_active: 409,
   run_owner_mismatch: 403,
   unknown_field: 400,

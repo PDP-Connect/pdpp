@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { SOURCE_WEBHOOK_MAX_BODY_BYTES } from "../operations/ref-source-webhook-ingest/index.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
@@ -45,6 +46,15 @@ async function closeServer(server: TestServer): Promise<void> {
 
 function sign(secret: string, eventId: string, timestamp: string, body: string): string {
   return `sha256=${createHmac("sha256", secret).update(`${eventId}.${timestamp}.${body}`).digest("hex")}`;
+}
+
+function bodyWithByteLength(byteLength: number, action: "ingest_records" | "schedule_run"): string {
+  const base =
+    action === "ingest_records" ? { action, padding: "", records: [], stream: "top_artists" } : { action, padding: "" };
+  const baseBody = JSON.stringify(base);
+  const paddingLength = byteLength - Buffer.byteLength(baseBody);
+  assert.ok(paddingLength >= 0, `fixture base body exceeds requested length ${byteLength}`);
+  return JSON.stringify({ ...base, padding: "x".repeat(paddingLength) });
 }
 
 async function withHarness(
@@ -260,6 +270,65 @@ test("source webhook route accepts schedule_run as a webhook-classified run requ
     );
     assert.ok(started && typeof started === "object");
     assert.equal(objectField(started as JsonObject, "data").trigger_kind, "webhook");
+  });
+});
+
+test("source webhook route enforces the one-byte body boundary before claiming an event", async () => {
+  await withHarness(async ({ rsUrl, secret, sourceId }) => {
+    const justUnder = await postWebhook(
+      rsUrl,
+      sourceId,
+      secret,
+      "evt_body_under",
+      bodyWithByteLength(SOURCE_WEBHOOK_MAX_BODY_BYTES - 1, "ingest_records")
+    );
+    assert.equal(justUnder.status, 200);
+
+    const exact = await postWebhook(
+      rsUrl,
+      sourceId,
+      secret,
+      "evt_body_exact",
+      bodyWithByteLength(SOURCE_WEBHOOK_MAX_BODY_BYTES, "ingest_records")
+    );
+    assert.equal(exact.status, 200);
+
+    const over = await postWebhook(
+      rsUrl,
+      sourceId,
+      secret,
+      "evt_body_over",
+      bodyWithByteLength(SOURCE_WEBHOOK_MAX_BODY_BYTES + 1, "ingest_records")
+    );
+    assert.equal(over.status, 413);
+    const error = objectField(over.body, "error");
+    assert.equal(error.type, "request_entity_too_large_error");
+    assert.equal(error.code, "resource_limit");
+    assert.equal(
+      (
+        getDb()
+          .prepare("SELECT COUNT(*) AS n FROM source_webhook_events WHERE source_id = ? AND event_id = ?")
+          .get(sourceId, "evt_body_over") as { n: number }
+      ).n,
+      0
+    );
+
+    const oversizedSchedule = await postWebhook(
+      rsUrl,
+      sourceId,
+      secret,
+      "evt_schedule_over",
+      bodyWithByteLength(SOURCE_WEBHOOK_MAX_BODY_BYTES + 1, "schedule_run")
+    );
+    assert.equal(oversizedSchedule.status, 413);
+    assert.equal(
+      (
+        getDb()
+          .prepare("SELECT COUNT(*) AS n FROM source_webhook_events WHERE source_id = ? AND event_id = ?")
+          .get(sourceId, "evt_schedule_over") as { n: number }
+      ).n,
+      0
+    );
   });
 });
 
