@@ -14,6 +14,7 @@
 
 import { getRunTerminalEvent } from "../lib/spine.ts";
 import { isHealthRelevant as isAttentionHealthRelevant } from "../runtime/attention.ts";
+import type { ConnectorEnvironmentPolicy } from "../runtime/connector-child-environment.ts";
 import { getScheduleIneligibilityReason, resolveDefaultConnectorPath } from "../runtime/controller.ts";
 import { hasForwardEvidenceDebt } from "../runtime/recovery-decision.ts";
 import type {
@@ -127,6 +128,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 interface SchedulerManagerOptions {
+  readonly connectorEnvironmentPolicy?: ConnectorEnvironmentPolicy;
   readonly connectorPathResolver: ConnectorPathResolver;
   readonly controller: Controller;
   readonly createConnectorInstanceCredentialStore: () => ConnectorInstanceCredentialStore;
@@ -365,6 +367,7 @@ function createRunManagedConnectorViaController(
 
 export function createReferenceSchedulerManager({
   controller,
+  connectorEnvironmentPolicy,
   logger,
   runtimeContext,
   schedulerStore = getDefaultSchedulerStore(),
@@ -475,6 +478,12 @@ export function createReferenceSchedulerManager({
     const managedRunner = createRunManagedConnectorViaController(controller);
     scheduler = createScheduler({
       connectors,
+      ...(connectorEnvironmentPolicy?.approvedBindings.length
+        ? { approvedEnvironmentBindings: connectorEnvironmentPolicy.approvedBindings }
+        : {}),
+      ...(connectorEnvironmentPolicy?.approvedProxyConnectorIds.length
+        ? { approvedProxyConnectorIds: connectorEnvironmentPolicy.approvedProxyConnectorIds }
+        : {}),
       referenceBaseUrl: runtimeContext.referenceBaseUrl,
       resolveStaticSecretRunEnv: resolveScheduledConnectionScopedRunEnv,
       rsUrl: runtimeContext.rsUrl,

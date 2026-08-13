@@ -58,6 +58,10 @@ import {
   createDefaultBrowserSurfaceReadinessProbe,
 } from "../runtime/browser-surface-readiness.ts";
 import {
+  type ConnectorEnvironmentPolicy,
+  parseConnectorEnvironmentPolicy,
+} from "../runtime/connector-child-environment.ts";
+import {
   type ConnectorManifest,
   type Controller,
   createController,
@@ -651,6 +655,8 @@ interface ServerOpts {
   clientEventSubscriptionsCapability?: unknown;
   clientEventSubscriptionsSupported?: boolean;
   configuredProviderAuthConnectorKeys?: readonly string[];
+  /** Operator-owned connector child environment policy; defaults to the JSON env contract. */
+  connectorEnvironmentPolicy?: ConnectorEnvironmentPolicy | null;
   connectorInstanceId?: string;
   connectorPathResolver?: ((connectorId: string, manifest?: ConnectorManifest) => string | null) | null;
   controller?: Controller | null;
@@ -1854,12 +1860,12 @@ async function buildStaticSecretCredentialProber() {
 // Builds the controller's connection-scoped static-secret resolver (design
 // Decision 5). For a static-secret connector that HAS an active stored
 // credential, it returns the env fragment carrying only that connection's
-// secret; the run then authenticates with exactly that secret, overriding any
-// process-global one. It returns `null` for non-static-secret connectors and
+// secret; the run then authenticates with that explicit per-connection
+// capability. It returns `null` for non-static-secret connectors and
 // for browser-session source bindings that have no optional stored login
 // credential. A missing/revoked/deleted credential on a true static-secret
 // connection still fails closed: the run seam throws and the run is refused
-// before any child can use a stale or deployment-wide provider-account secret.
+// before any child can use an undeclared provider-account secret.
 function buildControllerStaticSecretRunEnvResolver() {
   return async ({
     connectorId,
@@ -2246,6 +2252,43 @@ function publicClientMetadataForAuthorizationServer(clients: Record<string, unkn
       };
     })
     .filter(Boolean);
+}
+
+export function resolveConnectorEnvironmentPolicy(
+  opts: { connectorEnvironmentPolicy?: unknown } = {}
+): ConnectorEnvironmentPolicy {
+  if (opts.connectorEnvironmentPolicy !== undefined) {
+    const policy = opts.connectorEnvironmentPolicy;
+    if (typeof policy === "string" || policy === null) {
+      return parseConnectorEnvironmentPolicy(policy, "connectorEnvironmentPolicy");
+    }
+    if (policy && typeof policy === "object" && "approvedBindings" in policy && "approvedProxyConnectorIds" in policy) {
+      const typedPolicy = policy as ConnectorEnvironmentPolicy;
+      if (!(Array.isArray(typedPolicy.approvedBindings) && Array.isArray(typedPolicy.approvedProxyConnectorIds))) {
+        throw new Error("connectorEnvironmentPolicy.approvedBindings and approvedProxyConnectorIds must be arrays");
+      }
+      return parseConnectorEnvironmentPolicy(
+        {
+          bindings: typedPolicy.approvedBindings.map((binding) => ({
+            connector_id: binding.connectorId,
+            logical_key: binding.logicalKey,
+            source: binding.source,
+            target_key: binding.targetKey,
+          })),
+          proxy_connector_ids: typedPolicy.approvedProxyConnectorIds,
+        },
+        "connectorEnvironmentPolicy"
+      );
+    }
+    return parseConnectorEnvironmentPolicy(policy, "connectorEnvironmentPolicy");
+  }
+  if (process.env.NODE_TEST_CONTEXT && process.env.PDPP_CONNECTOR_ENVIRONMENT_POLICY === undefined) {
+    return parseConnectorEnvironmentPolicy(undefined);
+  }
+  return parseConnectorEnvironmentPolicy(
+    process.env.PDPP_CONNECTOR_ENVIRONMENT_POLICY,
+    "PDPP_CONNECTOR_ENVIRONMENT_POLICY"
+  );
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
@@ -6326,6 +6369,7 @@ function buildRsApp(opts: ServerOpts = {}) {
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 export async function startServer(opts: ServerOpts = {}) {
   const logger = opts.logger ?? buildLogger({ quiet: !!opts.quiet });
+  const connectorEnvironmentPolicy = resolveConnectorEnvironmentPolicy(opts);
   setConnectorSummaryReconcileObservationSink(createConnectorSummaryReconcileObservationSink(logger));
   const nativeConfig = validateNativeConfiguration(opts);
   const storageBackend = (resolveStorageBackend as (...args: unknown[]) => { backend: string; databaseUrl?: string })({
@@ -6610,6 +6654,12 @@ export async function startServer(opts: ServerOpts = {}) {
   } = { invoke: null, releaseLease: null };
   const controller = createController({
     ...(configuredAsPublicUrl === null ? {} : { asPublicUrl: configuredAsPublicUrl }),
+    ...(connectorEnvironmentPolicy.approvedBindings.length > 0
+      ? { approvedEnvironmentBindings: connectorEnvironmentPolicy.approvedBindings }
+      : {}),
+    ...(connectorEnvironmentPolicy.approvedProxyConnectorIds.length > 0
+      ? { approvedProxyConnectorIds: connectorEnvironmentPolicy.approvedProxyConnectorIds }
+      : {}),
     admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId, runAdmission }) => {
       const namespace =
         runAdmission === "browser_enrollment"
@@ -6863,7 +6913,6 @@ export async function startServer(opts: ServerOpts = {}) {
     webPushConfig,
     webPushSubscriptionStore: webPushStore,
     ...(browserSurfaceControllerOptions as Record<string, unknown>),
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     cancelScheduledRun: (runId: string) => schedulerManager?.cancelRun?.(runId) ?? null,
     configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
     logger,
@@ -7015,6 +7064,7 @@ export async function startServer(opts: ServerOpts = {}) {
   }
 
   schedulerManager = createReferenceSchedulerManager({
+    connectorEnvironmentPolicy,
     connectorPathResolver: opts.connectorPathResolver || resolveDefaultConnectorPath,
     controller,
     logger,
@@ -7178,13 +7228,18 @@ export async function startServer(opts: ServerOpts = {}) {
     await Promise.allSettled(clientEventEnqueueTasks);
     await Promise.all(deliveryWorkerLeases.map(({ release }) => release()));
   };
+  function releaseDeliveryWorkerLease(index: number): void {
+    const lease = deliveryWorkerLeases[index];
+    if (lease) {
+      // biome-ignore lint/complexity/noVoid: The side effect is intentionally fire-and-forget by this runtime contract.
+      void lease.release();
+    }
+  }
   asServer.once("close", () => {
-    // biome-ignore lint/complexity/noVoid: The side effect is intentionally fire-and-forget by this runtime contract.
-    void deliveryWorkerLeases[0]?.release();
+    releaseDeliveryWorkerLease(0);
   });
   rsServer.once("close", () => {
-    // biome-ignore lint/complexity/noVoid: The side effect is intentionally fire-and-forget by this runtime contract.
-    void deliveryWorkerLeases[1]?.release();
+    releaseDeliveryWorkerLease(1);
   });
   return {
     abortStartupBackfill: (reason: unknown) => startupBackfillAbortController.abort(reason),
@@ -7452,6 +7507,7 @@ export function isManagedNekoSurfaceApproved(
 
 function createReferenceSchedulerManager({
   controller,
+  connectorEnvironmentPolicy,
   logger,
   runtimeContext,
   schedulerStore = getDefaultSchedulerStore(),
@@ -7461,6 +7517,7 @@ function createReferenceSchedulerManager({
   webPushSubscriptionStore = createWebPushSubscriptionStore(),
 }: {
   controller: Controller;
+  connectorEnvironmentPolicy?: ConnectorEnvironmentPolicy;
   logger: LoggerLike;
   runtimeContext: { rsUrl: string | null; referenceBaseUrl: string | null };
   schedulerStore?: SchedulerStore;
@@ -7633,6 +7690,12 @@ function createReferenceSchedulerManager({
       : null;
     scheduler = createScheduler({
       connectors,
+      ...(connectorEnvironmentPolicy?.approvedBindings.length
+        ? { approvedEnvironmentBindings: connectorEnvironmentPolicy.approvedBindings }
+        : {}),
+      ...(connectorEnvironmentPolicy?.approvedProxyConnectorIds.length
+        ? { approvedProxyConnectorIds: connectorEnvironmentPolicy.approvedProxyConnectorIds }
+        : {}),
       ...(runtimeContext.rsUrl === null ? {} : { rsUrl: runtimeContext.rsUrl }),
       ...(runtimeContext.referenceBaseUrl === null ? {} : { referenceBaseUrl: runtimeContext.referenceBaseUrl }),
       admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId: admittedOwnerSubjectId }) => {

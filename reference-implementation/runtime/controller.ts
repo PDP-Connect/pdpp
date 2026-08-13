@@ -69,6 +69,7 @@ import {
   type BrowserSurfaceReadinessProbe,
   createBrowserSurfaceManager,
 } from "./browser-surface/index.ts";
+import type { ConnectorEnvironmentBinding } from "./connector-child-environment.ts";
 import { runConnector } from "./index.ts";
 import {
   classifyRecoveryGap,
@@ -417,6 +418,10 @@ export interface ControllerOptions {
     ownerSubjectId: string;
     runAdmission: "collection" | "browser_enrollment";
   }) => Promise<{ connectorId: string; connectorInstanceId: string }>;
+  /** Operator-owned logical connector-input bindings for manual runs. */
+  approvedEnvironmentBindings?: readonly ConnectorEnvironmentBinding[];
+  /** Operator-authorized connector IDs that may receive ambient proxy aliases. */
+  approvedProxyConnectorIds?: readonly string[];
   asPublicUrl?: string;
   /** Awaited before a managed surface lease becomes reusable after run cleanup. */
   beforeBrowserSurfaceLeaseRelease?: (args: { readonly runId: string }) => Promise<void> | void;
@@ -503,7 +508,7 @@ export interface ControllerOptions {
    * exactly that connection's provider secret (Gmail app password / GitHub
    * PAT), recovered from the per-connection encrypted credential store. The
    * fragment is threaded to `runConnector` as `staticSecretEnv` and merged
-   * LAST over `process.env` at spawn (design Decision 5).
+   * into a fresh child environment; runtime controls retain precedence.
    *
    * Contract:
    *   - Return a non-empty env fragment when the connection has an active
@@ -512,7 +517,7 @@ export interface ControllerOptions {
    *     or another connection-scoped setup family should handle the run.
    *   - Throw (fail closed) when a configured static-secret connection has no
    *     active recoverable credential — the run is refused rather than started
-   *     with a stale or deployment-wide provider-account secret.
+   *     with an undeclared provider-account secret.
    *
    * Injected (not imported) so the controller stays decoupled from the
    * credential store and the connector package, matching `runConnectorImpl`.
@@ -2123,7 +2128,6 @@ function scheduleToApi(
     return null;
   }
   const effectiveMode = computeEffectiveMode(schedule, runtimeProjection);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const humanAttentionNeeded = runtimeProjection?.human_attention_needed ?? false;
   const automationPolicy = projectRunAutomationPolicy({
     humanAttentionNeeded,
@@ -3205,7 +3209,6 @@ export function createController(opts: ControllerOptions = {}): Controller {
   async function probeForwardEvidenceDebt(connectorId: string, connectorInstanceId: string): Promise<boolean> {
     try {
       const schedule = await getScheduleRecord(connectorInstanceId);
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       const scheduleIntervalMs = Math.max(1, schedule?.interval_seconds ?? 1) * 1000;
       await reconcileDirtyConnectorSummaryEvidence([connectorInstanceId]);
       const evidence = await getConnectorSummaryEvidence(connectorInstanceId);
@@ -3525,7 +3528,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // Resolve connection-scoped static-secret credentials before acquiring any
     // managed runtime resources. A resolver throw is fail-closed for true
     // static-secret sources, refusing the run before it can fall through to a
-    // deployment-wide provider-account secret. A `null` return means either the
+    // undeclared provider-account secret. A `null` return means either the
     // connector is not static-secret-backed or this browser-session source has
     // no optional stored login credential.
     const staticSecretEnv = opts.resolveStaticSecretRunEnv
@@ -3678,6 +3681,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
             };
           },
           connectorId: admittedConnectorId,
+          ...(opts.approvedEnvironmentBindings
+            ? { approvedEnvironmentBindings: opts.approvedEnvironmentBindings }
+            : {}),
+          ...(opts.approvedProxyConnectorIds ? { approvedProxyConnectorIds: opts.approvedProxyConnectorIds } : {}),
           connectorInstanceId,
           connectorPath,
           manifest,

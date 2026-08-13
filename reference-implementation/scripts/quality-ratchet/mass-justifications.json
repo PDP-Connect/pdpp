@@ -50,9 +50,9 @@
     "date": "2026-07-30"
   },
   "server/scheduler-manager-factory.ts": {
-    "allowed_mass": 76,
-    "reason": "TypeScript migration (2026-07-27): strict contracts replace implicit JavaScript surfaces for scheduler dependencies, and the original sequential refresh order is preserved with an explicit promise reduction rather than parallelizing manifest resolution and owner-token issuance. The four-point mass increase is the minimum control-flow cost of retaining that ordering while satisfying the no-await-in-loop rule; removing it would change refresh concurrency and behavior.",
-    "date": "2026-07-27"
+    "allowed_mass": 82,
+    "date": "2026-08-12",
+    "reason": "PR #105 retarget to current main: scheduler-manager construction forwards the production connector environment policy and proxy connector allowlist from server startup into scheduler instances. The added option plumbing is the production authority seam that keeps scheduled managed children under the same fail-closed connector-scoped environment policy as controller runs."
   },
   "server/connector-key.ts": {
     "allowed_mass": 4,
@@ -238,5 +238,25 @@
     "allowed_mass": 53,
     "reason": "New file (2026-07-30, run-history-backfill-list-cutover / terminal-read-architecture-fable-0730.md §9 R9.1-R9.3): the bounded, resumable spine-to-run_history backfill stage. Its mass is inherent dual-backend duplication across five independent concerns, each needed on both SQLite and PostgreSQL: candidate-run discovery by event_seq cursor, fold-data loading (batched per-backend terminal-data extraction so facts_json captures collection_facts/known_gaps/recovery_only/collection_rate from the terminal event's raw data rather than the fold summary, which does not carry those fields), legacy connector-wide singleton attribution (resolveLegacyConnectorWideInstanceId, reusing resolveActiveByConnector's own throws-on-ambiguous semantics), per-candidate insert (both backends' ON CONFLICT DO NOTHING so a concurrent live terminal write always wins), and fenced-lease cursor bookkeeping mirroring the evidence sweep's pattern, plus a bounded multi-round startup accelerator. Two extraction passes already applied (backfillOneCandidate, loadCandidateFoldData) to keep runRunHistoryBackfillRound's own complexity below 20; the residual mass is the five dual-backend concerns themselves — collapsing further would hide backend-specific SQL predicates or lose the terminal-data/fold-summary distinction a prior draft got wrong. Proven by test/run-history-backfill-cutover.test.ts (9 tests): candidate corpus, legacy singleton skip, idempotency, crash-resume, concurrent-write and concurrent-owner races, boundedness, zero-spine-events on the product route. LIVE CANARY REVISE (2026-07-30, +10 mass): run_id alone was proven NOT globally unique on a live instance (two distinct connections legitimately sharing one run_id). Identity moved to the composite (run_id, connector_instance_id) pair throughout: candidate discovery now GROUPs BY both columns with a NULL-aware exclusion predicate (SQLite's OR-both-NULL branch; Postgres's IS NOT DISTINCT FROM); every per-candidate insert's conflict target is now ON CONFLICT(run_id, connector_instance_id) DO NOTHING, not run_id alone; and loadCandidateFoldData filters each candidate's run_id-fetched event window down to its own connector_instance_id (the real column on Postgres rows, connectionIdFromEventData on SQLite's hydrated records) before folding with the genuinely unmodified summarizeEvents/summarizeRows — only the input window is scoped. Without this, two connections sharing a run_id would collide on insert or silently blend into one wrong row. Proven by test/run-history-duplicate-run-id-identity.test.ts's backfill test: two connections sharing a run_id discover as two separate candidates and fold into two separate rows, each reflecting only its own connection's event history.",
     "date": "2026-07-30"
+  },
+  "runtime/connector-child-environment.ts": {
+    "allowed_mass": 41,
+    "date": "2026-08-11",
+    "reason": "PR #105 ambient-secret authority repair: manifest declarations are reduced to logical requirements, and only an operator-owned binding can select a process-env, connection-env, or literal source. The explicit source union and declared-key intersection are the minimum branches needed to prevent connector-authored manifests from reading arbitrary ambient AWS/OpenAI/sibling secrets while retaining connection and Windows case-insensitive layering. Follow-up closure adds the fail-closed JSON policy parser, tagged connection-fragment boundary, complete shipped declaration coverage (credential capture, manual upload, connection config, auth alternatives), connector-scoped proxy authority, and Windows alias ambiguity rejection. These branches are the policy boundary; collapsing them would restore malformed or ambient authority. Adversarial and real-manifest child tests prove the former leak is blocked and approved inputs remain usable."
+  },
+  "runtime/scheduler/run-executor.ts": {
+    "allowed_mass": 83,
+    "date": "2026-08-12",
+    "reason": "PR #105 retarget to current main: scheduled direct-run dispatch now forwards both the operator-owned logical-input bindings and connector-scoped proxy authority into the shared child-environment composer on top of the current scheduler baseline. The added branches preserve behavior-compatible option forwarding when no authority is configured and keep scheduled runs aligned with manual/controller child-environment isolation."
+  },
+  "runtime/connector-child-environment.test.ts": {
+    "allowed_mass": 4,
+    "date": "2026-08-11",
+    "reason": "PR #105 follow-up adversarial oracle: validates malformed authority sources, duplicate/case-colliding targets, Windows alias ambiguity, connector-scoped proxy authorization, and real shipped static/provider/manual/connection declaration forms. The four-point test mass is the discriminating matrix, including resolver-owned connection-target identity, closed-fragment collision/proxy fail-closed coverage, and real production-child evidence for approved inputs; it is test oracle mass, not production control flow."
+  },
+  "runtime/index.ts": {
+    "allowed_mass": 408,
+    "date": "2026-08-12",
+    "reason": "PR #105 retarget to current main: runConnector owns the ordered launch boundary for admission, connector-scoped child-environment composition, progress redaction, stream validation, and terminalization. The retarget adds explicit connector-environment policy inputs and a tagged connection-fragment boundary at this single launch seam so controller and scheduler paths share the same fail-closed isolation behavior. Keeping this orchestration together preserves the tested ordering invariants; extracting shallow helpers would obscure the child-spawn authority boundary without reducing semantic complexity."
   }
 }
