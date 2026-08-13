@@ -142,7 +142,7 @@ interface ApprovedGrant {
 }
 
 function sourceIdForConnectorId(connectorId: string): string {
-  return connectorId.includes("://") ? connectorId : `https://registry.pdpp.org/connectors/${connectorId}`;
+  return connectorId.includes("://") ? connectorId : `https://registry.pdpp.dev/connectors/${connectorId}`;
 }
 
 async function seedDefaultGrantInstance(connectorId: string, ownerSubjectId: string): Promise<void> {

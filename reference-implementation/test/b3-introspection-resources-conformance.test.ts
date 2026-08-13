@@ -176,7 +176,7 @@ interface SpotifyManifest {
 }
 
 function sourceIdForConnectorId(connectorId: string): string {
-  return connectorId.includes("://") ? connectorId : `https://registry.pdpp.org/connectors/${connectorId}`;
+  return connectorId.includes("://") ? connectorId : `https://registry.pdpp.dev/connectors/${connectorId}`;
 }
 
 async function seedDefaultGrantInstance(connectorId: string, ownerSubjectId: string): Promise<void> {
@@ -436,7 +436,7 @@ test("introspection: active client token returns documented fields (B3)", async 
     assert.ok(Array.isArray(body.authorization_details), "authorization_details is an array");
     const [detail] = body.authorization_details;
     assert.ok(detail, "introspected grant has an authorization detail");
-    assert.equal(detail.type, "https://pdpp.org/data-access", "authorization detail type is PDPP data access");
+    assert.equal(detail.type, "https://pdpp.dev/data-access", "authorization detail type is PDPP data access");
     assert.equal(detail.source?.kind, "connector", "authorization detail source.kind = connector");
     assert.equal(detail.access_mode, "continuous", "authorization detail access_mode matches");
     assert.ok(Array.isArray(detail.streams), "authorization detail streams is an array");

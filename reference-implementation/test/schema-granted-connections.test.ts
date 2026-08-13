@@ -57,7 +57,7 @@ function at<T>(items: T[], index: number): T {
 }
 
 const CONNECTOR_ID = "spotify";
-const SOURCE_ID = "https://registry.pdpp.org/connectors/spotify";
+const SOURCE_ID = "https://registry.pdpp.dev/connectors/spotify";
 const STREAM = "messages";
 
 const INSTANCE_A = "cin_schema_account_a";
@@ -675,7 +675,7 @@ test("client metadata uses the approving subject's granted instance and never ow
       const approved = await approveGrant(asUrl, hostedSubject, {
         access_mode: "continuous",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/analytics",
+        purpose_code: "https://pdpp.dev/purpose/analytics",
         purpose_description: "hosted subject metadata isolation",
         source: { id: SOURCE_ID, kind: "connector" },
         streams: [
@@ -734,7 +734,7 @@ test("client schema and stream metadata remain a closed resolved-grant projectio
       const approved = await approveGrant(asUrl, "owner_local", {
         access_mode: "continuous",
         client_id: "longview",
-        purpose_code: "https://pdpp.org/purpose/analytics",
+        purpose_code: "https://pdpp.dev/purpose/analytics",
         purpose_description: "frozen client metadata projection",
         source: { id: SOURCE_ID, kind: "connector" },
         streams: [
@@ -865,7 +865,7 @@ test("client relationship metadata checks has_many foreign keys against the rela
         approveGrant(asUrl, "owner_local", {
           access_mode: "continuous",
           client_id: "longview",
-          purpose_code: "https://pdpp.org/purpose/analytics",
+          purpose_code: "https://pdpp.dev/purpose/analytics",
           purpose_description: purposeDescription,
           source: { id: SOURCE_ID, kind: "connector" },
           streams: [

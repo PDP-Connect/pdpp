@@ -22,10 +22,10 @@ function validResponse(): Record<string, unknown> {
     authorization_details: [
       {
         access_mode: "continuous",
-        purpose_code: "https://pdpp.org/purpose/personal-ai",
+        purpose_code: "https://pdpp.dev/purpose/personal-ai",
         source: { id: "https://sources.example/spotify", kind: "connector" },
         streams: [{ fields: ["id"], instance_ids: ["account-a"], name: "top_artists" }],
-        type: "https://pdpp.org/data-access",
+        type: "https://pdpp.dev/data-access",
       },
     ],
     client_id: "pr89-seam-client",

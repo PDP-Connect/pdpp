@@ -1426,7 +1426,7 @@ test("fields projection on a declared but ungranted field is rejected under a re
     const approved = await approveGrant(asUrl, "ungranted_fields_owner", {
       access_mode: "continuous",
       client_id: "longview",
-      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "projection conformance under a narrowed field grant",
       source: { id: connectorId, kind: "connector" },
       streams: [{ fields: ["id", "name", "source_updated_at"], name: "top_artists" }],

@@ -518,7 +518,7 @@ test("10.C.4 GET /_ref/grant-packages/count returns the total without paging the
           client: { client_id: "cli_x" },
           grant_id: grantId,
           issued_at: now,
-          source: { id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" },
+          source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
           source_declaration: { version: "reference.source-declaration.test.v1" },
           streams: [],
           subject: { id: TEST_SUBJECT },
@@ -551,7 +551,7 @@ test("10.C.4 GET /_ref/grant-packages/count returns the total without paging the
         pid,
         grantId,
         `${pid}_token`,
-        JSON.stringify({ id: "https://registry.pdpp.org/connectors/spotify", kind: "connector" }),
+        JSON.stringify({ id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" }),
         now
       );
     }

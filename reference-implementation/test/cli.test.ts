@@ -4620,7 +4620,7 @@ test("PDPP CLI smoke", async (t) => {
             access_mode: "continuous",
             client_display: { name: "Concert Recommendation App" },
             client_id: "concert_recommendation_app",
-            purpose_code: "https://pdpp.org/purpose/personalization",
+            purpose_code: "https://pdpp.dev/purpose/personalization",
             purpose_description: "Recommend concerts using top artists only",
             source: { id: spotifyManifest.connector_id, kind: "connector" },
             streams: [{ name: "top_artists", view: "basic" }],

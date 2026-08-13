@@ -113,11 +113,11 @@ async function startReviewedPendingConsent(): Promise<{ deviceCode: string; revi
     authorization_details: [
       {
         access_mode: "continuous",
-        purpose_code: "https://pdpp.org/purpose/personalization",
+        purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: "atomic terminal decision postgres proof",
         source: { id: manifest.connector_id, kind: "connector" },
         streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
-        type: "https://pdpp.org/data-access",
+        type: "https://pdpp.dev/data-access",
       },
     ],
     client_id: CONSOLE_CLIENT_ID,
@@ -612,10 +612,10 @@ if (POSTGRES_URL) {
       authorizationDetails: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+          purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
           source: { id: manifest.connector_id, kind: "connector" },
           streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       clientId: CONSOLE_CLIENT_ID,
@@ -645,10 +645,10 @@ if (POSTGRES_URL) {
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           source: { id: manifest.connector_id, kind: "connector" },
           streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CONSOLE_CLIENT_ID,
@@ -693,10 +693,10 @@ if (POSTGRES_URL) {
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           source: { id: manifest.connector_id, kind: "connector" },
           streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CONSOLE_CLIENT_ID,
@@ -730,10 +730,10 @@ if (POSTGRES_URL) {
       authorization_details: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personalization",
+          purpose_code: "https://pdpp.dev/purpose/personalization",
           source: { id: manifest.connector_id, kind: "connector" },
           streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: CONSOLE_CLIENT_ID,
@@ -769,10 +769,10 @@ if (POSTGRES_URL) {
       authorizationDetails: [
         {
           access_mode: "continuous",
-          purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+          purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
           source: { id: manifest.connector_id, kind: "connector" },
           streams: [{ instance_ids: [POSTGRES_AUTH_INSTANCE_ID], name: "top_artists", view: "basic" }],
-          type: "https://pdpp.org/data-access",
+          type: "https://pdpp.dev/data-access",
         },
       ],
       clientId: CONSOLE_CLIENT_ID,

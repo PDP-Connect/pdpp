@@ -604,7 +604,7 @@ if (POSTGRES_URL) {
           client: { client_id: registeredClient.client_id },
           grant_id: grantId,
           issued_at: "2026-08-11T12:00:00Z",
-          purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+          purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
           source: { id: sourceId, kind: "connector" },
           source_declaration: { version: "1.0.0" },
           streams: [{ fields: ["id", "name"], instance_ids: [SPOTIFY_INSTANCE_ID], name: "top_artists" }],

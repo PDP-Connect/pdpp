@@ -62,7 +62,7 @@ export interface GrantedAuthorizationDetail {
   selection_preset?: string;
   source: ResolvedGrant["source"];
   streams: ApprovedAuthorizationStream[];
-  type: "https://pdpp.org/data-access";
+  type: "https://pdpp.dev/data-access";
 }
 
 const RAR_DETAIL_KEYS = new Set([
@@ -296,7 +296,7 @@ export function parseResolvedGrantApprovedAuthorization(
 }
 
 function requireGrantedPolicy(value: JsonObject): void {
-  if (value.type !== "https://pdpp.org/data-access" || !isNonEmptyString(value.purpose_code)) {
+  if (value.type !== "https://pdpp.dev/data-access" || !isNonEmptyString(value.purpose_code)) {
     sourceFail("Granted authorization detail has invalid type or purpose_code");
   }
   if (value.purpose_description !== undefined && !isNonEmptyString(value.purpose_description)) {
@@ -349,7 +349,7 @@ export function buildGrantedAuthorizationDetail(value: unknown): GrantedAuthoriz
     ...(grant.selection_preset ? { selection_preset: grant.selection_preset } : {}),
     source: structuredClone(grant.source),
     streams: structuredClone(grant.streams),
-    type: "https://pdpp.org/data-access",
+    type: "https://pdpp.dev/data-access",
   };
 }
 

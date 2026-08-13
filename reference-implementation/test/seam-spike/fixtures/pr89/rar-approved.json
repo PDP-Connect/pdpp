@@ -1,6 +1,6 @@
 {
   "access_mode": "continuous",
-  "purpose_code": "https://pdpp.org/purpose/personal_ai_assistant",
+  "purpose_code": "https://pdpp.dev/purpose/personal_ai_assistant",
   "purpose_description": "Build a personal listening summary",
   "retention": {
     "max_duration": "P30D",
@@ -28,5 +28,5 @@
       "name": "recently_played"
     }
   ],
-  "type": "https://pdpp.org/data-access"
+  "type": "https://pdpp.dev/data-access"
 }

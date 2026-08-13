@@ -13,7 +13,7 @@ import { initDb } from "../server/db.ts";
 
 const TOP_LEVEL_REGEX_1 = /purpose_code/;
 const CONNECTOR_ID = "demo";
-const SOURCE_ID = "https://registry.pdpp.org/connectors/demo";
+const SOURCE_ID = "https://registry.pdpp.dev/connectors/demo";
 
 let registeredClientId: string | null = null;
 

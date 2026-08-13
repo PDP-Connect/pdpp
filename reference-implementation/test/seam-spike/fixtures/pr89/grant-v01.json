@@ -6,7 +6,7 @@
   "expires_at": null,
   "grant_id": "grt_pr89",
   "issued_at": "2026-08-11T11:55:00Z",
-  "purpose_code": "https://pdpp.org/purpose/personal_ai_assistant",
+  "purpose_code": "https://pdpp.dev/purpose/personal_ai_assistant",
   "purpose_description": "Build a personal listening summary",
   "retention": {
     "max_duration": "P30D",
