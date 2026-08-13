@@ -43,7 +43,7 @@ import { isMainModule } from "../../src/is-main-module.ts";
 import { steamPacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 
-const API_BASE = "https://api.steampowered.com";
+const API_BASE = process.env.STEAM_API_BASE_URL ?? "https://api.steampowered.com";
 
 // Conservative pacing profile: Steam doesn't publish rate limits officially.
 // 60s+ interval is a community-observed safe pace to avoid multi-hour lockouts.
@@ -174,7 +174,19 @@ type ProgressFn = (
  */
 export const STEAM_RETRYABLE_PATTERN = /ECONN|ETIMEDOUT|fetch failed|steam_rate_limited|retryable status \d+/i;
 
-export type SteamHttpClassification = { kind: "ok" } | { kind: "error"; message: string };
+export type SteamHttpClassification = { kind: "ok" } | { kind: "error"; message: string; status: number };
+
+export class SteamHttpError extends Error {
+  readonly status: number;
+  readonly path: string;
+
+  constructor(path: string, status: number, message: string) {
+    super(message);
+    this.name = "SteamHttpError";
+    this.path = path;
+    this.status = status;
+  }
+}
 
 /**
  * Pure status/body classifier used by steamApiRequest. Kept separate (and
@@ -183,16 +195,16 @@ export type SteamHttpClassification = { kind: "ok" } | { kind: "error"; message:
  */
 export function classifySteamHttpResponse(status: number, _body: string): SteamHttpClassification {
   if (status === 401) {
-    return { kind: "error", message: "steam_auth_failed" };
+    return { kind: "error", message: "steam_auth_failed", status };
   }
   if (status === 403) {
-    return { kind: "error", message: "steam_forbidden_auth_or_visibility" };
+    return { kind: "error", message: "steam_forbidden_auth_or_visibility", status };
   }
   if (status === 429) {
-    return { kind: "error", message: "steam_rate_limited" };
+    return { kind: "error", message: "steam_rate_limited", status };
   }
   if (status < 200 || status >= 300) {
-    return { kind: "error", message: `steam_http_${String(status)}` };
+    return { kind: "error", message: `steam_http_${String(status)}`, status };
   }
   return { kind: "ok" };
 }
@@ -237,13 +249,13 @@ async function steamApiRequest<T>(
 
     const classification = classifySteamHttpResponse(result.status, result.body);
     if (classification.kind === "error") {
-      throw new Error(classification.message);
+      throw new SteamHttpError(path, classification.status, classification.message);
     }
     return JSON.parse(result.body) as T;
   } catch (error) {
-    if (error instanceof Error && error.message === "steam_auth_failed") {
+    if (error instanceof SteamHttpError && error.message === "steam_auth_failed") {
       await progress?.("Steam API authentication failed", extra);
-    } else if (error instanceof Error && error.message === "steam_forbidden_auth_or_visibility") {
+    } else if (error instanceof SteamHttpError && error.message === "steam_forbidden_auth_or_visibility") {
       await progress?.("Steam API request forbidden; authentication or profile visibility may be involved", extra);
     }
     throw error;
@@ -547,13 +559,28 @@ async function collectFriends(
   newState: Record<string, unknown>
 ): Promise<void> {
   await deps.progress("Fetching friends list", { stream: "friends" });
-  const friendsRes = await steamApiRequest<GetFriendListResponse>(
-    "/ISteamUser/GetFriendList/v0001",
-    apiKey,
-    { steamid, relationship: "friend" },
-    deps.progress,
-    { stream: "friends" }
-  );
+  let friendsRes: GetFriendListResponse;
+  try {
+    friendsRes = await steamApiRequest<GetFriendListResponse>(
+      "/ISteamUser/GetFriendList/v0001",
+      apiKey,
+      { steamid, relationship: "friend" },
+      deps.progress,
+      { stream: "friends" }
+    );
+  } catch (error) {
+    if (error instanceof SteamHttpError && error.status === 401) {
+      await deps.emit({
+        type: "SKIP_RESULT",
+        stream: "friends",
+        reason: "steam_optional_resource_unavailable",
+        message: "Steam friends are unavailable because this account restricts the friends list.",
+        recovery_hint: { retryable: false },
+      });
+      return;
+    }
+    throw error;
+  }
   const envelope = requireSteamObject(friendsRes, "wire envelope");
   const friendsList = requireSteamObject(envelope.friendslist, "friendslist");
   const friends = requireSteamArray<SteamFriend>(friendsList.friends, "friendslist.friends");

@@ -3,7 +3,11 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 import {
   classifySteamHttpResponse,
   isSteamId64,
@@ -12,6 +16,10 @@ import {
   steamCollect,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PACKAGE_ROOT = resolve(__dirname, "..", "..", "..");
+const ENTRYPOINT = join(__dirname, "index.ts");
 
 // ─── Schema validation tests ───────────────────────────────────────────────
 
@@ -327,17 +335,17 @@ test("steam - malformed response handling", () => {
 
 test("classifySteamHttpResponse - 429 maps to steam_rate_limited", () => {
   const result = classifySteamHttpResponse(429, "");
-  assert.deepEqual(result, { kind: "error", message: "steam_rate_limited" });
+  assert.deepEqual(result, { kind: "error", message: "steam_rate_limited", status: 429 });
 });
 
 test("classifySteamHttpResponse - 401 maps to steam_auth_failed", () => {
   const result = classifySteamHttpResponse(401, "");
-  assert.deepEqual(result, { kind: "error", message: "steam_auth_failed" });
+  assert.deepEqual(result, { kind: "error", message: "steam_auth_failed", status: 401 });
 });
 
 test("classifySteamHttpResponse - 403 preserves auth-versus-visibility ambiguity", () => {
   const result = classifySteamHttpResponse(403, "");
-  assert.deepEqual(result, { kind: "error", message: "steam_forbidden_auth_or_visibility" });
+  assert.deepEqual(result, { kind: "error", message: "steam_forbidden_auth_or_visibility", status: 403 });
 });
 
 test("classifySteamHttpResponse - other non-2xx status is bounded and sanitized", () => {
@@ -509,5 +517,114 @@ test("steamCollect - rejects a vanity resolver response that is not a SteamID64"
     } else {
       process.env.STEAM_USER_ID = originalSteamUserId;
     }
+  }
+});
+
+function startSteamFixtureServer(requiredEndpoint401: boolean): Promise<{ stop: () => Promise<void>; url: string }> {
+  return new Promise((resolveServer, rejectServer) => {
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      const path = req.url?.split("?", 1)[0] ?? "";
+      if (requiredEndpoint401 && path.endsWith("/GetPlayerSummaries/v0002")) {
+        res.writeHead(401).end();
+        return;
+      }
+      if (path.endsWith("/GetFriendList/v0001")) {
+        res.writeHead(401).end();
+        return;
+      }
+      let body: Record<string, unknown>;
+      if (path.endsWith("/GetPlayerSummaries/v0002")) {
+        body = { response: { players: [{ steamid: "76561198012345678", personaname: "UAT" }] } };
+      } else if (path.endsWith("/GetOwnedGames/v0001") || path.endsWith("/GetRecentlyPlayedGames/v0001")) {
+        body = { response: { games: [] } };
+      } else {
+        body = { response: { player_level: 7 } };
+      }
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        rejectServer(new Error("fixture server did not bind to a TCP port"));
+        return;
+      }
+      resolveServer({
+        url: `http://127.0.0.1:${String(address.port)}`,
+        stop: () =>
+          new Promise<void>((resolveStop, rejectStop) =>
+            server.close((error) => (error ? rejectStop(error) : resolveStop()))
+          ),
+      });
+    });
+    server.on("error", rejectServer);
+  });
+}
+
+test("Steam protocol execution: optional friends 401 emits exact SKIP_RESULT and succeeds", async () => {
+  const fixture = await startSteamFixtureServer(false);
+  try {
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: ENTRYPOINT,
+      env: { STEAM_API_BASE_URL: fixture.url, STEAM_API_KEY: "uat-key", STEAM_USER_ID: "76561198012345678" },
+      start: {
+        type: "START",
+        scope: {
+          streams: [
+            { name: "profile" },
+            { name: "owned_games" },
+            { name: "recently_played_games" },
+            { name: "friends" },
+            { name: "steam_level" },
+          ],
+        },
+        state: {},
+      },
+    });
+    assert.equal(result.code, 0);
+    const skip = result.messages.find((message) => message.type === "SKIP_RESULT");
+    assert.deepEqual(skip, {
+      type: "SKIP_RESULT",
+      stream: "friends",
+      reason: "steam_optional_resource_unavailable",
+      message: "Steam friends are unavailable because this account restricts the friends list.",
+      recovery_hint: { retryable: false },
+    });
+    assert.equal(
+      result.messages.some((message) => message.type === "STATE" && message.stream === "friends"),
+      false
+    );
+    assert.equal(
+      result.messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "friends"),
+      false
+    );
+    const done = result.messages.at(-1);
+    assert.equal(done?.type, "DONE");
+    assert.equal(done?.status, "succeeded");
+  } finally {
+    await fixture.stop();
+  }
+});
+
+test("Steam protocol execution: required endpoint 401 remains a failed DONE", async () => {
+  const fixture = await startSteamFixtureServer(true);
+  try {
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: ENTRYPOINT,
+      env: { STEAM_API_BASE_URL: fixture.url, STEAM_API_KEY: "uat-key", STEAM_USER_ID: "76561198012345678" },
+      start: { type: "START", scope: { streams: [{ name: "profile" }] }, state: {} },
+      allowFailedDone: true,
+    });
+    assert.notEqual(result.code, 0);
+    const done = result.messages.at(-1);
+    assert.equal(done?.type, "DONE");
+    if (done?.type === "DONE") {
+      assert.equal(done.status, "failed");
+      assert.equal(done.error?.message, "steam_auth_failed");
+      assert.equal(done.error?.retryable, false);
+    }
+  } finally {
+    await fixture.stop();
   }
 });
