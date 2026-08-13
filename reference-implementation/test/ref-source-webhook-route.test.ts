@@ -13,7 +13,13 @@ import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
-import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
+import {
+  createPostgresConnectorInstanceStore,
+  createSqliteConnectorInstanceStore,
+} from "../server/stores/connector-instance-store.ts";
+import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
+import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
 type TestServer = Awaited<ReturnType<typeof startServer>>;
 type JsonObject = Record<string, unknown>;
@@ -58,7 +64,13 @@ function bodyWithByteLength(byteLength: number, action: "ingest_records" | "sche
 }
 
 async function withHarness(
-  fn: (input: { asUrl: string; rsUrl: string; secret: string; sourceId: string }) => Promise<void>
+  fn: (input: {
+    asUrl: string;
+    connectorInstanceId: string;
+    rsUrl: string;
+    secret: string;
+    sourceId: string;
+  }) => Promise<void>
 ): Promise<void> {
   const oldSecrets = process.env.PDPP_SOURCE_WEBHOOK_SECRETS;
   const secret = "spotify_source_secret";
@@ -82,7 +94,13 @@ async function withHarness(
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
       sourceBindingKey: "legacy-webhook@example.com",
     });
-    await fn({ asUrl, rsUrl, secret, sourceId: "spotify" });
+    await fn({
+      asUrl,
+      connectorInstanceId: "cin_spotify_legacy_webhook",
+      rsUrl,
+      secret,
+      sourceId: "spotify",
+    });
   } finally {
     if (oldSecrets === undefined) {
       delete process.env.PDPP_SOURCE_WEBHOOK_SECRETS;
@@ -139,9 +157,11 @@ async function seedConnectorInstance(input: {
   displayName: string;
   ownerSubjectId: string;
   sourceBindingKey: string;
+  storage?: "postgres" | "sqlite";
 }): Promise<void> {
   const now = new Date().toISOString();
-  const store = createSqliteConnectorInstanceStore();
+  const store =
+    input.storage === "postgres" ? createPostgresConnectorInstanceStore() : createSqliteConnectorInstanceStore();
   const connectorId = canonicalConnectorKey(input.connectorId) ?? input.connectorId;
   await store.upsert({
     connectorId,
@@ -155,6 +175,77 @@ async function seedConnectorInstance(input: {
     status: "active",
     updatedAt: now,
   });
+}
+
+const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
+
+async function withPostgresHarness(
+  fn: (input: {
+    asUrl: string;
+    connectorInstanceId: string;
+    rsUrl: string;
+    secret: string;
+    sourceId: string;
+  }) => Promise<void>
+): Promise<void> {
+  assert.ok(POSTGRES_URL, "PDPP_TEST_POSTGRES_URL must target the disposable Postgres listener");
+  const oldDatabaseUrl = process.env.PDPP_DATABASE_URL;
+  const oldStorageBackend = process.env.PDPP_STORAGE_BACKEND;
+  const oldSecrets = process.env.PDPP_SOURCE_WEBHOOK_SECRETS;
+  const secret = "spotify_source_secret_pg_route";
+  const sourceId = "spotify";
+  const connectorInstanceId = "cin_spotify_pg_webhook";
+  const databaseName = `pdpp_test_source_webhook_route_${process.pid}_${Date.now().toString(36)}`;
+  try {
+    await withTemporaryPostgresDatabase(
+      { closeConnections: closePostgresStorage, connectionString: POSTGRES_URL, databaseName },
+      async (databaseUrl) => {
+        process.env.PDPP_DATABASE_URL = databaseUrl;
+        process.env.PDPP_STORAGE_BACKEND = "postgres";
+        process.env.PDPP_SOURCE_WEBHOOK_SECRETS = `spotify:${secret}:${sourceId}`;
+        const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+        const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+        try {
+          const asUrl = `http://localhost:${server.asPort}`;
+          const rsUrl = `http://localhost:${server.rsPort}`;
+          const registerResp = await fetch(`${asUrl}/connectors`, {
+            body: JSON.stringify(manifest),
+            headers: { "Content-Type": "application/json" },
+            method: "POST",
+          });
+          assert.equal(registerResp.status, 201);
+          await seedConnectorInstance({
+            connectorId: sourceId,
+            connectorInstanceId,
+            displayName: "Postgres webhook",
+            ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+            sourceBindingKey: "pg-webhook@example.com",
+            storage: "postgres",
+          });
+          await fn({ asUrl, connectorInstanceId, rsUrl, secret, sourceId });
+        } finally {
+          await closeServer(server);
+          await closePostgresStorage();
+        }
+      }
+    );
+  } finally {
+    if (oldDatabaseUrl === undefined) {
+      delete process.env.PDPP_DATABASE_URL;
+    } else {
+      process.env.PDPP_DATABASE_URL = oldDatabaseUrl;
+    }
+    if (oldStorageBackend === undefined) {
+      delete process.env.PDPP_STORAGE_BACKEND;
+    } else {
+      process.env.PDPP_STORAGE_BACKEND = oldStorageBackend;
+    }
+    if (oldSecrets === undefined) {
+      delete process.env.PDPP_SOURCE_WEBHOOK_SECRETS;
+    } else {
+      process.env.PDPP_SOURCE_WEBHOOK_SECRETS = oldSecrets;
+    }
+  }
 }
 
 async function waitForRunTerminal(asUrl: string, runId: string, timeoutMs = 5000): Promise<JsonObject> {
@@ -213,6 +304,62 @@ async function postWebhook(
   return { body: raw as JsonObject, status: resp.status };
 }
 
+async function setWebhookBackgroundSafety(input: {
+  backgroundSafe: boolean;
+  connectorId: string;
+  storage: "postgres" | "sqlite";
+}): Promise<void> {
+  const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+  manifest.capabilities = {
+    ...(manifest.capabilities ?? {}),
+    refresh_policy: {
+      ...(manifest.capabilities?.refresh_policy ?? {}),
+      background_safe: input.backgroundSafe,
+      rationale: "Exercise source-webhook policy-transition idempotency.",
+      recommended_mode: "automatic",
+    },
+  };
+  if (input.storage === "postgres") {
+    await postgresQuery("UPDATE connectors SET manifest = $1::jsonb WHERE connector_id = $2", [
+      JSON.stringify(manifest),
+      input.connectorId,
+    ]);
+    return;
+  }
+  getDb()
+    .prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?")
+    .run(JSON.stringify(manifest), input.connectorId);
+}
+
+async function assertBlockedScheduleStaysGenericDuplicate(input: {
+  connectorInstanceId: string;
+  countActiveRuns: () => Promise<number>;
+  countReceipts: () => Promise<number>;
+  countGenericClaims: () => Promise<number>;
+  rsUrl: string;
+  secret: string;
+  setBackgroundSafety: (backgroundSafe: boolean) => Promise<void>;
+  sourceId: string;
+}): Promise<void> {
+  const body = '{"action":"schedule_run"}';
+  const eventId = "evt_schedule_blocked_then_allowed";
+  await input.setBackgroundSafety(false);
+  const blocked = await postWebhook(input.rsUrl, input.sourceId, input.secret, eventId, body);
+  assert.equal(blocked.status, 200, JSON.stringify(blocked.body));
+  assert.equal(blocked.body.duplicate, false);
+  assert.equal(objectField(blocked.body, "automation_policy").allowed_to_start, false);
+  assert.equal(await input.countGenericClaims(), 1);
+  assert.equal(await input.countReceipts(), 0);
+
+  await input.setBackgroundSafety(true);
+  const retry = await postWebhook(input.rsUrl, input.sourceId, input.secret, eventId, body);
+  assert.equal(retry.status, 202);
+  assert.equal(retry.body.duplicate, true);
+  assert.equal(await input.countGenericClaims(), 1);
+  assert.equal(await input.countReceipts(), 0, "a generic-claimed event must not enter receipt admission later");
+  assert.equal(await input.countActiveRuns(), 0, "a generic-claimed event must not start a later run");
+}
+
 test("source webhook route rejects missing signature before mutation", async () => {
   await withHarness(async ({ rsUrl }) => {
     const resp = await fetch(`${rsUrl}/_ref/source-webhooks/spotify`, {
@@ -253,8 +400,10 @@ test("source webhook route ingests signed records and dedupes event id", async (
 });
 
 test("source webhook route accepts schedule_run as a webhook-classified run request", async () => {
-  await withHarness(async ({ asUrl, rsUrl, secret, sourceId }) => {
-    const result = await postWebhook(rsUrl, sourceId, secret, "evt_schedule_1", '{"action":"schedule_run"}');
+  await withHarness(async ({ asUrl, connectorInstanceId, rsUrl, secret, sourceId }) => {
+    const eventId = "evt_schedule_1";
+    const body = '{"action":"schedule_run"}';
+    const result = await postWebhook(rsUrl, sourceId, secret, eventId, body);
     assert.equal(result.status, 200);
     assert.equal(result.body.action, "schedule_run");
     assert.equal(result.body.accepted, true);
@@ -270,6 +419,208 @@ test("source webhook route accepts schedule_run as a webhook-classified run requ
     );
     assert.ok(started && typeof started === "object");
     assert.equal(objectField(started as JsonObject, "data").trigger_kind, "webhook");
+
+    const receipt = getDb()
+      .prepare(
+        `SELECT source_id, event_id, body_hash, connector_id, connector_instance_id,
+                owner_subject_id, action, run_id, trace_id
+           FROM source_webhook_run_receipts
+          WHERE source_id = ? AND event_id = ?`
+      )
+      .get(sourceId, eventId) as
+      | {
+          action: string;
+          body_hash: string;
+          connector_id: string;
+          connector_instance_id: string;
+          event_id: string;
+          owner_subject_id: string;
+          run_id: string;
+          source_id: string;
+          trace_id: string;
+        }
+      | undefined;
+    assert.ok(receipt, "the live HTTP route must persist the source-webhook dispatch receipt");
+    assert.equal(receipt.source_id, sourceId);
+    assert.equal(receipt.event_id, eventId);
+    assert.equal(receipt.body_hash, createHmac("sha256", secret).update(body).digest("hex"));
+    assert.equal(receipt.connector_id, canonicalConnectorKey(sourceId));
+    assert.equal(receipt.connector_instance_id, connectorInstanceId);
+    assert.equal(receipt.run_id, runId);
+    assert.equal(receipt.trace_id, stringField(run, "trace_id"));
+
+    const routeReplay = await postWebhook(rsUrl, sourceId, secret, eventId, body);
+    assert.equal(routeReplay.status, 200);
+    assert.equal(routeReplay.body.duplicate, false);
+    assert.equal(stringField(objectField(routeReplay.body, "run"), "run_id"), runId);
+    assert.equal(stringField(objectField(routeReplay.body, "run"), "trace_id"), receipt.trace_id);
+
+    assert.equal(
+      (
+        getDb()
+          .prepare("SELECT COUNT(*) AS count FROM controller_active_runs WHERE connector_instance_id = ?")
+          .get(connectorInstanceId) as { count: number }
+      ).count,
+      0,
+      "terminal cleanup must remove the active admission before receipt replay"
+    );
+
+    const conflictBody = '{"action":"schedule_run","conflict":true}';
+    const conflict = await postWebhook(rsUrl, sourceId, secret, eventId, conflictBody);
+    assert.equal(conflict.status, 409);
+    assert.equal(objectField(conflict.body, "error").code, "source_webhook_event_conflict");
+    assert.equal(objectField(conflict.body, "error").type, "api_error");
+    assert.equal(
+      (
+        getDb()
+          .prepare("SELECT COUNT(*) AS count FROM source_webhook_run_receipts WHERE source_id = ? AND event_id = ?")
+          .get(sourceId, eventId) as { count: number }
+      ).count,
+      1,
+      "a body conflict must not create a second receipt"
+    );
+    assert.equal(
+      (
+        getDb()
+          .prepare("SELECT COUNT(*) AS count FROM controller_active_runs WHERE connector_instance_id = ?")
+          .get(connectorInstanceId) as { count: number }
+      ).count,
+      0,
+      "a body conflict must not admit a second active run"
+    );
+  });
+});
+
+test("source webhook route keeps a blocked signed schedule event generic after policy becomes allowed", async () => {
+  await withHarness(async ({ connectorInstanceId, rsUrl, secret, sourceId }) => {
+    await assertBlockedScheduleStaysGenericDuplicate({
+      connectorInstanceId,
+      countActiveRuns: async () =>
+        Number(
+          (
+            getDb()
+              .prepare("SELECT COUNT(*) AS count FROM controller_active_runs WHERE connector_instance_id = ?")
+              .get(connectorInstanceId) as { count: number }
+          ).count
+        ),
+      countGenericClaims: async () =>
+        Number(
+          (
+            getDb()
+              .prepare("SELECT COUNT(*) AS count FROM source_webhook_events WHERE source_id = ? AND event_id = ?")
+              .get(sourceId, "evt_schedule_blocked_then_allowed") as { count: number }
+          ).count
+        ),
+      countReceipts: async () =>
+        Number(
+          (
+            getDb()
+              .prepare("SELECT COUNT(*) AS count FROM source_webhook_run_receipts WHERE source_id = ? AND event_id = ?")
+              .get(sourceId, "evt_schedule_blocked_then_allowed") as { count: number }
+          ).count
+        ),
+      rsUrl,
+      secret,
+      setBackgroundSafety: async (backgroundSafe) =>
+        await setWebhookBackgroundSafety({
+          backgroundSafe,
+          connectorId: canonicalConnectorKey(sourceId) ?? sourceId,
+          storage: "sqlite",
+        }),
+      sourceId,
+    });
+  });
+});
+
+test("source webhook route replays schedule receipt on live PostgreSQL", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset or not a dedicated test URL",
+}, async () => {
+  await withPostgresHarness(async ({ asUrl, connectorInstanceId, rsUrl, secret, sourceId }) => {
+    const eventId = "evt_schedule_pg_route";
+    const body = '{"action":"schedule_run"}';
+    const first = await postWebhook(rsUrl, sourceId, secret, eventId, body);
+    assert.equal(first.status, 200);
+    const run = objectField(first.body, "run");
+    const runId = stringField(run, "run_id");
+    await waitForRunTerminal(asUrl, runId);
+
+    const receiptResult = await postgresQuery<{
+      body_hash: string;
+      connector_instance_id: string;
+      event_id: string;
+      run_id: string;
+      source_id: string;
+    }>(
+      `SELECT source_id, event_id, body_hash, connector_instance_id, run_id
+         FROM source_webhook_run_receipts
+        WHERE source_id = $1 AND event_id = $2`,
+      [sourceId, eventId]
+    );
+    const [receipt] = receiptResult.rows;
+    assert.ok(receipt, "the live HTTP route must persist the Postgres receipt");
+    assert.equal(receipt.body_hash, createHmac("sha256", secret).update(body).digest("hex"));
+    assert.equal(receipt.connector_instance_id, connectorInstanceId);
+    assert.equal(receipt.run_id, runId);
+
+    const replay = await postWebhook(rsUrl, sourceId, secret, eventId, body);
+    assert.equal(replay.status, 200);
+    assert.equal(replay.body.duplicate, false);
+    assert.equal(stringField(objectField(replay.body, "run"), "run_id"), runId);
+    assert.equal(stringField(objectField(replay.body, "run"), "trace_id"), stringField(run, "trace_id"));
+
+    const conflict = await postWebhook(rsUrl, sourceId, secret, eventId, '{"action":"schedule_run","conflict":true}');
+    assert.equal(conflict.status, 409);
+    assert.equal(objectField(conflict.body, "error").code, "source_webhook_event_conflict");
+    const count = await postgresQuery<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM source_webhook_run_receipts WHERE source_id = $1 AND event_id = $2",
+      [sourceId, eventId]
+    );
+    assert.equal(count.rows[0]?.count, "1");
+    const active = await postgresQuery<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM controller_active_runs WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.equal(active.rows[0]?.count, "0");
+  });
+});
+
+test("source webhook route keeps a blocked signed schedule event generic on live PostgreSQL", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset or not a dedicated test URL",
+}, async () => {
+  await withPostgresHarness(async ({ connectorInstanceId, rsUrl, secret, sourceId }) => {
+    await assertBlockedScheduleStaysGenericDuplicate({
+      connectorInstanceId,
+      countActiveRuns: async () => {
+        const result = await postgresQuery<{ count: string }>(
+          "SELECT COUNT(*)::text AS count FROM controller_active_runs WHERE connector_instance_id = $1",
+          [connectorInstanceId]
+        );
+        return Number(result.rows[0]?.count ?? 0);
+      },
+      countGenericClaims: async () => {
+        const result = await postgresQuery<{ count: string }>(
+          "SELECT COUNT(*)::text AS count FROM source_webhook_events WHERE source_id = $1 AND event_id = $2",
+          [sourceId, "evt_schedule_blocked_then_allowed"]
+        );
+        return Number(result.rows[0]?.count ?? 0);
+      },
+      countReceipts: async () => {
+        const result = await postgresQuery<{ count: string }>(
+          "SELECT COUNT(*)::text AS count FROM source_webhook_run_receipts WHERE source_id = $1 AND event_id = $2",
+          [sourceId, "evt_schedule_blocked_then_allowed"]
+        );
+        return Number(result.rows[0]?.count ?? 0);
+      },
+      rsUrl,
+      secret,
+      setBackgroundSafety: async (backgroundSafe) =>
+        await setWebhookBackgroundSafety({
+          backgroundSafe,
+          connectorId: canonicalConnectorKey(sourceId) ?? sourceId,
+          storage: "postgres",
+        }),
+      sourceId,
+    });
   });
 });
 

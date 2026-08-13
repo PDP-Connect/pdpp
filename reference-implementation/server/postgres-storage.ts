@@ -1221,6 +1221,24 @@ export async function bootstrapPostgresSchema({
         PRIMARY KEY(source_id, event_id)
       );
 
+      CREATE TABLE IF NOT EXISTS source_webhook_run_receipts (
+        source_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        body_hash TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        owner_subject_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK (action = 'schedule_run'),
+        run_id TEXT NOT NULL,
+        trace_id TEXT NOT NULL,
+        automation_mode TEXT,
+        automation_summary TEXT,
+        started_at TEXT NOT NULL,
+        PRIMARY KEY(source_id, event_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_source_webhook_run_receipts_run
+        ON source_webhook_run_receipts(run_id, connector_instance_id);
+
       CREATE TABLE IF NOT EXISTS connector_state (
         connector_id TEXT NOT NULL,
         connector_instance_id TEXT NOT NULL,
