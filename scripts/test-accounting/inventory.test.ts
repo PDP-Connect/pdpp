@@ -602,6 +602,10 @@ test("keeps the manifest-receipt PostgreSQL skip title in the exact receipt mapp
   const name = "PostgreSQL manifest receipt changes once and BIGINT exhaustion remains canonical";
   assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
 });
+test("keeps the checkpoint-dependency parity PostgreSQL skip title in the exact receipt mapping", () => {
+  const name = "SQLite/Postgres parity scenario (Postgres side, skipped: PDPP_TEST_POSTGRES_URL unset)";
+  assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
+});
 test("keeps the source-revision stale-publication PostgreSQL skip title in the exact receipt mapping", () => {
   const name = "PostgreSQL stale failure publication cannot overwrite newer evidence";
   assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));

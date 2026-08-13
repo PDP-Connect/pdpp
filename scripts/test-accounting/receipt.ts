@@ -70,6 +70,7 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "Postgres DeviceExporterStore conforms when PDPP_TEST_POSTGRES_URL is set",
   "Postgres SourceWebhookEventStore claims each source event once when PDPP_TEST_POSTGRES_URL is set",
   "Postgres WebPushSubscriptionStore conforms when PDPP_TEST_POSTGRES_URL is set",
+  "SQLite/Postgres parity scenario (Postgres side, skipped: PDPP_TEST_POSTGRES_URL unset)",
   "Postgres bootstrap widens a legacy connector_instances status CHECK to draft",
   "Postgres browser generation hash upsert preserves same-container state and clears on container replacement",
   "Postgres scoped browser-surface reads match filtered global rows for 0, 1, and 25 identities",
