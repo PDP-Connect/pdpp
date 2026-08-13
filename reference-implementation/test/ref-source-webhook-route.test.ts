@@ -275,7 +275,7 @@ test("source webhook route resolves structured config to exact real owner connec
       ownerSubjectId,
       secrets: JSON.stringify([
         {
-          connector_id: "https://registry.pdpp.org/connectors/spotify",
+          connector_id: "https://registry.pdpp.dev/connectors/spotify",
           connector_instance_id: selectedInstanceId,
           owner_subject_id: ownerSubjectId,
           secret,
@@ -352,7 +352,7 @@ test("source webhook route rejects bad structured target before claim or mutatio
       ownerSubjectId,
       secrets: JSON.stringify([
         {
-          connector_id: "https://registry.pdpp.org/connectors/spotify",
+          connector_id: "https://registry.pdpp.dev/connectors/spotify",
           connector_instance_id: "cin_spotify_missing_target",
           owner_subject_id: ownerSubjectId,
           secret,
@@ -392,7 +392,7 @@ test("source webhook route rejects bad structured target before claim or mutatio
 
       process.env.PDPP_SOURCE_WEBHOOK_SECRETS = JSON.stringify([
         {
-          connector_id: "https://registry.pdpp.org/connectors/spotify",
+          connector_id: "https://registry.pdpp.dev/connectors/spotify",
           connector_instance_id: selectedInstanceId,
           owner_subject_id: ownerSubjectId,
           secret,
