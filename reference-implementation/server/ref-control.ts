@@ -18,7 +18,10 @@ import { allowUnboundedReadAcknowledged, iterateDynamicSqlAcknowledged, referenc
 import { isNullish } from "../lib/nullish.ts";
 import type { SpineSummary } from "../lib/spine.ts";
 import type { RefApprovalDetail } from "../operations/ref-approval-detail/index.ts";
-import { buildLiveConsentApprovalDetail, buildOwnerDeviceApprovalDetail } from "../operations/ref-approval-detail/index.ts";
+import {
+  buildLiveConsentApprovalDetail,
+  buildOwnerDeviceApprovalDetail,
+} from "../operations/ref-approval-detail/index.ts";
 import {
   CONNECTOR_SUMMARY_PAGE_LIMIT_MAX,
   type ConnectorIdentityPageBoundary,
