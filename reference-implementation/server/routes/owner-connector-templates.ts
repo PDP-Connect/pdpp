@@ -343,7 +343,7 @@ function projectTemplate(
   const listing = manifest.capabilities?.public_listing;
   const isUnproven = listing?.tier === "preview";
   const isDevelopment = listing?.tier === "development";
-  const isAllowlisted = ctx.uatConnectorAllowlist && ctx.uatConnectorAllowlist.has(connectorKey);
+  const isAllowlisted = ctx.uatConnectorAllowlist?.has(connectorKey) === true;
 
   const uatExposeUnlistedConnectors =
     ctx.uatExposeUnlistedConnectors === true &&
