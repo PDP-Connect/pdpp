@@ -95,4 +95,4 @@ verification over a uniform requirement.
 - Session 3 on 20 August will cover the grant and the resource server
   interface, Sections 7–8 of the core specification.
 
-Recording link to follow.
+[Watch the Session 2 recording](https://www.youtube.com/watch?v=V_EkmK-7b9c).
