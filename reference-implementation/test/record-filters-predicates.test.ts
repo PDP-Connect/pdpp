@@ -14,7 +14,7 @@
  * malformed record JSON.
  *
  * The boundary assertions are the point: `gte` is inclusive, `gt`
- * exclusive, `lte` inclusive, `lt` exclusive; `time_range.since` is
+ * exclusive, `lte` inclusive, `lt` exclusive; `time_constraint.since` is
  * inclusive, `until` exclusive. Off-by-one mutants (`<` vs `<=`) flip
  * exactly one of these and turn red here.
  */
@@ -180,8 +180,11 @@ test("passesGrantRecordConstraints: resources allowlist gates by record key, the
   assert.equal(passesGrantRecordConstraints({}, "k1", grant, stream), true);
   assert.equal(passesGrantRecordConstraints({}, "k9", grant, stream), false);
 
-  // Allowed key still subject to the grant time_range.
-  const timed = { resources: ["k1"], time_range: { since: "2026-02-01T00:00:00Z" } };
+  // Allowed key still subject to the frozen grant time_constraint.
+  const timed = {
+    resources: ["k1"],
+    time_constraint: { field: "occurred_at", since: "2026-02-01T00:00:00Z" },
+  };
   assert.equal(
     passesGrantRecordConstraints({ occurred_at: "2026-01-01T00:00:00Z" }, "k1", timed, stream),
     false,
@@ -190,13 +193,13 @@ test("passesGrantRecordConstraints: resources allowlist gates by record key, the
   assert.equal(passesGrantRecordConstraints({ occurred_at: "2026-03-01T00:00:00Z" }, "k1", timed, stream), true);
 });
 
-test("hasGrantRecordConstraints / needsCandidateRecordScan: detect time_range, non-empty resources, or filters", () => {
+test("hasGrantRecordConstraints / needsCandidateRecordScan: detect time_constraint, resources, or filters", () => {
   assert.equal(hasGrantRecordConstraints(null), false);
   assert.equal(hasGrantRecordConstraints({}), false);
   // Empty resources array is NOT a constraint.
   assert.equal(hasGrantRecordConstraints({ resources: [] }), false);
   assert.equal(hasGrantRecordConstraints({ resources: ["k1"] }), true);
-  assert.equal(hasGrantRecordConstraints({ time_range: { since: "x" } }), true);
+  assert.equal(hasGrantRecordConstraints({ time_constraint: { field: "ts", since: "2026-01-01T00:00:00Z" } }), true);
 
   // needsCandidateRecordScan: true if any compiled filters OR grant constraints.
   assert.equal(needsCandidateRecordScan({}, []), false);

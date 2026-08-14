@@ -14,9 +14,10 @@
  *   - `disclosure.served`-shaped data is populated from the result counts;
  *   - owner manifest visibility raises `not_found`;
  *   - view/fields mutual exclusion raises `invalid_request`;
- *   - view → fields resolution sets `requestParams.fields` and clears
+ *   - client grants reject absent streams with `grant_stream_not_allowed`;
+ *   - owner view → fields resolution sets `requestParams.fields` and clears
  *     `requestParams.view`;
- *   - a view referencing ungranted fields raises `field_not_granted`;
+ *   - client views are rejected without consulting current definitions;
  *   - `decorateRecord` is applied to every returned record;
  *   - `validateRequestFields` is called with the resolved manifest stream.
  *
@@ -34,6 +35,9 @@ import {
   type RecordsListManifestStream,
   RecordsListVisibilityError,
 } from "../operations/rs-records-list/index.ts";
+
+const TOP_LEVEL_REGEX_1 = /Stream 'gone' not in grant/;
+const TOP_LEVEL_REGEX_2 = /must use explicit fields/;
 
 const ownerActor: RecordsListActor = { kind: "owner", subject_id: "subj_1" };
 const clientActor: RecordsListActor = {
@@ -117,22 +121,27 @@ test("rs.records.list throws not_found for owner when the manifest does not incl
   );
 });
 
-test("rs.records.list does not 404 on missing manifest stream for client actors", async () => {
-  // Client actors rely on the underlying `queryRecords` capability for
-  // grant-shape rejection (the previous native route delegated to
-  // `queryRecords` for that branch). The operation must not 404.
+test("rs.records.list rejects client streams that are absent from the grant before querying records", async () => {
   let called = false;
-  await executeRecordsList(
-    { actor: clientActor, requestParams: {}, streamName: "gone" },
-    makeDeps({
-      getManifest: () => ({ streams: [] }),
-      queryRecords: () => {
-        called = true;
-        return Promise.resolve({ data: [], has_more: false, object: "list" });
-      },
-    })
+  await assert.rejects(
+    () =>
+      executeRecordsList(
+        { actor: clientActor, requestParams: {}, streamName: "gone" },
+        makeDeps({
+          queryRecords: () => {
+            called = true;
+            return Promise.resolve({ data: [], has_more: false, object: "list" });
+          },
+        })
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsListVisibilityError);
+      assert.equal(err.code, "grant_stream_not_allowed");
+      assert.match(err.message, TOP_LEVEL_REGEX_1);
+      return true;
+    }
   );
-  assert.equal(called, true);
+  assert.equal(called, false);
 });
 
 test("rs.records.list rejects when both view and fields are present", async () => {
@@ -179,7 +188,8 @@ test("rs.records.list resolves a view by id, sets fields, and removes view from 
   assert.equal("view" in observedParams, false);
 });
 
-test("rs.records.list raises field_not_granted when the view names ungranted fields", async () => {
+test("rs.records.list rejects client views without consulting their current definition", async () => {
+  let queried = false;
   await assert.rejects(
     () =>
       executeRecordsList(
@@ -193,14 +203,29 @@ test("rs.records.list raises field_not_granted when the view names ungranted fie
           getGrant: () => ({
             streams: [{ fields: ["net_pay_minor", "employer"], name: "pay_statements" }],
           }),
+          getManifest: () =>
+            Promise.resolve({
+              streams: [
+                {
+                  name: "pay_statements",
+                  views: [{ fields: ["newly_added_secret"], id: "unauthorized" }],
+                },
+              ],
+            }),
+          queryRecords: () => {
+            queried = true;
+            return Promise.resolve({ data: [], has_more: false, object: "list" });
+          },
         })
       ),
     (err) => {
       assert.ok(err instanceof RecordsListVisibilityError);
-      assert.equal(err.code, "field_not_granted");
+      assert.equal(err.code, "invalid_request");
+      assert.match(err.message, TOP_LEVEL_REGEX_2);
       return true;
     }
   );
+  assert.equal(queried, false);
 });
 
 test("rs.records.list raises invalid_request when the view id is unknown", async () => {

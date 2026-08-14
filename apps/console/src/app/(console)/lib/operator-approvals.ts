@@ -13,6 +13,7 @@
  */
 import { describeError } from "./describe-error.ts";
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
+import { requireOneClickConsentApproval } from "./pending-consent-review.ts";
 
 function asForm(body: Record<string, string>): string {
   return new URLSearchParams(body).toString();
@@ -24,6 +25,37 @@ function readBody(res: Response): Promise<unknown> {
     return res.json();
   }
   return res.text();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function readConsentReview(
+  body: unknown,
+  expectedRequestUri?: string
+): { approvalReview: Record<string, unknown>; batch: boolean; requestUri: string; revision: string } {
+  if (!isRecord(body)) {
+    throw new Error("consent review returned a non-object response");
+  }
+  if (!isRecord(body.approval_review)) {
+    throw new Error("consent review returned without the exact approval artifact");
+  }
+  if (typeof body.approval_review_revision !== "string" || !body.approval_review_revision) {
+    throw new Error("consent review returned without approval_review_revision");
+  }
+  if (typeof body.request_uri !== "string" || !body.request_uri) {
+    throw new Error("consent review returned without canonical request_uri");
+  }
+  if (expectedRequestUri && body.request_uri !== expectedRequestUri) {
+    throw new Error("consent review returned a different request_uri");
+  }
+  return {
+    approvalReview: body.approval_review,
+    batch: body.batch === true,
+    requestUri: body.request_uri,
+    revision: body.approval_review_revision,
+  };
 }
 
 async function fetchAs(path: string, init: RequestInit): Promise<Response> {
@@ -51,12 +83,24 @@ async function fetchAs(path: string, init: RequestInit): Promise<Response> {
  * which projects only the opaque `approval_id`.
  */
 export async function approveConsentRequest(requestUri: string, subjectId = "owner_local") {
+  const reviewResponse = await fetchAs("/consent/review", {
+    body: JSON.stringify({ request_uri: requestUri, subject_id: subjectId }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const reviewBody = await readBody(reviewResponse);
+  if (!reviewResponse.ok) {
+    throw new Error(describeError(reviewBody, `consent review failed (${reviewResponse.status})`));
+  }
+  const review = readConsentReview(reviewBody, requestUri);
+  requireOneClickConsentApproval(review);
+
   const response = await fetchAs("/consent/approve", {
     body: JSON.stringify({
-      request_uri: requestUri,
-      subject_id: subjectId,
+      approval_review_revision: review.revision,
+      request_uri: review.requestUri,
     }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   const body = await readBody(response);
@@ -84,6 +128,8 @@ export async function denyConsentRequest(requestUri: string) {
 export async function approvePendingApproval(input: {
   kind: "consent" | "owner_device";
   approvalId: string;
+  approvalReviewRevision?: string;
+  requestUri?: string;
   userCode?: string | null;
   subjectId?: string;
 }) {
@@ -93,12 +139,15 @@ export async function approvePendingApproval(input: {
   const subjectId = input.subjectId || "owner_local";
 
   if (input.kind === "consent") {
+    if (!(input.requestUri && input.approvalReviewRevision)) {
+      throw new Error("consent approval requires reviewed request_uri and approval_review_revision");
+    }
     const response = await fetchAs("/consent/approve", {
       body: JSON.stringify({
-        approval_id: input.approvalId,
-        subject_id: subjectId,
+        approval_review_revision: input.approvalReviewRevision,
+        request_uri: input.requestUri,
       }),
-      headers: { "Content-Type": "application/json" },
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
       method: "POST",
     });
     const body = await readBody(response);

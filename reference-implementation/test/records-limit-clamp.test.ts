@@ -86,6 +86,7 @@ const manifest = {
   capabilities: { human_interaction: [] },
   connector_id: CONNECTOR_ID,
   display_name: "Limit-clamp Test Connector",
+  manifest_uri: `https://sources.example/${CONNECTOR_ID}`,
   protocol_version: "0.1.0",
   streams: [
     {
@@ -101,6 +102,8 @@ const manifest = {
         required: ["id", "subject", "received_at"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",
@@ -293,6 +296,7 @@ test("multi-connection fan-in surfaces a single deduplicated limit_clamped warni
   // warning), not one per connection.
   await withDualConnectionDb(80, async () => {
     const { bindings } = await resolveFanInBindings({
+      authorizedInstanceIds: [INSTANCE_A, INSTANCE_B],
       connectorId: CONNECTOR_ID,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
     });

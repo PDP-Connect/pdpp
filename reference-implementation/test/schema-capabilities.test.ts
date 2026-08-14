@@ -129,8 +129,8 @@ test("buildFieldCapabilities applies field_not_granted when the grant omits a fi
   const priority = field(caps, "priority");
   assert.equal(subject.granted, true);
   assert.equal(sentAt.granted, false);
-  assert.equal((sentAt.exact_filter as Record<string, unknown>).usable, false);
-  assert.equal((sentAt.range_filter as Record<string, unknown>).reason, "field_not_granted");
+  assert.equal(sentAt.exact_filter, undefined);
+  assert.equal(sentAt.range_filter, undefined);
   const priorityAggregation = priority.aggregation as Record<string, Record<string, unknown> | undefined>;
   assert.equal(priorityAggregation.sum?.usable, false);
   assert.equal(priorityAggregation.sum?.reason, "field_not_granted");

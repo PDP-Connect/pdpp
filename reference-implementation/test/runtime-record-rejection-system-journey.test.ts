@@ -141,11 +141,25 @@ function streamSchema() {
 function manifest(connectorId: string) {
   return {
     connector_id: connectorId,
+    connector_key: connectorId,
     display_name: "Runtime Record Rejection Journey Test Connector",
+    manifest_uri: `https://registry.pdpp.dev/connectors/${connectorId}`,
     protocol_version: "0.1.0",
-    streams: [{ name: "items", primary_key: ["id"], schema: streamSchema(), semantics: "append_only" }],
+    streams: [
+      {
+        name: "items",
+        primary_key: ["id"],
+        schema: streamSchema(),
+        selection: { fields: true, resources: true },
+        semantics: "append_only",
+      },
+    ],
     version: "1.0.0",
   };
+}
+
+function runtimeManifest(connectorId: string): Parameters<typeof runConnector>[0]["manifest"] {
+  return manifest(connectorId) as Parameters<typeof runConnector>[0]["manifest"];
 }
 
 function createTestConnector(messages: readonly Record<string, unknown>[]) {
@@ -590,7 +604,7 @@ test("runtime/server SQLite journey durably receipts invalid identity rejections
         connectorId,
         connectorInstanceId,
         connectorPath,
-        manifest: manifest(connectorId),
+        manifest: runtimeManifest(connectorId),
         onInteraction: async () => ({}),
         onProgress: (message) => progress.push(message),
         ownerToken,
@@ -1019,7 +1033,7 @@ test("runtime/server SQLite response loss replays the same durable rejection rec
             connectorId,
             connectorInstanceId,
             connectorPath: firstAttempt.connectorPath,
-            manifest: manifest(connectorId),
+            manifest: runtimeManifest(connectorId),
             onInteraction: async () => ({}),
             onProgress: (message) => firstProgress.push(message),
             ownerToken,
@@ -1093,7 +1107,7 @@ test("runtime/server SQLite response loss replays the same durable rejection rec
         connectorId,
         connectorInstanceId,
         connectorPath: secondAttempt.connectorPath,
-        manifest: manifest(connectorId),
+        manifest: runtimeManifest(connectorId),
         onInteraction: async () => ({}),
         onProgress: (message) => secondProgress.push(message),
         ownerToken,
@@ -1284,7 +1298,7 @@ test("runtime cancellation after a committed rejection response preserves the re
         connectorId,
         connectorInstanceId,
         connectorPath,
-        manifest: manifest(connectorId),
+        manifest: runtimeManifest(connectorId),
         onInteraction: async () => ({}),
         onProgress: (message) => progress.push(message),
         ownerToken,

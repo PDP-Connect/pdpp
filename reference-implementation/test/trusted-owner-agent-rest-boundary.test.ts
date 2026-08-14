@@ -6,9 +6,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { registerConnector as registerConnectorCatalog } from "../server/auth.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
 import { ingestRecord } from "../server/records.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -126,9 +129,14 @@ async function registerConnector(asUrl: string, manifest: ConnectorManifest): Pr
 }
 
 interface NorthstarManifest {
-  connector_id: string;
+  name: string;
+  source_declaration: {
+    protocol_version: string;
+    streams: { name: string }[];
+    [key: string]: unknown;
+  };
   storage_binding: { connector_id: string };
-  streams: { name: string }[];
+  version: string;
   [key: string]: unknown;
 }
 
@@ -162,20 +170,49 @@ interface BlobUploadBody {
   blob_id: string;
 }
 
-async function seedNorthstar(nativeManifest: NorthstarManifest): Promise<void> {
-  await ingestRecord(nativeManifest.storage_binding.connector_id, {
-    data: {
-      currency: "USD",
-      employee_id: "emp_123",
-      employer: "Northstar HR",
-      gross_pay: 5400,
-      net_pay: 3912,
-      statement_id: "ps_owner_agent_1",
+async function seedNorthstar(nativeManifest: NorthstarManifest, ownerSubjectId: string): Promise<void> {
+  const connectorId = nativeManifest.storage_binding.connector_id;
+  const connectorInstanceId = makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId);
+  const now = new Date().toISOString();
+  await registerConnectorCatalog(
+    {
+      connector_id: connectorId,
+      display_name: nativeManifest.name,
+      protocol_version: nativeManifest.source_declaration.protocol_version,
+      source_declaration: nativeManifest.source_declaration,
+      streams: nativeManifest.source_declaration.streams,
+      version: nativeManifest.version,
     },
-    emitted_at: "2026-05-31T00:00:00Z",
-    key: "ps_owner_agent_1",
-    stream: "pay_statements",
+    { backfillRetrievalIndexes: false }
+  );
+  await createRequestConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: "Northstar HR",
+    ownerSubjectId,
+    sourceBinding: { fixture: "trusted-owner-agent-rest-boundary" },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
   });
+  await ingestRecord(
+    { connector_id: connectorId, connector_instance_id: connectorInstanceId },
+    {
+      data: {
+        currency: "USD",
+        employee_id: "emp_123",
+        employer: "Northstar HR",
+        gross_pay: 5400,
+        net_pay: 3912,
+        statement_id: "ps_owner_agent_1",
+      },
+      emitted_at: "2026-05-31T00:00:00Z",
+      key: "ps_owner_agent_1",
+      stream: "pay_statements",
+    }
+  );
 }
 
 test("trusted owner-agent bearer reaches owner-visible REST discovery and read surfaces", async () => {
@@ -191,28 +228,29 @@ test("trusted owner-agent bearer reaches owner-visible REST discovery and read s
   const rsUrl = `http://localhost:${server.rsPort}`;
 
   try {
-    await seedNorthstar(nativeManifest);
-    const ownerToken = await issueOwnerToken(asUrl, "employee_1");
+    const ownerSubjectId = "employee_1";
+    await seedNorthstar(nativeManifest, ownerSubjectId);
+    const ownerToken = await issueOwnerToken(asUrl, ownerSubjectId);
     const authHeaders = { Authorization: `Bearer ${ownerToken}` };
 
     const schema = await fetchJson(`${rsUrl}/v1/schema`, { headers: authHeaders });
     assert.equal(schema.status, 200);
 
     const streams = await fetchJson<StreamListBody>(`${rsUrl}/v1/streams`, { headers: authHeaders });
-    assert.equal(streams.status, 200);
+    assert.equal(streams.status, 200, JSON.stringify(streams.body));
     assert.ok(streams.body.data.some((stream) => stream.name === "pay_statements"));
 
     const streamMetadata = await fetchJson(`${rsUrl}/v1/streams/pay_statements`, { headers: authHeaders });
-    assert.equal(streamMetadata.status, 200);
+    assert.equal(streamMetadata.status, 200, JSON.stringify(streamMetadata.body));
 
     const records = await fetchJson<RecordListBody>(`${rsUrl}/v1/streams/pay_statements/records?limit=1`, {
       headers: authHeaders,
     });
-    assert.equal(records.status, 200);
+    assert.equal(records.status, 200, JSON.stringify(records.body));
     assert.equal(records.body.data?.[0]?.id, "ps_owner_agent_1");
 
     const search = await fetchJson(`${rsUrl}/v1/search?q=Northstar&limit=1`, { headers: authHeaders });
-    assert.equal(search.status, 200);
+    assert.equal(search.status, 200, JSON.stringify(search.body));
   } finally {
     await closeServer(server);
   }

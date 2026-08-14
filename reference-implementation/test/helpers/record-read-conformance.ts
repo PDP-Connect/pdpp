@@ -134,6 +134,9 @@ export const CONFORMANCE_NULLABLE_CURSOR_STREAM = "budgets";
 export const CONFORMANCE_MANIFEST = {
   connector_id: CONFORMANCE_CONNECTOR_ID,
   display_name: "Record Read Conformance",
+  // `connector_id` is the private storage key.  SourceDeclaration requires
+  // the public authorization identity to be an absolute URI.
+  manifest_uri: `https://sources.example/${CONFORMANCE_CONNECTOR_ID}`,
   protocol_version: "0.1.0",
   runtime_requirements: { bindings: { network: { required: true } } },
   streams: [

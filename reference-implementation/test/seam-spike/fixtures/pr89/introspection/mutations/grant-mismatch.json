@@ -1,0 +1,6 @@
+{
+  "kind": "response",
+  "path": "pdpp.grant_id",
+  "value": "wrong-grant",
+  "expected": "context.grant_mismatch"
+}

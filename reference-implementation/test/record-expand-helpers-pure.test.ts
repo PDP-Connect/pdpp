@@ -12,11 +12,8 @@
 //                                the identity guard's field list.
 //   - parseIntegerValue        — strict integer coercion for numeric query
 //                                params (whitespace/sign/non-numeric rules).
-//   - SAFE_JSON_FIELD /
-//     assertSafeJsonField      — the SQL-injection guard that lets a backend
-//                                interpolate only `$.<field>` identifiers into
-//                                SQL. This is a security boundary; a loosened
-//                                regex must fail loudly here.
+//   - assertNonEmptyJsonField preserves arbitrary literal top-level JSON
+//                                keys so a backend can quote or bind them.
 //   - invalidQueryError        — the typed query-error factory + default code.
 //
 // These do not touch grant/scope logic; assertions observe behavior only.
@@ -25,16 +22,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  assertSafeJsonField,
+  assertNonEmptyJsonField,
   invalidQueryError,
   normalizePrimaryKey,
   parseIntegerValue,
-  SAFE_JSON_FIELD,
 } from "../server/record-expand-helpers.ts";
 
 interface QueryError extends Error {
   code?: string;
 }
+
+const NON_EMPTY_STRING_ERROR = /non-empty string/;
 
 function isQueryError(value: unknown): value is QueryError {
   return value instanceof Error;
@@ -108,61 +106,17 @@ test("parseIntegerValue rejects non-string, non-number inputs", () => {
   }
 });
 
-// ─── SAFE_JSON_FIELD / assertSafeJsonField (SQL-injection guard) ─────────────
+// ─── assertNonEmptyJsonField ────────────────────────────────────────────────
 
-test("SAFE_JSON_FIELD accepts plain identifiers only", () => {
-  for (const ok of ["id", "created_at", "_private", "A1", "field_9", "__x__"]) {
-    assert.ok(SAFE_JSON_FIELD.test(ok), `${ok} should be a safe field`);
+test("assertNonEmptyJsonField accepts arbitrary literal keys", () => {
+  for (const field of ["created_at", "1field", "a.b", "a-b", 'a"b', "a'b", "時刻"]) {
+    assert.doesNotThrow(() => assertNonEmptyJsonField(field, "cursor_field"));
   }
 });
 
-test("SAFE_JSON_FIELD rejects anything that could break out of a $.<field> path", () => {
-  // Leading digit, dots, quotes, brackets, whitespace, SQL/path metacharacters,
-  // and empty string must all be rejected so they can never be interpolated.
-  for (const bad of [
-    "",
-    "1field",
-    "a.b",
-    "a b",
-    "a-b",
-    'a"b',
-    "a'b",
-    "a;b",
-    "a)b",
-    "a]b",
-    "a$b",
-    "a\nb",
-    "'; DROP TABLE records; --",
-    "field ", // trailing space
-    " field", // leading space
-    "weird.key",
-  ]) {
-    assert.equal(SAFE_JSON_FIELD.test(bad), false, `${JSON.stringify(bad)} must be rejected`);
-  }
-});
-
-test("assertSafeJsonField is a no-op for a safe field and throws for an unsafe one", () => {
-  assert.doesNotThrow(() => assertSafeJsonField("created_at", "cursor_field"));
-
-  // biome-ignore lint/suspicious/noEvolvingTypes: the accumulator intentionally represents heterogeneous fixture observations.
-  // biome-ignore lint/suspicious/noImplicitAnyLet: the test initializes the value from runtime fixture state before its stable type is known.
-  let caught;
-  try {
-    assertSafeJsonField("a'; DROP TABLE records; --", "cursor_field");
-  } catch (e) {
-    caught = e;
-  }
-  assert.ok(caught instanceof Error, "an unsafe field throws");
-  // The label and the offending value are surfaced (JSON-stringified) so the
-  // failure is diagnosable without leaking a raw value into SQL.
-  // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
-  assert.match(caught.message, /Unsafe JSON field cursor_field/);
-  // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
-  assert.match(caught.message, /DROP TABLE/);
-});
-
-test("assertSafeJsonField throws for a non-string field", () => {
+test("assertNonEmptyJsonField rejects empty and non-string values", () => {
+  assert.throws(() => assertNonEmptyJsonField("", "field"), NON_EMPTY_STRING_ERROR);
   for (const bad of [null, undefined, 42, {}, ["id"]]) {
-    assert.throws(() => assertSafeJsonField(bad, "field"), Error);
+    assert.throws(() => assertNonEmptyJsonField(bad, "field"), Error);
   }
 });

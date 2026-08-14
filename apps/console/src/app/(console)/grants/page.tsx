@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { buttonVariants, IcButton, IcTimestamp } from "@pdpp/brand-react";
+import { buttonVariants, IcTimestamp } from "@pdpp/brand-react";
 import { formatSourceForDisplay, grantRowLabel } from "@pdpp/display";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
@@ -19,7 +19,9 @@ import {
   listPendingApprovals,
   type PendingApproval,
 } from "../lib/ref-client.ts";
-import { approvePendingApprovalAction, denyPendingApprovalAction } from "./pending-actions.ts";
+import { clientCaption } from "./client-caption.ts";
+import { denyPendingApprovalAction } from "./pending-actions.ts";
+import { PendingApprovalRow } from "./pending-approval-row.tsx";
 
 export const dynamic = "force-dynamic";
 
@@ -43,37 +45,6 @@ function listHref(params: Params, overrides: Partial<Params> = {}): string {
     )
     .join("&");
   return qs ? `/grants?${qs}` : "/grants";
-}
-
-const TECHNICAL_CLIENT_ID_RE = /^cli_[a-z0-9]+$/i;
-const WWW_PREFIX_RE = /^www\./;
-
-function looksLikeTechnicalClientId(value: string): boolean {
-  return TECHNICAL_CLIENT_ID_RE.test(value);
-}
-
-function clientOriginCaption(value: string): string | null {
-  try {
-    const url = new URL(value);
-    const host = url.hostname.replace(WWW_PREFIX_RE, "");
-    return host ? `client ${host}` : null;
-  } catch {
-    return null;
-  }
-}
-
-function grantClientCaption(grant: GrantSummary): string | null {
-  const name = grant.client?.client_name?.trim();
-  if (name) {
-    return `client ${name}`;
-  }
-  const clientId = grant.client_id?.trim();
-  if (!clientId) {
-    return null;
-  }
-  return (
-    clientOriginCaption(clientId) ?? (looksLikeTechnicalClientId(clientId) ? "registered client" : `client ${clientId}`)
-  );
 }
 
 export default async function GrantsPage({ searchParams }: { searchParams: Promise<Params> }) {
@@ -141,7 +112,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
           <DataList>
             {approvals.data.map((approval) => (
               <li key={approval.approval_id}>
-                <PendingApprovalRow approval={approval} />
+                <PendingApprovalRow approval={approval} denyAction={denyPendingApprovalAction} />
               </li>
             ))}
           </DataList>
@@ -205,44 +176,6 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
   );
 }
 
-function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
-  const previewStreams = Array.isArray(approval.grant_preview?.streams)
-    ? approval.grant_preview.streams.flatMap((stream) => {
-        const name = typeof stream === "string" ? stream : stream?.name || "";
-        return name ? [name] : [];
-      })
-    : [];
-
-  return (
-    <div className="grid gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-baseline gap-2">
-          <code className="pdpp-caption break-all font-medium font-mono text-foreground">{approval.approval_id}</code>
-          <span className="pdpp-caption text-muted-foreground">
-            <IcTimestamp value={approval.created_at} />
-          </span>
-          <StatusBadge status={approval.kind} />
-        </div>
-        <div className="pdpp-caption mt-1 break-words text-muted-foreground">
-          client {approval.client_id ?? "—"}
-          {approval.grant_preview?.source ? ` · source ${formatSourceForDisplay(approval.grant_preview.source)}` : ""}
-          {previewStreams.length ? ` · streams ${previewStreams.join(", ")}` : ""}
-        </div>
-      </div>
-      <form className="flex flex-wrap gap-2">
-        <input name="kind" type="hidden" value={approval.kind} />
-        <input name="approval_id" type="hidden" value={approval.approval_id} />
-        <IcButton formAction={approvePendingApprovalAction} size="sm" type="submit">
-          Approve
-        </IcButton>
-        <IcButton formAction={denyPendingApprovalAction} size="sm" type="submit" variant="destructive">
-          Deny
-        </IcButton>
-      </form>
-    </div>
-  );
-}
-
 function GrantRow({
   grant,
   href,
@@ -255,7 +188,7 @@ function GrantRow({
   peeked: boolean;
 }) {
   const packageHref = grant.grant_package_id ? `/grants/packages/${encodeURIComponent(grant.grant_package_id)}` : null;
-  const clientCaption = grantClientCaption(grant);
+  const clientCaptionText = clientCaption(grant);
 
   // Shared row content rendered inside both the mobile and desktop links.
   const rowContent = (
@@ -266,12 +199,12 @@ function GrantRow({
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="truncate font-medium text-foreground">{grantRowLabel(grant)}</span>
           <StatusBadge status={grant.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
-          {clientCaption ? (
+          {clientCaptionText ? (
             <span
               className="pdpp-caption max-w-[20ch] truncate text-muted-foreground"
               title={grant.client_id ?? undefined}
             >
-              {clientCaption}
+              {clientCaptionText}
             </span>
           ) : null}
         </div>

@@ -137,7 +137,12 @@ async function issueOwnerToken(asUrl: string, subjectId = OWNER_SUBJECT_ID): Pro
 
 // PAR + consent yields a grant-scoped client-kind bearer (pdpp_token_kind:
 // "client"). These must NOT reach the owner-agent control surface.
-async function approveClientGrant(asUrl: string, connectorId: string, streamName: string): Promise<string> {
+async function approveClientGrant(
+  asUrl: string,
+  sourceId: string,
+  streamName: string,
+  instanceId: string
+): Promise<string> {
   const par = (
     await fetchJson(`${asUrl}/oauth/par`, {
       body: JSON.stringify({
@@ -146,8 +151,8 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
             access_mode: "continuous",
             purpose_code: "https://pdpp.dev/purpose/analytics",
             purpose_description: "owner-connection intent boundary test",
-            source: { id: connectorId, kind: "connector" },
-            streams: [{ fields: ["id"], name: streamName }],
+            source: { id: sourceId, kind: "connector" },
+            streams: [{ fields: ["id"], instance_ids: [instanceId], name: streamName }],
             type: "https://pdpp.dev/data-access",
           },
         ],
@@ -157,10 +162,24 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
       method: "POST",
     })
   ).body as { request_uri?: string };
+  assert.ok(par.request_uri);
+  const review = (
+    await fetchJson(`${asUrl}/consent/review`, {
+      body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    })
+  ).body as { approval_review?: object; approval_review_revision?: string; request_uri?: string };
+  assert.ok(review.approval_review);
+  assert.ok(review.approval_review_revision);
+  assert.equal(review.request_uri, par.request_uri);
   const approved = (
     await fetchJson(`${asUrl}/consent/approve`, {
-      body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
-      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        approval_review_revision: review.approval_review_revision,
+        request_uri: review.request_uri,
+      }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
       method: "POST",
     })
   ).body as { token?: string };
@@ -261,14 +280,39 @@ function loadPackageManifest(name: string): PackageManifest {
   ) as PackageManifest;
 }
 
+function withExplicitTestSourceDeclaration(manifest: PackageManifest): PackageManifest {
+  if (manifest.source_declaration && typeof manifest.source_declaration === "object") {
+    return manifest;
+  }
+  const connectorKey = canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id;
+  const streams = Array.isArray(manifest.streams)
+    ? manifest.streams.map((stream) => ({
+        ...stream,
+        ...(stream.semantics === "append" ? { semantics: "append_only" } : {}),
+      }))
+    : [];
+  return {
+    ...manifest,
+    source_declaration: {
+      declaration_version: `owner-connection-intent-test:${connectorKey}:v1`,
+      display: { name: typeof manifest.display_name === "string" ? manifest.display_name : connectorKey },
+      protocol_version: manifest.protocol_version,
+      publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
+      source: { id: `https://sources.example/connectors/${encodeURIComponent(connectorKey)}`, kind: "connector" },
+      streams,
+    },
+  };
+}
+
 async function registerConnector(asUrl: string, manifest: PackageManifest): Promise<PackageManifest> {
+  const registeredManifest = withExplicitTestSourceDeclaration(manifest);
   const resp = await fetch(`${asUrl}/connectors`, {
-    body: JSON.stringify(manifest),
+    body: JSON.stringify(registeredManifest),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
   const text = await resp.text();
-  assert.equal(resp.status, 201, `register ${manifest.connector_id} failed: ${resp.status} ${text}`);
+  assert.equal(resp.status, 201, `register ${registeredManifest.connector_id} failed: ${resp.status} ${text}`);
   return manifest;
 }
 
@@ -864,8 +908,14 @@ test("owner-agent intent rejects a client grant token with 403 and audits the fa
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
+    await seedInstance({
+      connectorId: "codex",
+      connectorInstanceId: "cin_codex_client_auth",
+      displayName: "Codex auth fixture",
+      sourceBindingKey: "the owner@example.com",
+    });
     const streamName = manifest.streams?.[0]?.name || "sessions";
-    const clientToken = await approveClientGrant(asUrl, "codex", streamName);
+    const clientToken = await approveClientGrant(asUrl, manifest.connector_id, streamName, "cin_codex_client_auth");
 
     const { status, body: rawBody, resp } = await createIntent(rsUrl, clientToken, { connector_id: "codex" });
     const body = rawBody as IntentResponseBody;

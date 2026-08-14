@@ -125,18 +125,31 @@ rl.on('line', (line) => {
 // the exact shape of a private/default (not catalog-browsable) connector,
 // which is what exposed the regression: catalog-visibility gating has no
 // legitimate role in an owner-addressed detail lookup.
+const UNLISTED_CONNECTOR_KEY = "detail-default-account-unlisted";
+const UNLISTED_SOURCE_ID = `https://sources.example/connectors/${UNLISTED_CONNECTOR_KEY}`;
+const UNLISTED_STREAMS = [
+  {
+    name: "items",
+    primary_key: ["id"],
+    schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+    semantics: "append_only",
+  },
+];
 const UNLISTED_MANIFEST = {
-  connector_id: "detail-default-account-unlisted",
+  // The short connector_id is the local storage key; the Core SourceDeclaration
+  // carries the connector's stable public source identity separately.
+  connector_id: UNLISTED_CONNECTOR_KEY,
   display_name: "Unlisted Default-Account Connector",
   protocol_version: "0.1.0",
-  streams: [
-    {
-      name: "items",
-      primary_key: ["id"],
-      schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
-      semantics: "append_only",
-    },
-  ],
+  source_declaration: {
+    declaration_version: "connector-detail-default-account-v1",
+    display: { name: "Unlisted Default-Account Connector" },
+    protocol_version: "0.1.0",
+    publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
+    source: { id: UNLISTED_SOURCE_ID, kind: "connector" },
+    streams: UNLISTED_STREAMS,
+  },
+  streams: UNLISTED_STREAMS,
   version: "1.0.0",
 };
 
@@ -185,11 +198,12 @@ test("a no-explicit-instance ingest run against an unlisted connector resolves t
   const { asPort, rsPort } = server;
   const asUrl = `http://localhost:${asPort}`;
 
-  await fetchJson(`${asUrl}/connectors`, {
+  const registration = await fetchJson(`${asUrl}/connectors`, {
     body: JSON.stringify(UNLISTED_MANIFEST),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
+  assert.equal(registration.status, 201, "register connector fixture");
   // The owner-dashboard read surface (`getConnectorDetail`) is hardcoded to
   // REFERENCE_OWNER_SUBJECT_ID/OWNER_AUTH_DEFAULT_SUBJECT_ID ('owner_local')
   // — a real, intentional single-owner security boundary. A run's owner
@@ -256,11 +270,12 @@ test("a connector with zero real connections still resolves to the typed unresol
   const { asPort } = server;
   const asUrl = `http://localhost:${asPort}`;
 
-  await fetchJson(`${asUrl}/connectors`, {
+  const registration = await fetchJson(`${asUrl}/connectors`, {
     body: JSON.stringify(UNLISTED_MANIFEST),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
+  assert.equal(registration.status, 201, "register connector fixture");
   const connectorId = UNLISTED_MANIFEST.connector_id;
 
   try {

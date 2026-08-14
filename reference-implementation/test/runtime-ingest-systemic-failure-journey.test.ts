@@ -45,7 +45,9 @@ async function fetchJson(url: string, init?: RequestInit): Promise<{ body: unkno
 function manifest(connectorId: string) {
   return {
     connector_id: connectorId,
+    connector_key: connectorId,
     display_name: "Runtime systemic failure journey",
+    manifest_uri: `https://registry.pdpp.dev/connectors/${connectorId}`,
     protocol_version: "0.1.0",
     streams: [
       {
@@ -56,18 +58,25 @@ function manifest(connectorId: string) {
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
+        semantics: "mutable_state",
       },
     ],
     version: "1.0.0",
   };
 }
 
+function runtimeManifest(connectorId: string): Parameters<typeof runConnector>[0]["manifest"] {
+  return manifest(connectorId) as Parameters<typeof runConnector>[0]["manifest"];
+}
+
 async function registerManifest(asUrl: string, connectorManifest: Record<string, unknown>): Promise<void> {
-  await fetchJson(`${asUrl}/connectors`, {
+  const response = await fetchJson(`${asUrl}/connectors`, {
     body: JSON.stringify(connectorManifest),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
+  assert.equal(response.status, 201, JSON.stringify(response.body));
 }
 
 async function issueOwnerToken(asUrl: string): Promise<string> {
@@ -151,7 +160,7 @@ test("runtime journey: non-ok systemic ingest fails the run and does not commit 
           connectorId,
           connectorInstanceId: admitted.connectorInstanceId,
           connectorPath: connector.connectorPath,
-          manifest: manifest(connectorId),
+          manifest: runtimeManifest(connectorId),
           onInteraction: async () => ({}),
           ownerToken,
           persistState: true,

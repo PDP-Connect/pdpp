@@ -23,6 +23,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { startServer } from "../server/index.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = "pdpp-reference-test-initial-access-token";
 
@@ -70,7 +71,24 @@ async function closeServer(server: StartedServer): Promise<void> {
 // overlapping candidates, and `comments` differs between the two (declares
 // both extensions but with different field sets) so source-specific hits
 // exercise lexical-only and semantic-only provenance paths.
-const MANIFEST_A = {
+function withCoreSourceDeclaration<
+  T extends { connector_id: string; display_name: string; protocol_version: string; streams: unknown[] },
+>(manifest: T) {
+  return {
+    ...manifest,
+    manifest_uri: `https://implementations.example/connectors/${manifest.connector_id}`,
+    source_declaration: {
+      declaration_version: `${manifest.connector_id}-declaration-v1`,
+      display: { name: manifest.display_name },
+      protocol_version: manifest.protocol_version,
+      publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
+      source: { id: `https://registry.pdpp.dev/connectors/${manifest.connector_id}`, kind: "connector" },
+      streams: manifest.streams,
+    },
+  };
+}
+
+const MANIFEST_A = withCoreSourceDeclaration({
   capabilities: { human_interaction: ["credentials"] },
   connector_id: "hybrid-a",
   display_name: "Hybrid A",
@@ -126,7 +144,7 @@ const MANIFEST_A = {
     },
   ],
   version: "1.0.0",
-};
+});
 
 interface DeviceAuthorizationBody {
   device_code: string;
@@ -165,9 +183,9 @@ async function issueOwnerToken(asUrl: string, subjectId = "owner_local"): Promis
 interface ApproveClientGrantParams {
   access_mode: string;
   client_id: string;
-  connector_id: string;
   purpose_code: string;
   purpose_description: string;
+  source_id: string;
   streams: { fields: string[]; name: string }[];
   subject_id?: string;
 }
@@ -181,14 +199,14 @@ interface ApprovedGrant {
 }
 
 async function approveClientGrant(asUrl: string, params: ApproveClientGrantParams): Promise<ApprovedGrant> {
-  const { body: initiateBody } = await fetchJson(`${asUrl}/oauth/par`, {
+  const { body: initiateBody, status: initiateStatus } = await fetchJson(`${asUrl}/oauth/par`, {
     body: JSON.stringify({
       authorization_details: [
         {
           access_mode: params.access_mode,
           purpose_code: params.purpose_code,
           purpose_description: params.purpose_description,
-          source: { id: params.connector_id, kind: "connector" },
+          source: { id: params.source_id, kind: "connector" },
           streams: params.streams,
           type: "https://pdpp.dev/data-access",
         },
@@ -198,13 +216,25 @@ async function approveClientGrant(asUrl: string, params: ApproveClientGrantParam
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
+  assert.equal(initiateStatus, 201, JSON.stringify(initiateBody));
   const initiate = initiateBody as ParInitiateBody;
-  const { body: approved } = await fetchJson(`${asUrl}/consent/approve`, {
+  const review = await fetchJson(`${asUrl}/consent/review`, {
     body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: params.subject_id || "owner_local" }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
-  return approved as ApprovedGrant;
+  assert.equal(review.status, 200, JSON.stringify(review.body));
+  const reviewRevision = (review.body as Record<string, unknown>).approval_review_revision;
+  assert.equal(typeof reviewRevision, "string", "consent review must return approval_review_revision");
+  const { body: approved, status: approvalStatus } = await fetchJson(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({ approval_review_revision: reviewRevision, request_uri: initiate.request_uri }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(approvalStatus, 200, JSON.stringify(approved));
+  const result = approved as ApprovedGrant;
+  assert.ok(result.token, "consent approval token");
+  return result;
 }
 
 interface IngestRecord {
@@ -276,6 +306,12 @@ async function withHarness(
         method: "POST",
       });
       assert.equal(reg.status, 201, `register ${manifest.connector_id}`);
+      await createRequestConnectorInstanceStore().ensureDefaultAccountConnection({
+        connectorId: String(manifest.connector_id),
+        displayName: `${String(manifest.display_name)} test account`,
+        now: new Date().toISOString(),
+        ownerSubjectId: "owner_local",
+      });
     }
     await fn({ asUrl, rsUrl, server });
   } finally {
@@ -504,9 +540,9 @@ test("client-token hybrid search respects the same grant projection as lexical +
     const approved = await approveClientGrant(asUrl, {
       access_mode: "continuous",
       client_id: "longview",
-      connector_id: connectorA,
       purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "hybrid test",
+      source_id: MANIFEST_A.source_declaration.source.id,
       streams: [{ fields: ["id", "title"], name: "posts" }],
     });
 
@@ -537,9 +573,9 @@ test("client-token hybrid search rejects streams[] not in grant (same as lexical
     const approved = await approveClientGrant(asUrl, {
       access_mode: "continuous",
       client_id: "longview",
-      connector_id: connectorA,
       purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "grant enforcement",
+      source_id: MANIFEST_A.source_declaration.source.id,
       streams: [{ fields: ["id", "title"], name: "posts" }],
     });
     const { status, body } = await fetchJson(`${rsUrl}/v1/search/hybrid?q=overdraft&streams=comments`, {

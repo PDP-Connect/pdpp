@@ -29,17 +29,17 @@ export interface Manifest {
 export type RecordJson = string | Record<string, unknown> | null | undefined;
 
 const KEY_SEPARATOR = "\x00"; // NUL byte separator for composite keys
-const SAFE_JSON_FIELD_RE = /^[A-Za-z0-9_]+$/;
 
 /**
- * Validate a JSON field name (alphanumeric + underscore only).
- * Mirrors safeJsonField from postgres-records.js line 192-194.
+ * A SourceDeclaration cursor field names one literal top-level JSON key.
+ * It is data, not an identifier: punctuation, Unicode, and whitespace are
+ * valid key characters.
  *
  * @param field
  * @returns
  */
-function safeJsonField(field: string | null | undefined): string | null {
-  if (!(field && SAFE_JSON_FIELD_RE.test(field))) {
+function literalTopLevelField(field: string | null | undefined): string | null {
+  if (typeof field !== "string" || field.length === 0) {
     return null;
   }
   return field;
@@ -194,7 +194,7 @@ export function deriveCursorValue(
   recordJson: RecordJson
 ): string | null {
   // Get cursor field from manifest
-  const cursorField = safeJsonField(streamMeta?.cursor_field);
+  const cursorField = literalTopLevelField(streamMeta?.cursor_field);
 
   // If no cursor field declared, return null
   if (!cursorField) {

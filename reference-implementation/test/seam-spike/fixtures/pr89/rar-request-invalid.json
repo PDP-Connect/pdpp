@@ -1,0 +1,15 @@
+{
+  "access_mode": "continuous",
+  "purpose_code": "https://pdpp.dev/purpose/personal_ai_assistant",
+  "source": {
+    "id": "https://sources.example/records/spotify",
+    "kind": "connector"
+  },
+  "streams": [
+    {
+      "fields": [],
+      "name": "top_artists"
+    }
+  ],
+  "type": "https://pdpp.dev/data-access"
+}

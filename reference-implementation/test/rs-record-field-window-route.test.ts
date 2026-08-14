@@ -40,12 +40,42 @@ const LONG_BODY = "The quick brown fox jumps over the lazy dog. ".repeat(300).tr
 
 const CONNECTOR_ID = "field_window_route_demo";
 const CONNECTOR_INSTANCE_ID = "cin_field_window_route_demo";
+const SOURCE_ID = "https://sources.example/field-window-route-demo";
 const STREAM = "emails";
 
 const MANIFEST = {
   connector_id: CONNECTOR_ID,
   display_name: "Field Window Route Demo",
+  manifest_uri: "https://implementations.example/connectors/field-window-route-demo",
   protocol_version: "0.1.0",
+  source_declaration: {
+    declaration_version: "field-window-route-demo-source-v1",
+    display: { name: "Field Window Route Demo" },
+    protocol_version: "0.1.0",
+    publisher: { id: "https://publishers.example/pdpp-test" },
+    source: { id: SOURCE_ID, kind: "connector" },
+    streams: [
+      {
+        consent_time_field: "created_at",
+        cursor_field: "created_at",
+        name: STREAM,
+        primary_key: ["id"],
+        schema: {
+          properties: {
+            body: { type: "string" },
+            created_at: { format: "date-time", type: "string" },
+            id: { type: "string" },
+            read_count: { type: "integer" },
+            subject: { type: "string" },
+          },
+          required: ["id"],
+          type: "object",
+        },
+        selection: { fields: true, resources: true },
+        semantics: "append_only",
+      },
+    ],
+  },
   streams: [
     {
       consent_time_field: "created_at",
@@ -63,7 +93,8 @@ const MANIFEST = {
         required: ["id"],
         type: "object",
       },
-      selection: { fields: true },
+      selection: { fields: true, resources: true },
+      semantics: "append_only",
     },
   ],
   version: "1.0.0",
@@ -82,7 +113,7 @@ const SEED = [
 // `startServer`'s inferred asServer/rsServer type comes from a framework
 // `.listen()` call whose TS overload resolves to an http2-shaped type, but at
 // runtime these are plain node:http/https servers (the framework never
-// negotiates ALPN in this reference stack) — so `closeAllConnections` (added
+// negotiates ALPN in this reference stack), so `closeAllConnections` (added
 // Node 18.2+) and the single-error-arg `close` callback genuinely exist and
 // are safe to declare here. Established pattern, see
 // connector-gap-severity.test.ts.
@@ -162,7 +193,7 @@ interface GrantRequestParams {
   purpose_code: string;
   purpose_description: string;
   source?: { id: string; kind: string };
-  streams: Array<{ fields?: string[]; name: string }>;
+  streams: Array<{ fields?: string[]; instance_ids?: string[]; name: string }>;
 }
 
 async function issueOwnerToken(asUrl: string, subjectId = "owner_local"): Promise<string> {
@@ -214,17 +245,25 @@ async function startGrantRequest(asUrl: string, params: GrantRequestParams) {
   });
 }
 
-// biome-ignore lint/suspicious/useAwait: mock preserves the production Promise contract and rejection timing
 async function approveGrantRequest(asUrl: string, requestUri: string, subjectId = "owner_local") {
-  return fetchJson(`${asUrl}/consent/approve`, {
+  const review = await fetchJson(`${asUrl}/consent/review`, {
     body: JSON.stringify({ request_uri: requestUri, subject_id: subjectId }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(review.status, 200, JSON.stringify(review.body));
+  const reviewRevision = (review.body as Record<string, unknown>).approval_review_revision;
+  assert.equal(typeof reviewRevision, "string", "consent review must return approval_review_revision");
+  return fetchJson(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({ approval_review_revision: reviewRevision, request_uri: requestUri }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
 }
 
 async function approveGrant(asUrl: string, subjectId: string, params: GrantRequestParams): Promise<ApprovedGrant> {
-  const { body: initiateBody } = await startGrantRequest(asUrl, params);
+  const { body: initiateBody, status: initiateStatus } = await startGrantRequest(asUrl, params);
+  assert.equal(initiateStatus, 201, JSON.stringify(initiateBody));
   assert.ok(initiateBody, "expected a PAR initiate response body");
   const initiate = initiateBody as GrantRequestInitiateResponse;
   const { body: approvedBody } = await approveGrantRequest(asUrl, initiate.request_uri, subjectId);
@@ -418,8 +457,8 @@ test("field-window route enforces client grant field projections", async () => {
       client_id: "longview",
       purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "field window grant test",
-      source: { id: CONNECTOR_ID, kind: "connector" },
-      streams: [{ fields: ["id", "created_at", "body"], name: STREAM }],
+      source: { id: SOURCE_ID, kind: "connector" },
+      streams: [{ fields: ["id", "created_at", "body"], instance_ids: [CONNECTOR_INSTANCE_ID], name: STREAM }],
     });
     assert.ok(approved.token, `expected issued grant token, got ${JSON.stringify(approved)}`);
     const auth = { headers: { Authorization: `Bearer ${approved.token}` } };
@@ -517,7 +556,7 @@ test("field-window route reports a non-text field as 422", async () => {
     await seedStream(rsUrl, ownerToken, CONNECTOR_ID, STREAM, SEED);
     const auth = { headers: { Authorization: `Bearer ${ownerToken}` } };
 
-    // `read_count` is an integer field — well-formed request, but it cannot be
+    // `read_count` is an integer field: well-formed request, but it cannot be
     // served as a readable text window.
     const res = await fetchJson(fieldWindowUrl(rsUrl, STREAM, "e1", { field: "read_count" }), auth);
     assert.equal(res.status, 422, "non-text field is a 422");

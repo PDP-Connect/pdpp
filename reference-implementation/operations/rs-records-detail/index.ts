@@ -23,6 +23,7 @@
  *
  * What the operation owns:
  *   - `not_found` error mapping when the record does not exist;
+ *   - grant stream visibility for client actors (`grant_stream_not_allowed`);
  *   - field projection validation against the manifest stream;
  *   - owner read-grant construction for the actor's stream;
  *   - output shape (decorated record + instrumentation data blocks).
@@ -171,17 +172,17 @@ export interface RecordDetailOutput {
  * route-compatible response without translation.
  */
 export class RecordDetailVisibilityError extends Error {
-  readonly code: "not_found";
+  readonly code: "not_found" | "grant_stream_not_allowed";
 
-  constructor(message: string) {
+  constructor(message: string, code: "not_found" | "grant_stream_not_allowed" = "not_found") {
     super(message);
     this.name = "RecordDetailVisibilityError";
-    this.code = "not_found";
+    this.code = code;
   }
 }
 
-function buildOwnerReadGrant(streamName: string): RecordDetailGrant {
-  return { streams: [{ name: streamName }] };
+function buildOwnerReadGrant(manifest: RecordDetailManifest): RecordDetailGrant {
+  return { streams: manifest.streams.map((stream) => ({ name: stream.name })) };
 }
 
 /**
@@ -196,7 +197,9 @@ export async function executeRecordDetail(
   let grant = dependencies.getGrant();
 
   if (input.actor.kind === "owner") {
-    grant = buildOwnerReadGrant(input.streamName);
+    grant = buildOwnerReadGrant(manifest);
+  } else if (!grant.streams.some((stream) => stream.name === input.streamName)) {
+    throw new RecordDetailVisibilityError(`Stream '${input.streamName}' not in grant`, "grant_stream_not_allowed");
   }
 
   const expandOptions: RecordDetailExpandOptions = input.expandOptions ?? {};

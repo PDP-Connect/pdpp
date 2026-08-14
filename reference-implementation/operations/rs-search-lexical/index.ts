@@ -54,6 +54,8 @@
 
 // ─── Errors ────────────────────────────────────────────────────────────────
 
+import { searchAuthorityKey } from "../search-authority-key.ts";
+
 export type SearchLexicalErrorCode =
   | "invalid_request"
   | "invalid_argument"
@@ -108,6 +110,7 @@ export interface SearchLexicalManifest {
 
 export interface SearchLexicalGrantStream {
   fields?: string[];
+  instance_ids?: string[];
   name: string;
   [extra: string]: unknown;
 }
@@ -245,6 +248,7 @@ export interface SearchLexicalSnapshotRecall {
 }
 
 export interface SearchLexicalSnapshot {
+  authority_key?: string;
   query: string;
   /**
    * Operation-level recall/count disclosure for the *whole* ranked set. The
@@ -369,8 +373,7 @@ export interface SearchLexicalDependencies {
    * connector plan per binding.
    *
    * Implementations MUST honor:
-   *   - grant-scope per-stream `connection_id` constraints
-   *     (`grant.streams[].connection_id`);
+   *   - grant-scope per-stream `instance_ids` authority;
    *   - request-time `connection_id` / deprecated `connector_instance_id`
    *     alias narrowing;
    *   - exactly-one auto-select when only one binding is addressable.
@@ -1055,11 +1058,10 @@ export async function executeSearchLexical(
         }
       }
     }
-    const connectorId =
-      (grant as { source?: { kind?: unknown; id?: unknown } } | null)?.source?.kind === "connector" &&
-      typeof (grant as { source?: { id?: unknown } } | null)?.source?.id === "string"
-        ? ((grant as { source?: { id?: string } }).source?.id as string)
-        : null;
+    // source.id is authorization identity, not a local connector key. The
+    // host resolves the persisted storage binding and supplies that identity
+    // through each binding manifest.
+    const connectorId: string | null = null;
     // Cross-binding fan-in path for client mode. When the host wires the
     // binding-aware resolver, the operation iterates every binding the grant
     // authorizes (after narrowing) and emits one connector plan per binding.
@@ -1115,6 +1117,21 @@ export async function executeSearchLexical(
 
   // 4. Resolve cursor → snapshot. Fresh request: build & persist; cursor
   //    request: load by id.
+  const authorityKey = searchAuthorityKey({
+    actor: input.actor,
+    connection_id: requestConnectionId,
+    plans: perConnectorPlans.map((plan) => ({
+      connector_id: plan.connectorId,
+      grant: plan.grant,
+      plan_entries: plan.planEntries,
+    })),
+    query: {
+      filter: params.filter,
+      filtered_stream: params.filteredStream,
+      q: params.q,
+      streams: params.streams,
+    },
+  });
   let snapshot: SearchLexicalSnapshot;
   let snapshotId: string;
   let offset: number;
@@ -1127,6 +1144,9 @@ export async function executeSearchLexical(
     if (!loaded) {
       throw new SearchLexicalRequestError("invalid_cursor", "Cursor refers to an expired or unknown snapshot");
     }
+    if (loaded.authority_key !== authorityKey || loaded.query !== params.q) {
+      throw new SearchLexicalRequestError("invalid_cursor", "Cursor does not match this query and grant authority");
+    }
     snapshot = loaded;
     snapshotId = decoded.snap;
     offset = decoded.off;
@@ -1136,7 +1156,7 @@ export async function executeSearchLexical(
     // stream; planner omission must short-circuit before the host adapter can
     // scan records or FTS state.
     if (perConnectorPlans.length === 0) {
-      snapshot = { query: params.q, results: [], snapshot_id: "" };
+      snapshot = { authority_key: authorityKey, query: params.q, results: [], snapshot_id: "" };
       snapshotId = "";
     } else {
       snapshot = await dependencies.buildSnapshot({
@@ -1144,6 +1164,7 @@ export async function executeSearchLexical(
         perConnectorPlans,
         q: params.q,
       });
+      snapshot.authority_key = authorityKey;
       snapshotId = snapshot.snapshot_id;
       await dependencies.persistSnapshot(snapshot);
     }

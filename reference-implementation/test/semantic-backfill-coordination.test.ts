@@ -64,6 +64,7 @@ const baseManifest = {
   capabilities: { human_interaction: [] },
   connector_id: "semantic-fence",
   display_name: "Semantic fence test",
+  manifest_uri: "https://sources.example/semantic-fence",
   protocol_version: "0.1.0",
   streams: [
     {
@@ -75,6 +76,8 @@ const baseManifest = {
         required: ["id", "subject"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
     {
       name: "later",
@@ -85,16 +88,21 @@ const baseManifest = {
         required: ["id", "subject"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
+  version: "1.0.0",
 };
 
 const semanticManifest = {
   connector_id: "semantic-fence",
+  protocol_version: "0.1.0",
   streams: [
     { name: "first", query: { search: { semantic_fields: ["subject"] } } },
     { name: "later", query: { search: { semantic_fields: ["subject"] } } },
   ],
+  version: "1.0.0",
 };
 
 test("semantic backfill holds one instance fence through later-stream meta completion while another instance proceeds", async () => {

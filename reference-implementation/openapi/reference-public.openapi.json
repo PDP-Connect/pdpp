@@ -965,6 +965,11 @@
                     "pdpp_self_export_supported": {
                       "type": "boolean"
                     },
+                    "pdpp_source_declaration_uri": {
+                      "format": "uri",
+                      "pattern": "^(?!.*[\\p{Cc}\\s\\\\#])(?!.*%(?![0-9A-Fa-f]{2}))[Hh][Tt][Tt][Pp][Ss]:\\/\\/(?![^/?#]*@)(?:\\[[0-9A-Fa-f:.]+\\](?::\\d+)?|[^/?#\\s\\\\@:%]+(?::\\d+)?)(?:[/?][^\\s\\\\#]*)?$",
+                      "type": "string"
+                    },
                     "pdpp_token_kinds_supported": {
                       "items": {
                         "enum": [
@@ -1001,7 +1006,7 @@
             }
           }
         },
-        "summary": "Return RFC 9728 protected-resource metadata advertising the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`.",
+        "summary": "Return RFC 9728 protected-resource metadata advertising the optional provider-native `pdpp_source_declaration_uri`, the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`.",
         "tags": [
           "metadata"
         ]
@@ -1586,6 +1591,11 @@
                     "pdpp_self_export_supported": {
                       "type": "boolean"
                     },
+                    "pdpp_source_declaration_uri": {
+                      "format": "uri",
+                      "pattern": "^(?!.*[\\p{Cc}\\s\\\\#])(?!.*%(?![0-9A-Fa-f]{2}))[Hh][Tt][Tt][Pp][Ss]:\\/\\/(?![^/?#]*@)(?:\\[[0-9A-Fa-f:.]+\\](?::\\d+)?|[^/?#\\s\\\\@:%]+(?::\\d+)?)(?:[/?][^\\s\\\\#]*)?$",
+                      "type": "string"
+                    },
                     "pdpp_token_kinds_supported": {
                       "items": {
                         "enum": [
@@ -1722,6 +1732,9 @@
                     "error_description": {
                       "type": "string"
                     },
+                    "fresh_authorization_required": {
+                      "type": "boolean"
+                    },
                     "request_id": {
                       "type": "string"
                     }
@@ -1749,6 +1762,9 @@
                     "error_description": {
                       "type": "string"
                     },
+                    "fresh_authorization_required": {
+                      "type": "boolean"
+                    },
                     "request_id": {
                       "type": "string"
                     }
@@ -1775,6 +1791,9 @@
                     },
                     "error_description": {
                       "type": "string"
+                    },
+                    "fresh_authorization_required": {
+                      "type": "boolean"
                     },
                     "request_id": {
                       "type": "string"
@@ -2341,279 +2360,1014 @@
         }
       }
     },
-    "/consent/approve": {
+    "/consent/review": {
       "post": {
-        "operationId": "approveConsent",
+        "operationId": "reviewConsent",
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Grant approved and client token issued",
+            "description": "Approval review finalized",
             "content": {
               "application/json": {
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "grant": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "access_mode": {
-                          "enum": [
-                            "single_use",
-                            "continuous"
-                          ],
-                          "type": "string"
-                        },
-                        "client": {
+                    "approval_review": {
+                      "oneOf": [
+                        {
                           "additionalProperties": false,
                           "properties": {
-                            "client_display": {
+                            "access_mode": {
+                              "enum": [
+                                "continuous",
+                                "single_use"
+                              ],
+                              "type": "string"
+                            },
+                            "ai_training_consented": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ]
+                            },
+                            "client": {
                               "additionalProperties": false,
                               "properties": {
-                                "logo_uri": {
-                                  "format": "uri",
-                                  "type": "string"
+                                "client_display": {
+                                  "oneOf": [
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "logo_uri": {
+                                          "oneOf": [
+                                            {
+                                              "format": "uri",
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "name": {
+                                          "oneOf": [
+                                            {
+                                              "minLength": 1,
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "policy_uri": {
+                                          "oneOf": [
+                                            {
+                                              "format": "uri",
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "tos_uri": {
+                                          "oneOf": [
+                                            {
+                                              "format": "uri",
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "uri": {
+                                          "oneOf": [
+                                            {
+                                              "format": "uri",
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        }
+                                      },
+                                      "type": "object"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
                                 },
-                                "name": {
+                                "client_id": {
                                   "minLength": 1,
                                   "type": "string"
                                 },
-                                "policy_uri": {
-                                  "format": "uri",
-                                  "type": "string"
-                                },
-                                "tos_uri": {
-                                  "format": "uri",
-                                  "type": "string"
-                                },
-                                "uri": {
-                                  "format": "uri",
+                                "registration_mode": {
+                                  "enum": [
+                                    "dynamic",
+                                    "client_id_metadata_document",
+                                    "pre_registered_public"
+                                  ],
                                   "type": "string"
                                 }
                               },
+                              "required": [
+                                "client_id",
+                                "registration_mode"
+                              ],
                               "type": "object"
                             },
-                            "client_id": {
-                              "minLength": 1,
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "client_id"
-                          ],
-                          "type": "object"
-                        },
-                        "expires_at": {
-                          "format": "date-time",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "grant_id": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "issued_at": {
-                          "format": "date-time",
-                          "type": "string"
-                        },
-                        "purpose_code": {
-                          "format": "uri",
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "purpose_description": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "retention": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "max_duration": {
+                            "client_claims": {
+                              "oneOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "commitments": {
+                                      "items": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "minItems": 1,
+                                      "type": "array",
+                                      "uniqueItems": true
+                                    }
+                                  },
+                                  "required": [
+                                    "commitments"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "purpose_code": {
                               "minLength": 1,
                               "type": "string"
                             },
-                            "on_expiry": {
-                              "enum": [
-                                "delete",
-                                "anonymize"
-                              ],
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "max_duration",
-                            "on_expiry"
-                          ],
-                          "type": "object"
-                        },
-                        "selection_preset": {
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "source": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "id": {
-                              "format": "uri",
-                              "minLength": 1,
-                              "type": "string"
+                            "purpose_description": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
-                            "kind": {
-                              "enum": [
-                                "connector",
-                                "provider_native"
+                            "resolved_streams": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "fields": {
+                                    "items": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "minItems": 1,
+                                    "type": "array",
+                                    "uniqueItems": true
+                                  },
+                                  "instance_ids": {
+                                    "items": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "minItems": 1,
+                                    "type": "array",
+                                    "uniqueItems": true
+                                  },
+                                  "name": {
+                                    "minLength": 1,
+                                    "not": {
+                                      "const": "*"
+                                    },
+                                    "type": "string"
+                                  },
+                                  "resources": {
+                                    "items": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "minItems": 1,
+                                    "type": "array",
+                                    "uniqueItems": true
+                                  },
+                                  "time_constraint": {
+                                    "additionalProperties": false,
+                                    "anyOf": [
+                                      {
+                                        "required": [
+                                          "since"
+                                        ]
+                                      },
+                                      {
+                                        "required": [
+                                          "until"
+                                        ]
+                                      }
+                                    ],
+                                    "properties": {
+                                      "field": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "since": {
+                                        "format": "date-time",
+                                        "type": "string"
+                                      },
+                                      "until": {
+                                        "format": "date-time",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "field"
+                                    ],
+                                    "type": "object"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "instance_ids",
+                                  "fields"
+                                ],
+                                "type": "object"
+                              },
+                              "minItems": 1,
+                              "type": "array",
+                              "uniqueItems": true
+                            },
+                            "retention": {
+                              "oneOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "max_duration": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "on_expiry": {
+                                      "enum": [
+                                        "delete",
+                                        "anonymize"
+                                      ],
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "max_duration",
+                                    "on_expiry"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "selection_preset": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "source": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "id": {
+                                  "format": "uri",
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "kind": {
+                                  "enum": [
+                                    "connector",
+                                    "provider_native"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
                               ],
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "id"
-                          ],
-                          "type": "object"
-                        },
-                        "source_declaration": {
-                          "additionalProperties": false,
-                          "properties": {
+                              "type": "object"
+                            },
+                            "source_declaration": {
+                              "oneOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "digest": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "version": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "digest",
+                                    "version"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "digest": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "publisher_attribution": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "id": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "status": {
+                                          "const": "unverified"
+                                        }
+                                      },
+                                      "required": [
+                                        "id",
+                                        "status"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "resource_authority": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "status": {
+                                          "const": "local_operator_provisioned"
+                                        }
+                                      },
+                                      "required": [
+                                        "status"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "version": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "digest",
+                                    "publisher_attribution",
+                                    "resource_authority",
+                                    "version"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "accepted_revision_reference": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "digest": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "publisher_attribution": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "id": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "status": {
+                                          "const": "unverified"
+                                        }
+                                      },
+                                      "required": [
+                                        "id",
+                                        "status"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "resource_authority": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "authority_binding": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "status": {
+                                          "const": "verified"
+                                        }
+                                      },
+                                      "required": [
+                                        "authority_binding",
+                                        "status"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "version": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "accepted_revision_reference",
+                                    "digest",
+                                    "publisher_attribution",
+                                    "resource_authority",
+                                    "version"
+                                  ],
+                                  "type": "object"
+                                }
+                              ]
+                            },
+                            "subject": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "id"
+                              ],
+                              "type": "object"
+                            },
                             "version": {
-                              "minLength": 1,
-                              "type": "string"
+                              "const": "reference.approval-review.v1"
                             }
                           },
                           "required": [
+                            "access_mode",
+                            "ai_training_consented",
+                            "client",
+                            "client_claims",
+                            "expires_at",
+                            "purpose_code",
+                            "purpose_description",
+                            "resolved_streams",
+                            "retention",
+                            "selection_preset",
+                            "source",
+                            "source_declaration",
+                            "subject",
                             "version"
                           ],
                           "type": "object"
                         },
-                        "streams": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "fields": {
-                                "items": {
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "access_mode": {
+                              "enum": [
+                                "continuous",
+                                "single_use"
+                              ],
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "approved_source_indexes": {
+                              "items": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "type": "array"
+                            },
+                            "client": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "client_display": {
+                                  "oneOf": [
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "logo_uri": {
+                                          "oneOf": [
+                                            {
+                                              "format": "uri",
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "name": {
+                                          "oneOf": [
+                                            {
+                                              "minLength": 1,
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "policy_uri": {
+                                          "oneOf": [
+                                            {
+                                              "format": "uri",
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "tos_uri": {
+                                          "oneOf": [
+                                            {
+                                              "format": "uri",
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "uri": {
+                                          "oneOf": [
+                                            {
+                                              "format": "uri",
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        }
+                                      },
+                                      "type": "object"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "client_id": {
                                   "minLength": 1,
                                   "type": "string"
                                 },
-                                "minItems": 1,
-                                "type": "array",
-                                "uniqueItems": true
-                              },
-                              "instance_ids": {
-                                "items": {
-                                  "minLength": 1,
+                                "registration_mode": {
+                                  "enum": [
+                                    "dynamic",
+                                    "client_id_metadata_document",
+                                    "pre_registered_public"
+                                  ],
                                   "type": "string"
-                                },
-                                "minItems": 1,
-                                "type": "array",
-                                "uniqueItems": true
+                                }
                               },
-                              "name": {
-                                "minLength": 1,
-                                "not": {
-                                  "const": "*"
-                                },
-                                "type": "string"
-                              },
-                              "resources": {
-                                "items": {
-                                  "minLength": 1,
-                                  "type": "string"
-                                },
-                                "minItems": 1,
-                                "type": "array",
-                                "uniqueItems": true
-                              },
-                              "time_constraint": {
+                              "required": [
+                                "client_id",
+                                "registration_mode"
+                              ],
+                              "type": "object"
+                            },
+                            "expires_at": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "parent_package_id": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "source_narrowing": {
+                              "additionalProperties": {
                                 "additionalProperties": false,
-                                "anyOf": [
-                                  {
-                                    "required": [
-                                      "since"
+                                "properties": {
+                                  "fields": {
+                                    "additionalProperties": {
+                                      "items": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "type": "object"
+                                  },
+                                  "since": {
+                                    "additionalProperties": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "type": "object"
+                                  },
+                                  "streams": {
+                                    "items": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "propertyNames": {
+                                "pattern": "^(0|[1-9][0-9]*)$"
+                              },
+                              "type": "object"
+                            },
+                            "sources": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "access_mode": {
+                                    "enum": [
+                                      "continuous",
+                                      "single_use"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "client_claims": {
+                                    "oneOf": [
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "commitments": {
+                                            "items": {
+                                              "minLength": 1,
+                                              "type": "string"
+                                            },
+                                            "minItems": 1,
+                                            "type": "array",
+                                            "uniqueItems": true
+                                          }
+                                        },
+                                        "required": [
+                                          "commitments"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
                                     ]
                                   },
-                                  {
-                                    "required": [
-                                      "until"
-                                    ]
-                                  }
-                                ],
-                                "properties": {
-                                  "field": {
+                                  "index": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "purpose_code": {
                                     "minLength": 1,
                                     "type": "string"
                                   },
-                                  "since": {
-                                    "format": "date-time",
-                                    "type": "string"
+                                  "purpose_description": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
                                   },
-                                  "until": {
-                                    "format": "date-time",
-                                    "type": "string"
+                                  "resolved_streams": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "fields": {
+                                          "items": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "minItems": 1,
+                                          "type": "array",
+                                          "uniqueItems": true
+                                        },
+                                        "instance_ids": {
+                                          "items": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "minItems": 1,
+                                          "type": "array",
+                                          "uniqueItems": true
+                                        },
+                                        "name": {
+                                          "minLength": 1,
+                                          "not": {
+                                            "const": "*"
+                                          },
+                                          "type": "string"
+                                        },
+                                        "resources": {
+                                          "items": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "minItems": 1,
+                                          "type": "array",
+                                          "uniqueItems": true
+                                        },
+                                        "time_constraint": {
+                                          "additionalProperties": false,
+                                          "anyOf": [
+                                            {
+                                              "required": [
+                                                "since"
+                                              ]
+                                            },
+                                            {
+                                              "required": [
+                                                "until"
+                                              ]
+                                            }
+                                          ],
+                                          "properties": {
+                                            "field": {
+                                              "minLength": 1,
+                                              "type": "string"
+                                            },
+                                            "since": {
+                                              "format": "date-time",
+                                              "type": "string"
+                                            },
+                                            "until": {
+                                              "format": "date-time",
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": [
+                                            "field"
+                                          ],
+                                          "type": "object"
+                                        }
+                                      },
+                                      "required": [
+                                        "name",
+                                        "instance_ids",
+                                        "fields"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "minItems": 1,
+                                    "type": "array",
+                                    "uniqueItems": true
+                                  },
+                                  "retention": {
+                                    "oneOf": [
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "max_duration": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "on_expiry": {
+                                            "enum": [
+                                              "delete",
+                                              "anonymize"
+                                            ],
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "max_duration",
+                                          "on_expiry"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "selection_preset": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "source": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "id": {
+                                        "format": "uri",
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "kind": {
+                                        "enum": [
+                                          "connector",
+                                          "provider_native"
+                                        ],
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "id"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "source_declaration": {
+                                    "oneOf": [
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "digest": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "version": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "digest",
+                                          "version"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "digest": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "publisher_attribution": {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "id": {
+                                                "minLength": 1,
+                                                "type": "string"
+                                              },
+                                              "status": {
+                                                "const": "unverified"
+                                              }
+                                            },
+                                            "required": [
+                                              "id",
+                                              "status"
+                                            ],
+                                            "type": "object"
+                                          },
+                                          "resource_authority": {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "status": {
+                                                "const": "local_operator_provisioned"
+                                              }
+                                            },
+                                            "required": [
+                                              "status"
+                                            ],
+                                            "type": "object"
+                                          },
+                                          "version": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "digest",
+                                          "publisher_attribution",
+                                          "resource_authority",
+                                          "version"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "accepted_revision_reference": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "digest": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "publisher_attribution": {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "id": {
+                                                "minLength": 1,
+                                                "type": "string"
+                                              },
+                                              "status": {
+                                                "const": "unverified"
+                                              }
+                                            },
+                                            "required": [
+                                              "id",
+                                              "status"
+                                            ],
+                                            "type": "object"
+                                          },
+                                          "resource_authority": {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "authority_binding": {
+                                                "minLength": 1,
+                                                "type": "string"
+                                              },
+                                              "status": {
+                                                "const": "verified"
+                                              }
+                                            },
+                                            "required": [
+                                              "authority_binding",
+                                              "status"
+                                            ],
+                                            "type": "object"
+                                          },
+                                          "version": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "accepted_revision_reference",
+                                          "digest",
+                                          "publisher_attribution",
+                                          "resource_authority",
+                                          "version"
+                                        ],
+                                        "type": "object"
+                                      }
+                                    ]
                                   }
                                 },
                                 "required": [
-                                  "field"
+                                  "access_mode",
+                                  "client_claims",
+                                  "index",
+                                  "purpose_code",
+                                  "purpose_description",
+                                  "resolved_streams",
+                                  "retention",
+                                  "selection_preset",
+                                  "source",
+                                  "source_declaration"
                                 ],
                                 "type": "object"
-                              }
+                              },
+                              "type": "array"
                             },
-                            "required": [
-                              "name",
-                              "instance_ids",
-                              "fields"
-                            ],
-                            "type": "object"
-                          },
-                          "minItems": 1,
-                          "type": "array",
-                          "uniqueItems": true
-                        },
-                        "subject": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "id": {
-                              "minLength": 1,
-                              "type": "string"
+                            "subject": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "id"
+                              ],
+                              "type": "object"
+                            },
+                            "version": {
+                              "const": "reference.batch-approval-review.v1"
                             }
                           },
                           "required": [
-                            "id"
+                            "access_mode",
+                            "approved_source_indexes",
+                            "client",
+                            "expires_at",
+                            "parent_package_id",
+                            "source_narrowing",
+                            "sources",
+                            "subject",
+                            "version"
                           ],
                           "type": "object"
-                        },
-                        "version": {
-                          "const": "0.1.0",
-                          "type": "string"
                         }
-                      },
-                      "required": [
-                        "version",
-                        "grant_id",
-                        "issued_at",
-                        "subject",
-                        "client",
-                        "source",
-                        "source_declaration",
-                        "purpose_code",
-                        "access_mode",
-                        "streams"
-                      ],
-                      "type": "object"
+                      ]
                     },
-                    "grant_id": {
+                    "approval_review_revision": {
                       "minLength": 1,
                       "type": "string"
                     },
-                    "token": {
+                    "batch": {
+                      "type": "boolean"
+                    },
+                    "request_uri": {
                       "minLength": 1,
                       "type": "string"
                     }
                   },
                   "required": [
-                    "grant_id",
-                    "token",
-                    "grant"
+                    "approval_review",
+                    "approval_review_revision",
+                    "batch",
+                    "request_uri"
                   ],
                   "type": "object"
                 }
@@ -2885,6 +3639,913 @@
             }
           }
         },
+        "summary": "Finalize a consent review before approval.",
+        "tags": [
+          "grants"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "oneOf": [
+                      {
+                        "required": [
+                          "request_uri"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "approval_id"
+                        ]
+                      }
+                    ],
+                    "properties": {
+                      "approval_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "ai_training_consented": {
+                        "oneOf": [
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "enum": [
+                              "true",
+                              "false",
+                              "1",
+                              "0",
+                              "on",
+                              "off"
+                            ],
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "request_uri": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "subject_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "anyOf": [
+                      {
+                        "required": [
+                          "approved_source_indexes"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "confirm_approve_all"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "source_narrowing"
+                        ]
+                      }
+                    ],
+                    "oneOf": [
+                      {
+                        "required": [
+                          "request_uri"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "approval_id"
+                        ]
+                      }
+                    ],
+                    "properties": {
+                      "approval_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "approved_source_indexes": {
+                        "oneOf": [
+                          {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          {
+                            "pattern": "^[0-9]+$",
+                            "type": "string"
+                          },
+                          {
+                            "items": {
+                              "oneOf": [
+                                {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                {
+                                  "pattern": "^[0-9]+$",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            "type": "array"
+                          }
+                        ]
+                      },
+                      "confirm_approve_all": {
+                        "oneOf": [
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "enum": [
+                              "true",
+                              "1",
+                              "on"
+                            ],
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "request_uri": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "source_narrowing": {
+                        "additionalProperties": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "fields": {
+                              "additionalProperties": {
+                                "items": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "type": "object"
+                            },
+                            "since": {
+                              "additionalProperties": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "type": "object"
+                            },
+                            "streams": {
+                              "items": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "propertyNames": {
+                          "pattern": "^(0|[1-9][0-9]*)$"
+                        },
+                        "type": "object"
+                      },
+                      "subject_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/consent/approve": {
+      "post": {
+        "operationId": "approveConsent",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Grant approved and client token issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "grant": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "access_mode": {
+                              "enum": [
+                                "single_use",
+                                "continuous"
+                              ],
+                              "type": "string"
+                            },
+                            "client": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "client_display": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "logo_uri": {
+                                      "format": "uri",
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "policy_uri": {
+                                      "format": "uri",
+                                      "type": "string"
+                                    },
+                                    "tos_uri": {
+                                      "format": "uri",
+                                      "type": "string"
+                                    },
+                                    "uri": {
+                                      "format": "uri",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "type": "object"
+                                },
+                                "client_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "client_id"
+                              ],
+                              "type": "object"
+                            },
+                            "expires_at": {
+                              "format": "date-time",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "grant_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "issued_at": {
+                              "format": "date-time",
+                              "type": "string"
+                            },
+                            "purpose_code": {
+                              "format": "uri",
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "purpose_description": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "retention": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "max_duration": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "on_expiry": {
+                                  "enum": [
+                                    "delete",
+                                    "anonymize"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "max_duration",
+                                "on_expiry"
+                              ],
+                              "type": "object"
+                            },
+                            "selection_preset": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "source": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "id": {
+                                  "format": "uri",
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "kind": {
+                                  "enum": [
+                                    "connector",
+                                    "provider_native"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "type": "object"
+                            },
+                            "source_declaration": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "version": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "version"
+                              ],
+                              "type": "object"
+                            },
+                            "streams": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "fields": {
+                                    "items": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "minItems": 1,
+                                    "type": "array",
+                                    "uniqueItems": true
+                                  },
+                                  "instance_ids": {
+                                    "items": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "minItems": 1,
+                                    "type": "array",
+                                    "uniqueItems": true
+                                  },
+                                  "name": {
+                                    "minLength": 1,
+                                    "not": {
+                                      "const": "*"
+                                    },
+                                    "type": "string"
+                                  },
+                                  "resources": {
+                                    "items": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "minItems": 1,
+                                    "type": "array",
+                                    "uniqueItems": true
+                                  },
+                                  "time_constraint": {
+                                    "additionalProperties": false,
+                                    "anyOf": [
+                                      {
+                                        "required": [
+                                          "since"
+                                        ]
+                                      },
+                                      {
+                                        "required": [
+                                          "until"
+                                        ]
+                                      }
+                                    ],
+                                    "properties": {
+                                      "field": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "since": {
+                                        "format": "date-time",
+                                        "type": "string"
+                                      },
+                                      "until": {
+                                        "format": "date-time",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "field"
+                                    ],
+                                    "type": "object"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "instance_ids",
+                                  "fields"
+                                ],
+                                "type": "object"
+                              },
+                              "minItems": 1,
+                              "type": "array",
+                              "uniqueItems": true
+                            },
+                            "subject": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "id"
+                              ],
+                              "type": "object"
+                            },
+                            "version": {
+                              "const": "0.1.0",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "grant_id",
+                            "issued_at",
+                            "subject",
+                            "client",
+                            "source",
+                            "source_declaration",
+                            "purpose_code",
+                            "access_mode",
+                            "streams"
+                          ],
+                          "type": "object"
+                        },
+                        "grant_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "token": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "grant_id",
+                        "token",
+                        "grant"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "grant": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "child_grants": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "grant_id": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "source": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "connection_id": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "id": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "kind": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id"
+                                    ],
+                                    "type": "object"
+                                  }
+                                },
+                                "required": [
+                                  "grant_id",
+                                  "source"
+                                ],
+                                "type": "object"
+                              },
+                              "minItems": 1,
+                              "type": "array"
+                            },
+                            "grant_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "package": {
+                              "const": true
+                            },
+                            "package_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "child_grants",
+                            "grant_id",
+                            "package",
+                            "package_id"
+                          ],
+                          "type": "object"
+                        },
+                        "package_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "token": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "grant",
+                        "package_id",
+                        "token"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Grant is malformed or no longer valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Pending consent request not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Pending consent approval conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
         "summary": "Approve a pending data-access request through the JSON consent surface used by tests and automation.",
         "tags": [
           "grants"
@@ -2893,66 +4554,60 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "ai_training_consented": {
-                    "type": "boolean"
-                  },
-                  "approved_source_indexes": {
-                    "oneOf": [
-                      {
-                        "minimum": 0,
-                        "type": "integer"
-                      },
-                      {
-                        "pattern": "^[0-9]+$",
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "approval_review_revision": {
+                        "minLength": 1,
                         "type": "string"
                       },
-                      {
-                        "items": {
-                          "oneOf": [
-                            {
-                              "minimum": 0,
-                              "type": "integer"
-                            },
-                            {
-                              "pattern": "^[0-9]+$",
-                              "type": "string"
-                            }
-                          ]
-                        },
-                        "type": "array"
-                      }
-                    ]
-                  },
-                  "confirm_approve_all": {
-                    "oneOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "enum": [
-                          "true",
-                          "1",
-                          "on"
-                        ],
+                      "request_uri": {
+                        "minLength": 1,
                         "type": "string"
                       }
-                    ]
+                    },
+                    "required": [
+                      "approval_review_revision",
+                      "request_uri"
+                    ],
+                    "type": "object"
                   },
-                  "request_uri": {
-                    "minLength": 1,
-                    "type": "string"
-                  },
-                  "subject_id": {
-                    "minLength": 1,
-                    "type": "string"
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "approval_review_revision": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "confirm_reviewed_decision": {
+                        "oneOf": [
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "enum": [
+                              "true",
+                              "1",
+                              "on"
+                            ],
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "request_uri": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "approval_review_revision",
+                      "confirm_reviewed_decision",
+                      "request_uri"
+                    ],
+                    "type": "object"
                   }
-                },
-                "required": [
-                  "request_uri"
-                ],
-                "type": "object"
+                ]
               }
             }
           },
@@ -3594,6 +5249,9 @@
                     "error_description": {
                       "type": "string"
                     },
+                    "fresh_authorization_required": {
+                      "type": "boolean"
+                    },
                     "request_id": {
                       "type": "string"
                     }
@@ -3712,6 +5370,9 @@
                     "error_description": {
                       "type": "string"
                     },
+                    "fresh_authorization_required": {
+                      "type": "boolean"
+                    },
                     "request_id": {
                       "type": "string"
                     }
@@ -3738,6 +5399,9 @@
                     },
                     "error_description": {
                       "type": "string"
+                    },
+                    "fresh_authorization_required": {
+                      "type": "boolean"
                     },
                     "request_id": {
                       "type": "string"
@@ -4238,9 +5902,97 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Confidential resource-server authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
           }
         },
-        "summary": "Inspect token activity and, for active client tokens, the bound grant projection.",
+        "summary": "Inspect token activity for an authenticated confidential resource server.",
         "tags": [
           "oauth"
         ],
@@ -5282,8 +7034,6 @@
                                         "required": [
                                           "schema",
                                           "granted",
-                                          "exact_filter",
-                                          "range_filter",
                                           "lexical_search",
                                           "semantic_search",
                                           "aggregation"
@@ -6312,7 +8062,7 @@
             }
           }
         },
-        "summary": "List streams available under the current grant or owner scope. Returns stream-level totals only; for per-field filter capabilities (exact, range operators, aggregation) call `GET /v1/schema` first and consult `field_capabilities` per stream before issuing `filter[...]` queries on `/v1/streams/{stream}/records`. Multi-connection deployments emit one entry per (stream, connection_id); each entry carries `connection_id` and a `display_name` so callers can attribute and disambiguate.",
+        "summary": "List streams available under the current grant or owner scope. Returns stream-level totals only. Owner-token current-capability callers can consult `GET /v1/schema` for per-field filter capabilities; client-token v0.1 reads reject `filter[...]`. Multi-connection deployments emit one entry per (stream, connection_id); each entry carries `connection_id` and a `display_name` so callers can attribute and disambiguate.",
         "tags": [
           "records"
         ]
@@ -6700,8 +8450,6 @@
                             "required": [
                               "schema",
                               "granted",
-                              "exact_filter",
-                              "range_filter",
                               "lexical_search",
                               "semantic_search",
                               "aggregation"
@@ -7208,7 +8956,7 @@
             }
           }
         },
-        "summary": "Return stream metadata including declared query capabilities and advisory freshness. For per-field filter capabilities on this stream (exact, range operators, aggregation), prefer `GET /v1/schema` first and read `field_capabilities` rather than guessing `filter[...]` shapes against the records endpoint. Pass `connection_id` (or the deprecated `connector_instance_id` alias) to restrict to a single connection; omitted, the response aggregates across the connections the grant authorizes.",
+        "summary": "Return stream metadata including declared query capabilities and advisory freshness. Owner-token current-capability callers can consult `GET /v1/schema` for per-field filter capabilities; client-token v0.1 metadata does not advertise typed filter capabilities and client reads reject `filter[...]`. Pass `connection_id` (or the deprecated `connector_instance_id` alias) to restrict to a single connection; omitted, the response aggregates across the connections the grant authorizes.",
         "tags": [
           "records"
         ]
@@ -7308,7 +9056,7 @@
             "name": "filter",
             "required": false,
             "schema": {
-              "description": "Per-field filter map. Exact: `filter[field]=value`. Range: `filter[field][op]=value` where `op` is one of the declared `field_capabilities.range_filter.operators` from `GET /v1/schema`.",
+              "description": "Owner-token current-capability filter map only. Client-token v0.1 reads reject exact `filter[field]=value` and range `filter[field][op]=value` before consulting current source metadata.",
               "type": "object"
             }
           },
@@ -8018,7 +9766,7 @@
             }
           }
         },
-        "summary": "List records in a stream under grant enforcement. Supports logical-cursor pagination, exact and declared range filters, declared one-hop expansion, and changes_since. Per-field filter operators, sortable fields, expandable relations, projection, search modes, and count support are advertised by `GET /v1/schema` (`field_capabilities`, `expand_capabilities`); consult it before issuing `filter[...]`, `expand[]`, or `fields=` shapes to avoid 400 errors. Pass `connection_id` to restrict to one connection; the deprecated `connector_instance_id` alias is accepted for compatibility but new clients SHOULD use `connection_id`.",
+        "summary": "List records in a stream under grant enforcement. Supports logical-cursor pagination, declared one-hop expansion, and changes_since. Client-token v0.1 reads reject exact and range `filter[...]` parameters before consulting current source metadata; owner-token current-capability reads MAY use declared filters. Per-field query capabilities are advertised by `GET /v1/schema`; consult it before issuing supported query shapes. Pass `connection_id` to restrict to one connection; the deprecated `connector_instance_id` alias is accepted for compatibility but new clients SHOULD use `connection_id`.",
         "tags": [
           "records"
         ]
@@ -8638,7 +10386,7 @@
             }
           }
         },
-        "summary": "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, exact count_distinct, scalar grouped counts (`group_by`), calendar time-bucket counts (`group_by_time`+`granularity`, optional `time_zone` defaulting to UTC), and existing exact/range filters over declared fields. Exactly one grouping dimension per call: `group_by` XOR `group_by_time`. Grouped responses include `other_count` (sum of counts for groups/buckets beyond `limit`) so callers can detect truncation without a second round trip.",
+        "summary": "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, exact count_distinct, scalar grouped counts (`group_by`), calendar time-bucket counts (`group_by_time`+`granularity`, optional `time_zone` defaulting to UTC), and owner-token current-capability exact/range filters over declared fields. Client-token v0.1 reads reject `filter[...]`. Exactly one grouping dimension per call: `group_by` XOR `group_by_time`. Grouped responses include `other_count` (sum of counts for groups/buckets beyond `limit`) so callers can detect truncation without a second round trip.",
         "tags": [
           "records"
         ]
@@ -9847,7 +11595,7 @@
             }
           }
         },
-        "summary": "Optional lexical retrieval extension: search records across authorized streams by text. Search modes, per-mode cursor support, and field-level `lexical_search`/`semantic_search` capabilities are advertised by `GET /v1/schema`; `filter[...]` operators applied to a single named stream must come from that stream's `field_capabilities`. Hits carry `connection_id` for attribution; the deprecated `connector_instance_id` alias is emitted alongside for compatibility but new clients SHOULD read `connection_id`.",
+        "summary": "Optional lexical retrieval extension: search records across authorized streams by text. Search modes, per-mode cursor support, and field-level `lexical_search`/`semantic_search` capabilities are advertised by `GET /v1/schema`. Client-token v0.1 reads reject `filter[...]`; owner-token current-capability reads MAY use declared filters. Hits carry `connection_id` for attribution; the deprecated `connector_instance_id` alias is emitted alongside for compatibility but new clients SHOULD read `connection_id`.",
         "tags": [
           "records",
           "lexical-retrieval"

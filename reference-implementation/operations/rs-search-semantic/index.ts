@@ -72,6 +72,8 @@
 
 // ─── Errors ────────────────────────────────────────────────────────────────
 
+import { searchAuthorityKey } from "../search-authority-key.ts";
+
 export type SearchSemanticErrorCode =
   | "invalid_request"
   | "invalid_argument"
@@ -205,6 +207,7 @@ export interface SearchSemanticSnapshotResult {
 }
 
 export interface SearchSemanticSnapshot {
+  authority_key?: string;
   /**
    * Opaque backend identity hash captured at snapshot build time. The
    * operation compares it against `getCurrentBackendIdentity()` on cursor
@@ -245,6 +248,7 @@ export interface SearchSemanticOwnerBinding {
  * downstream plan compiler scopes vector queries to that binding.
  */
 export interface SearchSemanticClientBinding {
+  connectorId?: string | null;
   connectorInstanceId: string;
   displayName?: string | null;
   manifest: SearchSemanticManifest;
@@ -939,19 +943,27 @@ export async function executeSearchSemantic(
         }
       }
     }
-    const connectorId =
-      (grant as { source?: { kind?: unknown; id?: unknown } } | null)?.source?.kind === "connector" &&
-      typeof (grant as { source?: { id?: unknown } } | null)?.source?.id === "string"
-        ? ((grant as { source?: { id?: string } }).source?.id as string)
-        : null;
+    // source.id is authorization identity, not a local connector key. The
+    // host resolves the persisted storage binding and supplies that identity
+    // through each binding manifest.
+    const connectorId: string | null = null;
     if (typeof dependencies.resolveClientBindings === "function") {
       const clientBindings = await dependencies.resolveClientBindings(
         { grant, kind: "client" },
         { connectionId: requestConnectionId }
       );
       for (const cb of clientBindings) {
+        const bindingManifest = cb.manifest as SearchSemanticManifest & {
+          connector_id?: string | null;
+          storage_binding?: { connector_id?: string | null } | null;
+        };
+        const bindingConnectorId =
+          cb.connectorId ??
+          bindingManifest.storage_binding?.connector_id ??
+          bindingManifest.connector_id ??
+          connectorId;
         const planEntries = dependencies.buildSearchPlanForGrant({
-          connectorId,
+          connectorId: bindingConnectorId,
           filter: params.filter,
           filteredStream: params.filteredStream,
           grant,
@@ -961,12 +973,12 @@ export async function executeSearchSemantic(
         if (planEntries.length === 0) {
           skippedSources.push({
             connection_id: cb.connectorInstanceId,
-            source: connectorId ?? "",
+            source: bindingConnectorId ?? "",
           });
           continue;
         }
         perConnectorPlans.push({
-          connectorId,
+          connectorId: bindingConnectorId,
           grant,
           manifest: cb.manifest,
           planEntries,
@@ -993,6 +1005,21 @@ export async function executeSearchSemantic(
 
   // 4. Resolve cursor → snapshot. Fresh request: build & persist; cursor
   //    request: load by id and verify backend identity.
+  const authorityKey = searchAuthorityKey({
+    actor: input.actor,
+    connection_id: requestConnectionId,
+    plans: perConnectorPlans.map((plan) => ({
+      connector_id: plan.connectorId,
+      grant: plan.grant,
+      plan_entries: plan.planEntries,
+    })),
+    query: {
+      filter: params.filter,
+      filtered_stream: params.filteredStream,
+      q: params.q,
+      streams: params.streams,
+    },
+  });
   let snapshot: SearchSemanticSnapshot;
   let snapshotId: string;
   let offset: number;
@@ -1004,6 +1031,9 @@ export async function executeSearchSemantic(
     const loaded = await dependencies.loadSnapshot(decoded.snap);
     if (!loaded) {
       throw new SearchSemanticRequestError("invalid_cursor", "Cursor refers to an expired or unknown snapshot");
+    }
+    if (loaded.authority_key !== authorityKey || loaded.query !== params.q) {
+      throw new SearchSemanticRequestError("invalid_cursor", "Cursor does not match this query and grant authority");
     }
     // Stale-cursor backend-identity check: any divergence ⇒ invalid_cursor.
     // Recomputing under a different model would be dishonest — the spec
@@ -1021,6 +1051,7 @@ export async function executeSearchSemantic(
     // an empty result without touching vector/index storage or snapshots.
     if (perConnectorPlans.length === 0) {
       snapshot = {
+        authority_key: authorityKey,
         backend_hash: dependencies.getCurrentBackendIdentity(),
         query: params.q,
         results: [],
@@ -1034,6 +1065,7 @@ export async function executeSearchSemantic(
         perConnectorPlans,
         q: params.q,
       });
+      snapshot.authority_key = authorityKey;
       snapshotId = snapshot.snapshot_id;
       await dependencies.persistSnapshot(snapshot);
     }

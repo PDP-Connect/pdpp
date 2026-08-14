@@ -75,7 +75,7 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "Postgres clears stale profile provenance on a profile-key change and accepts an explicit replacement",
   "Postgres connector-summary evidence reaches the same rebuild/dirty/reconcile shape",
   "Postgres ground-truth streams + for-keys produce the same shaped facts as SQLite",
-  "Postgres introspection fails closed on an unexpected manifest-storage fault",
+  "Postgres introspection keeps the issued declaration snapshot authoritative",
   "Postgres migrates legacy accepted outcomes to equal named terminal cursor facts",
   "Postgres pool saturation and unlock uncertainty destroy the lock session",
   "Postgres preserves new run identity and rejects an unbound writer",

@@ -138,7 +138,12 @@ async function issueOwnerToken(asUrl: string, subjectId = OWNER_SUBJECT_ID): Pro
 
 // PAR + consent yields a grant-scoped client-kind bearer (pdpp_token_kind: "client").
 // These must NOT reach the owner-agent control surface.
-async function approveClientGrant(asUrl: string, connectorId: string, streamName: string): Promise<string> {
+async function approveClientGrant(
+  asUrl: string,
+  sourceId: string,
+  streamName: string,
+  instanceId: string
+): Promise<string> {
   const par = (
     await fetchJson(`${asUrl}/oauth/par`, {
       body: JSON.stringify({
@@ -147,8 +152,8 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
             access_mode: "continuous",
             purpose_code: "https://pdpp.dev/purpose/analytics",
             purpose_description: "owner-connection reactivate boundary test",
-            source: { id: connectorId, kind: "connector" },
-            streams: [{ fields: ["id"], name: streamName }],
+            source: { id: sourceId, kind: "connector" },
+            streams: [{ fields: ["id"], instance_ids: [instanceId], name: streamName }],
             type: "https://pdpp.dev/data-access",
           },
         ],
@@ -158,10 +163,24 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
       method: "POST",
     })
   ).body as { request_uri?: string };
+  assert.ok(par.request_uri);
+  const review = (
+    await fetchJson(`${asUrl}/consent/review`, {
+      body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    })
+  ).body as { approval_review?: object; approval_review_revision?: string; request_uri?: string };
+  assert.ok(review.approval_review);
+  assert.ok(review.approval_review_revision);
+  assert.equal(review.request_uri, par.request_uri);
   const approved = (
     await fetchJson(`${asUrl}/consent/approve`, {
-      body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
-      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        approval_review_revision: review.approval_review_revision,
+        request_uri: review.request_uri,
+      }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
       method: "POST",
     })
   ).body as { token?: string };
@@ -486,14 +505,22 @@ test("client grant token cannot reactivate (403)", async () => {
       sourceBindingKey: "the owner@example.com",
     });
 
-    // Revoke it via owner token first.
-    const ownerToken = await issueOwnerToken(asUrl);
-    await postRevoke(rsUrl, ownerToken, "/v1/owner/connections/cin_spotify_client_test/revoke");
-
     // Client grant must not reach reactivate.
     const [clientStream] = manifest.streams;
     assert.ok(clientStream, "manifest carries at least one stream");
-    const clientToken = await approveClientGrant(asUrl, connectorKey, clientStream.name);
+    const clientToken = await approveClientGrant(
+      asUrl,
+      manifest.connector_id,
+      clientStream.name,
+      "cin_spotify_client_test"
+    );
+
+    // Revoke it via owner token after minting the client grant. Approval only
+    // authorizes active instances, but the negative-auth assertion targets the
+    // owner-control boundary, not consent eligibility.
+    const ownerToken = await issueOwnerToken(asUrl);
+    await postRevoke(rsUrl, ownerToken, "/v1/owner/connections/cin_spotify_client_test/revoke");
+
     const result = await fetchJson(`${rsUrl}/v1/owner/connections/cin_spotify_client_test/reactivate`, {
       headers: { Authorization: `Bearer ${clientToken}`, "Content-Type": "application/json" },
       method: "POST",

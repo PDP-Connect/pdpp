@@ -27,8 +27,11 @@ import {
   issueOwnerToken as issueOwnerTokenRecord,
   registerDynamicClient,
 } from "../server/auth.ts";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { getSubscriptionSummary } from "../server/stores/client-event-subscription-store.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -121,14 +124,48 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
       method: "POST",
     })
   ).body;
-  const approved = (
-    await fetchJson<ApprovedGrant>(`${asUrl}/consent/approve`, {
-      body: JSON.stringify({ request_uri: par.request_uri, subject_id: "e2e_owner" }),
-      headers: { "Content-Type": "application/json" },
-      method: "POST",
-    })
-  ).body;
-  return approved.token;
+  const review = await fetchJson<{
+    approval_review?: unknown;
+    approval_review_revision?: unknown;
+  }>(`${asUrl}/consent/review`, {
+    body: JSON.stringify({ request_uri: par.request_uri, subject_id: "e2e_owner" }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(review.status, 200, JSON.stringify(review.body));
+  assert.ok(review.body.approval_review && typeof review.body.approval_review === "object");
+  assert.equal(typeof review.body.approval_review_revision, "string");
+  const approved = await fetchJson<ApprovedGrant>(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({
+      approval_review_revision: review.body.approval_review_revision,
+      request_uri: par.request_uri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(approved.status, 200, JSON.stringify(approved.body));
+  assert.ok(approved.body.token);
+  return approved.body.token;
+}
+
+async function seedE2eConnectorInstance(connectorId: string): Promise<string> {
+  const connectorKey = canonicalConnectorKey(connectorId);
+  assert.ok(connectorKey, `expected a canonical connector key for ${connectorId}`);
+  const connectorInstanceId = makeDefaultAccountConnectorInstanceId("e2e_owner", connectorKey);
+  const now = new Date().toISOString();
+  await createRequestConnectorInstanceStore().upsert({
+    connectorId: connectorKey,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: "E2E Spotify account",
+    ownerSubjectId: "e2e_owner",
+    sourceBinding: { fixture: "client-event-subscriptions-e2e" },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+  return connectorInstanceId;
 }
 
 interface CloudEventPayload {
@@ -342,6 +379,7 @@ test("client event subscriptions deliver signed hints end-to-end", async () => {
       ).status,
       201
     );
+    await seedE2eConnectorInstance(connectorId);
 
     const ownerToken = await issueOwnerDeviceToken(asUrl);
     const clientToken = await approveClientGrant(asUrl, connectorId, "top_artists");
@@ -472,6 +510,7 @@ test("grant revoke disables subscription and notifies client", async () => {
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
+    await seedE2eConnectorInstance(connectorId);
     const ownerToken = await issueOwnerDeviceToken(asUrl);
     const clientToken = await approveClientGrant(asUrl, connectorId, "top_artists");
 
@@ -533,6 +572,7 @@ test("trusted owner-agent event subscriptions deliver signed hints and are revok
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
+    await seedE2eConnectorInstance(connectorId);
 
     const ownerSubjectId = "e2e_owner";
     const registered = await registerDynamicClient(
@@ -752,13 +792,15 @@ test("registered owner bearer cannot see client-grant subscriptions", async () =
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
+    await seedE2eConnectorInstance(spotifyManifest.connector_id);
     const ownerToken = await issueOwnerDeviceToken(asUrl);
     const clientToken = await approveClientGrant(asUrl, spotifyManifest.connector_id, "top_artists");
-    await fetchJson(`${rsUrl}/v1/event-subscriptions`, {
+    const created = await fetchJson(`${rsUrl}/v1/event-subscriptions`, {
       body: JSON.stringify({ callback_url: receiver.url }),
       headers: { Authorization: `Bearer ${clientToken}`, "Content-Type": "application/json" },
       method: "POST",
     });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
     const ownerListResp = await fetchJson<SubscriptionListBody>(`${rsUrl}/v1/event-subscriptions`, {
       headers: { Authorization: `Bearer ${ownerToken}` },
     });

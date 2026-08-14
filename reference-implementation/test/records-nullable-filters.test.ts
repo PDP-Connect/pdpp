@@ -173,6 +173,7 @@ function nullableFiltersManifest() {
   return {
     connector_id: "nullable-filters",
     display_name: "Nullable Filters",
+    manifest_uri: "https://sources.example/nullable-filters",
     protocol_version: "0.1.0",
     runtime_requirements: { bindings: { network: { required: true } } },
     streams: [

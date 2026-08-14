@@ -52,6 +52,7 @@ import {
 } from "./connection-id-request.ts";
 import {
   AmbiguousConnectionError,
+  listActiveBindingsForGrant,
   projectBindingForWire,
   resolveRecordIdentityForBinding,
   resolveRequestBindings,
@@ -64,7 +65,6 @@ import {
 import { canonicalConnectorKey } from "./connector-key.ts";
 import { markConnectorSummaryEvidenceDirty } from "./connector-summary-read-model.ts";
 import { applyDatasetSummaryRecordDelta, markDatasetSummaryProjectionStale } from "./dataset-summary-read-model.ts";
-import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "./owner-auth.ts";
 import {
   postgresDeleteAllRecords,
   postgresDeleteRecord,
@@ -83,8 +83,9 @@ import {
 } from "./postgres-records.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "./postgres-storage.ts";
 import {
+  assertExpansionInstanceAuthorized,
+  assertNonEmptyJsonField,
   assertRecordIdentity,
-  assertSafeJsonField,
   buildEffectiveFilter,
   type ExpandResult,
   invalidQueryError,
@@ -102,7 +103,14 @@ import {
   normalizeWindowSelector,
   sqliteFieldJsonPath,
 } from "./record-field-window.ts";
-import { type CompiledFilter, compileRequestFilters, passesRequestFilters, passesTimeRange } from "./record-filters.ts";
+import {
+  type CompiledFilter,
+  compileRequestFilters,
+  jsonPathForTopLevelField,
+  passesRequestFilters,
+  passesTimeConstraint,
+  type TimeConstraint,
+} from "./record-filters.ts";
 import {
   applyRetainedSizeRecordDelta,
   markRetainedSizeConnectionDirty,
@@ -115,7 +123,6 @@ import {
   resolveStorageConnectorId,
   resolveStorageConnectorInstanceId,
 } from "./storage-utils.ts";
-import { makeDefaultAccountConnectorInstanceId } from "./stores/connector-instance-store.ts";
 import { getDefaultConnectorStateStore } from "./stores/connector-state-store.ts";
 import { advanceSqliteDeviceIngestPrefix } from "./stores/device-exporter-store.ts";
 
@@ -272,15 +279,16 @@ interface ManifestStream {
 }
 type RequestParams = Record<string, unknown>;
 interface StreamGrant {
-  connection_id?: string;
   fields?: string[] | null;
+  instance_ids?: string[];
   resources?: string[];
-  time_range?: { since?: string; until?: string } | null;
+  time_constraint?: TimeConstraint | null;
 }
 interface EffectiveReadScope {
   fields: string[] | null;
   resources: string[] | null;
-  timeRange: { since?: string; until?: string } | null;
+  timeConstraint: TimeConstraint | null;
+  timeConstraintField: string | null;
 }
 interface StoredRecordRow {
   __fk?: unknown;
@@ -559,11 +567,11 @@ interface StorageBinding {
 }
 interface ReadRequestBindingsArgs {
   grant: ReadGrant;
-  nativeProviderStorage?: boolean;
+  ownerRead?: boolean;
   ownerSubjectId?: string;
   requestParams: RequestParams;
   storageBinding?: StorageBinding | null;
-  streamName: string;
+  streamName: string | null;
 }
 interface SyncStateOptions {
   allowedStreams?: Iterable<string> | null;
@@ -588,7 +596,6 @@ interface LogicalPosition {
   primary_key?: unknown[];
 }
 type PageOrder = "ASC" | "DESC";
-const SAFE_JSON_FIELD_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 interface PaginationCursor {
   after_version?: number;
   cursor_value?: unknown;
@@ -608,7 +615,6 @@ function buildEffectiveReadScope(
   requiredFields: string[] = []
 ): EffectiveReadScope {
   const effective = buildEffectiveFilter(streamGrant, requestParams, requiredFields);
-  const rawTimeRange = effective.timeRange;
   return {
     fields: Array.isArray(effective.fields)
       ? effective.fields.filter((field): field is string => typeof field === "string")
@@ -616,12 +622,8 @@ function buildEffectiveReadScope(
     resources: Array.isArray(effective.resources)
       ? effective.resources.filter((resource): resource is string => typeof resource === "string")
       : null,
-    timeRange: isRecordData(rawTimeRange)
-      ? {
-          ...(typeof rawTimeRange.since === "string" ? { since: rawTimeRange.since } : {}),
-          ...(typeof rawTimeRange.until === "string" ? { until: rawTimeRange.until } : {}),
-        }
-      : null,
+    timeConstraint: effective.timeConstraint,
+    timeConstraintField: effective.timeConstraintField,
   };
 }
 
@@ -634,7 +636,9 @@ interface ClientEventChange {
   connectionId: string;
   connectorId: string;
   connectorInstanceId: string;
+  data: Record<string, unknown> | null;
   emittedAt: string;
+  recordKey: string;
   stream: string;
   version: number | null;
 }
@@ -1332,7 +1336,12 @@ async function ingestPostgresRecord(
       connectionId: connectorInstanceId,
       connectorId,
       connectorInstanceId,
+      data:
+        record.data && typeof record.data === "object" && !Array.isArray(record.data)
+          ? (record.data as Record<string, unknown>)
+          : null,
       emittedAt: record.emitted_at ?? nowIso(),
+      recordKey: encodeKey(record.key),
       stream,
       version: outcome.version ?? null,
     });
@@ -1626,7 +1635,12 @@ async function ingestSqliteRecord(
     connectionId: connectorInstanceId,
     connectorId,
     connectorInstanceId,
+    data:
+      record.data && typeof record.data === "object" && !Array.isArray(record.data)
+        ? (record.data as Record<string, unknown>)
+        : null,
     emittedAt: effectiveEmittedAt,
+    recordKey: encodeKey(record.key),
     stream,
     version: outcome.version,
   });
@@ -2718,9 +2732,38 @@ function normalizeAggregateRequest(
 }
 
 function jsonExtractExpr(field: string): string {
-  assertSafeJsonField(field, "json_extract");
-  // record_json is our JSON TEXT column; $.<field> is the JSONPath.
-  return `json_extract(record_json, '$.${field}')`;
+  return sqliteTopLevelJsonExpr(field);
+}
+
+function sqliteTopLevelJsonExpr(field: string): string {
+  assertNonEmptyJsonField(field, "json_extract");
+  const path = jsonPathForTopLevelField(field).replace(/'/g, "''");
+  return `json_extract(record_json, '${path}')`;
+}
+
+function appendSqliteGrantTimeConstraint(
+  whereParts: string[],
+  whereBinds: BindValue[],
+  effective: EffectiveReadScope
+): void {
+  const constraint = effective.timeConstraint;
+  if (!constraint) {
+    return;
+  }
+
+  const timeExpr = sqliteTopLevelJsonExpr(constraint.field);
+  const path = jsonPathForTopLevelField(constraint.field).replace(/'/g, "''");
+  const julianExpr = `julianday(${timeExpr})`;
+  whereParts.push(`json_type(record_json, '${path}') = 'text'`);
+  whereParts.push(`${julianExpr} IS NOT NULL`);
+  if (constraint.since !== undefined) {
+    whereParts.push(`${julianExpr} >= julianday(?)`);
+    whereBinds.push(constraint.since);
+  }
+  if (constraint.until !== undefined) {
+    whereParts.push(`${julianExpr} < julianday(?)`);
+    whereBinds.push(constraint.until);
+  }
 }
 
 /**
@@ -2899,7 +2942,7 @@ function buildCursorSeekClause(
  * change).
  *
  * Contract:
- *   - Access-control filters (time_range, resources) are applied in SQL.
+ *   - Access-control filters (time_constraint, resources) are applied in SQL.
  *   - ORDER BY is applied in SQL, reproducing `compareLogicalPositions`.
  *   - Cursor-based seek is applied in SQL; no result is materialized for
  *     rows before the cursor.
@@ -2935,25 +2978,11 @@ function fetchVisibleRecordRowsInMemory({
   limit,
   order,
 }: FetchVisibleRecordsArgs): { hasMore: boolean; rows: VisibleRecordRow[]; scanned: number; underread: false } {
-  const consentTimeField = manifestStream?.consent_time_field;
-
   // Access-control pushdown: keep the same WHERE shape the SQL path uses, just
   // without ORDER BY / LIMIT / cursor-seek.
   const whereParts = ["connector_instance_id = ?", "stream = ?", "deleted = 0"];
   const whereBinds = [connectorInstanceId, stream];
-  if (effective.timeRange && consentTimeField) {
-    assertSafeJsonField(consentTimeField, "consent_time_field");
-    const ctExpr = jsonExtractExpr(consentTimeField);
-    whereParts.push(`${ctExpr} IS NOT NULL`);
-    if (!isNullish(effective.timeRange.since)) {
-      whereParts.push(`${ctExpr} >= ?`);
-      whereBinds.push(new Date(effective.timeRange.since).toISOString());
-    }
-    if (!isNullish(effective.timeRange.until)) {
-      whereParts.push(`${ctExpr} < ?`);
-      whereBinds.push(new Date(effective.timeRange.until).toISOString());
-    }
-  }
+  appendSqliteGrantTimeConstraint(whereParts, whereBinds, effective);
   if (effective.resources && effective.resources.length > 0) {
     const placeholders = effective.resources.map(() => "?").join(", ");
     whereParts.push(`record_key IN (${placeholders})`);
@@ -2967,7 +2996,7 @@ function fetchVisibleRecordRowsInMemory({
   `;
 
   // REVIEWED-DYNAMIC: in-memory fallback for streams whose cursor_field is
-  // not SQL-safe; WHERE clause varies with grant time_range / resources;
+  // not SQL-safe; WHERE clause varies with grant time_constraint / resources;
   // intentionally no LIMIT — JS sort/seek needs the full visible set.
   const visible: VisibleRecordRow[] = [];
   for (const row of iterateDynamicSqlAcknowledged<StoredRecordRow>(sql, whereBinds)) {
@@ -3012,7 +3041,6 @@ function buildPaginatedSqlParts(
   cursorPosition: Required<LogicalPosition> | null,
   order: PageOrder
 ): PaginatedSqlParts {
-  const consentTimeField = manifestStream?.consent_time_field;
   const cursorField = manifestStream?.cursor_field || null;
   const primaryKeyFields = normalizePrimaryKey(manifestStream?.primary_key);
   if (primaryKeyFields.length === 0) {
@@ -3034,19 +3062,7 @@ function buildPaginatedSqlParts(
 
   const whereParts = ["connector_instance_id = ?", "stream = ?", "deleted = 0"];
   const whereBinds: BindValue[] = [connectorInstanceId, stream];
-  if (effective.timeRange && consentTimeField) {
-    assertSafeJsonField(consentTimeField, "consent_time_field");
-    const ctExpr = jsonExtractExpr(consentTimeField);
-    whereParts.push(`${ctExpr} IS NOT NULL`);
-    if (!isNullish(effective.timeRange.since)) {
-      whereParts.push(`${ctExpr} >= ?`);
-      whereBinds.push(new Date(effective.timeRange.since).toISOString());
-    }
-    if (!isNullish(effective.timeRange.until)) {
-      whereParts.push(`${ctExpr} < ?`);
-      whereBinds.push(new Date(effective.timeRange.until).toISOString());
-    }
-  }
+  appendSqliteGrantTimeConstraint(whereParts, whereBinds, effective);
   if (effective.resources && effective.resources.length > 0) {
     const placeholders = effective.resources.map(() => "?").join(", ");
     whereParts.push(`record_key IN (${placeholders})`);
@@ -3135,7 +3151,7 @@ function fetchVisibleRecordRowsPaginated({
     LIMIT ?
   `;
 
-  // REVIEWED-DYNAMIC: WHERE clause varies with grant time_range / resources
+  // REVIEWED-DYNAMIC: WHERE clause varies with grant time_constraint / resources
   // / cursor seek; SQL composed in JS as today; LIMIT N+1 included.
   const collected: VisibleRecordRow[] = [];
   let scanned = 0;
@@ -3231,6 +3247,7 @@ function hydrateExpandedRelations({
   }
 
   for (const expansion of expansions) {
+    assertExpansionInstanceAuthorized(expansion.childGrant, connectorInstanceId);
     const childManifestStream = manifest?.streams?.find((entry) => entry.name === expansion.relationship.stream);
     const childRequiredFields = childManifestStream?.schema?.required ?? [];
     const childEffective = buildEffectiveReadScope(expansion.childGrant, {}, childRequiredFields);
@@ -3301,13 +3318,13 @@ function assignExpansionToParentRow(
  * Slice-2 replacement for the per-child full-scan. Builds one window-function
  * SQL query that:
  *   - narrows by `foreign_key IN (?, ?, ...)` to the current parent page,
- *   - applies the child grant's access-control filters (time_range, resources)
+ *   - applies the child grant's access-control filters (time_constraint, resources)
  *     in SQL,
  *   - assigns ROW_NUMBER() per foreign-key partition ordered by the child's
  *     manifest-declared (cursor_field, primary_key) basis,
  *   - clips the per-partition rank to (has_many: limit + 1) or (has_one: 1).
  *
- * Grant filtering stays in SQL: the child's time_range/resources come from
+ * Grant filtering stays in SQL: the child's time_constraint/resources come from
  * `childEffective` (derived from `expansion.childGrant`) and are pushed into
  * WHERE exactly as the primary path does.
  *
@@ -3335,7 +3352,6 @@ function fetchExpansionChildrenGroupedByForeignKeyInMemory({
     return result;
   }
 
-  const consentTimeField = childManifestStream?.consent_time_field;
   const primaryKeyFields = normalizePrimaryKey(childManifestStream?.primary_key);
   if (primaryKeyFields.length === 0) {
     throw new Error("[records] child stream manifest primary_key is required for expansion");
@@ -3343,25 +3359,12 @@ function fetchExpansionChildrenGroupedByForeignKeyInMemory({
 
   const whereParts = ["connector_instance_id = ?", "stream = ?", "deleted = 0"];
   const whereBinds = [connectorInstanceId, childStream];
-  if (childEffective.timeRange && consentTimeField) {
-    assertSafeJsonField(consentTimeField, "consent_time_field");
-    const ctExpr = jsonExtractExpr(consentTimeField);
-    whereParts.push(`${ctExpr} IS NOT NULL`);
-    if (!isNullish(childEffective.timeRange.since)) {
-      whereParts.push(`${ctExpr} >= ?`);
-      whereBinds.push(new Date(childEffective.timeRange.since).toISOString());
-    }
-    if (!isNullish(childEffective.timeRange.until)) {
-      whereParts.push(`${ctExpr} < ?`);
-      whereBinds.push(new Date(childEffective.timeRange.until).toISOString());
-    }
-  }
+  appendSqliteGrantTimeConstraint(whereParts, whereBinds, childEffective);
   if (childEffective.resources && childEffective.resources.length > 0) {
     const placeholders = childEffective.resources.map(() => "?").join(", ");
     whereParts.push(`record_key IN (${placeholders})`);
     whereBinds.push(...childEffective.resources);
   }
-  assertSafeJsonField(foreignKeyField, "foreign_key");
   const fkExpr = jsonExtractExpr(foreignKeyField);
   const parentPlaceholders = parentKeys.map(() => "?").join(", ");
   whereParts.push(`${fkExpr} IN (${parentPlaceholders})`);
@@ -3374,7 +3377,7 @@ function fetchExpansionChildrenGroupedByForeignKeyInMemory({
 
   // REVIEWED-DYNAMIC: in-memory expansion fallback for child streams whose
   // cursor_field is not SQL-safe; WHERE clause varies with child grant
-  // time_range / resources and parent foreign-key IN-list; intentionally no
+  // time_constraint / resources and parent foreign-key IN-list; intentionally no
   // LIMIT — JS sort/per-parent slice needs the full visible child set for
   // the parent page.
   const rankBound = cardinality === "has_one" ? 1 : limit + 1;
@@ -3416,7 +3419,6 @@ function fetchExpansionChildrenGroupedByForeignKey({
     return result;
   }
 
-  assertSafeJsonField(foreignKeyField, "foreign_key");
   // If the child stream's cursor_field isn't SQL-safe, fall back to an
   // in-memory per-foreign-key group so the expansion still hydrates. Rare in
   // practice (expansion streams are typically the narrow, well-typed ones),
@@ -3452,7 +3454,6 @@ function fetchExpansionChildrenGroupedByForeignKey({
   }
   const pkExpr = jsonExtractExpr(primaryKeyField);
   const cursorField = childManifestStream?.cursor_field || null;
-  const consentTimeField = childManifestStream?.consent_time_field;
 
   const orderByParts: string[] = [];
   if (cursorField) {
@@ -3466,20 +3467,8 @@ function fetchExpansionChildrenGroupedByForeignKey({
   const whereParts = ["connector_instance_id = ?", "stream = ?", "deleted = 0"];
   const whereBinds = [connectorInstanceId, childStream];
 
-  // time_range pushdown — same shape as fetchVisibleRecordRowsPaginated.
-  if (childEffective.timeRange && consentTimeField) {
-    assertSafeJsonField(consentTimeField, "consent_time_field");
-    const ctExpr = jsonExtractExpr(consentTimeField);
-    whereParts.push(`${ctExpr} IS NOT NULL`);
-    if (!isNullish(childEffective.timeRange.since)) {
-      whereParts.push(`${ctExpr} >= ?`);
-      whereBinds.push(new Date(childEffective.timeRange.since).toISOString());
-    }
-    if (!isNullish(childEffective.timeRange.until)) {
-      whereParts.push(`${ctExpr} < ?`);
-      whereBinds.push(new Date(childEffective.timeRange.until).toISOString());
-    }
-  }
+  // time_constraint pushdown has the same shape as fetchVisibleRecordRowsPaginated.
+  appendSqliteGrantTimeConstraint(whereParts, whereBinds, childEffective);
 
   // resources pushdown.
   if (childEffective.resources && childEffective.resources.length > 0) {
@@ -3517,7 +3506,7 @@ function fetchExpansionChildrenGroupedByForeignKey({
   `;
 
   // REVIEWED-DYNAMIC: SQL-pushdown expansion; WHERE clause varies with
-  // child grant time_range / resources and parent foreign-key IN-list;
+  // child grant time_constraint / resources and parent foreign-key IN-list;
   // ORDER BY varies with the child manifest's cursor_field /
   // primary_key; per-partition rank bound (__rn <= ?) caps each parent's
   // child set instead of a top-level LIMIT.
@@ -3539,22 +3528,14 @@ function fetchExpansionChildrenGroupedByForeignKey({
   return result;
 }
 
-function isVisibleSnapshot(
-  snapshot: RecordSnapshot | null,
-  effective: EffectiveReadScope,
-  consentTimeField: string | null | undefined
-): boolean {
+function isVisibleSnapshot(snapshot: RecordSnapshot | null, effective: EffectiveReadScope): boolean {
   if (!snapshot || snapshot.deleted || !snapshot.data) {
     return false;
   }
   if (effective.resources && !effective.resources.includes(snapshot.record_key)) {
     return false;
   }
-  if (
-    effective.timeRange &&
-    consentTimeField &&
-    !passesTimeRange(snapshot.data, effective.timeRange, consentTimeField)
-  ) {
+  if (!passesTimeConstraint(snapshot.data, effective.timeConstraint)) {
     return false;
   }
   return true;
@@ -4020,7 +4001,6 @@ function collectVisibleChanges(
   verifiedAfterVersion: number,
   effectiveSessionMaxVersion: number,
   effective: EffectiveReadScope,
-  consentTimeField: string | undefined,
   compiledFilters: CompiledFilter[],
   recordIdentity: RecordIdentity | null,
   limit: number
@@ -4049,7 +4029,6 @@ function collectVisibleChanges(
         stream,
         verifiedSinceVersion,
         effective,
-        consentTimeField,
         compiledFilters,
         recordIdentity
       );
@@ -4080,15 +4059,14 @@ function resolveChangeGroupRecord(
   stream: string,
   verifiedSinceVersion: number,
   effective: EffectiveReadScope,
-  consentTimeField: string | undefined,
   compiledFilters: CompiledFilter[],
   recordIdentity: RecordIdentity | null
 ): ResponseRecord | null {
   const previous = getSnapshotAtVersion(connectorInstanceId, stream, group.record_key, verifiedSinceVersion);
   const current = getSnapshotAtVersion(connectorInstanceId, stream, group.record_key, group.latest_version);
 
-  const previousVisible = isVisibleSnapshot(previous, effective, consentTimeField);
-  const currentVisible = isVisibleSnapshot(current, effective, consentTimeField);
+  const previousVisible = isVisibleSnapshot(previous, effective);
+  const currentVisible = isVisibleSnapshot(current, effective);
 
   if (current?.deleted) {
     if (!(previousVisible && previous?.data && passesRequestFilters(previous.data, compiledFilters))) {
@@ -4133,7 +4111,6 @@ interface QueryRecordsChangesSinceArgs {
   changesSince: ChangesSinceCursor | null;
   compiledFilters: CompiledFilter[];
   connectorInstanceId: string;
-  consentTimeField: string | undefined;
   effective: EffectiveReadScope;
   limit: number;
   paginationCursor: PaginationCursor | null;
@@ -4146,7 +4123,6 @@ function queryRecordsChangesSince({
   changesSince,
   compiledFilters,
   connectorInstanceId,
-  consentTimeField,
   effective,
   limit,
   paginationCursor,
@@ -4168,7 +4144,6 @@ function queryRecordsChangesSince({
     verifiedAfterVersion,
     effectiveSessionMaxVersion,
     effective,
-    consentTimeField,
     compiledFilters,
     recordIdentity,
     limit
@@ -4282,7 +4257,6 @@ async function buildPagedRecordsResponse({
   const countOutcome = computeGradedRecordCount({
     compiledFilters,
     connectorInstanceId,
-    consentTimeField,
     effective,
     requestParams,
     stream,
@@ -4437,7 +4411,6 @@ export async function queryRecords(
       changesSince: ctx.changesSince,
       compiledFilters: ctx.compiledFilters,
       connectorInstanceId: ctx.connectorInstanceId,
-      consentTimeField: ctx.consentTimeField,
       effective: ctx.effective,
       limit: ctx.limit,
       paginationCursor: ctx.paginationCursor,
@@ -4494,11 +4467,9 @@ function computeGradedRecordCount({
   stream,
   effective,
   compiledFilters,
-  consentTimeField,
 }: {
   compiledFilters: readonly CompiledFilter[];
   connectorInstanceId: string;
-  consentTimeField: string | null | undefined;
   effective: EffectiveReadScope;
   requestParams: RequestParams;
   stream: string;
@@ -4511,7 +4482,6 @@ function computeGradedRecordCount({
   const exactValue = countVisibleRecordsForStream({
     compiledFilters,
     connectorInstanceId,
-    consentTimeField,
     effective,
     stream,
   });
@@ -4533,11 +4503,9 @@ function countVisibleRecordsForStream({
   stream,
   effective,
   compiledFilters,
-  consentTimeField,
 }: {
   compiledFilters: readonly CompiledFilter[];
   connectorInstanceId: string;
-  consentTimeField: string | null | undefined;
   effective: EffectiveReadScope;
   stream: string;
 }): number {
@@ -4558,7 +4526,7 @@ function countVisibleRecordsForStream({
     if (effective.resources && !effective.resources.includes(row.record_key)) {
       continue;
     }
-    if (effective.timeRange && consentTimeField && !passesTimeRange(rawData, effective.timeRange, consentTimeField)) {
+    if (!passesTimeConstraint(rawData, effective.timeConstraint)) {
       continue;
     }
     if (compiledFilters.length && !passesRequestFilters(rawData, compiledFilters)) {
@@ -4596,13 +4564,12 @@ function isVisibleAggregateRow(
   row: AggregateRecordRow,
   rawData: RecordData,
   effective: EffectiveReadScope,
-  consentTimeField: string | null | undefined,
   compiledFilters: readonly CompiledFilter[]
 ): boolean {
   if (effective.resources && !effective.resources.includes(row.record_key)) {
     return false;
   }
-  if (effective.timeRange && consentTimeField && !passesTimeRange(rawData, effective.timeRange, consentTimeField)) {
+  if (!passesTimeConstraint(rawData, effective.timeConstraint)) {
     return false;
   }
   return compiledFilters.length === 0 || passesRequestFilters(rawData, compiledFilters);
@@ -4626,8 +4593,9 @@ function recordWindowTime(value: unknown): number | null {
  * resources, time-range, and compiled filters), so the two surfaces stay in
  * lock-step and we never duplicate grant/filter semantics on a divergent path.
  *
- * Timestamp source is the stream's logical `consent_time_field` — the same
- * field `passesTimeRange` filters on — never the storage ingest `emitted_at`.
+ * Timestamp source for metadata remains the stream's logical
+ * `consent_time_field`, never the storage ingest `emitted_at`. Authorization
+ * independently uses the frozen grant `time_constraint.field`.
  *
  * Honest-omission rules (never estimate; see spec scenario "Window metadata is
  * omitted rather than estimated"):
@@ -4682,7 +4650,7 @@ function computeRecordWindow({
 
   for (const row of rows) {
     const rawData = parseStoredRecordData(row.record_json);
-    if (!isVisibleAggregateRow(row, rawData, effective, consentTimeField, compiledFilters)) {
+    if (!isVisibleAggregateRow(row, rawData, effective, compiledFilters)) {
       continue;
     }
 
@@ -4886,7 +4854,6 @@ export async function aggregateRecords(
   enforceConnectionNarrowing(requestParams, connectorInstanceId);
   const compiledFilters = compileRequestFilters(requestParams.filter, streamGrant, manifestStream);
   const effective = buildEffectiveReadScope(streamGrant, {});
-  const consentTimeField = manifestStream?.consent_time_field || null;
 
   const rows = await listRowsForAggregation(connectorInstanceId, stream);
 
@@ -4906,7 +4873,7 @@ export async function aggregateRecords(
     if (effective.resources && !effective.resources.includes(row.record_key)) {
       continue;
     }
-    if (effective.timeRange && consentTimeField && !passesTimeRange(rawData, effective.timeRange, consentTimeField)) {
+    if (!passesTimeConstraint(rawData, effective.timeConstraint)) {
       continue;
     }
     if (compiledFilters.length && !passesRequestFilters(rawData, compiledFilters)) {
@@ -4991,14 +4958,13 @@ export async function getRecord(
   }
 
   const rawData = parseStoredRecordData(row.record_json);
-  const consentTimeField = mStream?.consent_time_field;
   const requiredFields = mStream?.schema?.required || [];
 
   const effective = buildEffectiveReadScope(streamGrant, {}, requiredFields);
   if (effective.resources && !effective.resources.includes(row.record_key)) {
     throw codedError("Record not found", "not_found");
   }
-  if (effective.timeRange && consentTimeField && !passesTimeRange(rawData, effective.timeRange, consentTimeField)) {
+  if (!passesTimeConstraint(rawData, effective.timeConstraint)) {
     throw codedError("Record not found", "not_found");
   }
 
@@ -5072,15 +5038,14 @@ function assertFieldWindowManifestAuthority(manifest: ReadManifest | null, strea
 
 function assertFieldWindowRecordVisible(
   row: RecordFieldWindowRow,
-  effective: ReturnType<typeof buildEffectiveReadScope>,
-  consentTimeField: string | undefined
+  effective: ReturnType<typeof buildEffectiveReadScope>
 ): void {
   if (effective.resources && !effective.resources.includes(row.record_key)) {
     throw fieldWindowError("not_found", "Record not found", 404);
   }
-  if (effective.timeRange && consentTimeField) {
-    const consentData = { [consentTimeField]: row.consent_time_value };
-    if (!passesTimeRange(consentData, effective.timeRange, consentTimeField)) {
+  if (effective.timeConstraint && effective.timeConstraintField) {
+    const constrainedData = { [effective.timeConstraintField]: row.consent_time_value };
+    if (!passesTimeConstraint(constrainedData, effective.timeConstraint)) {
       throw fieldWindowError("not_found", "Record not found", 404);
     }
   }
@@ -5164,25 +5129,24 @@ export async function getRecordFieldWindow(
   enforceConnectionNarrowing(requestParams, connectorInstanceId);
 
   const mStream = manifest?.streams?.find((s) => s.name === stream);
-  const consentTimeField = mStream?.consent_time_field;
   const requiredFields = mStream?.schema?.required || [];
   const effective = buildEffectiveReadScope(streamGrant, {}, requiredFields);
 
   assertFieldVisibleToGrant(fieldPath, effective.fields);
 
   const fieldPathExpr = sqliteFieldJsonPath(fieldPath);
-  const consentPathExpr = consentTimeField ? sqliteFieldJsonPath(consentTimeField) : null;
+  const constraintPathExpr = effective.timeConstraintField ? sqliteFieldJsonPath(effective.timeConstraintField) : null;
 
   const row = getOne<RecordFieldWindowRow>(
     referenceQueries.recordsGetFieldWindow,
-    buildFieldWindowBinds(fieldPathExpr, consentPathExpr, connectorInstanceId, stream, recordId, selector)
+    buildFieldWindowBinds(fieldPathExpr, constraintPathExpr, connectorInstanceId, stream, recordId, selector)
   );
 
   if (!row) {
     throw fieldWindowError("not_found", "Record not found", 404);
   }
 
-  assertFieldWindowRecordVisible(row, effective, consentTimeField);
+  assertFieldWindowRecordVisible(row, effective);
 
   const fieldClass = classifyFieldType(row.field_type);
   assertReadableStringField(fieldPath, fieldClass);
@@ -5841,14 +5805,12 @@ export async function listStreams(
       sg.name,
     ]);
     const effective = buildEffectiveReadScope(sg, {});
-    const manifestStream = manifest?.streams?.find((stream) => stream.name === sg.name);
-    const consentTimeField = manifestStream?.consent_time_field || null;
     let visibleCount = 0;
     let lastUpdated: string | null = null;
 
     for (const row of rows) {
       const rawData = parseStoredRecordData(row.record_json);
-      if (effective.timeRange && consentTimeField && !passesTimeRange(rawData, effective.timeRange, consentTimeField)) {
+      if (!passesTimeConstraint(rawData, effective.timeConstraint)) {
         continue;
       }
       if (effective.resources && !effective.resources.includes(row.record_key)) {
@@ -5880,7 +5842,8 @@ export async function listStreams(
 // `getBlob`-style flows) with the canonical (connection_id, stream)
 // addressing rule from the public read contract:
 //
-//   - omitted `connection_id` SHALL fan in across the granted connections;
+//   - the grant's closed `instance_ids` set is the fan-in upper bound;
+//   - an omitted request-time `connection_id` reads that full set;
 //   - exactly one matching connection SHALL be auto-selected;
 //   - record/blob identifier ambiguity SHALL raise the typed
 //     `ambiguous_connection` error with `available_connections`.
@@ -6692,11 +6655,10 @@ function compareMergedBuckets(left: AggregateGroup, right: AggregateGroup, isSca
  * pre-existing shape with `connection_id`/`display_name` populated from
  * the sole active binding.
  *
- * When the grant pins per-stream `connection_id`, those streams resolve
- * against the named binding(s) only; streams without the constraint fan
- * in across `defaultBindings`. The `resolveBindingsForStream` callback
- * lets the route adapter apply the same `(request connection_id, grant
- * per-stream connection_id)` rules per stream. When callers do not pass
+ * The grant's per-stream `instance_ids` are the authority, and the request's
+ * optional `connection_id` may narrow that set. The
+ * `resolveBindingsForStream` callback lets the route adapter apply those
+ * rules per stream. When callers do not pass
  * a resolver, the helper falls back to using `defaultBindings` for every
  * stream (preserving the prior single-resolution behavior for callers
  * that do not need per-stream constraint accuracy).
@@ -6748,9 +6710,8 @@ export async function listStreamsAcrossBindings(
     return summaries;
   }
 
-  // Per-stream resolver path: each stream's bindings honor its own
-  // grant-scope `connection_id` constraint. Streams whose grant entry
-  // pins different connections do not bleed each other's counts.
+  // Per-stream resolver path: each stream honors its own closed instance_ids
+  // authority. Streams with different authorized sets do not bleed counts.
   const namedGrants = grantStreams.filter((sg) => sg?.name);
   const perStreamResults = await mapWithConcurrency(
     namedGrants,
@@ -6859,8 +6820,8 @@ export async function getStreamDetailAcrossBindings(
  * should iterate. `warnings` contains the deprecated-alias warning when
  * the caller used `connector_instance_id` on the wire.
  *
- * Honors per-stream `grant.streams[].connection_id` when present; absent
- * constraint preserves cross-connection (fan-in) semantics.
+ * Client instance authority comes only from the selected stream's required
+ * `grant.streams[].instance_ids`. Owner reads opt into the active owner set.
  */
 export async function resolveReadRequestBindings({
   ownerSubjectId,
@@ -6868,7 +6829,7 @@ export async function resolveReadRequestBindings({
   grant,
   requestParams,
   streamName,
-  nativeProviderStorage = false,
+  ownerRead = false,
 }: ReadRequestBindingsArgs) {
   // Canonicalize the storage binding's connector_id at the shared admission
   // boundary. A grant or owner storage binding may still carry the legacy
@@ -6881,44 +6842,24 @@ export async function resolveReadRequestBindings({
   // Decision 1: storage bindings and grants key by connector_key.
   const rawConnectorId = storageBinding?.connector_id || null;
   const connectorId = rawConnectorId ? (canonicalConnectorKey(rawConnectorId) ?? rawConnectorId) : null;
-  if (nativeProviderStorage && connectorId) {
-    const { connectionId } = resolveRequestConnectionId(requestParams);
-    if (connectionId) {
-      const err: CodedReadError = Object.assign(
-        new Error("connection_id is not applicable to provider_native sources."),
-        {
-          code: "invalid_argument",
-        }
-      );
-      err.param =
-        typeof requestParams.connection_id === "string" && requestParams.connection_id
-          ? "connection_id"
-          : "connector_instance_id";
-      throw err;
-    }
-    return {
-      bindings: [
-        {
-          connectorId,
-          connectorInstanceId:
-            storageBinding?.connector_instance_id ||
-            makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId),
-          displayName: null,
-        },
-      ],
-      requestConnectionId: null,
-      warnings: [],
-    };
-  }
-
-  const connectorInstanceIdHint = storageBinding?.connector_instance_id || undefined;
   const streamGrant = grant.streams.find((s) => s.name === streamName);
-  const grantStreamConnectionId = streamGrant?.connection_id || undefined;
+  let authorizedInstanceIds: string[] | null | undefined;
+  if (ownerRead) {
+    authorizedInstanceIds = null;
+  } else if (streamName) {
+    authorizedInstanceIds = streamGrant?.instance_ids;
+  } else {
+    authorizedInstanceIds = [...new Set(grant.streams.flatMap((entry) => entry.instance_ids || []))];
+  }
+  const connectorInstanceIdHint = storageBinding?.connector_instance_id || undefined;
+  const instanceIds = ownerRead
+    ? (await listActiveBindingsForGrant({ connectorId, ownerSubjectId })).map((binding) => binding.connectorInstanceId)
+    : authorizedInstanceIds || [];
   return await Reflect.apply(resolveRequestBindings, undefined, [
     {
+      authorizedInstanceIds: instanceIds,
       connectorId,
       connectorInstanceIdHint,
-      grantStreamConnectionId,
       ownerSubjectId,
       requestParams,
     },
@@ -7094,11 +7035,11 @@ export function getDatasetSummaryStreamRecordTimeBounds(connectorId: string, str
   if (isPostgresStorageBackend()) {
     return { earliest: null, latest: null };
   }
-  if (!SAFE_JSON_FIELD_NAME.test(consentTimeField || "")) {
-    throw new Error("unsafe consent_time_field for dataset summary stream reconciliation");
+  if (!consentTimeField) {
+    throw new Error("consent_time_field is required for dataset summary stream reconciliation");
   }
 
-  const jsonPath = `$.${consentTimeField}`;
+  const jsonPath = jsonPathForTopLevelField(consentTimeField);
   const result = getOne<DatasetTimeBoundsRow>(referenceQueries.recordsDatasetGetStreamTimeBounds, [
     jsonPath,
     jsonPath,
@@ -7135,12 +7076,12 @@ function recordTimeBoundsForManifest(
   for (const stream of manifest.streams) {
     const field = stream?.consent_time_field;
     const streamName = stream?.name;
-    if (typeof field !== "string" || !field || typeof streamName !== "string" || !SAFE_JSON_FIELD_NAME.test(field)) {
+    if (typeof field !== "string" || !field || typeof streamName !== "string") {
       continue;
     }
     const result = getOne<DatasetTimeBoundsRow>(referenceQueries.recordsDatasetGetStreamTimeBounds, [
-      `$.${field}`,
-      `$.${field}`,
+      jsonPathForTopLevelField(field),
+      jsonPathForTopLevelField(field),
       connectorId,
       streamName,
     ]);
@@ -7226,7 +7167,7 @@ function getManifestConsentTimeField(connectorId: string, streamName: string): s
   if (typeof field !== "string" || !field) {
     return null;
   }
-  return SAFE_JSON_FIELD_NAME.test(field) ? field : null;
+  return field;
 }
 
 // Below this, a numeric timestamp is treated as Unix SECONDS; at or above it, as

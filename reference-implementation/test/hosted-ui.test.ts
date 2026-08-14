@@ -20,14 +20,18 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { initiateOwnerDeviceAuthorization } from "../server/auth.ts";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { HOSTED_UI_CSS_PATH } from "../server/hosted-ui.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
 const SPOTIFY_MANIFEST = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
 
 const TEST_PASSWORD = "hosted-ui-test-password";
+const OWNER_SUBJECT_ID = "owner_local";
+const NOW = "2026-05-31T00:00:00.000Z";
 
 interface CloseableTestServer {
   readonly asPort: number;
@@ -88,6 +92,7 @@ async function startPendingConsent(asUrl: string): Promise<string> {
   if (!registerResp.ok) {
     throw new Error(`connector registration failed: ${registerResp.status}`);
   }
+  await seedSpotifyInstance();
   const resp = await fetch(`${asUrl}/oauth/par`, {
     body: JSON.stringify({
       authorization_details: [
@@ -108,6 +113,23 @@ async function startPendingConsent(asUrl: string): Promise<string> {
   });
   const body = (await resp.json()) as { request_uri: string };
   return body.request_uri;
+}
+
+async function seedSpotifyInstance(): Promise<void> {
+  const connectorId = canonicalConnectorKey(SPOTIFY_MANIFEST.connector_id);
+  assert.ok(connectorId, "spotify manifest must resolve to a canonical connector key");
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId: "cin_hosted_ui_spotify",
+    createdAt: NOW,
+    displayName: "Hosted UI Spotify",
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    sourceBinding: { account_hint: "hosted-ui@example.com" },
+    sourceBindingKey: "hosted-ui@example.com",
+    sourceKind: "account",
+    status: "active",
+    updatedAt: NOW,
+  });
 }
 
 /**
@@ -151,7 +173,7 @@ test("hosted-ui: /consent uses the shared hosted-UI layer", async () => {
     assert.match(html, /Longview/, "shows client name");
     assert.match(html, /concert-recommendation profile/, "shows purpose");
     assert.match(html, /data-surface="human"/, "frames consent as a human surface");
-    assert.match(html, /action="\/consent\/approve"/, "keeps allow action");
+    assert.match(html, /action="\/consent\/review"/, "keeps review-first allow action");
     assert.match(html, /action="\/consent\/deny"/, "keeps deny action");
   });
 });
@@ -186,8 +208,20 @@ test("hosted-ui: /device approval page uses the shared hosted-UI layer", async (
 test("hosted-ui: /consent/approve result page uses the shared hosted-UI layer", async () => {
   await withServer({}, async ({ asUrl }) => {
     const requestUri = await startPendingConsent(asUrl);
+    const reviewResp = await fetch(`${asUrl}/consent/review`, {
+      body: JSON.stringify({ request_uri: requestUri, subject_id: "owner_local" }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(reviewResp.status, 200);
+    const review = (await reviewResp.json()) as { approval_review_revision?: unknown };
+    assert.equal(typeof review.approval_review_revision, "string", "consent review returns a revision");
+    const reviewRevision = review.approval_review_revision as string;
     const resp = await fetch(`${asUrl}/consent/approve`, {
-      body: new URLSearchParams({ request_uri: requestUri, subject_id: "owner_local" }).toString(),
+      body: new URLSearchParams({
+        approval_review_revision: reviewRevision,
+        request_uri: requestUri,
+      }).toString(),
       headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
       method: "POST",
     });

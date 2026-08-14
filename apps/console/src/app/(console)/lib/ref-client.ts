@@ -2463,21 +2463,215 @@ export async function refSearch(query: string): Promise<{
   };
 }
 
-export interface PendingApproval {
+export interface PendingConsentApproval {
   approval_id: string;
+  /** Batch requests require the hosted per-source review ceremony. */
+  batch: boolean;
   client_id?: string | null;
   created_at: string;
   grant_preview?: {
     source?: SourceObject | null;
     streams?: Array<{ name?: string } | string>;
   } | null;
-  kind: "consent" | "owner_device";
+  kind: "consent";
   object: "approval";
   user_code?: string | null;
 }
 
+export interface PendingOwnerDeviceApproval {
+  approval_id: string;
+  client_id?: string | null;
+  created_at: string;
+  grant_preview?: null;
+  kind: "owner_device";
+  object: "approval";
+  user_code?: string | null;
+}
+
+export type PendingApproval = PendingConsentApproval | PendingOwnerDeviceApproval;
+
 export async function listPendingApprovals(): Promise<ListResponse<PendingApproval>> {
   return (await refFetch("/_ref/approvals")) as ListResponse<PendingApproval>;
+}
+
+export type ApprovalReviewJson =
+  | boolean
+  | null
+  | number
+  | string
+  | ApprovalReviewJson[]
+  | { [key: string]: ApprovalReviewJson };
+
+export interface ReviewedStreamArtifact {
+  fields: string[];
+  instance_ids: string[];
+  name: string;
+  resources?: string[];
+  time_constraint?: { field: string; since?: string; until?: string };
+}
+
+export interface ReviewedClientArtifact {
+  client_display?: {
+    logo_uri?: string | null;
+    name?: string | null;
+    policy_uri?: string | null;
+    tos_uri?: string | null;
+    uri?: string | null;
+  } | null;
+  client_id: string;
+  registration_mode: string;
+}
+
+export interface ReviewedSourceArtifact {
+  id: string;
+  kind: string;
+}
+
+export interface SourceDeclarationArtifact {
+  accepted_revision_reference?: string;
+  digest: string;
+  publisher_attribution?: {
+    id: string;
+    status: "unverified";
+  };
+  resource_authority?: { status: "local_operator_provisioned" } | { authority_binding: string; status: "verified" };
+  version: string;
+}
+
+export interface ReviewClientClaimsArtifact {
+  commitments: string[];
+}
+
+export interface SingleConsentApprovalArtifact {
+  access_mode: string;
+  ai_training_consented: boolean | null;
+  client: ReviewedClientArtifact;
+  client_claims: ReviewClientClaimsArtifact | null;
+  expires_at: string | null;
+  purpose_code: string;
+  purpose_description: string | null;
+  resolved_streams: ReviewedStreamArtifact[];
+  retention: { max_duration?: string; on_expiry?: string } | null;
+  selection_preset: string | null;
+  source: ReviewedSourceArtifact;
+  source_declaration: SourceDeclarationArtifact;
+  subject: { id: string };
+  version: "reference.approval-review.v1";
+}
+
+export interface BatchConsentApprovalArtifact {
+  access_mode: string | null;
+  approved_source_indexes: number[];
+  client: ReviewedClientArtifact;
+  expires_at: string | null;
+  parent_package_id: string | null;
+  source_narrowing: Record<string, ApprovalReviewJson>;
+  sources: Array<{
+    access_mode: string;
+    client_claims: ReviewClientClaimsArtifact | null;
+    index: number;
+    purpose_code: string;
+    purpose_description: string | null;
+    resolved_streams: ReviewedStreamArtifact[];
+    retention: { max_duration?: string; on_expiry?: string } | null;
+    selection_preset: string | null;
+    source: ReviewedSourceArtifact;
+    source_declaration: SourceDeclarationArtifact;
+  }>;
+  subject: { id: string };
+  version: "reference.batch-approval-review.v1";
+}
+
+export type ConsentApprovalArtifact = SingleConsentApprovalArtifact | BatchConsentApprovalArtifact;
+
+export interface ConsentApprovalReview {
+  approval_id: string;
+  approval_review: ConsentApprovalArtifact;
+  approval_review_revision: string;
+  batch: boolean;
+  kind: "consent";
+  object: "approval_review";
+  request_uri: string;
+}
+
+export interface LegacyConsentApprovalReview {
+  approval_id: string;
+  client: {
+    client_id: string;
+    display: { name: string | null; policy_uri: string | null; tos_uri: string | null; uri: string | null };
+    registration_mode: string;
+  };
+  created_at: string;
+  expires_at: string;
+  grant_outcome: { access_mode: string; description: string };
+  kind: "consent";
+  object: "approval_review";
+  purpose: { code: string | null; description: string | null };
+  retention: ApprovalReviewJson | null;
+  source: { id: string; kind: "connector" | "provider_native" } | null;
+  streams: Array<{
+    client_claims: ApprovalReviewJson | null;
+    connection_id: string | null;
+    fields: string[] | null;
+    name: string;
+    necessity: string | null;
+    resources: ApprovalReviewJson[] | null;
+    time_range: { since: string | null } | null;
+    view: string | null;
+  }>;
+  trust: "unverified";
+}
+
+export interface OwnerDeviceApprovalReview {
+  approval_id: string;
+  client_id: string;
+  created_at: string;
+  expires_at: string;
+  kind: "owner_device";
+  object: "approval_review";
+}
+
+export type ApprovalReview = ConsentApprovalReview | OwnerDeviceApprovalReview;
+
+export async function getPendingApprovalReview(approvalId: string): Promise<ApprovalReview> {
+  const detail = (await refFetch(`/_ref/approvals/${encodeURIComponent(approvalId)}`)) as
+    | LegacyConsentApprovalReview
+    | OwnerDeviceApprovalReview;
+  if (detail.kind !== "consent") {
+    return detail;
+  }
+  const body = (await refFetch("/consent/review", undefined, {
+    body: JSON.stringify({ approval_id: approvalId }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  })) as {
+    approval_review?: unknown;
+    approval_review_revision?: unknown;
+    batch?: unknown;
+    request_uri?: unknown;
+  };
+  if (
+    typeof body.request_uri !== "string" ||
+    typeof body.approval_review_revision !== "string" ||
+    !body.approval_review ||
+    typeof body.approval_review !== "object" ||
+    Array.isArray(body.approval_review)
+  ) {
+    throw new RefRequestError(
+      "consent review did not return an immutable approval artifact",
+      400,
+      JSON.stringify(body)
+    );
+  }
+  return {
+    approval_id: detail.approval_id,
+    approval_review: body.approval_review as ConsentApprovalArtifact,
+    approval_review_revision: body.approval_review_revision,
+    batch: body.batch === true,
+    kind: "consent",
+    object: "approval_review",
+    request_uri: body.request_uri,
+  };
 }
 
 /** Operator-issued OAuth client (one per dashboard-issued bearer). */

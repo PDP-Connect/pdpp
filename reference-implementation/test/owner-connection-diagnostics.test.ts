@@ -139,7 +139,12 @@ async function issueOwnerToken(asUrl: string, subjectId = OWNER_SUBJECT_ID): Pro
 
 // PAR + consent yields a grant-scoped client-kind bearer (pdpp_token_kind:
 // "client"). These must NOT reach the owner-agent control surface.
-async function approveClientGrant(asUrl: string, connectorId: string, streamName: string): Promise<string> {
+async function approveClientGrant(
+  asUrl: string,
+  sourceId: string,
+  streamName: string,
+  instanceId: string
+): Promise<string> {
   const par = (
     await fetchJson(`${asUrl}/oauth/par`, {
       body: JSON.stringify({
@@ -148,8 +153,8 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
             access_mode: "continuous",
             purpose_code: "https://pdpp.dev/purpose/analytics",
             purpose_description: "owner-connection diagnostics boundary test",
-            source: { id: connectorId, kind: "connector" },
-            streams: [{ fields: ["id"], name: streamName }],
+            source: { id: sourceId, kind: "connector" },
+            streams: [{ fields: ["id"], instance_ids: [instanceId], name: streamName }],
             type: "https://pdpp.dev/data-access",
           },
         ],
@@ -159,10 +164,24 @@ async function approveClientGrant(asUrl: string, connectorId: string, streamName
       method: "POST",
     })
   ).body as { request_uri?: string };
+  assert.ok(par.request_uri);
+  const review = (
+    await fetchJson(`${asUrl}/consent/review`, {
+      body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    })
+  ).body as { approval_review?: object; approval_review_revision?: string; request_uri?: string };
+  assert.ok(review.approval_review);
+  assert.ok(review.approval_review_revision);
+  assert.equal(review.request_uri, par.request_uri);
   const approved = (
     await fetchJson(`${asUrl}/consent/approve`, {
-      body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
-      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        approval_review_revision: review.approval_review_revision,
+        request_uri: review.request_uri,
+      }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
       method: "POST",
     })
   ).body as { token?: string };
@@ -599,7 +618,12 @@ test("owner-agent diagnostics rejects a client grant token with 403 and audits i
     // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
     const firstStream = manifest.streams[0];
     assert.ok(firstStream, "manifest carries at least one stream");
-    const clientToken = await approveClientGrant(asUrl, connectorKey, firstStream.name);
+    const clientToken = await approveClientGrant(
+      asUrl,
+      manifest.connector_id,
+      firstStream.name,
+      "cin_spotify_personal"
+    );
 
     const {
       status,

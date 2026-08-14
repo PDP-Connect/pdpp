@@ -11,8 +11,8 @@
  * - scoped to run against a local reference AS + RS (defaults:
  *   AS http://localhost:7662, RS http://localhost:7663)
  * - uses only the existing public reference endpoints:
- *     POST /oauth/register, POST /oauth/par, POST /consent/approve (inline
- *     JSON shortcut), GET /consent (hosted approval page), POST /introspect,
+ *     POST /oauth/register, POST /oauth/par, POST /consent/review,
+ *     POST /consent/approve, GET /consent (hosted approval page),
  *     GET {rs}/v1/streams, GET {rs}/v1/streams/:stream/records
  *
  * What this is NOT:
@@ -69,9 +69,7 @@ interface QueryInfo {
 interface ExampleState {
   clientId: string;
   draft: Draft;
-  introspection: unknown | null;
   lastApprovalError: string | null;
-  lastIntrospectError: string | null;
   lastParError: string | null;
   lastQuery: QueryInfo | null;
   lastQueryError: string | null;
@@ -103,7 +101,6 @@ import {
   buildHostedApprovalUrl,
   buildParRequest,
   denyInline,
-  introspectToken,
   queryStreamRecords,
   queryStreams,
   registerClient,
@@ -164,9 +161,7 @@ export function buildDefaultDraft() {
 const state: ExampleState = {
   clientId: "",
   draft: buildDefaultDraft(),
-  introspection: null,
   lastApprovalError: null,
-  lastIntrospectError: null,
   lastParError: null,
   lastQuery: null,
   lastQueryError: null,
@@ -318,11 +313,6 @@ function renderPage() {
       <div style="margin-top: 6px;"><strong>access_token:</strong> <code>${escapeHtml(state.tokenInfo.token)}</code></div>
       ${conditionalHtml(state.tokenInfo.grantId, `<div><strong>grant_id:</strong> <code>${escapeHtml(state.tokenInfo.grantId || "")}</code></div>`)}
       <details><summary>Issued grant snapshot</summary><pre>${escapeHtml(JSON.stringify(state.tokenInfo.grant || state.tokenInfo, null, 2))}</pre></details>
-      <form method="post" action="/introspect" class="actions">
-        <button type="submit" class="secondary">Introspect token</button>
-      </form>
-      ${conditionalHtml(state.introspection, `<details open><summary>Introspection result</summary><pre>${escapeHtml(JSON.stringify(state.introspection, null, 2))}</pre></details>`)}
-      ${conditionalHtml(state.lastIntrospectError, `<div class="err">${escapeHtml(state.lastIntrospectError || "")}</div>`)}
     `
         : '<div class="muted">No token yet. Approve the request above, or paste a token obtained from the hosted consent page.</div>'
     }
@@ -471,24 +461,8 @@ app.post("/token/paste", (req: Request, res: Response) => {
   const pasted = state.draft.pastedToken;
   if (pasted) {
     state.tokenInfo = { grant: null, grantId: null, source: "pasted from hosted approval", token: pasted };
-    state.introspection = null;
-    state.lastIntrospectError = null;
   } else {
     state.lastApprovalError = "No token pasted.";
-  }
-  res.redirect("/");
-});
-
-app.post("/introspect", async (_req: Request, res: Response) => {
-  state.lastIntrospectError = null;
-  if (!state.tokenInfo?.token) {
-    state.lastIntrospectError = "No token to introspect.";
-    return res.redirect("/");
-  }
-  try {
-    state.introspection = await introspectToken({ asUrl: AS_URL, token: state.tokenInfo.token });
-  } catch (err) {
-    state.lastIntrospectError = errorMessage(err);
   }
   res.redirect("/");
 });
@@ -538,8 +512,6 @@ app.post("/reset", (_req: Request, res: Response) => {
   state.tokenInfo = null;
   state.lastApprovalError = null;
   state.ownerAuthSuspected = false;
-  state.introspection = null;
-  state.lastIntrospectError = null;
   state.lastQuery = null;
   state.lastQueryError = null;
   res.redirect("/");

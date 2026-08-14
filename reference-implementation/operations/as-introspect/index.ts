@@ -6,8 +6,8 @@
  *
  * Owns the RFC 7662-style introspection envelope semantics for `POST
  * /introspect`: token-presence validation, the call into the introspect
- * capability, and the redaction of the AS-internal
- * `grant_storage_binding` field from the public response.
+ * capability, and the optional projection of the AS-internal
+ * `grant_storage_binding` field for a confidential resource server.
  *
  * Boundary rules (see openspec/changes/complete-reference-operation-refactor):
  * - This module SHALL NOT import Fastify, Express, Next, SQLite, Postgres,
@@ -24,6 +24,7 @@ export type AsIntrospectInfo = Record<string, unknown> & {
 };
 
 export interface AsIntrospectDependencies {
+  includeStorageBinding?: boolean;
   introspect: (token: string) => Promise<AsIntrospectInfo> | AsIntrospectInfo;
 }
 
@@ -54,10 +55,10 @@ export async function executeAsIntrospect(
     };
   }
   const info = await deps.introspect(input.token);
-  // The AS-internal `grant_storage_binding` field is never returned to
-  // introspection callers. Redaction lives in the operation so any future
-  // host that mounts this surface inherits the rule automatically.
-  const { grant_storage_binding: _redacted, ...publicInfo } = info as Record<string, unknown>;
+  // Redact the AS-internal binding unless the authenticated host explicitly
+  // identifies the caller as a confidential resource server.
+  const { grant_storage_binding: _redacted, ...redactedInfo } = info as Record<string, unknown>;
+  const publicInfo = deps.includeStorageBinding ? info : redactedInfo;
   return {
     outcome: "success",
     publicInfo: publicInfo as AsIntrospectInfo,

@@ -78,6 +78,7 @@ const HARNESS_MANIFESTS = [
   {
     connector_id: CONNECTOR_A,
     display_name: "Conformance Connector A",
+    manifest_uri: `https://sources.example/${CONNECTOR_A}`,
     protocol_version: "0.1.0",
     runtime_requirements: { bindings: { network: { required: true } } },
     streams: [
@@ -85,12 +86,14 @@ const HARNESS_MANIFESTS = [
         name: "stream_x",
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
         semantics: "mutable_state",
       },
       {
         name: "stream_y",
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
         semantics: "mutable_state",
       },
     ],
@@ -99,6 +102,7 @@ const HARNESS_MANIFESTS = [
   {
     connector_id: CONNECTOR_B,
     display_name: "Conformance Connector B",
+    manifest_uri: `https://sources.example/${CONNECTOR_B}`,
     protocol_version: "0.1.0",
     runtime_requirements: { bindings: { network: { required: true } } },
     streams: [
@@ -106,6 +110,7 @@ const HARNESS_MANIFESTS = [
         name: "stream_x",
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
         semantics: "mutable_state",
       },
     ],

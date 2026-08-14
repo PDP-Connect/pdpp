@@ -4,6 +4,111 @@
     "date": "2026-08-09",
     "reason": "Boot reconciliation now projects its abandons onto run_history, closing a live acceptance blocker: on the UAT instance 7 of 8 run_history rows claiming 'running' were zombies up to two days old, every one of them ALREADY carrying a run.abandoned spine event. Root cause is that both abandon emitters INSERT into spine_events directly (they need the spine_run_abandoned_cause_unique named-constraint idempotency a raw INSERT gives them) while run_history is written ONLY from inside emitSpineEvent, so the event log terminalised and the durable projection did not. A stuck row is not cosmetic: getActiveRun reads it, so the connection is refused every new run with 409 active_run_exists and its coverage checkpoint never leaves not_staged/not_committed (the RECORDS_NO_PROOF class). The +1 mass is repairTerminalRunHistoryDriftSqlite's terminalStatusForEventType branch set, which maps each of the five canonical terminal event types onto the status stores/run-history-writer.ts's toTerminalStatus would have derived, so a repaired row is indistinguishable from a writer-finalized one. That mapping is the load-bearing part: collapsing it to a single 'failed' would misreport a completed or cancelled run's outcome. Repair is deliberately fact-based, not time-based -- it reads the durable terminal event rather than a heartbeat/lease staleness threshold, which would need a guessed window and can be wrong in both directions (killing a slow live run, or waiting out the window before freeing a provably dead one). server/heartbeat-lease.ts was considered and rejected as the wrong primitive twice over: it is presentation-only and answers device-collector liveness, not run terminality. records_emitted is deliberately never written on either path, so records validly committed before the controller died stay committed per the RI-owner ruling. Proven by test/boot-orphan-run-history-projection.test.ts (4 tests): orphan terminalised with a typed reason, committed records retained, drift against an already-terminal spine repaired -- all three fail on the unmodified base -- plus a counterweight proving a run owned by the CURRENT incarnation is left running, which passes before and after and pins the no-over-correction half."
   },
+  "server/source-declaration-trust/live-retrieval.ts": {
+    "allowed_mass": 6,
+    "reason": "Discovery RI (2026-08-11): this is the production send-time DNS-rebinding boundary. It must reject an invalid address set, create a fresh pinned dispatcher per hop, bound the streamed body, and close the dispatcher on fetch failure, EOF, cancellation, and stream error. Those branches are the transport ownership contract proven by live TLS, redirect, late-response, and byte-limit regressions.",
+    "date": "2026-08-11"
+  },
+  "server/source-declaration-trust/retrieval.ts": {
+    "allowed_mass": 34,
+    "reason": "Discovery RI (2026-08-11): bounded declaration retrieval must independently distinguish URL policy, fresh per-hop DNS/address approval, manual redirect limits, absolute deadline, streamed byte cap, late-response cleanup, schema validation, and source identity. These are the fail-closed trust predicates; collapsing them would conflate security outcomes or leave an owned response transport open. Deterministic retrieval and real pinned-socket regressions cover the paths.",
+    "date": "2026-08-11"
+  },
+  "server/source-declaration-trust/revision-store.ts": {
+    "allowed_mass": 4,
+    "reason": "Discovery RI (2026-08-11): immutable accepted-revision storage must canonicalize parsed content, distinguish first acceptance from identical replay, and reject equivocation for the same authority/source/opaque-version key on both SQLite and PostgreSQL. The small branch set is the durable trust invariant proven by backend parity tests.",
+    "date": "2026-08-11"
+  },
+  "server/metadata.ts": {
+    "allowed_mass": 40,
+    "reason": "Discovery RI (2026-08-11): provider-native declaration-pointer emission must validate the exact protected-resource binding before it advertises the pointer. The added conditional keeps this native-only trust assertion at the metadata wire boundary; moving it to a generic helper or caller would either permit invalid metadata emission or split the request resource from the declaration-pointer contract. Focused metadata route coverage proves both native emission and hosted-MCP omission.",
+    "date": "2026-08-11"
+  },
+  "server/routes/root-and-discovery.ts": {
+    "allowed_mass": 29,
+    "reason": "Discovery RI (2026-08-11): the protected-resource route must supply the configured declaration pointer only for provider-native metadata and omit it from the separate hosted-MCP resource. The two explicit route branches preserve resource-scoped advertisement rather than broadening the pointer to every metadata document. Focused native-route coverage proves the distinction.",
+    "date": "2026-08-11"
+  },
+  "server/routes/as-agent-connect.ts": {
+    "allowed_mass": 109,
+    "reason": "Agent-connect durable handoff (2026-08-12): replacing the process-local polling Map with restart-safe SQLite/PostgreSQL rows adds explicit backend branches for hashed polling-code lookup, approval/denial completion, delivered-response recovery, expiry cleanup, and active-token revalidation before returning a retained bearer. The P1 closure adds the remaining fail-closed states: recovery when consent approval commits before attempt completion, expiry enforcement before any approved delivery or replay, exact bearer revocation when an approved attempt expires before delivery, retained expired tombstones so cleanup cannot delete an unreconciled row that a later approval will complete, and approval-completion revocation when it encounters an expired tombstone. The final CAS closure adds the ordered cleanup/complete race states: cleanup tombstones pending/expired rows before final durable recovery/revocation, never overwrites approved rows, completion revokes its just-committed token when an expired tombstone wins, and SQLite expired cleanup pages by integer rowid so batches over 1000 cannot bypass reconciliation. Tombstone collection now has independent durable predicates for pending/approving/approved consent retention, a sibling-aware token-revoke mutation, registration's SQLite guarded insert/PostgreSQL row claim, and a separate bounded historic-row deletion lane; each prevents a distinct token authority race or a non-progressing cleanup page and cannot be collapsed without restoring check-then-act behavior. The denial durability closure adds canonical approval_id-to-request_uri propagation, polling-time denied/expired consent reconciliation after a post-decision completion failure, and SQLite/PostgreSQL restart evidence; these branches keep denial terminal state and agent polling state convergent without issuing a bearer. These branches are the credential handoff contract; extracting them into shallow helpers would hide backend transaction predicates without reducing the state space. Proven by agent-cli SQLite approval/retry/cleanup, restart, crash-seam, cleanup/approval interleaving, approved-expiry/revocation, second-registration/concurrent-polling, 1001-row historic/batch and GC regressions, denial approval_id/restart/failure/expiry journeys, and live-PostgreSQL restart plus cleanup/approval, CAS interleaving, denial recovery, approved-expiry/revocation, GC, sibling delivery, and registration-race proof.",
+    "date": "2026-08-12"
+  },
+  "server/routes/run-interaction.ts": {
+    "allowed_mass": 29,
+    "reason": "Direct-CDP terminal-barrier closure (2026-08-05): run-final cleanup must invoke the presentation terminal barrier for every run, including direct-CDP runs without a managed n.eko lease, before clearing the run nonce. The added hook is the single lifecycle seam that prevents a connector finalization path from skipping target purge; extracting it would obscure the required ordering.",
+    "date": "2026-08-05"
+  },
+  "server/streaming/playground.ts": {
+    "allowed_mass": 26,
+    "reason": "Built-Core direct-CDP oracle (2026-08-05): the dev-only Patchright fixture must launch a real browser, pin one selected Page while opening a decoy, emit browser-surface assistance, support registration-disabled mutation, and terminalize cached run/interaction state. These branches are the bounded discriminator required to prove exact-page frame/input and stale fencing; collapsing them would remove an oracle state or conflate fixture cache policy with run identity.",
+    "date": "2026-08-05"
+  },
+  "server/streaming/routes.ts": {
+    "allowed_mass": 201,
+    "reason": "Core direct-CDP lifecycle closure (2026-08-05): companion and controller authority must be keyed by runId, interactionId, and browserSessionId; direct-target readiness must fail closed before mint; terminalization must invalidate, stop, and force-unregister; and run cleanup must retire every lifecycle. These are independent security and cleanup predicates proven by route and built-Core tests, not incidental branching suitable for a shallow extraction.",
+    "date": "2026-08-05"
+  },
+  "server/streaming/cdp-adapter.ts": {
+    "allowed_mass": 19,
+    "reason": "Direct-CDP Remote Surface 1.5.1 migration (2026-08-05): the adapter must preserve exact-page target discovery, adopted-page URL/title events, opener-gated popup classification, and blank-child deferral while bridging the installed assembled server backend's lifecycle, frame, keyboard-focus, input, viewport, and clipboard events into PDPP's existing wire. Those ordered predicates and the single lifecycle bridge are load-bearing authority/security boundaries; extracting them would either obscure event-state transitions or split the adapter from the one backend owner. Proven by the focused adapter, Remote Surface session, route authorization, and parity regressions.",
+    "date": "2026-08-05"
+  },
+  "server/streaming/protocol-wire.ts": {
+    "allowed_mass": 30,
+    "reason": "Direct-CDP Remote Surface 1.5.1 migration (2026-08-05): the existing PDPP wire must carry the installed backend's keyboard_focus event without changing the SSE protocol's explicit event envelope or weakening its fallback payload handling. The added discriminant and projection are the single compatibility seam for server-side focus detection; removing them would drop the event or duplicate a second focus channel. Proven by the focused adapter, session, route, and parity regressions.",
+    "date": "2026-08-05"
+  },
+  "server/streaming/run-target-registry.ts": {
+    "allowed_mass": 1,
+    "reason": "Run-final direct-CDP target purge (2026-08-05): clearNonce now deletes every target record owned by the terminal run as the crash/timeout safety net before nonce state is cleared. The single added branch is the load-bearing all-target cleanup predicate; TTL remains only defensive eviction.",
+    "date": "2026-08-05"
+  },
+  "server/connector-maintenance-sweep.ts": {
+    "allowed_mass": 18,
+    "reason": "P0/P1/P2 fleet evidence convergence correction (2026-07-30): periodic and startup bounded evidence maintenance must retain a keyset cursor through a durable cross-backend store, acquire a generation-and-token fenced lease before the full read/sweep/write unit, reject malformed/non-resumable results without overwriting the prior cursor, reject a malformed completed result that carries a cursor, retain progress on failure, and discard a completion when its lease was superseded. An incomplete NULL result is valid only when the leased current cursor is also NULL, because the bounded sweep uses the cursor-before-page to retry a heavy first-page fold; after a non-null cursor it remains fail-closed. Startup must likewise retry the valid first-page NULL only through its existing round cap. These independent scheduling-safety branches sit at the orchestration boundary; extracting them would conceal ownership/error ordering or split a small module into shallow helpers. SQLite/real-PostgreSQL restart, cursor-loss, heavy-first-page, overlap, and stale-writer regressions prove the paths.",
+    "date": "2026-07-30"
+  },
+  "server/ref-control.ts": {
+    "allowed_mass": 221,
+    "reason": "PR114 operator approval projection (2026-08-12): the existing approvals queue now distinguishes single consent, which supports the one-click reviewed-revision action, from batch consent, which must route to the hosted per-source review ceremony. The added discriminator prevents the operator surface from implicitly approving every batch source and is proven by projection and console guard tests. This extends the existing bounded approvals projection rather than adding another read model.",
+    "date": "2026-08-12"
+  },
+  "server/routes/as-consent.ts": {
+    "allowed_mass": 87,
+    "reason": "PR114 reviewed-consent ceremony (2026-08-12): the route must keep review and issuance as separate HTTP transitions, map approval_id to a canonical server-side request URI, distinguish single and batch review inputs, reject mutable facts on final approval, and render the exact persisted artifact for resumed HTML. These branches are the public security boundary for explicit human consent; collapsing them would permit post-review mutation or bypass per-source batch confirmation. PR89 consent-exchange hardening applies credential no-store headers to JSON and HTML handoff responses and accepts an optional out-of-band recovery proof at the exchange boundary without exposing that proof in browser HTML. The denial handoff adapter now consumes the canonical request URI returned by the decision operation, so approval_id denial cannot leave an agent attempt pending; the one guard preserves the typed action boundary. Exact-artifact HTML/JSON, stale-revision, console batch, concurrent final-approval, cache-header, denial-reconciliation, and proof-bound replay regressions cover the states.",
+    "date": "2026-08-12"
+  },
+  "server/routes/ref-connectors.ts": {
+    "allowed_mass": 33,
+    "reason": "Fable ruling terminal-read-architecture-fable-0730.md §8 (2026-07-30, identity_inventory) + design doc add-source-perf-design-agy-0730.md R4/R5 (2026-07-30, retained_count_summary + connector_id SET scope). The second increment adds a third accepted profile value (validated in the same one-place guard) and its matching branch/overload fork in sendConnectionScopedConnectorSummary's listConnectorSummaries closure, so the connection-scoped `?connection=` form can also serve retained_count_summary. The added branches are the profile parse/validate guard's extra arm and the closure's third call-site fork; both are the minimum surface for the route to expose a second additional named profile without a second route.",
+    "date": "2026-07-30"
+  },
+  "server/stores/connector-maintenance-cursor-store.ts": {
+    "allowed_mass": 5,
+    "reason": "P1 PostgreSQL-replica maintenance fence (2026-07-30): the singleton cursor must atomically acquire only an unleased/expired row, issue a monotonically increasing generation plus opaque lease token, and condition both commit and failure release on both values. The SQLite BEGIN IMMEDIATE and PostgreSQL conditional UPDATE forms intentionally expose their backend predicates rather than hiding them behind a shallow SQL abstraction. A real PostgreSQL dual-runner regression and SQLite parity prove that an expired stale incomplete owner cannot replace a later complete NULL cursor.",
+    "date": "2026-07-30"
+  },
+  "server/scheduler-manager-factory.ts": {
+    "allowed_mass": 76,
+    "reason": "TypeScript migration (2026-07-27): strict contracts replace implicit JavaScript surfaces for scheduler dependencies, and the original sequential refresh order is preserved with an explicit promise reduction rather than parallelizing manifest resolution and owner-token issuance. The four-point mass increase is the minimum control-flow cost of retaining that ordering while satisfying the no-await-in-loop rule; removing it would change refresh concurrency and behavior.",
+    "date": "2026-07-27"
+  },
+  "server/connector-key.ts": {
+    "allowed_mass": 4,
+    "reason": "Lane C3c TypeScript migration (2026-07-26): canonicalConnectorKey's legacy-alias branch indexed LEGACY_LOCAL_ALIASES[trimmed] with an unchecked string in the original .js; under strict-plus typing that requires trimmed to be narrowed to the object's literal key union first. Added a 4-line isLegacyLocalAliasKey(value): value is LegacyLocalAlias type guard (baseline 2 -> current 4) rather than an unsafe index signature or an `as` assertion on the lookup. No behavior change: the guard's body is the same LEGACY_LOCAL_ALIAS_SET.has(value) check the pre-migration code already performed one line earlier before this branch was ever reached.",
+    "date": "2026-07-26"
+  },
+  "server/local-transformer-child.ts": {
+    "allowed_mass": 1,
+    "reason": "Lane C3c TypeScript migration (2026-07-26): pump()'s `const job = queue.shift()` returns TransformerJob | undefined under noUncheckedIndexedAccess even though `queue.length > 0` in the enclosing while-condition already guarantees an element is present at this single-threaded call site. Added `if (!job) { break; }` (baseline 0 -> current 1) as the honest narrowing guard rather than a forbidden non-null assertion; the branch is unreachable in practice (queue is only ever read/written synchronously within this one module) but the type system cannot prove that from the API shape of Array.prototype.shift alone.",
+    "date": "2026-07-26"
+  },
+  "server/stores/connector-instance-store.js": {
+    "allowed_mass": 28,
+    "reason": "D8 (fix-enroll-connector-instance-pk-collision): a live counterexample proved connector_instances.upsert's INSERT ... ON CONFLICT(owner, connector, source_kind, source_binding_key) is not resilient to a PRIMARY KEY collision against a legacy row for the SAME logical binding whose source_binding_key was computed under an OLDER, larger sourceBinding shape (embedding per-enrollment device_id/source_instance_id) that predates deviceExporterSourceBindingIdentity's stable {kind, local_binding_name}-only shape. That legacy row's id predates makeConnectorInstanceId and coincides with what today's formula computes for this same binding under its current key. Reaching the INSERT already proves the named ON CONFLICT target did not match this binding under its CURRENT key, so a 23505 here means either (a) the colliding row is this same binding under a legacy key (a migration, not a collision), or (b) it is a genuinely unrelated row (must fail closed). Both backends (Postgres try/catch; SQLite equivalent catching SQLITE_CONSTRAINT_PRIMARYKEY) now look up the colliding row and migrate it in place -- UPDATE its source_binding_key/source_binding_json to the current shape and return its SAME connector_instance_id -- ONLY when isSameLogicalBindingUnderLegacyKey proves it (same owner/connector/source_kind, and the local_binding_name embedded in its OWN stored source_binding_json matches); any other collision re-throws the raw 23505 unmodified. Proven load-bearing by a mutation test: reverting the migration logic makes the Postgres D8 regression (device-enroll-postgres-admission-decoupling.test.js) fail deterministically 3/3 runs with the exact live 503 enrollment_identity_conflict symptom; a SQLite unit test (connector-instance-store.test.js) additionally proves the fail-closed path for an unrelated colliding row.",
+    "date": "2026-07-25"
+  },
   "lib/postgres-spine.ts": {
     "allowed_mass": 132,
     "date": "2026-07-20",
@@ -450,5 +555,10 @@
     "allowed_mass": 8,
     "date": "2026-08-11",
     "reason": "New leaf module (2026-08-11, direct-review residual close): extracted resolveNonNegativeMsOrInfinity out of runtime/scheduler.ts's resolveDispatchLivenessCeilingMs, which had accumulated a validation asymmetry (its explicit-value branch accepted any finite number including negative, while its env branch rejected negatives) and a second bug (Number('') coerces to 0, so an empty/whitespace PDPP_DISPATCH_LIVENESS_CEILING_MS silently disabled the dispatch-liveness deadline instead of falling back to the safe default). Both are fixed once, in one place, shared by both branches: reject negative/non-finite in either form, and treat empty/whitespace-only env as UNSET rather than as 0. This is genuine production reuse: resolveMaxRunWallClockMs in scheduler.ts was migrated onto this exact shared resolver (below), not left as a separate hand-rolled duplicate -- a direct diff review caught that an earlier revision of this change claimed 'real reuse' as its justification while resolveMaxRunWallClockMs still had its own hand-rolled, unmigrated implementation, which would have made this a misleading one-caller abstraction. The migration is a DELIBERATE, documented behavior change for two edge cases resolveMaxRunWallClockMs previously got wrong (matching the exact bugs dispatchLivenessCeilingMs had before this change): an explicit negative maxRunWallClockMs is now rejected (previously silently accepted -- only its env form rejected negatives), and an empty/whitespace PDPP_MAX_RUN_WALL_CLOCK_MS now falls to the 4-hour default instead of coercing to 0 (Number('') coerces to 0, silently disabling the connector-attempt watchdog). No existing test exercised either pre-migration edge case (grepped every maxRunWallClockMs test usage: all pass real config values -- 20, 5000, Infinity -- never a negative value or a blank env var), so this migration has zero observed regression surface. SchedulerOptions' own maxRunWallClockMs JSDoc was updated to document the 0/blank-env decision explicitly. A follow-up review rejected an initial __resolveDispatchLivenessCeilingMsForTests test-only export from scheduler.ts once this extraction made the resolver itself a legitimately unit-testable production module. Proven by scheduler-config.test.ts (17 tests as of 2026-08-11; count re-verified by a live node --test run, 17/17 pass): empty/whitespace env resolves to the real default and NOT to 0 (mutation-killed: reverting the trim guard reproduces 0 !== 1800000); a genuine explicit \"0\" is distinct from empty/unset and means disabled; negative/non-numeric values are rejected on both the explicit-value and env forms (mutation-killed: reverting either check reproduces a missing-exception failure); Infinity and a valid positive number resolve exactly; and an explicit value takes precedence over env. scheduler-dispatch-liveness-deadline.test.ts additionally proves the real wiring end to end through createScheduler with real PDPP_DISPATCH_LIVENESS_CEILING_MS env mutation and restoration."
+  },
+  "server/source-approved-authorization.ts": {
+    "allowed_mass": 30,
+    "reason": "PR89 authorization hardening (2026-08-13): approved Source authorization validation must fail closed over retained declaration identity, stream membership, instance_ids, fields, time constraints, resources, unknown members, and widening. These checks are the authority boundary that prevents post-review authorization expansion before code delivery or token redemption; splitting them would hide the ordered validation contract rather than reduce it. PR89 seam receipts and authorization boundary tests cover these branches.",
+    "date": "2026-08-13"
   }
 }

@@ -1285,6 +1285,9 @@ export async function bootstrapPostgresSchema({
 
       CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
         refresh_token_hash TEXT PRIMARY KEY,
+        family_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        parent_generation INTEGER,
         client_id TEXT NOT NULL,
         grant_id TEXT NOT NULL,
         subject_id TEXT NOT NULL,
@@ -1292,13 +1295,13 @@ export async function bootstrapPostgresSchema({
         created_at TEXT NOT NULL,
         expires_at TEXT,
         last_used_at TEXT,
+        superseded_at TEXT,
         revoked_at TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_grant
         ON oauth_refresh_tokens(grant_id, status);
       CREATE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_client_status
         ON oauth_refresh_tokens(client_id, status, expires_at);
-
       CREATE TABLE IF NOT EXISTS grants (
         grant_id TEXT PRIMARY KEY,
         subject_id TEXT NOT NULL,
@@ -1320,6 +1323,7 @@ export async function bootstrapPostgresSchema({
         token_id TEXT PRIMARY KEY,
         grant_id TEXT,
         package_id TEXT,
+        refresh_family_id TEXT,
         subject_id TEXT NOT NULL,
         client_id TEXT,
         token_kind TEXT NOT NULL,
@@ -1331,6 +1335,18 @@ export async function bootstrapPostgresSchema({
         ON tokens(grant_id);
       CREATE INDEX IF NOT EXISTS idx_pg_tokens_client_id
         ON tokens(client_id);
+      CREATE TABLE IF NOT EXISTS consent_exchange_codes (
+        code_hash TEXT PRIMARY KEY,
+        proof_hash TEXT,
+        token_id TEXT NOT NULL REFERENCES tokens(token_id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        redeemed_at TEXT
+      );
+      ALTER TABLE consent_exchange_codes
+        ADD COLUMN IF NOT EXISTS proof_hash TEXT;
+      CREATE INDEX IF NOT EXISTS idx_pg_consent_exchange_codes_expiry
+        ON consent_exchange_codes(expires_at);
 
       CREATE TABLE IF NOT EXISTS grant_packages (
         package_id TEXT PRIMARY KEY,
@@ -1413,6 +1429,9 @@ export async function bootstrapPostgresSchema({
         denied_at TEXT,
         interval_seconds INTEGER NOT NULL DEFAULT 2,
         last_polled_at TEXT,
+        approval_review_revision TEXT,
+        approval_review_digest TEXT,
+        approval_review_json JSONB,
         approval_id TEXT UNIQUE
       );
       CREATE INDEX IF NOT EXISTS idx_pg_pending_consents_status_expires
@@ -1421,19 +1440,94 @@ export async function bootstrapPostgresSchema({
         ADD COLUMN IF NOT EXISTS interval_seconds INTEGER NOT NULL DEFAULT 2;
       ALTER TABLE pending_consents
         ADD COLUMN IF NOT EXISTS last_polled_at TEXT;
+      ALTER TABLE pending_consents
+        ADD COLUMN IF NOT EXISTS approval_review_revision TEXT;
+      ALTER TABLE pending_consents
+        ADD COLUMN IF NOT EXISTS approval_review_digest TEXT;
+      ALTER TABLE pending_consents
+        ADD COLUMN IF NOT EXISTS approval_review_json JSONB;
+
+      CREATE TABLE IF NOT EXISTS agent_connect_attempts (
+        id TEXT PRIMARY KEY,
+        request_uri TEXT NOT NULL,
+        client_id TEXT,
+        polling_code_hash TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        approval_url TEXT NOT NULL,
+        token_url TEXT NOT NULL,
+        interval_seconds INTEGER NOT NULL DEFAULT 2,
+        created_at TEXT NOT NULL,
+        expires_at_ms BIGINT NOT NULL,
+        completed_at TEXT,
+        grant_id TEXT,
+        grant_json JSONB,
+        token TEXT,
+        response_json TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_agent_connect_attempts_request_uri
+        ON agent_connect_attempts(request_uri, status);
+      CREATE INDEX IF NOT EXISTS idx_pg_agent_connect_attempts_status_expires
+        ON agent_connect_attempts(status, expires_at_ms);
 
       ALTER TABLE tokens
         ADD COLUMN IF NOT EXISTS package_id TEXT;
+      ALTER TABLE tokens
+        ADD COLUMN IF NOT EXISTS refresh_family_id TEXT;
       ALTER TABLE oauth_authorization_codes
         ADD COLUMN IF NOT EXISTS package_id TEXT;
       ALTER TABLE oauth_refresh_tokens
         ADD COLUMN IF NOT EXISTS package_id TEXT;
       ALTER TABLE oauth_refresh_tokens
+        ADD COLUMN IF NOT EXISTS family_id TEXT;
+      ALTER TABLE oauth_refresh_tokens
+        ADD COLUMN IF NOT EXISTS generation INTEGER;
+      ALTER TABLE oauth_refresh_tokens
+        ADD COLUMN IF NOT EXISTS parent_generation INTEGER;
+      ALTER TABLE oauth_refresh_tokens
+        ADD COLUMN IF NOT EXISTS superseded_at TEXT;
+      ALTER TABLE oauth_refresh_tokens
         ALTER COLUMN grant_id DROP NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_pg_tokens_package_id
         ON tokens(package_id);
+      CREATE INDEX IF NOT EXISTS idx_pg_tokens_refresh_family
+        ON tokens(refresh_family_id, revoked);
+      UPDATE tokens AS bearer
+         SET revoked = TRUE
+       WHERE bearer.revoked = FALSE
+         AND (
+           bearer.grant_id IN (
+             SELECT legacy.grant_id
+               FROM oauth_refresh_tokens AS legacy
+              WHERE legacy.grant_id IS NOT NULL
+                AND legacy.status <> 'revoked'
+                AND NOT EXISTS (
+                  SELECT 1 FROM tokens AS linked WHERE linked.refresh_family_id = legacy.family_id
+                )
+           )
+           OR bearer.package_id IN (
+             SELECT legacy.package_id
+               FROM oauth_refresh_tokens AS legacy
+              WHERE legacy.package_id IS NOT NULL
+                AND legacy.status <> 'revoked'
+                AND NOT EXISTS (
+                  SELECT 1 FROM tokens AS linked WHERE linked.refresh_family_id = legacy.family_id
+                )
+           )
+         );
+      UPDATE oauth_refresh_tokens AS legacy
+         SET status = 'revoked',
+             revoked_at = COALESCE(
+               legacy.revoked_at,
+               TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+             )
+       WHERE legacy.status <> 'revoked'
+         AND NOT EXISTS (
+           SELECT 1 FROM tokens AS linked WHERE linked.refresh_family_id = legacy.family_id
+         );
       CREATE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_package
         ON oauth_refresh_tokens(package_id, status);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_family_generation
+        ON oauth_refresh_tokens(family_id, generation);
       CREATE INDEX IF NOT EXISTS idx_pg_oauth_authorization_codes_package
         ON oauth_authorization_codes(package_id, status);
 

@@ -104,12 +104,20 @@ function startMockRs() {
 // no-op SIGTERM handler so the runtime must escalate to SIGKILL (the forced
 // path). Records and state are emitted at module top level after START so the
 // runtime flushes the record and stages the cursor before the test aborts.
-function writeStub({ ignoreSigterm }: { ignoreSigterm: boolean }): { stubPath: string; tmpDir: string } {
+function writeStub({ doneOnSigterm, ignoreSigterm }: { doneOnSigterm?: boolean; ignoreSigterm: boolean }): {
+  stubPath: string;
+  tmpDir: string;
+} {
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-runtime-cancel-"));
   const stubPath = join(tmpDir, "stub.mjs");
-  const sigtermLine = ignoreSigterm
-    ? "process.on('SIGTERM', () => { /* deliberately ignore: force SIGKILL escalation */ });"
-    : "// default SIGTERM disposition: terminate the process";
+  let sigtermLine = "// default SIGTERM disposition: terminate the process";
+  if (ignoreSigterm) {
+    sigtermLine = "process.on('SIGTERM', () => { /* deliberately ignore: force SIGKILL escalation */ });";
+  }
+  if (doneOnSigterm) {
+    sigtermLine =
+      "process.on('SIGTERM', () => { emit({ type: 'DONE', status: 'succeeded', records_emitted: 1 }); setTimeout(() => process.exit(0), 10); });";
+  }
   writeFileSync(
     stubPath,
     `
@@ -197,14 +205,17 @@ function assertRunEventsUseDefaultAccountBinding(runId: string): SpineEventRow[]
   return events;
 }
 
-async function runCancelScenario(t: TestContext, { ignoreSigterm, runId }: { ignoreSigterm: boolean; runId: string }) {
+async function runCancelScenario(
+  t: TestContext,
+  { doneOnSigterm, ignoreSigterm, runId }: { doneOnSigterm?: boolean; ignoreSigterm: boolean; runId: string }
+) {
   freshDb(t);
   const { server, requests, ingested } = startMockRs();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   assert.ok(address && typeof address === "object", "expected an AddressInfo from an ephemeral listen(0)");
   const rsUrl = `http://127.0.0.1:${address.port}`;
-  const { stubPath, tmpDir } = writeStub({ ignoreSigterm });
+  const { stubPath, tmpDir } = writeStub({ ...(doneOnSigterm === undefined ? {} : { doneOnSigterm }), ignoreSigterm });
 
   const controller = new AbortController();
   // Abort as soon as the RS has received the flushed record: the run is past
@@ -295,6 +306,9 @@ test("runtime owner-cancel: connector that ignores SIGTERM is force-terminated â
     runId,
   });
 
+  if (outcomeError) {
+    throw outcomeError;
+  }
   const result = asStructuredOutcome(outcome ?? outcomeError);
   assert.equal(result.status, "cancelled", "force-cancelled run resolves status=cancelled");
   assert.equal(
@@ -313,4 +327,28 @@ test("runtime owner-cancel: connector that ignores SIGTERM is force-terminated â
   assert.ok(events.includes("run.cancel_requested"), "a non-terminal run.cancel_requested is recorded");
   assert.ok(events.includes("run.cancelled"), "a terminal run.cancelled is recorded");
   assert.ok(!events.includes("run.failed"), "a force-cancelled run does NOT terminal as run.failed");
+});
+
+test("runtime owner-cancel: a raced successful DONE still returns the cancelled result", async (t) => {
+  const runId = "run_cancel_raced_done";
+  const { outcome, outcomeError, requests } = await runCancelScenario(t, {
+    doneOnSigterm: true,
+    ignoreSigterm: false,
+    runId,
+  });
+
+  if (outcomeError) {
+    throw outcomeError;
+  }
+  const result = asStructuredOutcome(outcome ?? outcomeError);
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.terminal_reason, "owner_cancelled");
+  assert.equal(
+    requests.some((request) => request.method === "PUT" && request.pathname.startsWith("/v1/state/")),
+    false,
+    "a raced successful DONE cannot commit staged state after cancellation"
+  );
+  const events = assertRunEventsUseDefaultAccountBinding(runId).map((event) => event.event_type);
+  assert.ok(events.includes("run.cancelled"));
+  assert.ok(!events.includes("run.completed"));
 });

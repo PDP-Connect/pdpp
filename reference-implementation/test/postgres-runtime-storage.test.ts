@@ -490,7 +490,7 @@ if (POSTGRES_URL) {
       protocol_version: "0.1.0",
       streams: [
         {
-          consent_time_field: "created_at",
+          consent_time_field: "event-time",
           cursor_field: "created_at",
           name: stream,
           primary_key: ["id"],
@@ -502,7 +502,9 @@ if (POSTGRES_URL) {
           schema: {
             properties: {
               created_at: { format: "date-time", type: "string" },
+              "event-time": { format: "date-time", type: "string" },
               id: { type: "string" },
+              mutable_time: { format: "date-time", type: "string" },
               text: { type: "string" },
             },
             required: ["id"],
@@ -514,7 +516,14 @@ if (POSTGRES_URL) {
     };
     const grant = {
       source: { id: connectorId, kind: "connector" },
-      streams: [{ fields: ["id", "text"], name: stream }],
+      streams: [
+        {
+          fields: ["id", "text"],
+          instance_ids: [connectorInstanceId],
+          name: stream,
+          time_constraint: { field: "created_at", since: "2026-06-02T00:00:00.000Z" },
+        },
+      ],
     };
     const tokenInfo = {
       client_id: "cl_pg_lexical_backfill",
@@ -552,8 +561,18 @@ if (POSTGRES_URL) {
           connectorId,
           connectorInstanceId,
           stream,
-          JSON.stringify({ id: "msg-1", text: "Redactable alpha historical row" }),
-          JSON.stringify({ id: "msg-2", text: "Redactable beta historical row" }),
+          JSON.stringify({
+            created_at: "2026-06-01T00:00:00.000Z",
+            id: "msg-1",
+            mutable_time: "2026-06-03T00:00:00.000Z",
+            text: "Redactable alpha historical row",
+          }),
+          JSON.stringify({
+            created_at: "2026-06-02T00:00:00.000Z",
+            id: "msg-2",
+            mutable_time: "2026-06-03T00:00:00.000Z",
+            text: "Redactable beta historical row",
+          }),
           "2026-06-01T00:00:00.000Z",
         ]
       );
@@ -602,7 +621,7 @@ if (POSTGRES_URL) {
       );
       assert.deepEqual(
         page.envelope.data.map((hit) => hit.record_key).sort((a, b) => a.localeCompare(b)),
-        ["msg-1", "msg-2"]
+        ["msg-2"]
       );
     } finally {
       await postgresQuery("DELETE FROM lexical_search_index WHERE connector_id = $1", [connectorId]);
@@ -625,7 +644,7 @@ if (POSTGRES_URL) {
       protocol_version: "0.1.0",
       streams: [
         {
-          consent_time_field: "created_at",
+          consent_time_field: "mutable_time",
           cursor_field: "created_at",
           name: stream,
           primary_key: ["id"],
@@ -636,6 +655,7 @@ if (POSTGRES_URL) {
             properties: {
               created_at: { format: "date-time", type: "string" },
               id: { type: "string" },
+              mutable_time: { format: "date-time", type: "string" },
               title: { type: "string" },
             },
             required: ["id"],
@@ -645,7 +665,7 @@ if (POSTGRES_URL) {
       ],
       version: "1.0.0",
     };
-    const fields = ["id", "title", "created_at"];
+    const fields = ["event-time", "id", "title"];
     const fullGrant = { streams: [{ fields, name: stream }] };
     const resourceGrant = { streams: [{ fields, name: stream, resources: ["a"] }] };
     const timeGrant = {
@@ -653,7 +673,8 @@ if (POSTGRES_URL) {
         {
           fields,
           name: stream,
-          time_range: {
+          time_constraint: {
+            field: "event-time",
             since: "2026-04-02T00:00:00.000Z",
             until: "2026-04-03T00:00:00.000Z",
           },
@@ -668,7 +689,9 @@ if (POSTGRES_URL) {
       await ingestRecord(connectorId, {
         data: {
           created_at: "2026-04-01T00:00:00.000Z",
+          "event-time": "2026-04-01T00:00:00.000Z",
           id: "a",
+          mutable_time: "2026-04-02T12:00:00.000Z",
           title: "Alpha launch",
         },
         key: "a",
@@ -677,7 +700,9 @@ if (POSTGRES_URL) {
       await ingestRecord(connectorId, {
         data: {
           created_at: "2026-04-02T00:00:00.000Z",
+          "event-time": "2026-04-02T00:00:00.000Z",
           id: "b",
+          mutable_time: "2026-04-02T12:00:00.000Z",
           title: "Beta proof",
         },
         key: "b",
@@ -871,7 +896,8 @@ if (POSTGRES_URL) {
 
   test("postgres runtime storage covers records, blobs, spine, lexical, and semantic fallback", async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-    const connectorId = `pg_runtime_${suffix}`;
+    const connectorId = `pg-runtime-${suffix.replaceAll("_", "-")}`;
+    const sourceId = `https://registry.pdpp.org/connectors/${connectorId}`;
     const clientId = `pg_client_${suffix}`;
     const ownerSubjectId = `pg_owner_${suffix}`;
     const stream = "events";
@@ -891,8 +917,43 @@ if (POSTGRES_URL) {
     const manifest = {
       capabilities: { human_interaction: [] },
       connector_id: connectorId,
+      connector_key: connectorId,
       display_name: "Postgres Runtime Test",
+      manifest_uri: sourceId,
       protocol_version: "0.1.0",
+      source_declaration: {
+        declaration_version: `postgres-runtime.${suffix}.v1`,
+        display: { name: "Postgres Runtime Test" },
+        protocol_version: "0.1.0",
+        publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
+        source: { id: sourceId, kind: "connector" },
+        streams: [
+          {
+            consent_time_field: "created_at",
+            cursor_field: "created_at",
+            name: stream,
+            primary_key: ["id"],
+            query: {
+              search: {
+                lexical_fields: ["title", "body"],
+                semantic_fields: ["body"],
+              },
+            },
+            schema: {
+              properties: {
+                body: { type: "string" },
+                created_at: { format: "date-time", type: "string" },
+                id: { type: "string" },
+                title: { type: "string" },
+              },
+              required: ["id"],
+              type: "object",
+            },
+            selection: { fields: true, resources: false },
+            semantics: "mutable_state",
+          },
+        ],
+      },
       streams: [
         {
           consent_time_field: "created_at",
@@ -1119,13 +1180,32 @@ if (POSTGRES_URL) {
       // biome-ignore lint/suspicious/noUnnecessaryConditions: assertion retains its defensive runtime boundary
       assert.ok((retainedConnections[0]?.total_retained_bytes ?? 0) > 0);
 
+      const approvalInstanceStore = createPostgresConnectorInstanceStore();
+      const approvalInstanceNow = new Date().toISOString();
+      const defaultConnectorInstanceId = makeDefaultAccountConnectorInstanceId(
+        OWNER_AUTH_DEFAULT_SUBJECT_ID,
+        connectorId
+      );
+      await approvalInstanceStore.upsert({
+        connectorId,
+        connectorInstanceId: defaultConnectorInstanceId,
+        createdAt: approvalInstanceNow,
+        displayName: "Postgres Runtime Default Account",
+        ownerSubjectId,
+        sourceBinding: { fixture: defaultConnectorInstanceId },
+        sourceBindingKey: defaultConnectorInstanceId,
+        sourceKind: "account",
+        status: "active",
+        updatedAt: approvalInstanceNow,
+      });
+
       const grantInit = await initiateGrant({
         authorization_details: [
           {
             access_mode: "continuous",
             purpose_code: "https://pdpp.dev/purpose/personalization",
             purpose_description: "Postgres runtime storage coverage",
-            source: { id: connectorId, kind: "connector" },
+            source: { id: sourceId, kind: "connector" },
             streams: [{ fields: ["id", "title", "body", "created_at"], name: stream }],
             type: "https://pdpp.dev/data-access",
           },
@@ -1153,7 +1233,7 @@ if (POSTGRES_URL) {
             approval.kind === "consent" &&
             approval.client_id === clientId &&
             approval.grant_preview?.source?.kind === "connector" &&
-            approval.grant_preview?.source?.id === connectorId
+            approval.grant_preview?.source?.id === sourceId
         )
       );
 
@@ -1161,9 +1241,16 @@ if (POSTGRES_URL) {
       if (!approvedOwnerSubjectId) {
         throw new Error("owner subject must be configured");
       }
-      const approved = await approveGrant(deviceCode, approvedOwnerSubjectId);
+      const reviewed = await getPendingConsent(deviceCode, { finalizeReview: true, subjectId: approvedOwnerSubjectId });
+      assert.ok(typeof reviewed?.reviewRevision === "string");
+      const approved = await approveGrant(deviceCode, approvedOwnerSubjectId, {
+        approval_review_revision: reviewed?.reviewRevision,
+      });
       issuedGrantId = (approved.grant as { grant_id: string }).grant_id;
-      assert.deepEqual((approved.grant as { source?: unknown }).source, { id: connectorId, kind: "connector" });
+      assert.deepEqual((approved.grant as { source?: unknown }).source, { id: sourceId, kind: "connector" });
+      assert.deepEqual((approved.grant as { streams: Array<{ instance_ids?: string[] }> }).streams[0]?.instance_ids, [
+        defaultConnectorInstanceId,
+      ]);
       const tokenInfo = castIntrospect(await introspect(approved.token));
       assert.equal(tokenInfo.active, true);
       assert.equal(tokenInfo.grant_id, (approved.grant as { grant_id: string }).grant_id);
@@ -1324,30 +1411,8 @@ if (POSTGRES_URL) {
       });
       assert.deepEqual([...new Set(accountALexicalHits.map((row) => row.record_key))], ["shared"]);
 
-      // Register the default connector instance for this owner so the client-mode
-      // search fan-in (resolveClientBindings -> resolveFanInBindings ->
-      // listActiveBindingsForGrant) can discover an active binding.  ingestRecord
-      // writes to the records table using makeDefaultAccountConnectorInstanceId
-      // but never inserts a connector_instances row; that registration belongs here
-      // in the test setup, not in the ingest path.
-      const defaultConnectorInstanceId = makeDefaultAccountConnectorInstanceId(
-        OWNER_AUTH_DEFAULT_SUBJECT_ID,
-        connectorId
-      );
-      const instanceStore = createPostgresConnectorInstanceStore();
-      const instanceNow = new Date().toISOString();
-      await instanceStore.upsert({
-        connectorId,
-        connectorInstanceId: defaultConnectorInstanceId,
-        createdAt: instanceNow,
-        displayName: connectorId,
-        ownerSubjectId,
-        sourceBinding: {},
-        sourceKind: "account",
-        status: "active",
-        updatedAt: instanceNow,
-      });
-
+      // The grant froze the default instance before approval, so client search
+      // resolves the same namespace that contains records a and b.
       const searchDeps = {
         buildOwnerReadGrantForManifest: () => grant,
         resolveGrantManifest: async () => ({ manifest }),

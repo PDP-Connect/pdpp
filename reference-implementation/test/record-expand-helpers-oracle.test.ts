@@ -6,18 +6,15 @@
 //     (filters non-string/empty array members, wraps a scalar, [] otherwise);
 //   - parseIntegerValue: the integer coercion behind filter comparisons (accepts
 //     integer numbers, trims decimal strings, rejects floats / non-numeric);
-//   - assertSafeJsonField: the injection guard restricting an interpolated
-//     `$.<field>` JSON path to a safe SQL identifier.
+//   - assertNonEmptyJsonField: validates the Source contract's non-empty
+//     literal top-level field reference before backends quote or bind it.
 // All pure, all previously untested by name. No DB.
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  assertSafeJsonField,
-  normalizePrimaryKey,
-  parseIntegerValue,
-  SAFE_JSON_FIELD,
-} from "../server/record-expand-helpers.ts";
+import { assertNonEmptyJsonField, normalizePrimaryKey, parseIntegerValue } from "../server/record-expand-helpers.ts";
+
+const NON_EMPTY_STRING_ERROR = /non-empty string/;
 
 test("normalizePrimaryKey cleans an array, wraps a scalar string, and returns [] otherwise", () => {
   assert.deepEqual(normalizePrimaryKey(["a", "", "b", 123, null]), ["a", "b"]);
@@ -41,21 +38,10 @@ test("parseIntegerValue accepts integer numbers and integer strings, rejecting f
   assert.equal(parseIntegerValue(undefined), null);
 });
 
-test("SAFE_JSON_FIELD admits identifier-shaped fields and rejects the rest", () => {
-  assert.ok(SAFE_JSON_FIELD.test("field_1"));
-  assert.ok(SAFE_JSON_FIELD.test("_x"));
-  assert.ok(!SAFE_JSON_FIELD.test("1field")); // leading digit
-  assert.ok(!SAFE_JSON_FIELD.test("a.b")); // dot
-  assert.ok(!SAFE_JSON_FIELD.test("a b")); // space
-  assert.ok(!SAFE_JSON_FIELD.test("")); // empty
-});
-
-test("assertSafeJsonField throws on an unsafe field and passes a safe identifier", () => {
-  // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
-  assert.throws(() => assertSafeJsonField("a.b", "field"), /Unsafe JSON field field/);
-  // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
-  assert.throws(() => assertSafeJsonField(123, "field"), /Unsafe JSON field field/);
-  // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
-  assert.throws(() => assertSafeJsonField("", "field"), /Unsafe JSON field field/);
-  assert.doesNotThrow(() => assertSafeJsonField("good_field", "field"));
+test("assertNonEmptyJsonField accepts arbitrary literal keys and rejects absent values", () => {
+  for (const field of ["field_1", "1field", "a.b", "a b", "a-b", 'a"b', "時刻"]) {
+    assert.doesNotThrow(() => assertNonEmptyJsonField(field, "field"));
+  }
+  assert.throws(() => assertNonEmptyJsonField(123, "field"), NON_EMPTY_STRING_ERROR);
+  assert.throws(() => assertNonEmptyJsonField("", "field"), NON_EMPTY_STRING_ERROR);
 });

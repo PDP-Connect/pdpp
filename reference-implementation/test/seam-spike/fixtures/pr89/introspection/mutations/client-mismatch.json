@@ -1,0 +1,6 @@
+{
+  "kind": "response",
+  "path": "pdpp.client_id",
+  "value": "wrong-client",
+  "expected": "context.identity_mismatch"
+}

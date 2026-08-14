@@ -6,9 +6,17 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { getGrantPackageIdForGrant, listGrantPackagesForOwner, parsePendingConsentRequestUri } from "../server/auth.ts";
+import {
+  approveGrant,
+  denyGrant,
+  getGrantPackageIdForGrant,
+  listGrantPackagesForOwner,
+  parsePendingConsentRequestUri,
+  revokeGrantPackage,
+} from "../server/auth.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const REGEXP_1 = /Confirm each source/;
 const REGEXP_2 = /Reference-experimental batch consent/;
@@ -18,7 +26,7 @@ const REGEXP_5 = /I confirm allowing all/;
 const REGEXP_6 = /Approve-all is not available/;
 const REGEXP_7 = /sensitive_no_time_bound/;
 const REGEXP_8 = /three_or_more_sensitive_sources/;
-const REGEXP_9 = /requires a re-asserting confirmation/;
+const REGEXP_9 = /requires (?:a re-asserting )?confirmation/;
 const REGEXP_10 = /out-of-range/;
 const REGEXP_11 = /Broad setup/;
 const REGEXP_12 = /reference warning threshold/;
@@ -32,12 +40,17 @@ const REGEXP_19 = /widening is forbidden/;
 const REGEXP_20 = /not in the staged field set/;
 const REGEXP_21 = /earlier than the staged bound/;
 const REGEXP_22 = /not a valid ISO-8601 instant/;
-const REGEXP_23 = /no field projection/;
 const REGEXP_24 = /not in the approved set/;
 const REGEXP_25 = /Narrow this source/;
 const REGEXP_26 = /name="narrow_streams_0"/;
 const REGEXP_27 = /name="narrow_fields_0__/;
 const REGEXP_28 = /name="narrow_since_0__/;
+const REGEXP_29 = /Client-authored claims/;
+const CONSENT_EXCHANGE_CODE_RE = /cex_[0-9a-f]{64}/;
+const LEGACY_PROJECTION_REVISION_RE = /^reference\.legacy-connector-projection\.v1:sha256:[0-9a-f]{64}$/;
+const PACKAGE_ID_RE = /gpkg_[a-zA-Z0-9]+/;
+const SPOTIFY_BATCH_COMMITMENT = "Only use Spotify listening history for playlist suggestions.";
+const REDDIT_BATCH_COMMITMENT = "Only use Reddit posts for community summaries.";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -51,6 +64,35 @@ function countRows(sql: string): number {
   const row = getDb().prepare(sql).get<{ n: number }>();
   assert.ok(row, `count query returns a row: ${sql}`);
   return row.n;
+}
+
+function countConsentEvents(deviceCode: string, eventType: string): number {
+  return (
+    getDb()
+      .prepare(
+        "SELECT COUNT(*) AS count FROM spine_events WHERE object_id = ? AND object_type = 'pending_consent' AND event_type = ?"
+      )
+      .get(deviceCode, eventType) as { count: number }
+  ).count;
+}
+
+function createDecisionPause(): { hook: () => Promise<void>; paused: Promise<void>; release: () => void } {
+  let markPaused: () => void = () => undefined;
+  let release: () => void = () => undefined;
+  const paused = new Promise<void>((resolve) => {
+    markPaused = resolve;
+  });
+  const resumed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    hook: async () => {
+      markPaused();
+      await resumed;
+    },
+    paused,
+    release,
+  };
 }
 
 function requirePackageId(body: GateResponseBody): string {
@@ -99,6 +141,21 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>) {
         method: "POST",
       });
       assert.ok(resp.status < 400, `connector registration for ${manifest.connector_id} should succeed`);
+      const connectorId = new URL(manifest.connector_id).pathname.split("/").filter(Boolean).at(-1);
+      assert.ok(connectorId);
+      const now = new Date().toISOString();
+      await createSqliteConnectorInstanceStore().upsert({
+        connectorId,
+        connectorInstanceId: `cin_batch_${connectorId}`,
+        createdAt: now,
+        displayName: `${connectorId} batch fixture`,
+        ownerSubjectId: "owner_local",
+        sourceBinding: { fixture: connectorId },
+        sourceBindingKey: `batch:${connectorId}`,
+        sourceKind: "manual",
+        status: "active",
+        updatedAt: now,
+      });
     }
     await fn({ asUrl, github, reddit, spotify });
   } finally {
@@ -176,10 +233,57 @@ async function consentPage(asUrl: string, requestUri: string): Promise<{ status:
   return { html: await resp.text(), status: resp.status };
 }
 
-async function approve(asUrl: string, requestBody: Record<string, unknown>): Promise<GateResult> {
+function sourceCardHtml(html: string, sourceIndex: number): string {
+  const start = html.indexOf(`aria-label="Source ${sourceIndex}"`);
+  assert.notEqual(start, -1, `expected source ${sourceIndex} card`);
+  const next = html.indexOf(`aria-label="Source ${sourceIndex + 1}"`, start + 1);
+  return next === -1 ? html.slice(start) : html.slice(start, next);
+}
+
+async function approve(
+  asUrl: string,
+  requestBody: Record<string, unknown>,
+  options: { confirmReviewedDecision?: boolean } = {}
+): Promise<GateResult> {
+  // The review artifact owns the complete batch decision. The final approval
+  // only re-asserts that artifact by revision; source choices must not be
+  // accepted again at the approval boundary.
+  const reviewBody = { ...requestBody };
+  if (
+    reviewBody.approved_source_indexes === undefined &&
+    reviewBody.source_narrowing === undefined &&
+    reviewBody.confirm_approve_all === undefined
+  ) {
+    reviewBody.confirm_approve_all = true;
+  }
+  const reviewResp = await fetch(`${asUrl}/consent/review`, {
+    body: JSON.stringify(reviewBody),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const reviewResult = {
+    body: (await reviewResp.json().catch(() => null)) as GateResponseBody | null,
+    status: reviewResp.status,
+  };
+  if (reviewResp.status !== 200) {
+    return reviewResult;
+  }
+  const reviewedBody = reviewResult.body as GateResponseBody & {
+    approval_review?: unknown;
+    approval_review_revision?: unknown;
+  };
+  assert.ok(reviewedBody.approval_review && typeof reviewedBody.approval_review === "object");
+  assert.equal(typeof reviewedBody.approval_review_revision, "string");
+  const finalBody: Record<string, unknown> = {
+    approval_review_revision: reviewedBody.approval_review_revision,
+    request_uri: requestBody.request_uri,
+  };
+  if (options.confirmReviewedDecision !== false) {
+    finalBody.confirm_reviewed_decision = "1";
+  }
   const resp = await fetch(`${asUrl}/consent/approve`, {
-    body: JSON.stringify(requestBody),
-    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(finalBody),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   return { body: (await resp.json().catch(() => null)) as GateResponseBody | null, status: resp.status };
@@ -193,12 +297,62 @@ async function approveForm(asUrl: string, fields: Record<string, unknown>): Prom
       params.append(key, String(item));
     }
   }
-  const resp = await fetch(`${asUrl}/consent/approve`, {
+  if (!(params.has("approved_source_indexes") || params.has("source_narrowing") || params.has("confirm_approve_all"))) {
+    params.set("confirm_approve_all", "1");
+  }
+  const reviewResp = await fetch(`${asUrl}/consent/review`, {
     body: params.toString(),
     headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
     method: "POST",
   });
+  const reviewResult = {
+    body: (await reviewResp.json().catch(() => null)) as GateResponseBody | null,
+    status: reviewResp.status,
+  };
+  if (reviewResp.status !== 200) {
+    return reviewResult;
+  }
+  const reviewedBody = reviewResult.body as GateResponseBody & {
+    approval_review?: unknown;
+    approval_review_revision?: unknown;
+  };
+  assert.ok(reviewedBody.approval_review && typeof reviewedBody.approval_review === "object");
+  assert.equal(typeof reviewedBody.approval_review_revision, "string");
+  const finalParams = new URLSearchParams({
+    approval_review_revision: reviewedBody.approval_review_revision as string,
+    confirm_reviewed_decision: "1",
+    request_uri: String(fields.request_uri ?? ""),
+  });
+  const resp = await fetch(`${asUrl}/consent/approve`, {
+    body: finalParams.toString(),
+    headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
+  });
   return { body: (await resp.json().catch(() => null)) as GateResponseBody | null, status: resp.status };
+}
+
+async function approveBatchHtml(asUrl: string, requestUri: string, approvedSourceIndexes: number[]): Promise<Response> {
+  const review = await fetch(`${asUrl}/consent/review`, {
+    body: JSON.stringify({
+      approved_source_indexes: approvedSourceIndexes,
+      request_uri: requestUri,
+      subject_id: "owner_local",
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(review.status, 200, await review.clone().text());
+  const reviewed = (await review.json()) as { approval_review_revision?: unknown };
+  assert.equal(typeof reviewed.approval_review_revision, "string");
+  return fetch(`${asUrl}/consent/approve`, {
+    body: new URLSearchParams({
+      approval_review_revision: reviewed.approval_review_revision as string,
+      confirm_reviewed_decision: "1",
+      request_uri: requestUri,
+    }).toString(),
+    headers: { Accept: "text/html", "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
+  });
 }
 
 /** Narrows a `{status, body}` result's body from `T | null` to `T`, failing the assertion if null. */
@@ -221,6 +375,68 @@ function issuedGrant(result: GateResult): IssuedGrant {
   return grant as IssuedGrant;
 }
 
+test("batch consent terminal decision is exclusive across approval and denial", async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const body = unwrapBody(
+      await par(asUrl, [
+        detail({ id: spotify.connector_id, kind: "connector" }, [{ name: "top_artists" }]),
+        detail({ id: reddit.connector_id, kind: "connector" }, [{ name: "posts" }]),
+      ])
+    );
+    const code = parsePendingConsentRequestUri(body.request_uri);
+    assert.ok(code);
+    const review = await fetch(`${asUrl}/consent/review`, {
+      body: JSON.stringify({
+        approved_source_indexes: [0, 1],
+        request_uri: body.request_uri,
+        subject_id: "owner_local",
+      }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(review.status, 200);
+    const revision = ((await review.json()) as { approval_review_revision: string }).approval_review_revision;
+    const pause = createDecisionPause();
+    const denial = denyGrant(code, { beforeCasHook: pause.hook });
+    await pause.paused;
+    const approval = await approveGrant(code, "owner_local", { approval_review_revision: revision });
+    pause.release();
+    await assert.rejects(
+      denial,
+      (error: unknown) => error instanceof Error && "code" in error && error.code === "approval_conflict"
+    );
+    assert.equal(typeof approval.token, "string");
+    assert.equal(countConsentEvents(code, "consent.denied"), 0);
+    assert.equal(countRows("SELECT COUNT(*) AS n FROM grant_packages"), 1);
+
+    const body2 = unwrapBody(
+      await par(asUrl, [
+        detail({ id: spotify.connector_id, kind: "connector" }, [{ name: "top_artists" }]),
+        detail({ id: reddit.connector_id, kind: "connector" }, [{ name: "posts" }]),
+      ])
+    );
+    const code2 = parsePendingConsentRequestUri(body2.request_uri);
+    assert.ok(code2);
+    const review2 = await fetch(`${asUrl}/consent/review`, {
+      body: JSON.stringify({
+        approved_source_indexes: [0, 1],
+        request_uri: body2.request_uri,
+        subject_id: "owner_local",
+      }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    const revision2 = ((await review2.json()) as { approval_review_revision: string }).approval_review_revision;
+    assert.equal(await denyGrant(code2), true);
+    await assert.rejects(
+      approveGrant(code2, "owner_local", { approval_review_revision: revision2 }),
+      (error: unknown) => error instanceof Error && "code" in error && error.code === "approval_conflict"
+    );
+    assert.equal(countConsentEvents(code2, "consent.denied"), 1);
+    assert.equal(countRows("SELECT COUNT(*) AS n FROM grant_packages"), 1);
+  });
+});
+
 test("batch consent gate: page defaults to per-source confirmation and suppresses approve-all for continuous all-streams", async () => {
   await withHarness(async ({ asUrl, spotify, reddit }) => {
     const parResult = await par(asUrl, [
@@ -241,6 +457,33 @@ test("batch consent gate: page defaults to per-source confirmation and suppresse
     assert.match(html, REGEXP_3);
     assert.match(html, REGEXP_4);
     assert.doesNotMatch(html, REGEXP_5);
+  });
+});
+
+test("batch consent gate: top-level client_claims render under the matching source cards", async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const body = unwrapBody(
+      await par(asUrl, [
+        detail({ id: spotify.connector_id, kind: "connector" }, [{ name: "top_artists" }], {
+          client_claims: { commitments: [SPOTIFY_BATCH_COMMITMENT] },
+        }),
+        detail({ id: reddit.connector_id, kind: "connector" }, [{ name: "posts" }], {
+          client_claims: { commitments: [REDDIT_BATCH_COMMITMENT] },
+        }),
+      ])
+    );
+
+    assert.ok(body.request_uri);
+    const { status, html } = await consentPage(asUrl, body.request_uri);
+    assert.equal(status, 200);
+    const spotifyCard = sourceCardHtml(html, 1);
+    const redditCard = sourceCardHtml(html, 2);
+    assert.match(spotifyCard, REGEXP_29);
+    assert.match(redditCard, REGEXP_29);
+    assert.ok(spotifyCard.includes(SPOTIFY_BATCH_COMMITMENT));
+    assert.ok(!spotifyCard.includes(REDDIT_BATCH_COMMITMENT));
+    assert.ok(redditCard.includes(REDDIT_BATCH_COMMITMENT));
+    assert.ok(!redditCard.includes(SPOTIFY_BATCH_COMMITMENT));
   });
 });
 
@@ -324,7 +567,7 @@ test("batch consent gate: explicit per-source indexes issue only the selected ch
     assert.equal(issuedGrant(approved).child_grants.length, 1);
     const [firstChild] = issuedGrant(approved).child_grants;
     assert.ok(firstChild);
-    assert.equal(firstChild.source.id, "reddit");
+    assert.equal(firstChild.source.id, reddit.connector_id);
 
     const db = getDb();
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM grants").get() as { n: number }).n, 1);
@@ -355,7 +598,7 @@ test("batch consent gate: approved sources become independent child grants under
       issuedGrant(approved)
         .child_grants.map((child) => child.source.id)
         .sort(),
-      ["reddit", "spotify"]
+      [reddit.connector_id, spotify.connector_id]
     );
 
     const db = getDb();
@@ -383,6 +626,61 @@ test("batch consent gate: approved sources become independent child grants under
   });
 });
 
+test("batch consent gate: HTML approval hands off the package token durably", async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const staged = unwrapBody(
+      await par(asUrl, [
+        detail({ id: spotify.connector_id, kind: "connector" }, [{ name: "top_artists" }]),
+        detail({ id: reddit.connector_id, kind: "connector" }, [{ name: "posts" }]),
+      ])
+    );
+    const approval = await approveBatchHtml(asUrl, staged.request_uri || "", [0, 1]);
+    assert.equal(approval.status, 200);
+    const code = (await approval.text()).match(CONSENT_EXCHANGE_CODE_RE)?.[0];
+    assert.ok(code);
+    const exchange = await fetch(`${asUrl}/consent/exchange`, {
+      body: JSON.stringify({ code }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(exchange.status, 200);
+    const result = (await exchange.json()) as {
+      grant: { child_grants?: unknown[]; package?: boolean };
+      package_id?: string;
+      token?: string;
+    };
+    assert.ok(result.package_id?.startsWith("gpkg_"));
+    assert.equal(result.grant.package, true);
+    assert.equal(result.grant.child_grants?.length, 2);
+    assert.ok(result.token);
+  });
+});
+
+test("batch consent gate: a revoked package is not delivered by a stored exchange code", async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const staged = unwrapBody(
+      await par(asUrl, [
+        detail({ id: spotify.connector_id, kind: "connector" }, [{ name: "top_artists" }]),
+        detail({ id: reddit.connector_id, kind: "connector" }, [{ name: "posts" }]),
+      ])
+    );
+    const approval = await approveBatchHtml(asUrl, staged.request_uri || "", [0, 1]);
+    const html = await approval.text();
+    const code = html.match(CONSENT_EXCHANGE_CODE_RE)?.[0];
+    const packageId = html.match(PACKAGE_ID_RE)?.[0];
+    assert.ok(code);
+    assert.ok(packageId);
+    await revokeGrantPackage(packageId);
+    const exchange = await fetch(`${asUrl}/consent/exchange`, {
+      body: JSON.stringify({ code }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(exchange.status, 404);
+    assert.equal((await exchange.text()).includes("tok_"), false);
+  });
+});
+
 test("batch consent gate: low-risk approve-all requires re-asserting confirmation", async () => {
   await withHarness(async ({ asUrl, spotify, reddit }) => {
     const entries = [
@@ -391,10 +689,14 @@ test("batch consent gate: low-risk approve-all requires re-asserting confirmatio
     ];
     const first = await par(asUrl, entries);
 
-    const missingConfirmation = await approve(asUrl, {
-      request_uri: unwrapBody(first).request_uri,
-      subject_id: "owner_local",
-    });
+    const missingConfirmation = await approve(
+      asUrl,
+      {
+        request_uri: unwrapBody(first).request_uri,
+        subject_id: "owner_local",
+      },
+      { confirmReviewedDecision: false }
+    );
     assert.equal(missingConfirmation.status, 400);
     assert.match(unwrapBody(missingConfirmation).error?.message ?? "", REGEXP_9);
 
@@ -449,13 +751,57 @@ test("batch consent gate: staged batch remains source-bounded in storage", async
     };
     const stored = JSON.parse(row.params_json) as {
       request_kind: string;
-      entries: { source_binding: { id: string } }[];
+      entries: {
+        source_binding: { id: string };
+        source_declaration_snapshot: {
+          declaration: {
+            declaration_version: string;
+            extensions?: Record<string, { connector?: { id?: string; version?: string } }>;
+            publisher: { id: string };
+            source: { id: string; kind: string };
+            streams: { name: string }[];
+          };
+          declaration_version: string;
+          snapshot_version: string;
+          source: { id: string; kind: string };
+        };
+      }[];
     };
     assert.equal(stored.request_kind, "pdpp_selection_request_batch");
     assert.deepEqual(
       stored.entries.map((entry) => entry.source_binding.id),
-      ["spotify", "reddit"]
+      [spotify.connector_id, reddit.connector_id]
     );
+    const [spotifySnapshot, redditSnapshot] = stored.entries.map((entry) => entry.source_declaration_snapshot);
+    assert.ok(spotifySnapshot);
+    assert.ok(redditSnapshot);
+    for (const snapshot of [spotifySnapshot, redditSnapshot]) {
+      assert.match(snapshot.declaration_version, LEGACY_PROJECTION_REVISION_RE);
+      assert.equal(snapshot.snapshot_version, "reference.source-declaration-snapshot.v1");
+      assert.equal(snapshot.declaration.declaration_version, snapshot.declaration_version);
+    }
+    assert.deepEqual(spotifySnapshot.source, { id: spotify.connector_id, kind: "connector" });
+    assert.deepEqual(redditSnapshot.source, { id: reddit.connector_id, kind: "connector" });
+    const [firstStoredEntry] = stored.entries;
+    assert.ok(firstStoredEntry);
+    assert.deepEqual(firstStoredEntry.source_declaration_snapshot.declaration.source, {
+      id: spotify.connector_id,
+      kind: "connector",
+    });
+    assert.deepEqual(firstStoredEntry.source_declaration_snapshot.declaration.publisher, {
+      id: "https://pdpp.dev/reference-implementation",
+    });
+    assert.equal(
+      firstStoredEntry.source_declaration_snapshot.declaration.declaration_version,
+      firstStoredEntry.source_declaration_snapshot.declaration_version
+    );
+    assert.equal("connector_id" in firstStoredEntry.source_declaration_snapshot.declaration, false);
+    assert.equal("version" in firstStoredEntry.source_declaration_snapshot.declaration, false);
+    const collectionExtension =
+      firstStoredEntry.source_declaration_snapshot.declaration.extensions?.["https://pdpp.org/profile/collection"];
+    assert.ok(collectionExtension);
+    assert.deepEqual(collectionExtension.connector, { id: spotify.manifest_uri, version: spotify.version });
+    assert.equal(firstStoredEntry.source_declaration_snapshot.declaration.streams[0]?.name, "top_artists");
   });
 });
 
@@ -513,7 +859,7 @@ test("batch consent gate: over-soft-cap requests are flagged with affected sourc
     assert.equal(stored.over_soft_cap, true);
     assert.deepEqual(
       stored.over_cap_sources.map((source) => source.id),
-      ["reddit"]
+      [reddit.connector_id]
     );
 
     // The ceremony flags the over-cap condition and names the affected source.
@@ -557,7 +903,13 @@ test("batch consent gate: a package mixing access modes across approved sources 
 
 interface StoredGrant {
   source?: { id: string };
-  streams: { name: string; fields?: string[]; time_range?: { since: string } }[];
+  streams: {
+    name: string;
+    fields?: string[];
+    instance_ids?: string[];
+    time_constraint?: { field: string; since?: string };
+    time_range?: { since: string };
+  }[];
 }
 
 function childGrantStreams(
@@ -598,12 +950,12 @@ test("batch consent narrowing: owner defers a source by approving a subset", asy
     assert.equal(issuedGrant(approved).child_grants.length, 1);
     const [onlySpotifyChild] = issuedGrant(approved).child_grants;
     assert.ok(onlySpotifyChild);
-    assert.equal(onlySpotifyChild.source.id, "spotify");
+    assert.equal(onlySpotifyChild.source.id, spotify.connector_id);
 
     const db = getDb();
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM grants").get() as { n: number }).n, 1);
     // No reddit grant issued from this ceremony.
-    assert.equal(childGrantStreams(db, requirePackageId(unwrapBody(approved)), "reddit"), null);
+    assert.equal(childGrantStreams(db, requirePackageId(unwrapBody(approved)), reddit.connector_id), null);
   });
 });
 
@@ -631,11 +983,11 @@ test("batch consent narrowing: HTML form defers a source even when nested contro
     assert.equal(issuedGrant(approved).child_grants.length, 1);
     const [formSpotifyChild] = issuedGrant(approved).child_grants;
     assert.ok(formSpotifyChild);
-    assert.equal(formSpotifyChild.source.id, "spotify");
+    assert.equal(formSpotifyChild.source.id, spotify.connector_id);
 
     const db = getDb();
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM grants").get() as { n: number }).n, 1);
-    assert.equal(childGrantStreams(db, requirePackageId(unwrapBody(approved)), "reddit"), null);
+    assert.equal(childGrantStreams(db, requirePackageId(unwrapBody(approved)), reddit.connector_id), null);
   });
 });
 
@@ -658,14 +1010,14 @@ test("batch consent narrowing: owner reduces a wildcard source to a single strea
     assert.equal(approved.status, 200);
 
     const db = getDb();
-    const spotifyStreams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), "spotify");
+    const spotifyStreams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), spotify.connector_id);
     assert.ok(spotifyStreams);
     assert.deepEqual(
       spotifyStreams.map((s) => s.name),
       ["top_artists"]
     );
     // reddit untouched.
-    const redditStreams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), "reddit");
+    const redditStreams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), reddit.connector_id);
     assert.ok(redditStreams);
     assert.deepEqual(
       redditStreams.map((s) => s.name),
@@ -699,7 +1051,7 @@ test("batch consent narrowing: owner reduces a stream to a subset of staged fiel
     assert.equal(approved.status, 200);
 
     const db = getDb();
-    const streams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), "spotify");
+    const streams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), spotify.connector_id);
     assert.ok(streams);
     assert.equal(streams.length, 1);
     const [fieldNarrowedStream] = streams;
@@ -728,11 +1080,12 @@ test("batch consent narrowing: owner tightens an existing time bound", async () 
     assert.equal(approved.status, 200);
 
     const db = getDb();
-    const streams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), "spotify");
+    const streams = childGrantStreams(db, requirePackageId(unwrapBody(approved)), spotify.connector_id);
     assert.ok(streams);
     const [timeBoundStream] = streams;
-    assert.ok(timeBoundStream?.time_range);
-    assert.equal(timeBoundStream.time_range.since, "2026-03-01T00:00:00Z");
+    assert.ok(timeBoundStream?.time_constraint);
+    assert.equal(timeBoundStream.time_constraint.field, "source_updated_at");
+    assert.equal(timeBoundStream.time_constraint.since, "2026-03-01T00:00:00Z");
   });
 });
 
@@ -833,11 +1186,10 @@ test("batch consent narrowing: a malformed since value is rejected before issuin
   });
 });
 
-test("batch consent narrowing: a field subset on an unprojected stream is rejected", async () => {
+test("batch consent narrowing: omitted fields resolve from the snapshot and may be narrowed", async () => {
   await withHarness(async ({ asUrl, spotify, reddit }) => {
-    // spotify top_artists staged with NO field projection. A field subset
-    // cannot be proven narrower against an unprojected (full-record) stream, so
-    // the narrowing is rejected rather than silently issuing the full record.
+    // Omitted fields resolve to the snapshot's complete field set at staging,
+    // so owner narrowing has a concrete immutable baseline.
     const body = unwrapBody(
       await par(asUrl, [
         detail({ id: spotify.connector_id, kind: "connector" }, [{ name: "top_artists" }]),
@@ -845,16 +1197,15 @@ test("batch consent narrowing: a field subset on an unprojected stream is reject
       ])
     );
 
-    const rejected = await approve(asUrl, {
+    const approved = await approve(asUrl, {
       approved_source_indexes: [0, 1],
       request_uri: body.request_uri,
       source_narrowing: { 0: { fields: { top_artists: ["id"] } } },
       subject_id: "owner_local",
     });
-    assert.equal(rejected.status, 400);
-    assert.match(unwrapBody(rejected).error?.message ?? "", REGEXP_23);
-
-    assert.equal(countRows("SELECT COUNT(*) AS n FROM grants"), 0);
+    assert.equal(approved.status, 200);
+    const streams = childGrantStreams(getDb(), requirePackageId(unwrapBody(approved)), spotify.connector_id);
+    assert.deepEqual(streams?.[0]?.fields, ["id", "name"]);
   });
 });
 

@@ -15,6 +15,7 @@ import { createSqliteConnectorInstanceStore } from "../server/stores/connector-i
 import { writeSqliteRunHistoryForSpineEvent } from "../server/stores/run-history-writer.ts";
 
 const CONNECTOR_ID = "systemic_redaction_route_probe";
+const CONNECTOR_URI = "https://registry.pdpp.dev/connectors/systemic-redaction-route-probe";
 const CONNECTOR_INSTANCE_ID = "cin_systemic_redaction_route_probe";
 const INTERNAL_RUN_ID = "run_internal_secret_storage_detail";
 const NOW = "2026-08-13T00:00:00.000Z";
@@ -65,7 +66,9 @@ function freshDb(t: TestContext): void {
 function manifest() {
   return {
     connector_id: CONNECTOR_ID,
+    connector_key: CONNECTOR_ID,
     display_name: "Systemic redaction route probe",
+    manifest_uri: CONNECTOR_URI,
     protocol_version: "0.1.0",
     streams: [
       {
@@ -76,6 +79,8 @@ function manifest() {
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
+        semantics: "mutable_state",
       },
     ],
     version: "1.0.0",

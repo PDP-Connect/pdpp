@@ -1,0 +1,6 @@
+{
+  "kind": "response",
+  "path": "pdpp.source.id",
+  "value": "https://wrong.example/source",
+  "expected": "context.source_mismatch"
+}

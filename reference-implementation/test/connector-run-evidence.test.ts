@@ -7,7 +7,7 @@
  * connector-run-evidence.js has no co-named test. The async
  * getLatestConnectorRunSummary needs the spine store and is out of scope
  * here; these tests pin the three pure, synchronous projections directly:
- *   - getConnectorRunEvidenceSource: connector-source id gating,
+ *   - getConnectorRunEvidenceConnectorId: storage connector id gating,
  *   - getManifestRefreshPolicy: capabilities shape gating,
  *   - getMaximumStalenessSeconds: positive-finite-number gating.
  */
@@ -16,17 +16,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  getConnectorRunEvidenceSource,
+  getConnectorRunEvidenceConnectorId,
   getManifestRefreshPolicy,
   getMaximumStalenessSeconds,
 } from "../server/connector-run-evidence.ts";
 
-test("getConnectorRunEvidenceSource returns the id only for a connector source", () => {
-  assert.equal(getConnectorRunEvidenceSource({ id: "gmail", kind: "connector" }), "gmail");
-  assert.equal(getConnectorRunEvidenceSource({ id: "apple", kind: "provider_native" }), null);
-  assert.equal(getConnectorRunEvidenceSource({ id: "", kind: "connector" }), null);
-  assert.equal(getConnectorRunEvidenceSource({ kind: "connector" }), null);
-  assert.equal(getConnectorRunEvidenceSource(null), null);
+test("getConnectorRunEvidenceConnectorId returns the id only from a storage binding", () => {
+  assert.equal(getConnectorRunEvidenceConnectorId({ connector_id: "gmail" }), "gmail");
+  assert.equal(getConnectorRunEvidenceConnectorId({ connector_id: "" }), null);
+  assert.equal(getConnectorRunEvidenceConnectorId({}), null);
+  assert.equal(getConnectorRunEvidenceConnectorId(null), null);
 });
 
 test("getManifestRefreshPolicy reads capabilities.refresh_policy or null", () => {

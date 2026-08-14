@@ -160,7 +160,8 @@ function buildFieldAggregationCapabilities(
 function buildFieldCapabilityEntry(
   field: string,
   schema: Schema,
-  ctx: CapabilityContext
+  ctx: CapabilityContext,
+  advertiseFilterCapabilities: boolean
 ): [string, Record<string, unknown>] {
   const { grantedFields, rangeFilters, fieldDeclarations, lexicalFields, semanticFields, aggregations } = ctx;
   const granted = !grantedFields || grantedFields.has(field);
@@ -191,25 +192,29 @@ function buildFieldCapabilityEntry(
       ...(declaredType ? { type: declaredType } : {}),
       ...(declaredRole ? { role: declaredRole } : {}),
       aggregation: buildFieldAggregationCapabilities(aggregations, field, granted),
-      exact_filter: buildFieldCapabilityFlag({
-        declared: isExactFilterableSchema(schema),
-        granted,
-      }),
       granted,
       lexical_search: buildFieldCapabilityFlag({
         declared: lexicalFields.has(field),
         granted,
-      }),
-      range_filter: buildFieldCapabilityFlag({
-        declared: Boolean(rangeOperators),
-        granted,
-        operators: rangeOperators || undefined,
       }),
       schema,
       semantic_search: buildFieldCapabilityFlag({
         declared: semanticFields.has(field),
         granted,
       }),
+      ...(advertiseFilterCapabilities
+        ? {
+            exact_filter: buildFieldCapabilityFlag({
+              declared: isExactFilterableSchema(schema),
+              granted,
+            }),
+            range_filter: buildFieldCapabilityFlag({
+              declared: Boolean(rangeOperators),
+              granted,
+              operators: rangeOperators || undefined,
+            }),
+          }
+        : {}),
     },
   ];
 }
@@ -258,9 +263,10 @@ export function buildFieldCapabilities(
     rangeFilters,
     semanticFields,
   };
+  const advertiseFilterCapabilities = streamGrant === null;
   return Object.fromEntries(
     Object.entries(properties).map(([field, schema]) =>
-      buildFieldCapabilityEntry(field, schema, fieldCapabilityContext)
+      buildFieldCapabilityEntry(field, schema, fieldCapabilityContext, advertiseFilterCapabilities)
     )
   );
 }
