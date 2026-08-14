@@ -89,9 +89,9 @@ test("buildClientSourceDescriptor: grant.source wins over storage_binding", () =
   );
 });
 
-test("buildClientSourceDescriptor: falls back to storage_binding connector when no grant.source", () => {
+test("buildClientSourceDescriptor: does not expose storage_binding as public source identity", () => {
   const tokenInfo = { grant_storage_binding: { connector_id: "fallback-connector" } };
-  assert.deepEqual(buildClientSourceDescriptor(tokenInfo), { id: "fallback-connector", kind: "connector" });
+  assert.equal(buildClientSourceDescriptor(tokenInfo), null);
 });
 
 test("buildClientSourceDescriptor: null when neither grant.source nor storage binding present", () => {

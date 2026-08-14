@@ -363,8 +363,8 @@ test("passesGrantRecordConstraints rejects a record key outside the resource all
   assert.equal(passesGrantRecordConstraints({}, "k1", grant, manifestStream()), true);
 });
 
-test("passesGrantRecordConstraints applies the grant time_range through the consent field", () => {
-  const grant = { time_range: { since: "2026-01-10T00:00:00Z" } };
+test("passesGrantRecordConstraints applies the frozen grant time_constraint field", () => {
+  const grant = { time_constraint: { field: "received_at", since: "2026-01-10T00:00:00Z" } };
   const stream = manifestStream();
   assert.equal(passesGrantRecordConstraints({ received_at: "2026-01-01T00:00:00Z" }, "k1", grant, stream), false);
   assert.equal(passesGrantRecordConstraints({ received_at: "2026-01-20T00:00:00Z" }, "k1", grant, stream), true);
@@ -373,7 +373,7 @@ test("passesGrantRecordConstraints applies the grant time_range through the cons
 test("passesGrantRecordConstraints combines resource and time-range gates", () => {
   const grant = {
     resources: ["k1"],
-    time_range: { until: "2026-02-01T00:00:00Z" },
+    time_constraint: { field: "received_at", until: "2026-02-01T00:00:00Z" },
   };
   const stream = manifestStream();
   // In resource set AND before until -> allowed.

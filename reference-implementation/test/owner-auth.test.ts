@@ -10,6 +10,7 @@ import { getOwnerDeviceAuthorizationByUserCode, initiateOwnerDeviceAuthorization
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { closeDb, getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -21,7 +22,10 @@ const SPOTIFY_MANIFEST = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manif
 const TEST_DCR_INITIAL_ACCESS_TOKEN = "pdpp-reference-test-initial-access-token";
 const TEST_PASSWORD = "placeholder-test-password";
 const CUSTOM_SUBJECT_ID = "owner_testing_custom";
+const OWNER_SUBJECT_ID = "owner_local";
+const NOW = "2026-05-31T00:00:00.000Z";
 const CSRF_HIDDEN_FIELD_PATTERN = /<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/;
+const CONSENT_REQUEST_PATTERN = /Consent request/;
 
 interface CloseableServer {
   close: (callback?: (err?: Error) => void) => unknown;
@@ -108,7 +112,11 @@ async function withServer(
   }
 }
 
-async function startPendingConsent(asUrl: string, overrides: Record<string, unknown> = {}): Promise<string> {
+async function startPendingConsent(
+  asUrl: string,
+  overrides: Record<string, unknown> = {},
+  instanceOwnerSubjectIds: readonly string[] = [OWNER_SUBJECT_ID, CUSTOM_SUBJECT_ID]
+): Promise<string> {
   const registerResp = await fetch(`${asUrl}/connectors`, {
     body: JSON.stringify(SPOTIFY_MANIFEST),
     headers: { "Content-Type": "application/json" },
@@ -118,6 +126,7 @@ async function startPendingConsent(asUrl: string, overrides: Record<string, unkn
     const text = await registerResp.text();
     throw new Error(`connector registration failed: ${registerResp.status} ${text}`);
   }
+  await seedSpotifyInstance(instanceOwnerSubjectIds);
   const resp = await fetch(`${asUrl}/oauth/par`, {
     body: JSON.stringify({
       authorization_details: [
@@ -146,6 +155,54 @@ async function startPendingConsent(asUrl: string, overrides: Record<string, unkn
     throw new Error(`par did not return request_uri: ${JSON.stringify(body)}`);
   }
   return body.request_uri;
+}
+
+async function reviewPendingConsent(
+  asUrl: string,
+  requestUri: string,
+  cookie: string,
+  subjectId?: string
+): Promise<string> {
+  const resp = await fetch(`${asUrl}/consent/review`, {
+    body: JSON.stringify({ request_uri: requestUri, ...(subjectId ? { subject_id: subjectId } : {}) }),
+    headers: { Accept: "application/json", "Content-Type": "application/json", Cookie: cookie },
+    method: "POST",
+  });
+  const text = await resp.text();
+  assert.equal(resp.status, 200, text);
+  const body = JSON.parse(text) as {
+    approval_review?: object;
+    approval_review_revision?: string;
+    request_uri?: string;
+  };
+  assert.ok(body.approval_review);
+  assert.ok(body.approval_review_revision);
+  assert.equal(body.request_uri, requestUri);
+  return body.approval_review_revision;
+}
+
+async function seedSpotifyInstance(
+  ownerSubjectIds: readonly string[] = [OWNER_SUBJECT_ID, CUSTOM_SUBJECT_ID]
+): Promise<void> {
+  const connectorId = canonicalConnectorKey(SPOTIFY_MANIFEST.connector_id);
+  assert.ok(connectorId, "spotify manifest must resolve to a canonical connector key");
+  const store = createSqliteConnectorInstanceStore();
+  await Promise.all(
+    ownerSubjectIds.map((ownerSubjectId) =>
+      store.upsert({
+        connectorId,
+        connectorInstanceId: `cin_owner_auth_spotify_${ownerSubjectId}`,
+        createdAt: NOW,
+        displayName: "Owner Auth Spotify",
+        ownerSubjectId,
+        sourceBinding: { account_hint: `${ownerSubjectId}@example.com` },
+        sourceBindingKey: `${ownerSubjectId}@example.com`,
+        sourceKind: "account",
+        status: "active",
+        updatedAt: NOW,
+      })
+    )
+  );
 }
 
 function getRawSetCookieList(resp: Response): string[] {
@@ -315,6 +372,52 @@ test("owner-auth placeholder: when PDPP_OWNER_PASSWORD unset, /consent and /devi
   });
 });
 
+test("owner-auth placeholder: open local-dev HTML display defers subject-bound resolution to JSON review", async () => {
+  const customSubjectId = "u1";
+  await withServer({}, async ({ asUrl }) => {
+    const requestUri = await startPendingConsent(asUrl, {}, [customSubjectId]);
+
+    const display = await fetch(`${asUrl}/consent?request_uri=${encodeURIComponent(requestUri)}`, {
+      headers: { Accept: "text/html" },
+      redirect: "manual",
+    });
+    const displayHtml = await display.text();
+    assert.equal(display.status, 200, displayHtml);
+    assert.match(displayHtml, CONSENT_REQUEST_PATTERN);
+
+    const review = await fetch(`${asUrl}/consent/review`, {
+      body: JSON.stringify({ request_uri: requestUri, subject_id: customSubjectId }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    const reviewText = await review.text();
+    assert.equal(review.status, 200, reviewText);
+    const reviewBody = JSON.parse(reviewText) as {
+      approval_review?: { subject?: { id?: string } };
+      approval_review_revision?: string;
+    };
+    assert.equal(reviewBody.approval_review?.subject?.id, customSubjectId, "review binds the submitted subject");
+    assert.ok(reviewBody.approval_review_revision, "review materializes a revision");
+
+    const approved = await fetch(`${asUrl}/consent/approve`, {
+      body: JSON.stringify({ approval_review_revision: reviewBody.approval_review_revision, request_uri: requestUri }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    const approvedText = await approved.text();
+    assert.equal(approved.status, 200, approvedText);
+    const approvedBody = JSON.parse(approvedText) as {
+      grant?: { streams?: Array<{ instance_ids?: string[] }>; subject?: { id?: string } };
+    };
+    assert.equal(
+      approvedBody.grant?.subject?.id,
+      customSubjectId,
+      "revision-only approval preserves the reviewed subject"
+    );
+    assert.deepEqual(approvedBody.grant?.streams?.[0]?.instance_ids, [`cin_owner_auth_spotify_${customSubjectId}`]);
+  });
+});
+
 // ── 2. enabled: unauthenticated HTML requests redirect to /owner/login ────────
 test("owner-auth placeholder: enabled — unauthenticated /consent and /device redirect to /owner/login", async () => {
   await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
@@ -436,9 +539,10 @@ test("owner-auth placeholder: authenticated /consent/approve issues a grant and 
   await withServer({ ownerAuthPassword: TEST_PASSWORD }, async ({ asUrl }) => {
     const { cookie } = await login(asUrl, TEST_PASSWORD);
     const requestUri = await startPendingConsent(asUrl);
+    const approvalReviewRevision = await reviewPendingConsent(asUrl, requestUri, cookie || "");
 
     const approveResp = await fetch(`${asUrl}/consent/approve`, {
-      body: JSON.stringify({ request_uri: requestUri }),
+      body: JSON.stringify({ approval_review_revision: approvalReviewRevision, request_uri: requestUri }),
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
@@ -504,15 +608,29 @@ test("owner-auth placeholder: authenticated /consent/approve issues a grant and 
 });
 
 // ── 6. enabled: submitted subject_id is ignored, configured subject wins ─────
-test("owner-auth placeholder: enabled — submitted subject_id is ignored on approve", async () => {
+test("owner-auth placeholder: enabled — submitted subject_id is ignored during consent review", async () => {
   await withServer({ ownerAuthPassword: TEST_PASSWORD, ownerAuthSubjectId: CUSTOM_SUBJECT_ID }, async ({ asUrl }) => {
     const { cookie } = await login(asUrl, TEST_PASSWORD);
-    const requestUri = await startPendingConsent(asUrl);
+    const requestUri = await startPendingConsent(asUrl, {}, [CUSTOM_SUBJECT_ID]);
+    const display = await fetch(
+      `${asUrl}/consent?request_uri=${encodeURIComponent(requestUri)}&subject_id=attacker_injected_subject`,
+      {
+        headers: { Accept: "text/html", Cookie: cookie || "" },
+        redirect: "manual",
+      }
+    );
+    assert.equal(display.status, 200, await display.text());
+    const approvalReviewRevision = await reviewPendingConsent(
+      asUrl,
+      requestUri,
+      cookie || "",
+      "attacker_injected_subject"
+    );
 
     const resp = await fetch(`${asUrl}/consent/approve`, {
       body: JSON.stringify({
+        approval_review_revision: approvalReviewRevision,
         request_uri: requestUri,
-        subject_id: "attacker_injected_subject",
       }),
       headers: {
         Accept: "application/json",

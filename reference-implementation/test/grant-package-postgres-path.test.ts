@@ -51,11 +51,14 @@ import {
   listGrantPackagesForOwner,
   revokeGrantPackage,
 } from "../server/auth.ts";
-import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
+import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { closeDb } from "../server/db.ts";
 import { encodeHostedMcpSelection } from "../server/hosted-mcp-selection.ts";
 import { startServer } from "../server/index.ts";
-import { closePostgresStorage } from "../server/postgres-storage.ts";
+import { basicIntrospectionAuthorization } from "../server/introspection-http.ts";
+import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
+import { createPostgresConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
@@ -262,6 +265,27 @@ interface Manifest {
   [key: string]: unknown;
 }
 
+function packageInstanceId(connectorId: string): string {
+  return `cin_pkg_pg_${connectorId}`;
+}
+
+async function seedPackageInstance(connectorId: string): Promise<void> {
+  const now = new Date().toISOString();
+  const connectorInstanceId = packageInstanceId(connectorId);
+  await createPostgresConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: `${connectorId} package fixture`,
+    ownerSubjectId: "owner_local",
+    sourceBinding: { fixture: connectorInstanceId },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "manual",
+    status: "active",
+    updatedAt: now,
+  });
+}
+
 async function registerConnector(asUrl: string, name: string): Promise<Manifest> {
   const raw = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `manifests/${name}.json`), "utf8")) as Manifest;
   const canonical = canonicalConnectorKeyFromManifest(raw);
@@ -305,7 +329,7 @@ async function completeMultiSourcePackageFlow({
   asUrl: string;
   client: AuthCodeClient;
   connectorIds: string[];
-}): Promise<{ packageId: string }> {
+}): Promise<{ accessToken: string; expiresIn: number | undefined; packageId: string; refreshToken: string }> {
   const verifier = randomBytes(32).toString("base64url");
   const state = "pkg-pg-test-state";
   const challenge = pkceChallenge(verifier);
@@ -330,7 +354,7 @@ async function completeMultiSourcePackageFlow({
   params.append("code_challenge", challenge);
   params.append("code_challenge_method", "S256");
   for (const id of connectorIds) {
-    params.append("selection", encodeHostedMcpSelection({ connectionId: null, connectorId: id }));
+    params.append("selection", encodeHostedMcpSelection({ connectionId: packageInstanceId(id), connectorId: id }));
   }
   for (const streamValue of renderedHostedMcpStreamValues(pickerHtml)) {
     params.append("stream", streamValue);
@@ -342,7 +366,8 @@ async function completeMultiSourcePackageFlow({
     method: "POST",
     redirect: "manual",
   });
-  assert.equal(approveResp.status, 302);
+  const approveBody = await approveResp.text();
+  assert.equal(approveResp.status, 302, approveBody);
   const location = approveResp.headers.get("location");
   assert.ok(location, "the picker-approval redirect carries a location header");
   const callback = new URL(location);
@@ -361,9 +386,21 @@ async function completeMultiSourcePackageFlow({
     method: "POST",
   });
   assert.equal(status, 200);
-  const body = rawBody as { grant_package_id?: string };
+  const body = rawBody as {
+    access_token?: string;
+    expires_in?: number;
+    grant_package_id?: string;
+    refresh_token?: string;
+  };
   assert.ok(body.grant_package_id);
-  return { packageId: body.grant_package_id };
+  assert.ok(body.access_token);
+  assert.ok(body.refresh_token);
+  return {
+    accessToken: body.access_token,
+    expiresIn: body.expires_in,
+    packageId: body.grant_package_id,
+    refreshToken: body.refresh_token,
+  };
 }
 
 if (POSTGRES_URL) {
@@ -384,6 +421,7 @@ if (POSTGRES_URL) {
       asPort: 0,
       databaseUrl: POSTGRES_URL,
       dbPath: ":memory:",
+      introspectionCallerCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
       ownerAuthPassword: "",
       quiet: true,
       reconcilePolyfillManifests: false,
@@ -394,6 +432,8 @@ if (POSTGRES_URL) {
     asUrl = `http://localhost:${server.asPort}`;
     spotify = await registerConnector(asUrl, "spotify");
     github = await registerConnector(asUrl, "github");
+    await seedPackageInstance(spotify.connector_id);
+    await seedPackageInstance(github.connector_id);
     client = await registerAuthCodeClient(asUrl);
   });
 
@@ -465,7 +505,67 @@ if (POSTGRES_URL) {
       assert.equal(typeof member.grant_id, "string");
       assert.equal(typeof member.token, "string", "member exposes its child grant token");
       assert.ok(member.grant, "member carries the parsed child grant");
+      const grant = requireObject(member.grant, "member grant must be an object");
+      const source = requireObject(grant.source, "member source must be an object");
+      const sourceId = requireString(source.id, "member source id must be a string");
+      const storageConnectorId = canonicalConnectorKey(sourceId);
+      assert.ok(storageConnectorId, "member public source id maps to its local fulfillment key");
+      for (const streamValue of requireArray(grant.streams, "member grant streams must be an array")) {
+        const stream = requireObject(streamValue, "member grant stream must be an object");
+        assert.deepEqual(stream.instance_ids, [packageInstanceId(storageConnectorId)]);
+      }
     }
+
+    const memberIdentityRows = await postgresQuery<{
+      grant_id: string;
+      grant_json: Record<string, unknown>;
+      token_id: string;
+    }>(
+      `SELECT gm.grant_id, gm.token_id, g.grant_json
+         FROM grant_package_members gm
+         JOIN grants g ON g.grant_id = gm.grant_id
+        WHERE gm.package_id = $1
+        ORDER BY gm.grant_id
+        LIMIT 1`,
+      [packageId]
+    );
+    const [memberIdentity] = memberIdentityRows.rows;
+    assert.ok(memberIdentity);
+    const originalGrant = structuredClone(memberIdentity.grant_json);
+    const foreignGrant = structuredClone(originalGrant);
+    foreignGrant.subject = { id: "owner_foreign_package_member" };
+    await postgresQuery("UPDATE grants SET subject_id = $1, grant_json = $2::jsonb WHERE grant_id = $3", [
+      "owner_foreign_package_member",
+      JSON.stringify(foreignGrant),
+      memberIdentity.grant_id,
+    ]);
+    await postgresQuery("UPDATE tokens SET subject_id = $1 WHERE token_id = $2", [
+      "owner_foreign_package_member",
+      memberIdentity.token_id,
+    ]);
+    const foreignAccessResponse = await getGrantPackageAccess(packageId);
+    assert.ok(foreignAccessResponse);
+    assert.equal(
+      grantPackageAccess(foreignAccessResponse).members.length,
+      1,
+      "the package omits a valid child whose subject no longer matches its parent"
+    );
+    const packageSubject = requireString(
+      requireObject(requireObject(accessResponse, "package access").package, "package envelope").subject_id,
+      "package subject_id must be a string"
+    );
+    await postgresQuery("UPDATE grants SET subject_id = $1, grant_json = $2::jsonb WHERE grant_id = $3", [
+      packageSubject,
+      JSON.stringify(originalGrant),
+      memberIdentity.grant_id,
+    ]);
+    await postgresQuery("UPDATE tokens SET subject_id = $1 WHERE token_id = $2", [
+      packageSubject,
+      memberIdentity.token_id,
+    ]);
+    const restoredAccess = await getGrantPackageAccess(packageId);
+    assert.ok(restoredAccess);
+    assert.equal(grantPackageAccess(restoredAccess).members.length, 2);
 
     // getGrantPackageIdForGrant: member-by-grant SELECT. Every child grant
     // resolves back to this package; the package token (NULL grant_id) does
@@ -475,6 +575,78 @@ if (POSTGRES_URL) {
       const resolved = await getGrantPackageIdForGrant(child.grant_id);
       assert.equal(resolved, packageId, "child grant resolves to its package");
     }
+  });
+
+  test("package refresh replay deactivates every family-linked bearer through real postgres adapters", async () => {
+    assert.ok(client && spotify && github, "premise: test.before registered the client and connectors");
+    const packageClient = client;
+    const issued = await completeMultiSourcePackageFlow({
+      asUrl,
+      client,
+      connectorIds: [spotify.connector_id, github.connector_id],
+    });
+    assert.ok(issued.expiresIn && issued.expiresIn <= 600, "family-linked package bearer has a short lifetime");
+
+    const rotate = async (refreshToken: string) =>
+      fetchJson(`${asUrl}/oauth/token`, {
+        body: new URLSearchParams({
+          client_id: packageClient.client_id,
+          grant_type: "refresh_token",
+          refresh_token: refreshToken,
+        }).toString(),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+    const attacker = await rotate(issued.refreshToken);
+    assert.equal(attacker.status, 200, JSON.stringify(attacker.body));
+    const attackerBody = requireObject(attacker.body, "attacker refresh response must be an object");
+    assert.ok(
+      requireNumber(attackerBody.expires_in, "attacker bearer expires_in must be a number") <= 600,
+      "refresh-derived package bearer has a short lifetime"
+    );
+    assert.ok(typeof attackerBody.access_token === "string");
+    assert.ok(typeof attackerBody.refresh_token === "string");
+
+    const replay = await rotate(issued.refreshToken);
+    assert.equal(replay.status, 400);
+    const replayBody = requireObject(replay.body, "replay response must be an object");
+    assert.equal(replayBody.error, "invalid_grant");
+    assert.equal(replayBody.fresh_authorization_required, true);
+
+    const family = await postgresQuery<{ family_id: string }>(
+      `SELECT family_id
+         FROM oauth_refresh_tokens
+        WHERE refresh_token_hash = $1`,
+      [createHash("sha256").update(issued.refreshToken).digest("base64url")]
+    );
+    const familyId = requireString(family.rows[0]?.family_id, "refresh family id must be persisted");
+    const bearers = await postgresQuery<{ expires_at: string | null; revoked: boolean; token_id: string }>(
+      `SELECT token_id, expires_at, revoked
+         FROM tokens
+        WHERE refresh_family_id = $1
+        ORDER BY created_at, token_id`,
+      [familyId]
+    );
+    assert.equal(bearers.rows.length, 2, "the initial and attacker-minted package bearers share the family");
+    const introspectionHeaders = {
+      Authorization: basicIntrospectionAuthorization(TEST_RS_INTROSPECTION_CREDENTIALS),
+      "Content-Type": "application/x-www-form-urlencoded",
+    };
+    for (const bearer of bearers.rows) {
+      assert.equal(bearer.revoked, true, "replay revokes every family-linked package bearer row");
+      assert.ok(bearer.expires_at, "every family-linked package bearer has an expiry");
+      // biome-ignore lint/performance/noAwaitInLoops: Each persisted family bearer is an independent security assertion.
+      const introspection = await fetchJson(`${asUrl}/introspect`, {
+        body: new URLSearchParams({ token: bearer.token_id }).toString(),
+        headers: introspectionHeaders,
+        method: "POST",
+      });
+      assert.equal(introspection.status, 200);
+      assert.equal(requireObject(introspection.body, "introspection body must be an object").active, false);
+    }
+
+    const successor = await rotate(requireString(attackerBody.refresh_token, "attacker successor must be a string"));
+    assert.equal(successor.status, 400, "family replay revokes the attacker successor");
   });
 
   // ---------------------------------------------------------------------

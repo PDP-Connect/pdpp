@@ -25,7 +25,9 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -126,10 +128,28 @@ async function registerConnector(asUrl: string, manifest: ConnectorManifest) {
   }
 }
 
+async function seedActiveInstance(manifest: ConnectorManifest): Promise<void> {
+  const connectorId = canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id;
+  const now = new Date().toISOString();
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId: "cin_blob_route_gmail",
+    createdAt: now,
+    displayName: "Gmail",
+    ownerSubjectId: "owner_local",
+    sourceBinding: { kind: "test_account", label: "blob-route-gmail" },
+    sourceBindingKey: "blob-route-gmail",
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+}
+
 test("GET /v1/blobs/:blob_id returns 404 blob_not_found for unknown blob_id", async () => {
   await withHarness(async ({ asUrl, rsUrl }) => {
     const manifest = loadGmailManifest();
     await registerConnector(asUrl, manifest);
+    await seedActiveInstance(manifest);
     const ownerToken = await issueOwnerToken(asUrl);
 
     const resp = await fetch(
@@ -146,6 +166,7 @@ test("GET /v1/blobs/:blob_id returns 404 when blob exists but no visible record 
   await withHarness(async ({ asUrl, rsUrl }) => {
     const manifest = loadGmailManifest();
     await registerConnector(asUrl, manifest);
+    await seedActiveInstance(manifest);
     const ownerToken = await issueOwnerToken(asUrl);
 
     // Upload a blob without a corresponding record. The blob row + binding
@@ -185,6 +206,7 @@ test("GET /v1/blobs/:blob_id returns 200 with bytes when a visible record refere
   await withHarness(async ({ asUrl, rsUrl }) => {
     const manifest = loadGmailManifest();
     await registerConnector(asUrl, manifest);
+    await seedActiveInstance(manifest);
     const ownerToken = await issueOwnerToken(asUrl);
 
     const bytes = Buffer.from("hello-world", "utf8");

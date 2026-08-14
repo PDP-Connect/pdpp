@@ -37,6 +37,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **GET** | `/_ref/connector-instances/{connectorInstanceId}` | `refGetConnectorInstance` | Compatibility alias for reading one configured connector instance behind an owner-facing connection. |
 | **PATCH** | `/_ref/connections/{connectorInstanceId}` | `refSetConnectionDisplayName` | Owner-authenticated mutation of the owner-meaningful `display_name` carried on the public read contract. Operator-only surface; grant-authorized tokens SHALL NOT reach this route. |
 | **GET** | `/_ref/approvals` | `refListApprovals` | List pending approvals across provider-connect consents and owner-device flows. |
+| **GET** | `/_ref/approvals/{approvalId}` | `refGetApproval` | Get one pending approval review by opaque approval_id. The reference projection excludes device-flow credentials and raw persisted request payloads. |
 | **POST** | `/_ref/device-exporters/enrollment-codes` | `refCreateDeviceExporterEnrollmentCode` | Create a short-lived local device exporter enrollment code for an owner-approved connector binding. |
 | **POST** | `/_ref/device-exporters/enroll` | `refExchangeDeviceExporterEnrollmentCode` | Exchange a one-time enrollment code for a device-scoped local exporter credential. |
 | **GET** | `/_ref/device-exporters` | `refListDeviceExporters` | List enrolled local device exporters and their source-instance diagnostics. |
@@ -648,6 +649,23 @@ Owner-authenticated mutation of the owner-meaningful `display_name` carried on t
 `GET /_ref/approvals`
 
 List pending approvals across provider-connect consents and owner-device flows.
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refGetApproval
+
+`GET /_ref/approvals/{approvalId}`
+
+Get one pending approval review by opaque approval_id. The reference projection excludes device-flow credentials and raw persisted request payloads.
+
+### Path parameters
+
+- `approvalId` — string
 
 ### Responses
 

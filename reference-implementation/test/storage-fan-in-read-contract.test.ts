@@ -7,13 +7,12 @@
  * Closes the deferred runtime tranche under
  * `openspec/changes/expose-connection-identity-on-public-read/tasks.md`:
  *
- *   - records list, aggregate, and streams list fan in across the granted
- *     connections when `connection_id` is omitted;
+ *   - records list, aggregate, and streams list fan in across the grant's
+ *     closed `instance_ids` when request-time `connection_id` is omitted;
  *   - exactly-one matching connection auto-selects without raising;
  *   - record detail emits `ambiguous_connection` with `available_connections`
  *     when the identifier resolves to more than one connection;
- *   - grant scope `streams[].connection_id` narrows reads to one connection
- *     and preserves cross-connection (fan-in) semantics when absent;
+ *   - per-stream `instance_ids` are the grant's closed connection authority;
  *   - owner `setDisplayName` mutates `display_name` and surfaces it on the
  *     subsequent records-list response;
  *   - deprecated `connector_instance_id` request alias keeps working;
@@ -44,6 +43,7 @@ import {
   resolveReadRequestBindings,
   validateConnectionAlias,
 } from "../server/records.ts";
+import { resolveClientStreamListBindingsOrEmpty } from "../server/routes/rs-read.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 interface RecordListWarning {
@@ -184,21 +184,24 @@ interface FanInBindingsResult {
 
 // `server/connection-identity.ts` is plain JS: the destructured `= null`
 // defaults give TS no other signal, so `requestConnectionId`/
-// `grantStreamConnectionId`/`connectorInstanceIdHint` all infer as exactly
+// `authorizedInstanceIds`/`connectorInstanceIdHint` all infer as exactly
 // `null` (never `string`), rejecting every real call these tests make.
 // Re-typed here via the same documented pattern used elsewhere in this
 // cohort: import the real export and cast it to a signature matching how
 // it is actually called.
 type ResolveFanInBindingsFn = (args: {
+  authorizedInstanceIds?: string[];
   connectorId: string | null | undefined;
   connectorInstanceIdHint?: string | null;
-  grantStreamConnectionId?: string | null;
   ownerSubjectId: string | null | undefined;
   requestConnectionId?: string | null;
 }) => Promise<FanInBindingsResult>;
 
 const resolveFanInBindings: ResolveFanInBindingsFn = async (args) => {
-  const result = await resolveFanInBindingsUntyped(args);
+  const result = await resolveFanInBindingsUntyped({
+    ...args,
+    authorizedInstanceIds: args.authorizedInstanceIds ?? [INSTANCE_A, INSTANCE_B],
+  });
   return {
     bindings: result.bindings.map((binding) => ({
       connectorId: binding.connectorId,
@@ -220,6 +223,7 @@ const baseManifest = {
   capabilities: { human_interaction: [] },
   connector_id: CONNECTOR_ID,
   display_name: "Fan-in Test Connector",
+  manifest_uri: `https://sources.example/${CONNECTOR_ID}`,
   protocol_version: "0.1.0",
   streams: [
     {
@@ -244,13 +248,15 @@ const baseManifest = {
         required: ["id", "subject", "received_at"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",
 };
 
 const grant = {
-  streams: [{ fields: ["id", "subject", "received_at"], name: STREAM }],
+  streams: [{ fields: ["id", "subject", "received_at"], instance_ids: [INSTANCE_A, INSTANCE_B], name: STREAM }],
 };
 
 function target(instanceId: string) {
@@ -320,6 +326,7 @@ async function withSingleConnectionDb(testFn: () => Promise<void>): Promise<void
 test("resolveFanInBindings returns both active bindings when no narrowing is requested", async () => {
   await withDualConnectionDb(async () => {
     const { bindings } = await resolveFanInBindings({
+      authorizedInstanceIds: [INSTANCE_A, INSTANCE_B],
       connectorId: CONNECTOR_ID,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
     });
@@ -332,6 +339,7 @@ test("resolveFanInBindings returns both active bindings when no narrowing is req
 test("resolveFanInBindings narrows to a single binding when request supplies connection_id", async () => {
   await withDualConnectionDb(async () => {
     const { bindings } = await resolveFanInBindings({
+      authorizedInstanceIds: [INSTANCE_A, INSTANCE_B],
       connectorId: CONNECTOR_ID,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
       requestConnectionId: INSTANCE_B,
@@ -342,14 +350,15 @@ test("resolveFanInBindings narrows to a single binding when request supplies con
   });
 });
 
-test("resolveFanInBindings rejects connection_id outside the grant with connection_not_found", async () => {
+test("resolveFanInBindings rejects active connection_id outside instance_ids with connection_not_found", async () => {
   await withDualConnectionDb(async () => {
     await assert.rejects(
       () =>
         resolveFanInBindings({
+          authorizedInstanceIds: [INSTANCE_A],
           connectorId: CONNECTOR_ID,
           ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
-          requestConnectionId: "cin_does_not_exist",
+          requestConnectionId: INSTANCE_B,
         }),
       (err: unknown) =>
         err !== null &&
@@ -362,11 +371,11 @@ test("resolveFanInBindings rejects connection_id outside the grant with connecti
   });
 });
 
-test("resolveFanInBindings honors grant-scope connection_id constraint", async () => {
+test("resolveFanInBindings starts from grant-scope instance_ids", async () => {
   await withDualConnectionDb(async () => {
     const { bindings } = await resolveFanInBindings({
+      authorizedInstanceIds: [INSTANCE_A],
       connectorId: CONNECTOR_ID,
-      grantStreamConnectionId: INSTANCE_A,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
     });
     assert.equal(bindings.length, 1);
@@ -426,6 +435,8 @@ const firstPartyManifest = {
         required: ["id", "subject", "received_at"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",
@@ -471,7 +482,7 @@ test("resolveReadRequestBindings canonicalizes a URL-shaped storage binding to t
     // Storage binding still carries the legacy URL form (as a stale grant or
     // owner scope would). Admission must resolve the canonical instance.
     const { bindings } = await resolveReadRequestBindings({
-      grant: { streams: [{ name: STREAM }] },
+      grant: { streams: [{ instance_ids: [FIRST_PARTY_INSTANCE], name: STREAM }] },
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
       requestParams: {},
       storageBinding: { connector_id: FIRST_PARTY_URL_CONNECTOR_ID },
@@ -487,14 +498,14 @@ test("resolveReadRequestBindings canonicalizes a URL-shaped storage binding to t
 test("resolveReadRequestBindings resolves identically for the URL alias and the bare canonical key", async () => {
   await withFirstPartyUrlConnectorDb(async () => {
     const viaUrl = await resolveReadRequestBindings({
-      grant: { streams: [{ name: STREAM }] },
+      grant: { streams: [{ instance_ids: [FIRST_PARTY_INSTANCE], name: STREAM }] },
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
       requestParams: {},
       storageBinding: { connector_id: FIRST_PARTY_URL_CONNECTOR_ID },
       streamName: STREAM,
     });
     const viaCanonical = await resolveReadRequestBindings({
-      grant: { streams: [{ name: STREAM }] },
+      grant: { streams: [{ instance_ids: [FIRST_PARTY_INSTANCE], name: STREAM }] },
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
       requestParams: {},
       storageBinding: { connector_id: FIRST_PARTY_CANONICAL_KEY },
@@ -539,6 +550,7 @@ test("queryRecordsAcrossBindings preserves fan-in order and cursor collapse unde
     await ingestRecord(target(INSTANCE_C), recordPayload("rec-c-1", "C first", "2026-05-18T12:04:00.000Z"));
 
     const { bindings } = await resolveFanInBindings({
+      authorizedInstanceIds: [INSTANCE_A, INSTANCE_B, INSTANCE_C],
       connectorId: CONNECTOR_ID,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
     });
@@ -569,12 +581,12 @@ test("queryRecordsAcrossBindings preserves fan-in order and cursor collapse unde
   });
 });
 
-test("queryRecordsAcrossBindings narrows to one binding when bindings list is filtered", async () => {
+test("record list starts from grant instance_ids and never includes active sibling B", async () => {
   await withDualConnectionDb(async () => {
     const { bindings } = await resolveFanInBindings({
+      authorizedInstanceIds: [INSTANCE_A],
       connectorId: CONNECTOR_ID,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
-      requestConnectionId: INSTANCE_A,
     });
     const response = await queryRecordsAcrossBindings(bindings, STREAM, grant, {}, baseManifest);
     assert.equal(response.data.length, 2);
@@ -588,6 +600,7 @@ test("queryRecordsAcrossBindings narrows to one binding when bindings list is fi
 test("queryRecordsAcrossBindings auto-selects exactly-one binding without raising", async () => {
   await withSingleConnectionDb(async () => {
     const { bindings } = await resolveFanInBindings({
+      authorizedInstanceIds: [INSTANCE_A],
       connectorId: CONNECTOR_ID,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
     });
@@ -903,6 +916,7 @@ test("queryRecordsAcrossBindings rejects changes_since under multi-binding fan-i
 test("queryRecordsAcrossBindings honors changes_since on the single-binding fast path", async () => {
   await withSingleConnectionDb(async () => {
     const { bindings } = await resolveFanInBindings({
+      authorizedInstanceIds: [INSTANCE_A],
       connectorId: CONNECTOR_ID,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
     });
@@ -1009,8 +1023,8 @@ test("aggregateRecordsAcrossBindings threads resolver warnings into multi-bindin
   });
 });
 
-test("listStreamsAcrossBindings honors per-stream grant connection_id when resolver is supplied", async () => {
-  // Two-stream grant where each stream pins a different connection_id.
+test("listStreamsAcrossBindings honors per-stream grant instance_ids when resolver is supplied", async () => {
+  // Two-stream grant where each stream authorizes a different instance.
   // Without per-stream resolution, the route would resolve bindings for
   // grant.streams[0] only and count stream B against binding A's storage.
   await withDualConnectionDb(async () => {
@@ -1051,8 +1065,8 @@ test("listStreamsAcrossBindings honors per-stream grant connection_id when resol
     // Pinned grant: messages → connection A, tasks → connection B.
     const pinnedGrant = {
       streams: [
-        { connection_id: INSTANCE_A, fields: ["id", "subject", "received_at"], name: STREAM },
-        { connection_id: INSTANCE_B, fields: ["id", "received_at"], name: tasksStream },
+        { fields: ["id", "subject", "received_at"], instance_ids: [INSTANCE_A], name: STREAM },
+        { fields: ["id", "received_at"], instance_ids: [INSTANCE_B], name: tasksStream },
       ],
     };
 
@@ -1062,7 +1076,7 @@ test("listStreamsAcrossBindings honors per-stream grant connection_id when resol
     // tasks. The per-stream resolver path must show both summaries with
     // honest counts.
     const ownerSubjectId = OWNER_AUTH_DEFAULT_SUBJECT_ID;
-    const resolverFor = async (streamGrant: { name: string; connection_id?: string }) => {
+    const resolverFor = async (streamGrant: { name: string; instance_ids?: string[] }) => {
       const { bindings } = await resolveReadRequestBindings({
         grant: pinnedGrant,
         ownerSubjectId,
@@ -1090,5 +1104,37 @@ test("listStreamsAcrossBindings honors per-stream grant connection_id when resol
     // because A is not authorized to read tasks.
     const tasksA = summaries.find((s) => s.name === tasksStream && s.connection_id === INSTANCE_A);
     assert.equal(tasksA, undefined, "tasks must not surface under A when grant pins tasks → B");
+
+    const reversePinnedGrant = {
+      streams: [
+        { fields: ["id", "received_at"], instance_ids: [INSTANCE_B], name: tasksStream },
+        { fields: ["id", "subject", "received_at"], instance_ids: [INSTANCE_A], name: STREAM },
+      ],
+    };
+    const requestParams = { connection_id: INSTANCE_A };
+    const { bindings: grantWideBindings } = await resolveReadRequestBindings({
+      grant: reversePinnedGrant,
+      ownerSubjectId,
+      requestParams,
+      storageBinding: { connector_id: CONNECTOR_ID },
+      streamName: null,
+    });
+    const narrowed = await listStreamsAcrossBindings(grantWideBindings, reversePinnedGrant, taskManifest, {
+      resolveBindingsForStream: (streamGrant) =>
+        resolveClientStreamListBindingsOrEmpty(() =>
+          resolveReadRequestBindings({
+            grant: reversePinnedGrant,
+            ownerSubjectId,
+            requestParams,
+            storageBinding: { connector_id: CONNECTOR_ID },
+            streamName: streamGrant.name,
+          })
+        ),
+    });
+    assert.deepEqual(
+      narrowed.map((summary) => `${summary.name}@${summary.connection_id}`),
+      [`${STREAM}@${INSTANCE_A}`],
+      "a grant-wide selector must not fail because the first stream authorizes another instance"
+    );
   });
 });

@@ -196,12 +196,10 @@ export function runConsentDeviceAuthConformance({
     }
   });
 
-  // 2. Approval terminates the pending row. After approval, the public
-  //    lookup MUST stop returning the pending view (the row is no longer
-  //    available for re-approval), and a second approval MUST fail with
-  //    `not_found`. This pins the terminal-state invariant: approve is a
-  //    one-shot transition, not idempotent.
-  t("pending consent: approval is terminal — public lookup disappears and re-approval fails", async () => {
+  // 2. Approval terminates the pending row. After approval, the public lookup
+  //    MUST stop returning the pending view. A retry MAY resume delivery, but
+  //    it MUST return the exact persisted issuance and MUST NOT mint again.
+  t("pending consent: approval is terminal — public lookup disappears and retry resumes exact issuance", async () => {
     const driver = await makeDriver();
     await driver.setup();
     try {
@@ -220,19 +218,8 @@ export function runConsentDeviceAuthConformance({
       const afterApprove = await driver.lookupPendingConsentByRequestUri(start.request_uri);
       assert.equal(afterApprove, null, "after approval, public lookup MUST NOT return a pending view");
 
-      // biome-ignore lint/suspicious/noEvolvingTypes: localized test assertion preserves its explicit contract.
-      let reApproveError = null;
-      try {
-        await driver.approvePendingConsent(start.request_uri);
-      } catch (err) {
-        reApproveError = err;
-      }
-      assert.ok(reApproveError, "re-approval after approval MUST throw");
-      assert.equal(
-        errorCode(reApproveError),
-        "not_found",
-        `re-approval error MUST carry code='not_found'; got '${errorCode(reApproveError)}'`
-      );
+      const resumed = await driver.approvePendingConsent(start.request_uri);
+      assert.deepEqual(resumed, result, "approval retry MUST resume the exact persisted grant and token");
     } finally {
       await driver.teardown();
     }
@@ -559,64 +546,49 @@ export function runConsentDeviceAuthConformance({
     }
   });
 
-  // 9b. Owner-device approval is terminal. After approveOwnerDeviceAuth
-  //     succeeds, a second approveOwnerDeviceAuth on the same user_code
-  //     MUST fail with `not_found` — re-approval cannot re-mint a second
-  //     owner token against the same row. The originally-issued token
-  //     remains usable for exchange (the row is bound to it), so the
-  //     poller's contract is not retroactively broken by the rejected
-  //     re-approval. This pairs with scenario 2's pending-consent
-  //     terminal-approval invariant; the same invariant must hold for
-  //     the owner-device flow.
-  t(
-    "owner device auth: approval is terminal — re-approval throws not_found, original token still exchanges",
-    async () => {
-      const driver = await makeDriver();
-      await driver.setup();
-      try {
-        const start = await driver.startOwnerDeviceAuth({});
+  // 9b. Owner-device approval is terminal and retry-idempotent. After
+  //     approveOwnerDeviceAuth succeeds, a second approveOwnerDeviceAuth on
+  //     the same user_code MUST return the originally-bound owner token, not
+  //     re-mint a second bearer. This is the response-loss retry contract:
+  //     the poller's exchange result and the approval retry result agree.
+  t("owner device auth: approval is terminal — re-approval returns the original token", async () => {
+    const driver = await makeDriver();
+    await driver.setup();
+    try {
+      const start = await driver.startOwnerDeviceAuth({});
 
-        const firstApprove = await driver.approveOwnerDeviceAuth(start.user_code);
-        assert.ok(firstApprove.access_token, "first approveOwnerDeviceAuth MUST mint an access_token");
-        const originalToken = firstApprove.access_token;
+      const firstApprove = await driver.approveOwnerDeviceAuth(start.user_code);
+      assert.ok(firstApprove.access_token, "first approveOwnerDeviceAuth MUST mint an access_token");
+      const originalToken = firstApprove.access_token;
 
-        // biome-ignore lint/suspicious/noEvolvingTypes: localized test assertion preserves its explicit contract.
-        let reApproveErr = null;
-        try {
-          await driver.approveOwnerDeviceAuth(start.user_code);
-        } catch (err) {
-          reApproveErr = err;
-        }
-        assert.ok(reApproveErr, "re-approval after approval MUST throw");
-        assert.equal(
-          errorCode(reApproveErr),
-          "not_found",
-          `re-approval error MUST carry code='not_found'; got '${errorCode(reApproveErr)}'`
-        );
+      const reApprove = await driver.approveOwnerDeviceAuth(start.user_code);
+      assert.equal(
+        reApprove.access_token,
+        originalToken,
+        "re-approval after approval MUST return the originally-bound access_token"
+      );
 
-        // The original token MUST still exchange — the rejected re-approval
-        // is not allowed to invalidate the already-issued bearer.
-        const exchange = await driver.exchangeOwnerDeviceCode({
-          client_id: driver.getRegisteredClientId(),
-          device_code: start.device_code,
-        });
-        assert.ok(
-          exchange.access_token,
-          "exchange after a rejected re-approval MUST still return the original access_token"
-        );
-        assert.equal(
-          exchange.access_token,
-          originalToken,
-          "exchange MUST return the token minted by the FIRST approval, unchanged"
-        );
-      } finally {
-        await driver.teardown();
-      }
+      // The original token MUST still exchange after the approval retry.
+      const exchange = await driver.exchangeOwnerDeviceCode({
+        client_id: driver.getRegisteredClientId(),
+        device_code: start.device_code,
+      });
+      assert.ok(
+        exchange.access_token,
+        "exchange after a re-approval retry MUST still return the original access_token"
+      );
+      assert.equal(
+        exchange.access_token,
+        originalToken,
+        "exchange MUST return the token minted by the FIRST approval, unchanged"
+      );
+    } finally {
+      await driver.teardown();
     }
-  );
+  });
 
   // 10. Denial terminates the row. After denial, lookup MUST return null,
-  //     approval MUST throw `not_found`, and exchange MUST throw
+  //     approval MUST throw `approval_conflict`, and exchange MUST throw
   //     `access_denied`. This pins the denied-vs-approved distinction
   //     surfaced to the polling client.
   t("owner device auth: denial is terminal — exchange throws access_denied", async () => {
@@ -640,8 +612,8 @@ export function runConsentDeviceAuthConformance({
       assert.ok(approveErr, "approve after deny MUST throw");
       assert.equal(
         errorCode(approveErr),
-        "not_found",
-        `approve-after-deny MUST throw code='not_found'; got '${errorCode(approveErr)}'`
+        "approval_conflict",
+        `approve-after-deny MUST throw code='approval_conflict'; got '${errorCode(approveErr)}'`
       );
 
       // biome-ignore lint/suspicious/noEvolvingTypes: localized test assertion preserves its explicit contract.

@@ -18,7 +18,9 @@ export interface StorageBinding {
 }
 
 export interface NativeManifest {
+  /** Retained only as an ignored implementation-specific manifest field. */
   provider_id?: string;
+  source_declaration?: { source?: unknown };
   storage_binding?: StorageBinding;
 }
 
@@ -62,16 +64,7 @@ export function resolveGrantStorageBinding(tokenInfo: TokenInfo | null | undefin
 }
 
 export function buildClientSourceDescriptor(tokenInfo: TokenInfo | null | undefined): SourceDescriptor | null {
-  const grantSource = buildSourceDescriptor(tokenInfo?.grant?.source);
-  if (grantSource) {
-    return grantSource;
-  }
-
-  const storageBinding = resolveGrantStorageBinding(tokenInfo);
-  if (storageBinding?.connector_id) {
-    return { id: storageBinding.connector_id, kind: "connector" };
-  }
-  return null;
+  return buildSourceDescriptor(tokenInfo?.grant?.source);
 }
 
 export function buildOwnerQuerySourceDescriptor(
@@ -79,8 +72,9 @@ export function buildOwnerQuerySourceDescriptor(
   opts: SourceDescriptorOptions = {}
 ): SourceDescriptor | null {
   const nativeManifest = resolveNativeManifest(opts);
-  if (nativeManifest?.provider_id) {
-    return buildSourceDescriptor({ id: nativeManifest.provider_id, kind: "provider_native" });
+  const configuredSource = buildSourceDescriptor(nativeManifest?.source_declaration?.source);
+  if (configuredSource) {
+    return configuredSource;
   }
 
   const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
@@ -108,10 +102,17 @@ export async function resolveOwnerReadScope(req: RequestWithQuery, opts: SourceD
   const nativeManifest = resolveNativeManifest(opts);
   const nativeStorageBinding = resolveNativeStorageBinding(opts);
   if (nativeManifest && nativeStorageBinding) {
+    const configuredSource = buildSourceDescriptor(nativeManifest.source_declaration?.source);
+    if (!configuredSource) {
+      const err = Object.assign(new Error("Configured SourceDeclaration source is missing"), {
+        code: "invalid_request",
+      });
+      throw err;
+    }
     return {
       owner_subject_id: getOwnerTokenSubjectId(req),
       public_scope: "native",
-      source: { id: nativeManifest.provider_id, kind: "provider_native" },
+      source: configuredSource,
       storage_binding: nativeStorageBinding,
     };
   }

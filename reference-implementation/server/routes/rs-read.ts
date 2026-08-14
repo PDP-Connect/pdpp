@@ -77,6 +77,7 @@ import {
   type StreamsListDependencies,
   type StreamsListInput,
 } from "../../operations/rs-streams-list/index.ts";
+import { rejectUnsupportedClientQuery } from "../record-filters.ts";
 import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -119,6 +120,7 @@ interface TokenInfo {
 }
 
 interface GrantStreamLike {
+  readonly instance_ids?: string[] | null;
   readonly name?: string | null;
   readonly [key: string]: unknown;
 }
@@ -175,8 +177,8 @@ interface ResolverWarning {
 }
 
 interface ReadRequestBinding {
-  readonly connectorId?: string | null;
-  readonly connectorInstanceId?: string | null;
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
   readonly displayName?: string | null;
   readonly [key: string]: unknown;
 }
@@ -189,7 +191,7 @@ interface ReadRequestBindingsResult {
 }
 
 interface NativeManifest {
-  readonly provider_id?: string | null;
+  readonly source_declaration?: { readonly source?: SourceDescriptorLike | null } | null;
   readonly storage_binding?: { connector_id?: string | null } | null;
   readonly [key: string]: unknown;
 }
@@ -248,6 +250,7 @@ export interface MountRsReadContext {
     storageBinding: StorageBindingLike;
     manifest: ManifestLike;
     grant?: GrantLike | null | undefined;
+    ownerSubjectId?: string | null | undefined;
   }) => Promise<unknown>;
   buildConnectorSchemaItem: (args: {
     source: SourceDescriptorLike | null;
@@ -279,7 +282,7 @@ export interface MountRsReadContext {
   ensureRequestId: (res: unknown) => string;
   finalizeCanonicalEnvelope: (payload: unknown, req: unknown) => unknown;
   getConnectorFreshnessEvidence: (args: {
-    source: SourceDescriptorLike | null;
+    storageBinding: StorageBindingLike;
     manifest: ManifestLike;
   }) => Promise<unknown>;
   getOwnerTokenSubjectId: (req: unknown) => string | null;
@@ -365,7 +368,7 @@ export interface MountRsReadContext {
     grant: GrantLike | null;
     requestParams: Record<string, unknown>;
     streamName: string | null;
-    nativeProviderStorage: boolean;
+    ownerRead?: boolean;
   }) => Promise<ReadRequestBindingsResult>;
   resolveRegisteredConnectorManifest: (connectorId: string) => Promise<ManifestLike>;
   runHybridSearch: (args: Record<string, unknown>) => Promise<{ envelope: unknown; disclosureData: unknown }>;
@@ -671,16 +674,14 @@ export function mountRsConnectors(app: AppLike, ctx: MountRsReadContext): void {
           const nativeManifest = ctx.resolveNativeManifest(ctx.opts);
           const nativeStorageBinding = ctx.resolveNativeStorageBinding(ctx.opts);
           if (nativeManifest && nativeStorageBinding) {
-            const source = ctx.buildSourceDescriptor({
-              id: nativeManifest.provider_id,
-              kind: "provider_native",
-            });
+            const source = ctx.buildSourceDescriptor(nativeManifest.source_declaration?.source);
             queryContext.sourceDescriptor = source;
             dependencies = {
               getSourceDescriptor: () => source,
               listConnectorItems: async () => {
                 const item = await ctx.buildConnectorDiscoveryItem({
                   manifest: nativeManifest,
+                  ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
                   source,
                   storageBinding: nativeStorageBinding,
                 });
@@ -700,6 +701,7 @@ export function mountRsConnectors(app: AppLike, ctx: MountRsReadContext): void {
                     const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
                     return ctx.buildConnectorDiscoveryItem({
                       manifest,
+                      ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
                       source: ctx.buildSourceDescriptor({ id: connectorId, kind: "connector" }),
                       storageBinding: { connector_id: connectorId },
                     });
@@ -729,6 +731,7 @@ export function mountRsConnectors(app: AppLike, ctx: MountRsReadContext): void {
               const item = await ctx.buildConnectorDiscoveryItem({
                 grant: tokenInfo.grant,
                 manifest: grantResolved.manifest,
+                ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
                 source,
                 storageBinding: grantResolved.storageBinding,
               });
@@ -844,10 +847,7 @@ function buildOwnerSchemaGetPlan(
   const nativeManifest = ctx.resolveNativeManifest(ctx.opts);
   const nativeStorageBinding = ctx.resolveNativeStorageBinding(ctx.opts);
   if (nativeManifest && nativeStorageBinding) {
-    const source = ctx.buildSourceDescriptor({
-      id: nativeManifest.provider_id,
-      kind: "provider_native",
-    });
+    const source = ctx.buildSourceDescriptor(nativeManifest.source_declaration?.source);
     queryContext.sourceDescriptor = source;
     return {
       dependencies: {
@@ -1166,7 +1166,7 @@ async function listOwnerStreamsForConnector(
   const firstStream = Array.isArray(grant.streams) ? grant.streams[0]?.name : null;
   const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
     grant,
-    nativeProviderStorage: false,
+    ownerRead: true,
     ownerSubjectId,
     requestParams,
     storageBinding: ownerResolved.storageBinding,
@@ -1177,7 +1177,7 @@ async function listOwnerStreamsForConnector(
     resolveBindingsForStream: async (streamGrant: GrantStreamLike) => {
       const { bindings: streamBindings } = await ctx.resolveReadRequestBindings({
         grant,
-        nativeProviderStorage: false,
+        ownerRead: true,
         ownerSubjectId,
         requestParams,
         storageBinding: ownerResolved.storageBinding,
@@ -1205,7 +1205,7 @@ async function listExplicitPolyfillOwnerStreams(
   const firstStream = Array.isArray(grant.streams) ? grant.streams[0]?.name : null;
   const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
     grant,
-    nativeProviderStorage: false,
+    ownerRead: true,
     ownerSubjectId,
     requestParams,
     storageBinding: ownerResolved.storageBinding,
@@ -1216,7 +1216,7 @@ async function listExplicitPolyfillOwnerStreams(
     resolveBindingsForStream: async (streamGrant: GrantStreamLike) => {
       const { bindings: streamBindings } = await ctx.resolveReadRequestBindings({
         grant,
-        nativeProviderStorage: false,
+        ownerRead: true,
         ownerSubjectId,
         requestParams,
         storageBinding: ownerResolved.storageBinding,
@@ -1288,17 +1288,12 @@ async function buildStreamsListOwnerPlan(
   const ownerResolved = await ctx.resolveOwnerManifest(req, ctx.opts);
   const streamListFreshnessEvidence = await ctx.getConnectorFreshnessEvidence({
     manifest: ownerResolved.manifest,
-    source: ownerScope.source ?? null,
+    storageBinding: ownerResolved.storageBinding,
   });
   return {
     dependencies: {
       getSourceDescriptor: () => queryContext.sourceDescriptor,
-      listSummaries: () => {
-        if (ownerScope.public_scope === "polyfill" || ownerScope.source?.kind === "connector") {
-          return listExplicitPolyfillOwnerStreams(ctx, req, ownerResolved);
-        }
-        return ctx.listAllStreams(ownerResolved.storageBinding);
-      },
+      listSummaries: () => listExplicitPolyfillOwnerStreams(ctx, req, ownerResolved),
     },
     operationInput: {
       actor: { kind: "owner", subject_id: tokenInfo.subject_id || null },
@@ -1319,51 +1314,44 @@ async function buildStreamsListClientPlan(
   const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
   const streamListFreshnessEvidence = await ctx.getConnectorFreshnessEvidence({
     manifest: grantResolved.manifest,
-    source: grantResolved.source,
+    storageBinding: grantResolved.storageBinding,
   });
   const streamCountLimit = Array.isArray(grant?.streams) ? grant.streams.length : null;
   queryContext.sourceDescriptor = grantResolved.source;
   queryContext.queryData.stream_count_limit = streamCountLimit;
   const ownerSubjectId = ctx.ownerSubjectIdForBindings(tokenInfo);
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-  const nativeProviderStorage = grantResolved.source?.kind === "provider_native";
   const requestParams = (req.query as Record<string, unknown>) || {};
   return {
     dependencies: {
       getSourceDescriptor: () => queryContext.sourceDescriptor,
       listSummaries: async () => {
-        // Honor request-time `connection_id` filter and grant-scope
-        // `connection_id` constraint. When neither is set, fan in across
-        // every active connection under the grant's connector.
-        //
-        // Each grant stream may pin a different `connection_id`; the resolver
-        // runs per-stream so per-stream record counts honor the right binding
-        // constraint instead of borrowing the first stream's resolution.
-        const firstStream = Array.isArray(grant?.streams) ? grant?.streams[0]?.name : null;
+        // The grant's closed instance_ids are the fan-in upper bound. A
+        // request-time connection_id may only narrow that set. Resolve each
+        // stream independently because its authorized instance set may differ.
         const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
           grant: grant ?? null,
-          nativeProviderStorage,
+          ownerRead: tokenInfo.pdpp_token_kind === "owner",
           ownerSubjectId,
           requestParams,
           storageBinding: grantResolved.storageBinding,
-          streamName: firstStream ?? null,
+          streamName: null,
         });
         // Stash resolver warnings on the request scope so the route body can
         // thread them into `meta.warnings` (P3 fix).
         req._pdpp_resolver_warnings = resolverWarnings;
         return await ctx.listStreamsAcrossBindings(bindings, grant ?? null, grantResolved.manifest, {
-          resolveBindingsForStream: async (streamGrant: GrantStreamLike) => {
-            const { bindings: streamBindings } = await ctx.resolveReadRequestBindings({
-              grant: grant ?? null,
-              nativeProviderStorage,
-              ownerSubjectId,
-              requestParams,
-              storageBinding: grantResolved.storageBinding,
-              // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-              streamName: streamGrant?.name || null,
-            });
-            return streamBindings;
-          },
+          resolveBindingsForStream: (streamGrant: GrantStreamLike) =>
+            resolveClientStreamListBindingsOrEmpty(() =>
+              ctx.resolveReadRequestBindings({
+                grant: grant ?? null,
+                ownerRead: tokenInfo.pdpp_token_kind === "owner",
+                ownerSubjectId,
+                requestParams,
+                storageBinding: grantResolved.storageBinding,
+                // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+                streamName: streamGrant?.name || null,
+              })
+            ),
         });
       },
     },
@@ -1379,6 +1367,19 @@ async function buildStreamsListClientPlan(
     },
     streamListFreshnessEvidence,
   };
+}
+
+export async function resolveClientStreamListBindingsOrEmpty(
+  resolve: () => Promise<{ bindings: ReadRequestBinding[] }>
+): Promise<ReadRequestBinding[]> {
+  try {
+    return (await resolve()).bindings;
+  } catch (error) {
+    if (error instanceof Error && (error as Error & { code?: string }).code === "connection_not_found") {
+      return [];
+    }
+    throw error;
+  }
 }
 
 // GET /v1/streams — list streams (client or owner)
@@ -1607,7 +1608,7 @@ function buildStreamAggregateDeps(
     aggregate: async (params: Record<string, unknown>) => {
       const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
         grant,
-        nativeProviderStorage: sourceDescriptor?.kind === "provider_native",
+        ownerRead: tokenInfo.pdpp_token_kind === "owner",
         ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
         requestParams: params,
         storageBinding,
@@ -1668,6 +1669,8 @@ export function mountRsStreamAggregate(app: AppLike, ctx: MountRsReadContext): v
           tokenInfo,
           traceId,
         };
+
+        rejectUnsupportedClientQuery(tokenInfo.pdpp_token_kind, requestParams);
 
         const scope = await resolveReadScope(ctx, req, tokenInfo, queryContext);
         const { storageBinding, manifest } = scope;
@@ -1763,7 +1766,7 @@ function buildRecordsListDeps(
     queryRecords: async (stream: string, grant: GrantLike | null, params: Record<string, unknown>, m: ManifestLike) => {
       const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
         grant,
-        nativeProviderStorage: sourceDescriptor?.kind === "provider_native",
+        ownerRead: tokenInfo.pdpp_token_kind === "owner",
         ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
         requestParams: params,
         storageBinding,
@@ -1813,6 +1816,8 @@ export function mountRsRecordsList(app: AppLike, ctx: MountRsReadContext): void 
           tokenInfo,
           traceId,
         };
+
+        rejectUnsupportedClientQuery(tokenInfo.pdpp_token_kind, requestParams);
 
         // Self-export: owner can query without a client grant. `resolveReadScope`
         // sets `queryContext.sourceDescriptor` and returns the resolved trio.
@@ -1930,6 +1935,8 @@ export function mountRsRecordDetail(app: AppLike, ctx: MountRsReadContext): void
           traceId,
         };
 
+        rejectUnsupportedClientQuery(tokenInfo.pdpp_token_kind, req.query);
+
         ({ storageBinding, manifest, sourceDescriptor } = await resolveReadScope(ctx, req, tokenInfo, queryContext));
         await ctx.emitQueryReceived(queryContext, req);
 
@@ -1959,7 +1966,7 @@ export function mountRsRecordDetail(app: AppLike, ctx: MountRsReadContext): void
             const mergedParams = { ...((req.query as Record<string, unknown>) || {}), ...(options || {}) };
             const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
               grant,
-              nativeProviderStorage: sourceDescriptor?.kind === "provider_native",
+              ownerRead: tokenInfo.pdpp_token_kind === "owner",
               ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
               requestParams: mergedParams,
               storageBinding: storageBinding as StorageBindingLike,
@@ -2134,7 +2141,7 @@ export function mountRsRecordFieldWindow(app: AppLike, ctx: MountRsReadContext):
 
         const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
           grant,
-          nativeProviderStorage: sourceDescriptor?.kind === "provider_native",
+          ownerRead: tokenInfo.pdpp_token_kind === "owner",
           ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
           requestParams,
           storageBinding,
@@ -2264,6 +2271,7 @@ async function runSearchRouteHandler(
       tokenInfo,
       traceId,
     };
+    rejectUnsupportedClientQuery(tokenInfo.pdpp_token_kind, req.query);
     await ctx.emitQueryReceived(queryContext, req);
 
     const { envelope, disclosureData } = await opts.runSearch({
@@ -2362,14 +2370,12 @@ export function mountRsSearchHybrid(app: AppLike, ctx: MountRsReadContext): void
 
 interface BlobActorScope {
   manifest: ManifestLike;
-  nativeProviderStorage: boolean;
   storageBinding: StorageBindingLike;
 }
 
 // Owner/client scope resolution for the blob route. Unlike `resolveReadScope`,
-// the blob route does not thread `queryContext` (it has no `query.received`
-// instrumentation) and needs the `nativeProviderStorage` flag for the binding
-// resolver. Behaviour-identical to the previous inline branch.
+// the blob route does not thread `queryContext` because it has no
+// `query.received` instrumentation.
 async function resolveBlobActorScope(
   ctx: MountRsReadContext,
   req: RouteRequest,
@@ -2380,22 +2386,19 @@ async function resolveBlobActorScope(
     const ownerResolved = await ctx.resolveOwnerManifestFromScope(ownerScope, ctx.opts);
     return {
       manifest: ownerResolved.manifest,
-      nativeProviderStorage: ownerScope.source?.kind === "provider_native",
       storageBinding: ownerResolved.storageBinding,
     };
   }
   const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
   return {
     manifest: grantResolved.manifest,
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-    nativeProviderStorage: grantResolved.source?.kind === "provider_native",
     storageBinding: grantResolved.storageBinding,
   };
 }
 
 // Walk every blob binding and collect the unique connector instances that
 // expose a visible record referencing this blob. Owns the per-stream
-// addressable-id resolution (with its grant-scope `connection_id` re-check and
+// addressable-id resolution (with its closed grant `instance_ids` check and
 // connection_not_found / invalid_argument tolerance) and the visibility scan.
 // Behaviour-identical to the previous inline loop + `resolveAddressableForStream`
 // closure.
@@ -2408,7 +2411,6 @@ async function scanBlobBindingMatches(
     blobBindings: BlobBindingRow[];
     storageBinding: StorageBindingLike;
     manifest: ManifestLike;
-    nativeProviderStorage: boolean;
     actorConnectorId: string | null;
     defaultAddressableInstanceIds: Set<string>;
   }
@@ -2420,7 +2422,6 @@ async function scanBlobBindingMatches(
     blobBindings,
     storageBinding,
     manifest,
-    nativeProviderStorage,
     actorConnectorId,
     defaultAddressableInstanceIds,
   } = args;
@@ -2429,9 +2430,8 @@ async function scanBlobBindingMatches(
   const requestParams = (req.query as Record<string, unknown>) || {};
 
   // Owner-mode addressable cache: owner can read any active connection and
-  // there is no grant-scope connection_id constraint. Client mode resolves
-  // `(stream → bindings)` lazily and honors per-stream
-  // `grant.streams[].connection_id`.
+  // there is no grant-scoped instance constraint. Client mode resolves
+  // `(stream → bindings)` lazily from per-stream `grant.streams[].instance_ids`.
   const streamBindingCache = new Map<string, Set<string>>();
   async function resolveAddressableForStream(streamName: string): Promise<Set<string>> {
     if (ownerMode) {
@@ -2446,7 +2446,7 @@ async function scanBlobBindingMatches(
     try {
       const { bindings: streamBindings } = await ctx.resolveReadRequestBindings({
         grant: tokenInfo.grant || { streams: [] },
-        nativeProviderStorage,
+        ownerRead: ownerMode,
         ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
         requestParams,
         storageBinding,
@@ -2459,8 +2459,8 @@ async function scanBlobBindingMatches(
       // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       const code = (err as { code?: string })?.code;
       if (code === "connection_not_found" || code === "invalid_argument") {
-        // Grant-scope pins a connection that is not currently active, or the
-        // request supplied an addressable id outside the grant for this stream.
+        // The request supplied an addressable id outside the grant for this
+        // stream, or the stored grant is malformed.
         // Treat the stream as inaccessible for the blob-visibility check.
         const empty = new Set<string>();
         streamBindingCache.set(streamName, empty);
@@ -2471,14 +2471,14 @@ async function scanBlobBindingMatches(
   }
 
   // Is this binding addressable by the caller for its stream? Owner mode and
-  // the no-grant-scope fan-in case use the default set; grant-scoped clients
+  // the owner fan-in case use the default set; grant-scoped clients
   // resolve per-stream.
   async function bindingIsAddressable(binding: BlobBindingRow): Promise<boolean> {
     const addressable =
       grantStreams.length || ownerMode
         ? await resolveAddressableForStream(binding.stream)
         : defaultAddressableInstanceIds;
-    return !(addressable.size > 0 && binding.connector_instance_id && !addressable.has(binding.connector_instance_id));
+    return Boolean(binding.connector_instance_id && addressable.has(binding.connector_instance_id));
   }
 
   // Load the record this binding points at (under the binding's own connection
@@ -2608,7 +2608,7 @@ async function serveResolvedBlob(
 // flow through the `BlobStore` capability (server/stores/blob-store.ts),
 // constructed once via `ctx.createBlobStore()` at mount time exactly as the
 // inline `const blobStore = createBlobStore()` did. The route owns the
-// binding scan and the per-stream grant-scope `connection_id` re-check (P1/P2
+// binding scan and the per-stream closed `instance_ids` re-check (P1/P2
 // fixes); `executeBlobsRead` owns the 404 / 200 shape and error mapping.
 export function mountRsBlobRead(app: AppLike, ctx: MountRsReadContext): void {
   const blobStore = ctx.createBlobStore();
@@ -2620,21 +2620,21 @@ export function mountRsBlobRead(app: AppLike, ctx: MountRsReadContext): void {
       try {
         const blobId = decodeURIComponent(req.params.blob_id as string);
         const { tokenInfo } = req;
-        const { storageBinding, manifest, nativeProviderStorage } = await resolveBlobActorScope(ctx, req, tokenInfo);
+        const { storageBinding, manifest } = await resolveBlobActorScope(ctx, req, tokenInfo);
 
         // Resolve the default set of bindings this caller can address. When
         // the request supplies `connection_id` (or the deprecated alias) the
         // resolver narrows; otherwise the resolver fans in. The blob route
         // does not know the stream yet — that comes from per-binding records
         // — so we resolve without a stream constraint here and re-check the
-        // per-stream grant-scope `connection_id` constraint per binding below.
+        // per-stream closed `instance_ids` constraint per binding below.
         const {
           bindings: defaultBindings,
           requestConnectionId,
           warnings: resolverWarnings,
         } = await ctx.resolveReadRequestBindings({
           grant: tokenInfo.grant || { streams: [] },
-          nativeProviderStorage,
+          ownerRead: tokenInfo.pdpp_token_kind === "owner",
           ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
           requestParams: (req.query as Record<string, unknown>) || {},
           storageBinding,
@@ -2677,7 +2677,6 @@ export function mountRsBlobRead(app: AppLike, ctx: MountRsReadContext): void {
           blobId,
           defaultAddressableInstanceIds,
           manifest,
-          nativeProviderStorage,
           req,
           storageBinding,
           tokenInfo,

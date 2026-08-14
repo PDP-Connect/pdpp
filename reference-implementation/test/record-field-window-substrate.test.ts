@@ -82,6 +82,9 @@ const LONG_BODY = "The quick brown fox jumps over the lazy dog. ".repeat(300).tr
 
 const MANIFEST = {
   connector_id: CONNECTOR_ID,
+  display_name: "Record field-window substrate",
+  manifest_uri: `https://sources.example/${CONNECTOR_ID}`,
+  protocol_version: "0.1.0",
   streams: [
     {
       consent_time_field: "created_at",
@@ -100,10 +103,16 @@ const MANIFEST = {
         required: ["id"],
         type: "object",
       },
-      selection: { fields: true },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",
+};
+
+const MUTATED_TIME_FIELD_MANIFEST = {
+  ...MANIFEST,
+  streams: MANIFEST.streams.map((stream) => ({ ...stream, consent_time_field: "subject" })),
 };
 
 const SEED = [
@@ -168,6 +177,20 @@ async function expectError(fn: () => Promise<unknown>, code: string, label: stri
 // The behavioral contract both backends must satisfy.
 async function runSubstrateConformance(label: string): Promise<void> {
   await seed();
+  await Promise.all(
+    [
+      { created_at: 0, id: "numeric-time" },
+      { created_at: "not-a-time", id: "malformed-time" },
+      { id: "missing-time" },
+    ].map((temporal) =>
+      ingestRecord(CONNECTOR_ID, {
+        data: { body: "must stay hidden", subject: "invalid time", ...temporal },
+        emitted_at: "2026-01-01T00:00:00.000Z",
+        key: temporal.id,
+        stream: STREAM,
+      })
+    )
+  );
 
   // 1. Default window from offset 0 returns a bounded prefix, reports the full
   //    length, and signals more remains.
@@ -285,19 +308,57 @@ async function runSubstrateConformance(label: string): Promise<void> {
     `${label}: ungranted stream`
   );
 
-  // 11. Out-of-grant by time range -> not_found (the record's consent time is
+  // 11. Out-of-grant by frozen time constraint -> not_found (the record's time is
   //     before the grant window, so the grant cannot see it at all).
   const futureGrant = {
-    streams: [{ fields: ["body"], name: STREAM, time_range: { since: "2026-03-01T00:00:00.000Z" } }],
+    streams: [
+      {
+        fields: ["body"],
+        name: STREAM,
+        time_constraint: { field: "created_at", since: "2026-03-01T00:00:00.000Z" },
+      },
+    ],
   };
   await expectError(
-    () => getRecordFieldWindow(CONNECTOR_ID, STREAM, "e1", "body", futureGrant, MANIFEST, {}),
+    () => getRecordFieldWindow(CONNECTOR_ID, STREAM, "e1", "body", futureGrant, MUTATED_TIME_FIELD_MANIFEST, {}),
     "not_found",
-    `${label}: record outside grant time range`
+    `${label}: record outside frozen grant time constraint`
   );
-  // ...but e2 (June) IS inside that window and reads fine.
-  const wInRange = await getRecordFieldWindow(CONNECTOR_ID, STREAM, "e2", "body", futureGrant, MANIFEST, {});
+  // ...but e2 (June) IS inside that window and reads fine even though the
+  // mutable manifest now points consent_time_field at a different field.
+  const wInRange = await getRecordFieldWindow(
+    CONNECTOR_ID,
+    STREAM,
+    "e2",
+    "body",
+    futureGrant,
+    MUTATED_TIME_FIELD_MANIFEST,
+    {}
+  );
   assert.equal(wInRange.window.text, "short body", `${label}: in-range record reads under time grant`);
+
+  const coercionGrant = {
+    streams: [
+      {
+        fields: ["body"],
+        name: STREAM,
+        time_constraint: {
+          field: "created_at",
+          since: "1999-01-01T00:00:00.000Z",
+          until: "2001-01-01T00:00:00.000Z",
+        },
+      },
+    ],
+  };
+  await Promise.all(
+    ["numeric-time", "missing-time", "malformed-time"].map((recordId) =>
+      expectError(
+        () => getRecordFieldWindow(CONNECTOR_ID, STREAM, recordId, "body", coercionGrant, MANIFEST, {}),
+        "not_found",
+        `${label}: ${recordId} fails closed under time constraint`
+      )
+    )
+  );
 
   // 12. Out-of-grant by resource list -> not_found.
   const resourceGrant = { streams: [{ fields: ["body"], name: STREAM, resources: ["e2"] }] };

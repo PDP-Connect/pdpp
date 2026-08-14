@@ -11,7 +11,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { runConnector } from "../runtime/index.ts";
-import { parsePendingConsentRequestUri } from "../server/auth.ts";
+import { parsePendingConsentRequestUri, registerConnector } from "../server/auth.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
@@ -21,10 +21,16 @@ import {
   admitOwnerRunConnection,
   makeDefaultAccountConnectorInstanceId,
 } from "../server/stores/connector-instance-store.ts";
+import {
+  TEST_INTROSPECTION_SERVER_OPTS,
+  TEST_RS_INTROSPECTION_CREDENTIALS,
+} from "./helpers/introspection-test-credentials.ts";
+
+type RuntimeConnectorManifest = NonNullable<Parameters<typeof runConnector>[0]["manifest"]>;
 
 const TOP_LEVEL_REGEX_1 = /Reference trace ID: (trc_[A-Za-z0-9]+)/;
 const TOP_LEVEL_REGEX_2 = /^warning: "pdpp trace show" is deprecated; use "pdpp ref trace show" instead\.$/m;
-const TOP_LEVEL_REGEX_3 = /Unknown connector: missing_spotify_connector/;
+const TOP_LEVEL_REGEX_3 = /Grant is malformed or no longer valid/;
 const TOP_LEVEL_REGEX_4 = /User code: ([A-Z0-9]+)/;
 const TOP_LEVEL_REGEX_5 = /Verification URI:/;
 const TOP_LEVEL_REGEX_6 = /User code: ([A-Z0-9]+)/;
@@ -62,19 +68,17 @@ const TOP_LEVEL_REGEX_37 = /Request ID: req_/;
 const TOP_LEVEL_REGEX_38 = /Reference trace ID: trc_/;
 const TOP_LEVEL_REGEX_39 = /malformed or no longer valid/;
 const TOP_LEVEL_REGEX_40 = /Unknown client_id/;
-const TOP_LEVEL_REGEX_41 =
-  /Pending consent request manifest_version '999\.0\.0' does not match current manifest version/;
 const TOP_LEVEL_REGEX_42 = /Access Denied/;
 const TOP_LEVEL_REGEX_43 = /Access Denied/;
 const TOP_LEVEL_REGEX_44 = /Unsupported request fields: redirect_uri, response_type/;
-const TOP_LEVEL_REGEX_45 = /Stream 'saved_tracks' view and fields are mutually exclusive/;
+const TOP_LEVEL_REGEX_45 = /Selection request is invalid: \/streams\/0 must NOT be valid/;
 const TOP_LEVEL_REGEX_46 = /Grant is malformed or no longer valid/;
 const TOP_LEVEL_REGEX_47 = /Request ID: (req_[A-Za-z0-9]+)/;
 const TOP_LEVEL_REGEX_48 = /Reference trace ID: (trc_[A-Za-z0-9]+)/;
 const TOP_LEVEL_REGEX_49 = /Invalid initial access token/;
-const TOP_LEVEL_REGEX_50 = /source.*provider_native/;
+const TOP_LEVEL_REGEX_50 = /Source kind does not match the retained declaration/;
 const TOP_LEVEL_REGEX_51 = /Unknown source/;
-const TOP_LEVEL_REGEX_52 = /source: \{ kind/;
+const TOP_LEVEL_REGEX_52 = /Selection request is invalid: .*additional properties.*source\/id must match format "uri"/s;
 const TOP_LEVEL_REGEX_53 = /Registered client:/;
 const TOP_LEVEL_REGEX_54 = /User code: ([A-Z0-9]+)/;
 const TOP_LEVEL_REGEX_55 = /is not scoped to stream saved_tracks/;
@@ -83,27 +87,26 @@ const TOP_LEVEL_REGEX_57 = /Request ID: (req_[A-Za-z0-9]+)/;
 const TOP_LEVEL_REGEX_58 = /Reference trace ID: (trc_[A-Za-z0-9]+)/;
 const TOP_LEVEL_REGEX_59 = /view and fields are mutually exclusive/;
 const TOP_LEVEL_REGEX_60 = /view and fields are mutually exclusive/;
-const TOP_LEVEL_REGEX_61 = /Unknown connector: missing_spotify_connector/;
+const TOP_LEVEL_REGEX_61 = /Grant is malformed or no longer valid/;
 const TOP_LEVEL_REGEX_62 = /Request ID: (req_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_63 = /Reference trace ID: (trc_[A-Za-z0-9_]+)/;
-const TOP_LEVEL_REGEX_64 = /Unknown connector: missing_spotify_connector/;
-const TOP_LEVEL_REGEX_65 = /Unknown connector: missing_spotify_connector/;
+const TOP_LEVEL_REGEX_64 = /Grant is malformed or no longer valid/;
+const TOP_LEVEL_REGEX_65 = /Grant is malformed or no longer valid/;
 const TOP_LEVEL_REGEX_66 = /Request ID: (req_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_67 = /Reference trace ID: (trc_[A-Za-z0-9_]+)/;
-const TOP_LEVEL_REGEX_68 = /Unknown connector: missing_spotify_connector/;
+const TOP_LEVEL_REGEX_68 = /Grant is malformed or no longer valid/;
 const TOP_LEVEL_REGEX_69 = /Request ID: (req_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_70 = /Reference trace ID: (trc_[A-Za-z0-9_]+)/;
-const TOP_LEVEL_REGEX_71 = /Unknown connector: missing_spotify_connector/;
-const TOP_LEVEL_REGEX_72 = /Unknown connector: missing_spotify_connector/;
+const TOP_LEVEL_REGEX_71 = /Grant is malformed or no longer valid/;
+const TOP_LEVEL_REGEX_72 = /Grant is malformed or no longer valid/;
 const TOP_LEVEL_REGEX_73 = /Request ID: (req_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_74 = /Reference trace ID: (trc_[A-Za-z0-9_]+)/;
-const TOP_LEVEL_REGEX_75 = /Filter on field 'popularity' not in grant/;
-const TOP_LEVEL_REGEX_76 = /Filter on field 'popularity' not in grant/;
+const TOP_LEVEL_REGEX_CLIENT_FILTER_UNSUPPORTED =
+  /filter\[\.\.\.\] is not supported for client-token reads in PDPP v0\.1/;
+const TOP_LEVEL_REGEX_INTROSPECTION_FAILED = /Token introspection failed closed/;
+const TOP_LEVEL_REGEX_INVALID_TOKEN = /Invalid or expired token/;
 const TOP_LEVEL_REGEX_77 = /Record not found/;
 const TOP_LEVEL_REGEX_78 = /Record not found/;
-const TOP_LEVEL_REGEX_79 = /Stream 'recently_played' not in grant/;
-const TOP_LEVEL_REGEX_80 = /Stream 'recently_played' not in grant/;
-const TOP_LEVEL_REGEX_81 = /Stream 'saved_tracks' not in grant/;
 const TOP_LEVEL_REGEX_82 = /Record not found/;
 const TOP_LEVEL_REGEX_83 = /Record not found/;
 const TOP_LEVEL_REGEX_84 = /invalid INTERACTION.kind/;
@@ -142,7 +145,7 @@ const TOP_LEVEL_REGEX_116 = /view and fields are mutually exclusive/;
 const TOP_LEVEL_REGEX_117 = /Request ID: (req_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_118 = /Reference trace ID: (trc_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_119 = /view and fields are mutually exclusive/;
-const TOP_LEVEL_REGEX_120 = /Unknown connector: missing_spotify_connector/;
+const TOP_LEVEL_REGEX_120 = /Unknown source: missing_spotify_connector/;
 const TOP_LEVEL_REGEX_121 = /Request ID: req_/;
 const TOP_LEVEL_REGEX_122 = /Reference trace ID: trc_qry_/;
 const TOP_LEVEL_REGEX_123 = /Request ID: (req_[A-Za-z0-9_]+)/;
@@ -159,6 +162,9 @@ const TOP_LEVEL_REGEX_133 = /Reference trace ID: (trc_[A-Za-z0-9_]+)/;
 const TOP_LEVEL_REGEX_134 = /Stream 'not_a_stream' not found/;
 const TOP_LEVEL_REGEX_135 = /connector_id must be a single non-empty string for polyfill owner access/;
 const TOP_LEVEL_REGEX_136 = /request\.source_binding must include only kind and id/;
+const TOP_LEVEL_REGEX_137 =
+  /Missing introspection caller credentials: set PDPP_RS_INTROSPECTION_CLIENT_ID and PDPP_RS_INTROSPECTION_CLIENT_SECRET/;
+const CLI_GRANT_FIXTURE_OWNER_SUBJECTS = ["cli_owner", "u1", "employee_1"] as const;
 
 const execFile = promisify(execFileCallback);
 
@@ -179,6 +185,14 @@ interface CloseableHttpServer {
 // callers of withHarness/withNativeHarness.
 interface TestManifest {
   readonly connector_id: string;
+  readonly name?: string;
+  readonly provider_id?: string;
+  readonly source_declaration?: {
+    readonly protocol_version: string;
+    readonly streams: readonly Record<string, unknown>[];
+  };
+  readonly storage_binding?: { readonly connector_id: string };
+  readonly version?: string;
   readonly [key: string]: unknown;
 }
 
@@ -413,6 +427,7 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>) {
     dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -426,6 +441,7 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>) {
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
+    await seedCliGrantInstances(spotifyManifest.connector_id, "Spotify");
 
     await fn({ asUrl, rsUrl, spotifyManifest });
   } finally {
@@ -443,6 +459,7 @@ async function withNativeHarness(fn: (ctx: NativeHarnessContext) => Promise<void
     nativeManifest,
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -475,7 +492,7 @@ function startGrantRequest(asUrl: string, params: GrantRequestParams) {
             params.source ||
             (params.provider_id
               ? { id: params.provider_id, kind: "provider_native" }
-              : { id: params.connector_id, kind: "connector" }),
+              : { id: sourceIdForConnectorId(params.connector_id), kind: "connector" }),
           streams: params.streams,
           type: "https://pdpp.dev/data-access",
         },
@@ -494,11 +511,21 @@ function approveGrantRequest(
   subjectId: string,
   extra: Record<string, unknown> = {}
 ) {
-  return fetchJson<ApprovedGrant>(`${asUrl}/consent/approve`, {
-    body: JSON.stringify({ request_uri: requestUri, subject_id: subjectId, ...extra }),
-    headers: { "Content-Type": "application/json" },
-    method: "POST",
-  });
+  return (async () => {
+    const review = await fetchJson<Record<string, unknown>>(`${asUrl}/consent/review`, {
+      body: JSON.stringify({ request_uri: requestUri, subject_id: subjectId, ...extra }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(review.status, 200, JSON.stringify(review.body));
+    const reviewRevision = review.body.approval_review_revision;
+    assert.equal(typeof reviewRevision, "string", "consent review must return approval_review_revision");
+    return fetchJson<ApprovedGrant>(`${asUrl}/consent/approve`, {
+      body: JSON.stringify({ approval_review_revision: reviewRevision, request_uri: requestUri }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    });
+  })();
 }
 
 async function denyGrantRequest(asUrl: string, requestUri: string) {
@@ -654,6 +681,47 @@ async function materializeCliRunConnection(connectorId: string, ownerSubjectId =
   return namespace.connectorInstanceId;
 }
 
+function sourceIdForConnectorId(connectorId: string | undefined): string | undefined {
+  if (connectorId === undefined || connectorId.includes("://")) {
+    return connectorId;
+  }
+  return `https://registry.pdpp.dev/connectors/${connectorId}`;
+}
+
+async function seedDefaultGrantInstance(
+  connectorId: string,
+  ownerSubjectId: string,
+  displayName: string
+): Promise<void> {
+  const store = createRequestConnectorInstanceStore();
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
+  const connectorInstanceId = makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorKey);
+  if (await store.get(connectorInstanceId)) {
+    return;
+  }
+  const now = new Date().toISOString();
+  await store.upsert({
+    connectorId: connectorKey,
+    connectorInstanceId,
+    createdAt: now,
+    displayName,
+    ownerSubjectId,
+    sourceBinding: { fixture: "cli-grant-omission-default-account" },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+}
+
+async function seedCliGrantInstances(connectorId: string, displayName: string): Promise<void> {
+  await Promise.all(
+    CLI_GRANT_FIXTURE_OWNER_SUBJECTS.map((ownerSubjectId) =>
+      seedDefaultGrantInstance(connectorId, ownerSubjectId, displayName)
+    )
+  );
+}
+
 function seedSpotify(rsUrl: string, manifest: TestManifest, ownerToken: string, ownerSubjectId = "cli_owner") {
   const connectorPath = join(REFERENCE_IMPL_DIR, "connectors/seed/index.ts");
   return runConnector({
@@ -667,7 +735,7 @@ function seedSpotify(rsUrl: string, manifest: TestManifest, ownerToken: string, 
     collectionMode: "full_refresh",
     connectorId: manifest.connector_id,
     connectorPath,
-    manifest,
+    manifest: manifest as RuntimeConnectorManifest,
     ownerSubjectId,
     ownerToken,
     rsUrl,
@@ -675,7 +743,7 @@ function seedSpotify(rsUrl: string, manifest: TestManifest, ownerToken: string, 
   });
 }
 
-async function seedNorthstar(nativeManifest: TestManifest) {
+async function seedNorthstar(nativeManifest: TestManifest, ownerSubjectId = "cli_owner") {
   const records = [
     {
       data: {
@@ -728,8 +796,40 @@ async function seedNorthstar(nativeManifest: TestManifest) {
   ];
 
   const storageBinding = nativeManifest.storage_binding as { connector_id: string };
+  assert.ok(nativeManifest.name, "native manifest includes name");
+  assert.ok(nativeManifest.source_declaration, "native manifest includes source_declaration");
+  assert.ok(nativeManifest.version, "native manifest includes version");
+  await registerConnector(
+    {
+      connector_id: storageBinding.connector_id,
+      display_name: nativeManifest.name,
+      protocol_version: nativeManifest.source_declaration.protocol_version,
+      source_declaration: nativeManifest.source_declaration,
+      streams: nativeManifest.source_declaration.streams,
+      version: nativeManifest.version,
+    },
+    { backfillRetrievalIndexes: false }
+  );
+
+  const connectorInstanceId = makeDefaultAccountConnectorInstanceId(ownerSubjectId, storageBinding.connector_id);
+  const now = new Date().toISOString();
+  await createRequestConnectorInstanceStore().upsert({
+    connectorId: storageBinding.connector_id,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: "Northstar HR",
+    ownerSubjectId,
+    sourceBinding: { fixture: "cli-native-provider" },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
   for await (const record of records) {
-    await ingestRecord(storageBinding.connector_id, record);
+    await ingestRecord(
+      { connector_id: storageBinding.connector_id, connector_instance_id: connectorInstanceId },
+      record
+    );
   }
 }
 
@@ -745,6 +845,9 @@ function issueNorthstarClientGrant(asUrl: string, nativeManifest: TestManifest, 
 }
 
 async function approveGrant(asUrl: string, subjectId: string, params: GrantRequestParams): Promise<ApprovedGrant> {
+  if (params.connector_id) {
+    await seedDefaultGrantInstance(params.connector_id, subjectId, "Grant fixture");
+  }
   const { body: initiate } = await startGrantRequest(asUrl, params);
   assert.ok(initiate.request_uri, "expected request_uri from PAR");
 
@@ -846,6 +949,7 @@ async function withMalformedPolyfillClientGrant(fn: (ctx: MalformedPolyfillClien
       dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
       quiet: true,
       rsPort: server.rsPort,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
 
     const reRegisterResp = await fetchJson(`${asUrl}/connectors`, {
@@ -890,9 +994,11 @@ function assertMalformedPolyfillClientArtifacts({
   assert.equal(queryReceived.trace_id, traceId);
   const queryReceivedData = asRecord(queryReceived.data);
   assert.equal(queryReceivedData.query_shape, queryShape);
-  const queryReceivedSource = asRecord(queryReceivedData.source);
-  assert.equal(queryReceivedSource.kind, "connector");
-  assert.equal(queryReceivedSource.id, missingConnectorId);
+  assert.equal(
+    queryReceivedData.source,
+    undefined,
+    `malformed source '${missingConnectorId}' must not be trusted for ${label}`
+  );
   if (streamId) {
     assert.equal(queryReceived.stream_id, streamId);
   }
@@ -907,11 +1013,13 @@ function assertMalformedPolyfillClientArtifacts({
   assert.equal(rejectedEvent.trace_id, traceId);
   const rejectedEventData = asRecord(rejectedEvent.data);
   assert.equal(rejectedEventData.query_shape, queryShape);
-  const rejectedEventSource = asRecord(rejectedEventData.source);
-  assert.equal(rejectedEventSource.kind, "connector");
-  assert.equal(rejectedEventSource.id, missingConnectorId);
+  assert.equal(
+    rejectedEventData.source,
+    undefined,
+    `malformed source '${missingConnectorId}' must not be trusted for ${label}`
+  );
   const rejectedEventError = asRecord(rejectedEventData.error);
-  assert.equal(rejectedEventError.code, "not_found");
+  assert.equal(rejectedEventError.code, "grant_invalid");
   assert.match(String(rejectedEventError.message ?? ""), TOP_LEVEL_REGEX_3);
   if (streamId) {
     assert.equal(rejectedEvent.stream_id, streamId);
@@ -949,6 +1057,8 @@ async function runCli(args: readonly string[], env: Record<string, string> = {})
       ...process.env,
       AS_URL: "",
       PDPP_AS_URL: "",
+      PDPP_RS_INTROSPECTION_CLIENT_ID: TEST_RS_INTROSPECTION_CREDENTIALS.clientId,
+      PDPP_RS_INTROSPECTION_CLIENT_SECRET: TEST_RS_INTROSPECTION_CREDENTIALS.clientSecret,
       PDPP_RS_URL: "",
       RS_URL: "",
       ...env,
@@ -979,6 +1089,8 @@ async function runCliExpectFailure(args: readonly string[], env: Record<string, 
         ...process.env,
         AS_URL: "",
         PDPP_AS_URL: "",
+        PDPP_RS_INTROSPECTION_CLIENT_ID: TEST_RS_INTROSPECTION_CREDENTIALS.clientId,
+        PDPP_RS_INTROSPECTION_CLIENT_SECRET: TEST_RS_INTROSPECTION_CREDENTIALS.clientSecret,
         PDPP_RS_URL: "",
         RS_URL: "",
         ...env,
@@ -1026,7 +1138,7 @@ test("PDPP CLI smoke", async (t) => {
   });
 
   await t.test(
-    "auth introspect preserves the current native client grant shape without storage-binding leakage",
+    "auth introspect exposes native client authorization details without storage-binding leakage",
     async () => {
       await withNativeHarness(async ({ asUrl, rsUrl, nativeManifest }) => {
         await seedNorthstar(nativeManifest);
@@ -1051,14 +1163,37 @@ test("PDPP CLI smoke", async (t) => {
         assert.equal(result.json.subject_id, "cli_owner");
         assert.ok(typeof result.json.trace_id === "string" && result.json.trace_id.startsWith("trc_"));
         assert.ok(typeof result.json.scenario_id === "string" && result.json.scenario_id.startsWith("scn_"));
-        const resultGrantSource = asRecord(asRecord(result.json.grant).source);
+        const resultAuthorizationDetails = asRecord(
+          (result.json.authorization_details as readonly unknown[] | undefined)?.[0]
+        );
+        const resultGrantSource = asRecord(resultAuthorizationDetails.source);
         assert.equal(resultGrantSource.kind, "provider_native");
         assert.equal(resultGrantSource.id, nativeManifest.provider_id);
-        assert.equal("grant_storage_binding" in result.json, false);
+        assert.equal("grant_storage_binding" in resultAuthorizationDetails, false);
         assert.equal(result.stderr, "");
+
+        const recordsResponse = await fetch(`${rsUrl}/v1/streams/pay_statements/records`, {
+          headers: { Authorization: `Bearer ${approved.token}` },
+        });
+        assert.equal(recordsResponse.status, 200, "issued native grant reads the serving binding");
+        const recordsBody = (await recordsResponse.json()) as { data?: unknown[] };
+        assert.ok(recordsBody.data?.length, "native serving binding returns the seeded pay statement");
       });
     }
   );
+
+  await t.test("auth introspect requires caller credentials from the environment", async () => {
+    const result = await runCliExpectFailure(
+      ["auth", "introspect", "--rs-url", "http://localhost:1", "--token", "token"],
+      {
+        PDPP_RS_INTROSPECTION_CLIENT_ID: "",
+        PDPP_RS_INTROSPECTION_CLIENT_SECRET: "",
+      }
+    );
+
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, TOP_LEVEL_REGEX_137);
+  });
 
   await t.test("auth introspect preserves grant_invalid client context", async () => {
     const { dbPath, cleanup } = createTempDbPath();
@@ -1069,6 +1204,7 @@ test("PDPP CLI smoke", async (t) => {
       nativeManifest,
       quiet: true,
       rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
@@ -1092,6 +1228,7 @@ test("PDPP CLI smoke", async (t) => {
         nativeManifest,
         quiet: true,
         rsPort: server.rsPort,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
 
       const result = await runCli([
@@ -1211,7 +1348,15 @@ test("PDPP CLI smoke", async (t) => {
         ],
         {
           cwd: REFERENCE_IMPL_DIR,
-          env: { ...process.env, AS_URL: "", PDPP_AS_URL: "", PDPP_RS_URL: "", RS_URL: "" },
+          env: {
+            ...process.env,
+            AS_URL: "",
+            PDPP_AS_URL: "",
+            PDPP_RS_INTROSPECTION_CLIENT_ID: TEST_RS_INTROSPECTION_CREDENTIALS.clientId,
+            PDPP_RS_INTROSPECTION_CLIENT_SECRET: TEST_RS_INTROSPECTION_CREDENTIALS.clientSecret,
+            PDPP_RS_URL: "",
+            RS_URL: "",
+          },
           stdio: ["ignore", "pipe", "pipe"],
         }
       );
@@ -1983,7 +2128,7 @@ test("PDPP CLI smoke", async (t) => {
     assert.ok(Array.isArray(result.json));
     const payStatements = result.json.find((stream) => stream.stream === "pay_statements");
     assert.equal(payStatements.source_kind, "provider_native");
-    assert.equal(payStatements.source_id, "northstar_hr");
+    assert.equal(payStatements.source_id, "https://northstar.example/pdpp");
     assert.equal(payStatements.primary_key, "statement_id");
     assert.equal(result.stderr, "");
   });
@@ -2641,7 +2786,7 @@ test("PDPP CLI smoke", async (t) => {
       assert.equal(rejected.object_type, "pending_consent");
       assert.equal(rejected.client_id, registration.json.client_id);
       assert.equal(asRecord(rejected.data?.source).kind, "connector");
-      assert.equal(asRecord(rejected.data?.source).id, canonicalConnectorKey(spotifyManifest.connector_id));
+      assert.equal(asRecord(rejected.data?.source).id, spotifyManifest.connector_id);
       assert.equal(asRecord(rejected.data?.error).code, "invalid_client");
       assert.match(String(asRecord(rejected.data?.error).message ?? ""), TOP_LEVEL_REGEX_40);
       assert.equal(result.stderr, "");
@@ -2651,7 +2796,10 @@ test("PDPP CLI smoke", async (t) => {
   await t.test(
     "trace show keeps approval artifacts on the original staged trace when persisted pending trace-context drifts",
     async () => {
-      await withHarness(async ({ asUrl, spotifyManifest }) => {
+      await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+        const ownerToken = await issueOwnerToken(asUrl, "u1");
+        await seedSpotify(rsUrl, spotifyManifest, ownerToken, "u1");
+
         const initiate = await startGrantRequest(asUrl, {
           access_mode: "single_use",
           client_id: "longview",
@@ -2692,21 +2840,21 @@ test("PDPP CLI smoke", async (t) => {
         );
         assert.ok(approved, "trace show should keep consent.approved on the original staged trace");
         assert.equal(asRecord(approved.data?.source).kind, "connector");
-        assert.equal(asRecord(approved.data?.source).id, canonicalConnectorKey(spotifyManifest.connector_id));
+        assert.equal(asRecord(approved.data?.source).id, spotifyManifest.connector_id);
 
         const grantIssued = (result.json.data || []).find(
           (event) => event.event_type === "grant.issued" && event.request_id === stagedRequestId
         );
         assert.ok(grantIssued, "trace show should keep grant.issued on the original staged trace");
         assert.equal(asRecord(grantIssued.data?.source).kind, "connector");
-        assert.equal(asRecord(grantIssued.data?.source).id, canonicalConnectorKey(spotifyManifest.connector_id));
+        assert.equal(asRecord(grantIssued.data?.source).id, spotifyManifest.connector_id);
 
         const tokenIssued = (result.json.data || []).find(
           (event) => event.event_type === "token.issued" && event.request_id === stagedRequestId
         );
         assert.ok(tokenIssued, "trace show should keep token.issued on the original staged trace");
         assert.equal(asRecord(tokenIssued.data?.source).kind, "connector");
-        assert.equal(asRecord(tokenIssued.data?.source).id, canonicalConnectorKey(spotifyManifest.connector_id));
+        assert.equal(asRecord(tokenIssued.data?.source).id, spotifyManifest.connector_id);
         assert.equal(tokenIssued.data?.issuance_path, "grant_approval");
         assert.equal(result.stderr, "");
       });
@@ -2806,8 +2954,12 @@ test("PDPP CLI smoke", async (t) => {
           };
         });
 
-        const approveResp = await approveGrantRequest(asUrl, requireRequestUri(initiate.body), "u1");
-        assert.equal(approveResp.status, 400);
+        const reviewResp = await fetchJson(`${asUrl}/consent/review`, {
+          body: JSON.stringify({ request_uri: requireRequestUri(initiate.body), subject_id: "u1" }),
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          method: "POST",
+        });
+        assert.equal(reviewResp.status, 400);
 
         const result = await runCli(["trace", "show", stagedTraceId, "--as-url", asUrl, "--format", "json"]);
         assert.ok(result.json, "expected CLI --format json output to parse");
@@ -2820,7 +2972,7 @@ test("PDPP CLI smoke", async (t) => {
         );
         assert.ok(rejected, "trace show should keep request.rejected on the original staged trace");
         assert.equal(asRecord(rejected.data?.source).kind, "connector");
-        assert.equal(asRecord(rejected.data?.source).id, canonicalConnectorKey(spotifyManifest.connector_id));
+        assert.equal(asRecord(rejected.data?.source).id, spotifyManifest.connector_id);
         assert.equal(result.stderr, "");
       });
     }
@@ -2849,8 +3001,12 @@ test("PDPP CLI smoke", async (t) => {
           };
         });
 
-        const approveResp = await approveGrantRequest(asUrl, requireRequestUri(initiate.body), "u1");
-        assert.equal(approveResp.status, 400);
+        const reviewResp = await fetchJson(`${asUrl}/consent/review`, {
+          body: JSON.stringify({ request_uri: requireRequestUri(initiate.body), subject_id: "u1" }),
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          method: "POST",
+        });
+        assert.equal(reviewResp.status, 400);
 
         const result = await runCli(["trace", "show", stagedTraceId, "--as-url", asUrl, "--format", "json"]);
         assert.ok(result.json, "expected CLI --format json output to parse");
@@ -2868,7 +3024,7 @@ test("PDPP CLI smoke", async (t) => {
     }
   );
 
-  await t.test("trace show keeps consent-time native manifest drift artifacts inspectable", async () => {
+  await t.test("trace show keeps retained native authorization stable across manifest label drift", async () => {
     await withNativeHarness(async ({ asUrl, nativeManifest }) => {
       const initiate = await startGrantRequest(asUrl, {
         access_mode: "continuous",
@@ -2879,6 +3035,7 @@ test("PDPP CLI smoke", async (t) => {
         streams: [{ name: "pay_statements" }],
       });
       assert.equal(initiate.status, 201);
+      const stagedTrace = await readPendingConsentTraceContext(requireRequestUri(initiate.body));
 
       await mutatePendingConsentRequest(requireRequestUri(initiate.body), (request) => {
         request.manifest_version = "999.0.0";
@@ -2887,30 +3044,31 @@ test("PDPP CLI smoke", async (t) => {
       const consentResp = await fetch(
         `${asUrl}/consent?request_uri=${encodeURIComponent(requireRequestUri(initiate.body))}`
       );
-      assert.equal(consentResp.status, 400);
-      const requestId = consentResp.headers.get("Request-Id");
-      const traceId = consentResp.headers.get("PDPP-Reference-Trace-Id");
-      assert.ok(requestId, "expected Request-Id header");
-      assert.ok(traceId, "expected PDPP-Reference-Trace-Id header");
-      assert.ok(requestId.startsWith("req_"));
-      assert.ok(traceId.startsWith("trc_"));
+      assert.equal(consentResp.status, 200);
 
-      const result = await runCli(["trace", "show", traceId, "--as-url", asUrl, "--format", "json"]);
+      const approval = await approveGrantRequest(asUrl, requireRequestUri(initiate.body), "employee_1");
+      assert.equal(approval.status, 200);
+
+      const result = await runCli(["trace", "show", stagedTrace.trace_id, "--as-url", asUrl, "--format", "json"]);
       assert.ok(result.json, "expected CLI --format json output to parse");
 
       assert.equal(result.json.object, "trace");
-      assert.equal(result.json.trace_id, traceId);
+      assert.equal(result.json.trace_id, stagedTrace.trace_id);
 
-      const rejected = (result.json.data || []).find(
-        (event) => event.event_type === "request.rejected" && event.request_id === requestId
+      const approved = (result.json.data || []).find(
+        (event) => event.event_type === "consent.approved" && event.request_id === stagedTrace.request_id
       );
-      assert.ok(rejected, "trace show should include request.rejected for consent-time native manifest drift");
-      assert.equal(rejected.object_type, "pending_consent");
-      assert.equal(rejected.client_id, "longview");
-      assert.equal(asRecord(rejected.data?.source).kind, "provider_native");
-      assert.equal(asRecord(rejected.data?.source).id, nativeManifest.provider_id);
-      assert.equal(asRecord(rejected.data?.error).code, "invalid_request");
-      assert.match(String(asRecord(rejected.data?.error).message ?? ""), TOP_LEVEL_REGEX_41);
+      assert.ok(approved, "trace show should include consent.approved from the retained native declaration");
+      assert.equal(approved.object_type, "pending_consent");
+      assert.equal(approved.client_id, "longview");
+      assert.equal(asRecord(approved.data?.source).kind, "provider_native");
+      assert.equal(asRecord(approved.data?.source).id, nativeManifest.provider_id);
+      assert.equal(
+        (result.json.data || []).find(
+          (event) => event.event_type === "request.rejected" && event.request_id === stagedTrace.request_id
+        ),
+        undefined
+      );
       assert.equal(result.stderr, "");
     });
   });
@@ -2954,7 +3112,7 @@ test("PDPP CLI smoke", async (t) => {
       assert.equal(denied.object_type, "pending_consent");
       assert.equal(denied.status, "denied");
       assert.equal(asRecord(denied.data?.source).kind, "connector");
-      assert.equal(asRecord(denied.data?.source).id, canonicalConnectorKey(spotifyManifest.connector_id));
+      assert.equal(asRecord(denied.data?.source).id, spotifyManifest.connector_id);
       assert.equal(result.stderr, "");
     });
   });
@@ -2964,7 +3122,7 @@ test("PDPP CLI smoke", async (t) => {
     async () => {
       await withNativeHarness(async ({ asUrl, nativeManifest }) => {
         const initiate = await startGrantRequest(asUrl, {
-          access_mode: "single_use",
+          access_mode: "continuous",
           client_id: "longview",
           purpose_code: "https://pdpp.dev/purpose/financial_planning",
           purpose_description: "Support compensation planning and verification",
@@ -3259,7 +3417,9 @@ test("PDPP CLI smoke", async (t) => {
   await t.test(
     "grant revoke failures surface correlation ids and stay inspectable through timeline and trace readers",
     async () => {
-      await withHarness(async ({ asUrl, spotifyManifest }) => {
+      await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+        const ownerToken = await issueOwnerToken(asUrl, "u1");
+        await seedSpotify(rsUrl, spotifyManifest, ownerToken, "u1");
         const approved = await approveGrant(asUrl, "u1", {
           access_mode: "continuous",
           client_id: "longview",
@@ -3390,8 +3550,8 @@ test("PDPP CLI smoke", async (t) => {
     });
   });
 
-  await t.test("grant start fails honestly when a polyfill provider receives a native-provider request", async () => {
-    await withHarness(async ({ asUrl }) => {
+  await t.test("grant start rejects the wrong Source kind without falling back to connector storage", async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }) => {
       const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-cli-bad-grant-"));
       const requestPath = join(tmpDir, "request.json");
       writeFileSync(
@@ -3403,7 +3563,7 @@ test("PDPP CLI smoke", async (t) => {
                 access_mode: "single_use",
                 purpose_code: "https://pdpp.dev/purpose/financial_planning",
                 purpose_description: "Compare pay, equity, and benefits data",
-                source: { id: "northstar_hr", kind: "provider_native" },
+                source: { id: spotifyManifest.connector_id, kind: "provider_native" },
                 streams: [{ fields: ["gross_pay", "net_pay"], name: "pay_statements" }],
                 type: "https://pdpp.dev/data-access",
               },
@@ -3436,7 +3596,7 @@ test("PDPP CLI smoke", async (t) => {
                 access_mode: "single_use",
                 purpose_code: "https://pdpp.dev/purpose/financial_planning",
                 purpose_description: "Compare pay, equity, and benefits data",
-                source: { id: "wrong_provider", kind: "provider_native" },
+                source: { id: "https://unknown.example/pdpp", kind: "provider_native" },
                 streams: [{ fields: ["gross_pay", "net_pay"], name: "pay_statements" }],
                 type: "https://pdpp.dev/data-access",
               },
@@ -3516,7 +3676,13 @@ test("PDPP CLI smoke", async (t) => {
   });
 
   await t.test("agent bootstrap uses the reference-local DCR default without an explicit token", async () => {
-    const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+    const server = await startServer({
+      asPort: 0,
+      dbPath: ":memory:",
+      quiet: true,
+      rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
+    });
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
     const cacheRoot = mkdtempSync(join(tmpdir(), "pdpp-agent-bootstrap-"));
@@ -3671,6 +3837,7 @@ test("PDPP CLI smoke", async (t) => {
   await t.test("grant timeline keeps grant-scoped state artifacts inspectable", async () => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
       const ownerToken = await issueOwnerToken(asUrl, "cli_owner");
+      await seedSpotify(rsUrl, spotifyManifest, ownerToken);
       const approved = await approveGrant(asUrl, "cli_owner", {
         access_mode: "continuous",
         client_display: { name: "Concert Recommendation App" },
@@ -4029,7 +4196,7 @@ test("PDPP CLI smoke", async (t) => {
       const rejectedResp = await fetch(`${rsUrl}/v1/streams/top_artists`, {
         headers: { Authorization: `Bearer ${approved.token}` },
       });
-      assert.equal(rejectedResp.status, 404);
+      assert.equal(rejectedResp.status, 403);
       const requestId = rejectedResp.headers.get("Request-Id");
       const traceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
       assert.ok(requestId, "malformed polyfill client stream-metadata read should surface a request id");
@@ -4037,7 +4204,7 @@ test("PDPP CLI smoke", async (t) => {
       assert.ok(requestId.startsWith("req_"));
       assert.ok(traceId.startsWith("trc_"));
       const rejectedBody = asRecord(await rejectedResp.json());
-      assert.equal(asRecord(rejectedBody.error).code, "not_found");
+      assert.equal(asRecord(rejectedBody.error).code, "grant_invalid");
       assert.match(String(asRecord(rejectedBody.error).message ?? ""), TOP_LEVEL_REGEX_64);
 
       const timeline = await runCli([
@@ -4170,10 +4337,10 @@ test("PDPP CLI smoke", async (t) => {
           const rejectedResp = await fetch(`${rsUrl}/v1/streams/top_artists`, {
             headers: { Authorization: `Bearer ${approved.token}` },
           });
-          assert.equal(rejectedResp.status, 404);
+          assert.equal(rejectedResp.status, 403);
           const rejectedBody = asRecord(await rejectedResp.json());
           const rejectedError = asRecord(rejectedBody.error);
-          assert.equal(rejectedError.code, "not_found");
+          assert.equal(rejectedError.code, "grant_invalid");
           assert.match(String(rejectedError.message ?? ""), TOP_LEVEL_REGEX_71);
           return {
             requestId: rejectedResp.headers.get("Request-Id"),
@@ -4206,7 +4373,7 @@ test("PDPP CLI smoke", async (t) => {
     for await (const scenario of scenarios) {
       await withMalformedPolyfillClientGrant(async ({ asUrl, rsUrl, approved, visibleRecord, missingConnectorId }) => {
         const failure = await scenario.trigger({ approved, rsUrl, visibleRecord });
-        assert.match(failure.stderr || "Unknown connector: missing_spotify_connector", TOP_LEVEL_REGEX_72);
+        assert.match(failure.stderr || "Grant is malformed or no longer valid", TOP_LEVEL_REGEX_72);
         const requestId = failure.requestId || failure.stderr?.match(TOP_LEVEL_REGEX_73)?.[1];
         const traceId = failure.traceId || failure.stderr?.match(TOP_LEVEL_REGEX_74)?.[1];
         assert.ok(requestId, `malformed polyfill client ${scenario.label} should surface a request id`);
@@ -4253,10 +4420,10 @@ test("PDPP CLI smoke", async (t) => {
 
       const changesSince = Buffer.from(JSON.stringify({ kind: "changes_since", version: 0 })).toString("base64");
       const rejectedResp = await fetch(
-        `${rsUrl}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(changesSince)}&filter[popularity]=96`,
+        `${rsUrl}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(changesSince)}&filter[popularity][eq]=96`,
         { headers: { Authorization: `Bearer ${approved.token}` } }
       );
-      assert.equal(rejectedResp.status, 403);
+      assert.equal(rejectedResp.status, 400);
       const rejectedRequestId = rejectedResp.headers.get("Request-Id");
       const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
       assert.ok(rejectedRequestId, "expected rejectedRequestId to be present");
@@ -4264,8 +4431,8 @@ test("PDPP CLI smoke", async (t) => {
       assert.ok(rejectedTraceId, "expected rejectedTraceId to be present");
       assert.ok(rejectedTraceId.startsWith("trc_"));
       const rejectedBody = asRecord(await rejectedResp.json());
-      assert.equal(asRecord(rejectedBody.error).code, "field_not_granted");
-      assert.match(String(asRecord(rejectedBody.error).message ?? ""), TOP_LEVEL_REGEX_75);
+      assert.equal(asRecord(rejectedBody.error).code, "invalid_request");
+      assert.match(String(asRecord(rejectedBody.error).message ?? ""), TOP_LEVEL_REGEX_CLIENT_FILTER_UNSUPPORTED);
 
       const timeline = await runCli([
         "grant",
@@ -4287,7 +4454,7 @@ test("PDPP CLI smoke", async (t) => {
       assert.equal(queryReceived.data?.query_shape, "record_list");
       assert.equal(queryReceived.data?.has_changes_since, true);
       assert.equal(asRecord(queryReceived.data?.source).kind, "connector");
-      assert.equal(asRecord(queryReceived.data?.source).id, canonicalConnectorKey(spotifyManifest.connector_id));
+      assert.equal(asRecord(queryReceived.data?.source).id, spotifyManifest.connector_id);
 
       const rejectedEvent = (timeline.json.data || []).find(
         (event) => event.event_type === "query.rejected" && event.object_id === rejectedRequestId
@@ -4298,9 +4465,12 @@ test("PDPP CLI smoke", async (t) => {
       assert.equal(rejectedEvent.data?.query_shape, "record_list");
       assert.equal(rejectedEvent.data?.has_changes_since, true);
       assert.equal(asRecord(rejectedEvent.data?.source).kind, "connector");
-      assert.equal(asRecord(rejectedEvent.data?.source).id, canonicalConnectorKey(spotifyManifest.connector_id));
-      assert.equal(asRecord(rejectedEvent.data?.error).code, "field_not_granted");
-      assert.match(String(asRecord(rejectedEvent.data?.error).message ?? ""), TOP_LEVEL_REGEX_76);
+      assert.equal(asRecord(rejectedEvent.data?.source).id, spotifyManifest.connector_id);
+      assert.equal(asRecord(rejectedEvent.data?.error).code, "invalid_request");
+      assert.match(
+        String(asRecord(rejectedEvent.data?.error).message ?? ""),
+        TOP_LEVEL_REGEX_CLIENT_FILTER_UNSUPPORTED
+      );
 
       const servedEvent = (timeline.json.data || []).find(
         (event) => event.event_type === "disclosure.served" && event.object_id === rejectedRequestId
@@ -4365,7 +4535,7 @@ test("PDPP CLI smoke", async (t) => {
       assert.equal(queryReceived.data?.query_shape, "record_detail");
       assert.equal(queryReceived.data?.requested_record_id, rejectedId);
       assert.equal(asRecord(queryReceived.data?.source).kind, "connector");
-      assert.equal(asRecord(queryReceived.data?.source).id, canonicalConnectorKey(spotifyManifest.connector_id));
+      assert.equal(asRecord(queryReceived.data?.source).id, spotifyManifest.connector_id);
 
       const rejectedEvent = (timeline.json.data || []).find(
         (event) => event.event_type === "query.rejected" && event.object_id === rejectedRequestId
@@ -4376,7 +4546,7 @@ test("PDPP CLI smoke", async (t) => {
       assert.equal(rejectedEvent.data?.query_shape, "record_detail");
       assert.equal(rejectedEvent.data?.requested_record_id, rejectedId);
       assert.equal(asRecord(rejectedEvent.data?.source).kind, "connector");
-      assert.equal(asRecord(rejectedEvent.data?.source).id, canonicalConnectorKey(spotifyManifest.connector_id));
+      assert.equal(asRecord(rejectedEvent.data?.source).id, spotifyManifest.connector_id);
       assert.equal(asRecord(rejectedEvent.data?.error).code, "not_found");
       assert.match(String(asRecord(rejectedEvent.data?.error).message ?? ""), TOP_LEVEL_REGEX_78);
 
@@ -4403,7 +4573,7 @@ test("PDPP CLI smoke", async (t) => {
         assert.ok(hiddenRecord, "expected an owner-visible saved_tracks record outside the client grant");
         assert.ok(hiddenRecord.id, "expected the hidden saved_tracks record to carry an id");
 
-        const approved = await approveGrant(asUrl, "cli_owner", {
+        await approveGrant(asUrl, "cli_owner", {
           access_mode: "single_use",
           client_display: { name: "Concert Recommendation App" },
           client_id: "concert_recommendation_app",
@@ -4415,56 +4585,68 @@ test("PDPP CLI smoke", async (t) => {
 
         const scenarios = [
           {
-            expectedCode: "grant_stream_not_allowed",
-            expectedMessage: TOP_LEVEL_REGEX_79,
-            expectStatus: 403,
+            expectedBodyMessage: TOP_LEVEL_REGEX_INTROSPECTION_FAILED,
+            expectedCode: "context.stream_not_allowed",
+            expectedTimelineMessage: TOP_LEVEL_REGEX_INVALID_TOKEN,
+            expectStatus: 401,
             label: "stream-metadata reads",
             queryShape: "stream_metadata",
             streamId: "recently_played",
-            trigger: () =>
+            trigger: (token: string) =>
               fetch(`${rsUrl}/v1/streams/recently_played`, {
-                headers: { Authorization: `Bearer ${approved.token}` },
+                headers: { Authorization: `Bearer ${token}` },
               }),
           },
           {
-            expectedCode: "grant_stream_not_allowed",
-            expectedMessage: TOP_LEVEL_REGEX_80,
-            expectStatus: 403,
+            expectedBodyMessage: TOP_LEVEL_REGEX_INTROSPECTION_FAILED,
+            expectedCode: "context.stream_not_allowed",
+            expectedTimelineMessage: TOP_LEVEL_REGEX_INVALID_TOKEN,
+            expectStatus: 401,
             label: "record-list reads",
             queryShape: "record_list",
             streamId: "recently_played",
-            trigger: () =>
+            trigger: (token: string) =>
               fetch(`${rsUrl}/v1/streams/recently_played/records?limit=1`, {
-                headers: { Authorization: `Bearer ${approved.token}` },
+                headers: { Authorization: `Bearer ${token}` },
               }),
           },
           {
-            expectedCode: "grant_stream_not_allowed",
-            expectedMessage: TOP_LEVEL_REGEX_81,
-            expectStatus: 403,
+            expectedBodyMessage: TOP_LEVEL_REGEX_INTROSPECTION_FAILED,
+            expectedCode: "context.stream_not_allowed",
+            expectedTimelineMessage: TOP_LEVEL_REGEX_INVALID_TOKEN,
+            expectStatus: 401,
             label: "record-detail reads",
             queryShape: "record_detail",
             requestedRecordId: hiddenRecord.id,
             streamId: "saved_tracks",
-            trigger: () =>
+            trigger: (token: string) =>
               fetch(`${rsUrl}/v1/streams/saved_tracks/records/${encodeURIComponent(String(hiddenRecord.id))}`, {
-                headers: { Authorization: `Bearer ${approved.token}` },
+                headers: { Authorization: `Bearer ${token}` },
               }),
           },
         ];
 
         for await (const scenario of scenarios) {
-          const rejectedResp = await scenario.trigger();
-          assert.equal(rejectedResp.status, scenario.expectStatus);
+          const approved = await approveGrant(asUrl, "cli_owner", {
+            access_mode: "continuous",
+            client_display: { name: "Concert Recommendation App" },
+            client_id: "concert_recommendation_app",
+            purpose_code: "https://pdpp.dev/purpose/personalization",
+            purpose_description: "Recommend concerts using top artists only",
+            source: { id: spotifyManifest.connector_id, kind: "connector" },
+            streams: [{ name: "top_artists", view: "basic" }],
+          });
+          const rejectedResp = await scenario.trigger(approved.token);
+          const rejectedBody = asRecord(await rejectedResp.clone().json());
+          assert.equal(rejectedResp.status, scenario.expectStatus, JSON.stringify({ body: rejectedBody, scenario }));
           const rejectedRequestId = rejectedResp.headers.get("Request-Id");
           const rejectedTraceId = rejectedResp.headers.get("PDPP-Reference-Trace-Id");
           assert.ok(rejectedRequestId, "expected rejectedRequestId to be present");
           assert.ok(rejectedRequestId.startsWith("req_"));
           assert.ok(rejectedTraceId, "expected rejectedTraceId to be present");
           assert.ok(rejectedTraceId.startsWith("trc_"));
-          const rejectedBody = asRecord(await rejectedResp.json());
           assert.equal(asRecord(rejectedBody.error).code, scenario.expectedCode);
-          assert.match(String(asRecord(rejectedBody.error).message ?? ""), scenario.expectedMessage);
+          assert.match(String(asRecord(rejectedBody.error).message ?? ""), scenario.expectedBodyMessage);
 
           const timeline = await runCli([
             "grant",
@@ -4485,8 +4667,12 @@ test("PDPP CLI smoke", async (t) => {
           assert.equal(queryReceived.stream_id, scenario.streamId);
           assert.equal(queryReceived.data?.query_shape, scenario.queryShape);
           assert.equal(queryReceived.data?.requested_record_id ?? null, scenario.requestedRecordId ?? null);
-          assert.equal(asRecord(queryReceived.data?.source).kind, "connector");
-          assert.equal(asRecord(queryReceived.data?.source).id, canonicalConnectorKey(spotifyManifest.connector_id));
+          if (scenario.expectStatus === 403) {
+            assert.equal(asRecord(queryReceived.data?.source).kind, "connector");
+            assert.equal(asRecord(queryReceived.data?.source).id, spotifyManifest.connector_id);
+          } else {
+            assert.equal(queryReceived.data?.source, undefined);
+          }
 
           const rejectedEvent = (timeline.json.data || []).find(
             (event) => event.event_type === "query.rejected" && event.object_id === rejectedRequestId
@@ -4496,10 +4682,14 @@ test("PDPP CLI smoke", async (t) => {
           assert.equal(rejectedEvent.stream_id, scenario.streamId);
           assert.equal(rejectedEvent.data?.query_shape, scenario.queryShape);
           assert.equal(rejectedEvent.data?.requested_record_id ?? null, scenario.requestedRecordId ?? null);
-          assert.equal(asRecord(rejectedEvent.data?.source).kind, "connector");
-          assert.equal(asRecord(rejectedEvent.data?.source).id, canonicalConnectorKey(spotifyManifest.connector_id));
+          if (scenario.expectStatus === 403) {
+            assert.equal(asRecord(rejectedEvent.data?.source).kind, "connector");
+            assert.equal(asRecord(rejectedEvent.data?.source).id, spotifyManifest.connector_id);
+          } else {
+            assert.equal(rejectedEvent.data?.source, undefined);
+          }
           assert.equal(asRecord(rejectedEvent.data?.error).code, scenario.expectedCode);
-          assert.match(String(asRecord(rejectedEvent.data?.error).message ?? ""), scenario.expectedMessage);
+          assert.match(String(asRecord(rejectedEvent.data?.error).message ?? ""), scenario.expectedTimelineMessage);
 
           const servedEvent = (timeline.json.data || []).find(
             (event) => event.event_type === "disclosure.served" && event.object_id === rejectedRequestId
@@ -4592,7 +4782,7 @@ test("PDPP CLI smoke", async (t) => {
       assert.equal(queryReceived.data?.query_shape, "record_detail");
       assert.equal(queryReceived.data?.requested_record_id, hiddenRecord.id);
       assert.equal(asRecord(queryReceived.data?.source).kind, "connector");
-      assert.equal(asRecord(queryReceived.data?.source).id, canonicalConnectorKey(spotifyManifest.connector_id));
+      assert.equal(asRecord(queryReceived.data?.source).id, spotifyManifest.connector_id);
 
       const rejectedEvent = (timeline.json.data || []).find(
         (event) => event.event_type === "query.rejected" && event.object_id === rejectedRequestId
@@ -4606,7 +4796,7 @@ test("PDPP CLI smoke", async (t) => {
       assert.equal(rejectedEvent.data?.query_shape, "record_detail");
       assert.equal(rejectedEvent.data?.requested_record_id, hiddenRecord.id);
       assert.equal(asRecord(rejectedEvent.data?.source).kind, "connector");
-      assert.equal(asRecord(rejectedEvent.data?.source).id, canonicalConnectorKey(spotifyManifest.connector_id));
+      assert.equal(asRecord(rejectedEvent.data?.source).id, spotifyManifest.connector_id);
       assert.equal(asRecord(rejectedEvent.data?.error).code, "not_found");
       assert.match(String(asRecord(rejectedEvent.data?.error).message ?? ""), TOP_LEVEL_REGEX_83);
 
@@ -4701,7 +4891,7 @@ test("PDPP CLI smoke", async (t) => {
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
-          manifest: spotifyManifest,
+          manifest: spotifyManifest as RuntimeConnectorManifest,
           ownerToken,
           rsUrl,
           state: null,
@@ -4780,7 +4970,7 @@ rl.on('line', (line) => {
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
-          manifest: spotifyManifest,
+          manifest: spotifyManifest as RuntimeConnectorManifest,
           onInteraction: async (message: unknown) => ({
             data: { token: "super_secret_token" },
             request_id: (message as { request_id?: string }).request_id,
@@ -4874,7 +5064,7 @@ rl.on('line', (line) => {
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
-          manifest: spotifyManifest,
+          manifest: spotifyManifest as RuntimeConnectorManifest,
           onInteraction: async () => new Promise(() => undefined),
           ownerToken,
           rsUrl,
@@ -4949,7 +5139,7 @@ rl.on('line', (line) => {
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
-          manifest: spotifyManifest,
+          manifest: spotifyManifest as RuntimeConnectorManifest,
           onInteraction: () => Promise.reject(new Error("user aborted interaction")),
           ownerToken,
           rsUrl,
@@ -5019,7 +5209,7 @@ rl.on('line', (line) => {
             collectionMode: "full_refresh",
             connectorId: spotifyManifest.connector_id,
             connectorPath,
-            manifest: spotifyManifest,
+            manifest: spotifyManifest as RuntimeConnectorManifest,
             onInteraction: async (message: unknown) => ({
               request_id: (message as { request_id?: string }).request_id,
               status: "success",
@@ -5118,7 +5308,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               onInteraction: async () => ({
                 data: {},
                 request_id: "cli_run_interaction_invalid_envelope",
@@ -5204,7 +5394,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               onInteraction: async () => ({
                 data: {},
                 request_id: "cli_run_interaction_invalid_schema",
@@ -5287,7 +5477,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken,
               rsUrl,
               state: null,
@@ -5364,7 +5554,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken,
               rsUrl,
               state: null,
@@ -5440,7 +5630,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken,
               rsUrl,
               state: null,
@@ -5517,7 +5707,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken,
               rsUrl,
               state: null,
@@ -5593,7 +5783,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken,
               rsUrl,
               state: null,
@@ -5753,7 +5943,7 @@ rl.on('line', (line) => {
                   collectionMode: "full_refresh",
                   connectorId: spotifyManifest.connector_id,
                   connectorPath,
-                  manifest: spotifyManifest,
+                  manifest: spotifyManifest as RuntimeConnectorManifest,
                   onInteraction: async () => new Promise(() => undefined),
                   ownerToken,
                   rsUrl,
@@ -5841,7 +6031,7 @@ rl.on('line', (line) => {
         connectorId: spotifyManifest.connector_id,
         connectorInstanceId,
         connectorPath,
-        manifest: spotifyManifest,
+        manifest: spotifyManifest as RuntimeConnectorManifest,
         ownerToken,
         rsUrl,
         state: null,
@@ -5936,7 +6126,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken: "invalid_owner_token",
               rsUrl: `http://localhost:${rsPort}`,
               state: null,
@@ -6049,7 +6239,7 @@ rl.on('line', (line) => {
               collectionMode: "incremental",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken: "client_token_instead_of_owner",
               persistState: true,
               rsUrl: `http://localhost:${rsPort}`,
@@ -6162,7 +6352,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken: "owner_token",
               rsUrl: `http://localhost:${rsPort}`,
               state: null,
@@ -6267,7 +6457,7 @@ rl.on('line', (line) => {
               collectionMode: "full_refresh",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               ownerToken: "owner_token",
               rsUrl: `http://localhost:${rsPort}`,
               state: null,
@@ -6350,7 +6540,7 @@ rl.on('line', (line) => {
           collectionMode: "full_refresh",
           connectorId: spotifyManifest.connector_id,
           connectorPath,
-          manifest: spotifyManifest,
+          manifest: spotifyManifest as RuntimeConnectorManifest,
           onInteraction: async () => ({}),
           ownerToken,
           rsUrl,
@@ -6422,7 +6612,7 @@ rl.on('line', (line) => {
             collectionMode: "full_refresh",
             connectorId: spotifyManifest.connector_id,
             connectorPath,
-            manifest: spotifyManifest,
+            manifest: spotifyManifest as RuntimeConnectorManifest,
             onInteraction: async () => ({}),
             ownerToken,
             rsUrl,
@@ -6509,7 +6699,7 @@ rl.on('line', (line) => {
               collectionMode: "incremental",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               onInteraction: async () => ({}),
               ownerToken,
               persistState: true,
@@ -6606,7 +6796,7 @@ rl.on('line', (line) => {
               collectionMode: "incremental",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               onInteraction: async () => ({}),
               ownerToken,
               persistState: true,
@@ -6727,7 +6917,7 @@ rl.on('line', (line) => {
                 collectionMode: "incremental",
                 connectorId: spotifyManifest.connector_id,
                 connectorPath,
-                manifest: spotifyManifest,
+                manifest: spotifyManifest as RuntimeConnectorManifest,
                 onInteraction: async () => ({}),
                 ownerToken,
                 persistState: true,
@@ -6818,7 +7008,7 @@ rl.on('line', (line) => {
                 collectionMode: "full_refresh",
                 connectorId: spotifyManifest.connector_id,
                 connectorPath,
-                manifest: spotifyManifest,
+                manifest: spotifyManifest as RuntimeConnectorManifest,
                 onInteraction: async () => ({}),
                 ownerToken,
                 rsUrl,
@@ -6925,7 +7115,7 @@ rl.on('line', (line) => {
               collectionMode: "incremental",
               connectorId: spotifyManifest.connector_id,
               connectorPath,
-              manifest: spotifyManifest,
+              manifest: spotifyManifest as RuntimeConnectorManifest,
               onInteraction: async () => ({}),
               ownerToken,
               persistState: true,
@@ -6980,6 +7170,44 @@ rl.on('line', (line) => {
   await t.test("run timeline keeps partial checkpoint commit artifacts inspectable", async () => {
     const manifest = {
       connector_id: "https://registry.pdpp.dev/connectors/cli-run-partial-checkpoint-test",
+      source_declaration: {
+        declaration_version: "cli-run-partial-checkpoint-test-v1",
+        display: { name: "CLI Run Partial Checkpoint Test" },
+        extensions: {},
+        protocol_version: "0.1.0",
+        publisher: { id: "https://publishers.example/pdpp-test" },
+        source: { id: "https://registry.pdpp.dev/connectors/cli-run-partial-checkpoint-test", kind: "connector" },
+        streams: [
+          {
+            name: "items",
+            primary_key: ["id"],
+            schema: {
+              properties: {
+                id: { type: "string" },
+                value: { type: "string" },
+              },
+              required: ["id"],
+              type: "object",
+            },
+            selection: { fields: true, resources: true },
+            semantics: "mutable_state",
+          },
+          {
+            name: "other_items",
+            primary_key: ["id"],
+            schema: {
+              properties: {
+                id: { type: "string" },
+                value: { type: "string" },
+              },
+              required: ["id"],
+              type: "object",
+            },
+            selection: { fields: true, resources: true },
+            semantics: "mutable_state",
+          },
+        ],
+      },
       streams: [
         {
           name: "items",
@@ -6992,6 +7220,8 @@ rl.on('line', (line) => {
             required: ["id"],
             type: "object",
           },
+          selection: { fields: true, resources: true },
+          semantics: "mutable_state",
         },
         {
           name: "other_items",
@@ -7004,6 +7234,8 @@ rl.on('line', (line) => {
             required: ["id"],
             type: "object",
           },
+          selection: { fields: true, resources: true },
+          semantics: "mutable_state",
         },
       ],
       version: "0.1.0",
@@ -7060,6 +7292,7 @@ rl.on('line', (line) => {
       dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
       quiet: true,
       rsPort: 0,
+      ...TEST_INTROSPECTION_SERVER_OPTS,
     });
     const asUrl = `http://localhost:${server.asPort}`;
     const committedState: unknown[] = [];
@@ -7115,7 +7348,7 @@ rl.on('line', (line) => {
             collectionMode: "incremental",
             connectorId: manifest.connector_id,
             connectorPath,
-            manifest,
+            manifest: manifest as RuntimeConnectorManifest,
             onInteraction: async () => ({}),
             ownerToken,
             persistState: true,
@@ -7649,7 +7882,7 @@ rl.on('line', (line) => {
       assert.ok(Array.isArray(result.json.data));
       assert.deepEqual(
         result.json.data.map((stream) => stream.name),
-        ["benefits_enrollments", "equity_grants", "pay_statements"]
+        ["pay_statements", "equity_grants", "benefits_enrollments"]
       );
       assert.ok(result.json.request_id?.startsWith("req_"));
       assert.ok(result.json.reference_trace_id?.startsWith("trc_qry_"));
@@ -7694,6 +7927,7 @@ rl.on('line', (line) => {
         nativeManifest,
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;
@@ -7725,6 +7959,7 @@ rl.on('line', (line) => {
           nativeManifest,
           quiet: true,
           rsPort: server.rsPort,
+          ...TEST_INTROSPECTION_SERVER_OPTS,
         });
 
         const result = await runCliExpectFailure(["query", "streams", "--rs-url", rsUrl], {
@@ -7833,6 +8068,7 @@ rl.on('line', (line) => {
             nativeManifest,
             quiet: true,
             rsPort: server.rsPort,
+            ...TEST_INTROSPECTION_SERVER_OPTS,
           });
         },
       },
@@ -7877,6 +8113,7 @@ rl.on('line', (line) => {
         nativeManifest,
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;
@@ -7957,6 +8194,7 @@ rl.on('line', (line) => {
               nativeManifest,
               quiet: true,
               rsPort: server.rsPort,
+              ...TEST_INTROSPECTION_SERVER_OPTS,
             });
           },
         },
@@ -8001,6 +8239,7 @@ rl.on('line', (line) => {
           nativeManifest,
           quiet: true,
           rsPort: 0,
+          ...TEST_INTROSPECTION_SERVER_OPTS,
         });
         const asUrl = `http://localhost:${server.asPort}`;
         const rsUrl = `http://localhost:${server.rsPort}`;
@@ -8106,6 +8345,7 @@ rl.on('line', (line) => {
         nativeManifest,
         quiet: true,
         rsPort: 0,
+        ...TEST_INTROSPECTION_SERVER_OPTS,
       });
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;

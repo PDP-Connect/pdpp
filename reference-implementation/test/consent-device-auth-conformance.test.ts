@@ -25,6 +25,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { canonicalConnectorKey } from "../server/connector-key.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 import { runConsentDeviceAuthConformance } from "./helpers/consent-device-auth-conformance.ts";
 import { createSqliteConsentDeviceAuthDriver } from "./helpers/sqlite-consent-device-auth-driver.ts";
 
@@ -133,6 +135,24 @@ runConsentDeviceAuthConformance({
           ...(typeof view.created_at === "string" || view.created_at === null ? { created_at: view.created_at } : {}),
           ...(typeof view.expires_at === "string" || view.expires_at === null ? { expires_at: view.expires_at } : {}),
         };
+      },
+      async setup() {
+        await driver.setup();
+        const connectorId = driver.getRegisteredConnectorId();
+        const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
+        const now = new Date().toISOString();
+        await createSqliteConnectorInstanceStore().upsert({
+          connectorId: canonicalId,
+          connectorInstanceId: "cin_conformance_spotify",
+          createdAt: now,
+          displayName: "Spotify",
+          ownerSubjectId: "owner_local",
+          sourceBinding: { kind: "test_account", label: "consent-conformance-spotify" },
+          sourceBindingKey: "consent-conformance-spotify",
+          sourceKind: "account",
+          status: "active",
+          updatedAt: now,
+        });
       },
       async startOwnerDeviceAuth(input: Record<string, unknown>) {
         const clientId = stringProperty(input, "client_id");

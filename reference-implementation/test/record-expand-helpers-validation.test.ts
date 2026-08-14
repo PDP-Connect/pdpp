@@ -11,28 +11,25 @@
  *
  *   - normalizePrimaryKey  (array/scalar/empty normalization)
  *   - parseIntegerValue    (integer coercion + strict digit regex)
- *   - assertSafeJsonField  (the SQL-safety allowlist guard that THROWS on
- *                           any field name outside /^[A-Za-z_][A-Za-z_0-9]*$/)
+ *   - assertNonEmptyJsonField (validates non-empty literal top-level keys)
  *   - buildEffectiveFilter (grant∩request field projection + required-field
  *                           union)
  *   - normalizeExpandRequest (the whole invalid_expand / insufficient_scope
  *                             error tree + limit clamping)
  *
- * The `assertSafeJsonField` cases are the security-relevant ones: a mutant
- * that loosens the regex (e.g. allows a leading digit, a dot, or a quote)
- * would let unsafe identifiers reach SQL interpolation, and turns red here.
+ * SQL builders quote or bind this value; this helper only rejects absent field
+ * names so valid JSON property names cannot be narrowed into identifiers.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  assertSafeJsonField,
+  assertNonEmptyJsonField,
   buildEffectiveFilter,
   normalizeExpandRequest,
   normalizePrimaryKey,
   parseIntegerValue,
-  SAFE_JSON_FIELD,
 } from "../server/record-expand-helpers.ts";
 
 interface QueryError extends Error {
@@ -90,36 +87,29 @@ test("parseIntegerValue: accepts int number / digit strings; rejects floats, bla
   assert.equal(parseIntegerValue(null), null);
 });
 
-test("assertSafeJsonField: passes valid identifiers, THROWS on anything outside the allowlist", () => {
-  // Valid: letter/underscore start, then letters/digits/underscores.
-  assert.equal(assertSafeJsonField("emitted_at", "x"), undefined);
-  assert.equal(assertSafeJsonField("_private", "x"), undefined);
-  assert.equal(assertSafeJsonField("Field9", "x"), undefined);
-  assert.ok(SAFE_JSON_FIELD.test("emitted_at"));
-
-  // A leading digit is unsafe (kills a mutant that drops the anchor).
-  assertThrowsCode(() => assertSafeJsonField("9field", "sort"), undefined, "Unsafe JSON field sort");
-  // A dot (nested path) is unsafe.
-  assertThrowsCode(() => assertSafeJsonField("a.b", "sort"), undefined, "Unsafe JSON field");
-  // A quote / SQL-injection attempt is unsafe.
-  assertThrowsCode(() => assertSafeJsonField('a"; DROP', "sort"), undefined, "Unsafe JSON field");
-  // Whitespace / empty / non-string are unsafe.
-  assertThrowsCode(() => assertSafeJsonField("a b", "sort"));
-  assertThrowsCode(() => assertSafeJsonField("", "sort"));
-  assertThrowsCode(() => assertSafeJsonField(123, "sort"));
+test("assertNonEmptyJsonField: accepts literal JSON keys and rejects absent values", () => {
+  for (const field of ["emitted_at", "9field", "a.b", 'a"; DROP', "a b", "時刻"]) {
+    assert.equal(assertNonEmptyJsonField(field, "x"), undefined);
+  }
+  assertThrowsCode(() => assertNonEmptyJsonField("", "sort"), undefined, "non-empty string");
+  assertThrowsCode(() => assertNonEmptyJsonField(123, "sort"), undefined, "non-empty string");
 });
 
 test("buildEffectiveFilter: intersects request fields with grant, unions required fields", () => {
   // Grant limits to [a,b,c]; request narrows to [b,c,z] -> intersection [b,c].
   const eff = buildEffectiveFilter(
-    { fields: ["a", "b", "c"], resources: ["k1"], time_range: { since: "t" } },
+    {
+      fields: ["a", "b", "c"],
+      resources: ["k1"],
+      time_constraint: { field: "frozen_at", since: "2026-01-01T00:00:00Z" },
+    },
     { fields: ["b", "c", "z"] },
     []
   );
   assert.deepEqual(eff.fields, ["b", "c"]);
-  assert.deepEqual(eff.timeRange, { since: "t" });
+  assert.deepEqual(eff.timeConstraint, { field: "frozen_at", since: "2026-01-01T00:00:00Z" });
+  assert.equal(eff.timeConstraintField, "frozen_at");
   assert.deepEqual(eff.resources, ["k1"]);
-  assert.equal(eff.consentTimeField, null);
 
   // No grant field limit + request fields -> request fields used verbatim.
   const eff2 = buildEffectiveFilter({}, { fields: ["x", "y"] }, []);

@@ -14,6 +14,8 @@
  *       (the parser and projection requirements that both backends share).
  */
 
+import { requireTimeConstraint, type TimeConstraint } from "./record-filters.ts";
+
 export type JsonObject = Record<string, unknown>;
 type RecordKey = unknown;
 class QueryError extends Error {
@@ -26,14 +28,22 @@ class QueryError extends Error {
 }
 interface EffectiveFilterGrant {
   fields?: string[] | null;
+  instance_ids?: string[] | null;
   resources?: string[] | null;
-  time_range?: JsonObject | null;
+  time_constraint?: TimeConstraint | null;
+}
+export interface EffectiveFilter {
+  fields: string[] | null;
+  resources: string[] | null;
+  timeConstraint: TimeConstraint | null;
+  timeConstraintField: string | null;
 }
 interface ExpandGrant {
   streams: Array<{
     name: string;
     fields?: string[] | null;
-    time_range?: JsonObject | null;
+    instance_ids?: string[] | null;
+    time_constraint?: TimeConstraint | null;
     resources?: string[] | null;
   }>;
 }
@@ -161,32 +171,32 @@ export function parseIntegerValue(value: unknown): number | null {
   return Number.parseInt(value.trim(), 10);
 }
 
-// JSON-path identifiers that come from the manifest are already validated by
-// `validateConnectorManifest`, but we re-validate here with a tight regex so
-// backends can only interpolate safely-quoted `$.<field>` paths into SQL.
-export const SAFE_JSON_FIELD = /^[A-Za-z_][A-Za-z_0-9]*$/;
-
-export function assertSafeJsonField(field: unknown, label: string): void {
-  if (typeof field !== "string" || !SAFE_JSON_FIELD.test(field)) {
-    throw new Error(`[records] Unsafe JSON field ${label}: ${JSON.stringify(field)}`);
+// A SourceDeclaration field reference names one literal top-level JSON key.
+// It is not an identifier: punctuation and Unicode are valid key characters.
+// SQL builders must quote or bind it as JSON data rather than interpolate it
+// as SQL syntax.
+export function assertNonEmptyJsonField(field: unknown, label: string): asserts field is string {
+  if (typeof field !== "string" || field.length === 0) {
+    throw new Error(`[records] JSON field ${label} must be a non-empty string: ${JSON.stringify(field)}`);
   }
 }
 
 /**
  * Build an effective filter from grant + request params.
- * Returns { fields, timeRange, resources, consentTimeField } for use by
+ * Returns frozen grant fields, resources, and temporal constraint for use by
  * either the SQLite or Postgres record paths.
  */
 export function buildEffectiveFilter(
   streamGrant: EffectiveFilterGrant,
   requestParams: RequestParams,
   requiredFields: string[] = []
-): JsonObject {
+): EffectiveFilter {
+  const timeConstraint = requireTimeConstraint(streamGrant.time_constraint);
   const effective = {
-    consentTimeField: null,
     fields: streamGrant.fields || null,
     resources: streamGrant.resources || null,
-    timeRange: streamGrant.time_range || null,
+    timeConstraint,
+    timeConstraintField: timeConstraint ? timeConstraint.field : null,
   };
 
   if (requestParams.fields && effective.fields !== null) {
@@ -196,10 +206,35 @@ export function buildEffectiveFilter(
   }
 
   if (effective.fields !== null) {
-    effective.fields = [...new Set([...requiredFields, ...effective.fields])];
+    // Resolved client grants carry instance_ids and freeze the field set at
+    // authorization time. A later manifest declaration must not widen that
+    // grant by adding newly-required fields. Owner grants omit instance_ids
+    // and retain the current-manifest behavior used by self-reads.
+    const manifestRequiredFields = Object.hasOwn(streamGrant, "instance_ids") ? [] : requiredFields;
+    effective.fields = [...new Set([...manifestRequiredFields, ...effective.fields])];
   }
 
   return effective;
+}
+
+/**
+ * Expansion children are stored in the same source instance as their parent.
+ * A resolved client grant therefore authorizes an expansion only when the
+ * child stream's closed instance set contains the selected parent instance.
+ * Owner grants omit instance_ids and keep their unrestricted self-read path.
+ */
+export function assertExpansionInstanceAuthorized(childGrant: EffectiveFilterGrant, connectorInstanceId: string): void {
+  if (!Object.hasOwn(childGrant, "instance_ids")) {
+    return;
+  }
+  if (!(Array.isArray(childGrant.instance_ids) && childGrant.instance_ids.includes(connectorInstanceId))) {
+    const error = invalidQueryError(
+      "The expanded stream is not authorized on the selected connection.",
+      "connection_not_found"
+    );
+    error.param = "connection_id";
+    throw error;
+  }
 }
 
 /**

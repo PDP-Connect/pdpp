@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { isTransientManifestDriftIngestFailure, loadSyncState, runConnector } from "../runtime/index.ts";
+import { getConnectorManifest } from "../server/auth.ts";
 import { startServer } from "../server/index.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
@@ -102,8 +103,17 @@ function rsRegisteredManifest(connectorId: string) {
   return {
     connector_id: connectorId,
     display_name: "Drift Test Connector",
+    manifest_uri: `https://sources.example/${connectorId}`,
     protocol_version: "0.1.0",
-    streams: [{ name: "items", primary_key: ["id"], schema: streamSchema(), semantics: "append_only" }],
+    streams: [
+      {
+        name: "items",
+        primary_key: ["id"],
+        schema: streamSchema(),
+        selection: { fields: true, resources: true },
+        semantics: "append_only",
+      },
+    ],
     version: "1.0.0",
   };
 }
@@ -114,9 +124,36 @@ function runtimeManifest(connectorId: string) {
   return {
     ...rsRegisteredManifest(connectorId),
     streams: [
-      { name: "items", primary_key: ["id"], schema: streamSchema(), semantics: "append_only" },
-      { name: "drift_stream", primary_key: ["id"], schema: streamSchema(), semantics: "append_only" },
+      {
+        name: "items",
+        primary_key: ["id"],
+        schema: streamSchema(),
+        selection: { fields: true, resources: true },
+        semantics: "append_only",
+      },
+      {
+        name: "drift_stream",
+        primary_key: ["id"],
+        schema: streamSchema(),
+        selection: { fields: true, resources: true },
+        semantics: "append_only",
+      },
     ],
+  };
+}
+
+type RuntimeManifest = Parameters<typeof runConnector>[0]["manifest"];
+
+function runtimeCompatibleManifest(manifest: {
+  streams: ReadonlyArray<{ name: string; selection?: unknown; [key: string]: unknown }>;
+  [key: string]: unknown;
+}): RuntimeManifest {
+  return {
+    ...manifest,
+    streams: manifest.streams.map((stream) => {
+      const { selection: _selection, ...withoutSelection } = stream;
+      return withoutSelection;
+    }),
   };
 }
 
@@ -144,11 +181,12 @@ rl.on('line', (line) => {
 }
 
 async function registerManifest(asUrl: string, manifest: Record<string, unknown>): Promise<void> {
-  await fetchJson(`${asUrl}/connectors`, {
+  const result = await fetchJson(`${asUrl}/connectors`, {
     body: JSON.stringify(manifest),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
+  assert.equal(result.status, 201, `drift fixture registration: ${JSON.stringify(result.body)}`);
 }
 
 interface DeviceAuthorizationBody {
@@ -194,6 +232,7 @@ test("transient manifest drift: scope-stream ingest not_found degrades to a per-
     const asUrl = `http://localhost:${asPort}`;
     const connectorId = "drift-test";
     await registerManifest(asUrl, rsRegisteredManifest(connectorId)); // RS lacks drift_stream
+    assert.ok(await getConnectorManifest(connectorId), "drift fixture registration");
     const ownerToken = await issueOwnerToken(asUrl);
 
     // items ingests fine (200); drift_stream 404s (RS manifest lacks it).
@@ -211,7 +250,7 @@ test("transient manifest drift: scope-stream ingest not_found degrades to a per-
         collectionMode: "full_refresh",
         connectorId,
         connectorPath,
-        manifest: runtimeManifest(connectorId), // runtime scope INCLUDES drift_stream
+        manifest: runtimeCompatibleManifest(runtimeManifest(connectorId)), // runtime scope INCLUDES drift_stream
         onInteraction: async () => ({}),
         ownerToken,
         persistState: true,
@@ -299,7 +338,7 @@ test("transient manifest drift: scope-stream ingest not_found degrades to a per-
             collectionMode: "full_refresh",
             connectorId,
             connectorPath,
-            manifest: rsRegisteredManifest(connectorId), // runtime scope EXCLUDES not_in_scope
+            manifest: runtimeCompatibleManifest(rsRegisteredManifest(connectorId)), // runtime scope EXCLUDES not_in_scope
             onInteraction: async () => ({}),
             ownerToken,
             persistState: true,

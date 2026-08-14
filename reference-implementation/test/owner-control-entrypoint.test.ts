@@ -28,7 +28,9 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const TOP_LEVEL_REGEX_1 = /test-event/;
 const TOP_LEVEL_REGEX_2 = /resume/;
@@ -176,9 +178,43 @@ async function registerConnector(asUrl: string, manifest: Record<string, unknown
   return manifest;
 }
 
+interface SeedInstanceInput {
+  connectorId: string;
+  connectorInstanceId: string;
+  displayName: string;
+  sourceBindingKey: string;
+}
+
+async function seedInstance({
+  connectorId,
+  connectorInstanceId,
+  displayName,
+  sourceBindingKey,
+}: SeedInstanceInput): Promise<void> {
+  const now = "2026-06-01T00:00:00.000Z";
+  const store = createSqliteConnectorInstanceStore();
+  await store.upsert({
+    connectorId,
+    connectorInstanceId,
+    createdAt: now,
+    displayName,
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    sourceBinding: { account_hint: sourceBindingKey },
+    sourceBindingKey,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+}
+
 // PAR + consent yields a grant-scoped client-kind bearer. It must NOT reach the
 // owner-agent control entrypoint. Scopes to a real registered connector/stream.
-async function approveClientGrant(asUrl: string, connectorId: unknown, streamName: unknown): Promise<string> {
+async function approveClientGrant(
+  asUrl: string,
+  sourceId: unknown,
+  streamName: unknown,
+  instanceId: string
+): Promise<string> {
   const par = asRecord(
     (
       await fetchJson(`${asUrl}/oauth/par`, {
@@ -188,8 +224,8 @@ async function approveClientGrant(asUrl: string, connectorId: unknown, streamNam
               access_mode: "continuous",
               purpose_code: "https://pdpp.dev/purpose/analytics",
               purpose_description: "owner-control boundary test",
-              source: { id: connectorId, kind: "connector" },
-              streams: [{ fields: ["id"], name: streamName }],
+              source: { id: sourceId, kind: "connector" },
+              streams: [{ fields: ["id"], instance_ids: [instanceId], name: streamName }],
               type: "https://pdpp.dev/data-access",
             },
           ],
@@ -200,11 +236,27 @@ async function approveClientGrant(asUrl: string, connectorId: unknown, streamNam
       })
     ).body
   );
+  assert.ok(par.request_uri);
+  const review = asRecord(
+    (
+      await fetchJson(`${asUrl}/consent/review`, {
+        body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        method: "POST",
+      })
+    ).body
+  );
+  assert.ok(review.approval_review);
+  assert.ok(review.approval_review_revision);
+  assert.equal(review.request_uri, par.request_uri);
   const approved = asRecord(
     (
       await fetchJson(`${asUrl}/consent/approve`, {
-        body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
-        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          approval_review_revision: review.approval_review_revision,
+          request_uri: review.request_uri,
+        }),
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
         method: "POST",
       })
     ).body
@@ -426,8 +478,16 @@ test("control document names every family with a typed status and a non-empty re
 test("owner-agent control entrypoint rejects a client grant token with 403", async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const manifest = await registerConnector(asUrl, loadManifest("amazon"));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    assert.ok(connectorKey, "amazon manifest must resolve a canonical connector key");
+    await seedInstance({
+      connectorId: connectorKey,
+      connectorInstanceId: "cin_amazon_entrypoint",
+      displayName: "Amazon auth fixture",
+      sourceBindingKey: "the owner@example.com",
+    });
     const streamName = asRecord(asArray(manifest.streams)[0]).name;
-    const clientToken = await approveClientGrant(asUrl, manifest.connector_id, streamName);
+    const clientToken = await approveClientGrant(asUrl, manifest.connector_id, streamName, "cin_amazon_entrypoint");
     const { status, body } = await fetchJson(`${rsUrl}/v1/owner/control`, {
       headers: { Authorization: `Bearer ${clientToken}` },
     });

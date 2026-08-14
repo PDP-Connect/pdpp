@@ -51,16 +51,36 @@ const TEST_DCR_INITIAL_ACCESS_TOKEN = "pdpp-reference-test-initial-access-token"
 
 const STUB_MANIFEST = {
   connector_id: "https://registry.pdpp.dev/connectors/test-failure-diagnostics-cp",
+  display_name: "Failure diagnostics control-plane fixture",
+  manifest_uri: "https://registry.pdpp.dev/connectors/test-failure-diagnostics-cp",
+  protocol_version: "0.1.0",
   runtime_requirements: {},
   streams: [
     {
       name: "noop",
-      primary_key: "id",
+      primary_key: ["id"],
       schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "0.1.0",
 };
+
+type RuntimeManifest = Parameters<typeof runConnector>[0]["manifest"];
+
+function runtimeManifest(manifest: {
+  streams: ReadonlyArray<{ name: string; selection?: unknown; [key: string]: unknown }>;
+  [key: string]: unknown;
+}): RuntimeManifest {
+  return {
+    ...manifest,
+    streams: manifest.streams.map((stream) => {
+      const { selection: _selection, ...withoutSelection } = stream;
+      return withoutSelection;
+    }),
+  };
+}
 
 // `startServer`'s inferred asServer/rsServer type comes from a framework
 // `.listen()` call whose TS overload resolves to an http2-shaped type, but at
@@ -171,7 +191,7 @@ test("connector failure diagnostics surface on owner timeline; not on /v1 surfac
         collectionMode: "full_refresh",
         connectorId: STUB_MANIFEST.connector_id,
         connectorPath: stubPath,
-        manifest: STUB_MANIFEST,
+        manifest: runtimeManifest(STUB_MANIFEST),
         onInteraction: () => ({ status: "cancelled", type: "INTERACTION_RESPONSE" }),
         // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
         onProgress: () => {},

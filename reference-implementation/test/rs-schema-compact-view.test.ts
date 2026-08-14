@@ -152,6 +152,7 @@ function makeLargeManifest({ streamCount = 6, fieldsPerStream = 30 } = {}) {
     capabilities: { human_interaction: [] },
     connector_id: CONNECTOR_ID,
     display_name: "Compact Schema Fixture Connector",
+    manifest_uri: `https://sources.example/${CONNECTOR_ID}`,
     protocol_version: "0.1.0",
     streams: Array.from({ length: streamCount }, (_, s) => {
       const properties: ManifestProperties = {
@@ -176,7 +177,8 @@ function makeLargeManifest({ streamCount = 6, fieldsPerStream = 30 } = {}) {
         primary_key: ["id"],
         query: { range_filters: rangeFilters },
         schema: { properties, required: ["id", "received_at"], type: "object" },
-        selection: { fields: { mode: "explicit" } },
+        selection: { fields: true, resources: true },
+        semantics: "mutable_state",
       };
     }),
     version: "1.0.0",
@@ -614,10 +616,12 @@ test("/v1/schema?detail=full rejects ambiguous stream detail before dumping mult
       assert.equal(ambiguous.body.error?.code, "ambiguous_schema_detail");
       assert.equal(ambiguous.body.error?.retry_with, "connection_id");
       assert.ok(ambiguous.body.error?.available_connections, "expected available_connections on the error");
-      assert.deepEqual(ambiguous.body.error.available_connections.map((entry) => entry.connection_id).sort(), [
-        "cin_detail_a",
-        "cin_detail_b",
-      ]);
+      assert.deepEqual(
+        ambiguous.body.error.available_connections
+          .map((entry) => entry.connection_id)
+          .sort((a, b) => (a ?? "").localeCompare(b ?? "")),
+        ["cin_detail_a", "cin_detail_b"]
+      );
 
       const unscoped = await fetchJson(schemaUrl(rsUrl, { detail: "full" }), {
         headers: { Authorization: `Bearer ${ownerToken}` },

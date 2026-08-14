@@ -176,6 +176,8 @@ jobs:
         if: steps.changes.outputs.reference_impacting == 'true'
         env:
           PDPP_TEST_CONCURRENCY: "2"
+          PDPP_TEST_FILE_HARD_TIMEOUT_MS: "900000"
+          PDPP_TEST_FILE_TIMEOUT_MS: "120000"
         run: pnpm --dir reference-implementation run test
 
       - name: Report non-reference skip

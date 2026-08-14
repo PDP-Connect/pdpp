@@ -59,7 +59,7 @@ const MANIFEST_STREAM = {
   },
 };
 
-test("buildFieldCapabilities projects a granted field with declared type/role and capability flags", () => {
+test("buildFieldCapabilities omits typed filter capabilities for grant metadata", () => {
   const caps = buildFieldCapabilities(MANIFEST_STREAM, { fields: ["amount", "body"] });
   // biome-ignore lint/style/useDestructuring: Indexed access expresses the protocol field position under test.
   const amount = caps.amount;
@@ -67,8 +67,8 @@ test("buildFieldCapabilities projects a granted field with declared type/role an
   assert.equal(amount.type, "currency"); // from x_pdpp_type
   assert.equal(amount.role, "metric"); // from x_pdpp_role
   assert.equal(amount.granted, true);
-  assert.deepEqual(amount.exact_filter, { declared: true, usable: true });
-  assert.deepEqual(amount.range_filter, { declared: true, operators: ["gte", "lte"], usable: true });
+  assert.equal(amount.exact_filter, undefined);
+  assert.equal(amount.range_filter, undefined);
   assert.deepEqual(amount.aggregation.sum, { declared: true, usable: true });
   assert.deepEqual(amount.aggregation.group_by, { declared: true, usable: true });
   // Undeclared aggregations are declared:false/usable:false.
@@ -81,10 +81,7 @@ test("buildFieldCapabilities marks an ungranted field with field_not_granted on 
   const secret = caps.secret; // not in the grant
   assert.ok(secret, "secret field capabilities must be present");
   assert.equal(secret.granted, false);
-  // exact_filter is declared (string field) but ungranted => not usable, with reason.
-  assert.equal(secret.exact_filter.declared, true);
-  assert.equal(secret.exact_filter.usable, false);
-  assert.equal(secret.exact_filter.reason, "field_not_granted");
+  assert.equal(secret.exact_filter, undefined);
 });
 
 test("buildFieldCapabilities reflects lexical/semantic search declarations per field", () => {
@@ -104,4 +101,12 @@ test("buildFieldCapabilities: a null grant (owner/unfiltered) marks every field 
   assert.equal(caps.secret.granted, true);
   assert.equal(caps.secret.exact_filter.usable, true);
   assert.ok(!("reason" in caps.secret.exact_filter), "a granted flag carries no field_not_granted reason");
+});
+
+test("buildFieldCapabilities retains typed filter capabilities for owner metadata", () => {
+  const caps = buildFieldCapabilities(MANIFEST_STREAM, null);
+  const { amount } = caps;
+  assert.ok(amount, "amount field capabilities must be present");
+  assert.deepEqual(amount.exact_filter, { declared: true, usable: true });
+  assert.deepEqual(amount.range_filter, { declared: true, operators: ["gte", "lte"], usable: true });
 });

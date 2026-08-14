@@ -40,10 +40,10 @@ const BUDGET_EXHAUSTED_PATTERN = /\[REDACTED scan budget exhausted\]/;
  *
  * The fix (reference-implementation/scripts/run-tests.ts) stops forwarding
  * --test-force-exit to child `node --test` processes and instead bounds a
- * genuinely hung file with a runner-level SIGKILL watchdog that only fires
- * after the child fails to exit on its own within PDPP_TEST_FILE_TIMEOUT_MS.
- * A normal run drains its reporter completely and exits before the watchdog
- * ever fires.
+ * genuinely hung file with a runner-level SIGKILL watchdog. The watchdog
+ * fires after PDPP_TEST_FILE_TIMEOUT_MS without output or at the separate
+ * PDPP_TEST_FILE_HARD_TIMEOUT_MS absolute deadline. A normal run drains its
+ * reporter completely and exits before either deadline fires.
  *
  * This test spawns the real reporter against the file where the race was
  * observed live (compact-record-history.test.js has both a large pure-helper

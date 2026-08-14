@@ -61,6 +61,127 @@ const NonEmptyStringSchema = {
   type: "string",
 };
 
+const HTTPS_NO_FRAGMENT_OR_USERINFO_URI_RE =
+  /^(?!.*[\p{Cc}\s\\#])(?!.*%(?![0-9A-Fa-f]{2}))[Hh][Tt][Tt][Pp][Ss]:\/\/(?![^/?#]*@)(?:\[[0-9A-Fa-f:.]+\](?::\d+)?|[^/?#\s\\@:%]+(?::\d+)?)(?:[/?][^\s\\#]*)?$/u;
+
+const SourceDeclarationUriSchema = {
+  format: "uri",
+  pattern: HTTPS_NO_FRAGMENT_OR_USERINFO_URI_RE.source,
+  type: "string",
+};
+
+const RFC_9728_RESOURCE_IDENTIFIER_RE = /^(https):\/\/([^/?#\\]+)([/?][^#\\]*)?$/i;
+const FORBIDDEN_URI_CODE_POINT_RE = /[\p{Cc}\s\\#]/u;
+const INVALID_PERCENT_ENCODING_RE = /%(?![0-9A-Fa-f]{2})/u;
+const IPV6_AUTHORITY_RE = /^\[[0-9A-Fa-f:.]+\](?::\d+)?$/u;
+const HOST_AND_PORT_RE = /^[^:]+:\d+$/u;
+
+function containsNonAsciiCodePoint(value: string): boolean {
+  for (const character of value) {
+    if ((character.codePointAt(0) ?? 0) > 127) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasStrictHttpsAuthority(authority: string): boolean {
+  if (authority.includes("%") || authority.includes("@")) {
+    return false;
+  }
+
+  if (authority.startsWith("[")) {
+    return IPV6_AUTHORITY_RE.test(authority);
+  }
+
+  return !authority.includes(":") || HOST_AND_PORT_RE.test(authority);
+}
+
+function isStrictHttpsUri(value: string): boolean {
+  const components = RFC_9728_RESOURCE_IDENTIFIER_RE.exec(value);
+  if (
+    components === null ||
+    FORBIDDEN_URI_CODE_POINT_RE.test(value) ||
+    INVALID_PERCENT_ENCODING_RE.test(value) ||
+    containsNonAsciiCodePoint(value) ||
+    !hasStrictHttpsAuthority(components[2] ?? "")
+  ) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(value);
+    return (
+      parsed.protocol === "https:" &&
+      parsed.hostname !== "" &&
+      parsed.hash === "" &&
+      parsed.username === "" &&
+      parsed.password === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Apply RFC 9728 Section 3's well-known URI transformation without
+ * normalizing the resource identifier that must later compare exactly.
+ */
+export function deriveProtectedResourceMetadataUrl(resourceIdentifier: string): string {
+  const components = RFC_9728_RESOURCE_IDENTIFIER_RE.exec(resourceIdentifier);
+  if (components === null || !isStrictHttpsUri(resourceIdentifier)) {
+    throw new TypeError("RFC 9728 resource identifiers must be HTTPS URLs without fragments or user information");
+  }
+
+  const authority = `${components[1]}://${components[2]}`;
+  const capturedPathOrQuery = components[3] ?? "";
+  let pathOrQuery = capturedPathOrQuery;
+  if (capturedPathOrQuery === "/") {
+    pathOrQuery = "";
+  } else if (capturedPathOrQuery.startsWith("/?")) {
+    pathOrQuery = capturedPathOrQuery.slice(1);
+  }
+  return `${authority}/.well-known/oauth-protected-resource${pathOrQuery}`;
+}
+
+/** RFC 9728 Section 3.3 requires string identity, not URL equivalence. */
+export function hasExactProtectedResourceIdentity(requestedResource: string, returnedResource: string): boolean {
+  return returnedResource === requestedResource;
+}
+
+export type ProviderNativeDiscoveryValidationResult =
+  | { ok: true; sourceDeclarationUri: string }
+  | {
+      ok: false;
+      reason: "invalid_resource" | "invalid_source_declaration_uri" | "resource_mismatch";
+    };
+
+/** Apply the PDPP provider-native profile to a generic RFC 9728 document. */
+export function validateProviderNativeDiscoveryMetadata(
+  requestedResource: string,
+  metadata: Readonly<Record<string, unknown>>
+): ProviderNativeDiscoveryValidationResult {
+  if (!isStrictHttpsUri(requestedResource)) {
+    return { ok: false, reason: "invalid_resource" };
+  }
+  if (typeof metadata.resource !== "string" || !isStrictHttpsUri(metadata.resource)) {
+    return { ok: false, reason: "invalid_resource" };
+  }
+  if (!hasExactProtectedResourceIdentity(requestedResource, metadata.resource)) {
+    return { ok: false, reason: "resource_mismatch" };
+  }
+
+  const sourceDeclarationUri = metadata.pdpp_source_declaration_uri;
+  if (typeof sourceDeclarationUri !== "string") {
+    return { ok: false, reason: "invalid_source_declaration_uri" };
+  }
+  if (!isStrictHttpsUri(sourceDeclarationUri)) {
+    return { ok: false, reason: "invalid_source_declaration_uri" };
+  }
+
+  return { ok: true, sourceDeclarationUri };
+}
+
 export const BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP = 8;
 export const BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD = 6;
 
@@ -207,7 +328,7 @@ const ListRecordsQuerySchema = {
     fields: { type: "string" },
     filter: {
       description:
-        "Per-field filter map. Exact: `filter[field]=value`. Range: `filter[field][op]=value` where `op` is one of the declared `field_capabilities.range_filter.operators` from `GET /v1/schema`.",
+        "Owner-token current-capability filter map only. Client-token v0.1 reads reject exact `filter[field]=value` and range `filter[field][op]=value` before consulting current source metadata.",
       type: "object",
     },
     limit: { maximum: 100, minimum: 1, type: "integer" },
@@ -666,6 +787,7 @@ const ProtectedResourceMetadataSchema = {
     pdpp_owner_agent_onboarding: ProtectedResourceOwnerAgentOnboardingSchema,
     pdpp_provider_connect_version: NonEmptyStringSchema,
     pdpp_self_export_supported: { type: "boolean" },
+    pdpp_source_declaration_uri: SourceDeclarationUriSchema,
     pdpp_token_kinds_supported: {
       items: { enum: ["owner", "client"], type: "string" },
       minItems: 1,
@@ -917,6 +1039,360 @@ const GrantApprovalResponseSchema = {
   type: "object",
 };
 
+const BatchGrantApprovalResponseSchema = {
+  additionalProperties: false,
+  properties: {
+    grant: {
+      additionalProperties: false,
+      properties: {
+        child_grants: {
+          items: {
+            additionalProperties: false,
+            properties: {
+              grant_id: NonEmptyStringSchema,
+              source: {
+                additionalProperties: false,
+                properties: {
+                  connection_id: NonEmptyStringSchema,
+                  id: NonEmptyStringSchema,
+                  kind: NonEmptyStringSchema,
+                },
+                required: ["id"],
+                type: "object",
+              },
+            },
+            required: ["grant_id", "source"],
+            type: "object",
+          },
+          minItems: 1,
+          type: "array",
+        },
+        grant_id: NonEmptyStringSchema,
+        package: { const: true },
+        package_id: NonEmptyStringSchema,
+      },
+      required: ["child_grants", "grant_id", "package", "package_id"],
+      type: "object",
+    },
+    package_id: NonEmptyStringSchema,
+    token: NonEmptyStringSchema,
+  },
+  required: ["grant", "package_id", "token"],
+  type: "object",
+};
+
+const BatchSourceNarrowingSchema = {
+  additionalProperties: false,
+  properties: {
+    fields: {
+      additionalProperties: {
+        items: NonEmptyStringSchema,
+        type: "array",
+      },
+      type: "object",
+    },
+    since: {
+      additionalProperties: NonEmptyStringSchema,
+      type: "object",
+    },
+    streams: {
+      items: NonEmptyStringSchema,
+      type: "array",
+    },
+  },
+  type: "object",
+};
+
+const BatchApprovalReviewRequestSchema = {
+  additionalProperties: false,
+  anyOf: [
+    { required: ["approved_source_indexes"] },
+    { required: ["confirm_approve_all"] },
+    { required: ["source_narrowing"] },
+  ],
+  oneOf: [{ required: ["request_uri"] }, { required: ["approval_id"] }],
+  properties: {
+    approval_id: NonEmptyStringSchema,
+    approved_source_indexes: {
+      oneOf: [
+        { minimum: 0, type: "integer" },
+        { pattern: "^[0-9]+$", type: "string" },
+        {
+          items: {
+            oneOf: [
+              { minimum: 0, type: "integer" },
+              { pattern: "^[0-9]+$", type: "string" },
+            ],
+          },
+          type: "array",
+        },
+      ],
+    },
+    confirm_approve_all: {
+      oneOf: [{ type: "boolean" }, { enum: ["true", "1", "on"], type: "string" }],
+    },
+    request_uri: NonEmptyStringSchema,
+    source_narrowing: {
+      additionalProperties: BatchSourceNarrowingSchema,
+      propertyNames: { pattern: "^(0|[1-9][0-9]*)$" },
+      type: "object",
+    },
+    subject_id: NonEmptyStringSchema,
+  },
+  type: "object",
+};
+
+const SingleApprovalReviewRequestSchema = {
+  additionalProperties: false,
+  oneOf: [{ required: ["request_uri"] }, { required: ["approval_id"] }],
+  properties: {
+    approval_id: NonEmptyStringSchema,
+    ai_training_consented: {
+      oneOf: [{ type: "boolean" }, { enum: ["true", "false", "1", "0", "on", "off"], type: "string" }],
+    },
+    request_uri: NonEmptyStringSchema,
+    subject_id: NonEmptyStringSchema,
+  },
+  type: "object",
+};
+
+const ReviewClientDisplaySchema = {
+  additionalProperties: false,
+  properties: {
+    logo_uri: { oneOf: [UriSchema, { type: "null" }] },
+    name: { oneOf: [NonEmptyStringSchema, { type: "null" }] },
+    policy_uri: { oneOf: [UriSchema, { type: "null" }] },
+    tos_uri: { oneOf: [UriSchema, { type: "null" }] },
+    uri: { oneOf: [UriSchema, { type: "null" }] },
+  },
+  type: "object",
+};
+
+const ReviewClientSchema = {
+  additionalProperties: false,
+  properties: {
+    client_display: {
+      oneOf: [ReviewClientDisplaySchema, { type: "null" }],
+    },
+    client_id: NonEmptyStringSchema,
+    registration_mode: {
+      enum: ["dynamic", "client_id_metadata_document", "pre_registered_public"],
+      type: "string",
+    },
+  },
+  required: ["client_id", "registration_mode"],
+  type: "object",
+};
+
+const ReviewRetentionSchema = {
+  oneOf: [GrantSchema.properties.retention, { type: "null" }],
+};
+
+const ReviewSourceDeclarationSchema = {
+  oneOf: [
+    {
+      additionalProperties: false,
+      properties: {
+        digest: NonEmptyStringSchema,
+        version: NonEmptyStringSchema,
+      },
+      required: ["digest", "version"],
+      type: "object",
+    },
+    {
+      additionalProperties: false,
+      properties: {
+        digest: NonEmptyStringSchema,
+        publisher_attribution: {
+          additionalProperties: false,
+          properties: {
+            id: NonEmptyStringSchema,
+            status: { const: "unverified" },
+          },
+          required: ["id", "status"],
+          type: "object",
+        },
+        resource_authority: {
+          additionalProperties: false,
+          properties: { status: { const: "local_operator_provisioned" } },
+          required: ["status"],
+          type: "object",
+        },
+        version: NonEmptyStringSchema,
+      },
+      required: ["digest", "publisher_attribution", "resource_authority", "version"],
+      type: "object",
+    },
+    {
+      additionalProperties: false,
+      properties: {
+        accepted_revision_reference: NonEmptyStringSchema,
+        digest: NonEmptyStringSchema,
+        publisher_attribution: {
+          additionalProperties: false,
+          properties: {
+            id: NonEmptyStringSchema,
+            status: { const: "unverified" },
+          },
+          required: ["id", "status"],
+          type: "object",
+        },
+        resource_authority: {
+          additionalProperties: false,
+          properties: {
+            authority_binding: NonEmptyStringSchema,
+            status: { const: "verified" },
+          },
+          required: ["authority_binding", "status"],
+          type: "object",
+        },
+        version: NonEmptyStringSchema,
+      },
+      required: ["accepted_revision_reference", "digest", "publisher_attribution", "resource_authority", "version"],
+      type: "object",
+    },
+  ],
+};
+
+const ReviewClientClaimsSchema = {
+  oneOf: [
+    {
+      additionalProperties: false,
+      properties: {
+        commitments: {
+          items: NonEmptyStringSchema,
+          minItems: 1,
+          type: "array",
+          uniqueItems: true,
+        },
+      },
+      required: ["commitments"],
+      type: "object",
+    },
+    { type: "null" },
+  ],
+};
+
+const SingleApprovalReviewArtifactSchema = {
+  additionalProperties: false,
+  properties: {
+    access_mode: { enum: ["continuous", "single_use"], type: "string" },
+    ai_training_consented: { type: ["boolean", "null"] },
+    client: ReviewClientSchema,
+    client_claims: ReviewClientClaimsSchema,
+    expires_at: { type: ["string", "null"] },
+    purpose_code: NonEmptyStringSchema,
+    purpose_description: { type: ["string", "null"] },
+    resolved_streams: GrantSchema.properties.streams,
+    retention: ReviewRetentionSchema,
+    selection_preset: { type: ["string", "null"] },
+    source: GrantSchema.properties.source,
+    source_declaration: ReviewSourceDeclarationSchema,
+    subject: {
+      additionalProperties: false,
+      properties: { id: NonEmptyStringSchema },
+      required: ["id"],
+      type: "object",
+    },
+    version: { const: "reference.approval-review.v1" },
+  },
+  required: [
+    "access_mode",
+    "ai_training_consented",
+    "client",
+    "client_claims",
+    "expires_at",
+    "purpose_code",
+    "purpose_description",
+    "resolved_streams",
+    "retention",
+    "selection_preset",
+    "source",
+    "source_declaration",
+    "subject",
+    "version",
+  ],
+  type: "object",
+};
+
+const BatchApprovalReviewArtifactSchema = {
+  additionalProperties: false,
+  properties: {
+    access_mode: { enum: ["continuous", "single_use"], type: ["string", "null"] },
+    approved_source_indexes: { items: { minimum: 0, type: "integer" }, type: "array" },
+    client: ReviewClientSchema,
+    expires_at: { type: ["string", "null"] },
+    parent_package_id: { type: ["string", "null"] },
+    source_narrowing: {
+      additionalProperties: BatchSourceNarrowingSchema,
+      propertyNames: { pattern: "^(0|[1-9][0-9]*)$" },
+      type: "object",
+    },
+    sources: {
+      items: {
+        additionalProperties: false,
+        properties: {
+          access_mode: { enum: ["continuous", "single_use"], type: "string" },
+          client_claims: ReviewClientClaimsSchema,
+          index: { minimum: 0, type: "integer" },
+          purpose_code: NonEmptyStringSchema,
+          purpose_description: { type: ["string", "null"] },
+          resolved_streams: GrantSchema.properties.streams,
+          retention: ReviewRetentionSchema,
+          selection_preset: { type: ["string", "null"] },
+          source: GrantSchema.properties.source,
+          source_declaration: ReviewSourceDeclarationSchema,
+        },
+        required: [
+          "access_mode",
+          "client_claims",
+          "index",
+          "purpose_code",
+          "purpose_description",
+          "resolved_streams",
+          "retention",
+          "selection_preset",
+          "source",
+          "source_declaration",
+        ],
+        type: "object",
+      },
+      type: "array",
+    },
+    subject: {
+      additionalProperties: false,
+      properties: { id: NonEmptyStringSchema },
+      required: ["id"],
+      type: "object",
+    },
+    version: { const: "reference.batch-approval-review.v1" },
+  },
+  required: [
+    "access_mode",
+    "approved_source_indexes",
+    "client",
+    "expires_at",
+    "parent_package_id",
+    "source_narrowing",
+    "sources",
+    "subject",
+    "version",
+  ],
+  type: "object",
+};
+
+const BatchApprovalReviewResponseSchema = {
+  additionalProperties: false,
+  properties: {
+    approval_review: { oneOf: [SingleApprovalReviewArtifactSchema, BatchApprovalReviewArtifactSchema] },
+    approval_review_revision: NonEmptyStringSchema,
+    batch: { type: "boolean" },
+    request_uri: NonEmptyStringSchema,
+  },
+  required: ["approval_review", "approval_review_revision", "batch", "request_uri"],
+  type: "object",
+};
+
 const RevokeGrantResponseSchema = {
   additionalProperties: false,
   properties: {
@@ -924,6 +1400,32 @@ const RevokeGrantResponseSchema = {
   },
   required: ["revoked"],
   type: "object",
+};
+
+const ApproveConsentRequestSchema = {
+  oneOf: [
+    {
+      additionalProperties: false,
+      properties: {
+        approval_review_revision: NonEmptyStringSchema,
+        request_uri: NonEmptyStringSchema,
+      },
+      required: ["approval_review_revision", "request_uri"],
+      type: "object",
+    },
+    {
+      additionalProperties: false,
+      properties: {
+        approval_review_revision: NonEmptyStringSchema,
+        confirm_reviewed_decision: {
+          oneOf: [{ type: "boolean" }, { enum: ["true", "1", "on"], type: "string" }],
+        },
+        request_uri: NonEmptyStringSchema,
+      },
+      required: ["approval_review_revision", "confirm_reviewed_decision", "request_uri"],
+      type: "object",
+    },
+  ],
 };
 
 const RecordSchema = {
@@ -1191,15 +1693,7 @@ const StreamMetadataResponseSchema = {
               // never client-writable or grantable.
               type: { minLength: 1, type: "string" },
             },
-            required: [
-              "schema",
-              "granted",
-              "exact_filter",
-              "range_filter",
-              "lexical_search",
-              "semantic_search",
-              "aggregation",
-            ],
+            required: ["schema", "granted", "lexical_search", "semantic_search", "aggregation"],
             type: "object",
           },
         ],
@@ -1628,7 +2122,7 @@ export const publicManifests = [
       200: { schema: ProtectedResourceMetadataSchema },
     },
     summary:
-      "Return RFC 9728 protected-resource metadata advertising the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`.",
+      "Return RFC 9728 protected-resource metadata advertising the optional provider-native `pdpp_source_declaration_uri`, the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`.",
     surface: "public",
     tags: ["metadata"],
   },
@@ -1686,47 +2180,44 @@ export const publicManifests = [
     tags: ["grants"],
   },
   {
+    id: "reviewConsent",
+    method: "POST",
+    path: "/consent/review",
+    request: {
+      body: {
+        contentType: "application/json",
+        schema: { oneOf: [SingleApprovalReviewRequestSchema, BatchApprovalReviewRequestSchema] },
+      },
+    },
+    responses: {
+      200: { description: "Approval review finalized", schema: BatchApprovalReviewResponseSchema },
+      400: { description: "Invalid request", schema: ErrorObjectSchema },
+      403: { description: "Grant is malformed or no longer valid", schema: ErrorObjectSchema },
+      404: { description: "Pending consent request not found", schema: ErrorObjectSchema },
+    },
+    summary: "Finalize a consent review before approval.",
+    surface: "public",
+    tags: ["grants"],
+  },
+  {
     id: "approveConsent",
     method: "POST",
     path: "/consent/approve",
     request: {
       body: {
         contentType: "application/json",
-        schema: {
-          additionalProperties: false,
-          properties: {
-            ai_training_consented: { type: "boolean" },
-            approved_source_indexes: {
-              oneOf: [
-                { minimum: 0, type: "integer" },
-                { pattern: "^[0-9]+$", type: "string" },
-                {
-                  items: {
-                    oneOf: [
-                      { minimum: 0, type: "integer" },
-                      { pattern: "^[0-9]+$", type: "string" },
-                    ],
-                  },
-                  type: "array",
-                },
-              ],
-            },
-            confirm_approve_all: {
-              oneOf: [{ type: "boolean" }, { enum: ["true", "1", "on"], type: "string" }],
-            },
-            request_uri: NonEmptyStringSchema,
-            subject_id: NonEmptyStringSchema,
-          },
-          required: ["request_uri"],
-          type: "object",
-        },
+        schema: ApproveConsentRequestSchema,
       },
     },
     responses: {
-      200: { description: "Grant approved and client token issued", schema: GrantApprovalResponseSchema },
+      200: {
+        description: "Grant approved and client token issued",
+        schema: { oneOf: [GrantApprovalResponseSchema, BatchGrantApprovalResponseSchema] },
+      },
       400: { description: "Invalid request", schema: ErrorObjectSchema },
       403: { description: "Grant is malformed or no longer valid", schema: ErrorObjectSchema },
       404: { description: "Pending consent request not found", schema: ErrorObjectSchema },
+      409: { description: "Pending consent approval conflict", schema: ErrorObjectSchema },
     },
     summary: "Approve a pending data-access request through the JSON consent surface used by tests and automation.",
     surface: "public",
@@ -1810,8 +2301,9 @@ export const publicManifests = [
     responses: {
       200: { schema: IntrospectionResponseSchema },
       400: { description: "Missing token parameter", schema: ErrorObjectSchema },
+      401: { description: "Confidential resource-server authentication failed", schema: ErrorObjectSchema },
     },
-    summary: "Inspect token activity and, for active client tokens, the bound grant projection.",
+    summary: "Inspect token activity for an authenticated confidential resource server.",
     surface: "public",
     tags: ["oauth"],
   },
@@ -1885,7 +2377,7 @@ export const publicManifests = [
       ...ProtectedReadErrors,
     },
     summary:
-      "List streams available under the current grant or owner scope. Returns stream-level totals only; for per-field filter capabilities (exact, range operators, aggregation) call `GET /v1/schema` first and consult `field_capabilities` per stream before issuing `filter[...]` queries on `/v1/streams/{stream}/records`. Multi-connection deployments emit one entry per (stream, connection_id); each entry carries `connection_id` and a `display_name` so callers can attribute and disambiguate.",
+      "List streams available under the current grant or owner scope. Returns stream-level totals only. Owner-token current-capability callers can consult `GET /v1/schema` for per-field filter capabilities; client-token v0.1 reads reject `filter[...]`. Multi-connection deployments emit one entry per (stream, connection_id); each entry carries `connection_id` and a `display_name` so callers can attribute and disambiguate.",
     surface: "public",
     tags: ["records"],
   },
@@ -1912,7 +2404,7 @@ export const publicManifests = [
       ...ProtectedReadErrors,
     },
     summary:
-      "Return stream metadata including declared query capabilities and advisory freshness. For per-field filter capabilities on this stream (exact, range operators, aggregation), prefer `GET /v1/schema` first and read `field_capabilities` rather than guessing `filter[...]` shapes against the records endpoint. Pass `connection_id` (or the deprecated `connector_instance_id` alias) to restrict to a single connection; omitted, the response aggregates across the connections the grant authorizes.",
+      "Return stream metadata including declared query capabilities and advisory freshness. Owner-token current-capability callers can consult `GET /v1/schema` for per-field filter capabilities; client-token v0.1 metadata does not advertise typed filter capabilities and client reads reject `filter[...]`. Pass `connection_id` (or the deprecated `connector_instance_id` alias) to restrict to a single connection; omitted, the response aggregates across the connections the grant authorizes.",
     surface: "public",
     tags: ["records"],
   },
@@ -1930,7 +2422,7 @@ export const publicManifests = [
       ...ListRecordErrors,
     },
     summary:
-      "List records in a stream under grant enforcement. Supports logical-cursor pagination, exact and declared range filters, declared one-hop expansion, and changes_since. Per-field filter operators, sortable fields, expandable relations, projection, search modes, and count support are advertised by `GET /v1/schema` (`field_capabilities`, `expand_capabilities`); consult it before issuing `filter[...]`, `expand[]`, or `fields=` shapes to avoid 400 errors. Pass `connection_id` to restrict to one connection; the deprecated `connector_instance_id` alias is accepted for compatibility but new clients SHOULD use `connection_id`.",
+      "List records in a stream under grant enforcement. Supports logical-cursor pagination, declared one-hop expansion, and changes_since. Client-token v0.1 reads reject exact and range `filter[...]` parameters before consulting current source metadata; owner-token current-capability reads MAY use declared filters. Per-field query capabilities are advertised by `GET /v1/schema`; consult it before issuing supported query shapes. Pass `connection_id` to restrict to one connection; the deprecated `connector_instance_id` alias is accepted for compatibility but new clients SHOULD use `connection_id`.",
     surface: "public",
     tags: ["records"],
   },
@@ -1948,7 +2440,7 @@ export const publicManifests = [
       ...ProtectedReadErrors,
     },
     summary:
-      "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, exact count_distinct, scalar grouped counts (`group_by`), calendar time-bucket counts (`group_by_time`+`granularity`, optional `time_zone` defaulting to UTC), and existing exact/range filters over declared fields. Exactly one grouping dimension per call: `group_by` XOR `group_by_time`. Grouped responses include `other_count` (sum of counts for groups/buckets beyond `limit`) so callers can detect truncation without a second round trip.",
+      "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, exact count_distinct, scalar grouped counts (`group_by`), calendar time-bucket counts (`group_by_time`+`granularity`, optional `time_zone` defaulting to UTC), and owner-token current-capability exact/range filters over declared fields. Client-token v0.1 reads reject `filter[...]`. Exactly one grouping dimension per call: `group_by` XOR `group_by_time`. Grouped responses include `other_count` (sum of counts for groups/buckets beyond `limit`) so callers can detect truncation without a second round trip.",
     surface: "public",
     tags: ["records"],
   },
@@ -2079,7 +2571,7 @@ export const publicManifests = [
       410: { description: "Cursor expired or refers to an unknown snapshot", schema: ErrorObjectSchema },
     },
     summary:
-      "Optional lexical retrieval extension: search records across authorized streams by text. Search modes, per-mode cursor support, and field-level `lexical_search`/`semantic_search` capabilities are advertised by `GET /v1/schema`; `filter[...]` operators applied to a single named stream must come from that stream's `field_capabilities`. Hits carry `connection_id` for attribution; the deprecated `connector_instance_id` alias is emitted alongside for compatibility but new clients SHOULD read `connection_id`.",
+      "Optional lexical retrieval extension: search records across authorized streams by text. Search modes, per-mode cursor support, and field-level `lexical_search`/`semantic_search` capabilities are advertised by `GET /v1/schema`. Client-token v0.1 reads reject `filter[...]`; owner-token current-capability reads MAY use declared filters. Hits carry `connection_id` for attribution; the deprecated `connector_instance_id` alias is emitted alongside for compatibility but new clients SHOULD read `connection_id`.",
     surface: "public",
     tags: ["records", "lexical-retrieval"],
   },

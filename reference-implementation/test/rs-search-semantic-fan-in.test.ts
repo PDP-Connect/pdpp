@@ -285,3 +285,26 @@ test("client-mode semantic fan-in: iterates every grant-authorized binding", asy
     ["B1", "A1"]
   );
 });
+
+test("client-mode semantic fan-in: skipped warning preserves the storage source identity", async () => {
+  const grant = { source: { id: "https://sources.example/gmail", kind: "connector" }, streams: [{ name: "messages" }] };
+  const clientActor: SearchSemanticActor = { client_id: "c", grant, grant_id: "g", kind: "client", subject_id: "subj" };
+  const deps = makeOwnerDepsWithBindings([], { cin_gmail_A: { _emptyPlan: true } });
+  deps.resolveClientBindings = () => [
+    {
+      connectorInstanceId: "cin_gmail_A",
+      manifest: {
+        storage_binding: { connector_id: "gmail", connector_instance_id: "cin_gmail_A" },
+        streams: [{ name: "messages" }],
+      },
+    },
+  ];
+
+  const out = await executeSearchSemantic({ actor: clientActor, query: { q: "foo" } }, deps);
+  const skipped = (out.envelope.meta?.warnings || []).find((w) => w.code === "source_skipped_not_applicable") as
+    | SearchSemanticWarning
+    | undefined;
+  assert.ok(skipped);
+  assert.equal(skipped.detail?.connection_id, "cin_gmail_A");
+  assert.equal(skipped.detail?.source, "gmail");
+});

@@ -4,6 +4,7 @@
   "pages": [
     "---Specification---",
     "spec-core",
+    "spec-discovery-and-trust",
     "spec-collection-profile",
     "spec-ext-lexical-search",
     "spec-ext-aggregation",

@@ -175,13 +175,13 @@ Legend:
 
 ## Source Binding (3 concepts)
 
-The request- and grant-level `source: { kind, id }` object names where authorized data comes from. It replaced the top-level `connector_id` scalar (and the reference contract's sibling `provider_id`) unified in the `2026-04-30-unify-source-binding-vocabulary` change; a request carrying a top-level `connector_id` or `provider_id` is now rejected 400 `invalid_request` (spec-deferred §"Source-binding unification"). The former scalars survive only as the kind-keyed meanings of `source.id`. Distinct from the runtime *bindings* of concepts 62/64 (which are capability requirements like `browser_automation`).
+The selection-request `source: { id, kind? }` object and the resolved-grant `source: { kind, id }` object name where authorized data comes from. The request's `source.id` is authoritative; an optional `source.kind` must match the retained declaration, and the AS derives an omitted kind. This replaced the top-level `connector_id` scalar (and the reference contract's sibling `provider_id`) in the `2026-04-30-unify-source-binding-vocabulary` change; a request carrying a top-level `connector_id` or `provider_id` is rejected with 400 `invalid_request` (spec-deferred §"Source-binding unification"). The former scalars survive only as kind-keyed meanings of `source.id`. This is distinct from the runtime *bindings* of concepts 62/64, which are capability requirements such as `browser_automation`.
 
 | # | Concept | Description | Flow | Audience |
 |---|---------|-------------|------|----------|
-| 86 | Source binding | Every selection request and issued grant names its data source with one `source: { kind, id }` object; both members required, no others permitted; the grant resolves it from the request at issuance (spec-core §6 request-level params, §7 grant fields) | Spine | Eng, Std |
-| 87 | Source kinds (connector vs provider_native) | `source.kind` is `"connector"` (a polyfill connector bridges a platform that does not speak PDPP; `id` is the connector registry key) or `"provider_native"` (the platform serves records directly under its own AS/RS roles; `id` identifies that provider source) (spec-core §6 Source kinds) | Branch | Eng, Std |
-| 88 | Unrecognized source kind rejection | An AS that receives a `source.kind` it does not recognize MUST reject with 400 `invalid_request`; consent cannot be rendered for an unrecognized source kind (spec-core §6) | Branch | Eng |
+| 86 | Source binding | Every selection request names its data source with `source: { id, kind? }`; the AS derives an omitted kind from the retained declaration. Every issued grant contains `source: { kind, id }` (spec-core §6 request-level params, §7 grant fields) | Spine | Eng, Std |
+| 87 | Source kinds (connector vs provider_native) | When supplied in a request, and always in a grant, `source.kind` is `"connector"` (a polyfill connector bridges a platform that does not speak PDPP; `id` is the connector registry key) or `"provider_native"` (the platform serves records directly under its own AS/RS roles; `id` identifies that provider source) (spec-core §6 Source kinds) | Branch | Eng, Std |
+| 88 | Unrecognized source kind rejection | An AS that receives an unrecognized `source.kind` MUST reject with 400 `invalid_request`; consent cannot be rendered for that supplied kind (spec-core §6) | Branch | Eng |
 
 ---
 

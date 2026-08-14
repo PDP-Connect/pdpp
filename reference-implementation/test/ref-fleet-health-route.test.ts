@@ -18,6 +18,7 @@ import type { MountRefConnectorsContext } from "../server/routes/ref-connectors.
 import { mountRefFleetHealth } from "../server/routes/ref-connectors.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 import { createApp } from "../server/transport.ts";
+import { TEST_INTROSPECTION_SERVER_OPTS } from "./helpers/introspection-test-credentials.ts";
 
 // mountRefFleetHealth only reads getFleetHealthVerdict / handleError /
 // requireOwnerSession from the shared MountRefConnectorsContext, but the
@@ -194,7 +195,11 @@ test("production fleet wiring projects one custom-owner visible population witho
     });
   }
 
-  const app = buildAsApp({ ownerAuthPassword: "", ownerAuthSubjectId: CUSTOM_OWNER_SUBJECT_ID });
+  const app = buildAsApp({
+    ownerAuthPassword: "",
+    ownerAuthSubjectId: CUSTOM_OWNER_SUBJECT_ID,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
+  });
   await app.fastify.ready();
   try {
     const response = await app.fastify.inject({ method: "GET", url: "/_ref/fleet-health" });

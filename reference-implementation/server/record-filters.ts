@@ -12,7 +12,7 @@ type JsonObject = Record<string, unknown>;
 interface StreamGrant {
   fields?: string[] | null;
   resources?: string[];
-  time_range?: { since?: string; until?: string } | null;
+  time_constraint?: TimeConstraint | null;
 }
 interface ManifestStream {
   consent_time_field?: string;
@@ -55,10 +55,49 @@ class QueryError extends Error {
   }
 }
 
+export interface TimeConstraint {
+  field: string;
+  since?: string;
+  until?: string;
+}
+
+interface TimeRange {
+  since?: string;
+  until?: string;
+}
+
+class GrantConstraintError extends Error {
+  readonly code = "grant_invalid";
+}
+
 const SUPPORTED_RANGE_OPERATORS = new Set(["gte", "gt", "lte", "lt"]);
 
 export function invalidQueryError(message: string, code = "invalid_request"): Error & { code: string } {
   return new QueryError(message, code);
+}
+
+/**
+ * v0.1 client grants do not expose request-time filters or retain relationship
+ * authorization. Keep this guard independent from manifest parsing so current
+ * declaration metadata cannot reinterpret an issued grant. Owner reads retain
+ * the current-capability query paths.
+ */
+export function rejectUnsupportedClientQuery(tokenKind: string | null | undefined, requestParams: unknown): void {
+  if (tokenKind !== "client" || !requestParams || typeof requestParams !== "object" || Array.isArray(requestParams)) {
+    return;
+  }
+  const params = requestParams as Record<string, unknown>;
+  const unsupported = [
+    { keys: ["expand", "expand[]"], message: "expand[]", param: "expand" },
+    { keys: ["expand_limit", "expand_limit[]"], message: "expand_limit[...]", param: "expand_limit" },
+    { keys: ["filter"], message: "filter[...]", param: "filter" },
+  ].find(({ keys }) => keys.some((key) => Object.hasOwn(params, key)));
+  if (!unsupported) {
+    return;
+  }
+  const error = invalidQueryError(`${unsupported.message} is not supported for client-token reads in PDPP v0.1`);
+  Object.assign(error, { param: unsupported.param });
+  throw error;
 }
 
 export function getFieldSchema(manifestStream: ManifestStream | null | undefined, field: string): Schema | null {
@@ -135,6 +174,36 @@ export function parseDateValue(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+export function requireTimeConstraint(value: unknown): TimeConstraint | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new GrantConstraintError("Grant time_constraint must be an object");
+  }
+  const constraint = value as Record<string, unknown>;
+  const unsupported = Object.keys(constraint).filter((key) => !["field", "since", "until"].includes(key));
+  const field = typeof constraint.field === "string" ? constraint.field : "";
+  const { since, until } = constraint;
+  const sinceMs = since === undefined ? null : parseDateValue(since);
+  const untilMs = until === undefined ? null : parseDateValue(until);
+  if (
+    unsupported.length > 0 ||
+    !field ||
+    (since === undefined && until === undefined) ||
+    (since !== undefined && sinceMs === null) ||
+    (until !== undefined && untilMs === null) ||
+    (sinceMs !== null && untilMs !== null && sinceMs > untilMs)
+  ) {
+    throw new GrantConstraintError("Grant time_constraint is malformed");
+  }
+  return {
+    field,
+    ...(typeof since === "string" ? { since } : {}),
+    ...(typeof until === "string" ? { until } : {}),
+  };
+}
+
 export function coerceComparableValue(
   value: unknown,
   fieldSchema: Schema | null | undefined,
@@ -195,8 +264,7 @@ function compileRangeFilter(
     throw invalidQueryError(`Range filters are not supported on '${field}'`);
   }
 
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-  const declaredOperators = manifestStream?.query?.range_filters?.[field];
+  const declaredOperators = manifestStream.query?.range_filters?.[field];
   if (!(Array.isArray(declaredOperators) && declaredOperators.length)) {
     throw invalidQueryError(`Range filters are not declared for '${field}'`);
   }
@@ -310,7 +378,7 @@ export function passesRequestFilters(
 
 export function passesTimeRange(
   data: JsonObject | null,
-  timeRange: StreamGrant["time_range"],
+  timeRange: TimeRange | null | undefined,
   consentTimeField: string | null | undefined
 ): boolean {
   if (!(timeRange && consentTimeField)) {
@@ -333,17 +401,30 @@ export function passesTimeRange(
   return true;
 }
 
+export function passesTimeConstraint(data: JsonObject | null, value: unknown): boolean {
+  const constraint = requireTimeConstraint(value);
+  if (!constraint) {
+    return true;
+  }
+  const recordTime = parseDateValue(data?.[constraint.field]);
+  if (recordTime === null) {
+    return false;
+  }
+  const since = constraint.since === undefined ? null : parseDateValue(constraint.since);
+  const until = constraint.until === undefined ? null : parseDateValue(constraint.until);
+  return !((since !== null && recordTime < since) || (until !== null && recordTime >= until));
+}
+
 export function passesGrantRecordConstraints(
   data: JsonObject | null,
   recordKey: string,
   streamGrant: StreamGrant | null | undefined,
-  manifestStream: ManifestStream
+  _manifestStream: ManifestStream
 ): boolean {
   if (streamGrant?.resources?.length && !streamGrant.resources.includes(recordKey)) {
     return false;
   }
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-  return passesTimeRange(data, streamGrant?.time_range, manifestStream?.consent_time_field);
+  return passesTimeConstraint(data, streamGrant?.time_constraint);
 }
 
 export function compileSingleStreamSearchFilter({
@@ -420,7 +501,10 @@ export function hashSearchPlanSummary({
 }
 
 export function hasGrantRecordConstraints(streamGrant: StreamGrant | null | undefined): boolean {
-  return !!(streamGrant?.time_range || (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0));
+  return !!(
+    streamGrant?.time_constraint ||
+    (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0)
+  );
 }
 
 export function needsCandidateRecordScan(

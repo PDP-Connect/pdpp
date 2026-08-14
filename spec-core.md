@@ -43,7 +43,7 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | [OAuth 2.0](https://www.rfc-editor.org/rfc/rfc6749) (RFC 6749) | PDPP is a profile of OAuth 2.0, carrying selection requests in RFC 9396 authorization_details. The grant is issued as the result of an OAuth authorization flow. |
 | [RFC 9396](https://www.rfc-editor.org/rfc/rfc9396) (RAR) | PDPP uses the `authorization_details` envelope for selection requests. The `type` URI is `https://pdpp.dev/data-access`. |
 | [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) (Bearer Token) | PDPP transports both owner tokens and client tokens as RFC 6750 Bearer Tokens on the wire. The resource server distinguishes token kind via `pdpp_token_kind` in the introspection response, not by token syntax. |
-| [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662) (Token Introspection) | PDPP relies on RFC 7662-style token introspection where the authorization server and resource server are separated, so the resource server can resolve grant-bound tokens. Co-located deployments may use a local equivalent. |
+| [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662) (Token Introspection) | PDPP uses authenticated RFC 7662 token introspection where the authorization server and resource server are separated, so the resource server can resolve grant-bound tokens. Co-located deployments may use a local equivalent. |
 | [OAuth 2.0 Dynamic Client Registration](https://www.rfc-editor.org/rfc/rfc7591) (RFC 7591) | PDPP reuses the RFC 7591 client metadata vocabulary (`client_name`, `logo_uri`, `policy_uri`, and similar fields) for the consent display. A dynamic client registration endpoint is a deployment choice and is required only where deployments need it; Core functions without it. |
 | [SMART on FHIR](https://hl7.org/fhir/smart-app-launch/) | Follows the domain-profile-over-OAuth pattern PDPP adopts: OAuth handles authorization, and the profile adds a domain data model, consent semantics, and a conformance regime. SMART on FHIR reached ubiquity through regulatory adoption of SMART-on-FHIR-patterned API requirements (the ONC Cures Act rule). |
 | [UK Open Banking](https://www.openbanking.org.uk/standards/) | Also follows the domain-profile-over-OAuth pattern PDPP adopts: OAuth handles authorization, and the profile adds a domain data model, consent semantics, and a conformance regime. UK Open Banking reached ubiquity through the CMA's Open Banking mandate for the largest UK banks. |
@@ -91,7 +91,7 @@ In many deployments, a single **personal server** fills all three roles. The spe
 
 **Note on the Authorization Server interface:** This spec defines the resource server interface normatively because cross-deployment interoperability requires it: a client written against the interface works with any conformant resource server regardless of who operates it or where data lives. The authorization server interface is not normatively specified in v0.1 because user-facing authorization flows are deployment-specific. The reference implementation uses the OAuth authorization code flow with RFC 9396 authorization_details for client grants, and OAuth device authorization for owner tokens.
 
-**Token resolution:** User-facing authorization flows are deployment-specific and are not normatively specified in v0.1. However, when the AS and RS are deployed separately, the AS↔RS token-resolution contract is normative: the RS resolves access tokens using RFC 7662-style token introspection. For co-located deployments, a local equivalent (shared database or function call) is acceptable. Self-contained JWTs may be used as an optimization but MUST NOT be the sole revocation mechanism (see Section 10).
+**Token resolution:** User-facing authorization flows are deployment-specific and are not normatively specified in v0.1. However, when the AS and RS are deployed separately, the AS-to-RS token-resolution contract is normative: the RS MUST authenticate to the RFC 7662 introspection endpoint and resolve the complete grant enforcement context from its response. The RS MUST enforce the request from that response and MUST NOT make a second AS lookup. For co-located deployments, a local equivalent (shared database or function call) is acceptable. Self-contained JWTs may be used as an optimization but MUST NOT be the sole revocation mechanism (see Section 10).
 
 ### Data concepts
 
@@ -906,6 +906,12 @@ Three independent version axes exist in PDPP. They MUST NOT be conflated:
 | Source declaration revision | `grant.source_declaration.version` | Identifies the exact retained declaration snapshot used for consent and issuance. It is opaque evidence metadata. The RS enforces the resolved grant and does not fetch that revision for authorization. |
 | HTTP API contract version | `PDPP-Version` request header | Version of the RS HTTP API contract. RS returns 400 `unsupported_version` if the requested version is not supported. If the header is absent, the RS uses the current stable version and returns the selected version in the response header (see [Section 8](#resource-server-interface)). |
 
+The current persisted-authorization-state reader MUST reject pre-v0.1 state
+with `authorization_state.unsupported_legacy_shape` before its caller
+continues introspection or route handling. The reader MUST NOT reconstruct
+missing authorization or binding facts from current configuration. The user
+MUST complete fresh consent.
+
 ### Access modes {#access-modes}
 
 | Mode | Behavior |
@@ -1052,7 +1058,7 @@ The resource server stores records and serves them to clients filtered by grants
 
 On every request, the resource server:
 
-1. Resolves the access token via token introspection (RFC 7662-style) or a local equivalent for co-located deployments. Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`.
+1. Resolves the access token through authenticated RFC 7662 introspection or a local equivalent for co-located deployments. Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`.
 2. Verifies that the grant is active (`active: true` in the introspection response).
 3. Verifies that the requested stream appears in the grant's `streams` list.
 4. Selects records only from the explicitly granted `instance_ids` and verifies that the request falls within the grant's `time_constraint`, `fields`, and `resources` constraints.
@@ -1070,7 +1076,9 @@ The RS MUST NOT re-validate authorization against the current SourceDeclaration.
 
 ### Token introspection
 
-For separated AS/RS deployments, the RS calls the AS introspection endpoint (RFC 7662). PDPP defines the following extension fields in the introspection response:
+For separated AS/RS deployments, the RS MUST authenticate to the AS
+introspection endpoint as required by RFC 7662. PDPP defines the following
+extension fields in the introspection response:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -1079,7 +1087,13 @@ For separated AS/RS deployments, the RS calls the AS introspection endpoint (RFC
 | `subject_id` | string | The subject (user) identifier. |
 | `grant_id` | string | The associated grant identifier. Present for client tokens. |
 | `client_id` | string | The client identifier. Present for client tokens. |
-| `exp` | integer | Expiry timestamp (Unix epoch). |
+| `exp` | integer | Optional expiry timestamp (Unix epoch). Omitted when the token has no expiration. |
+| `authorization_details` | array | The approved RFC 9396 detail for a client token. It carries the resolved grant enforcement constraints defined in Section 7. |
+
+The introspection response MUST contain the complete context needed to enforce
+the request. The separated RS MUST enforce only from that response and MUST
+NOT make a second AS lookup while handling the request. A co-located AS and RS
+MAY resolve the same context through a local equivalent.
 
 **Token kind extensibility:** This specification defines `owner` and `client`. Deployments MAY introduce additional token kinds in companion profiles. A resource server that receives a `pdpp_token_kind` value it does not recognize MUST treat the token as unauthorized for all operations defined in this specification.
 
@@ -1378,6 +1392,7 @@ Every non-2xx response returns a structured error:
 | `unknown_field` | 400 | `invalid_request_error` | Requested field not in stream schema. |
 | `unsupported_version` | 400 | `invalid_request_error` | `PDPP-Version` header specifies unsupported version, or grant references unsupported schema version. |
 | `authentication_error` | 401 | `authentication_error` | Missing or invalid access token. |
+| `authorization_state.unsupported_legacy_shape` | 401 | `authentication_error` | Persisted authorization state predates v0.1. Fresh consent is required. |
 | `field_not_granted` | 403 | `permission_error` | Filter targets a field outside the grant's authorized projection. |
 | `insufficient_scope` | 403 | `permission_error` | Expansion requests a stream not in the grant. |
 | `grant_stream_not_allowed` | 403 | `permission_error` | Stream not in grant. |
@@ -1435,6 +1450,10 @@ A conformant authorization server:
     reviewed revision changes before approval.
 16. Retains one exact SourceDeclaration snapshot through request validation, consent display, narrowing, issuance, and consent evidence. A later current declaration never substitutes for it.
 17. Returns 400 `unsupported_version` if `PDPP-Version` header specifies an unsupported version.
+18. For a separated AS and RS, authenticates the RS at the RFC 7662 introspection endpoint and returns the complete grant enforcement context in one response.
+19. Consumes each OAuth authorization code atomically on its first successful redemption. Rejects every later redemption with `invalid_grant` and does not issue another token.
+20. Issues refresh tokens only for `continuous` grants, or for a grant package only when every child grant is `continuous`. It rotates refresh tokens by family. Reuse of a superseded token revokes the family and every family-linked access token, returns `invalid_grant`, and requires fresh authorization.
+21. Rejects pre-v0.1 persisted authorization state before introspection or request handling. Does not reconstruct missing facts from current configuration and requires fresh consent.
 
 ### Resource Server conformance
 
@@ -1442,7 +1461,7 @@ A conformant Core RS:
 
 1. Implements the query endpoints defined in Section 8: list streams, get stream metadata, list records, get a single record, get a blob, delete a record (owner-authenticated).
 2. Enforces grant constraints on every client request: stream membership, explicit instance handles, frozen `time_constraint`, `fields` allowlist, and `resources` filter.
-3. Resolves access tokens via introspection (RFC 7662) or local equivalent. Caches positive introspection results no longer than `min(token_exp, 60 seconds)`.
+3. In a separated deployment, resolves access tokens through authenticated RFC 7662 introspection, enforces only from that response, and makes no second AS lookup while handling the request. A co-located deployment may use a local equivalent. Caches positive results no longer than `min(token_exp, 60 seconds)`.
 4. Distinguishes owner tokens from client tokens via `pdpp_token_kind`.
 5. Computes effective filters as `grant_filter AND request_filter`.
 6. Returns structured errors as defined in Section 8 (unified error table).
@@ -1482,11 +1501,40 @@ A formal conformance test suite is planned but is not defined in v0.1. This is o
 
 PDPP defines two token kinds at the resource server boundary: owner tokens and client tokens. Both use RFC 6750 Bearer Token format on the wire. The RS distinguishes them via `pdpp_token_kind` in the introspection response, not by token syntax.
 
-For separated AS/RS deployments, the RS calls the AS introspection endpoint (RFC 7662). For co-located deployments, a local equivalent (shared database lookup or function call) is acceptable. Self-contained JWTs are allowed as an optimization but MUST NOT be the sole revocation mechanism.
+For separated AS/RS deployments, the RS MUST authenticate to the AS introspection endpoint (RFC 7662) and enforce only from its response. It MUST NOT make a second AS lookup while handling the request. For co-located deployments, a local equivalent (shared database lookup or function call) is acceptable. Self-contained JWTs are allowed as an optimization but MUST NOT be the sole revocation mechanism.
 
 Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. This bounds the propagation window for revocation.
 
-Implementations SHOULD use short-lived access tokens with refresh tokens for `continuous` grants.
+An access token issued with or from a refresh-token family MUST be linked to
+that family and MUST have a short, token-specific expiration no later than the
+family or grant expiration. A token response MUST derive `expires_in` from the
+access token's persisted expiration. It MUST omit `expires_in` when the access
+token has no expiration. An RFC 7662 response MUST likewise omit `exp` when no
+expiration exists.
+
+Every successful OAuth token response that contains an access token or refresh
+token MUST include `Cache-Control: no-store` and `Pragma: no-cache` before the
+response is serialized. This applies to authorization-code, refresh-token, and
+device-code exchanges, including package-scoped variants.
+
+An authorization code MUST be consumed atomically on its first successful
+redemption. A later redemption, including one with the same valid PKCE
+verifier, MUST return `invalid_grant` and MUST NOT issue another token.
+
+When an authorization server issues refresh tokens for a `continuous` grant,
+each token MUST belong to a family and MUST rotate after successful use. The
+AS MUST atomically supersede the presented token and issue one active
+successor. Reuse of any superseded token, including a retry after a lost
+successful response, MUST revoke the token family and every access token linked
+to that family, return `invalid_grant`, and require fresh authorization.
+Introspection MUST report every family-linked access token inactive after the
+replay is detected. An AS MUST NOT issue refresh tokens for a `single_use`
+grant. It MUST NOT issue one for a grant package unless every child grant is
+`continuous`. On upgrade, an implementation MUST NOT infer family linkage for
+an existing bearer. Any live refresh family without persisted bearer linkage
+MUST be revoked together with its grant- or package-bound bearer tokens and
+MUST require fresh authorization. This behavior follows
+[RFC 9700](https://www.rfc-editor.org/rfc/rfc9700), Section 4.14.2.
 
 **Sender-constrained tokens (non-normative):** Bearer tokens (RFC 6750) are the v0.1 baseline. Deployments handling sensitive standing access SHOULD consider sender-constrained tokens, which bind a token to a client-held key so that possession of the token alone is not sufficient to use it. DPoP (RFC 9449) and mutual-TLS certificate binding (RFC 8705) are both compatible with PDPP's introspection-based design. A formal optional hardening profile is a candidate for a future version.
 
@@ -1800,6 +1848,7 @@ interface PDPPIntrospectionResponse {
   grant_id?: string;       // Present for client tokens
   client_id?: string;      // Present for client tokens
   exp?: number;            // Unix timestamp
+  authorization_details?: Array<Record<string, unknown>>; // Approved RFC 9396 detail with Section 7 enforcement constraints
 }
 
 // --- Tombstone (response object) ---

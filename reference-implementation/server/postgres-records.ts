@@ -32,8 +32,9 @@ import {
   withPostgresTransaction,
 } from "./postgres-storage.ts";
 import {
+  assertExpansionInstanceAuthorized,
+  assertNonEmptyJsonField,
   assertRecordIdentity,
-  assertSafeJsonField,
   buildEffectiveFilter,
   normalizeExpandRequest,
   normalizePrimaryKey,
@@ -47,7 +48,12 @@ import {
   fieldWindowError,
   normalizeWindowSelector,
 } from "./record-field-window.ts";
-import { compileRequestFilters, nonNullSchemaTypes, passesRequestFilters, passesTimeRange } from "./record-filters.ts";
+import {
+  compileRequestFilters,
+  nonNullSchemaTypes,
+  passesRequestFilters,
+  passesTimeConstraint,
+} from "./record-filters.ts";
 import {
   getChangeHistoryLimit,
   nowIso,
@@ -58,8 +64,6 @@ import { createPostgresConnectorInstanceStore } from "./stores/connector-instanc
 import { advancePostgresDeviceIngestPrefix } from "./stores/device-exporter-store.ts";
 
 type JsonObject = Record<string, unknown>;
-const SAFE_JSON_FIELD = /^[A-Za-z0-9_]+$/;
-const RECORD_TIME_FIELD = /^[A-Za-z_][A-Za-z0-9_]*$/;
 type PostgresAdmissionLockedPhaseHook = (point: string, context: Record<string, unknown>) => Promise<void> | void;
 
 let postgresAdmissionLockedPhaseHook: PostgresAdmissionLockedPhaseHook | null = null;
@@ -116,9 +120,10 @@ interface ConnectorManifest {
 
 interface StreamGrant {
   fields?: string[] | null;
+  instance_ids?: string[];
   name: string;
   resources?: string[];
-  time_range?: { since?: string; until?: string } | null;
+  time_constraint?: { field: string; since?: string; until?: string } | null;
 }
 
 interface ConnectorGrant {
@@ -140,6 +145,7 @@ interface PgRow {
   connector_count?: number | string;
   connector_id?: string;
   connector_instance_id?: string;
+  consent_time_type?: string | null;
   consent_time_value?: string | null;
   count?: number | string;
   cursor_value?: string | null;
@@ -185,7 +191,8 @@ interface PgRow {
 interface EffectiveFilter {
   fields?: string[] | null;
   resources?: string[] | null;
-  timeRange?: { since?: string; until?: string } | null;
+  timeConstraint?: { field: string; since?: string; until?: string } | null;
+  timeConstraintField?: string | null;
 }
 
 interface CompiledFilter {
@@ -577,7 +584,7 @@ function fieldsFor(
       effective = [...requestFields];
     }
   }
-  if (effective) {
+  if (effective && !Object.hasOwn(streamGrant, "instance_ids")) {
     const seen = new Set(effective);
     for (const required of requiredFields) {
       if (!seen.has(required)) {
@@ -753,7 +760,7 @@ export async function postgresBackfillRecordCursorValuesForManifest(
 
   const streamFacts = manifest.streams
     .map((manifestStream) => ({
-      cursorField: safeJsonField(manifestStream?.cursor_field),
+      cursorField: nonEmptyJsonField(manifestStream?.cursor_field),
       stream: typeof manifestStream?.name === "string" ? manifestStream.name : null,
     }))
     .filter((facts): facts is { cursorField: string; stream: string } => Boolean(facts.stream && facts.cursorField));
@@ -790,8 +797,8 @@ export async function postgresBackfillRecordSortPositionsForManifest(
 
   const streamFacts = manifest.streams
     .map((manifestStream) => ({
-      consentTimeField: safeJsonField(manifestStream?.consent_time_field),
-      cursorField: safeJsonField(manifestStream?.cursor_field),
+      consentTimeField: nonEmptyJsonField(manifestStream?.consent_time_field),
+      cursorField: nonEmptyJsonField(manifestStream?.cursor_field),
       primaryKey: primaryKeyFieldsFor(manifestStream),
       stream: typeof manifestStream?.name === "string" ? manifestStream.name : null,
     }))
@@ -1093,7 +1100,7 @@ function buildRangeFilterClauses(
   const cast = postgresRangeCastForField(filter.fieldSchema);
   const fieldExpr = jsonStringExpr(filter.field);
   const lhs = `${fieldExpr}::${cast}`;
-  const clauses = [`record_json ? '${filter.field}'`, `${fieldExpr} IS NOT NULL`];
+  const clauses = [`record_json ? ${postgresJsonKeyLiteral(filter.field)}`, `${fieldExpr} IS NOT NULL`];
   for (const op of ["gte", "gt", "lte", "lt"]) {
     if (!Object.hasOwn(operators, op)) {
       continue;
@@ -1116,7 +1123,7 @@ function buildFilterClause(
   }
   const clauses: string[] = [];
   for (const filter of compiledFilters) {
-    assertSafeJsonField(filter.field, "filter");
+    assertNonEmptyJsonField(filter.field, "filter");
     if (filter.kind === "range") {
       clauses.push(...buildRangeFilterClauses(filter, rawFilter, params));
       continue;
@@ -1141,24 +1148,17 @@ export function __buildPostgresFilterClauseForTest(
   };
 }
 
-function appendGrantVisibilityClauses(
-  whereParts: string[],
-  params: unknown[],
-  effective: EffectiveFilter,
-  manifestStream: ManifestStream | null
-): void {
-  const consentTimeField = manifestStream?.consent_time_field || null;
-  if (effective.timeRange && consentTimeField) {
-    assertSafeJsonField(consentTimeField, "consent_time_field");
-    const ctExpr = jsonStringExpr(consentTimeField);
-    whereParts.push(`${ctExpr} IS NOT NULL`);
-    if (effective.timeRange.since !== null && effective.timeRange.since !== undefined) {
-      params.push(new Date(effective.timeRange.since).toISOString());
-      whereParts.push(`${ctExpr} >= $${params.length}`);
+function appendGrantVisibilityClauses(whereParts: string[], params: unknown[], effective: EffectiveFilter): void {
+  if (effective.timeConstraint) {
+    const grantTimeExpr = postgresGrantTimeExpr(effective.timeConstraint.field);
+    whereParts.push(`${grantTimeExpr} IS NOT NULL`);
+    if (effective.timeConstraint.since !== null && effective.timeConstraint.since !== undefined) {
+      params.push(new Date(effective.timeConstraint.since).toISOString());
+      whereParts.push(`${grantTimeExpr} >= $${params.length}::timestamptz`);
     }
-    if (effective.timeRange.until !== null && effective.timeRange.until !== undefined) {
-      params.push(new Date(effective.timeRange.until).toISOString());
-      whereParts.push(`${ctExpr} < $${params.length}`);
+    if (effective.timeConstraint.until !== null && effective.timeConstraint.until !== undefined) {
+      params.push(new Date(effective.timeConstraint.until).toISOString());
+      whereParts.push(`${grantTimeExpr} < $${params.length}::timestamptz`);
     }
   }
 
@@ -1168,22 +1168,24 @@ function appendGrantVisibilityClauses(
   }
 }
 
-function isVisiblePostgresSnapshot(
-  snapshot: RecordSnapshot | null,
-  effective: EffectiveFilter,
-  consentTimeField: string | null
-): boolean {
+export function __buildPostgresGrantVisibilityForTest(streamGrant: StreamGrant): {
+  params: unknown[];
+  whereParts: string[];
+} {
+  const whereParts: string[] = [];
+  const params: unknown[] = [];
+  appendGrantVisibilityClauses(whereParts, params, buildEffectiveFilter(streamGrant, {}));
+  return { params, whereParts };
+}
+
+function isVisiblePostgresSnapshot(snapshot: RecordSnapshot | null, effective: EffectiveFilter): boolean {
   if (!snapshot || snapshot.deleted || !snapshot.data) {
     return false;
   }
   if (effective.resources && !effective.resources.includes(snapshot.record_key)) {
     return false;
   }
-  if (
-    effective.timeRange &&
-    consentTimeField &&
-    !passesTimeRange(snapshot.data, effective.timeRange, consentTimeField)
-  ) {
+  if (!passesTimeConstraint(snapshot.data, effective.timeConstraint)) {
     return false;
   }
   return true;
@@ -1223,15 +1225,15 @@ async function getPostgresSnapshotAtVersion(
   };
 }
 
-function safeJsonField(field: unknown): string | null {
-  if (!(typeof field === "string" && field && SAFE_JSON_FIELD.test(field))) {
+function nonEmptyJsonField(field: unknown): string | null {
+  if (!(typeof field === "string" && field.length > 0)) {
     return null;
   }
-  return field as string;
+  return field;
 }
 
 function recordOrderExpressions(manifestStream: ManifestStream | null): { cursorSql: string; primarySql: string } {
-  const cursorField = safeJsonField(manifestStream?.cursor_field);
+  const cursorField = nonEmptyJsonField(manifestStream?.cursor_field);
   return {
     cursorSql: cursorField ? "cursor_value" : "emitted_at",
     primarySql: "primary_key_text",
@@ -1254,11 +1256,24 @@ function rejectExpandWithChangesSince(requestParams: QueryRequestParams): void {
 }
 
 function jsonStringExpr(field: string): string {
-  // record_json is JSONB on Postgres; `->>` returns the field as text.
-  // Field comes from the manifest and is re-validated against SAFE_JSON_FIELD
-  // before reaching this builder, so quoting it as a SQL literal is safe.
-  assertSafeJsonField(field, "json_string");
-  return `(record_json->>'${field}')`;
+  return postgresTopLevelJsonExpr(field);
+}
+
+function postgresTopLevelJsonExpr(field: string): string {
+  assertNonEmptyJsonField(field, "json_string");
+  const literal = field.replace(/'/g, "''");
+  return `(record_json->>'${literal}')`;
+}
+
+function postgresJsonKeyLiteral(field: string): string {
+  assertNonEmptyJsonField(field, "json_key");
+  return `'${field.replace(/'/g, "''")}'`;
+}
+
+function postgresGrantTimeExpr(field: string): string {
+  const literal = field.replace(/'/g, "''");
+  const value = postgresTopLevelJsonExpr(field);
+  return `(CASE WHEN jsonb_typeof(record_json->'${literal}') = 'string' AND pg_input_is_valid(${value}, 'timestamp with time zone') THEN ${value}::timestamptz END)`;
 }
 
 function childResponseRecord({
@@ -1288,12 +1303,12 @@ function childResponseRecord({
  * trip. Children are partitioned by foreign key and ranked by the child
  * stream's manifest-declared (cursor_field, primary_key) basis so the
  * per-parent slice and per-parent `has_more` signal match the SQLite
- * engine. Grant projection (`fields`, `time_range`, `resources`) is
+ * engine. Grant projection (`fields`, `time_constraint`, `resources`) is
  * enforced in SQL exactly as the SQLite path enforces it.
  *
  * Throws `invalid_expand` if the child manifest is missing or declares
  * a child stream whose foreign-key/primary-key fields fail the
- * SAFE_JSON_FIELD regex.
+ * literal top-level JSON-key validation.
  *
  * Spec: openspec/changes/add-postgres-expand-hydration/specs/
  *       reference-implementation-architecture/spec.md
@@ -1324,7 +1339,6 @@ function resolvePostgresExpansionFields(
   childEffective: EffectiveFilter;
   childFields: string[] | null;
   childStream: string;
-  consentTimeField: string | null;
   cursorField: string | null;
   foreignKeyField: string;
   primaryKeyField: string;
@@ -1337,7 +1351,7 @@ function resolvePostgresExpansionFields(
     throw err;
   }
   const foreignKeyField = expansion.relationship.foreign_key;
-  assertSafeJsonField(foreignKeyField, "foreign_key");
+  assertNonEmptyJsonField(foreignKeyField, "foreign_key");
   if (typeof foreignKeyField !== "string") {
     throw invalidQueryError("Expand relation foreign_key must be a string", "invalid_expand");
   }
@@ -1367,7 +1381,7 @@ function resolvePostgresExpansionFields(
   if (!primaryKeyField) {
     throw invalidQueryError("Expand relation primary_key is empty", "invalid_expand");
   }
-  assertSafeJsonField(primaryKeyField, "primary_key");
+  assertNonEmptyJsonField(primaryKeyField, "primary_key");
   const childRequiredFields = Array.isArray(childManifestStream.schema?.required)
     ? childManifestStream.schema.required
     : [];
@@ -1380,7 +1394,6 @@ function resolvePostgresExpansionFields(
     childEffective,
     childFields: childEffective.fields ?? null,
     childStream,
-    consentTimeField: childManifestStream.consent_time_field || null,
     cursorField: childManifestStream.cursor_field || null,
     foreignKeyField,
     primaryKeyField,
@@ -1438,7 +1451,8 @@ async function hydratePostgresExpansion({
     return;
   }
 
-  const { childEffective, childFields, childStream, consentTimeField, cursorField, foreignKeyField, primaryKeyField } =
+  assertExpansionInstanceAuthorized(expansion.childGrant, connectorInstanceId);
+  const { childEffective, childFields, childStream, cursorField, foreignKeyField, primaryKeyField } =
     resolvePostgresExpansionFields(expansion, manifest);
 
   const fkExpr = jsonStringExpr(foreignKeyField);
@@ -1456,17 +1470,16 @@ async function hydratePostgresExpansion({
   const params: unknown[] = [connectorInstanceId, childStream];
   const whereParts = ["connector_instance_id = $1", "stream = $2", "deleted = FALSE"];
 
-  if (childEffective.timeRange && consentTimeField) {
-    assertSafeJsonField(consentTimeField, "consent_time_field");
-    const ctExpr = jsonStringExpr(consentTimeField);
-    whereParts.push(`${ctExpr} IS NOT NULL`);
-    if (childEffective.timeRange.since !== null && childEffective.timeRange.since !== undefined) {
-      params.push(new Date(childEffective.timeRange.since).toISOString());
-      whereParts.push(`${ctExpr} >= $${params.length}`);
+  if (childEffective.timeConstraint) {
+    const grantTimeExpr = postgresGrantTimeExpr(childEffective.timeConstraint.field);
+    whereParts.push(`${grantTimeExpr} IS NOT NULL`);
+    if (childEffective.timeConstraint.since !== null && childEffective.timeConstraint.since !== undefined) {
+      params.push(new Date(childEffective.timeConstraint.since).toISOString());
+      whereParts.push(`${grantTimeExpr} >= $${params.length}::timestamptz`);
     }
-    if (childEffective.timeRange.until !== null && childEffective.timeRange.until !== undefined) {
-      params.push(new Date(childEffective.timeRange.until).toISOString());
-      whereParts.push(`${ctExpr} < $${params.length}`);
+    if (childEffective.timeConstraint.until !== null && childEffective.timeConstraint.until !== undefined) {
+      params.push(new Date(childEffective.timeConstraint.until).toISOString());
+      whereParts.push(`${grantTimeExpr} < $${params.length}::timestamptz`);
     }
   }
 
@@ -2004,7 +2017,6 @@ async function visiblePostgresChange({
   stream,
   decodedVersion,
   effective,
-  consentTimeField,
   compiledFilters,
   identity,
 }: {
@@ -2013,14 +2025,13 @@ async function visiblePostgresChange({
   stream: string;
   decodedVersion: number;
   effective: EffectiveFilter;
-  consentTimeField: string | null;
   compiledFilters: Parameters<typeof passesRequestFilters>[1];
   identity: RecordIdentity | null;
 }): Promise<ResponseRecord | null> {
   const previous = await getPostgresSnapshotAtVersion(connectorInstanceId, stream, row.record_key, decodedVersion);
   const current = await getPostgresSnapshotAtVersion(connectorInstanceId, stream, row.record_key, Number(row.version));
-  const previousVisible = isVisiblePostgresSnapshot(previous, effective, consentTimeField);
-  const currentVisible = isVisiblePostgresSnapshot(current, effective, consentTimeField);
+  const previousVisible = isVisiblePostgresSnapshot(previous, effective);
+  const currentVisible = isVisiblePostgresSnapshot(current, effective);
   if (row.deleted) {
     return previous && previousVisible && passesRequestFilters(previous.data, compiledFilters)
       ? deletedResponseRecord({ identity, row, stream })
@@ -2048,7 +2059,6 @@ async function queryPostgresChangesSince({
   connectorInstanceId,
   effective,
   identity,
-  manifestStream,
   requestParams,
   requestWarnings,
   stream,
@@ -2057,7 +2067,6 @@ async function queryPostgresChangesSince({
   connectorInstanceId: string;
   effective: EffectiveFilter;
   identity: RecordIdentity | null;
-  manifestStream: ManifestStream | null;
   requestParams: QueryRequestParams;
   requestWarnings: unknown[];
   stream: string;
@@ -2101,14 +2110,12 @@ async function queryPostgresChangesSince({
     [connectorInstanceId, stream, decodedVersion, sessionMax]
   );
   const sorted = [...rows.rows].sort((a, b) => Number(a.version) - Number(b.version));
-  const consentTimeField = manifestStream?.consent_time_field || null;
   const visibleChanges: ResponseRecord[] = [];
   await sorted.reduce(async (previous, row) => {
     await previous;
     const visible = await visiblePostgresChange({
       compiledFilters,
       connectorInstanceId,
-      consentTimeField,
       decodedVersion,
       effective,
       identity,
@@ -2317,7 +2324,6 @@ export async function postgresQueryRecords(
       connectorInstanceId,
       effective,
       identity,
-      manifestStream,
       requestParams,
       requestWarnings,
       stream,
@@ -2326,7 +2332,7 @@ export async function postgresQueryRecords(
 
   const params: unknown[] = [connectorInstanceId, stream];
   const whereParts = ["connector_instance_id = $1", "stream = $2", "deleted = FALSE"];
-  appendGrantVisibilityClauses(whereParts, params, effective, manifestStream);
+  appendGrantVisibilityClauses(whereParts, params, effective);
   let where = `WHERE ${whereParts.join(" AND ")}`;
   where += buildFilterClause(compiledFilters, requestParams.filter, params);
   // Snapshot the filter-only WHERE clause / params for the graded-count
@@ -2385,8 +2391,7 @@ async function computePostgresRecordWindow({
   const window: JsonObject = { total };
 
   if (consentTimeField) {
-    assertSafeJsonField(consentTimeField, "consent_time_field");
-    const ctExpr = jsonStringExpr(consentTimeField);
+    const ctExpr = postgresTopLevelJsonExpr(consentTimeField);
     // MIN/MAX must compare CHRONOLOGICALLY, not lexicographically. Plain text
     // MIN/MAX picks the wrong bound for non-UTC offsets (e.g. a "...T00:00-07:00"
     // string sorts before "...T06:00+00:00" textually but is later in time), and
@@ -2461,7 +2466,7 @@ async function readProjectedRecordCount({
   if (hasRequestFilters(requestParams)) {
     return null;
   }
-  if (effective.timeRange) {
+  if (effective.timeConstraint) {
     return null;
   }
   if (Array.isArray(effective.resources) && effective.resources.length > 0) {
@@ -2587,9 +2592,9 @@ export async function postgresGetRecord(
     err.code = "not_found";
     throw err;
   }
-  if (effective.timeRange && manifestStream?.consent_time_field) {
+  if (effective.timeConstraint) {
     const rawData = typeof row.record_json === "string" ? JSON.parse(row.record_json) : row.record_json;
-    if (!passesTimeRange(rawData, effective.timeRange, manifestStream.consent_time_field)) {
+    if (!passesTimeConstraint(rawData, effective.timeConstraint)) {
       const err: PgQueryError = new Error("Record not found");
       err.code = "not_found";
       throw err;
@@ -2625,14 +2630,14 @@ function assertPostgresFieldWindowAuthority(manifest: ConnectorManifest | null, 
 
 async function fetchPostgresFieldWindowRow({
   connectorInstanceId,
-  consentTimeField,
+  timeConstraintField,
   fieldPath,
   recordId,
   selector,
   stream,
 }: {
   connectorInstanceId: string;
-  consentTimeField: string | null;
+  timeConstraintField: string | null;
   fieldPath: string;
   recordId: string;
   selector: WindowSelector;
@@ -2643,12 +2648,13 @@ async function fetchPostgresFieldWindowRow({
     `WITH selected AS (
        SELECT record_key, jsonb_typeof(record_json -> $4::text) AS field_type,
               record_json ->> $4::text AS field_text,
+              CASE WHEN $6::text IS NULL THEN NULL ELSE jsonb_typeof(record_json -> $6::text) END AS consent_time_type,
               CASE WHEN $6::text IS NULL THEN NULL ELSE record_json ->> $6::text END AS consent_time_value
        FROM records
        WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3 AND deleted = FALSE
        LIMIT 1
      ), positioned AS (
-       SELECT record_key, field_type, field_text,
+       SELECT record_key, field_type, field_text, consent_time_type,
               CASE WHEN field_type = 'string' THEN char_length(field_text) ELSE NULL END AS total_chars,
               CASE WHEN $5::text IS NOT NULL AND field_type = 'string'
                 THEN strpos(lower(field_text), lower($5::text)) ELSE NULL END AS match_pos,
@@ -2661,7 +2667,7 @@ async function fetchPostgresFieldWindowRow({
                 WHEN $5::text IS NOT NULL THEN greatest(1, match_pos - $7::integer)
                 ELSE $8::integer END FOR $9::integer)
               ELSE NULL END AS window_text,
-            match_pos, consent_time_value
+            match_pos, consent_time_type, consent_time_value
      FROM positioned`,
     [
       connectorInstanceId,
@@ -2669,7 +2675,7 @@ async function fetchPostgresFieldWindowRow({
       recordId,
       fieldPath,
       query,
-      consentTimeField,
+      timeConstraintField,
       selector.mode === "query" ? (selector.before ?? 0) : 0,
       selector.mode === "query" ? 1 : selector.offset + 1,
       selector.limit,
@@ -2678,17 +2684,16 @@ async function fetchPostgresFieldWindowRow({
   return result.rows[0];
 }
 
-function assertPostgresFieldWindowRowVisible(
-  row: PgRow,
-  effective: EffectiveFilter,
-  consentTimeField: string | null
-): void {
+function assertPostgresFieldWindowRowVisible(row: PgRow, effective: EffectiveFilter): void {
   if (effective.resources && !effective.resources.includes(row.record_key)) {
     throw fieldWindowError("not_found", "Record not found", 404);
   }
-  if (effective.timeRange && consentTimeField) {
-    const consentData = { [consentTimeField]: row.consent_time_value };
-    if (!passesTimeRange(consentData, effective.timeRange, consentTimeField)) {
+  if (effective.timeConstraint) {
+    if (row.consent_time_type !== "string") {
+      throw fieldWindowError("not_found", "Record not found", 404);
+    }
+    const constraintData = { [effective.timeConstraint.field]: row.consent_time_value };
+    if (!passesTimeConstraint(constraintData, effective.timeConstraint)) {
       throw fieldWindowError("not_found", "Record not found", 404);
     }
   }
@@ -2724,20 +2729,20 @@ export async function postgresGetRecordFieldWindow(
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
   enforceConnectionNarrowing(requestParams, connectorInstanceId);
 
-  const consentTimeField = manifestStream?.consent_time_field || null;
+  const timeConstraintField = effective.timeConstraintField ?? null;
   const row = await fetchPostgresFieldWindowRow({
     connectorInstanceId,
-    consentTimeField,
     fieldPath,
     recordId,
     selector,
     stream,
+    timeConstraintField,
   });
   if (!row) {
     throw fieldWindowError("not_found", "Record not found", 404);
   }
 
-  assertPostgresFieldWindowRowVisible(row, effective, consentTimeField);
+  assertPostgresFieldWindowRowVisible(row, effective);
 
   const fieldClass = classifyFieldType(row.field_type);
   assertReadableStringField(fieldPath, fieldClass);
@@ -3097,7 +3102,7 @@ async function postgresRecordTimeBoundsForManifestRow(
     await previous;
     const field = stream?.consent_time_field;
     const streamName = stream?.name;
-    if (typeof field !== "string" || !field || typeof streamName !== "string" || !RECORD_TIME_FIELD.test(field)) {
+    if (typeof field !== "string" || !field || typeof streamName !== "string") {
       return;
     }
     const result = await postgresQuery(

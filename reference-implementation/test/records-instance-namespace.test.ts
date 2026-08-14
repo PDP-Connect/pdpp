@@ -98,6 +98,7 @@ const manifest = {
   capabilities: { human_interaction: [] },
   connector_id: CONNECTOR_ID,
   display_name: "Instance Records",
+  manifest_uri: `https://sources.example/${CONNECTOR_ID}`,
   protocol_version: "0.1.0",
   streams: [
     {
@@ -112,6 +113,8 @@ const manifest = {
         required: ["id", "subject"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",
@@ -330,12 +333,9 @@ test("semantic candidate planning scans connector instance namespace, not connec
         streams: [
           {
             fields: ["id", "subject"],
+            instance_ids: [WORK_INSTANCE_ID],
             name: STREAM,
             resources: ["same-key"],
-            time_range: {
-              since: "2026-05-18T00:00:00.000Z",
-              until: "2026-05-19T00:00:00.000Z",
-            },
           },
         ],
       },

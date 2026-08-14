@@ -205,6 +205,10 @@ async function respondToInactiveToken(req: RequestLike, res: ResponseLike, info:
   if (info.inactive_reason === "grant_invalid") {
     return pdppError(res, 403, "grant_invalid", "Grant is malformed or no longer valid");
   }
+  if (info.inactive_reason === "authorization_state.unsupported_legacy_shape") {
+    setProtectedResourceMetadataChallenge(res);
+    return pdppError(res, 401, info.inactive_reason, "Fresh consent is required");
+  }
   setProtectedResourceMetadataChallenge(res);
   return pdppError(res, 401, "authentication_error", "Invalid or expired token");
 }

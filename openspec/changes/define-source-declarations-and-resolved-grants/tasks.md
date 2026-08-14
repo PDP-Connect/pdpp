@@ -29,14 +29,14 @@
     violates the Source request or narrowing contract. Leave the OAuth response
     mapping to PR89.
 
-- [ ] 3. Implement snapshot and mutation barriers.
+- [x] 3. Implement snapshot and mutation barriers.
   - Pass one exact snapshot through validation, display, narrowing, issuance,
     and evidence.
   - At barriers before display, narrowing, and issuance, mutate, delete, and
     same-version-replace the current catalog entry. Prove every phase still
     uses the retained snapshot and fails closed if that snapshot is lost.
 
-- [ ] 4. Separate authorization facts from serving metadata.
+- [x] 4. Separate authorization facts from serving metadata.
   - Make RS enforcement use only the resolved authorization context.
   - Define separate client-token and owner/discovery metadata projections.
     Client schema, stream, search, and record metadata must be grant-projected;
@@ -44,7 +44,7 @@
     route or reject unsupported resolved constraints, but must not reinterpret
     resource keys, widen grants, or change the frozen time field.
 
-- [ ] 5. Make the authorization-state break fail closed.
+- [x] 5. Make the authorization-state break fail closed.
   - Accept only the new retained-snapshot pending shape and closed resolved
     grant shape after this change.
   - Reject pre-v0.1 pending consent, grants, and packages and require fresh
@@ -53,7 +53,7 @@
   - Prove that a legacy per-stream `connection_id` never becomes one or more
     current `instance_ids` during approval or serving.
 
-- [ ] 6. Add implementation oracles and ownership gates.
+- [x] 6. Add implementation oracles and ownership gates.
   - Add a Core-only dependency oracle that imports no Collection schema or
     runtime module and proves a connector declaration works without an
     extension.
@@ -66,7 +66,7 @@
     grant-enforcement dependency or create a second grant shape.
   - Limit other Collection work to compatibility with the neutral contract.
 
-- [ ] 7. Verify the change.
+- [x] 7. Verify the change.
   - Run focused contract, snapshot, instance, upgrade-boundary, and RS tests.
   - Run `openspec validate define-source-declarations-and-resolved-grants
     --strict`, `git diff --check`, and stale-term sweeps for deleted live
@@ -113,3 +113,33 @@
   routes. Preserve owner-token current-capability expansion.
 - [x] Prove SQLite and live-PostgreSQL parity with a same-name relationship
   repointed to a different granted stream and foreign key after issuance.
+
+## PR114 corrective checkpoint
+
+- [x] Single-source approval requires a persisted reviewed revision before
+  issuance.
+- [x] The reviewed artifact freezes retained declaration evidence, source,
+  exact resolved instance IDs, streams, fields, resources, time, purpose,
+  retention, client, subject, and grant expiry.
+- [x] Single-source approval recomputes the reviewed artifact after current
+  instance eligibility revalidation and rejects stale review revisions.
+- [x] Single-source approval writes the pending-row CAS claim, grant, token,
+  approval events, and final approved state in one SQLite or PostgreSQL
+  transaction, with a typed conflict for CAS losers.
+- [x] Request-time source fulfillment no longer falls back from source kind/id
+  to a canonical connector key. Source fulfillment must be explicit.
+- [x] Selection request `source.kind` may be omitted; when omitted, the AS
+  derives provenance from the retained declaration. SourceDeclaration and
+  resolved grants still require `source.kind`.
+- [x] Staged batch approval uses the same reviewed-artifact and atomic
+  transaction seam. The finalized batch review binds approved source indexes,
+  exact resolved source/stream facts, parent linkage, member order, and the
+  posted review revision before issuing the package.
+- [x] Client-token record reads reject query-time views and use only explicit
+  fields or the grant's frozen projection; owner-token reads may resolve
+  current views.
+- [x] Client source descriptors fail closed when the resolved grant has no
+  valid public source instead of exposing a private storage connector ID.
+- [x] Immutable single and batch approval-review artifacts bind rendered
+  `client_claims`, while issued grants and Resource Server rights remain
+  unchanged by claims-only differences.

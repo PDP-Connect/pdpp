@@ -4170,12 +4170,22 @@ test("restore failure cancels the run instead of resuming against the mutated pr
       assert.equal(rejected.status, 500);
       const timeline = await waitForRunTerminal(asUrl, started.run_id);
       assert.equal(
-        timeline.data.some((event) => event.event_type === "run.completed"),
-        false
+        timeline.data.some(
+          (event) => event.event_type === "run.stream_session_resolved" && event.data?.restore_failed === true
+        ),
+        true
+      );
+      assert.equal(
+        timeline.data.some((event) => event.event_type === "run.cancel_requested"),
+        true
       );
       assert.equal(
         timeline.data.some((event) => event.event_type === "run.cancelled"),
         true
+      );
+      assert.equal(
+        timeline.data.some((event) => event.event_type === "run.completed"),
+        false
       );
       abort.abort();
     }
@@ -4371,12 +4381,22 @@ test("restore failure after bearer expiry cancels instead of resuming on present
       assert.equal(rejected.status, 500);
       const timeline = await waitForRunTerminal(asUrl, started.run_id);
       assert.equal(
-        timeline.data.some((event) => event.event_type === "run.completed"),
-        false
+        timeline.data.some(
+          (event) => event.event_type === "run.stream_session_resolved" && event.data?.restore_failed === true
+        ),
+        true
+      );
+      assert.equal(
+        timeline.data.some((event) => event.event_type === "run.cancel_requested"),
+        true
       );
       assert.equal(
         timeline.data.some((event) => event.event_type === "run.cancelled"),
         true
+      );
+      assert.equal(
+        timeline.data.some((event) => event.event_type === "run.completed"),
+        false
       );
       abort.abort();
     }

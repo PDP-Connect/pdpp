@@ -82,7 +82,7 @@ test("buildFieldCapabilities: object-typed field is NOT exact_filterable", () =>
   );
 });
 
-test("buildFieldCapabilities: ungranted field is declared-but-not-usable with field_not_granted reason", () => {
+test("buildFieldCapabilities: grant metadata omits typed filter capability flags", () => {
   const caps = buildFieldCapabilities(
     streamWith({ secret: { type: "string" }, status: { type: "string" } }),
     { fields: ["status"] } // grant only exposes `status`
@@ -91,10 +91,8 @@ test("buildFieldCapabilities: ungranted field is declared-but-not-usable with fi
   const secret = field(caps, "secret");
   assert.equal(status.granted, true);
   assert.equal(secret.granted, false);
-  const secretExactFilter = secret.exact_filter as Record<string, unknown>;
-  assert.equal(secretExactFilter.declared, true, "schema still declares it filterable");
-  assert.equal(secretExactFilter.usable, false, "but not usable without grant");
-  assert.equal(secretExactFilter.reason, "field_not_granted");
+  assert.equal(secret.exact_filter, undefined);
+  assert.equal(secret.range_filter, undefined);
 });
 
 test("buildFieldCapabilities: range_filter surfaces declared operators from manifest", () => {

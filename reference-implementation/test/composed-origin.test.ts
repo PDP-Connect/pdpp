@@ -862,9 +862,9 @@ test("composed browser origin carries metadata, owner session, console, device f
             access_mode: "single_use",
             purpose_code: "https://pdpp.dev/purpose/recommendation",
             purpose_description: "Review top artists",
-            retention: "P30D",
+            retention: { max_duration: "P30D", on_expiry: "delete" },
             source: { id: SPOTIFY_CONNECTOR_ID, kind: "connector" },
-            streams: [{ name: "top_artists" }],
+            streams: [{ instance_ids: [SPOTIFY_DEFAULT_CONNECTION_ID], name: "top_artists" }],
             type: "https://pdpp.dev/data-access",
           },
         ],
@@ -893,9 +893,25 @@ test("composed browser origin carries metadata, owner session, console, device f
     assert.match(consentHtml, TOP_REGEX_2);
     assert.ok(!consentHtml.includes(asUrl), "consent page should not leak the internal AS origin");
 
-    const approvedGrant = await fetchJson(`${webOrigin}/consent/approve`, {
+    const reviewedGrant = await fetchJson(`${webOrigin}/consent/review`, {
       body: JSON.stringify({ request_uri: stagedRequestBody.request_uri }),
       headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Cookie: ownerCookie,
+      },
+      method: "POST",
+    });
+    assert.equal(reviewedGrant.resp.status, 200);
+    const reviewRevision = (reviewedGrant.body as { approval_review_revision?: unknown }).approval_review_revision;
+    assert.equal(typeof reviewRevision, "string", "consent review returns a revision");
+    const approvedGrant = await fetchJson(`${webOrigin}/consent/approve`, {
+      body: JSON.stringify({
+        approval_review_revision: reviewRevision,
+        request_uri: stagedRequestBody.request_uri,
+      }),
+      headers: {
+        Accept: "application/json",
         "Content-Type": "application/json",
         Cookie: ownerCookie,
       },
@@ -904,7 +920,7 @@ test("composed browser origin carries metadata, owner session, console, device f
     assert.equal(approvedGrant.resp.status, 200);
     const approvedGrantBody = approvedGrant.body as ApprovedGrantBody;
     assert.equal(typeof approvedGrantBody.token, "string");
-    assert.deepEqual(approvedGrantBody.grant.source, { id: SPOTIFY_CONNECTOR_KEY, kind: "connector" });
+    assert.deepEqual(approvedGrantBody.grant.source, { id: SPOTIFY_CONNECTOR_ID, kind: "connector" });
   } finally {
     // Withdraw the explicit guard handoff granted in startWebServer once the
     // console child is gone, so the port is not implicitly trusted afterward.

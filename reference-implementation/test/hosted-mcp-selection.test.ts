@@ -275,25 +275,25 @@ test("hostedMcpSourceKey matches the dedupe key parseHostedMcpStreamSelections u
 // ─── Connection-pin enforcement lever (selection → grant scope) ─────────────
 //
 // The hosted MCP picker validates the owner's chosen connection, but the
-// issued child grant only enforces it when `connection_id` lands on
-// `grant.streams[]`. These tests pin the two pure deciders for that lever:
+// issued child grant only enforces it when the opaque handle lands in
+// `grant.streams[].instance_ids`. These tests pin the two pure deciders:
 //   - `buildHostedMcpAuthorizationDetailForConnector` stamps (or omits)
-//     `streams[].connection_id`, including on the wildcard entry;
+//     `streams[].instance_ids`, including on the wildcard entry;
 //   - `shouldPinSelectedConnection` pins ONLY when a specific connection was
 //     chosen among more than one active binding, so single-connection grants
 //     stay fan-in (no brittle stored id, no reissuance pressure).
 // The end-to-end persisted-grant + read-path proof lives in
 // `hosted-mcp-oauth.test.js`; these are the unit-level guards.
 
-test("buildHostedMcpAuthorizationDetailForConnector omits connection_id when none is selected", () => {
+test("buildHostedMcpAuthorizationDetailForConnector omits instance_ids when none is selected", () => {
   const detail = buildHostedMcpAuthorizationDetailForConnector("gmail", ["messages"], "continuous", null);
   assert.deepEqual(detail.streams, [{ name: "messages" }]);
   for (const stream of detail.streams) {
-    assert.equal("connection_id" in stream, false, "unpinned stream entry must not carry connection_id");
+    assert.equal("instance_ids" in stream, false, "unpinned stream entry must not carry instance_ids");
   }
 });
 
-test("buildHostedMcpAuthorizationDetailForConnector pins connection_id onto every narrowed stream entry", () => {
+test("buildHostedMcpAuthorizationDetailForConnector pins instance_ids onto every narrowed stream entry", () => {
   const detail = buildHostedMcpAuthorizationDetailForConnector(
     "gmail",
     ["messages", "threads"],
@@ -301,8 +301,8 @@ test("buildHostedMcpAuthorizationDetailForConnector pins connection_id onto ever
     "cin_work"
   );
   assert.deepEqual(detail.streams, [
-    { connection_id: "cin_work", name: "messages" },
-    { connection_id: "cin_work", name: "threads" },
+    { instance_ids: ["cin_work"], name: "messages" },
+    { instance_ids: ["cin_work"], name: "threads" },
   ]);
 });
 
@@ -310,7 +310,7 @@ test("buildHostedMcpAuthorizationDetailForConnector pins the wildcard stream ent
   // A wildcard pinned to a connection is intentionally valid: the runtime
   // narrows the binding to the connection, then expands streams under it.
   const detail = buildHostedMcpAuthorizationDetailForConnector("gmail", null, "continuous", "cin_personal");
-  assert.deepEqual(detail.streams, [{ connection_id: "cin_personal", name: "*" }]);
+  assert.deepEqual(detail.streams, [{ instance_ids: ["cin_personal"], name: "*" }]);
 });
 
 test("buildHostedMcpAuthorizationDetailForConnector treats blank/whitespace connectionId as unpinned", () => {

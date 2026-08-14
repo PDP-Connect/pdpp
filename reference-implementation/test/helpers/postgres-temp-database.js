@@ -1,6 +1,4 @@
-import pg from "pg";
-
-const { Pool } = pg;
+import { Pool } from "pg";
 
 function adminUrl(connectionString) {
   const url = new URL(connectionString);

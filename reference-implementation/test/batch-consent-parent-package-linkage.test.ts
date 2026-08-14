@@ -30,8 +30,11 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { getCumulativeClientAccessForPackage, revokeGrant } from "../server/auth.ts";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
 const REGEXP_1 = /access_token|refresh_token|"token"|token_hash/;
 const REGEXP_2 = /does not exist/;
@@ -73,6 +76,25 @@ async function registerManifest(asUrl: string, manifest: ConnectorManifest) {
   assert.ok(resp.status < 400, `connector registration for ${manifest.connector_id} should succeed`);
 }
 
+async function seedOwnerConnectorInstance(manifest: ConnectorManifest): Promise<void> {
+  const connectorKey = canonicalConnectorKey(manifest.connector_id);
+  assert.ok(connectorKey, `expected a canonical connector key for ${manifest.connector_id}`);
+  const connectorInstanceId = makeDefaultAccountConnectorInstanceId("owner_local", connectorKey);
+  const now = new Date().toISOString();
+  await createRequestConnectorInstanceStore().upsert({
+    connectorId: connectorKey,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: `${connectorKey} test account`,
+    ownerSubjectId: "owner_local",
+    sourceBinding: { fixture: "batch-consent-parent-package-linkage" },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+}
+
 interface HarnessContext {
   asUrl: string;
   github: ConnectorManifest;
@@ -90,6 +112,7 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>) {
     for (const manifest of [spotify, reddit, github]) {
       // biome-ignore lint/performance/noAwaitInLoops: Sequential test setup and assertion order is intentional.
       await registerManifest(asUrl, manifest);
+      await seedOwnerConnectorInstance(manifest);
     }
     await fn({ asUrl, github, reddit, spotify });
   } finally {
@@ -166,28 +189,68 @@ interface ApproveResult {
   status: number;
 }
 
-async function approve(asUrl: string, body: Record<string, unknown>): Promise<ApproveResult> {
-  const resp = await fetch(`${asUrl}/consent/approve`, {
-    body: JSON.stringify(body),
-    headers: { "Content-Type": "application/json" },
-    method: "POST",
-  });
-  return { body: (await resp.json().catch(() => null)) as ApproveResponseBody | null, status: resp.status };
-}
-
-// biome-ignore lint/suspicious/useAwait: Async callback preserves the dependency contract and rejection timing.
 async function approveBatch(
   asUrl: string,
   requestUri: string | undefined,
   approvedIndexes: number[],
   extra: Record<string, unknown> = {}
 ): Promise<ApproveResult> {
-  return approve(asUrl, {
-    approved_source_indexes: approvedIndexes,
-    request_uri: requestUri,
-    subject_id: "owner_local",
-    ...extra,
+  const reviewResp = await fetch(`${asUrl}/consent/review`, {
+    body: JSON.stringify({
+      approved_source_indexes: approvedIndexes,
+      request_uri: requestUri,
+      ...extra,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
   });
+  const reviewBody = (await reviewResp.json().catch(() => null)) as
+    | (ApproveResponseBody & {
+        approval_review?: unknown;
+        approval_review_revision?: unknown;
+      })
+    | null;
+  if (reviewResp.status !== 200) {
+    return { body: reviewBody, status: reviewResp.status };
+  }
+  assert.ok(reviewBody?.approval_review && typeof reviewBody.approval_review === "object");
+  assert.equal(typeof reviewBody.approval_review_revision, "string");
+  const resp = await fetch(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({
+      approval_review_revision: reviewBody.approval_review_revision,
+      confirm_reviewed_decision: "1",
+      request_uri: requestUri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  return { body: (await resp.json().catch(() => null)) as ApproveResponseBody | null, status: resp.status };
+}
+
+async function approveSingle(asUrl: string, requestUri: string | undefined, subjectId: string): Promise<ApproveResult> {
+  const reviewResp = await fetch(`${asUrl}/consent/review`, {
+    body: JSON.stringify({ request_uri: requestUri, subject_id: subjectId }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const reviewBody = (await reviewResp.json().catch(() => null)) as
+    | (ApproveResponseBody & {
+        approval_review?: unknown;
+        approval_review_revision?: unknown;
+      })
+    | null;
+  assert.equal(reviewResp.status, 200, JSON.stringify(reviewBody));
+  assert.ok(reviewBody?.approval_review && typeof reviewBody.approval_review === "object");
+  assert.equal(typeof reviewBody?.approval_review_revision, "string");
+  const resp = await fetch(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({
+      approval_review_revision: reviewBody?.approval_review_revision,
+      request_uri: requestUri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  return { body: (await resp.json().catch(() => null)) as ApproveResponseBody | null, status: resp.status };
 }
 
 /** Narrows a `{status, body}` result's body from `T | null` to `T`, failing the assertion if null. */
@@ -369,7 +432,7 @@ test("parent linkage: revoking one child grant updates the cumulative active cou
     const rootPackageId = unwrapBody(root).package_id;
     const rootGrant = unwrapBody(root).grant;
     assert.ok(rootGrant?.child_grants);
-    const spotifyChild = rootGrant.child_grants.find((c) => c.source.id === "spotify");
+    const spotifyChild = rootGrant.child_grants.find((c) => c.source.id === spotify.connector_id);
     assert.ok(spotifyChild, "root grant must include a spotify child grant");
 
     const second = await par(
@@ -473,10 +536,7 @@ test("parent linkage: a single-entry request without parent_package_id stays on 
     const resp = await par(asUrl, [detail({ id: github.connector_id, kind: "connector" }, [{ name: "repositories" }])]);
     assert.equal(resp.status, 201);
 
-    const approved = await approve(asUrl, {
-      request_uri: unwrapBody(resp).request_uri,
-      subject_id: "owner_local",
-    });
+    const approved = await approveSingle(asUrl, unwrapBody(resp).request_uri, "owner_local");
     assert.equal(approved.status, 200);
     const approvedGrant = unwrapBody(approved).grant;
     assert.ok(approvedGrant);

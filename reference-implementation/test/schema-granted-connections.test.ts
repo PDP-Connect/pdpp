@@ -14,9 +14,8 @@
  * Covers:
  *
  *   - multi-connection owner scope returns every active connection;
- *   - grant constrained to one `connection_id` returns only that connection;
- *   - grant without `connection_id` constraint preserves fan-in across
- *     active connections;
+ *   - grant `instance_ids` authorize only those connections;
+ *   - explicit multi-instance grants preserve intentional fan-in;
  *   - owner-renamed `display_name` propagates to the next schema response;
  *   - storage placeholder labels (`legacy`, `default_account`, connector_id
  *     defaults) are omitted from the wire (no leakage of non-granted /
@@ -36,6 +35,7 @@ import { startServer } from "../server/index.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
 import { ingestRecord } from "../server/records.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { TEST_INTROSPECTION_SERVER_OPTS } from "./helpers/introspection-test-credentials.ts";
 
 interface GrantedConnection {
   connection_id: string;
@@ -43,9 +43,9 @@ interface GrantedConnection {
 }
 
 type ListGrantedConnectionsForStream = (args: {
+  authorizedInstanceIds?: string[] | null;
   ownerSubjectId: string | null;
   connectorId: string | null;
-  grantStreamConnectionId?: string | null;
 }) => Promise<GrantedConnection[]>;
 
 const listGrantedConnectionsForStream = listGrantedConnectionsForStreamUntyped as ListGrantedConnectionsForStream;
@@ -56,36 +56,51 @@ function at<T>(items: T[], index: number): T {
   return item;
 }
 
-const CONNECTOR_ID = "schema-granted-connections";
+const CONNECTOR_ID = "spotify";
+const SOURCE_ID = "https://registry.pdpp.dev/connectors/spotify";
 const STREAM = "messages";
 
 const INSTANCE_A = "cin_schema_account_a";
 const INSTANCE_B = "cin_schema_account_b";
+
+const baseStreams = [
+  {
+    consent_time_field: "received_at",
+    cursor_field: "received_at",
+    name: STREAM,
+    primary_key: ["id"],
+    query: {},
+    schema: {
+      $defs: {
+        subject: { type: "string" },
+      },
+      properties: {
+        id: { type: "string" },
+        received_at: { format: "date-time", type: "string" },
+        subject: { $ref: "#/$defs/subject" },
+      },
+      required: ["id", "subject", "received_at"],
+      type: "object",
+    },
+    selection: { fields: true, resources: false },
+    semantics: "mutable_state",
+  },
+];
 
 const baseManifest = {
   capabilities: { human_interaction: [] },
   connector_id: CONNECTOR_ID,
   display_name: "Schema Granted Connections Test Connector",
   protocol_version: "0.1.0",
-  streams: [
-    {
-      consent_time_field: "received_at",
-      cursor_field: "received_at",
-      name: STREAM,
-      primary_key: ["id"],
-      query: {},
-      schema: {
-        properties: {
-          id: { type: "string" },
-          received_at: { format: "date-time", type: "string" },
-          subject: { type: "string" },
-        },
-        required: ["id", "subject", "received_at"],
-        type: "object",
-      },
-      selection: { fields: { mode: "explicit" } },
-    },
-  ],
+  source_declaration: {
+    declaration_version: "schema-granted-connections.v1",
+    display: { name: "Schema Granted Connections Test Connector" },
+    protocol_version: "0.1.0",
+    publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
+    source: { id: SOURCE_ID, kind: "connector" },
+    streams: baseStreams,
+  },
+  streams: baseStreams,
   version: "1.0.0",
 };
 
@@ -102,7 +117,12 @@ function record(id: string, receivedAt: string) {
   };
 }
 
-async function seedInstance(instanceId: string, displayName: string, sourceBindingKey: string): Promise<void> {
+async function seedInstance(
+  instanceId: string,
+  displayName: string,
+  sourceBindingKey: string,
+  ownerSubjectId = OWNER_AUTH_DEFAULT_SUBJECT_ID
+): Promise<void> {
   const store = createSqliteConnectorInstanceStore();
   const now = new Date().toISOString();
   await store.upsert({
@@ -110,7 +130,7 @@ async function seedInstance(instanceId: string, displayName: string, sourceBindi
     connectorInstanceId: instanceId,
     createdAt: now,
     displayName,
-    ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+    ownerSubjectId,
     sourceBinding: { account: sourceBindingKey },
     sourceBindingKey,
     sourceKind: "account",
@@ -186,11 +206,11 @@ test("owner scope enumerates every active connection with meaningful display_nam
 
 // ─── Grant constrained to one connection ──────────────────────────────────
 
-test("grant constrained to one connection_id returns only that connection", async () => {
+test("grant instance_ids constrained to one connection returns only that connection", async () => {
   await withDualConnectionDb(async () => {
     const granted = await listGrantedConnectionsForStream({
+      authorizedInstanceIds: [INSTANCE_B],
       connectorId: CONNECTOR_ID,
-      grantStreamConnectionId: INSTANCE_B,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
     });
     assert.equal(granted.length, 1);
@@ -201,11 +221,11 @@ test("grant constrained to one connection_id returns only that connection", asyn
 
 // ─── Grant without connection_id constraint preserves fan-in ─────────────
 
-test("grant without connection_id constraint returns every active connection", async () => {
+test("grant with both instance_ids returns every authorized active connection", async () => {
   await withDualConnectionDb(async () => {
     const granted = await listGrantedConnectionsForStream({
+      authorizedInstanceIds: [INSTANCE_A, INSTANCE_B],
       connectorId: CONNECTOR_ID,
-      grantStreamConnectionId: null,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
     });
     // biome-ignore lint/suspicious/useArraySortCompare: Fixture values use the runtime default sort semantics under test.
@@ -448,9 +468,20 @@ async function approveGrant(
   if (!initiate.request_uri) {
     throw new Error(`startGrantRequest returned no request_uri: ${JSON.stringify(initiate)}`);
   }
-  const { body: approved } = await fetchJson(`${asUrl}/consent/approve`, {
+  const review = await fetchJson(`${asUrl}/consent/review`, {
     body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: subjectId }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(review.status, 200, JSON.stringify(review.body));
+  const reviewRevision = (review.body as Record<string, unknown>).approval_review_revision;
+  assert.equal(typeof reviewRevision, "string", "consent review must return approval_review_revision");
+  const { body: approved } = await fetchJson(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({
+      approval_review_revision: reviewRevision,
+      request_uri: initiate.request_uri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   return asRecord(approved);
@@ -466,6 +497,7 @@ async function withHttpHarness(
     dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -486,8 +518,18 @@ async function withHttpHarness(
 }
 
 interface WireStream {
+  consent_time_field?: string;
+  field_capabilities?: Record<string, unknown>;
+  freshness?: { captured_at?: string; status?: string };
   granted_connections?: GrantedConnection[];
+  instance_ids?: string[];
   name: string;
+  relationships?: Record<string, unknown>[];
+  resources?: string[];
+  schema?: Record<string, unknown>;
+  selection?: unknown;
+  time_constraint?: Record<string, unknown>;
+  views?: unknown[];
 }
 
 interface WireConnector {
@@ -535,7 +577,7 @@ test("GET /v1/schema emits granted_connections for multi-connection owner scope"
   );
 });
 
-test("GET /v1/schema honors grant.streams[].connection_id constraint", async () => {
+test("GET /v1/schema exposes only grant.streams[].instance_ids", async () => {
   await withHttpHarness(
     async ({ asUrl, rsUrl }) => {
       const approved = await approveGrant(asUrl, "owner_local", {
@@ -543,11 +585,11 @@ test("GET /v1/schema honors grant.streams[].connection_id constraint", async () 
         client_id: "longview",
         purpose_code: "https://pdpp.dev/purpose/analytics",
         purpose_description: "granted_connections scope test",
-        source: { id: CONNECTOR_ID, kind: "connector" },
+        source: { id: SOURCE_ID, kind: "connector" },
         streams: [
           {
-            connection_id: INSTANCE_B,
             fields: ["id", "subject", "received_at"],
+            instance_ids: [INSTANCE_B],
             name: STREAM,
           },
         ],
@@ -562,7 +604,7 @@ test("GET /v1/schema honors grant.streams[].connection_id constraint", async () 
       const connector = at(connectors, 0);
       const stream = findStream(connector, STREAM);
       const grantedConnections = stream.granted_connections ?? [];
-      assert.equal(grantedConnections.length, 1);
+      assert.equal(grantedConnections.length, 1, JSON.stringify(body));
       assert.equal(at(grantedConnections, 0).connection_id, INSTANCE_B);
       assert.equal(at(grantedConnections, 0).display_name, "Account B");
       // The non-granted connection MUST NOT appear anywhere in the body.
@@ -584,7 +626,7 @@ test("GET /v1/schema honors grant.streams[].connection_id constraint", async () 
   );
 });
 
-test("GET /v1/schema returns every active connection when grant omits connection_id", async () => {
+test("GET /v1/schema returns every explicitly authorized instance", async () => {
   await withHttpHarness(
     async ({ asUrl, rsUrl }) => {
       const approved = await approveGrant(asUrl, "owner_local", {
@@ -592,8 +634,14 @@ test("GET /v1/schema returns every active connection when grant omits connection
         client_id: "longview",
         purpose_code: "https://pdpp.dev/purpose/analytics",
         purpose_description: "granted_connections fan-in test",
-        source: { id: CONNECTOR_ID, kind: "connector" },
-        streams: [{ fields: ["id", "subject", "received_at"], name: STREAM }],
+        source: { id: SOURCE_ID, kind: "connector" },
+        streams: [
+          {
+            fields: ["id", "subject", "received_at"],
+            instance_ids: [INSTANCE_A, INSTANCE_B],
+            name: STREAM,
+          },
+        ],
       });
       assert.ok(approved.token, "expected client token");
       const { status, body: bodyRaw } = await fetchJson(`${rsUrl}/v1/schema`, {
@@ -604,7 +652,7 @@ test("GET /v1/schema returns every active connection when grant omits connection
       const connectors = body.connectors as WireConnector[];
       const stream = findStream(at(connectors, 0), STREAM);
       const ids = (stream.granted_connections ?? []).map((g) => g.connection_id).sort();
-      assert.deepEqual(ids, [INSTANCE_A, INSTANCE_B]);
+      assert.deepEqual(ids, [INSTANCE_A, INSTANCE_B], JSON.stringify(body));
     },
     {
       seed: async () => {
@@ -612,6 +660,242 @@ test("GET /v1/schema returns every active connection when grant omits connection
         await seedInstance(INSTANCE_B, "Account B", "b@example.com");
         await ingestRecord(target(INSTANCE_A), record("a-1", "2026-05-25T12:00:00.000Z"));
         await ingestRecord(target(INSTANCE_B), record("b-1", "2026-05-25T12:01:00.000Z"));
+      },
+    }
+  );
+});
+
+test("client metadata uses the approving subject's granted instance and never owner_local", async () => {
+  const hostedSubject = "hosted_schema_owner";
+  const hostedInstance = "cin_schema_hosted";
+  const ownerLocalTimestamp = "2026-05-25T12:09:00.000Z";
+  const hostedTimestamp = "2026-05-25T12:03:00.000Z";
+  await withHttpHarness(
+    async ({ asUrl, rsUrl }) => {
+      const approved = await approveGrant(asUrl, hostedSubject, {
+        access_mode: "continuous",
+        client_id: "longview",
+        purpose_code: "https://pdpp.dev/purpose/analytics",
+        purpose_description: "hosted subject metadata isolation",
+        source: { id: SOURCE_ID, kind: "connector" },
+        streams: [
+          {
+            fields: ["id", "received_at"],
+            instance_ids: [hostedInstance],
+            name: STREAM,
+          },
+        ],
+      });
+      assert.ok(approved.token, JSON.stringify(approved));
+      const headers = { Authorization: `Bearer ${String(approved.token)}` };
+
+      const schemaResponse = await fetchJson(`${rsUrl}/v1/schema`, { headers });
+      assert.equal(schemaResponse.status, 200, JSON.stringify(schemaResponse.body));
+      const schemaBody = asRecord(schemaResponse.body);
+      const schemaStream = findStream(at(schemaBody.connectors as WireConnector[], 0), STREAM);
+      assert.equal(schemaStream.freshness?.captured_at, hostedTimestamp);
+      assert.deepEqual(schemaStream.instance_ids, [hostedInstance]);
+
+      const connectorsResponse = await fetchJson(`${rsUrl}/v1/connectors`, { headers });
+      assert.equal(connectorsResponse.status, 200, JSON.stringify(connectorsResponse.body));
+      const connectorsBody = asRecord(connectorsResponse.body);
+      const connector = at(connectorsBody.data as Array<{ streams: Record<string, unknown>[] }>, 0);
+      const connectorStream = at(connector.streams, 0);
+      assert.equal(connectorStream.record_count, 1);
+      assert.equal((connectorStream.freshness as { captured_at?: string }).captured_at, hostedTimestamp);
+
+      const streamResponse = await fetchJson(`${rsUrl}/v1/streams/${STREAM}`, { headers });
+      assert.equal(streamResponse.status, 200, JSON.stringify(streamResponse.body));
+      const streamBody = asRecord(streamResponse.body);
+      assert.equal((streamBody.freshness as { captured_at?: string }).captured_at, hostedTimestamp);
+
+      const serialized = JSON.stringify([schemaBody, connectorsBody, streamBody]);
+      assert.equal(
+        serialized.includes(ownerLocalTimestamp),
+        false,
+        "owner_local freshness leaked into hosted metadata"
+      );
+      assert.equal(serialized.includes(INSTANCE_A), false, "owner_local instance leaked into hosted metadata");
+    },
+    {
+      seed: async () => {
+        await seedInstance(INSTANCE_A, "Local account", "local@example.com");
+        await seedInstance(hostedInstance, "Hosted account", "hosted@example.com", hostedSubject);
+        await ingestRecord(target(INSTANCE_A), record("local-1", ownerLocalTimestamp));
+        await ingestRecord(target(hostedInstance), record("hosted-1", hostedTimestamp));
+      },
+    }
+  );
+});
+
+test("client schema and stream metadata remain a closed resolved-grant projection after manifest changes", async () => {
+  await withHttpHarness(
+    async ({ asUrl, rsUrl }) => {
+      const approved = await approveGrant(asUrl, "owner_local", {
+        access_mode: "continuous",
+        client_id: "longview",
+        purpose_code: "https://pdpp.dev/purpose/analytics",
+        purpose_description: "frozen client metadata projection",
+        source: { id: SOURCE_ID, kind: "connector" },
+        streams: [
+          {
+            fields: ["id", "received_at"],
+            instance_ids: [INSTANCE_A],
+            name: STREAM,
+            time_range: { since: "2026-01-01T00:00:00Z" },
+          },
+        ],
+      });
+      assert.ok(approved.token, JSON.stringify(approved));
+
+      const changedManifest = structuredClone(baseManifest) as Record<string, unknown>;
+      const [changedStream] = changedManifest.streams as Record<string, unknown>[];
+      assert.ok(changedStream);
+      const changedSchema = changedStream.schema as Record<string, unknown>;
+      changedSchema.properties = {
+        ...(changedSchema.properties as Record<string, unknown>),
+        id: { type: "integer" },
+        secret: { type: "string" },
+      };
+      changedSchema.$defs = {
+        subject: { properties: { changed: { type: "boolean" } }, type: "object" },
+      };
+      changedSchema.required = ["id", "received_at", "secret"];
+      changedSchema.additionalProperties = true;
+      changedSchema.patternProperties = { "^secret_": { type: "string" } };
+      changedSchema.allOf = [{ required: ["secret"] }];
+      changedStream.consent_time_field = "secret";
+      changedStream.selection = { fields: false, resources: false };
+      changedStream.views = [{ fields: ["secret"], id: "secret", label: "Secret" }];
+      const updateResponse = await fetch(`${asUrl}/connectors`, {
+        body: JSON.stringify(changedManifest),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(updateResponse.status, 201);
+
+      const clientHeaders = { Authorization: `Bearer ${String(approved.token)}` };
+      await Promise.all(
+        [`${rsUrl}/v1/schema`, `${rsUrl}/v1/streams/${STREAM}`].map(async (url) => {
+          const response = await fetchJson(url, { headers: clientHeaders });
+          assert.equal(response.status, 200, JSON.stringify(response.body));
+          const body = asRecord(response.body);
+          const stream = url.endsWith("/schema")
+            ? findStream(at(body.connectors as WireConnector[], 0), STREAM)
+            : (body as unknown as WireStream);
+          const schema = stream.schema as Record<string, unknown>;
+          assert.deepEqual(Object.keys(schema.properties as Record<string, unknown>).sort(), [
+            "id",
+            "received_at",
+            "subject",
+          ]);
+          assert.deepEqual((schema.properties as Record<string, unknown>).id, {});
+          assert.equal("$defs" in schema, false);
+          assert.equal("required" in schema, false);
+          assert.equal(schema.additionalProperties, false);
+          assert.equal("patternProperties" in schema, false);
+          assert.equal("allOf" in schema, false);
+          assert.equal(stream.consent_time_field, "received_at");
+          assert.deepEqual(stream.instance_ids, [INSTANCE_A]);
+          assert.deepEqual(stream.time_constraint, {
+            field: "received_at",
+            since: "2026-01-01T00:00:00Z",
+          });
+          assert.equal(JSON.stringify(stream).includes("secret"), false);
+        })
+      );
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      const ownerResponse = await fetchJson(`${rsUrl}/v1/schema?connector_id=${encodeURIComponent(CONNECTOR_ID)}`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(ownerResponse.status, 200, JSON.stringify(ownerResponse.body));
+      const ownerBody = asRecord(ownerResponse.body);
+      const ownerStream = findStream(at(ownerBody.connectors as WireConnector[], 0), STREAM);
+      assert.equal(ownerStream.consent_time_field, "secret");
+      assert.equal(
+        "secret" in ((ownerStream.schema as Record<string, unknown>).properties as Record<string, unknown>),
+        true
+      );
+      assert.deepEqual(ownerStream.selection, { fields: false, resources: false });
+      assert.equal(ownerStream.views?.length, 1);
+    },
+    {
+      seed: async () => {
+        await seedInstance(INSTANCE_A, "Account A", "a@example.com");
+        await ingestRecord(target(INSTANCE_A), record("a-1", "2026-05-25T12:00:00.000Z"));
+      },
+    }
+  );
+});
+
+test("client relationship metadata checks has_many foreign keys against the related stream grant", async () => {
+  await withHttpHarness(
+    async ({ asUrl, rsUrl }) => {
+      const manifest = structuredClone(baseManifest) as Record<string, unknown>;
+      const [parent] = manifest.streams as Record<string, unknown>[];
+      assert.ok(parent);
+      parent.relationships = [
+        {
+          cardinality: "has_many",
+          foreign_key: "message_id",
+          name: "replies",
+          stream: "replies",
+        },
+      ];
+      (manifest.streams as Record<string, unknown>[]).push({
+        name: "replies",
+        primary_key: ["id"],
+        schema: {
+          properties: { id: { type: "string" }, message_id: { type: "string" } },
+          required: ["id"],
+          type: "object",
+        },
+        selection: { fields: true, resources: false },
+        semantics: "mutable_state",
+      });
+      const update = await fetch(`${asUrl}/connectors`, {
+        body: JSON.stringify(manifest),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(update.status, 201);
+
+      const approve = (childFields: string[], purposeDescription: string) =>
+        approveGrant(asUrl, "owner_local", {
+          access_mode: "continuous",
+          client_id: "longview",
+          purpose_code: "https://pdpp.dev/purpose/analytics",
+          purpose_description: purposeDescription,
+          source: { id: SOURCE_ID, kind: "connector" },
+          streams: [
+            { fields: ["id"], instance_ids: [INSTANCE_A], name: STREAM },
+            { fields: childFields, instance_ids: [INSTANCE_A], name: "replies" },
+          ],
+        });
+
+      const withForeignKey = await approve(["id", "message_id"], "relationship with child key");
+      const withoutForeignKey = await approve(["id"], "relationship without child key");
+      await Promise.all(
+        (
+          [
+            [withForeignKey, 0],
+            [withoutForeignKey, 0],
+          ] as const
+        ).map(async ([approval, expectedCount]) => {
+          const response = await fetchJson(`${rsUrl}/v1/schema`, {
+            headers: { Authorization: `Bearer ${String(approval.token)}` },
+          });
+          assert.equal(response.status, 200, JSON.stringify(response.body));
+          const body = asRecord(response.body);
+          const stream = findStream(at(body.connectors as WireConnector[], 0), STREAM);
+          assert.equal(stream.relationships?.length, expectedCount, JSON.stringify(stream));
+        })
+      );
+    },
+    {
+      seed: async () => {
+        await seedInstance(INSTANCE_A, "Account A", "a@example.com");
       },
     }
   );

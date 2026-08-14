@@ -150,6 +150,7 @@ const FAILED_RUNS: RunSummary[] = [
 const PENDING: PendingApproval[] = [
   {
     approval_id: "appr_atlas",
+    batch: false,
     client_id: "Atlas Mortgage",
     created_at: iso(0),
     grant_preview: {

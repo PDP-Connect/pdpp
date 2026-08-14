@@ -53,7 +53,6 @@ test("every grant-authorized read operation accepts optional connection_id and c
 
 test("stream list response items carry connection_id and display_name", () => {
   const schema = responseSchema("listStreams");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc (noUncheckedIndexedAccess) requires this chain; biome's simpler type model disagrees on the Record<string, JsonSchema> index access.
   const item = schema?.properties?.data?.items;
   assert.ok(item, "listStreams 200 must declare data items");
   assert.ok(item.properties?.connection_id, "stream list item must declare connection_id");
@@ -74,7 +73,6 @@ test("record response carries connection_id and display_name", () => {
 
 test("search result items carry connection_id and display_name on lexical/semantic/hybrid", () => {
   for (const id of ["searchRecordsLexical", "searchRecordsSemantic", "searchRecordsHybrid"]) {
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc (noUncheckedIndexedAccess) requires this chain; biome's simpler type model disagrees on the Record<string, JsonSchema> index access.
     const item = responseSchema(id)?.properties?.data?.items;
     assert.ok(item, `${id} 200 must declare data items`);
     assert.ok(item.properties?.connection_id, `${id} hit must declare connection_id`);
@@ -91,7 +89,6 @@ test("getRecord and getBlob declare a typed ambiguous_connection 409 envelope", 
     const errorSchema = response.schema?.properties?.error;
     assert.ok(errorSchema, `${id} 409 must declare error envelope`);
     assert.equal(
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc (noUncheckedIndexedAccess) requires this chain; biome's simpler type model disagrees on the Record<string, JsonSchema> index access.
       errorSchema.properties?.code?.const,
       "ambiguous_connection",
       `${id} 409 must use code "ambiguous_connection"`
@@ -100,7 +97,6 @@ test("getRecord and getBlob declare a typed ambiguous_connection 409 envelope", 
     const retryWith = errorSchema.properties?.retry_with;
     assert.ok(retryWith, `${id} 409 must include retry_with`);
     assert.equal(
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc (noUncheckedIndexedAccess) requires this chain; biome's simpler type model disagrees on the Record<string, JsonSchema> index access.
       retryWith.properties?.field?.const,
       "connection_id",
       `${id} retry_with.field must point at connection_id`

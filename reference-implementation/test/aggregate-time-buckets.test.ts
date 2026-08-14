@@ -65,6 +65,7 @@ function manifestWith(aggregations: AggregationsDeclaration) {
     capabilities: { human_interaction: [] },
     connector_id: CONNECTOR_ID,
     display_name: "Aggregate Time Buckets Test Connector",
+    manifest_uri: `https://sources.example/${CONNECTOR_ID}`,
     protocol_version: "0.1.0",
     streams: [
       {
@@ -82,6 +83,8 @@ function manifestWith(aggregations: AggregationsDeclaration) {
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
+        semantics: "mutable_state",
       },
     ],
     version: "1.0.0",

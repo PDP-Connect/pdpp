@@ -1,0 +1,6 @@
+{
+  "kind": "response",
+  "path": "pdpp.context_kind",
+  "value": "unsupported",
+  "expected": "context.kind_mismatch"
+}

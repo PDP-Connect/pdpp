@@ -59,8 +59,13 @@ export interface ConsentPickerCapabilities {
 }
 
 export interface ConsentPickerManifest {
+  readonly connector_id?: string | null;
   readonly display_name?: string | null;
+  readonly manifest_uri?: string | null;
   readonly name?: string | null;
+  readonly source_declaration?: {
+    readonly source?: { readonly id?: string | null; readonly kind?: string | null } | null;
+  } | null;
   readonly streams?: Array<{ name: string; description?: string | null }> | null;
 }
 
@@ -256,13 +261,41 @@ export function validateAuthorizePkce({ responseType, codeChallenge, codeChallen
  * Builds a single-entry `authorization_details` array for a connector-backed
  * hosted MCP authorize shortcut (wildcard streams, continuous access).
  */
-export function buildHostedMcpAuthorizationDetailsForConnector(connectorId: string): unknown[] {
+interface HostedMcpSourceDescriptor {
+  id: string;
+  kind: "connector" | "provider_native";
+}
+
+/** Resolve public source identity without leaking the local storage key. */
+export function resolveHostedMcpSourceDescriptor(
+  manifest: ConsentPickerManifest | null | undefined
+): HostedMcpSourceDescriptor | null {
+  const declared = manifest?.source_declaration?.source;
+  if (
+    declared &&
+    (declared.kind === "connector" || declared.kind === "provider_native") &&
+    typeof declared.id === "string" &&
+    URL.canParse(declared.id)
+  ) {
+    return { id: declared.id, kind: declared.kind };
+  }
+  const legacyId =
+    typeof manifest?.manifest_uri === "string" && manifest.manifest_uri
+      ? manifest.manifest_uri
+      : manifest?.connector_id;
+  return typeof legacyId === "string" && URL.canParse(legacyId) ? { id: legacyId, kind: "connector" } : null;
+}
+
+export function buildHostedMcpAuthorizationDetailsForConnector(
+  connectorId: string,
+  source: HostedMcpSourceDescriptor = { id: connectorId, kind: "connector" }
+): unknown[] {
   return [
     {
       access_mode: "continuous",
       purpose_code: "https://pdpp.dev/purpose/personal_ai_assistant",
       purpose_description: "Allow this MCP client to read selected personal data through PDPP.",
-      source: { id: connectorId, kind: "connector" },
+      source,
       streams: [{ name: "*" }],
       type: "https://pdpp.dev/data-access",
     },
@@ -277,12 +310,9 @@ export function buildHostedMcpAuthorizationDetailsForConnector(connectorId: stri
  * to `HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE` (continuous).
  *
  * `connectionId`, when a non-empty string, pins every stream entry to that
- * connection by stamping `connection_id` onto it. This is the enforcement
- * lever: `resolveGrantSelection` copies `streams[].connection_id` onto the
- * issued child grant, and the read-path binding resolver narrows fan-in to the
- * named connection. Wildcard stream selections are pinned identically — the
- * runtime narrows the binding to the connection, then expands streams under
- * it. Callers MUST only pass a `connectionId` the picker presented and
+ * connector instance by stamping its opaque handle into `instance_ids`.
+ * Wildcard stream selections are pinned identically. Callers MUST only pass a
+ * `connectionId` the picker presented and
  * validated as active, and MUST omit it when the surface did not present a
  * specific-connection choice (single-connection or unconfigured connector), so
  * fan-in semantics and existing grants are preserved.
@@ -291,19 +321,20 @@ export function buildHostedMcpAuthorizationDetailForConnector(
   connectorId: string,
   streamNames: string[] | null = null,
   accessMode: string | null = null,
-  connectionId: string | null = null
+  connectionId: string | null = null,
+  source: HostedMcpSourceDescriptor = { id: connectorId, kind: "connector" }
 ): {
   type: string;
   source: { kind: string; id: string };
   purpose_code: string;
   purpose_description: string;
   access_mode: string;
-  streams: Array<{ name: string; connection_id?: string }>;
+  streams: Array<{ name: string; instance_ids?: string[] }>;
 } {
   const pinnedConnectionId = typeof connectionId === "string" && connectionId.trim() ? connectionId.trim() : null;
-  const withPin = (name: string): { name: string; connection_id?: string } =>
-    pinnedConnectionId ? { connection_id: pinnedConnectionId, name } : { name };
-  let streams: Array<{ name: string; connection_id?: string }>;
+  const withPin = (name: string): { name: string; instance_ids?: string[] } =>
+    pinnedConnectionId ? { instance_ids: [pinnedConnectionId], name } : { name };
+  let streams: Array<{ name: string; instance_ids?: string[] }>;
   if (Array.isArray(streamNames) && streamNames.length > 0) {
     streams = streamNames.map((name) => withPin(name));
   } else {
@@ -316,7 +347,7 @@ export function buildHostedMcpAuthorizationDetailForConnector(
     access_mode: resolvedAccessMode,
     purpose_code: HOSTED_MCP_PICKER_PURPOSE_CODE,
     purpose_description: HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION,
-    source: { id: connectorId, kind: "connector" },
+    source,
     streams,
     type: "https://pdpp.dev/data-access",
   };
@@ -553,6 +584,11 @@ export function renderPendingConsentNotFoundHtml(providerName: string, ui: Conse
   });
 }
 
+interface PendingClientClaims {
+  commitments?: string[] | null;
+  [key: string]: unknown;
+}
+
 export interface PendingGrantRequest {
   client?: {
     client_display?: { name?: string | null } | null;
@@ -560,20 +596,16 @@ export interface PendingGrantRequest {
     registration_mode?: string | null;
   } | null;
   selection?: {
+    client_claims?: PendingClientClaims | null;
     streams?: Array<{
       name: string;
+      time_constraint?: { field?: string | null; since?: string | null; until?: string | null } | null;
       time_range?: { since?: string | null } | null;
       fields?: string[] | null;
+      instance_ids?: string[] | null;
+      resources?: string[] | null;
       view?: string | null;
       necessity?: string | null;
-      // REQUEST-scoped, CLIENT-authored per-stream claims. Rendered as claims,
-      // never as protocol facts (see `buildClientClaimsBlock`). Carried through
-      // `normalizeStreamSelection` in server/auth.js; the renderer surfaces it.
-      client_claims?: {
-        purpose?: string | null;
-        commitments?: string[] | null;
-        [key: string]: unknown;
-      } | null;
     }> | null;
     access_mode?: string | null;
     purpose_description?: string | null;
@@ -589,6 +621,86 @@ export interface PendingGrantRequest {
   } | null;
 }
 
+interface ApprovalReviewStream {
+  fields: string[];
+  instance_ids: string[];
+  name: string;
+  resources?: string[];
+  time_constraint?: { field: string; since?: string; until?: string };
+}
+
+interface ApprovalReviewClient {
+  client_display?: {
+    logo_uri?: string | null;
+    name?: string | null;
+    policy_uri?: string | null;
+    tos_uri?: string | null;
+    uri?: string | null;
+  } | null;
+  client_id: string;
+  registration_mode: string;
+}
+
+interface ApprovalReviewSource {
+  id: string;
+  kind: string;
+}
+
+interface ApprovalReviewSourceDeclaration {
+  accepted_revision_reference?: string;
+  digest: string;
+  publisher_attribution?: { id: string; status: "unverified" };
+  resource_authority?: { authority_binding: string; status: "verified" } | { status: "local_operator_provisioned" };
+  version: string;
+}
+
+interface ApprovalReviewSourceEntry {
+  access_mode: string;
+  client_claims: PendingClientClaims | null;
+  index: number;
+  purpose_code: string;
+  purpose_description: string | null;
+  resolved_streams: ApprovalReviewStream[];
+  retention: { max_duration?: string; on_expiry?: string } | null;
+  selection_preset: string | null;
+  source: ApprovalReviewSource;
+  source_declaration: ApprovalReviewSourceDeclaration;
+}
+
+interface SingleApprovalReviewArtifact {
+  access_mode: string;
+  ai_training_consented: boolean | null;
+  client: ApprovalReviewClient;
+  client_claims: PendingClientClaims | null;
+  expires_at: string | null;
+  purpose_code: string;
+  purpose_description: string | null;
+  resolved_streams: ApprovalReviewStream[];
+  retention: { max_duration?: string; on_expiry?: string } | null;
+  selection_preset: string | null;
+  source: ApprovalReviewSource;
+  source_declaration: ApprovalReviewSourceDeclaration;
+  subject: { id: string };
+  version: "reference.approval-review.v1";
+}
+
+interface BatchApprovalReviewArtifact {
+  access_mode: string | null;
+  approved_source_indexes: number[];
+  client: ApprovalReviewClient;
+  expires_at: string | null;
+  parent_package_id: string | null;
+  source_narrowing: Record<
+    string,
+    { fields?: Record<string, string[]>; since?: Record<string, string>; streams?: string[] }
+  >;
+  sources: ApprovalReviewSourceEntry[];
+  subject: { id: string };
+  version: "reference.batch-approval-review.v1";
+}
+
+type ApprovalReviewArtifact = SingleApprovalReviewArtifact | BatchApprovalReviewArtifact;
+
 export interface PendingGrant {
   approveAllGate?: { approve_all_suppressed: boolean; suppression_reasons: string[] } | null;
   batch?: boolean;
@@ -598,6 +710,10 @@ export interface PendingGrant {
   overCapSources?: Array<{ id?: string | null; kind?: string | null } | null> | null;
   overSoftCap?: boolean;
   request: PendingGrantRequest;
+  review?: ApprovalReviewArtifact | null;
+  reviewArtifact?: string | null;
+  reviewDigest?: string | null;
+  reviewRevision?: string | null;
   softCap?: number;
   softCapWarning?: boolean;
   userCode?: string | null;
@@ -607,6 +723,7 @@ type StreamItem = NonNullable<NonNullable<PendingGrantRequest["selection"]>["str
 
 interface PendingConsentCard {
   access_mode?: string | null;
+  client_claims?: PendingClientClaims | null;
   index: number;
   manifestStreamNames?: string[] | null;
   purpose_code?: string | null;
@@ -638,7 +755,7 @@ interface PendingConsentCumulativeRisk {
 //   • MANIFEST — the owner-trusted human descriptions for the requested streams
 //     (stream labels/details from the resolved manifest).
 //   • CLIENT   — claims the client itself authored (its self-described app name,
-//     the purpose_description, and per-stream client_claims). Rendered, never
+//     the purpose_description, and top-level client_claims). Rendered, never
 //     trusted: each carries a "they say / not enforced" affordance.
 //
 // `data-authorship` is the machine-readable provenance hook (one per block),
@@ -725,55 +842,148 @@ function buildConsentClientDisplay(
 }
 
 /**
- * Render the per-stream `client_claims` (REQUEST-scoped, CLIENT-authored) as a
- * distinct, disclaimed block. Each claim is the client's own word about why it
- * wants a stream and what it commits to — the server does not vouch for any of
- * it. Returns "" when no stream carries claims (so the block never appears with
- * an empty body).
+ * Render top-level `client_claims.commitments` as a distinct, disclaimed
+ * client-authored block. These are the client's own commitments; the server
+ * renders but does not enforce them.
  */
-function buildClientClaimsBlock(streams: StreamItem[], ui: ConsentUiRenderer): string {
-  const rows: string[] = [];
-  for (const stream of streams) {
-    const claims = stream?.client_claims;
-    if (!claims || typeof claims !== "object") {
-      continue;
-    }
-    const parts: string[] = [];
-    const purpose = typeof claims.purpose === "string" ? claims.purpose.trim() : "";
-    if (purpose) {
-      parts.push(`<p class="hosted-ui-client-claim-purpose">${ui.escapeHtml(purpose)}</p>`);
-    }
-    const commitments = Array.isArray(claims.commitments)
-      ? claims.commitments.filter((c): c is string => typeof c === "string" && c.trim() !== "")
-      : [];
-    if (commitments.length > 0) {
-      parts.push(
-        `<ul class="hosted-ui-client-claim-commitments">${commitments
-          .map((c) => `<li>${ui.escapeHtml(c)}</li>`)
-          .join("")}</ul>`
-      );
-    }
-    if (parts.length === 0) {
-      continue;
-    }
-    rows.push(
-      `<div class="hosted-ui-client-claim"><span class="hosted-ui-stream-name">${ui.escapeHtml(
-        stream.name
-      )}</span>${parts.join("")}</div>`
-    );
-  }
-  if (rows.length === 0) {
+function buildClientClaimsBlock(clientClaims: PendingClientClaims | null | undefined, ui: ConsentUiRenderer): string {
+  if (!clientClaims || typeof clientClaims !== "object") {
     return "";
   }
-  const body = `<span class="pdpp-title">What this app says it will do</span>${rows.join(
-    ""
-  )}<p class="hosted-ui-client-claim-disclaimer">These are the app's own claims, not enforced by your server.</p>`;
+  const commitments = Array.isArray(clientClaims.commitments)
+    ? clientClaims.commitments.filter((c: unknown): c is string => typeof c === "string" && c.trim() !== "")
+    : [];
+  if (commitments.length === 0) {
+    return "";
+  }
+  const items = commitments.map((c: string) => `<li>${ui.escapeHtml(c)}</li>`).join("");
+  const body = `<span class="pdpp-title">What this app says it will do</span><ul class="hosted-ui-client-claim-commitments">${items}</ul><p class="hosted-ui-client-claim-disclaimer">These are the app's own claims, not enforced by your server.</p>`;
   return renderAuthorshipBlock("client", "Client-authored claims", body, ui);
 }
 
+function displayOptional(value: string | null | undefined): string {
+  return value ?? "None";
+}
+
+function displayList(values: string[] | null | undefined): string {
+  return values && values.length > 0 ? values.join(", ") : "None";
+}
+
+function buildReviewedClientFacts(client: ApprovalReviewClient): Array<{ label: string; value: string }> {
+  return [
+    { label: "Client ID", value: client.client_id },
+    { label: "Registration mode", value: client.registration_mode },
+    { label: "Display name", value: displayOptional(client.client_display?.name) },
+    { label: "Client URI", value: displayOptional(client.client_display?.uri) },
+    { label: "Logo URI", value: displayOptional(client.client_display?.logo_uri) },
+    { label: "Policy URI", value: displayOptional(client.client_display?.policy_uri) },
+    { label: "Terms URI", value: displayOptional(client.client_display?.tos_uri) },
+  ];
+}
+
+function renderReviewedStreams(streams: ApprovalReviewStream[], ui: ConsentUiRenderer): string {
+  return streams
+    .map((stream) => {
+      const timeFacts = stream.time_constraint
+        ? [
+            { label: "Time field", value: stream.time_constraint.field },
+            { label: "Since", value: displayOptional(stream.time_constraint.since) },
+            { label: "Until", value: displayOptional(stream.time_constraint.until) },
+          ]
+        : [{ label: "Time constraint", value: "None" }];
+      return ui.renderSurface({
+        ariaLabel: `Reviewed stream ${stream.name}`,
+        children: `<h4 class="pdpp-title">${ui.escapeHtml(stream.name)}</h4>${ui.renderKeyValueList([
+          { label: "Instance IDs", value: displayList(stream.instance_ids) },
+          { label: "Fields", value: displayList(stream.fields) },
+          { label: "Resources", value: displayList(stream.resources) },
+          ...timeFacts,
+        ])}`,
+        surface: "protocol",
+      });
+    })
+    .join("\n");
+}
+
+function buildReviewedSelectionFacts(review: SingleApprovalReviewArtifact | ApprovalReviewSourceEntry) {
+  return [
+    { label: "Purpose code", value: review.purpose_code },
+    { label: "Purpose description", value: displayOptional(review.purpose_description) },
+    { label: "Access mode", value: review.access_mode },
+    { label: "Selection preset", value: displayOptional(review.selection_preset) },
+    { label: "Retention duration", value: displayOptional(review.retention?.max_duration) },
+    { label: "Retention on expiry", value: displayOptional(review.retention?.on_expiry) },
+  ];
+}
+
+function buildReviewedSourceFacts(
+  source: ApprovalReviewSource,
+  declaration: ApprovalReviewSourceDeclaration
+): Array<{ label: string; value: string }> {
+  const resourceAuthority = declaration.resource_authority;
+  const authorityFacts: Array<{ label: string; value: string }> = [];
+  if (resourceAuthority?.status === "verified") {
+    authorityFacts.push({
+      label: "Resource authority",
+      value: `Verified (${resourceAuthority.authority_binding})`,
+    });
+  } else if (resourceAuthority?.status === "local_operator_provisioned") {
+    authorityFacts.push({
+      label: "Resource authority",
+      value: "Local operator provisioning (not verified discovery)",
+    });
+  }
+  return [
+    { label: "Source ID", value: source.id },
+    { label: "Source kind", value: source.kind },
+    { label: "Declaration version", value: declaration.version },
+    { label: "Declaration digest", value: declaration.digest },
+    ...(declaration.accepted_revision_reference
+      ? [{ label: "Accepted revision", value: declaration.accepted_revision_reference }]
+      : []),
+    ...authorityFacts,
+    ...(declaration.publisher_attribution
+      ? [
+          {
+            label: "Publisher attribution",
+            value: `${declaration.publisher_attribution.id} (unverified)`,
+          },
+        ]
+      : []),
+  ];
+}
+
+function displayAiTrainingDecision(value: boolean | null): string {
+  if (value === null) {
+    return "Not applicable";
+  }
+  return value ? "Agreed" : "Not agreed";
+}
+
+function renderReviewedNarrowing(
+  narrowing: BatchApprovalReviewArtifact["source_narrowing"][string] | undefined,
+  ui: ConsentUiRenderer
+): string {
+  if (!narrowing) {
+    return ui.renderKeyValueList([{ label: "Owner narrowing", value: "None" }]);
+  }
+  const fieldEntries = narrowing.fields
+    ? Object.entries(narrowing.fields).map(([stream, fields]) => `${stream}: ${displayList(fields)}`)
+    : [];
+  const sinceEntries = narrowing.since
+    ? Object.entries(narrowing.since).map(([stream, since]) => `${stream}: ${since}`)
+    : [];
+  return ui.renderKeyValueList([
+    { label: "Streams kept", value: displayList(narrowing.streams) },
+    { label: "Field narrowing", value: displayList(fieldEntries) },
+    { label: "Time narrowing", value: displayList(sinceEntries) },
+  ]);
+}
+
 function renderRequestedStreamItem(stream: StreamItem, ui: ConsentUiRenderer): string {
+  const since = stream.time_constraint?.since ?? stream.time_range?.since;
   const fragments = [
-    stream.time_range ? `since ${stream.time_range.since || "any"}` : null,
+    since ? `since ${since}` : null,
     stream.fields ? `fields: ${stream.fields.join(", ")}` : null,
     stream.view ? `view: ${stream.view}` : null,
     stream.necessity === "optional" ? "optional" : null,
@@ -860,8 +1070,8 @@ function buildBatchSourceCards(cards: PendingConsentCard[], ui: ConsentUiRendere
         ]),
         ui
       );
-      // CLIENT: the client-authored purpose for this source plus any per-stream
-      // client_claims. Rendered as claims, never as facts.
+      // CLIENT: the client-authored purpose for this source. Rendered as a
+      // claim, never as a fact.
       const clientPurpose = card.purpose_code || "unspecified";
       const clientPurposeBlock = renderAuthorshipBlock(
         "client",
@@ -869,7 +1079,7 @@ function buildBatchSourceCards(cards: PendingConsentCard[], ui: ConsentUiRendere
         ui.renderKeyValueList([{ label: "Stated purpose", value: clientPurpose }]),
         ui
       );
-      const clientClaimsBlock = buildClientClaimsBlock(streams, ui);
+      const clientClaimsBlock = buildClientClaimsBlock(card.client_claims, ui);
       return ui.renderSurface({
         ariaLabel: `Source ${card.index + 1}`,
         children: `<h3 class="pdpp-title">${ui.escapeHtml(
@@ -922,7 +1132,7 @@ function buildSourceNarrowingControls(card: PendingConsentCard, ui: ConsentUiRen
             .join("")}</div>`
         : "";
 
-      const since = stream.time_range?.since;
+      const since = stream.time_constraint?.since;
       const sinceControl = since
         ? `<label class="hosted-ui-narrow-since">Start no earlier than <input type="text" name="narrow_since_${index}__${encoded}" value="${ui.escapeHtml(
             since
@@ -947,6 +1157,7 @@ const APPROVE_ALL_SUPPRESSION_LABELS: Record<string, string> = {
 function buildPerSourceConfirmForm(
   cards: PendingConsentCard[],
   requestUri: string,
+  reviewRevision: string | null | undefined,
   csrfToken: string | null,
   csrfFieldName: string,
   ui: ConsentUiRenderer
@@ -963,8 +1174,11 @@ function buildPerSourceConfirmForm(
       )}" checked /> ${ui.escapeHtml(sourceLabel)}</label>${narrowControls}</div>`;
     })
     .join("\n");
-  return `<form class="hosted-ui-form" method="POST" action="/consent/approve" aria-label="Confirm each source">
-${csrfInput}<input type="hidden" name="request_uri" value="${ui.escapeHtml(requestUri)}" />
+  const reviewInput = reviewRevision
+    ? `<input type="hidden" name="approval_review_revision" value="${ui.escapeHtml(reviewRevision)}" />`
+    : "";
+  return `<form class="hosted-ui-form" method="POST" action="/consent/review" aria-label="Confirm each source">
+  ${csrfInput}${reviewInput}<input type="hidden" name="request_uri" value="${ui.escapeHtml(requestUri)}" />
 <div class="hosted-ui-source-toggles"><span class="pdpp-title">Confirm each source</span>${checkboxes}</div>
 <button type="submit" class="hosted-ui-button" data-variant="primary">Confirm selected sources</button>
 </form>`;
@@ -981,11 +1195,117 @@ function buildApproveAllForm(
     ? `<input type="hidden" name="${ui.escapeHtml(csrfFieldName)}" value="${ui.escapeHtml(csrfToken)}" />`
     : "";
   const sourceList = cards.map((card) => ui.escapeHtml(card.source?.id || `source ${card.index + 1}`)).join(", ");
-  return `<form class="hosted-ui-form" method="POST" action="/consent/approve" aria-label="Allow all sources">
-${csrfInput}<input type="hidden" name="request_uri" value="${ui.escapeHtml(requestUri)}" />
+  return `<form class="hosted-ui-form" method="POST" action="/consent/review" aria-label="Allow all sources">
+  ${csrfInput}<input type="hidden" name="request_uri" value="${ui.escapeHtml(requestUri)}" />
 <label class="hosted-ui-source-toggle"><input type="checkbox" name="confirm_approve_all" value="1" required /> I confirm allowing all ${cards.length} sources: ${sourceList}</label>
 <button type="submit" class="hosted-ui-button" data-variant="default">Allow all sources</button>
 </form>`;
+}
+
+function buildFinalBatchReviewForm(
+  cards: PendingConsentCard[],
+  requestUri: string,
+  reviewRevision: string,
+  csrfToken: string | null,
+  csrfFieldName: string,
+  ui: ConsentUiRenderer
+): string {
+  const csrfInput = csrfToken
+    ? `<input type="hidden" name="${ui.escapeHtml(csrfFieldName)}" value="${ui.escapeHtml(csrfToken)}" />`
+    : "";
+  const sourceList = cards
+    .map((card) => `<li>${ui.escapeHtml(card.source?.id || `source ${card.index + 1}`)}</li>`)
+    .join("");
+  return `<form class="hosted-ui-form" method="POST" action="/consent/approve" aria-label="Confirm reviewed batch decision">
+  ${csrfInput}<input type="hidden" name="request_uri" value="${ui.escapeHtml(requestUri)}" />
+  <input type="hidden" name="approval_review_revision" value="${ui.escapeHtml(reviewRevision)}" />
+<div class="hosted-ui-source-toggles"><span class="pdpp-title">Reviewed sources</span><ul>${sourceList}</ul></div>
+<label class="hosted-ui-source-toggle"><input type="checkbox" name="confirm_reviewed_decision" value="1" required /> I confirm this reviewed decision</label>
+<button type="submit" class="hosted-ui-button" data-variant="primary">Approve reviewed decision</button>
+</form>`;
+}
+
+function renderReviewedBatchConsentHtml(
+  review: BatchApprovalReviewArtifact,
+  pending: PendingGrant,
+  requestUri: string,
+  csrfToken: string | null,
+  csrfFieldName: string,
+  providerName: string,
+  ui: ConsentUiRenderer
+): string {
+  if (!pending.reviewRevision) {
+    throw new Error("Reviewed batch consent is missing its approval revision");
+  }
+  const cards: PendingConsentCard[] = review.sources.map((source) => ({
+    access_mode: source.access_mode,
+    client_claims: source.client_claims,
+    index: source.index,
+    purpose_code: source.purpose_code,
+    resolvedStreams: source.resolved_streams,
+    retention: source.retention,
+    source: source.source,
+  }));
+  const csrfHidden = csrfToken ? [{ name: csrfFieldName, value: csrfToken }] : [];
+  const denyForm = ui.renderActionRow([
+    {
+      action: "/consent/deny",
+      hidden: [...csrfHidden, { name: "request_uri", value: requestUri }],
+      label: "Deny",
+      method: "POST",
+      variant: "danger",
+    },
+  ]);
+  const sourceSections = review.sources
+    .map((source, order) =>
+      ui.renderSurface({
+        ariaLabel: `Reviewed source ${source.index + 1}`,
+        children: [
+          `<h3 class="pdpp-heading">${ui.escapeHtml(source.source.id)}</h3>`,
+          ui.renderKeyValueList([
+            { label: "Approval order", value: order + 1 },
+            { label: "Staged source index", value: source.index },
+            ...buildReviewedSourceFacts(source.source, source.source_declaration),
+            ...buildReviewedSelectionFacts(source),
+          ]),
+          buildClientClaimsBlock(source.client_claims, ui),
+          renderReviewedNarrowing(review.source_narrowing[String(source.index)], ui),
+          `<span class="pdpp-title">Exact reviewed streams</span>${renderReviewedStreams(source.resolved_streams, ui)}`,
+        ].join("\n"),
+        surface: "human",
+      })
+    )
+    .join("\n");
+  const actions = [
+    buildFinalBatchReviewForm(cards, requestUri, pending.reviewRevision, csrfToken, csrfFieldName, ui),
+    denyForm,
+  ].join("\n");
+  const body = [
+    ui.renderPageIntro({
+      eyebrow: "Final approval",
+      lede: "These are the exact facts your server saved when you completed review.",
+      title: "Approve the reviewed sources",
+    }),
+    ui.renderSurface({
+      ariaLabel: "Reviewed batch decision",
+      children: ui.renderKeyValueList([
+        ...buildReviewedClientFacts(review.client),
+        { label: "Subject ID", value: review.subject.id },
+        { label: "Access mode", value: displayOptional(review.access_mode) },
+        { label: "Grant expiry", value: displayOptional(review.expires_at) },
+        { label: "Parent package ID", value: displayOptional(review.parent_package_id) },
+        { label: "Approved source order", value: review.approved_source_indexes.join(", ") },
+      ]),
+      surface: "human",
+    }),
+    sourceSections,
+    ui.renderSurface({ ariaLabel: "Consent actions", children: actions, surface: "human" }),
+  ].join("\n");
+  return ui.renderHostedDocument({
+    body,
+    providerName,
+    title: `${providerName} — Reviewed batch consent`,
+  });
 }
 
 function renderBatchConsentHtml(
@@ -996,6 +1316,17 @@ function renderBatchConsentHtml(
   providerName: string,
   ui: ConsentUiRenderer
 ): string {
+  if (pending.review?.version === "reference.batch-approval-review.v1") {
+    return renderReviewedBatchConsentHtml(
+      pending.review,
+      pending,
+      requestUri,
+      csrfToken,
+      csrfFieldName,
+      providerName,
+      ui
+    );
+  }
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const request = pending.request;
   const client = request.client || {};
@@ -1037,14 +1368,18 @@ function renderBatchConsentHtml(
       variant: "danger",
     },
   ]);
-  const actions = [
-    suppressionNote,
-    buildPerSourceConfirmForm(cards, requestUri, csrfToken, csrfFieldName, ui),
-    approveAllSuppressed ? "" : buildApproveAllForm(cards, requestUri, csrfToken, csrfFieldName, ui),
-    denyForm,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const actions = pending.reviewRevision
+    ? [buildFinalBatchReviewForm(cards, requestUri, pending.reviewRevision, csrfToken, csrfFieldName, ui), denyForm]
+        .filter(Boolean)
+        .join("\n")
+    : [
+        suppressionNote,
+        buildPerSourceConfirmForm(cards, requestUri, null, csrfToken, csrfFieldName, ui),
+        approveAllSuppressed ? "" : buildApproveAllForm(cards, requestUri, csrfToken, csrfFieldName, ui),
+        denyForm,
+      ]
+        .filter(Boolean)
+        .join("\n");
 
   const body = [
     ui.renderPageIntro({
@@ -1087,6 +1422,133 @@ function renderBatchConsentHtml(
   });
 }
 
+function hiddenInputs(fields: Array<{ name: string; value: string }>, ui: ConsentUiRenderer): string {
+  return fields
+    .map((field) => `<input type="hidden" name="${ui.escapeHtml(field.name)}" value="${ui.escapeHtml(field.value)}" />`)
+    .join("");
+}
+
+function buildSingleConsentActions({
+  csrfFieldName,
+  csrfToken,
+  isAiTraining,
+  pending,
+  requestUri,
+  ui,
+}: {
+  csrfFieldName: string;
+  csrfToken: string | null;
+  isAiTraining: boolean;
+  pending: PendingGrant;
+  requestUri: string;
+  ui: ConsentUiRenderer;
+}): string {
+  const csrfHidden = csrfToken ? [{ name: csrfFieldName, value: csrfToken }] : [];
+  const reviewHidden = pending.reviewRevision
+    ? [{ name: "approval_review_revision", value: pending.reviewRevision }]
+    : [];
+  const allowAction = pending.reviewRevision
+    ? ui.renderActionRow([
+        {
+          action: "/consent/approve",
+          hidden: [...csrfHidden, ...reviewHidden, { name: "request_uri", value: requestUri }],
+          label: "Allow access",
+          method: "POST",
+          variant: "primary",
+        },
+      ])
+    : `<form class="hosted-ui-form" method="POST" action="/consent/review" aria-label="Finalize consent review">
+${hiddenInputs(csrfHidden, ui)}<input type="hidden" name="request_uri" value="${ui.escapeHtml(requestUri)}" />
+${
+  isAiTraining
+    ? '<label class="hosted-ui-source-toggle"><input type="checkbox" name="ai_training_consented" value="1" required /> I explicitly agree to AI training use</label>'
+    : ""
+}
+<button type="submit" class="hosted-ui-button" data-variant="primary">Allow access</button>
+</form>`;
+  const denyAction = ui.renderActionRow([
+    {
+      action: "/consent/deny",
+      hidden: [...csrfHidden, { name: "request_uri", value: requestUri }],
+      label: "Deny",
+      method: "POST",
+      variant: "danger",
+    },
+  ]);
+  return [allowAction, denyAction].join("\n");
+}
+
+function renderReviewedSingleConsentHtml(
+  review: SingleApprovalReviewArtifact,
+  pending: PendingGrant,
+  requestUri: string,
+  csrfToken: string | null,
+  csrfFieldName: string,
+  providerName: string,
+  ui: ConsentUiRenderer
+): string {
+  const actions = buildSingleConsentActions({
+    csrfFieldName,
+    csrfToken,
+    isAiTraining: false,
+    pending,
+    requestUri,
+    ui,
+  });
+  const body = [
+    ui.renderPageIntro({
+      eyebrow: "Final approval",
+      lede: "These are the exact facts your server saved when you completed review.",
+      title: "Approve the reviewed data access",
+    }),
+    ui.renderSurface({
+      ariaLabel: "Reviewed consent decision",
+      children: [
+        renderAuthorshipBlock(
+          "protocol",
+          "Reviewed client and subject",
+          ui.renderKeyValueList([
+            ...buildReviewedClientFacts(review.client),
+            { label: "Subject ID", value: review.subject.id },
+          ]),
+          ui
+        ),
+        renderAuthorshipBlock(
+          "protocol",
+          "Reviewed source declaration",
+          ui.renderKeyValueList(buildReviewedSourceFacts(review.source, review.source_declaration)),
+          ui
+        ),
+        renderAuthorshipBlock(
+          "client",
+          "Reviewed purpose",
+          [ui.renderKeyValueList(buildReviewedSelectionFacts(review)), buildClientClaimsBlock(review.client_claims, ui)]
+            .filter(Boolean)
+            .join("\n"),
+          ui
+        ),
+        renderAuthorshipBlock(
+          "protocol",
+          "Reviewed approval conditions",
+          ui.renderKeyValueList([
+            { label: "AI training consent", value: displayAiTrainingDecision(review.ai_training_consented) },
+            { label: "Grant expiry", value: displayOptional(review.expires_at) },
+          ]),
+          ui
+        ),
+        `<span class="pdpp-title">Exact reviewed streams</span>${renderReviewedStreams(review.resolved_streams, ui)}`,
+        actions,
+      ].join("\n"),
+      surface: "human",
+    }),
+  ].join("\n");
+  return ui.renderHostedDocument({
+    body,
+    providerName,
+    title: `${providerName} — Reviewed consent`,
+  });
+}
+
 /**
  * Renders the active consent review page for GET /consent when a live
  * pending-consent row exists. The owner reviews streams, facts, and submits
@@ -1102,6 +1564,17 @@ export function renderPendingGrantConsentHtml(
 ): string {
   if (pending.batch) {
     return renderBatchConsentHtml(pending, requestUri, csrfToken, csrfFieldName, providerName, ui);
+  }
+  if (pending.review?.version === "reference.approval-review.v1") {
+    return renderReviewedSingleConsentHtml(
+      pending.review,
+      pending,
+      requestUri,
+      csrfToken,
+      csrfFieldName,
+      providerName,
+      ui
+    );
   }
 
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
@@ -1167,9 +1640,8 @@ export function renderPendingGrantConsentHtml(
       ? renderAuthorshipBlock("client", "Client-authored display", ui.renderKeyValueList(clientFactsRaw), ui)
       : "";
 
-  // CLIENT: per-stream client_claims (purpose/commitments), if any. Previously
-  // dropped entirely — now surfaced as a distinct, disclaimed claims block.
-  const clientClaimsBlock = buildClientClaimsBlock(requestedStreams, ui);
+  // CLIENT: top-level client_claims.commitments, if any.
+  const clientClaimsBlock = buildClientClaimsBlock(selection.client_claims, ui);
 
   // MANIFEST: the streams the owner's server is being asked to project, named
   // and described by the resolved manifest (owner-trusted human descriptions).
@@ -1178,24 +1650,14 @@ export function renderPendingGrantConsentHtml(
   const codeBlock = pending.userCode
     ? `<div><span class="pdpp-eyebrow">Verification code</span><div class="hosted-ui-code">${ui.escapeHtml(pending.userCode)}</div></div>`
     : "";
-
-  const csrfHidden = csrfToken ? [{ name: csrfFieldName, value: csrfToken }] : [];
-  const actions = ui.renderActionRow([
-    {
-      action: "/consent/approve",
-      hidden: [...csrfHidden, { name: "request_uri", value: requestUri }],
-      label: "Allow access",
-      method: "POST",
-      variant: "primary",
-    },
-    {
-      action: "/consent/deny",
-      hidden: [...csrfHidden, { name: "request_uri", value: requestUri }],
-      label: "Deny",
-      method: "POST",
-      variant: "danger",
-    },
-  ]);
+  const actions = buildSingleConsentActions({
+    csrfFieldName,
+    csrfToken,
+    isAiTraining: selection.purpose_code === "https://pdpp.dev/purpose/ai_training",
+    pending,
+    requestUri,
+    ui,
+  });
 
   const body = [
     ui.renderPageIntro({

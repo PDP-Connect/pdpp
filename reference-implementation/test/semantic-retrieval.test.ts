@@ -49,6 +49,8 @@ import { fileURLToPath } from "node:url";
 import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { isPostgresStorageBackend, postgresQuery } from "../server/postgres-storage.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import {
   buildPostgresSemanticPlanRequests,
   DEFAULT_SEMANTIC_EMBEDDING_INPUT_MAX_CHARS,
@@ -73,6 +75,9 @@ const UNKNOWN_PROFILE_ERROR = /PDPP_EMBEDDING_PROFILE_ID must be one of:/;
 const LOCAL_SUPERVISOR_CONTRACT_ERROR =
   /production local semantic execution requires PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT=1/;
 const compareStrings = (a: unknown, b: unknown) => String(a).localeCompare(String(b));
+const SEMANTIC_A_SOURCE_ID = "https://registry.pdpp.dev/connectors/semantic-a";
+const SEMANTIC_B_SOURCE_ID = "https://registry.pdpp.dev/connectors/semantic-b";
+const SEMANTIC_A_TEST_INSTANCE_ID = "cin_semantic_a_test";
 
 interface TestHttpServer {
   close: (callback: () => void) => void;
@@ -143,6 +148,14 @@ const MANIFEST_A = {
   connector_id: "semantic-a",
   display_name: "Semantic A",
   protocol_version: "0.1.0",
+  source_declaration: {
+    declaration_version: "semantic-a-test-declaration-v1",
+    display: { name: "Semantic A" },
+    protocol_version: "0.1.0",
+    publisher: { id: "https://pdpp.dev/reference-implementation" },
+    source: { id: SEMANTIC_A_SOURCE_ID, kind: "connector" as const },
+    streams: [] as unknown[],
+  },
   streams: [
     {
       consent_time_field: "source_created_at",
@@ -190,6 +203,7 @@ const MANIFEST_A = {
         properties: {
           body: { type: "string" },
           id: { type: "string" },
+          marker: { type: "string" },
           post_title: { type: "string" },
           source_created_at: { format: "date-time", type: "string" },
         },
@@ -220,12 +234,21 @@ const MANIFEST_A = {
   ],
   version: "1.0.0",
 };
+MANIFEST_A.source_declaration.streams = MANIFEST_A.streams;
 
 const MANIFEST_B = {
   capabilities: { human_interaction: ["credentials"] },
   connector_id: "semantic-b",
   display_name: "Semantic B",
   protocol_version: "0.1.0",
+  source_declaration: {
+    declaration_version: "semantic-b-test-declaration-v1",
+    display: { name: "Semantic B" },
+    protocol_version: "0.1.0",
+    publisher: { id: "https://pdpp.dev/reference-implementation" },
+    source: { id: SEMANTIC_B_SOURCE_ID, kind: "connector" as const },
+    streams: [] as unknown[],
+  },
   streams: [
     {
       consent_time_field: "source_created_at",
@@ -255,6 +278,7 @@ const MANIFEST_B = {
   ],
   version: "1.0.0",
 };
+MANIFEST_B.source_declaration.streams = MANIFEST_B.streams;
 
 async function issueOwnerToken(asUrl: string, subjectId = "owner_local"): Promise<string> {
   const clientId = "cli_longview";
@@ -287,8 +311,18 @@ interface ClientGrantParams {
   connector_id: string;
   purpose_code: string;
   purpose_description: string;
-  streams: Array<{ name: string; fields: string[] }>;
+  streams: Array<{ name: string; fields: string[]; instance_ids?: string[] }>;
   subject_id?: string;
+}
+
+function sourceForConnector(connectorId: string): { id: string; kind: "connector" } {
+  if (connectorId === MANIFEST_A.connector_id) {
+    return MANIFEST_A.source_declaration.source;
+  }
+  if (connectorId === MANIFEST_B.connector_id) {
+    return MANIFEST_B.source_declaration.source;
+  }
+  throw new Error(`No test SourceDeclaration for connector ${connectorId}`);
 }
 
 async function approveClientGrant(asUrl: string, params: ClientGrantParams): Promise<Record<string, unknown>> {
@@ -299,7 +333,7 @@ async function approveClientGrant(asUrl: string, params: ClientGrantParams): Pro
           access_mode: params.access_mode,
           purpose_code: params.purpose_code,
           purpose_description: params.purpose_description,
-          source: { id: params.connector_id, kind: "connector" },
+          source: sourceForConnector(params.connector_id),
           streams: params.streams,
           type: "https://pdpp.dev/data-access",
         },
@@ -310,12 +344,90 @@ async function approveClientGrant(asUrl: string, params: ClientGrantParams): Pro
     method: "POST",
   });
   const initiate = asRecord(initiateBody);
+  const subjectId = params.subject_id || "owner_local";
+  const reviewResponse = await fetchJson(`${asUrl}/consent/review`, {
+    body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: subjectId }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(reviewResponse.status, 200, JSON.stringify(reviewResponse.body));
+  const review = asRecord(reviewResponse.body);
+  assert.equal(typeof review.approval_review_revision, "string", "consent review returns a revision");
   const { body: approved } = await fetchJson(`${asUrl}/consent/approve`, {
-    body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: params.subject_id || "owner_local" }),
-    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      approval_review_revision: review.approval_review_revision,
+      request_uri: initiate.request_uri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   return asRecord(approved);
+}
+
+async function materializeSemanticConnection(connectorId: string, connectorInstanceId: string): Promise<void> {
+  const now = "2026-01-01T00:00:00.000Z";
+  await createRequestConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: connectorId,
+    ownerSubjectId: "owner_local",
+    sourceBinding: { kind: "test_account", label: connectorInstanceId },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+}
+
+async function listSemanticVectorRows(connectorId: string, recordKeys: readonly string[]) {
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `
+      SELECT connector_instance_id, connector_id, scope_key, record_key
+      FROM semantic_search_blob
+      WHERE connector_id = $1 AND record_key = ANY($2::text[])
+      ORDER BY connector_instance_id
+    `,
+      [connectorId, recordKeys]
+    );
+    return result.rows;
+  }
+
+  const db = getDb();
+  const vectorTable = db.vectorIndexKind === "sqlite-vec" ? "semantic_search_rowid" : "semantic_search_blob";
+  return db
+    .prepare(`
+      SELECT connector_instance_id, connector_id, scope_key, record_key
+      FROM ${vectorTable}
+      WHERE connector_id = ? AND record_key IN (?, ?)
+      ORDER BY connector_instance_id
+    `)
+    .all(connectorId, ...recordKeys);
+}
+
+async function listSemanticMetaRows(connectorId: string) {
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `
+      SELECT connector_instance_id
+      FROM semantic_search_meta
+      WHERE connector_id = $1 AND stream = 'posts'
+      ORDER BY connector_instance_id
+    `,
+      [connectorId]
+    );
+    return result.rows;
+  }
+
+  return getDb()
+    .prepare(`
+      SELECT connector_instance_id
+      FROM semantic_search_meta
+      WHERE connector_id = ? AND stream = 'posts'
+      ORDER BY connector_instance_id
+    `)
+    .all(connectorId);
 }
 
 interface SemanticRecordInput {
@@ -707,15 +819,23 @@ test("filtered semantic search rejects invalid filters and still-forbidden param
   await withHarness({}, async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
     const connectorA = MANIFEST_A.connector_id;
-    await ingest(rsUrl, ownerToken, connectorA, "posts", [
-      {
-        id: "p1",
-        score: 5,
-        selftext: "secret body",
-        source_created_at: "2026-04-10T00:00:00Z",
-        title: "semantic filtered alpha",
-      },
-    ]);
+    await materializeSemanticConnection(connectorA, SEMANTIC_A_TEST_INSTANCE_ID);
+    await ingest(
+      rsUrl,
+      ownerToken,
+      connectorA,
+      "posts",
+      [
+        {
+          id: "p1",
+          score: 5,
+          selftext: "secret body",
+          source_created_at: "2026-04-10T00:00:00Z",
+          title: "semantic filtered alpha",
+        },
+      ],
+      SEMANTIC_A_TEST_INSTANCE_ID
+    );
 
     const rejectedOwnerQueries = [
       "q=semantic&filter[source_created_at][gte]=2026-04-01T00:00:00Z",
@@ -740,14 +860,16 @@ test("filtered semantic search rejects invalid filters and still-forbidden param
       connector_id: connectorA,
       purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "semantic filtered retrieval test",
-      streams: [{ fields: ["id", "title", "source_created_at"], name: "posts" }],
+      streams: [
+        { fields: ["id", "title", "source_created_at"], instance_ids: [SEMANTIC_A_TEST_INSTANCE_ID], name: "posts" },
+      ],
     });
     const unauthorized = await fetchJson(
       `${rsUrl}/v1/search/semantic?q=semantic&streams=posts&filter[selftext]=secret`,
       { headers: { Authorization: `Bearer ${String(approved.token)}` } }
     );
-    assert.equal(unauthorized.status, 403);
-    assert.equal(errorCode(unauthorized.body), "field_not_granted");
+    assert.equal(unauthorized.status, 400);
+    assert.equal(errorCode(unauthorized.body), "invalid_request");
   });
 });
 
@@ -789,16 +911,22 @@ test("client-token streams[] not in grant returns grant_stream_not_allowed", asy
   await withHarness({}, async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
     const connectorA = MANIFEST_A.connector_id;
-    await ingest(rsUrl, ownerToken, connectorA, "posts", [
-      { id: "p1", selftext: "", source_created_at: "2026-04-01T00:00:00Z", title: "overdraft" },
-    ]);
+    await materializeSemanticConnection(connectorA, SEMANTIC_A_TEST_INSTANCE_ID);
+    await ingest(
+      rsUrl,
+      ownerToken,
+      connectorA,
+      "posts",
+      [{ id: "p1", selftext: "", source_created_at: "2026-04-01T00:00:00Z", title: "overdraft" }],
+      SEMANTIC_A_TEST_INSTANCE_ID
+    );
     const approved = await approveClientGrant(asUrl, {
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorA,
       purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "semantic test",
-      streams: [{ fields: ["id", "title"], name: "posts" }], // posts only
+      streams: [{ fields: ["id", "title"], instance_ids: [SEMANTIC_A_TEST_INSTANCE_ID], name: "posts" }], // posts only
     });
     const { status, body } = await fetchJson(`${rsUrl}/v1/search/semantic?q=overdraft&streams=comments`, {
       headers: { Authorization: `Bearer ${String(approved.token)}` },
@@ -834,14 +962,22 @@ test("client grant authorizing only one of two declared semantic_fields restrict
   await withHarness({}, async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
     const connectorA = MANIFEST_A.connector_id;
-    await ingest(rsUrl, ownerToken, connectorA, "posts", [
-      {
-        id: "p1",
-        selftext: "unauthorized field content",
-        source_created_at: "2026-04-01T00:00:00Z",
-        title: "overdraft story",
-      },
-    ]);
+    await materializeSemanticConnection(connectorA, SEMANTIC_A_TEST_INSTANCE_ID);
+    await ingest(
+      rsUrl,
+      ownerToken,
+      connectorA,
+      "posts",
+      [
+        {
+          id: "p1",
+          selftext: "unauthorized field content",
+          source_created_at: "2026-04-01T00:00:00Z",
+          title: "overdraft story",
+        },
+      ],
+      SEMANTIC_A_TEST_INSTANCE_ID
+    );
     // Grant only `title` — selftext is NOT in the client's projection.
     const approved = await approveClientGrant(asUrl, {
       access_mode: "continuous",
@@ -849,7 +985,7 @@ test("client grant authorizing only one of two declared semantic_fields restrict
       connector_id: connectorA,
       purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "semantic test subset",
-      streams: [{ fields: ["id", "title"], name: "posts" }],
+      streams: [{ fields: ["id", "title"], instance_ids: [SEMANTIC_A_TEST_INSTANCE_ID], name: "posts" }],
     });
     const { status, body } = await fetchJson(`${rsUrl}/v1/search/semantic?q=${encodeURIComponent("overdraft story")}`, {
       headers: { Authorization: `Bearer ${String(approved.token)}` },
@@ -876,25 +1012,44 @@ test("client grant authorizing only one of two declared semantic_fields restrict
   });
 });
 
-// ─── 14.14 — zero intersection stream contributes zero hits ─────────────────
+// 14.14 - retained instance authority with current full-stream fields
 
-test("stream declared in semantic_fields but with empty grant∩declared intersection contributes zero hits", async () => {
+test("client grant without a retained field subset searches declared semantic_fields", async () => {
   await withHarness({}, async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
     const connectorA = MANIFEST_A.connector_id;
-    // Comments declares semantic_fields: ['body']. Grant authorizes only `id`
-    // — no overlap with declared semantic_fields. Should contribute zero hits
-    // AND return no per-stream error.
-    await ingest(rsUrl, ownerToken, connectorA, "comments", [
-      { body: "something about overdrafts", id: "c1", source_created_at: "2026-04-01T00:00:00Z" },
-    ]);
+    // Comments declares semantic_fields: ['body']. This approval path retains
+    // instance authority but no field subset, so semantic search follows the
+    // current full-stream grant behavior.
+    await materializeSemanticConnection(connectorA, SEMANTIC_A_TEST_INSTANCE_ID);
+    await ingest(
+      rsUrl,
+      ownerToken,
+      connectorA,
+      "comments",
+      [
+        {
+          body: "something about overdrafts",
+          id: "c1",
+          marker: "not semantic",
+          source_created_at: "2026-04-01T00:00:00Z",
+        },
+      ],
+      SEMANTIC_A_TEST_INSTANCE_ID
+    );
     const approved = await approveClientGrant(asUrl, {
       access_mode: "continuous",
       client_id: "longview",
       connector_id: connectorA,
       purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "zero-intersection test",
-      streams: [{ fields: ["id"], name: "comments" }], // id not in declared semantic_fields
+      streams: [
+        {
+          fields: ["marker"],
+          instance_ids: [SEMANTIC_A_TEST_INSTANCE_ID],
+          name: "comments",
+        },
+      ],
     });
     const { status, body } = await fetchJson(`${rsUrl}/v1/search/semantic?q=overdrafts&streams=comments`, {
       headers: { Authorization: `Bearer ${String(approved.token)}` },
@@ -902,7 +1057,9 @@ test("stream declared in semantic_fields but with empty grant∩declared interse
     assert.equal(status, 200);
     const bodyRecord = asRecord(body);
     assert.equal(bodyRecord.object, "list");
-    assert.deepEqual(bodyRecord.data, []);
+    const hits = asArray(bodyRecord.data);
+    assert.equal(hits.length, 1);
+    assert.equal(asRecord(hits[0]).record_key, "c1");
   });
 });
 
@@ -1458,55 +1615,45 @@ test("semantic upsert with an empty field deletes only that record, not the whol
   });
 });
 
-test("semantic index metadata isolates instances and client search fans in across active bindings", async () => {
+test("semantic index metadata isolates instances and client search fans in across granted active bindings", async () => {
   await withHarness({}, async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
 
-    const db = getDb();
-    const now = new Date().toISOString();
-    const insertInstance = db.prepare(`
-      INSERT INTO connector_instances(
-        connector_instance_id, owner_subject_id, connector_id, display_name,
-        status, source_kind, source_binding_key, source_binding_json, created_at, updated_at
-      ) VALUES(?, 'owner_local', ?, ?, 'active', 'account', ?, '{}', ?, ?)
-    `);
-    insertInstance.run("cin_semantic_work", MANIFEST_A.connector_id, "Semantic A work", "work", now, now);
-    insertInstance.run("cin_semantic_personal", MANIFEST_A.connector_id, "Semantic A personal", "personal", now, now);
+    await materializeSemanticConnection(MANIFEST_A.connector_id, "cin_semantic_work");
+    await materializeSemanticConnection(MANIFEST_A.connector_id, "cin_semantic_personal");
 
     const baseRecord = {
-      id: "shared-record-key",
       score: 1,
       selftext: "",
       source_created_at: "2026-04-01T00:00:00Z",
       subreddit: "pdpp",
       title: "semantic connector instance collision sentinel",
     };
-    await ingest(rsUrl, ownerToken, MANIFEST_A.connector_id, "posts", [baseRecord], "cin_semantic_work");
-    await ingest(rsUrl, ownerToken, MANIFEST_A.connector_id, "posts", [baseRecord], "cin_semantic_personal");
+    await ingest(
+      rsUrl,
+      ownerToken,
+      MANIFEST_A.connector_id,
+      "posts",
+      [{ ...baseRecord, id: "work-record-key" }],
+      "cin_semantic_work"
+    );
+    await ingest(
+      rsUrl,
+      ownerToken,
+      MANIFEST_A.connector_id,
+      "posts",
+      [{ ...baseRecord, id: "personal-record-key" }],
+      "cin_semantic_personal"
+    );
 
-    const vectorTable = db.vectorIndexKind === "sqlite-vec" ? "semantic_search_rowid" : "semantic_search_blob";
-    const indexed = db
-      .prepare(`
-      SELECT connector_instance_id, connector_id, scope_key, record_key
-      FROM ${vectorTable}
-      WHERE connector_id = ? AND record_key = ?
-      ORDER BY connector_instance_id
-    `)
-      .all(MANIFEST_A.connector_id, "shared-record-key");
+    const indexed = await listSemanticVectorRows(MANIFEST_A.connector_id, ["personal-record-key", "work-record-key"]);
     assert.deepEqual(
       indexed.map((row: Record<string, unknown>) => row.connector_instance_id),
       ["cin_semantic_personal", "cin_semantic_work"],
       "semantic vector identity includes connector_instance_id"
     );
 
-    const metaRows = db
-      .prepare(`
-      SELECT connector_instance_id
-      FROM semantic_search_meta
-      WHERE connector_id = ? AND stream = 'posts'
-      ORDER BY connector_instance_id
-    `)
-      .all(MANIFEST_A.connector_id);
+    const metaRows = await listSemanticMetaRows(MANIFEST_A.connector_id);
     assert.deepEqual(
       metaRows.map((row: Record<string, unknown>) => row.connector_instance_id),
       ["cin_semantic_personal", "cin_semantic_work"],
@@ -1517,28 +1664,29 @@ test("semantic index metadata isolates instances and client search fans in acros
       access_mode: "continuous",
       client_id: "longview",
       connector_id: MANIFEST_A.connector_id,
-      purpose_code: "https://pdpp.dev/purpose/analytics",
-      purpose_description: "semantic instance isolation test",
-      streams: [{ fields: ["id", "title", "source_created_at"], name: "posts" }],
+      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_description: "semantic instance fan-in test",
+      streams: [
+        {
+          fields: ["id", "title", "source_created_at"],
+          instance_ids: ["cin_semantic_personal", "cin_semantic_work"],
+          name: "posts",
+        },
+      ],
     });
+    assert.ok(approved.token, `expected issued grant token, got ${JSON.stringify(approved)}`);
     const { status, body } = await fetchJson(
-      `${rsUrl}/v1/search/semantic?q=${encodeURIComponent(baseRecord.title)}&streams[]=posts`,
+      `${rsUrl}/v1/search/semantic?q=${encodeURIComponent(baseRecord.title)}&streams=posts`,
       { headers: { Authorization: `Bearer ${String(approved.token)}` } }
     );
-    // With cross-binding search fan-in, two active connections under one
-    // connector are no longer an error — the runtime returns the union and
-    // each hit carries its `connection_id`. (Pre-fan-in this surfaced the
-    // scheduler's `ambiguous_connector_instance` error to the read path,
-    // which has been replaced by the typed `connection_not_found` /
-    // `ambiguous_connection` read-path errors covered by
-    // `storage-fan-in-read-contract.test.js` and the route-level
-    // `blob-fan-in-ambiguity.test.js`.)
+
     assert.equal(status, 200);
     const hits = asArray(asRecord(body).data);
-    // Both bindings should contribute a hit for the shared record_key.
-    assert.equal(hits.length, 2, "fan-in returns one hit per binding");
+    assert.equal(hits.length, 2, "fan-in returns one hit per granted active binding");
     const cids = hits.map((h) => asRecord(h).connection_id).sort(compareStrings);
     assert.deepEqual(cids, ["cin_semantic_personal", "cin_semantic_work"]);
+    const keys = hits.map((h) => asRecord(h).record_key).sort(compareStrings);
+    assert.deepEqual(keys, ["personal-record-key", "work-record-key"]);
   });
 });
 

@@ -1,0 +1,16 @@
+{
+  "access": {
+    "type": "pdpp-approved-authorization",
+    "source_id": "https://sources.example/records/spotify",
+    "access_mode": "single_use",
+    "streams": [
+      {
+        "name": "top_artists",
+        "instance_ids": ["account-a"],
+        "fields": ["id", "name"]
+      }
+    ],
+    "must_understand": ["unimplemented_control"],
+    "unimplemented_control": true
+  }
+}

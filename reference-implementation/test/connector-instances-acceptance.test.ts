@@ -33,6 +33,7 @@ function manifest(connectorId: string, stream = "messages") {
   return {
     connector_id: connectorId,
     display_name: connectorId,
+    manifest_uri: `https://sources.example/${connectorId}`,
     protocol_version: "0.1.0",
     runtime_requirements: { bindings: { network: { required: true } } },
     streams: [
@@ -47,6 +48,7 @@ function manifest(connectorId: string, stream = "messages") {
           required: ["id", "subject"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
         semantics: "mutable_state",
       },
     ],

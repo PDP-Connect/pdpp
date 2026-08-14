@@ -118,23 +118,41 @@ rl.on('line', (line) => {
 const TWO_STREAM_MANIFEST = {
   connector_id: "creport-two-stream",
   display_name: "Collection Report Two-Stream",
+  manifest_uri: "https://sources.example/creport-two-stream",
   protocol_version: "0.1.0",
   streams: [
     {
       name: "items",
       primary_key: ["id"],
       schema: { properties: { id: { type: "string" }, value: { type: "string" } }, required: ["id"], type: "object" },
+      selection: { fields: true, resources: true },
       semantics: "append_only",
     },
     {
       name: "other_items",
       primary_key: ["id"],
       schema: { properties: { id: { type: "string" }, value: { type: "string" } }, required: ["id"], type: "object" },
+      selection: { fields: true, resources: true },
       semantics: "append_only",
     },
   ],
   version: "1.0.0",
 };
+
+type RuntimeManifest = Parameters<typeof runConnector>[0]["manifest"];
+
+function runtimeManifest(manifest: {
+  streams: ReadonlyArray<{ name: string; selection?: unknown; [key: string]: unknown }>;
+  [key: string]: unknown;
+}): RuntimeManifest {
+  return {
+    ...manifest,
+    streams: manifest.streams.map((stream) => {
+      const { selection: _selection, ...withoutSelection } = stream;
+      return withoutSelection;
+    }),
+  };
+}
 
 // Every test in this file reads back through the owner-dashboard surface
 // (`getConnectorDetail`/`_ref/connectors`), which is hardcoded to
@@ -257,7 +275,7 @@ test("2.2b: a two-stream run yields a two-entry collection_report on the detail 
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
-      manifest: TWO_STREAM_MANIFEST,
+      manifest: runtimeManifest(TWO_STREAM_MANIFEST),
       onInteraction: async () => ({}),
       ownerToken,
       persistState: true,
@@ -342,7 +360,7 @@ test("2.4: a collected-records, no-gaps, no-considered run is NOT projected comp
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
-      manifest: TWO_STREAM_MANIFEST,
+      manifest: runtimeManifest(TWO_STREAM_MANIFEST),
       onInteraction: async () => ({}),
       ownerToken,
       persistState: true,
@@ -377,12 +395,14 @@ test("2.6: a portable RECORD/STATE/DONE-only connector yields a valid report wit
   const manifest = {
     connector_id: "creport-portable",
     display_name: "Portable Floor",
+    manifest_uri: "https://sources.example/creport-portable",
     protocol_version: "0.1.0",
     streams: [
       {
         name: "items",
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -405,7 +425,7 @@ test("2.6: a portable RECORD/STATE/DONE-only connector yields a valid report wit
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
-      manifest,
+      manifest: runtimeManifest(manifest),
       onInteraction: async () => ({}),
       ownerToken,
       persistState: true,
@@ -457,7 +477,7 @@ test("2.5: collection_facts and collection_report are absent from grant-scoped /
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
-      manifest: TWO_STREAM_MANIFEST,
+      manifest: runtimeManifest(TWO_STREAM_MANIFEST),
       onInteraction: async () => ({}),
       ownerToken,
       persistState: true,
@@ -533,7 +553,7 @@ test("derive-on-read: coverage condition is computed on each read (not frozen at
       collectionMode: "full_refresh",
       connectorId,
       connectorPath,
-      manifest: TWO_STREAM_MANIFEST,
+      manifest: runtimeManifest(TWO_STREAM_MANIFEST),
       onInteraction: async () => ({}),
       ownerToken,
       persistState: true,

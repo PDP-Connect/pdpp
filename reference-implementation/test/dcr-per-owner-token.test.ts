@@ -6,6 +6,8 @@ import test from "node:test";
 
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { introspectionHeaders } from "./helpers/introspection.ts";
+import { TEST_INTROSPECTION_SERVER_OPTS } from "./helpers/introspection-test-credentials.ts";
 
 const REGEXP_1 = /<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/;
 
@@ -31,9 +33,11 @@ interface StartServerOptions {
   asPort?: number;
   dbPath?: string;
   dynamicClientRegistrationInitialAccessTokens?: string[];
+  introspectionCallerCredentials?: unknown;
   ownerAuthPassword?: string;
   ownerAuthSubjectId?: string;
   quiet?: boolean;
+  rsIntrospectionCredentials?: unknown;
   rsPort?: number;
 }
 
@@ -150,6 +154,7 @@ async function withServer(fn: (ctx: { asUrl: string }) => Promise<void>): Promis
     ownerAuthSubjectId: TEST_SUBJECT,
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   try {
     await fn({ asUrl: `http://localhost:${server.asPort}` });
@@ -270,7 +275,7 @@ async function issueOwnerTokenViaDeviceFlow(asUrl: string, clientId: string, coo
       device_code: device.device_code,
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
     }),
-    headers: { "Content-Type": "application/json" },
+    headers: introspectionHeaders(),
     method: "POST",
   });
   assert.equal(tokenResp.status, 200);
@@ -280,7 +285,7 @@ async function issueOwnerTokenViaDeviceFlow(asUrl: string, clientId: string, coo
 async function introspect(asUrl: string, token: string): Promise<IntrospectBody> {
   const resp = await fetch(`${asUrl}/introspect`, {
     body: JSON.stringify({ token }),
-    headers: { "Content-Type": "application/json" },
+    headers: introspectionHeaders(),
     method: "POST",
   });
   assert.equal(resp.status, 200);
@@ -323,10 +328,11 @@ function seedActiveHostedMcpPackageForClient(clientId: string): SeededPackageSta
 
   db.prepare(`
     INSERT INTO oauth_refresh_tokens(
-      refresh_token_hash, client_id, grant_id, package_id, subject_id, status,
-      created_at, expires_at, last_used_at, revoked_at
-    ) VALUES (?, ?, NULL, ?, ?, 'active', ?, NULL, NULL, NULL)
-  `).run(refreshTokenHash, clientId, packageId, TEST_SUBJECT, now);
+      refresh_token_hash, family_id, generation, parent_generation,
+      client_id, grant_id, package_id, subject_id, status,
+      created_at, expires_at, last_used_at, superseded_at, revoked_at
+    ) VALUES (?, ?, 0, NULL, ?, NULL, ?, ?, 'active', ?, NULL, NULL, NULL, NULL)
+  `).run(refreshTokenHash, "rtf_dcr_delete_cascade", clientId, packageId, TEST_SUBJECT, now);
 
   return { packageId, packageTokenId, refreshTokenHash };
 }

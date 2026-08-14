@@ -139,11 +139,36 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Approvals — `/_ref/approvals` projection.
   readonly approvalsListPendingConsents: SmallEnumerationQuery;
   readonly approvalsListPendingOwnerDevices: SmallEnumerationQuery;
+  readonly authAgentConnectAttemptsCountByStatus: ReadOneQuery;
+  readonly authAgentConnectAttemptsDeleteById: MutationQuery;
+  readonly authAgentConnectAttemptsDeleteExpiredById: MutationQuery;
+  readonly authAgentConnectAttemptsDeleteExpiredHistoricPage: MutationQuery;
+  readonly authAgentConnectAttemptsDeleteExpiredIfConsentTerminal: MutationQuery;
+  readonly authAgentConnectAttemptsGetById: ReadOneQuery;
+  readonly authAgentConnectAttemptsGetExpiredByRequestUri: ReadOneQuery;
+  readonly authAgentConnectAttemptsInsert: MutationQuery;
+  readonly authAgentConnectAttemptsInsertIfConsentPending: MutationQuery;
+  readonly authAgentConnectAttemptsListExpiredPending: ReadManyQuery;
+  readonly authAgentConnectAttemptsListExpiredTombstones: ReadManyQuery;
+  readonly authAgentConnectAttemptsMarkApproved: MutationQuery;
+  readonly authAgentConnectAttemptsMarkExpiredById: MutationQuery;
+  readonly authAgentConnectAttemptsMarkFailed: MutationQuery;
+  readonly authAgentConnectAttemptsPrune: MutationQuery;
+  readonly authAgentConnectAttemptsRecoverApproved: ReadOneQuery;
+  readonly authAgentConnectAttemptsRevokeToken: MutationQuery;
+  readonly authAgentConnectAttemptsRevokeTokenIfNoLiveSibling: MutationQuery;
+  readonly authAgentConnectAttemptsSetExpiresAtById: MutationQuery;
+  readonly authAgentConnectAttemptsSetResponseJson: MutationQuery;
+  readonly authAgentConnectAttemptsTokenActive: ReadOneQuery;
+  readonly authConnectorInstancesGetReviewedActive: ReadOneQuery;
   readonly authConnectorsGetManifestById: ReadOneQuery;
   // Auth — connectors (manifest registry)
   readonly authConnectorsInsertIfAbsent: MutationQuery;
   readonly authConnectorsListIds: SmallEnumerationQuery;
   readonly authConnectorsUpsert: MutationQuery;
+  readonly authConsentExchangeCodesGetForRedemption: ReadOneQuery;
+  readonly authConsentExchangeCodesInsert: MutationQuery;
+  readonly authConsentExchangeCodesMarkRedeemed: MutationQuery;
   readonly authGrantPackageMembersGetPackageIdByGrant: ReadOneQuery;
   readonly authGrantPackageMembersInsert: MutationQuery;
   readonly authGrantPackageMembersListActiveByPackage: SmallEnumerationQuery;
@@ -177,9 +202,10 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Auth — oauth_refresh_tokens (hosted MCP durable OAuth sessions)
   readonly authOauthRefreshTokensGetByToken: ReadOneQuery;
   readonly authOauthRefreshTokensInsert: MutationQuery;
-  readonly authOauthRefreshTokensMarkUsed: MutationQuery;
   readonly authOauthRefreshTokensRevokeByGrant: MutationQuery;
   readonly authOauthRefreshTokensRevokeByPackage: MutationQuery;
+  readonly authOauthRefreshTokensRevokeFamily: MutationQuery;
+  readonly authOauthRefreshTokensSupersedeActive: MutationQuery;
   // Auth — owner_device_auth (owner CLI device-flow authentication)
   readonly authOwnerDeviceAuthGetByApprovalId: ReadOneQuery;
   readonly authOwnerDeviceAuthGetByDeviceCode: ReadOneQuery;
@@ -196,16 +222,21 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authPendingConsentsMarkApproved: MutationQuery;
   readonly authPendingConsentsMarkDenied: MutationQuery;
   readonly authPendingConsentsMarkExpired: MutationQuery;
+  readonly authPendingConsentsMarkExpiredIfDue: MutationQuery;
   // Auth — tokens
   readonly authTokensCountActiveByClientId: ReadOneQuery;
   readonly authTokensGetIntrospection: ReadOneQuery;
   readonly authTokensInsertClient: MutationQuery;
   readonly authTokensInsertMcpPackage: MutationQuery;
   readonly authTokensInsertOwner: MutationQuery;
+  readonly authTokensInsertRefreshClient: MutationQuery;
+  readonly authTokensInsertRefreshMcpPackage: MutationQuery;
+  readonly authTokensLinkRefreshFamily: MutationQuery;
   readonly authTokensListActiveByClientId: SmallEnumerationQuery;
   readonly authTokensRevokeByClientId: MutationQuery;
   readonly authTokensRevokeByGrant: MutationQuery;
   readonly authTokensRevokeByPackage: MutationQuery;
+  readonly authTokensRevokeByRefreshFamily: MutationQuery;
   readonly authTokensRevokeByTokenId: MutationQuery;
   readonly blobsGetRowById: ReadOneQuery;
   readonly blobsGetStoredById: ReadOneQuery;
@@ -738,9 +769,15 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "authOauthClientsDeleteByClientId",
     // Auth — connectors
     "authConnectorsInsertIfAbsent",
+    "authConnectorInstancesGetReviewedActive",
     "authConnectorsUpsert",
     "authConnectorsListIds",
     "authConnectorsGetManifestById",
+    // Auth — consent_exchange_codes
+    "authConsentExchangeCodesGetForRedemption",
+    "authConsentExchangeCodesInvalidateOutstandingByToken",
+    "authConsentExchangeCodesInsert",
+    "authConsentExchangeCodesMarkRedeemed",
     // Auth — grants
     "authGrantsInsert",
     "authGrantsGetForIssuance",
@@ -750,11 +787,15 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "authGrantsListActiveIdsByClientId",
     // Auth — tokens
     "authTokensInsertClient",
+    "authTokensInsertRefreshClient",
+    "authTokensInsertRefreshMcpPackage",
+    "authTokensLinkRefreshFamily",
     "authTokensInsertOwner",
     "authTokensCountActiveByClientId",
     "authTokensGetIntrospection",
     "authTokensRevokeByGrant",
     "authTokensRevokeByClientId",
+    "authTokensRevokeByRefreshFamily",
     // Auth — grant_packages
     "authGrantPackagesListAll",
     "authGrantPackageMembersListAllByPackage",

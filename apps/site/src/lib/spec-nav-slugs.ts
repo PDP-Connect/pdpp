@@ -14,8 +14,8 @@
 // still resolves.
 export const docsRoute = "/specification";
 
-// The specification IS the page. The rail lists the normative core, the profile
-// that accompanies it, and the three extension profiles — five documents, the
+// The specification IS the page. The rail lists the normative core, its two
+// companion specifications, and the three extension profiles: six documents, the
 // whole of what the protocol normatively defines. Everything else the repository
 // carries (guides, design rationale, deferred concerns, open questions, the
 // superseded Data Query API) is still built, still routed, still linked, and
@@ -26,6 +26,7 @@ export const docsRoute = "/specification";
 // Order is the reading order of the specification set, not alphabetical.
 export const PRIMARY_SLUGS = [
   "spec-core",
+  "spec-discovery-and-trust",
   "spec-collection-profile",
   "spec-ext-lexical-search",
   "spec-ext-aggregation",
