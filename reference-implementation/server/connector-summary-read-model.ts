@@ -275,17 +275,6 @@ export function normalizeSourceEventSeq(sourceEventSeq: unknown): number | null 
 function createConnectorSummaryStore() {
   if (isPostgresStorageBackend()) {
     return {
-      async listDirtyInstanceIds({ limit }: { limit: number }) {
-        const result = await postgresQuery(
-          `SELECT connector_instance_id
-             FROM connector_summary_evidence
-            WHERE dirty <> 0
-            ORDER BY connector_instance_id ASC
-            LIMIT $1`,
-          [limit]
-        );
-        return (result.rows as Row[]).map((row) => String(row.connector_instance_id));
-      },
       async listEvidence({
         connectorInstanceId,
         connectorInstanceIds,
@@ -327,6 +316,28 @@ function createConnectorSummaryStore() {
           params
         );
         return result.rows;
+      },
+      async listPendingMaintenanceInstanceIds({ limit }: { limit: number }) {
+        const dirty = await postgresQuery(
+          `SELECT connector_instance_id
+             FROM connector_summary_evidence
+            WHERE dirty <> 0
+            ORDER BY connector_instance_id ASC
+            LIMIT $1`,
+          [limit]
+        );
+        if (dirty.rows.length > 0) {
+          return (dirty.rows as Row[]).map((row) => String(row.connector_instance_id));
+        }
+        const incomplete = await postgresQuery(
+          `SELECT connector_instance_id
+             FROM connector_summary_evidence
+            WHERE terminal_facts_reason_code = 'terminal_fold_incomplete'
+            ORDER BY connector_instance_id ASC
+            LIMIT $1`,
+          [limit]
+        );
+        return (incomplete.rows as Row[]).map((row) => String(row.connector_instance_id));
       },
       async markAllDirty({ sanitized }: { sanitized?: string | null }) {
         await postgresQuery(
@@ -441,18 +452,6 @@ function createConnectorSummaryStore() {
     };
   }
   return {
-    listDirtyInstanceIds({ limit }: { limit: number }) {
-      const rows = getDb()
-        .prepare(
-          `SELECT connector_instance_id
-             FROM connector_summary_evidence
-            WHERE dirty <> 0
-            ORDER BY connector_instance_id ASC
-            LIMIT ?`
-        )
-        .all(limit) as Row[];
-      return rows.map((row) => String(row.connector_instance_id));
-    },
     listEvidence({
       connectorInstanceId,
       connectorInstanceIds,
@@ -503,6 +502,30 @@ function createConnectorSummaryStore() {
           `SELECT ${columns} FROM connector_summary_evidence ORDER BY connector_instance_id ASC`
         ),
       ];
+    },
+    listPendingMaintenanceInstanceIds({ limit }: { limit: number }) {
+      const dirty = getDb()
+        .prepare(
+          `SELECT connector_instance_id
+             FROM connector_summary_evidence
+            WHERE dirty <> 0
+            ORDER BY connector_instance_id ASC
+            LIMIT ?`
+        )
+        .all(limit) as Row[];
+      if (dirty.length > 0) {
+        return dirty.map((row) => String(row.connector_instance_id));
+      }
+      const incomplete = getDb()
+        .prepare(
+          `SELECT connector_instance_id
+             FROM connector_summary_evidence
+            WHERE terminal_facts_reason_code = 'terminal_fold_incomplete'
+            ORDER BY connector_instance_id ASC
+            LIMIT ?`
+        )
+        .all(limit) as Row[];
+      return incomplete.map((row) => String(row.connector_instance_id));
     },
     markAllDirty({ sanitized }: { sanitized?: string | null }) {
       getDb()
@@ -640,7 +663,6 @@ export async function getConnectorSummaryEvidence(connectorInstanceId: string | 
   const rows = await listConnectorSummaryEvidence({ connectorInstanceId });
   return rows[0] ?? null;
 }
-
 
 async function invalidateAllConnectorListSummaryTerminalProjections(reasonCode: string): Promise<void> {
   if (isPostgresStorageBackend()) {
@@ -2879,15 +2901,15 @@ export async function reconcileDirtyConnectorSummaryEvidence(
 // ---------------------------------------------------------------------------
 
 /**
- * One bounded page of connections whose evidence is durably marked dirty,
- * for the sweep's dirty-priority tranche. Best-effort by construction: the
- * cursor walk is the correctness backstop, so a read failure here degrades
- * to "no acceleration this round" (the walk still converges) rather than failing
- * the whole maintenance tick.
+ * One bounded page of prioritized maintenance work. Fresh canonical writes
+ * (`dirty <> 0`) always go first. Once that queue is empty, a bounded terminal
+ * replay that previously exhausted its event budget resumes immediately
+ * instead of waiting for the fleet cursor to wrap. Best-effort by
+ * construction: the cursor walk remains the correctness backstop.
  */
-async function readDirtyInstanceIdPage(limit: number): Promise<readonly string[]> {
+async function readPendingMaintenanceInstanceIdPage(limit: number): Promise<readonly string[]> {
   try {
-    return await createConnectorSummaryStore().listDirtyInstanceIds({ limit });
+    return await createConnectorSummaryStore().listPendingMaintenanceInstanceIds({ limit });
   } catch {
     return [];
   }
@@ -3070,9 +3092,12 @@ function emitScopedObservationUnit(
 }
 
 /**
- * Services ONE bounded page of durably-dirty connections, through the SAME
+ * Services ONE bounded page of prioritized maintenance work through the SAME
  * scoped discovery+fold+repair+prune barrier (`observeConnectorSummaryEvidence`)
- * the walk's own pages use.
+ * the walk's own pages use. Freshly dirty rows are never mixed with an older
+ * incomplete replay: the latter may consume the fold budget before a newer
+ * row's terminal event is reached. Incomplete replay is selected only when
+ * the dirty queue is empty.
  *
  * Runs AFTER the cursor walk, from whatever budget the walk left, under the
  * round's one absolute deadline. That ordering is what makes the walk's turn
@@ -3114,9 +3139,9 @@ async function runDirtyPriorityAcceleration(args: {
   if (sweepNow() >= args.deadline) {
     return empty;
   }
-  const dirtyIds = await readDirtyInstanceIdPage(args.limit);
+  const pendingIds = await readPendingMaintenanceInstanceIdPage(args.limit);
   testOnlySweepDiscoveryHook("acceleration_dirty_ids");
-  if (dirtyIds.length === 0) {
+  if (pendingIds.length === 0) {
     return empty;
   }
   // The discovery read above is itself work that can consume the budget, so
@@ -3128,26 +3153,26 @@ async function runDirtyPriorityAcceleration(args: {
     return empty;
   }
   const startedAt = Date.now();
-  const result = await observeConnectorSummaryEvidence(dirtyIds, {
+  const result = await observeConnectorSummaryEvidence(pendingIds, {
     deadline: args.deadline,
     ...args.foldEventCap,
   });
-  emitScopedObservationUnit(result, dirtyIds.length, startedAt);
+  emitScopedObservationUnit(result, pendingIds.length, startedAt);
   try {
-    await args.onPageConverged?.(dirtyIds, args.maintenanceLease);
+    await args.onPageConverged?.(pendingIds, args.maintenanceLease);
   } catch (error) {
     if (!isExpectedProjectionRace(error)) {
       throw error;
     }
     return {
-      discovered: dirtyIds.length,
+      discovered: pendingIds.length,
       incomplete: true,
       repaired: result.reconciled,
       skipped: result.skipped,
     };
   }
   return {
-    discovered: dirtyIds.length,
+    discovered: pendingIds.length,
     incomplete: result.incomplete,
     repaired: result.reconciled,
     skipped: result.skipped,
@@ -3300,7 +3325,8 @@ export async function runBoundedSummaryEvidenceSweep(options: {
   let repaired = 0;
   let skipped = 0;
 
-  // Dirty-priority acceleration (2026-08-10). The cursor walk is the
+  // Maintenance-priority acceleration (2026-08-10, extended 2026-08-13).
+  // The cursor walk is the
   // correctness backstop — it eventually covers every connection — but it is
   // ordered by `connector_instance_id`, NOT by when work arrived, so a
   // connection invalidated a moment ago waits for the cursor to wrap the whole
@@ -3311,11 +3337,14 @@ export async function runBoundedSummaryEvidenceSweep(options: {
   // to select one), so a completed run's facts stayed unreadable on the
   // owner's normal list/detail read.
   //
-  // One bounded bite of the dirty set is serviced each round, through the SAME
+  // One bounded bite of prioritized work is serviced each round, through the SAME
   // scoped discovery+fold+repair+prune barrier the walk's own pages use — no
   // new engine, no polling, no read-path write. It is a LATENCY hint on the
-  // same contract as every other dirty marker here, never a correctness gate:
-  // a lost or never-set dirty flag still converges via the walk.
+  // same contract as every other dirty marker here, never a correctness gate.
+  // Once dirty work clears, `terminal_fold_incomplete` rows stay in this
+  // acceleration path until their durable replay checkpoint reaches current;
+  // without that continuation, the first bounded pass cleared `dirty` and
+  // silently demoted the remaining replay to the fleet walk.
   // Threaded identically into both tranches; resolved once so the two call
   // sites cannot drift.
   const foldEventCap: { maxEvents?: number } =

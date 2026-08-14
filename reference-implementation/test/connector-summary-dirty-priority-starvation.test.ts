@@ -119,7 +119,7 @@ function seedSuccessfulRun(connectorInstanceId: string, eventSeq: number): void 
        ) VALUES(?, ?, 'run.completed', ?, ?, 'test', ?, 'runtime', 'test', 'run', ?, 'succeeded', ?, ?, ?, '1')`
     )
     .run(
-      `evt_${connectorInstanceId}`,
+      `evt_${connectorInstanceId}_${eventSeq}`,
       eventSeq,
       NOW,
       NOW,
@@ -142,6 +142,63 @@ function seedSuccessfulRun(connectorInstanceId: string, eventSeq: number): void 
       })
     );
 }
+
+test(
+  "an incomplete terminal fold stays accelerated across bounded rounds instead of waiting for the fleet cursor to wrap",
+  withTempDb(async () => {
+    const ids = seedConnections(120);
+    await runBoundedSummaryEvidenceSweep({ maxDurationMs: 60_000, pageSize: PRODUCTION_PAGE_SIZE });
+
+    const target = ids.at(-1);
+    assert.ok(target, "fleet seeded");
+    seedSuccessfulRun(target, 1);
+    seedSuccessfulRun(target, 2);
+    seedSuccessfulRun(target, 3);
+    await markConnectorSummaryEvidenceDirty({ connectorInstanceId: target, reason: "run.completed" });
+
+    const first = await runBoundedSummaryEvidenceSweep({
+      afterId: null,
+      firstTranche: "acceleration",
+      maxDurationMs: 60_000,
+      maxEventsPerFold: 2,
+      maxPages: 1,
+      pageSize: PRODUCTION_PAGE_SIZE,
+    });
+    const afterFirst = getDb()
+      .prepare(
+        `SELECT dirty, stream_facts_event_seq, terminal_facts_reason_code, terminal_facts_state
+           FROM connector_summary_evidence WHERE connector_instance_id = ?`
+      )
+      .get<{
+        dirty: number;
+        stream_facts_event_seq: number;
+        terminal_facts_reason_code: string | null;
+        terminal_facts_state: string;
+      }>(target);
+    assert.ok(afterFirst, "target evidence exists after the first round");
+    assert.equal(afterFirst.dirty, 0, "canonical repair completed; replay continuation is independently selected");
+    assert.equal(afterFirst.stream_facts_event_seq, 2, "the first round consumed exactly its event budget");
+    assert.equal(afterFirst.terminal_facts_state, "stale");
+    assert.equal(afterFirst.terminal_facts_reason_code, "terminal_fold_incomplete");
+
+    const second = await runBoundedSummaryEvidenceSweep({
+      afterId: first.resumeAfterId,
+      firstTranche: "acceleration",
+      maxDurationMs: 60_000,
+      maxEventsPerFold: 2,
+      maxPages: 1,
+      pageSize: PRODUCTION_PAGE_SIZE,
+    });
+    assert.ok(
+      connectionIsCurrentAfterRound(target),
+      "the next acceleration round resumes the incomplete target even though dirty was already cleared"
+    );
+    assert.ok(
+      second.discovered > PRODUCTION_PAGE_SIZE,
+      "the target was serviced by acceleration while the cursor walk remained far earlier in the fleet"
+    );
+  })
+);
 
 function readEvidence(connectorInstanceId: string): {
   dirty: number;
