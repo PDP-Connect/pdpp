@@ -258,16 +258,17 @@ interface TokenInfo {
   readonly client_id?: string | null;
   readonly grant?: GrantLike | null;
   readonly grant_id?: string | null;
+  readonly grant_storage_binding?: { readonly connector_id?: string | null } | null;
   readonly pdpp_token_kind?: string | null;
   readonly subject_id?: string | null;
   readonly [key: string]: unknown;
 }
 
 interface GrantStreamLike {
-  readonly connection_id?: string | null;
+  readonly instance_ids?: readonly string[] | null;
   readonly name?: string | null;
   readonly resources?: readonly string[] | null;
-  readonly time_range?: SubscriptionScopeStream["time_range"] | null;
+  readonly time_constraint?: SubscriptionScopeStream["time_constraint"] | null;
   readonly [key: string]: unknown;
 }
 
@@ -631,9 +632,16 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
 //
 // See: openspec/changes/add-client-event-subscriptions/
 
-function buildGrantScope(grant: GrantLike): SubscriptionScope {
+function buildGrantScope(grant: GrantLike, storageBinding: TokenInfo["grant_storage_binding"]): SubscriptionScope {
   return {
-    ...(grant.source ? { source: grant.source } : {}),
+    ...(grant.source
+      ? {
+          source: {
+            ...grant.source,
+            ...(storageBinding?.connector_id ? { connector_id: storageBinding.connector_id } : {}),
+          },
+        }
+      : {}),
     streams: Array.isArray(grant.streams)
       ? grant.streams.flatMap((s: GrantStreamLike): SubscriptionScopeStream[] => {
           if (!s.name) {
@@ -642,9 +650,9 @@ function buildGrantScope(grant: GrantLike): SubscriptionScope {
           return [
             {
               name: s.name,
-              ...(s.connection_id ? { connection_id: s.connection_id } : {}),
+              ...(Array.isArray(s.instance_ids) ? { instance_ids: s.instance_ids } : {}),
               ...(Array.isArray(s.resources) ? { resources: s.resources } : {}),
-              ...(s.time_range ? { time_range: s.time_range } : {}),
+              ...(s.time_constraint ? { time_constraint: s.time_constraint } : {}),
             },
           ];
         })
@@ -663,7 +671,7 @@ function buildBearerActorFromTokenInfo(req: RouteRequest): BearerActor | null {
       authorityKind: "client_grant",
       clientId: ti.client_id,
       grantId: ti.grant_id,
-      grantScope: buildGrantScope(grant),
+      grantScope: buildGrantScope(grant, ti.grant_storage_binding),
       subjectId: ti.subject_id ?? "",
     };
   }

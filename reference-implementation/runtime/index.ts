@@ -4500,6 +4500,32 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       await rejectAfterLeaseAccounting(error);
     }
 
+    function effectiveDoneStatus(doneStatus: DoneMessageState["status"]): DoneMessageState["status"] {
+      return ownerCancelRequested ? "cancelled" : doneStatus;
+    }
+
+    function doneTerminalEventType(
+      status: DoneMessageState["status"]
+    ): "run.cancelled" | "run.completed" | "run.failed" {
+      if (status === "succeeded") {
+        return "run.completed";
+      }
+      if (status === "cancelled" && ownerCancelRequested) {
+        return "run.cancelled";
+      }
+      return "run.failed";
+    }
+
+    function doneTerminalReason(status: DoneMessageState["status"]): string | null {
+      if (status === "failed") {
+        return "connector_reported_failed";
+      }
+      if (status === "cancelled") {
+        return ownerCancelRequested ? "owner_cancelled" : "connector_reported_cancelled";
+      }
+      return null;
+    }
+
     async function handleDoneClose(code: number | null): Promise<boolean> {
       const done = doneMessage;
       if (!done) {
@@ -4541,22 +4567,21 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       cleanupChildHandles();
       await awaitLeaseAccounting();
 
-      if (done.status === "succeeded" && persistState) {
+      const terminalStatus = effectiveDoneStatus(done.status);
+      finalStatus = terminalStatus;
+
+      if (terminalStatus === "succeeded" && persistState) {
         assertDetailCoverageSatisfiedBeforeCommit();
         await Object.entries(newState).reduce(
           (previous, [stream, cursor]) => previous.then(() => commitState(stream, cursor)),
           Promise.resolve()
         );
       }
-      const assistanceStatus = done.status === "succeeded" ? "resolved" : "cancelled";
-      const assistanceReason = done.status === "succeeded" ? "run_completed" : "connector_reported_failed";
+      const assistanceStatus = terminalStatus === "succeeded" ? "resolved" : "cancelled";
+      const assistanceReason =
+        terminalStatus === "succeeded" ? "run_completed" : (doneTerminalReason(terminalStatus) ?? "run_cancelled");
       await closeOpenStructuredAssistance(assistanceStatus, { reason: assistanceReason });
-      let terminalEventReason: string | null = null;
-      if (done.status === "failed") {
-        terminalEventReason = "connector_reported_failed";
-      } else if (done.status === "cancelled") {
-        terminalEventReason = "connector_reported_cancelled";
-      }
+      const terminalEventReason = doneTerminalReason(terminalStatus);
       await emitRunSpineEvent({
         actor_id: connectorId,
         actor_type: "runtime",
@@ -4565,15 +4590,15 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
           reason: terminalEventReason,
           recordsEmitted: done.records_emitted,
         }),
-        event_type: done.status === "succeeded" ? "run.completed" : "run.failed",
+        event_type: doneTerminalEventType(terminalStatus),
         object_id: runId,
         object_type: "run",
         run_id: runId,
         scenario_id: traceContext.scenario_id,
-        status: done.status,
+        status: terminalStatus,
         trace_id: traceContext.trace_id,
       });
-      onProgress({ records_emitted: done.records_emitted, status: done.status, type: "done" });
+      onProgress({ records_emitted: done.records_emitted, status: terminalStatus, type: "done" });
       return false;
     }
 
@@ -4673,7 +4698,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       let closeTerminalReason = derivedTerminal.reason;
       if (runTimedOut) {
         closeTerminalReason = runtimeTimeoutReason || "run_timed_out";
-      } else if (finalStatus === "cancelled" && ownerCancelRequested && !doneMessage) {
+      } else if (finalStatus === "cancelled" && ownerCancelRequested) {
         closeTerminalReason = ownerCancelForced ? "owner_cancel_forced" : "owner_cancelled";
       }
       const closeTerminalPhase = derivedTerminal.phase;

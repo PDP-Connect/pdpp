@@ -97,6 +97,8 @@ const TEST_PROVIDER_MANIFEST = {
   connector_id: "test_provider",
   connector_key: "test_provider",
   display_name: "Test Provider",
+  manifest_uri: "https://sources.example/test_provider",
+  protocol_version: "0.1.0",
   runtime_requirements: { bindings: { network: { required: true } } },
   streams: [
     {
@@ -107,6 +109,8 @@ const TEST_PROVIDER_MANIFEST = {
         required: ["id"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",
@@ -118,6 +122,8 @@ const NON_OAUTH_MANIFEST = {
   connector_id: "plain_api",
   connector_key: "plain_api",
   display_name: "Plain API",
+  manifest_uri: "https://sources.example/plain_api",
+  protocol_version: "0.1.0",
   runtime_requirements: { bindings: { network: { required: true } } },
   streams: [
     {
@@ -128,6 +134,8 @@ const NON_OAUTH_MANIFEST = {
         required: ["id"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",
@@ -232,11 +240,12 @@ async function withServer(
   const rsUrl = `http://localhost:${server.rsPort}`;
   try {
     // Register the test provider connector.
-    await fetch(`${asUrl}/connectors`, {
+    const registration = await fetch(`${asUrl}/connectors`, {
       body: JSON.stringify(TEST_PROVIDER_MANIFEST),
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
+    assert.equal(registration.status, 201, `provider test fixture registration (${await registration.text()})`);
     await fn({ asUrl, rsUrl, server });
   } finally {
     await closeServer(server);

@@ -31,6 +31,7 @@ function makeConsent(
 ): RefApprovalConsent {
   return {
     approval_id: approvalId,
+    batch: false,
     client_id: "client_x",
     created_at: createdAt,
     grant_preview: {
@@ -162,4 +163,12 @@ test("ref.approvals.list awaits dependency promises", async () => {
   });
   assert.equal(resolved, true);
   assert.equal(envelope.data.length, 1);
+});
+
+test("ref.approvals.list preserves the non-secret batch ceremony discriminator", async () => {
+  const envelope = await executeRefApprovalsList({
+    listPendingApprovals: () => [makeConsent("batch", "2026-04-01T00:00:00Z", { batch: true })],
+  });
+  assert.equal(envelope.data[0]?.kind, "consent");
+  assert.equal(envelope.data[0]?.batch, true);
 });

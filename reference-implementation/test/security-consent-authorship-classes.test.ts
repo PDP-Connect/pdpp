@@ -6,22 +6,22 @@
 // keeps the three authorship classes visually and semantically distinct, and
 // that client-authored claims are rendered AS claims, never as protocol facts:
 //
-//   • PROTOCOL — facts the owner's server enforces/verifies (access mode,
+//   - PROTOCOL: facts the owner's server enforces/verifies (access mode,
 //     retention, source binding, resolved client-identity origin).
-//   • MANIFEST — owner-trusted human descriptions of the requested streams.
-//   • CLIENT   — the client's own claims (self-described app name, the stated
-//     purpose, and per-stream `client_claims`), each disclaimed as not enforced.
+//   - MANIFEST: owner-trusted human descriptions of the requested streams.
+//   - CLIENT: the client's own claims (self-described app name, the stated
+//     purpose, and top-level `client_claims`), each disclaimed as not enforced.
 //
 // Before this fix, the renderer flattened `purpose_code` / `purpose_description`
 // into the same undifferentiated key/value list as the protocol facts, and
-// dropped per-stream `client_claims` entirely — so the rendered HTML did not
+// dropped top-level `client_claims` entirely, so the rendered HTML did not
 // present the three classes as distinct, violating the normative MUST and the
 // steering principle "keep protocol facts, manifest-authored descriptions, and
 // client-authored claims visually and semantically distinct."
 //
 // Spec: openspec/specs/reference-implementation-architecture/spec.md
 //       (Requirement: "Hosted consent UI SHALL disclose effective access risk"
-//        — scenario: "Hosted consent distinguishes the three authorship classes")
+//        - scenario: "Hosted consent distinguishes the three authorship classes")
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -29,15 +29,19 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
+const OWNER_SUBJECT_ID = "owner_local";
+const NOW = "2026-05-31T00:00:00.000Z";
 
 // `startServer`'s inferred asServer/rsServer type comes from a framework
 // `.listen()` call whose TS overload resolves to an http2-shaped type, but at
 // runtime these are plain node:http/https servers (the framework never
-// negotiates ALPN in this reference stack) — so `closeAllConnections` (added
+// negotiates ALPN in this reference stack), so `closeAllConnections` (added
 // Node 18.2+) and the single-error-arg `close` callback genuinely exist and
 // are safe to declare here. Established pattern, see
 // connector-failure-diagnostics-control-plane.test.ts / connector-gap-severity.test.ts.
@@ -99,18 +103,36 @@ async function withHarness(
       method: "POST",
     });
     assert.equal(registerResp.status, 201);
+    await seedSpotifyInstance(spotifyManifest);
     await fn({ asUrl, spotifyManifest });
   } finally {
     await closeServer(server);
   }
 }
 
+async function seedSpotifyInstance(spotifyManifest: SpotifyManifest): Promise<void> {
+  const connectorId = canonicalConnectorKey(spotifyManifest.connector_id);
+  assert.ok(connectorId, "spotify manifest must resolve to a canonical connector key");
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId: "cin_security_consent_authorship_spotify",
+    createdAt: NOW,
+    displayName: "Security Consent Authorship Spotify",
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    sourceBinding: { account_hint: "security-consent-authorship@example.com" },
+    sourceBindingKey: "security-consent-authorship@example.com",
+    sourceKind: "account",
+    status: "active",
+    updatedAt: NOW,
+  });
+}
+
 // Client-authored values we expect to be rendered AS claims, distinct from
 // protocol facts. Deliberately chosen to be unambiguous string needles.
 const CLIENT_PURPOSE = "Recommend concerts based on your listening history";
-const CLIENT_CLAIM_PURPOSE = "We only read your top artists to find nearby shows";
 const CLIENT_CLAIM_COMMITMENT_A = "We never sell your data";
 const CLIENT_CLAIM_COMMITMENT_B = "We delete reads after 30 days";
+const PER_STREAM_CLIENT_CLAIMS_ERROR_RE = /streams\/0|additional properties|client_claims/i;
 
 async function initiate(
   asUrl: string,
@@ -121,19 +143,13 @@ async function initiate(
     authorization_details: [
       {
         access_mode: "continuous",
+        client_claims: {
+          commitments: [CLIENT_CLAIM_COMMITMENT_A, CLIENT_CLAIM_COMMITMENT_B],
+        },
         purpose_code: "https://pdpp.dev/purpose/personalization",
         purpose_description: CLIENT_PURPOSE,
         source: { id: spotifyManifest.connector_id, kind: "connector" },
-        streams: [
-          {
-            client_claims: {
-              commitments: [CLIENT_CLAIM_COMMITMENT_A, CLIENT_CLAIM_COMMITMENT_B],
-              purpose: CLIENT_CLAIM_PURPOSE,
-            },
-            name: "top_artists",
-            view: "basic",
-          },
-        ],
+        streams: [{ name: "top_artists" }],
         type: "https://pdpp.dev/data-access",
         ...overrides,
       },
@@ -193,7 +209,7 @@ function authorshipBlock(html: string, authorship: string): string {
 
 test("security: hosted consent renders the three authorship classes distinctly", async (t) => {
   await t.test(
-    "client_claims + purpose render as client-authored claims, distinct from protocol facts and manifest streams",
+    "top-level client_claims + purpose render as client-authored claims, distinct from protocol facts and manifest streams",
     async () => {
       await withHarness(async ({ asUrl, spotifyManifest }: { asUrl: string; spotifyManifest: SpotifyManifest }) => {
         const par = await initiate(asUrl, spotifyManifest);
@@ -201,7 +217,7 @@ test("security: hosted consent renders the three authorship classes distinctly",
         assert.equal(consentResp.status, 200);
         const html = await consentResp.text();
 
-        // ── All three authorship classes are present and marked distinctly ──
+        // All three authorship classes are present and marked distinctly.
         for (const authorship of ["protocol", "manifest", "client"]) {
           assert.ok(
             html.includes(`data-authorship="${authorship}"`),
@@ -216,24 +232,15 @@ test("security: hosted consent renders the three authorship classes distinctly",
         assert.ok(protocolBlock, "protocol authorship block SHALL be present");
         assert.ok(manifestBlock, "manifest authorship block SHALL be present");
 
-        // ── client_claims (previously DROPPED) are now rendered ──
-        assert.ok(
-          html.includes(CLIENT_CLAIM_PURPOSE),
-          "consent HTML SHALL render the per-stream client_claims purpose"
-        );
+        // Top-level client_claims are rendered.
         assert.ok(
           html.includes(CLIENT_CLAIM_COMMITMENT_A) && html.includes(CLIENT_CLAIM_COMMITMENT_B),
-          "consent HTML SHALL render the per-stream client_claims commitments"
+          "consent HTML SHALL render top-level client_claims commitments"
         );
 
-        // ── client-authored values appear ONLY inside the client block, never
-        //    inside the protocol block (they must not be presented as facts) ──
-        for (const claim of [
-          CLIENT_PURPOSE,
-          CLIENT_CLAIM_PURPOSE,
-          CLIENT_CLAIM_COMMITMENT_A,
-          CLIENT_CLAIM_COMMITMENT_B,
-        ]) {
+        // Client-authored values appear ONLY inside the client block, never
+        // inside the protocol block (they must not be presented as facts).
+        for (const claim of [CLIENT_PURPOSE, CLIENT_CLAIM_COMMITMENT_A, CLIENT_CLAIM_COMMITMENT_B]) {
           assert.ok(
             clientBlock.includes(claim),
             `client-authored value "${claim}" SHALL be rendered inside the client authorship block`
@@ -244,20 +251,20 @@ test("security: hosted consent renders the three authorship classes distinctly",
           );
         }
 
-        // ── client claims carry an explicit "not enforced" disclaimer ──
+        // Client claims carry an explicit "not enforced" disclaimer.
         assert.ok(
           clientBlock.toLowerCase().includes("not enforced by your server"),
           "the client_claims block SHALL disclaim that the claims are not enforced by the server"
         );
 
-        // ── protocol facts (access mode is server-enforced) live in the
-        //    protocol block, not the client block ──
+        // Protocol facts (access mode is server-enforced) live in the protocol
+        // block, not the client block.
         assert.ok(
           protocolBlock.toLowerCase().includes("continuous"),
           "the enforced access mode SHALL be rendered as a protocol fact"
         );
 
-        // ── manifest-authored stream names live in the manifest block ──
+        // Manifest-authored stream names live in the manifest block.
         assert.ok(
           manifestBlock.includes('<span class="hosted-ui-stream-name">top_artists</span>'),
           "the requested stream name SHALL be rendered in the manifest authorship block"
@@ -271,8 +278,9 @@ test("security: hosted consent renders the three authorship classes distinctly",
     async () => {
       await withHarness(async ({ asUrl, spotifyManifest }: { asUrl: string; spotifyManifest: SpotifyManifest }) => {
         const par = await initiate(asUrl, spotifyManifest, {
-          // No client_claims on the stream this time.
-          streams: [{ name: "top_artists", view: "basic" }],
+          client_claims: undefined,
+          // No client_claims in this request.
+          streams: [{ name: "top_artists" }],
         });
         const consentResp = await fetch(`${asUrl}/consent?request_uri=${encodeURIComponent(par.request_uri)}`);
         assert.equal(consentResp.status, 200);
@@ -298,4 +306,38 @@ test("security: hosted consent renders the three authorship classes distinctly",
       });
     }
   );
+
+  await t.test("per-stream client_claims fail closed during request validation", async () => {
+    await withHarness(async ({ asUrl, spotifyManifest }: { asUrl: string; spotifyManifest: SpotifyManifest }) => {
+      const resp = await fetch(`${asUrl}/oauth/par`, {
+        body: JSON.stringify({
+          authorization_details: [
+            {
+              access_mode: "continuous",
+              purpose_code: "https://pdpp.dev/purpose/personalization",
+              purpose_description: CLIENT_PURPOSE,
+              source: { id: spotifyManifest.connector_id, kind: "connector" },
+              streams: [
+                {
+                  client_claims: {
+                    commitments: [CLIENT_CLAIM_COMMITMENT_A],
+                  },
+                  name: "top_artists",
+                },
+              ],
+              type: "https://pdpp.dev/data-access",
+            },
+          ],
+          client_display: { name: "Concert Recommender" },
+          client_id: "concert_recommendation_app",
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(resp.status, 400);
+      const body = (await resp.json()) as { error?: { code?: string; message?: string } };
+      assert.equal(body.error?.code, "invalid_authorization_details");
+      assert.match(body.error?.message ?? "", PER_STREAM_CLIENT_CLAIMS_ERROR_RE);
+    });
+  });
 });

@@ -11,7 +11,7 @@
  *       visible through more than one connection and the request did not
  *       specify `connection_id`.
  *
- *   P2: blob reads must respect grant-scope `streams[].connection_id`. A
+ *   P2: blob reads must respect grant-scope `streams[].instance_ids`. A
  *       grant pinned to connection A for stream S must not expose blob
  *       bytes reachable only from connection B for stream S.
  *
@@ -28,7 +28,8 @@ import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
 import { ingestRecord } from "../server/records.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
-const CONNECTOR_ID = "blob-fan-in";
+const CONNECTOR_ID = "spotify";
+const SOURCE_ID = "https://registry.pdpp.dev/connectors/spotify";
 const STREAM_A = "photos";
 const STREAM_B = "videos";
 const INSTANCE_A = "cin_blob_account_a";
@@ -36,7 +37,7 @@ const INSTANCE_B = "cin_blob_account_b";
 
 const baseManifest = {
   capabilities: { human_interaction: [] },
-  connector_id: CONNECTOR_ID,
+  connector_id: SOURCE_ID,
   display_name: "Blob Fan-in Test Connector",
   protocol_version: "0.1.0",
   streams: [
@@ -64,7 +65,8 @@ const baseManifest = {
         required: ["id", "received_at"],
         type: "object",
       },
-      selection: { fields: { mode: "explicit" } },
+      selection: { fields: true, resources: false },
+      semantics: "mutable_state",
     },
     {
       consent_time_field: "received_at",
@@ -90,7 +92,8 @@ const baseManifest = {
         required: ["id", "received_at"],
         type: "object",
       },
-      selection: { fields: { mode: "explicit" } },
+      selection: { fields: true, resources: false },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",
@@ -327,9 +330,9 @@ test("GET /v1/blobs/:blob_id?connection_id=X resolves ambiguity and returns byte
   });
 });
 
-// ─── P2: blob reads respect grant-scope per-stream connection_id ───────────
+// ─── P2: blob reads respect grant-scope per-stream instance_ids ───────────
 
-test("blob route per-stream binding resolution narrows by grant connection_id", async () => {
+test("blob route per-stream binding resolution narrows by grant instance_ids", async () => {
   // The blob route resolves the addressable set per (binding's) stream by
   // calling `resolveReadRequestBindings({ grant, streamName: binding.stream })`.
   // When the grant pins stream A → connection X, the resolver MUST return
@@ -340,12 +343,13 @@ test("blob route per-stream binding resolution narrows by grant connection_id", 
     const { resolveReadRequestBindings } = await import("../server/records.ts");
     const pinnedGrant = {
       streams: [
-        { connection_id: INSTANCE_A, fields: ["id", "received_at"], name: STREAM_A },
-        { connection_id: INSTANCE_B, fields: ["id", "received_at"], name: STREAM_B },
+        { fields: ["id", "received_at"], instance_ids: [INSTANCE_A], name: STREAM_A },
+        { fields: ["id", "received_at"], instance_ids: [INSTANCE_B], name: STREAM_B },
       ],
     };
     const { bindings: photosBindings } = await resolveReadRequestBindings({
       grant: pinnedGrant,
+      ownerRead: false,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
       requestParams: {},
       storageBinding: { connector_id: CONNECTOR_ID },
@@ -362,6 +366,7 @@ test("blob route per-stream binding resolution narrows by grant connection_id", 
 
     const { bindings: videosBindings } = await resolveReadRequestBindings({
       grant: pinnedGrant,
+      ownerRead: false,
       ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
       requestParams: {},
       storageBinding: { connector_id: CONNECTOR_ID },
@@ -424,7 +429,7 @@ interface ApproveGrantParams {
   connector_id: string;
   purpose_code: string;
   purpose_description: string;
-  streams: { name: string; fields: string[]; connection_id: string }[];
+  streams: { name: string; fields: string[]; instance_ids: string[] }[];
 }
 
 interface ApprovedGrant {
@@ -439,7 +444,7 @@ async function approveGrant(asUrl: string, subjectId: string, params: ApproveGra
           access_mode: params.access_mode,
           purpose_code: params.purpose_code,
           purpose_description: params.purpose_description,
-          source: { id: params.connector_id, kind: "connector" },
+          source: { id: SOURCE_ID, kind: "connector" },
           streams: params.streams,
           type: "https://pdpp.dev/data-access",
         },
@@ -453,9 +458,21 @@ async function approveGrant(asUrl: string, subjectId: string, params: ApproveGra
   if (!parBody.request_uri) {
     throw new Error(`PAR returned no request_uri: ${JSON.stringify(parBody)}`);
   }
-  const approveResp = await fetch(`${asUrl}/consent/approve`, {
+  const reviewResp = await fetch(`${asUrl}/consent/review`, {
     body: JSON.stringify({ request_uri: parBody.request_uri, subject_id: subjectId }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const review = (await reviewResp.json()) as { approval_review_revision?: unknown };
+  if (!reviewResp.ok || typeof review.approval_review_revision !== "string") {
+    throw new Error(`consent/review failed: ${JSON.stringify(review)}`);
+  }
+  const approveResp = await fetch(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({
+      approval_review_revision: review.approval_review_revision,
+      request_uri: parBody.request_uri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   const approved = (await approveResp.json()) as Partial<ApprovedGrant>;
@@ -499,7 +516,7 @@ test("GET /v1/blobs/:blob_id (client mode) 404s when grant pins stream to a conn
       connector_id: CONNECTOR_ID,
       purpose_code: "https://pdpp.dev/purpose/analytics",
       purpose_description: "blob route grant-scope narrowing test",
-      streams: [{ connection_id: INSTANCE_A, fields: ["id", "received_at"], name: STREAM_A }],
+      streams: [{ fields: ["id", "received_at"], instance_ids: [INSTANCE_A], name: STREAM_A }],
     });
 
     const resp = await fetch(`${rsUrl}/v1/blobs/${encodeURIComponent(blobId)}`, {
@@ -512,6 +529,66 @@ test("GET /v1/blobs/:blob_id (client mode) 404s when grant pins stream to a conn
     // into the response envelope.
     const serialized = JSON.stringify(body);
     assert.equal(serialized.includes(INSTANCE_B), false, "non-granted connection_id leaked into blob 404 envelope");
+  });
+});
+
+test("client blob reads fail closed for an ungranted stream and an inactive granted instance", async () => {
+  await issueOwnerOnlyHarness(async (server) => {
+    const ungrantedBlobId = "blob_sha256_ungranted_stream_006";
+    const inactiveBlobId = "blob_sha256_inactive_instance_007";
+    for (const [blobId, recordKey] of [
+      [ungrantedBlobId, "rec-b-ungranted"],
+      [inactiveBlobId, "rec-b-inactive"],
+    ] as const) {
+      seedBlob({
+        blobId,
+        connectorInstanceId: INSTANCE_B,
+        data: Buffer.from(blobId),
+        mimeType: "application/octet-stream",
+        recordKey,
+        stream: STREAM_A,
+      });
+      // These writes share one store and must complete in fixture order.
+      // biome-ignore lint/performance/noAwaitInLoops: sequential fixture setup preserves deterministic state.
+      await ingestRecord(target(INSTANCE_B), {
+        data: { blob_ref: { blob_id: blobId }, id: recordKey, received_at: "2026-05-19T00:00:00.000Z" },
+        emitted_at: "2026-05-19T00:00:00.000Z",
+        key: recordKey,
+        stream: STREAM_A,
+      });
+    }
+
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const otherStreamGrant = await approveGrant(asUrl, OWNER_AUTH_DEFAULT_SUBJECT_ID, {
+      access_mode: "continuous",
+      client_id: "longview",
+      connector_id: CONNECTOR_ID,
+      purpose_code: "https://pdpp.dev/purpose/analytics",
+      purpose_description: "ungranted stream blob test",
+      streams: [{ fields: ["id", "received_at"], instance_ids: [INSTANCE_A], name: STREAM_B }],
+    });
+    const ungrantedResponse = await fetch(`${rsUrl}/v1/blobs/${ungrantedBlobId}`, {
+      headers: { Authorization: `Bearer ${otherStreamGrant.token}` },
+    });
+    assert.equal(ungrantedResponse.status, 404);
+
+    const inactiveInstanceGrant = await approveGrant(asUrl, OWNER_AUTH_DEFAULT_SUBJECT_ID, {
+      access_mode: "continuous",
+      client_id: "longview",
+      connector_id: CONNECTOR_ID,
+      purpose_code: "https://pdpp.dev/purpose/analytics",
+      purpose_description: "inactive instance blob test",
+      streams: [{ fields: ["id", "received_at"], instance_ids: [INSTANCE_A], name: STREAM_A }],
+    });
+    await createSqliteConnectorInstanceStore().updateStatus(INSTANCE_A, {
+      status: "paused",
+      updatedAt: new Date().toISOString(),
+    });
+    const inactiveResponse = await fetch(`${rsUrl}/v1/blobs/${inactiveBlobId}`, {
+      headers: { Authorization: `Bearer ${inactiveInstanceGrant.token}` },
+    });
+    assert.equal(inactiveResponse.status, 404);
   });
 });
 

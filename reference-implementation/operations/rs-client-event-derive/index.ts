@@ -21,26 +21,27 @@ export interface RecordChangeDescriptor {
   readonly connectionId?: string | null;
   readonly connectorId: string;
   readonly connectorInstanceId: string;
+  readonly data?: Readonly<Record<string, unknown>> | null;
   readonly emittedAt: string;
   /** Owner subject for the changed connector instance, when known. */
   readonly ownerSubjectId?: string | null;
+  readonly recordKey?: string | null;
   readonly stream: string;
   /** Monotonic per (connector_instance, stream) version from `record_changes`. */
   readonly version: number;
 }
 
 export interface SubscriptionScopeStream {
-  /** Optional connection narrowing inherited from the grant. */
-  readonly connection_id?: string | null;
+  readonly instance_ids?: readonly string[];
   readonly name: string;
   readonly resources?: readonly string[];
-  readonly time_range?: { start?: string | null; end?: string | null };
+  readonly time_constraint?: { field: string; since?: string | null; until?: string | null };
 }
 
 export interface SubscriptionScope {
   /** Optional client-supplied narrowing (subset of stream names from grant). */
   readonly filters?: { streams?: readonly string[] };
-  readonly source?: { kind?: string; id?: string };
+  readonly source?: { connector_id?: string; kind?: string; id?: string };
   readonly streams: readonly SubscriptionScopeStream[];
 }
 
@@ -78,19 +79,45 @@ function findScopeStream(scope: SubscriptionScope, stream: string): Subscription
   return scope.streams.find((s) => s.name === stream) ?? scope.streams.find((s) => s.name === "*") ?? null;
 }
 
-function inGrantScope(scope: SubscriptionScope, stream: string, connectionId: string | null | undefined): boolean {
-  const filterList = scope.filters?.streams;
-  if (filterList && !filterList.includes(stream)) {
+function changePassesTimeConstraint(
+  change: RecordChangeDescriptor,
+  constraint: SubscriptionScopeStream["time_constraint"]
+): boolean {
+  if (!constraint) {
+    return true;
+  }
+  const rawValue = change.data?.[constraint.field];
+  const recordTime = typeof rawValue === "string" ? Date.parse(rawValue) : Number.NaN;
+  if (Number.isNaN(recordTime)) {
     return false;
   }
-  const match = findScopeStream(scope, stream);
+  const since = constraint.since ? Date.parse(constraint.since) : null;
+  const until = constraint.until ? Date.parse(constraint.until) : null;
+  return !(
+    (since !== null && (Number.isNaN(since) || recordTime < since)) ||
+    (until !== null && (Number.isNaN(until) || recordTime >= until))
+  );
+}
+
+function inGrantScope(scope: SubscriptionScope, change: RecordChangeDescriptor): boolean {
+  const filterList = scope.filters?.streams;
+  if (filterList && !filterList.includes(change.stream)) {
+    return false;
+  }
+  if (!(scope.source?.connector_id && scope.source.connector_id === change.connectorId)) {
+    return false;
+  }
+  const match = findScopeStream(scope, change.stream);
   if (!match) {
     return false;
   }
-  if (match.connection_id && connectionId && match.connection_id !== connectionId) {
+  if (!(Array.isArray(match.instance_ids) && match.instance_ids.includes(change.connectorInstanceId))) {
     return false;
   }
-  return true;
+  if (match.resources?.length && !(change.recordKey && match.resources.includes(change.recordKey))) {
+    return false;
+  }
+  return changePassesTimeConstraint(change, match.time_constraint);
 }
 
 function subscriptionCanSeeChange(sub: ActiveSubscription, change: RecordChangeDescriptor): boolean {
@@ -100,7 +127,11 @@ function subscriptionCanSeeChange(sub: ActiveSubscription, change: RecordChangeD
   ) {
     return false;
   }
-  return inGrantScope(sub.scope, change.stream, change.connectionId ?? null);
+  if (sub.authorityKind === "trusted_owner_agent") {
+    const filterList = sub.scope.filters?.streams;
+    return !(filterList && !filterList.includes(change.stream)) && Boolean(findScopeStream(sub.scope, change.stream));
+  }
+  return inGrantScope(sub.scope, change);
 }
 
 function encodeChangesSinceCursor(version: number): string {
@@ -134,7 +165,9 @@ export function deriveClientEventsFromRecordChange(
     }
     const scopeStream = findScopeStream(sub.scope, change.stream);
     const includeConnectionId =
-      sub.authorityKind === "trusted_owner_agent" || scopeStream?.name === "*" || Boolean(scopeStream?.connection_id);
+      sub.authorityKind === "trusted_owner_agent" ||
+      scopeStream?.name === "*" ||
+      Boolean(scopeStream?.instance_ids?.length);
     out.push({
       data: {
         ...(sub.authorityKind === "trusted_owner_agent" ? { connector_id: change.connectorId } : {}),

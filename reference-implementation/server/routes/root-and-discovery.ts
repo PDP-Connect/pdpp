@@ -293,6 +293,7 @@ export interface MountRsProtectedResourceMetadataContext {
     | null
     | Promise<RsProtectedResourceMetadataSemanticCapability | null>;
   resolveSiblingPublicUrl: (req: unknown, origin: string) => string;
+  resolveSourceDeclarationUri: () => string | null;
   shouldUseDirectRequestOrigin: (req: unknown, explicit: unknown) => boolean;
   trustedMetadataHosts: unknown;
 }
@@ -376,6 +377,7 @@ export function mountRsProtectedResourceMetadata(app: AppLike, ctx: MountRsProte
         resource,
         resourceName: `${ctx.providerName} Resource Server`,
         selfExportSupported: true,
+        sourceDeclarationUri: ctx.nativeMode ? ctx.resolveSourceDeclarationUri() : null,
         tokenKindsSupported: ["owner", "client"],
       })
     );

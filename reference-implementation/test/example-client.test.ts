@@ -3,6 +3,8 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -10,18 +12,24 @@ import {
   approveInline,
   buildParRequest,
   denyInline,
-  introspectToken,
   queryStreamRecords,
   queryStreams,
   registerClient,
   stageParRequest,
 } from "../examples/third-party-app/lib/flow.ts";
-import { buildDefaultDraft as buildDefaultDraftUntyped } from "../examples/third-party-app/server.ts";
+import {
+  buildDefaultDraft as buildDefaultDraftUntyped,
+  app as exampleApp,
+} from "../examples/third-party-app/server.ts";
 import { runConnector } from "../runtime/index.ts";
 import { startServer as startServerUntyped } from "../server/index.ts";
 import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from "../server/reference-local-defaults.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
+import {
+  TEST_INTROSPECTION_SERVER_OPTS,
+  type TEST_RS_INTROSPECTION_CREDENTIALS,
+} from "./helpers/introspection-test-credentials.ts";
 
 /**
  * Admission fixture for `runConnector`'s required `admitRunConnection`
@@ -75,12 +83,15 @@ interface ClosableServer {
 interface StartServerOptions {
   asPort?: number;
   dbPath?: string;
+  introspectionCallerCredentials?: typeof TEST_RS_INTROSPECTION_CREDENTIALS;
   ownerAuthPassword?: string;
   ownerAuthSubjectId?: string;
   quiet?: boolean;
+  rsIntrospectionCredentials?: typeof TEST_RS_INTROSPECTION_CREDENTIALS;
   rsPort?: number;
 }
 const startServer = startServerUntyped as unknown as (opts: StartServerOptions) => Promise<ClosableServer>;
+const appListen = exampleApp.listen.bind(exampleApp) as (port: number, callback: () => void) => Server;
 
 interface ConnectorManifest {
   connector_id: string;
@@ -123,6 +134,18 @@ async function closeServer(server: ClosableServer): Promise<void> {
       });
     });
   await Promise.allSettled([closeOne(server.asServer), closeOne(server.rsServer)]);
+}
+
+async function withExampleApp<T>(fn: (baseUrl: string) => Promise<T>): Promise<T> {
+  const server = await new Promise<Server>((resolve) => {
+    const listening = appListen(0, () => resolve(listening));
+  });
+  try {
+    const address = server.address() as AddressInfo;
+    return await fn(`http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 }
 
 async function registerSpotify(asUrl: string): Promise<ConnectorManifest> {
@@ -212,7 +235,13 @@ async function seedSpotify({
 }
 
 test("example client completes the current reference flow on the inline-approval path", async () => {
-  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const server = await startServer({
+    asPort: 0,
+    dbPath: ":memory:",
+    quiet: true,
+    rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
+  });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
 
@@ -251,9 +280,6 @@ test("example client completes the current reference flow on the inline-approval
     assert.ok(approval.token.length > 0);
     assert.equal(typeof approval.grantId, "string");
 
-    const introspection = await introspectToken({ asUrl, token: approval.token });
-    assert.equal(introspection.active, true);
-
     const streams = await queryStreams({ rsUrl, token: approval.token });
     assert.ok(streams);
     assert.ok(Array.isArray(streams.streams) || typeof streams === "object");
@@ -262,8 +288,25 @@ test("example client completes the current reference flow on the inline-approval
   }
 });
 
+test("example third-party app does not expose public token introspection", async () => {
+  await withExampleApp(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/introspect`, {
+      body: new URLSearchParams({ token: "tok_example" }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    assert.equal(response.status, 404);
+  });
+});
+
 test("example client denies a staged request on the inline path", async () => {
-  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const server = await startServer({
+    asPort: 0,
+    dbPath: ":memory:",
+    quiet: true,
+    rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
+  });
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
@@ -306,6 +349,7 @@ test("example client surfaces owner-auth enabled as an honest failure instead of
     ownerAuthSubjectId: "owner_local",
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   });
   const asUrl = `http://localhost:${server.asPort}`;
 
@@ -349,7 +393,13 @@ test("example client shipped defaults stage a PAR request and reach records agai
   // without editing it, after registering the reference Spotify manifest the
   // normal way. If the shipped connector id or stream name drifts out of
   // the manifest, this test fails loudly.
-  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const server = await startServer({
+    asPort: 0,
+    dbPath: ":memory:",
+    quiet: true,
+    rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
+  });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
 

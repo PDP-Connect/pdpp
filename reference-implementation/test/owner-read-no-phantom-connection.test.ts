@@ -53,6 +53,8 @@ const manualArtifactManifest = {
         required: ["id"],
         type: "object",
       },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",

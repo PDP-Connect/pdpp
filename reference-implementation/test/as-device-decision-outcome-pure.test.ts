@@ -147,6 +147,30 @@ test("executeAsDeviceDecision: a thrown store error is a 400 with the error code
   assert.equal(out.traceId, "tr");
 });
 
+test("executeAsDeviceDecision: approval_conflict maps to HTTP 409 and preserves trace ids", async () => {
+  const out = await executeAsDeviceDecision(
+    inputFor({ action: "deny", userCode: "UC-CONFLICT" }),
+    baseDeps({
+      // biome-ignore lint/suspicious/useAwait: async test double retains the Promise-returning dependency contract.
+      deny: async () => {
+        const e = new DeviceDecisionError("Pending consent approval conflict");
+        e.code = "approval_conflict";
+        e.request_id = "rq-conflict";
+        e.trace_id = "tr-conflict";
+        throw e;
+      },
+    })
+  );
+  assert.deepEqual(out, {
+    errorCode: "approval_conflict",
+    errorMessage: "Pending consent approval conflict",
+    outcome: "failure",
+    requestId: "rq-conflict",
+    status: 409,
+    traceId: "tr-conflict",
+  });
+});
+
 test("executeAsDeviceDecision: a thrown error with no code/message uses the defaults", async () => {
   const out = await executeAsDeviceDecision(
     inputFor({ action: "deny", userCode: "UC-4" }),

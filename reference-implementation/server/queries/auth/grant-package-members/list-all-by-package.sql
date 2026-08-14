@@ -8,7 +8,8 @@ SELECT gm.package_id,
        gm.status AS member_status,
        gm.added_at,
        gm.revoked_at AS member_revoked_at,
-       g.status AS grant_status
+       g.status AS grant_status,
+       g.access_mode AS grant_access_mode
 FROM grant_package_members gm
 JOIN grants g ON gm.grant_id = g.grant_id
 WHERE gm.package_id = ?

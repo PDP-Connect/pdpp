@@ -6,6 +6,8 @@ import test from "node:test";
 
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
+import { introspectionHeaders } from "./helpers/introspection.ts";
+import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
 interface CloseableServer {
   close: (callback?: (err?: Error) => void) => unknown;
@@ -18,7 +20,7 @@ type StartedServer = Awaited<ReturnType<typeof startServer>> & {
 };
 
 // Integration coverage for the additive owner-access reference contracts
-// (OpenSpec change redesign-owner-console-product-experience, tasks 10.C.1–4):
+// (OpenSpec change redesign-owner-console-product-experience, tasks 10.C.1-4):
 //   - PATCH /oauth/register/:clientId          (client-name update)
 //   - GET   /_ref/clients/:clientId/tokens      (per-client token listing)
 //   - DELETE /_ref/clients/:clientId/tokens/:id (per-token revoke)
@@ -60,9 +62,11 @@ async function withServer(fn: (ctx: { asUrl: string }) => Promise<void>): Promis
     asPort: 0,
     dbPath: ":memory:",
     dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+    introspectionCallerCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
     ownerAuthPassword: TEST_PASSWORD,
     ownerAuthSubjectId: TEST_SUBJECT,
     quiet: true,
+    rsIntrospectionCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
     rsPort: 0,
   })) as StartedServer;
   try {
@@ -209,7 +213,7 @@ async function issueOwnerTokenViaDeviceFlow(
       device_code: device.device_code,
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
     }),
-    headers: { "Content-Type": "application/json" },
+    headers: introspectionHeaders(),
     method: "POST",
   });
   assert.equal(tokenResp.status, 200);
@@ -240,7 +244,7 @@ interface RevokeResult {
 async function introspect(asUrl: string, token: string): Promise<IntrospectResult> {
   const resp = await fetch(`${asUrl}/introspect`, {
     body: JSON.stringify({ token }),
-    headers: { "Content-Type": "application/json" },
+    headers: introspectionHeaders(),
     method: "POST",
   });
   assert.equal(resp.status, 200);
@@ -500,11 +504,56 @@ test("10.C.4 GET /_ref/grant-packages/count returns the total without paging the
     const now = new Date().toISOString();
     const db = getDb();
     for (const pid of ["gpkg_count_a", "gpkg_count_b"]) {
+      const grantId = `${pid}_grant`;
+      db.prepare(`
+        INSERT INTO grants(grant_id, subject_id, client_id, storage_binding_json, grant_json,
+          access_mode, status, consumed, issued_at, expires_at, trace_id, scenario_id)
+        VALUES (?, ?, 'cli_x', ?, ?, 'continuous', 'active', 0, ?, NULL, 't', 's')
+      `).run(
+        grantId,
+        TEST_SUBJECT,
+        JSON.stringify({ connector_id: "spotify" }),
+        JSON.stringify({
+          access_mode: "continuous",
+          client: { client_id: "cli_x" },
+          grant_id: grantId,
+          issued_at: now,
+          source: { id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" },
+          source_declaration: { version: "reference.source-declaration.test.v1" },
+          streams: [],
+          subject: { id: TEST_SUBJECT },
+          version: "0.1.0",
+        }),
+        now
+      );
       db.prepare(`
         INSERT INTO grant_packages(package_id, subject_id, client_id, status, package_json,
           trace_id, scenario_id, created_at, approved_at, revoked_at)
         VALUES (?, ?, 'cli_x', 'active', ?, 't', 's', ?, ?, NULL)
-      `).run(pid, TEST_SUBJECT, JSON.stringify({ package_id: pid, version: "test" }), now, now);
+      `).run(
+        pid,
+        TEST_SUBJECT,
+        JSON.stringify({
+          approved_source_count: 1,
+          client: { client_display: null, client_id: "cli_x", registration_mode: "dynamic" },
+          package_id: pid,
+          source_bounded_child_grants: true,
+          subject: { id: TEST_SUBJECT },
+          version: "reference.mcp_package.v2",
+        }),
+        now,
+        now
+      );
+      db.prepare(`
+        INSERT INTO grant_package_members(package_id, grant_id, token_id, source_json, status, added_at, revoked_at)
+        VALUES (?, ?, ?, ?, 'active', ?, NULL)
+      `).run(
+        pid,
+        grantId,
+        `${pid}_token`,
+        JSON.stringify({ id: "https://registry.pdpp.dev/connectors/spotify", kind: "connector" }),
+        now
+      );
     }
 
     const two = await fetch(`${asUrl}/_ref/grant-packages/count`, { headers: { Cookie: sessionCookie } });

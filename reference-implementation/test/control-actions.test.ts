@@ -1227,12 +1227,14 @@ test("schedule upsert returns policy_warning when interval is below minimum_inte
     },
     connector_id: "policy-warning-test",
     display_name: "Policy Warning Test",
+    manifest_uri: "https://sources.example/policy-warning-test",
     protocol_version: "0.1.0",
     streams: [
       {
         name: "items",
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -1286,12 +1288,14 @@ test("schedule upsert rejects enabling manual or background-unsafe connector pol
     },
     connector_id: "manual-unsafe-test",
     display_name: "Manual Unsafe Test",
+    manifest_uri: "https://sources.example/manual-unsafe-test",
     protocol_version: "0.1.0",
     streams: [
       {
         name: "items",
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -1329,12 +1333,14 @@ test("schedule upsert permits a manual-default connector when background_safe=tr
     },
     connector_id: "manual-safe-test",
     display_name: "Manual Safe Test",
+    manifest_uri: "https://sources.example/manual-safe-test",
     protocol_version: "0.1.0",
     streams: [
       {
         name: "items",
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -1381,12 +1387,14 @@ test("schedule upsert permits assisted-after-owner-auth schedules as unattended 
     },
     connector_id: "assisted-after-owner-auth-test",
     display_name: "Assisted After Owner Auth Test",
+    manifest_uri: "https://sources.example/assisted-after-owner-auth-test",
     protocol_version: "0.1.0",
     streams: [
       {
         name: "items",
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -1426,12 +1434,14 @@ test("schedule resume rejects a disabled schedule when connector policy is backg
     },
     connector_id: "background-unsafe-test",
     display_name: "Background Unsafe Test",
+    manifest_uri: "https://sources.example/background-unsafe-test",
     protocol_version: "0.1.0",
     streams: [
       {
         name: "items",
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -1484,12 +1494,14 @@ test("GET /_ref/schedules surfaces ineligibility_reason for a stale enabled row 
     },
     connector_id: connectorId,
     display_name: "Stale Unsafe Reconcile Test",
+    manifest_uri: `https://sources.example/${connectorId}`,
     protocol_version: "0.1.0",
     streams: [
       {
         name: "items",
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -1576,12 +1588,14 @@ test("GET /_ref/schedules omits ineligibility_reason when persisted row is disab
     },
     connector_id: safeId,
     display_name: "Eligible Schedule Listing Test",
+    manifest_uri: `https://sources.example/${safeId}`,
     protocol_version: "0.1.0",
     streams: [
       {
         name: "items",
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -1600,12 +1614,14 @@ test("GET /_ref/schedules omits ineligibility_reason when persisted row is disab
     },
     connector_id: disabledId,
     display_name: "Disabled Unsafe Listing Test",
+    manifest_uri: `https://sources.example/${disabledId}`,
     protocol_version: "0.1.0",
     streams: [
       {
         name: "items",
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        selection: { fields: true, resources: true },
         semantics: "append_only",
       },
     ],
@@ -1685,7 +1701,7 @@ test("GET /_ref/approvals surfaces pending provider-connect consents with grant 
     assert.ok(entry, "expected a consent approval entry");
     assert.equal(entry.client_id, "concert_recommendation_app");
     assert.ok(entry.grant_preview);
-    assert.deepEqual(entry.grant_preview.source, { id: SPOTIFY_CONNECTOR_KEY, kind: "connector" });
+    assert.deepEqual(entry.grant_preview.source, { id: spotifyManifest.connector_id, kind: "connector" });
     assert.equal(entry.grant_preview.access_mode, "single_use");
     assert.ok(Array.isArray(entry.grant_preview.streams));
   });

@@ -35,6 +35,7 @@ import {
   renderHostedMcpSourceSelection,
   requireAuthorizeString,
   requireRegisteredRedirectUri,
+  resolveHostedMcpSourceDescriptor,
   validateAuthorizePkce,
 } from "./as-consent-ui-helpers.ts";
 
@@ -63,6 +64,11 @@ interface AppLike {
   get: (path: string, ...args: RouteArg<RouteHandler | MiddlewareHandler>[]) => AppLike;
   post: (path: string, ...args: RouteArg<RouteHandler | MiddlewareHandler>[]) => AppLike;
 }
+
+const OAUTH_AUTHORIZATION_ERROR_CODES: Readonly<Record<string, string>> = {
+  "source.authorization_details_invalid": "invalid_authorization_details",
+  undefined: "invalid_request",
+};
 
 // Shape expected by requireRegisteredRedirectUri (mirrors as-consent-ui-helpers.ts internal type).
 interface OAuthClient {
@@ -217,6 +223,11 @@ async function accumulateSourceEntry(
     oauthError(res, 400, "invalid_request", `Unknown connector: ${connectorId}`);
     return "rejected";
   }
+  const source = resolveHostedMcpSourceDescriptor(manifest);
+  if (!source) {
+    oauthError(res, 400, "invalid_request", `Connector ${connectorId} has no valid public source identity`);
+    return "rejected";
+  }
 
   let matchedBinding: ConsentPickerBinding | null = null;
   let activeBindingCount = 0;
@@ -270,7 +281,8 @@ async function accumulateSourceEntry(
       connectorId,
       narrowedStreamNames,
       packageAccessMode,
-      pinnedConnectionId
+      pinnedConnectionId,
+      source
     )
   );
   acc.storageBindings.push({ connector_id: connectorId });
@@ -294,7 +306,7 @@ function resolveNarrowedStreams(
   streamSelectionsBySource: Map<string, Set<string>>
 ): string[] | null | "deselected" {
   const manifestStreamNames = Array.isArray(manifest?.streams)
-    ? (manifest?.streams?.map((s) => s.name).filter((n): n is string => typeof n === "string") ?? [])
+    ? manifest.streams.map((s) => s.name).filter((n): n is string => typeof n === "string")
     : [];
   if (manifestStreamNames.length === 0) {
     return null; // (a)
@@ -330,7 +342,24 @@ async function initiateGrantAndRedirect(
   ctx: MountAsAuthorizeContext,
   req: RouteRequest
 ): Promise<unknown> {
-  const details = authorizationDetails || buildHostedMcpAuthorizationDetailsForConnector(selectedConnectorId as string);
+  let details = authorizationDetails;
+  if (!details) {
+    const connectorId = selectedConnectorId as string;
+    const manifest = await ctx.consentPickerCaps.getConnectorManifest(connectorId).catch(() => null);
+    if (!manifest) {
+      return ctx.oauthError(res, 400, "invalid_request", `Unknown connector: ${connectorId}`);
+    }
+    const source = resolveHostedMcpSourceDescriptor(manifest);
+    if (!source) {
+      return ctx.oauthError(
+        res,
+        400,
+        "invalid_request",
+        `Connector ${connectorId} has no valid public source identity`
+      );
+    }
+    details = buildHostedMcpAuthorizationDetailsForConnector(connectorId, source);
+  }
   const explicitBaseUrl = ctx.asPublicUrl || (ctx.ignoreAmbientPublicUrls ? null : (process.env.AS_PUBLIC_URL ?? null));
   const output = await ctx.consentStore.initiateGrant(
     { authorization_details: details, client_id: pkce.clientId },
@@ -616,7 +645,7 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
         );
       }
 
-      return initiateGrantAndRedirect(
+      return await initiateGrantAndRedirect(
         res,
         authorizationDetails,
         selectedConnectorId,
@@ -625,10 +654,11 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
         req
       );
     } catch (err) {
+      const errorCode = (err as { code?: string }).code;
       return ctx.oauthError(
         res,
         400,
-        (err as { code?: string }).code || "invalid_request",
+        OAUTH_AUTHORIZATION_ERROR_CODES[String(errorCode)] ?? String(errorCode),
         (err as Error).message || "Authorization request rejected"
       );
     }

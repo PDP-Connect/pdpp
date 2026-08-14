@@ -98,6 +98,7 @@ function makeManifest({ availability }: { availability?: unknown } = {}) {
           required: ["id"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
       },
     ],
     version: "0.1.0",

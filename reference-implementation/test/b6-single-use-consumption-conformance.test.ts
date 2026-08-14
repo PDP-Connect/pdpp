@@ -44,7 +44,11 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { issueToken } from "../server/auth.ts";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
+import { TEST_INTROSPECTION_SERVER_OPTS } from "./helpers/introspection-test-credentials.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -137,7 +141,34 @@ interface ApprovedGrant {
   token: string;
 }
 
+function sourceIdForConnectorId(connectorId: string): string {
+  return connectorId.includes("://") ? connectorId : `https://registry.pdpp.dev/connectors/${connectorId}`;
+}
+
+async function seedDefaultGrantInstance(connectorId: string, ownerSubjectId: string): Promise<void> {
+  const store = createRequestConnectorInstanceStore();
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
+  const connectorInstanceId = makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorKey);
+  if (await store.get(connectorInstanceId)) {
+    return;
+  }
+  const now = new Date().toISOString();
+  await store.upsert({
+    connectorId: connectorKey,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: "Spotify",
+    ownerSubjectId,
+    sourceBinding: { fixture: "b6-conformance-default-account" },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+}
+
 async function issueClientGrant(asUrl: string, subjectId: string, params: ClientGrantParams): Promise<ApprovedGrant> {
+  await seedDefaultGrantInstance(params.connector_id, subjectId);
   const { body: par } = await fetchJson<{ request_uri: string }>(`${asUrl}/oauth/par`, {
     body: JSON.stringify({
       authorization_details: [
@@ -145,22 +176,32 @@ async function issueClientGrant(asUrl: string, subjectId: string, params: Client
           access_mode: params.access_mode,
           purpose_code: params.purpose_code,
           purpose_description: params.purpose_description,
-          source: { id: params.connector_id, kind: "connector" },
+          source: { id: sourceIdForConnectorId(params.connector_id), kind: "connector" },
           streams: params.streams,
           type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: params.client_id,
     }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
+  const { body: review, status: reviewStatus } = await fetchJson<{ approval_review_revision?: unknown }>(
+    `${asUrl}/consent/review`,
+    {
+      body: JSON.stringify({ request_uri: par.request_uri, subject_id: subjectId }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    }
+  );
+  assert.equal(reviewStatus, 200, JSON.stringify(review));
+  assert.equal(typeof review.approval_review_revision, "string", "consent review returns a revision");
   const { body: approved } = await fetchJson<ApprovedGrant>(`${asUrl}/consent/approve`, {
     body: JSON.stringify({
+      approval_review_revision: review.approval_review_revision,
       request_uri: par.request_uri,
-      subject_id: subjectId,
     }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   return approved;
@@ -217,6 +258,7 @@ async function withHarness(fn: (ctx: { asUrl: string; rsUrl: string; connectorId
     dbPath: ":memory:",
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   })) as TestServer;
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -318,7 +360,7 @@ test("single_use: second token issuance is rejected with grant_consumed (B6)", a
     // HTTP 403. This is the consumption enforcement, not a generic error.
     await assert.rejects(
       () =>
-        issueToken(approved.grant.grant_id, "b6_reissue_owner", "longview", null, {
+        issueToken(approved.grant.grant_id, "b6_reissue_owner", "longview", approved.grant.expires_at ?? null, {
           source: "b6_second_issuance",
         }),
       (err: unknown) => {

@@ -58,6 +58,9 @@ function hasCodeAndHttpStatus(err: unknown): err is { code: unknown; httpStatus:
 
 const MANIFEST = {
   connector_id: CONNECTOR_ID,
+  display_name: "Query not-found fixture",
+  manifest_uri: `https://sources.example/${CONNECTOR_ID}`,
+  protocol_version: "0.1.0",
   streams: [
     {
       consent_time_field: "created_at",
@@ -73,7 +76,8 @@ const MANIFEST = {
         required: ["id"],
         type: "object",
       },
-      selection: { fields: true },
+      selection: { fields: true, resources: true },
+      semantics: "append_only",
     },
   ],
   version: "1.0.0",

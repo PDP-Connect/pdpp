@@ -2,10 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import type { CimdTransportFailureEvent } from "../server/cimd.ts";
 import { startServer } from "../server/index.ts";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REFERENCE_IMPL_DIR = join(__dirname, "..");
 
 interface CloseableServer {
   close: (callback?: (err?: Error) => void) => unknown;
@@ -31,6 +37,8 @@ interface OAuthErrorBody {
   error_description?: unknown;
   request_id?: unknown;
 }
+
+const SPOTIFY_SOURCE_ID = "https://registry.pdpp.dev/connectors/spotify";
 
 async function postForm(
   url: string,
@@ -133,12 +141,19 @@ test("MCP device authorization emits one CIMD transport event without changing i
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
+    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
+    const registerResp = await fetch(`${asUrl}/connectors`, {
+      body: JSON.stringify(spotifyManifest),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(registerResp.status, 201);
     const { resp, body } = await postForm(`${asUrl}/oauth/device_authorization`, {
       authorization_details: JSON.stringify([
         {
           access_mode: "single_use",
           purpose_code: "https://pdpp.dev/purpose/personal_assistant",
-          source: { id: "connector-test", kind: "connector" },
+          source: { id: SPOTIFY_SOURCE_ID, kind: "connector" },
           streams: [{ name: "*" }],
           type: "https://pdpp.dev/data-access",
         },
@@ -148,7 +163,7 @@ test("MCP device authorization emits one CIMD transport event without changing i
     });
 
     assert.equal(resp.status, 400);
-    assert.equal(body.error, "cimd_fetch_failed");
+    assert.equal(body.error, "cimd_fetch_failed", String(body.error_description));
     assertOAuthErrorHasRequestId(resp, body);
     assert.equal(events.length, 1);
     assert.equal(events[0]?.event_type, "cimd.transport_failure");

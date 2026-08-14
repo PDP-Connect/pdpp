@@ -202,11 +202,11 @@ _Previously deferred (carried forward): concerns that constrain semantic choices
 
 **Design constraint for v0.1:** Keep `retention` in the spec but document it as a structured policy field, not a technical control. This is consistent with how Open Banking handles it.
 
-### Source-binding unification (`connector_id`/`provider_id` → `source: { kind, id }`)
+### Source-binding unification (`connector_id`/`provider_id` → `source`)
 
 _Recorded 2026-07-06; change implemented 2026-04-30._
 
-Earlier drafts of spec-core defined a top-level `connector_id` scalar (and the reference contract a sibling `provider_id`) as the request/grant source-identity field. These were unified into the single discriminated `source: { kind: "connector" | "provider_native", id }` object. This was a breaking change to the request and grant contract, implemented via the archived OpenSpec change `2026-04-30-unify-source-binding-vocabulary`. The former scalars survive only as the kind-keyed meanings of `source.id`, never as top-level request or grant fields; a request carrying a top-level `connector_id` or `provider_id` is rejected with 400 `invalid_request`. The spec-core text was aligned with the implemented contract on 2026-07-06.
+Earlier drafts of spec-core defined a top-level `connector_id` scalar (and the reference contract a sibling `provider_id`) as the request/grant source-identity field. These were unified into a `source` object. A request requires `source.id` and may supply `source.kind`; a resolved grant requires both. This was a breaking change to the request and grant contract, implemented via the archived OpenSpec change `2026-04-30-unify-source-binding-vocabulary`. The former scalars survive only as kind-keyed meanings of `source.id`, never as top-level request or grant fields; a request carrying a top-level `connector_id` or `provider_id` is rejected with 400 `invalid_request`. The spec-core text was aligned with the implemented contract on 2026-07-06.
 
 ### Stream dependencies and binary data
 

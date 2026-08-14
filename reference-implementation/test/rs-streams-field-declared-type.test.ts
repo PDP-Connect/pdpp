@@ -30,8 +30,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { startServer } from "../server/index.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
 
-const CONNECTOR_ID = "streams-field-declared-type";
+const CONNECTOR_KEY = "codex";
+const CONNECTOR_ID = `https://registry.pdpp.dev/connectors/${CONNECTOR_KEY}`;
 const STREAM = "transactions";
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = "pdpp-reference-test-initial-access-token";
@@ -101,7 +104,8 @@ const baseManifest = {
         required: ["id", "amount_cents", "posted_at"],
         type: "object",
       },
-      selection: { fields: { mode: "explicit" } },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     },
   ],
   version: "1.0.0",
@@ -214,9 +218,17 @@ async function approveGrant(asUrl: string, subjectId: string, params: ApproveGra
   if (!initiate?.request_uri) {
     throw new Error(`startGrantRequest returned no request_uri: ${JSON.stringify(initiate)}`);
   }
-  const { body: approvedBody } = await fetchJson(`${asUrl}/consent/approve`, {
+  const review = await fetchJson(`${asUrl}/consent/review`, {
     body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: subjectId }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(review.status, 200, JSON.stringify(review.body));
+  const reviewRevision = (review.body as Record<string, unknown>).approval_review_revision;
+  assert.equal(typeof reviewRevision, "string", "consent review must return approval_review_revision");
+  const { body: approvedBody } = await fetchJson(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({ approval_review_revision: reviewRevision, request_uri: initiate.request_uri }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   return approvedBody as ApprovedGrant;
@@ -239,6 +251,20 @@ async function withHttpHarness(fn: (urls: { asUrl: string; rsUrl: string }) => P
       method: "POST",
     });
     assert.equal(registerResp.status, 201, "register connector");
+    const connectorInstanceId = makeDefaultAccountConnectorInstanceId("owner_local", CONNECTOR_KEY);
+    const now = new Date().toISOString();
+    await createRequestConnectorInstanceStore().upsert({
+      connectorId: CONNECTOR_KEY,
+      connectorInstanceId,
+      createdAt: now,
+      displayName: "Declared-Type Test Account",
+      ownerSubjectId: "owner_local",
+      sourceBinding: { fixture: "rs-streams-field-declared-type" },
+      sourceBindingKey: connectorInstanceId,
+      sourceKind: "account",
+      status: "active",
+      updatedAt: now,
+    });
     await fn({ asUrl, rsUrl });
   } finally {
     await closeServer(server);
@@ -268,7 +294,7 @@ interface FieldCapability {
 
 async function readStreamMetadata(rsUrl: string, token: string): Promise<Record<string, FieldCapability>> {
   const { status, body } = await fetchJson(
-    `${rsUrl}/v1/streams/${encodeURIComponent(STREAM)}?connector_id=${encodeURIComponent(CONNECTOR_ID)}`,
+    `${rsUrl}/v1/streams/${encodeURIComponent(STREAM)}?connector_id=${encodeURIComponent(CONNECTOR_KEY)}`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   assert.equal(status, 200, `GET /v1/streams/${STREAM} should be 200`);
@@ -395,19 +421,15 @@ test("declared type does not alter grant usability under a client token", async 
 
     const fc = await readStreamMetadata(rsUrl, approved.token);
 
-    // amount_cents is granted: type present AND granted true.
+    // The grant projection carries only field names. Current presentation
+    // types are not authorization evidence and are therefore omitted.
     assert.ok(fc.amount_cents, "amount_cents field_capabilities present");
-    assert.equal(fc.amount_cents.type, "currency");
+    assert.equal(fc.amount_cents.type, undefined);
     assert.equal(fc.amount_cents.granted, true);
 
     // merchant declares a type but is NOT in the grant: the declared type does
     // not rescue grant usability — granted is false, just like undeclared
     // ungranted fields.
-    if (fc.merchant) {
-      assert.equal(fc.merchant.type, "string");
-      assert.equal(fc.merchant.granted, false);
-      assert.ok(fc.merchant.exact_filter, "merchant exact_filter present");
-      assert.equal(fc.merchant.exact_filter.usable, false);
-    }
+    assert.equal(fc.merchant, undefined);
   });
 });

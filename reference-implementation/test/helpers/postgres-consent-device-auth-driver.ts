@@ -170,6 +170,14 @@ export function createPostgresConsentDeviceAuthDriver({ connectionString }: { co
       if (!row) {
         throw codedError("Unknown user code", "not_found");
       }
+      if (row.status === "approved" && typeof row.token_id === "string") {
+        return {
+          access_token: row.token_id,
+          expires_in: 365 * 24 * 60 * 60,
+          subject_id: row.subject_id || "owner_local",
+          token_type: "Bearer",
+        };
+      }
       if (row.status !== "pending") {
         throw codedError("Owner device authorization is not available", "not_found");
       }

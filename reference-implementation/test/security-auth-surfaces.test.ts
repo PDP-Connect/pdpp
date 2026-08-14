@@ -17,10 +17,16 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { RefSpineEventsPageEnvelope } from "../operations/ref-spine-events-page/index.ts";
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { introspectionHeaders } from "./helpers/introspection.ts";
+import { TEST_RS_INTROSPECTION_CREDENTIALS } from "./helpers/introspection-test-credentials.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
+const OWNER_SUBJECT_ID = "owner_local";
+const NOW = "2026-05-31T00:00:00.000Z";
 
 // `startServer`'s inferred asServer/rsServer type comes from a framework
 // `.listen()` call whose TS overload resolves to an http2-shaped type, but at
@@ -156,7 +162,7 @@ async function approveSpotifyGrant(
       ],
       client_id: "concert_recommendation_app",
     }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   if (initResp.status !== 201) {
@@ -164,13 +170,32 @@ async function approveSpotifyGrant(
     throw new Error(`PAR failed (${initResp.status}): ${errBody}`);
   }
   const initiate = (await initResp.json()) as ParInitiateBody;
-  const approveResp = await fetch(`${asUrl}/consent/approve`, {
+  const reviewResp = await fetch(`${asUrl}/consent/review`, {
     body: JSON.stringify({ request_uri: initiate.request_uri, subject_id: subjectId }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
-  assert.equal(approveResp.status, 200);
-  return approveResp.json() as Promise<ApproveGrantResponse>;
+  const reviewText = await reviewResp.text();
+  assert.equal(reviewResp.status, 200, reviewText);
+  const review = JSON.parse(reviewText) as {
+    approval_review: object;
+    approval_review_revision: string;
+    request_uri: string;
+  };
+  assert.ok(review.approval_review);
+  assert.ok(review.approval_review_revision);
+  assert.equal(review.request_uri, initiate.request_uri);
+  const approveResp = await fetch(`${asUrl}/consent/approve`, {
+    body: JSON.stringify({
+      approval_review_revision: review.approval_review_revision,
+      request_uri: review.request_uri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const approveBody = await approveResp.text();
+  assert.equal(approveResp.status, 200, approveBody);
+  return JSON.parse(approveBody) as ApproveGrantResponse;
 }
 
 interface HarnessContext {
@@ -183,7 +208,14 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>): Promise<
   const spotifyManifest = JSON.parse(
     readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8")
   ) as SpotifyManifest;
-  const server = (await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 })) as TestServer;
+  const server = (await startServer({
+    asPort: 0,
+    dbPath: ":memory:",
+    introspectionCallerCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
+    quiet: true,
+    rsIntrospectionCredentials: TEST_RS_INTROSPECTION_CREDENTIALS,
+    rsPort: 0,
+  })) as TestServer;
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   try {
@@ -193,10 +225,28 @@ async function withHarness(fn: (ctx: HarnessContext) => Promise<void>): Promise<
       method: "POST",
     });
     assert.equal(registerResp.status, 201);
+    await seedSpotifyInstance(spotifyManifest);
     await fn({ asUrl, rsUrl, spotifyManifest });
   } finally {
     await closeServer(server);
   }
+}
+
+async function seedSpotifyInstance(spotifyManifest: SpotifyManifest): Promise<void> {
+  const connectorId = canonicalConnectorKey(spotifyManifest.connector_id);
+  assert.ok(connectorId, "spotify manifest must resolve to a canonical connector key");
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId: "cin_security_auth_surfaces_spotify",
+    createdAt: NOW,
+    displayName: "Security Auth Surfaces Spotify",
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    sourceBinding: { account_hint: "security-auth-surfaces@example.com" },
+    sourceBindingKey: "security-auth-surfaces@example.com",
+    sourceKind: "account",
+    status: "active",
+    updatedAt: NOW,
+  });
 }
 
 test("security: harden reference auth surfaces", async (t) => {
@@ -259,7 +309,6 @@ test("security: harden reference auth surfaces", async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const approval = await approveSpotifyGrant(asUrl, spotifyManifest);
       const resp = await fetch(`${asUrl}/grants/${approval.grant.grant_id}/revoke`, {
-        headers: { "Content-Type": "application/json" },
         method: "POST",
       });
       assert.equal(resp.status, 401);
@@ -269,7 +318,7 @@ test("security: harden reference auth surfaces", async (t) => {
       // The grant SHALL remain unchanged. Use a fresh introspect call to prove it.
       const introResp = await fetch(`${asUrl}/introspect`, {
         body: JSON.stringify({ token: approval.token }),
-        headers: { "Content-Type": "application/json" },
+        headers: introspectionHeaders(),
         method: "POST",
       });
       const intro = (await introResp.json()) as IntrospectResponseBody;
@@ -313,7 +362,7 @@ test("security: harden reference auth surfaces", async (t) => {
       // A should still be active.
       const introResp = await fetch(`${asUrl}/introspect`, {
         body: JSON.stringify({ token: a.token }),
-        headers: { "Content-Type": "application/json" },
+        headers: introspectionHeaders(),
         method: "POST",
       });
       const intro = (await introResp.json()) as IntrospectResponseBody;

@@ -20,7 +20,9 @@ import {
   needsCandidateRecordScan,
   passesGrantRecordConstraints,
   passesRequestFilters,
+  passesTimeConstraint,
   passesTimeRange,
+  requireTimeConstraint,
 } from "../server/record-filters.ts";
 
 const intSchema = { type: "integer" };
@@ -128,7 +130,7 @@ test("passesTimeRange: missing or unparseable field value is rejected", () => {
   assert.equal(passesTimeRange({ [field]: "not-a-date" }, tr, field), false, "NaN date rejected");
 });
 
-// --- passesGrantRecordConstraints: resource allow-list + time_range -----------
+// --- passesGrantRecordConstraints: resource allow-list + frozen time ---------
 
 test("passesGrantRecordConstraints: resource allow-list gates by record key", () => {
   const grant = { resources: ["rec-a", "rec-b"] };
@@ -141,28 +143,67 @@ test("passesGrantRecordConstraints: empty resources means no key restriction", (
   assert.equal(passesGrantRecordConstraints({}, "anything", {}, {}), true);
 });
 
-test("passesGrantRecordConstraints: also enforces grant time_range against consent_time_field", () => {
-  const grant = { time_range: { since: "2021-01-01T00:00:00Z" } };
-  const manifestStream = { consent_time_field: "ts" };
+test("passesGrantRecordConstraints: enforces the frozen grant time_constraint field", () => {
+  const grant = { time_constraint: { field: "frozen_at", since: "2021-01-01T00:00:00Z" } };
+  const manifestStream = { consent_time_field: "mutable_at" };
   assert.equal(
-    passesGrantRecordConstraints({ ts: "2021-06-01T00:00:00Z" }, "k", grant, manifestStream),
+    passesGrantRecordConstraints({ frozen_at: "2021-06-01T00:00:00Z" }, "k", grant, manifestStream),
     true,
     "inside grant window passes"
   );
   assert.equal(
-    passesGrantRecordConstraints({ ts: "2020-06-01T00:00:00Z" }, "k", grant, manifestStream),
+    passesGrantRecordConstraints({ frozen_at: "2020-06-01T00:00:00Z" }, "k", grant, manifestStream),
     false,
     "before grant since rejected"
   );
 });
 
+test("time_constraint is since-inclusive, until-exclusive, and fails closed", () => {
+  const constraint = {
+    field: "frozen_at",
+    since: "2026-01-01T00:00:00Z",
+    until: "2026-02-01T00:00:00Z",
+  };
+  assert.equal(passesTimeConstraint({ frozen_at: constraint.since }, constraint), true, "since is inclusive");
+  assert.equal(passesTimeConstraint({ frozen_at: "2025-12-31T23:59:59Z" }, constraint), false);
+  assert.equal(passesTimeConstraint({ frozen_at: constraint.until }, constraint), false, "until is exclusive");
+  assert.equal(passesTimeConstraint({}, constraint), false, "missing frozen field is not authorized");
+  assert.equal(passesTimeConstraint({ frozen_at: "not-a-date" }, constraint), false, "bad record time is hidden");
+  assert.throws(
+    () => requireTimeConstraint({ field: "frozen_at", since: 123 }),
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "grant_invalid"
+  );
+  assert.throws(
+    () => requireTimeConstraint({ field: "frozen_at", since: "not-a-date" }),
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "grant_invalid"
+  );
+  assert.deepEqual(requireTimeConstraint({ field: "nested.time", since: "2026-01-01T00:00:00Z" }), {
+    field: "nested.time",
+    since: "2026-01-01T00:00:00Z",
+  });
+});
+
+test("time_constraint preserves arbitrary literal top-level fields", () => {
+  for (const field of [" leading and trailing ", "event-time", "occurred.at", 'said "when"', "時刻"]) {
+    const constraint = requireTimeConstraint({
+      field,
+      since: "2026-01-01T00:00:00Z",
+    });
+    assert.deepEqual(constraint, {
+      field,
+      since: "2026-01-01T00:00:00Z",
+    });
+    assert.equal(passesTimeConstraint({ [field]: "2026-01-02T00:00:00Z" }, constraint), true, field);
+  }
+});
+
 // --- hasGrantRecordConstraints / needsCandidateRecordScan ---------------------
 
-test("hasGrantRecordConstraints: true only when time_range or non-empty resources", () => {
+test("hasGrantRecordConstraints: true only when time_constraint or non-empty resources", () => {
   assert.equal(hasGrantRecordConstraints({}), false);
   assert.equal(hasGrantRecordConstraints({ resources: [] }), false, "empty resources is NOT a constraint");
   assert.equal(hasGrantRecordConstraints({ resources: ["x"] }), true);
-  assert.equal(hasGrantRecordConstraints({ time_range: { since: "x" } }), true);
+  assert.equal(hasGrantRecordConstraints({ time_constraint: { field: "ts", since: "2026-01-01T00:00:00Z" } }), true);
 });
 
 test("needsCandidateRecordScan: true when filters present OR grant constrains records", () => {

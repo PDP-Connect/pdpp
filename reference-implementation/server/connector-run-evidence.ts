@@ -13,10 +13,12 @@
 
 import { listSpineCorrelations } from "../lib/spine.ts";
 
-export function getConnectorRunEvidenceSource(
-  source: { kind?: unknown; id?: unknown } | null | undefined
-): string | null {
-  return source?.kind === "connector" && typeof source.id === "string" && source.id ? source.id : null;
+export function getConnectorRunEvidenceConnectorId(storageBinding: unknown): string | null {
+  const connectorId =
+    storageBinding && typeof storageBinding === "object" && !Array.isArray(storageBinding)
+      ? (storageBinding as { connector_id?: unknown }).connector_id
+      : null;
+  return typeof connectorId === "string" && connectorId ? connectorId : null;
 }
 
 export async function getLatestConnectorRunSummary(

@@ -13,6 +13,7 @@ import {
 } from "../src/public/index.ts";
 
 const CONSENT_APPROVE_RE = /consent\/approve.*\{ grant_id, token, grant \}/;
+const CONSENT_REVIEW_RE = /\/consent\/review/;
 const GRANT_REVOKE_RE = /\/grants\/\{grantId\}\/revoke/;
 const OAUTH_PAR_RE = /\/oauth\/par/;
 const OAUTH_TOKEN_RE = /\/oauth\/token/;
@@ -29,6 +30,7 @@ test("public manifests cover metadata, auth, grant, and record surfaces", () => 
     "getProtectedResourceMetadata",
     "registerDynamicClient",
     "createPushedAuthorizationRequest",
+    "reviewConsent",
     "approveConsent",
     "startOwnerDeviceAuthorization",
     "exchangeOwnerDeviceToken",
@@ -45,6 +47,7 @@ test("public manifests cover metadata, auth, grant, and record surfaces", () => 
 
   const publicOperations = listOperations().filter((entry) => entry.surface === "public");
   assert.ok(publicOperations.some((entry) => entry.id === "createPushedAuthorizationRequest"));
+  assert.ok(publicOperations.some((entry) => entry.id === "reviewConsent"));
   assert.ok(publicOperations.some((entry) => entry.id === "revokeGrant"));
 });
 
@@ -64,6 +67,129 @@ test("request validators accept the shipped public flow shapes", () => {
     },
   });
   assert.deepEqual(parRequest, { ok: true });
+
+  const batchReviewRequest = validateRequest("reviewConsent", {
+    body: {
+      approved_source_indexes: [0],
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+      source_narrowing: {
+        0: {
+          fields: { top_artists: ["id"] },
+          since: { top_artists: "2026-01-01T00:00:00Z" },
+          streams: ["top_artists"],
+        },
+      },
+    },
+  });
+  assert.deepEqual(batchReviewRequest, { ok: true });
+
+  const singleReviewRequest = validateRequest("reviewConsent", {
+    body: {
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+    },
+  });
+  assert.deepEqual(singleReviewRequest, { ok: true });
+
+  const singleAiTrainingBooleanReviewRequest = validateRequest("reviewConsent", {
+    body: {
+      ai_training_consented: true,
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+      subject_id: "owner_local",
+    },
+  });
+  assert.deepEqual(singleAiTrainingBooleanReviewRequest, { ok: true });
+
+  const singleAiTrainingFormReviewRequest = validateRequest("reviewConsent", {
+    body: {
+      ai_training_consented: "1",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+      subject_id: "owner_local",
+    },
+  });
+  assert.deepEqual(singleAiTrainingFormReviewRequest, { ok: true });
+
+  const singleAiTrainingMalformedReviewRequest = validateRequest("reviewConsent", {
+    body: {
+      ai_training_consented: "yes",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+      subject_id: "owner_local",
+    },
+  });
+  assert.equal(singleAiTrainingMalformedReviewRequest.ok, false);
+
+  const approvalIdReviewRequest = validateRequest("reviewConsent", {
+    body: {
+      approval_id: "appr_public_reference_id",
+    },
+  });
+  assert.deepEqual(approvalIdReviewRequest, { ok: true });
+
+  const reviewRejectsBothIdentifiers = validateRequest("reviewConsent", {
+    body: {
+      approval_id: "appr_public_reference_id",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+    },
+  });
+  assert.equal(reviewRejectsBothIdentifiers.ok, false);
+
+  const batchReviewRejectsUnknownShape = validateRequest("reviewConsent", {
+    body: {
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+      source_narrowing: { 0: { arbitrary: true } },
+    },
+  });
+  assert.equal(batchReviewRejectsUnknownShape.ok, false);
+
+  const batchReviewRejectsBadKey = validateRequest("reviewConsent", {
+    body: {
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+      source_narrowing: { nope: { streams: ["top_artists"] } },
+    },
+  });
+  assert.equal(batchReviewRejectsBadKey.ok, false);
+
+  const singleApprovalRequest = validateRequest("approveConsent", {
+    body: {
+      approval_review_revision: "reference.approval-review.v1:sha256:test",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+    },
+  });
+  assert.deepEqual(singleApprovalRequest, { ok: true });
+
+  const batchApprovalRequest = validateRequest("approveConsent", {
+    body: {
+      approval_review_revision: "reference.batch-approval-review.v1:sha256:test",
+      confirm_reviewed_decision: "1",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+    },
+  });
+  assert.deepEqual(batchApprovalRequest, { ok: true });
+
+  const batchApprovalRequiresReview = validateRequest("approveConsent", {
+    body: {
+      confirm_reviewed_decision: "1",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+    },
+  });
+  assert.equal(batchApprovalRequiresReview.ok, false);
+
+  const finalApprovalRejectsSubjectReplay = validateRequest("approveConsent", {
+    body: {
+      approval_review_revision: "reference.approval-review.v1:sha256:test",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+      subject_id: "owner_local",
+    },
+  });
+  assert.equal(finalApprovalRejectsSubjectReplay.ok, false);
+
+  const finalApprovalRejectsAiTrainingReplay = validateRequest("approveConsent", {
+    body: {
+      ai_training_consented: true,
+      approval_review_revision: "reference.approval-review.v1:sha256:test",
+      request_uri: "urn:ietf:params:oauth:request_uri:pdpp:pending:dev_test",
+    },
+  });
+  assert.equal(finalApprovalRejectsAiTrainingReplay.ok, false);
 
   const deviceAuthRequest = validateRequest("startOwnerDeviceAuthorization", {
     body: {
@@ -148,6 +274,145 @@ test("listRecords response validator accepts runtime warning parameters", () => 
   assert.deepEqual(result, { ok: true, skipped: false });
 });
 
+test("ref approval review contract enforces consent and owner-device shapes", () => {
+  const consent = validateResponse("refGetApproval", {
+    body: {
+      approval_id: "apr_review",
+      client: {
+        client_id: "concert_finder",
+        display: {
+          name: "Concert Finder",
+          policy_uri: "https://concert.example/policy",
+          tos_uri: null,
+          uri: "https://concert.example",
+        },
+        registration_mode: "pre_registered_public",
+      },
+      created_at: "2026-08-11T12:00:00.000Z",
+      expires_at: "2026-08-11T12:10:00.000Z",
+      grant_outcome: {
+        access_mode: "continuous",
+        description: "Ongoing access; this reference implementation sets no grant expiry.",
+      },
+      kind: "consent",
+      object: "approval_review",
+      purpose: { code: null, description: "Suggest concerts." },
+      retention: { period: "P30D" },
+      source: { id: "spotify", kind: "connector" },
+      streams: [
+        {
+          client_claims: { commitment: "delete after use" },
+          connection_id: "cin_music",
+          fields: null,
+          name: "top_artists",
+          necessity: null,
+          resources: null,
+          time_range: null,
+          view: "basic",
+        },
+      ],
+      trust: "unverified",
+    },
+    status: 200,
+  });
+  assert.deepEqual(consent, { ok: true, skipped: false });
+
+  const ownerDevice = validateResponse("refGetApproval", {
+    body: {
+      approval_id: "apr_owner",
+      client_id: "owner_cli",
+      created_at: "2026-08-11T12:00:00.000Z",
+      expires_at: "2026-08-11T12:10:00.000Z",
+      kind: "owner_device",
+      object: "approval_review",
+    },
+    status: 200,
+  });
+  assert.deepEqual(ownerDevice, { ok: true, skipped: false });
+
+  const leakedNestedField = validateResponse("refGetApproval", {
+    body: {
+      approval_id: "apr_review",
+      client: {
+        client_id: "concert_finder",
+        display: {
+          logo_uri: "https://concert.example/logo.png",
+          name: "Concert Finder",
+          policy_uri: null,
+          tos_uri: null,
+          uri: null,
+        },
+        registration_mode: "pre_registered_public",
+      },
+      created_at: "2026-08-11T12:00:00.000Z",
+      expires_at: "2026-08-11T12:10:00.000Z",
+      grant_outcome: { access_mode: "continuous", description: "Ongoing access." },
+      kind: "consent",
+      object: "approval_review",
+      purpose: { code: null, description: null },
+      retention: null,
+      source: null,
+      streams: [],
+      trust: "unverified",
+    },
+    status: 200,
+  });
+  assert.equal(leakedNestedField.ok, false);
+
+  const leakedSecretJson = validateResponse("refGetApproval", {
+    body: {
+      approval_id: "apr_review",
+      client: {
+        client_id: "concert_finder",
+        display: {
+          name: "Concert Finder",
+          policy_uri: null,
+          tos_uri: null,
+          uri: null,
+        },
+        registration_mode: "pre_registered_public",
+      },
+      created_at: "2026-08-11T12:00:00.000Z",
+      expires_at: "2026-08-11T12:10:00.000Z",
+      grant_outcome: { access_mode: "continuous", description: "Ongoing access." },
+      kind: "consent",
+      object: "approval_review",
+      purpose: { code: null, description: null },
+      retention: { nested: { Authorization: "Bearer token-value" } },
+      source: null,
+      streams: [
+        {
+          client_claims: { clientSecret: "secret-value" },
+          connection_id: null,
+          fields: null,
+          name: "top_artists",
+          necessity: null,
+          resources: [{ "api-key": "secret-value" }],
+          time_range: null,
+          view: null,
+        },
+      ],
+      trust: "unverified",
+    },
+    status: 200,
+  });
+  assert.equal(leakedSecretJson.ok, false);
+
+  const mixedVariant = validateResponse("refGetApproval", {
+    body: {
+      approval_id: "apr_owner",
+      client_id: "owner_cli",
+      client: { client_id: "should_not_be_here" },
+      created_at: "2026-08-11T12:00:00.000Z",
+      expires_at: "2026-08-11T12:10:00.000Z",
+      kind: "owner_device",
+      object: "approval_review",
+    },
+    status: 200,
+  });
+  assert.equal(mixedVariant.ok, false);
+});
+
 test("registerDynamicClient response omits unset optional URI metadata", () => {
   const minimal = validateResponse("registerDynamicClient", {
     body: {
@@ -203,6 +468,7 @@ test("OpenAPI and docs generation include the auth/control routes alongside reco
   assert.ok(publicDocument.paths["/.well-known/oauth-authorization-server"]);
   assert.ok(publicDocument.paths["/.well-known/oauth-protected-resource"]);
   assert.ok(publicDocument.paths["/oauth/par"]);
+  assert.ok(publicDocument.paths["/consent/review"]);
   assert.ok(publicDocument.paths["/oauth/token"]);
   assert.ok(publicDocument.paths["/grants/{grantId}/revoke"]);
   assert.equal(publicDocument.paths["/_ref/connectors"], undefined);
@@ -221,6 +487,7 @@ test("OpenAPI and docs generation include the auth/control routes alongside reco
   assert.equal(reconcileOperation.post.operationId, "refDatasetSummaryReconcile");
 
   assert.match(docs.routes, OAUTH_PAR_RE);
+  assert.match(docs.routes, CONSENT_REVIEW_RE);
   assert.match(docs.routes, OAUTH_TOKEN_RE);
   assert.match(docs.routes, GRANT_REVOKE_RE);
   assert.match(docs.routes, RECORDS_ROUTE_RE);

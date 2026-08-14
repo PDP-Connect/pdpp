@@ -180,6 +180,11 @@ import {
 } from "./hosted-ui.ts";
 import { registerInboxRoutes } from "./inbox.ts";
 import {
+  authenticateIntrospectionCaller,
+  createRemoteIntrospector,
+  type IntrospectionCallerCredentials,
+} from "./introspection-http.ts";
+import {
   buildAuthorizationServerMetadata,
   buildClientEventSubscriptionsCapability,
   buildHybridRetrievalCapability,
@@ -254,6 +259,7 @@ import {
   getConnectorDetail,
   getConnectorSummaryForRoute,
   getOwnerConnectionDiagnostics,
+  getPendingApprovalDetail,
   invalidateConnectorSummariesCache,
   listConnectorSummaries,
   listConnectorSummaryPage,
@@ -427,6 +433,13 @@ import {
   semanticIndexBackfillForManifest,
   supportsDeviceSemanticAttemptDeadline,
 } from "./search-semantic.ts";
+import { requireSourceDeclaration } from "./source-declaration.ts";
+import type { AcceptedSourceDeclarationRevisionStore } from "./source-declaration-trust/revision-store.ts";
+import {
+  enforceSourceReadRequest,
+  projectSourceIntrospectionWireContext,
+  SourceIntrospectionContextError,
+} from "./source-introspection-context.ts";
 import {
   createPostgresAcquisitionBatchStore,
   createSqliteAcquisitionBatchStore,
@@ -650,6 +663,12 @@ interface MutationContext {
 
 interface ServerOpts {
   acceptedCollectorProtocolVersions?: readonly string[];
+  /** Internal onboarding handoff. This value is never accepted from the PAR request. */
+  acceptedProviderNativeRevision?: {
+    acceptedRevisionReference: string;
+    revisionStore: AcceptedSourceDeclarationRevisionStore;
+    sourceId: string;
+  } | null;
   agentConnectTtlMs?: number;
   agentDiscoveryOrigin?: string | null;
   asIssuer?: string | null;
@@ -673,6 +692,7 @@ interface ServerOpts {
   connectorInstanceId?: string;
   connectorPathResolver?: ((connectorId: string, manifest?: ConnectorManifest) => string | null) | null;
   controller?: Controller | null;
+  databaseUrl?: string;
   dbPath?: string;
   deviceExporterStore?: unknown;
   dynamicClientRegistrationInitialAccessTokens?: readonly string[];
@@ -681,6 +701,8 @@ interface ServerOpts {
   hybridRetrievalCapability?: unknown;
   hybridRetrievalSupported?: boolean;
   ignoreAmbientPublicUrls?: boolean;
+  introspectionCallerCredentials?: IntrospectionCallerCredentials;
+  introspectionFetch?: typeof fetch;
   isNekoProxyTargetApproved?:
     | ((
         descriptor: unknown,
@@ -728,7 +750,11 @@ interface ServerOpts {
   referenceMode?: string | null;
   referenceOrigin?: string | null;
   referenceRevision?: string | null;
+  resolveIntrospectionAudience?: (() => string | null) | null;
+  resolveIntrospectionIssuer?: (() => string | null) | null;
   rsInternalUrl?: string | null;
+  rsIntrospectionCredentials?: IntrospectionCallerCredentials;
+  rsIntrospectionEndpoint?: string | null;
   rsPort?: number;
   rsPublicUrl?: string | null;
   rsUrl?: string | null;
@@ -737,10 +763,12 @@ interface ServerOpts {
   semanticRetrievalBackend?: unknown;
   semanticRetrievalCapability?: unknown;
   semanticRetrievalSupported?: boolean;
+  sourceDeclarationUri?: string | null;
   sqliteBusyTimeoutMs?: number;
   startClientEventDeliveryWorker?: boolean;
   staticSecretAutoResume?: boolean;
   staticSecretCredentialProber?: unknown;
+  storageBackend?: "postgres" | "sqlite";
   streamingClearTimeout?: ((handle: unknown) => void) | null;
   streamingCompanionFactory?: StreamingCompanionFactory | null;
   streamingLogger?: LoggerLike | null;
@@ -754,6 +782,67 @@ interface ServerOpts {
   webPushSubscriptionStore?: WebPushSubscriptionStore | null;
 }
 
+function requestSelectsSource(body: unknown, sourceId: string): boolean {
+  if (!(body && typeof body === "object" && "authorization_details" in body)) {
+    return false;
+  }
+  const details = (body as { authorization_details?: unknown }).authorization_details;
+  return (
+    Array.isArray(details) &&
+    details.some(
+      (detail) =>
+        detail !== null &&
+        typeof detail === "object" &&
+        "source" in detail &&
+        (detail as { source?: { id?: unknown } }).source?.id === sourceId
+    )
+  );
+}
+
+function readIntrospectionCredentialsFromEnv(): IntrospectionCallerCredentials | null {
+  const clientId = process.env.PDPP_RS_INTROSPECTION_CLIENT_ID?.trim();
+  const clientSecret = process.env.PDPP_RS_INTROSPECTION_CLIENT_SECRET?.trim();
+  if (!(clientId || clientSecret)) {
+    return null;
+  }
+  if (!(clientId && clientSecret)) {
+    throw new Error("PDPP RS introspection requires both client id and client secret");
+  }
+  return { clientId, clientSecret };
+}
+
+function generateLocalIntrospectionCredentials(): IntrospectionCallerCredentials {
+  return {
+    clientId: `rs-${randomBytes(12).toString("base64url")}`,
+    clientSecret: randomBytes(32).toString("base64url"),
+  };
+}
+
+function resolveIntrospectionCredentials(opts: ServerOpts): IntrospectionCallerCredentials {
+  const asCredentials = opts.introspectionCallerCredentials;
+  const rsCredentials = opts.rsIntrospectionCredentials;
+  if (asCredentials && rsCredentials) {
+    if (
+      asCredentials.clientId !== rsCredentials.clientId ||
+      asCredentials.clientSecret !== rsCredentials.clientSecret
+    ) {
+      throw new Error("AS and RS introspection credentials must match when both are configured");
+    }
+    return asCredentials;
+  }
+  return (
+    asCredentials ?? rsCredentials ?? readIntrospectionCredentialsFromEnv() ?? generateLocalIntrospectionCredentials()
+  );
+}
+
+function configuredNativeSourceId(opts: ServerOpts): string | null {
+  const declaration = opts.nativeManifest?.source_declaration;
+  if (!(declaration && typeof declaration === "object" && "source" in declaration)) {
+    return null;
+  }
+  const { source } = declaration as { source?: { id?: unknown } };
+  return typeof source?.id === "string" && source.id ? source.id : null;
+}
 interface OwnerDeviceAuthStore {
   approve: (userCode: string, subjectId?: string) => Promise<unknown>;
   deny: (userCode: string, subjectId?: string) => Promise<void>;
@@ -1280,12 +1369,20 @@ function createRequestAbortSignal(req: ReqLike | null | undefined, message: stri
   };
 }
 
-function oauthError(res: ResLike, status: number, code: string, description: string) {
+function oauthError(
+  res: ResLike,
+  status: number,
+  code: string,
+  description: string,
+  _param?: string | null,
+  extras?: Readonly<Record<string, unknown>> | null
+) {
   const requestId = ensureRequestId(res);
   res.status(status).json({
     error: code,
     error_description: description,
     request_id: requestId,
+    ...(extras ?? {}),
   });
 }
 
@@ -1695,14 +1792,35 @@ async function rejectMutation(res: ResLike, req: ReqLike, context: MutationConte
 // ─── Auth middleware ─────────────────────────────────────────────────────────
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
-async function requireToken(req: ReqLike, res: ResLike, next: () => void) {
+async function requireTokenWithIntrospection(
+  req: ReqLike,
+  res: ResLike,
+  next: () => void,
+  introspectToken: (token: string) => Promise<TokenInfo>
+) {
   const auth = req.headers?.authorization;
   if (!auth || typeof auth !== "string" || !auth.startsWith("Bearer ")) {
     setProtectedResourceMetadataChallenge(res);
     return pdppError(res, 401, "authentication_error", "Missing Bearer token");
   }
   const token = auth.slice(7);
-  const info = (await introspect(token)) as TokenInfo;
+  const info = await introspectToken(token);
+  if (info.active && info.pdpp_token_kind === "client" && req.params?.stream) {
+    const requestedConnection = resolveRequestConnectionId(req.query ?? {}).connectionId;
+    try {
+      enforceSourceReadRequest(info, {
+        ...(requestedConnection ? { instance_id: requestedConnection } : {}),
+        stream: req.params.stream,
+      });
+    } catch (error: unknown) {
+      if (error instanceof SourceIntrospectionContextError) {
+        info.active = false;
+        info.inactive_reason = error.code;
+      } else {
+        throw error;
+      }
+    }
+  }
   if (!info.active) {
     if (info.trace_id) {
       setReferenceTraceId(res, info.trace_id);
@@ -1754,6 +1872,14 @@ async function requireToken(req: ReqLike, res: ResLike, next: () => void) {
     }
     if (info.inactive_reason === "grant_invalid") {
       return pdppError(res, 403, "grant_invalid", "Grant is malformed or no longer valid");
+    }
+    if (info.inactive_reason?.startsWith("context.")) {
+      setProtectedResourceMetadataChallenge(res);
+      return pdppError(res, 401, info.inactive_reason, "Token introspection failed closed");
+    }
+    if (info.inactive_reason === "authorization_state.unsupported_legacy_shape") {
+      setProtectedResourceMetadataChallenge(res);
+      return pdppError(res, 401, info.inactive_reason, "Fresh consent is required");
     }
     setProtectedResourceMetadataChallenge(res);
     return pdppError(res, 401, "authentication_error", "Invalid or expired token");
@@ -2138,10 +2264,16 @@ async function resolveOwnerReadScope(req: ReqLike, opts: ServerOpts = {}) {
   const nativeManifest = resolveNativeManifest(opts);
   const nativeStorageBinding = resolveNativeStorageBinding(opts);
   if (nativeManifest && nativeStorageBinding) {
+    const configuredSource = buildSourceDescriptor(
+      (nativeManifest.source_declaration as { source?: { id?: string; kind?: string } } | undefined)?.source ?? null
+    );
+    if (!configuredSource) {
+      throw Object.assign(new Error("Configured SourceDeclaration source is missing"), { code: "invalid_request" });
+    }
     return {
       owner_subject_id: getOwnerTokenSubjectId(req),
       public_scope: "native",
-      source: { id: nativeManifest.provider_id, kind: "provider_native" },
+      source: configuredSource,
       storage_binding: nativeStorageBinding,
     };
   }
@@ -2207,9 +2339,7 @@ function validateNativeConfiguration(opts: ServerOpts = {}) {
     return null;
   }
 
-  if (!nativeManifest.provider_id) {
-    throw new Error("Native manifest must include provider_id");
-  }
+  requireSourceDeclaration(nativeManifest.source_declaration);
   if (nativeManifest.connector_id) {
     throw new Error("Native manifest must not include connector_id");
   }
@@ -2456,22 +2586,16 @@ function ownerSubjectIdForBindings(tokenInfo: TokenInfo | null | undefined) {
 
 function buildClientSourceDescriptor(tokenInfo: TokenInfo | null | undefined) {
   const grant = tokenInfo?.grant as Record<string, unknown> | null | undefined;
-  const grantSource = buildSourceDescriptor((grant?.source as { kind?: string; id?: string } | null) ?? null);
-  if (grantSource) {
-    return grantSource;
-  }
-
-  const storageBinding = resolveGrantStorageBinding(tokenInfo);
-  if (storageBinding?.connector_id) {
-    return { id: storageBinding.connector_id as string, kind: "connector" };
-  }
-  return null;
+  return buildSourceDescriptor((grant?.source as { kind?: string; id?: string } | null) ?? null);
 }
 
 function buildOwnerQuerySourceDescriptor(req: ReqLike, opts: ServerOpts = {}) {
   const nativeManifest = resolveNativeManifest(opts);
-  if (nativeManifest?.provider_id) {
-    return buildSourceDescriptor({ id: nativeManifest.provider_id as string, kind: "provider_native" });
+  const configuredSource = buildSourceDescriptor(
+    (nativeManifest?.source_declaration as { source?: { id?: string; kind?: string } } | undefined)?.source ?? null
+  );
+  if (configuredSource) {
+    return configuredSource;
   }
 
   const connectorId = resolveSingleConnectorIdQueryValue(req.query?.connector_id);
@@ -2517,10 +2641,7 @@ async function resolveOwnerManifestFromScope(ownerScope: Record<string, unknown>
   );
   if (!manifest) {
     const ownerSource = ownerScope.source as { kind?: string; id?: string } | null | undefined;
-    const errMsg =
-      ownerSource?.kind === "provider_native"
-        ? `Unknown source: { kind: 'provider_native', id: '${ownerSource.id}' }`
-        : `Unknown connector: ${storageBinding?.connector_id || "unknown"}`;
+    const errMsg = `Unknown source: ${ownerSource?.id || storageBinding?.connector_id || "unknown"}`;
     throw Object.assign(new Error(errMsg), { code: "not_found" });
   }
   return { manifest, ownerScope, storageBinding };
@@ -2532,51 +2653,22 @@ async function resolveOwnerManifest(req: ReqLike, opts: ServerOpts = {}) {
 }
 
 async function resolveGrantManifest(tokenInfo: TokenInfo | null | undefined, opts: ServerOpts = {}) {
-  let storageBinding: StorageBinding | null = resolveGrantStorageBinding(tokenInfo) as StorageBinding | null;
-  // Only resolve a connector_instance namespace for polyfill connector
-  // sources. Native provider grants point at synthetic storage bindings
-  // whose connector_id is not registered in the `connectors` catalog, so
-  // forcing a connector_instances upsert would FK-fail and surface as
-  // a 500 instead of the intended client-error rejection downstream.
-  const tokenGrant = tokenInfo?.grant as Record<string, unknown> | null | undefined;
-  const grantSourceKind = (tokenGrant?.source as Record<string, unknown> | null | undefined)?.kind;
-  if (storageBinding?.connector_id && grantSourceKind !== "provider_native") {
-    try {
-      const namespace = await resolveOwnerConnectorInstanceNamespace({
-        allowDefaultAccount: false,
-        connectorId: storageBinding.connector_id ?? null,
-        connectorInstanceId: storageBinding.connector_instance_id ?? null,
-        connectorInstanceStore: createRequestConnectorInstanceStore(),
-        displayName: storageBinding.connector_id ?? null,
-        ownerSubjectId:
-          ((tokenGrant?.subject as Record<string, unknown> | null | undefined)?.id as string | undefined) ||
-          tokenInfo?.subject_id ||
-          OWNER_AUTH_DEFAULT_SUBJECT_ID,
-      });
-      storageBinding = storageTargetForConnectorNamespace(namespace);
-    } catch (err) {
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-      if ((err as ApiError)?.code === "ambiguous_connector_instance") {
-        storageBinding = { connector_id: storageBinding.connector_id ?? null };
-        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-      } else if ((err as ApiError)?.code !== "connector_instance_not_found") {
-        throw err;
-      }
-    }
-  }
+  // Client serving is pinned by the persisted storage binding and the grant's
+  // closed instance_ids. Do not resolve a current connector instance here.
+  const storageBinding: StorageBinding | null = resolveGrantStorageBinding(tokenInfo) as StorageBinding | null;
   const source = buildClientSourceDescriptor(tokenInfo);
   const manifest = await getManifestForStorageBinding(
     storageBinding as unknown as Parameters<typeof getManifestForStorageBinding>[0],
     opts
   );
   if (!manifest) {
-    const errMsg =
-      source?.kind === "provider_native"
-        ? `Unknown source: { kind: 'provider_native', id: '${source.id}' }`
-        : `Unknown connector: ${storageBinding?.connector_id || "unknown"}`;
+    const errMsg = `Unknown source: ${source?.id || storageBinding?.connector_id || "unknown"}`;
     throw Object.assign(new Error(errMsg), { code: "not_found" });
   }
-  requireGrantContractAgainstManifest(tokenGrant ?? undefined, manifest);
+  requireGrantContractAgainstManifest(
+    tokenInfo?.grant ? (tokenInfo.grant as Record<string, unknown>) : undefined,
+    manifest
+  );
   return { manifest, source, storageBinding };
 }
 
@@ -2622,7 +2714,12 @@ export async function resolveGrantScopedStateGrant(connectorId: string, grantId:
   const row = isPostgresStorageBackend()
     ? (
         await postgresQuery(
-          `SELECT grant_json::text AS grant_json,
+          `SELECT grant_id AS persisted_grant_id,
+                subject_id AS grant_subject_id,
+                client_id AS grant_client_id,
+                access_mode AS grant_access_mode,
+                expires_at AS grant_expires_at,
+                grant_json::text AS grant_json,
                 storage_binding_json::text AS storage_binding_json,
                 trace_id, scenario_id
          FROM grants
@@ -2704,10 +2801,6 @@ function buildFreshness(lastUpdated: string | null = null) {
   return deriveReferenceFreshness({ recordLastUpdatedAt: lastUpdated });
 }
 
-function getConnectorRunEvidenceSource(source: { kind?: string; id?: string } | null | undefined) {
-  return source?.kind === "connector" && typeof source.id === "string" && source.id ? source.id : null;
-}
-
 async function getLatestConnectorRunSummary(connectorId: string | null, status: string | null = null) {
   if (!connectorId) {
     return null;
@@ -2743,13 +2836,13 @@ function getMaximumStalenessSeconds(refreshPolicy: unknown) {
 }
 
 async function getConnectorFreshnessEvidence({
-  source,
+  storageBinding,
   manifest,
 }: {
-  source: { kind?: string; id?: string } | null | undefined;
+  storageBinding: StorageBinding;
   manifest: Record<string, unknown> | null | undefined;
 }) {
-  const connectorId = getConnectorRunEvidenceSource(source);
+  const connectorId = storageBinding.connector_id ?? null;
   const refreshPolicy = getManifestRefreshPolicy(manifest);
   const [lastRun, lastSuccessfulRun] = await Promise.all([
     getLatestConnectorRunSummary(connectorId),
@@ -2923,25 +3016,29 @@ function buildFieldCapabilities(
           ...(declaredType ? { type: declaredType } : {}),
           ...(declaredRole ? { role: declaredRole } : {}),
           aggregation: buildFieldAggregationCapabilities(aggregations, field, granted),
-          exact_filter: buildFieldCapabilityFlag({
-            declared: isExactFilterableSchema(schemaObj),
-            granted,
-          }),
           granted,
           lexical_search: buildFieldCapabilityFlag({
             declared: lexicalFields.has(field),
             granted,
-          }),
-          range_filter: buildFieldCapabilityFlag({
-            declared: Boolean(rangeOperators),
-            granted,
-            operators: rangeOperators || undefined,
           }),
           schema: fieldSchema,
           semantic_search: buildFieldCapabilityFlag({
             declared: semanticFields.has(field),
             granted,
           }),
+          ...(streamGrant === null
+            ? {
+                exact_filter: buildFieldCapabilityFlag({
+                  declared: isExactFilterableSchema(schemaObj),
+                  granted,
+                }),
+                range_filter: buildFieldCapabilityFlag({
+                  declared: Boolean(rangeOperators),
+                  granted,
+                  operators: rangeOperators || undefined,
+                }),
+              }
+            : {}),
         },
       ];
     })
@@ -2963,29 +3060,65 @@ function buildStreamMetadataEntry({
   grantedConnections?: unknown[] | null;
   manifestStreamNames?: Set<string> | null;
 }) {
+  const projectedManifestStream = streamGrant ? projectManifestStreamForGrant(streamGrant) : manifestStream;
   const expandStreamGrant = streamGrant ? { ...streamGrant, grantStreams } : null;
   const entry: Record<string, unknown> = {
-    consent_time_field: manifestStream.consent_time_field,
-    cursor_field: manifestStream.cursor_field,
-    expand_capabilities: buildExpandCapabilities(manifestStream, expandStreamGrant, manifestStreamNames),
-    field_capabilities: buildFieldCapabilities(manifestStream, streamGrant),
+    consent_time_field: projectedManifestStream.consent_time_field,
+    cursor_field: projectedManifestStream.cursor_field,
+    expand_capabilities: buildExpandCapabilities(projectedManifestStream, expandStreamGrant, manifestStreamNames),
+    field_capabilities: buildFieldCapabilities(projectedManifestStream, streamGrant),
     freshness: freshness ?? buildFreshness(null),
-    name: manifestStream.name,
+    name: projectedManifestStream.name,
     object: "stream_metadata",
-    primary_key: normalizePrimaryKey(manifestStream.primary_key),
-    query: manifestStream.query || {},
-    relationships: manifestStream.relationships || [],
-    schema: manifestStream.schema,
-    selection: manifestStream.selection,
-    semantics: manifestStream.semantics,
-    views: manifestStream.views || [],
+    primary_key: normalizePrimaryKey(projectedManifestStream.primary_key),
+    query: projectedManifestStream.query || {},
+    relationships: projectedManifestStream.relationships || [],
+    schema: projectedManifestStream.schema,
+    selection: projectedManifestStream.selection,
+    semantics: projectedManifestStream.semantics,
+    views: projectedManifestStream.views || [],
   };
+  if (streamGrant) {
+    entry.instance_ids = Array.isArray(streamGrant.instance_ids) ? [...streamGrant.instance_ids] : [];
+    if (Array.isArray(streamGrant.resources)) {
+      entry.resources = [...streamGrant.resources];
+    }
+    if (streamGrant.time_constraint && typeof streamGrant.time_constraint === "object") {
+      entry.time_constraint = structuredClone(streamGrant.time_constraint);
+    }
+  }
   if (Array.isArray(grantedConnections)) {
     entry.granted_connections = grantedConnections;
   }
   return entry;
 }
 
+function projectManifestStreamForGrant(streamGrant: Record<string, unknown>): Record<string, unknown> {
+  // Resolved grants retain authorization facts, not live schema definitions.
+  // Do not copy property schemas, requiredness, $defs, query affordances, or
+  // relationships from the current declaration into a client projection.
+  // A future grant shape can retain a typed schema snapshot explicitly; until
+  // then, empty field schemas are the only honest projection.
+  const fields = Array.isArray(streamGrant.fields)
+    ? (streamGrant.fields as unknown[]).filter((field): field is string => typeof field === "string")
+    : [];
+  const grantedFields = new Set(fields);
+  const schema: Record<string, unknown> = {
+    additionalProperties: false,
+    properties: Object.fromEntries([...grantedFields].map((field) => [field, {}])),
+    type: "object",
+  };
+  const timeConstraint =
+    streamGrant.time_constraint && typeof streamGrant.time_constraint === "object"
+      ? (streamGrant.time_constraint as Record<string, unknown>)
+      : null;
+  const frozenTimeField = typeof timeConstraint?.field === "string" ? timeConstraint.field : undefined;
+  return {
+    name: streamGrant.name,
+    schema,
+    ...(frozenTimeField ? { consent_time_field: frozenTimeField } : {}),
+  };
+}
 // Emit one `expand_capabilities` entry per enabled parent-stream relation (a
 // `query.expand[]` capability backed by a `relationships[]` declaration),
 // including relations whose target stream is unreadable under the current
@@ -3112,6 +3245,87 @@ function buildStreamDiscoverySummary({
   };
 }
 
+function mergeStreamSummary(
+  current: Record<string, unknown> | undefined,
+  next: Record<string, unknown>
+): Record<string, unknown> {
+  const currentUpdated = typeof current?.last_updated === "string" ? current.last_updated : null;
+  const nextUpdated = typeof next.last_updated === "string" ? next.last_updated : null;
+  return {
+    last_updated: !currentUpdated || (nextUpdated && nextUpdated > currentUpdated) ? nextUpdated : currentUpdated,
+    name: next.name,
+    object: "stream",
+    record_count: Number(current?.record_count || 0) + Number(next.record_count || 0),
+  };
+}
+
+async function listSubjectVisibleStreamSummaries({
+  storageBinding,
+  manifest,
+  grant,
+  ownerSubjectId,
+}: {
+  source: { kind?: string; id?: string } | null | undefined;
+  storageBinding: StorageBinding;
+  manifest: Record<string, unknown>;
+  grant: Record<string, unknown> | null;
+  ownerSubjectId: string | null;
+}): Promise<Record<string, unknown>[]> {
+  const manifestStreams = Array.isArray(manifest.streams) ? (manifest.streams as Record<string, unknown>[]) : [];
+  const effectiveGrant = grant ?? {
+    streams: manifestStreams.flatMap((stream) =>
+      typeof stream.name === "string" && stream.name ? [{ name: stream.name }] : []
+    ),
+  };
+  const grantStreams = Array.isArray(effectiveGrant.streams)
+    ? (effectiveGrant.streams as Record<string, unknown>[])
+    : [];
+  const summaries = new Map<string, Record<string, unknown>>();
+  await Promise.all(
+    grantStreams.map(async (streamGrant) => {
+      const streamName = typeof streamGrant.name === "string" ? streamGrant.name : null;
+      if (!streamName) {
+        return;
+      }
+      let bindings: Array<{ connectorId: string; connectorInstanceId: string }>;
+      try {
+        const resolved = await resolveReadRequestBindings({
+          grant: effectiveGrant as unknown as Parameters<typeof resolveReadRequestBindings>[0]["grant"],
+          ownerRead: grant === null,
+          ...(ownerSubjectId ? { ownerSubjectId } : {}),
+          requestParams: {},
+          storageBinding: storageBinding as unknown as NonNullable<
+            Parameters<typeof resolveReadRequestBindings>[0]["storageBinding"]
+          >,
+          streamName,
+        });
+        bindings = resolved.bindings as Array<{ connectorId: string; connectorInstanceId: string }>;
+      } catch (error) {
+        if (error instanceof Error && (error as Error & { code?: string }).code === "connection_not_found") {
+          return;
+        }
+        throw error;
+      }
+      const perBinding = await Promise.all(
+        bindings.map((binding) =>
+          listStreams(
+            {
+              connector_id: binding.connectorId,
+              connector_instance_id: binding.connectorInstanceId,
+            },
+            { streams: [streamGrant] } as unknown as Parameters<typeof listStreams>[1],
+            manifest as Parameters<typeof listStreams>[2]
+          )
+        )
+      );
+      for (const summary of perBinding.flat() as unknown as Record<string, unknown>[]) {
+        summaries.set(streamName, mergeStreamSummary(summaries.get(streamName), summary));
+      }
+    })
+  );
+  return [...summaries.values()];
+}
+
 async function buildConnectorSchemaItem({
   source,
   storageBinding,
@@ -3125,14 +3339,14 @@ async function buildConnectorSchemaItem({
   grant?: Record<string, unknown> | null;
   ownerSubjectId?: string | null;
 }) {
-  const connectorId = source?.kind === "connector" ? ((source.id as string | null | undefined) ?? null) : null;
-  const rawStreamSummaries = grant
-    ? await listStreams(
-        storageBinding as unknown as Parameters<typeof listStreams>[0],
-        grant as unknown as Parameters<typeof listStreams>[1],
-        manifest as unknown as Parameters<typeof listStreams>[2]
-      )
-    : await listAllStreams(storageBinding as unknown as Parameters<typeof listAllStreams>[0]);
+  const connectorId = (storageBinding.connector_id as string | null | undefined) ?? null;
+  const rawStreamSummaries = await listSubjectVisibleStreamSummaries({
+    grant,
+    manifest,
+    ownerSubjectId,
+    source,
+    storageBinding,
+  });
   const streamSummaries = rawStreamSummaries as Record<string, unknown>[];
   const summaryByName = new Map(streamSummaries.map((summary) => [summary.name as string, summary]));
   const grantStreamsArr = Array.isArray(grant?.streams) ? (grant?.streams as Record<string, unknown>[]) : [];
@@ -3149,43 +3363,35 @@ async function buildConnectorSchemaItem({
   // Streams the loaded manifest declares — lets the expand-capabilities builder
   // distinguish "target stream not granted" from "target stream unknown".
   const manifestStreamNames = new Set(manifestStreamsArr.map((stream) => stream.name as string));
-  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, source });
+  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, storageBinding });
 
-  // Look up granted connections once per connector. For polyfill connectors
-  // we batch a single owner+connector store query and reuse the result for
-  // every stream entry, narrowing per-stream by `grant.streams[].connection_id`
-  // when the grant pins a single connection. For provider_native sources we
-  // omit the field — those grants do not address a connection_id.
-  // biome-ignore lint/suspicious/noEvolvingTypes: This runtime-untyped boundary requires staged type narrowing.
-  let activeBindings = null;
-  if (connectorId && ownerSubjectId) {
-    activeBindings = await listGrantedConnectionsForStream({
-      connectorId,
-      grantStreamConnectionId: null,
-      ownerSubjectId,
-    });
-  }
-
-  const streams = visibleStreams.map((manifestStream) => {
-    const streamName = manifestStream.name as string;
-    const summary = summaryByName.get(streamName);
-    const lastUpdated = (summary?.last_updated as string | null | undefined) || null;
-    const streamGrant = grantStreamByName ? grantStreamByName.get(streamName) || null : null;
-    let grantedConnections: unknown[] | null = null;
-    if (activeBindings) {
-      const pin = (streamGrant?.connection_id as string | null | undefined) || null;
-      const bindingsArr = activeBindings as unknown as Record<string, unknown>[];
-      grantedConnections = pin ? bindingsArr.filter((entry) => entry.connection_id === pin) : bindingsArr;
-    }
-    return buildStreamMetadataEntry({
-      freshness: buildConnectorAwareFreshness(freshnessEvidence, lastUpdated),
-      grantedConnections,
-      grantStreams,
-      manifestStream,
-      manifestStreamNames,
-      streamGrant,
-    });
-  });
+  const streams = await Promise.all(
+    visibleStreams.map(async (manifestStream) => {
+      const streamName = manifestStream.name as string;
+      const summary = summaryByName.get(streamName);
+      const lastUpdated = (summary?.last_updated as string | null | undefined) || null;
+      const streamGrant = grantStreamByName ? grantStreamByName.get(streamName) || null : null;
+      let grantedConnections: unknown[] | null = null;
+      if (connectorId && ownerSubjectId) {
+        const authorizedInstanceIds = Array.isArray(streamGrant?.instance_ids)
+          ? (streamGrant.instance_ids as string[])
+          : [];
+        grantedConnections = await listGrantedConnectionsForStream({
+          authorizedInstanceIds: grant ? authorizedInstanceIds : null,
+          connectorId,
+          ownerSubjectId,
+        });
+      }
+      return buildStreamMetadataEntry({
+        freshness: buildConnectorAwareFreshness(freshnessEvidence, lastUpdated),
+        grantedConnections,
+        grantStreams,
+        manifestStream,
+        manifestStreamNames,
+        streamGrant,
+      });
+    })
+  );
 
   const item: Record<string, unknown> = {
     object: "connector",
@@ -3205,20 +3411,22 @@ async function buildConnectorDiscoveryItem({
   storageBinding,
   manifest,
   grant = null as Record<string, unknown> | null,
+  ownerSubjectId = null as string | null,
 }: {
   source: { kind?: string; id?: string } | null | undefined;
   storageBinding: StorageBinding;
   manifest: Record<string, unknown>;
   grant?: Record<string, unknown> | null;
+  ownerSubjectId?: string | null;
 }) {
-  const connectorId = source?.kind === "connector" ? ((source.id as string | null | undefined) ?? null) : null;
-  const rawSummaries = grant
-    ? await listStreams(
-        storageBinding as unknown as Parameters<typeof listStreams>[0],
-        grant as unknown as Parameters<typeof listStreams>[1],
-        manifest as unknown as Parameters<typeof listStreams>[2]
-      )
-    : await listAllStreams(storageBinding as unknown as Parameters<typeof listAllStreams>[0]);
+  const connectorId = (storageBinding.connector_id as string | null | undefined) ?? null;
+  const rawSummaries = await listSubjectVisibleStreamSummaries({
+    grant,
+    manifest,
+    ownerSubjectId,
+    source,
+    storageBinding,
+  });
   const streamSummaries = rawSummaries as Record<string, unknown>[];
   const summaryByName = new Map(streamSummaries.map((summary) => [summary.name as string, summary]));
   const manifestStreamsArr = Array.isArray(manifest.streams) ? (manifest.streams as Record<string, unknown>[]) : [];
@@ -3228,7 +3436,7 @@ async function buildConnectorDiscoveryItem({
         .map((streamGrant) => manifestStreamsArr.find((stream) => stream.name === streamGrant.name))
         .filter(Boolean) as Record<string, unknown>[])
     : manifestStreamsArr;
-  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, source });
+  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, storageBinding });
 
   const item: Record<string, unknown> = {
     object: "connector",
@@ -3570,37 +3778,31 @@ async function getVisibleStreamFreshness({
   stream: string;
   manifest: Record<string, unknown>;
 }) {
-  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, source });
-  if (tokenInfo?.pdpp_token_kind === "owner") {
-    const rawSummaries = await listAllStreams(storageBinding as unknown as Parameters<typeof listAllStreams>[0]);
-    const summaries = rawSummaries as Record<string, unknown>[];
-    const summary = summaries.find((entry) => entry.name === stream);
-    return buildConnectorAwareFreshness(
-      freshnessEvidence,
-      (summary?.last_updated as string | null | undefined) || null
-    );
-  }
-
-  const grantStreams = Array.isArray((tokenInfo?.grant as Record<string, unknown> | null | undefined)?.streams)
-    ? // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-      ((tokenInfo?.grant as Record<string, unknown>)?.streams as Record<string, unknown>[])
-    : [];
-  const streamGrant = grantStreams.find((entry) => entry.name === stream);
-  if (!streamGrant) {
+  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, storageBinding });
+  const grant =
+    tokenInfo?.pdpp_token_kind === "owner"
+      ? null
+      : ((tokenInfo?.grant as Record<string, unknown> | null | undefined) ?? null);
+  const grantStreams = Array.isArray(grant?.streams) ? (grant.streams as Record<string, unknown>[]) : [];
+  if (grant && !grantStreams.some((entry) => entry.name === stream)) {
     throw Object.assign(new Error(`Stream '${stream}' not in grant`), {
       code: "grant_stream_not_allowed",
     }) as unknown as ApiError;
   }
-  const rawSummaries2 = await listStreams(
-    storageBinding as unknown as Parameters<typeof listStreams>[0],
-    { streams: [streamGrant] } as unknown as Parameters<typeof listStreams>[1],
-    manifest as unknown as Parameters<typeof listStreams>[2]
-  );
-  const summaries2 = rawSummaries2 as unknown as Record<string, unknown>[];
-  return buildConnectorAwareFreshness(
-    freshnessEvidence,
-    (summaries2[0]?.last_updated as string | null | undefined) || null
-  );
+  const summaries = await listSubjectVisibleStreamSummaries({
+    grant: grant
+      ? {
+          ...grant,
+          streams: grantStreams.filter((entry) => entry.name === stream),
+        }
+      : null,
+    manifest,
+    ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
+    source,
+    storageBinding,
+  });
+  const summary = summaries.find((entry) => entry.name === stream);
+  return buildConnectorAwareFreshness(freshnessEvidence, (summary?.last_updated as string | null | undefined) || null);
 }
 
 // ─── AS App ─────────────────────────────────────────────────────────────────
@@ -3976,7 +4178,10 @@ export function buildAsApp(opts: ServerOpts = {}) {
     async initiateNativeGrant({ baseUrl, clientId, clientName }) {
       const nativeManifest = resolveNativeManifest(opts);
       const nativeStorageBinding = (nativeManifest?.storage_binding || {}) as Record<string, unknown>;
-      if (!(nativeManifest?.provider_id && nativeStorageBinding.connector_id)) {
+      const configuredSource = buildSourceDescriptor(
+        (nativeManifest?.source_declaration as { source?: { id?: string; kind?: string } } | undefined)?.source ?? null
+      );
+      if (!(configuredSource && nativeStorageBinding.connector_id)) {
         return null;
       }
       return consentStore.initiateGrant(
@@ -3986,7 +4191,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
               access_mode: "single_use",
               purpose_code: "https://pdpp.dev/purpose/personal_assistant",
               purpose_description: "Delegate scoped personal data access to a local PDPP CLI client.",
-              source: { id: nativeManifest.provider_id as string, kind: "provider_native" },
+              source: configuredSource,
               streams: [{ name: "*" }],
               type: "https://pdpp.dev/data-access",
             },
@@ -4278,11 +4483,18 @@ export function buildAsApp(opts: ServerOpts = {}) {
     },
   } as unknown as Parameters<typeof mountAsDeviceUi>[1]);
 
-  // POST /introspect extracted to `server/routes/as-oauth.ts` per OpenSpec
-  // change `split-reference-server-by-route-family` (§6). Behaviour-preserving:
-  // same contract metadata, same auth posture (none — public endpoint),
-  // same response envelope, same status codes.
-  mountAsIntrospect(app, { introspect, pdppError });
+  const introspectionCallerCredentials = opts.introspectionCallerCredentials ?? readIntrospectionCredentialsFromEnv();
+  if (!introspectionCallerCredentials) {
+    throw new Error("AS introspection caller credentials must be configured");
+  }
+  mountAsIntrospect(app, {
+    authenticateCaller: (authorization) =>
+      authenticateIntrospectionCaller(authorization, introspectionCallerCredentials),
+    introspect: async (token) => projectSourceIntrospectionWireContext(await introspect(token)),
+    pdppError,
+    resolveAudience: opts.resolveIntrospectionAudience ?? (() => opts.rsPublicUrl ?? null),
+    resolveIssuer: opts.resolveIntrospectionIssuer ?? (() => opts.asIssuer ?? opts.asPublicUrl ?? null),
+  });
 
   // Spine correlation list / timeline / search routes delegate envelope
   // assembly to canonical operation modules. Timeline and search remain
@@ -4463,6 +4675,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
       (deleteCimdDocument as (d: string, o: unknown) => unknown)(documentId, options),
     getCimdDocument: (documentId: string) => getCimdDocument(documentId),
     getOwnerSubjectId,
+    getPendingApprovalDetail: (approvalId: string) => getPendingApprovalDetail(approvalId),
     handleError,
     listActiveTokensForOwnerClient: (clientId: string, subjectId: string) =>
       listActiveTokensForOwnerClient(clientId, subjectId),
@@ -4684,23 +4897,21 @@ export function buildAsApp(opts: ServerOpts = {}) {
       } catch (err) {
         // Failed restore is terminal, never a route to a connector resuming
         // against a phone-shaped shared surface.
-        try {
-          // The runtime may still be blocked in its interaction promise. Give
-          // it a terminal cancelled envelope before aborting the child so a
-          // failed restore cannot leave a live run waiting indefinitely.
-          originalRespondToInteraction(runId, {
-            interaction_id: interactionId,
-            status: "cancelled",
-          });
-        } finally {
-          // Same trusted internal resolution as onPresentationRestoreFailure
-          // above: this is system-initiated teardown of a run already known
-          // to the controller, not an owner-facing cancel request.
-          const restoreFailureOwnerSubjectId = controller?.getActiveRunOwnerSubjectId(runId);
-          if (restoreFailureOwnerSubjectId) {
-            await originalCancelRun?.(runId, restoreFailureOwnerSubjectId);
-          }
-        }
+        // Same trusted internal resolution as onPresentationRestoreFailure
+        // above: this is system-initiated teardown of a run already known
+        // to the controller, not an owner-facing cancel request. Start the
+        // cancellation before resolving the blocked interaction so the
+        // runtime cannot record success, but resolve before awaiting the
+        // cancellation because the connector may need it in order to exit.
+        const restoreFailureOwnerSubjectId = controller?.getActiveRunOwnerSubjectId(runId);
+        const cancellation = restoreFailureOwnerSubjectId
+          ? originalCancelRun?.(runId, restoreFailureOwnerSubjectId)
+          : undefined;
+        await originalRespondToInteraction(runId, {
+          interaction_id: interactionId,
+          status: "cancelled",
+        });
+        await cancellation;
         throw err;
       } finally {
         await runTargetRegistry.forceUnregister({ interactionId, runId });
@@ -5481,7 +5692,22 @@ export function buildAsApp(opts: ServerOpts = {}) {
     handleError,
     initiateGrant: (body: unknown, opts2: unknown) =>
       // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-      (consentStore as unknown as Record<string, (...args: unknown[]) => unknown>).initiateGrant?.(body, opts2),
+      (consentStore as unknown as Record<string, (...args: unknown[]) => unknown>).initiateGrant?.(body, {
+        ...(opts2 && typeof opts2 === "object" ? opts2 : {}),
+        ...(opts.acceptedProviderNativeRevision &&
+        requestSelectsSource(body, opts.acceptedProviderNativeRevision.sourceId)
+          ? {
+              acceptedRevisionReference: opts.acceptedProviderNativeRevision.acceptedRevisionReference,
+              acceptedRevisionStore: opts.acceptedProviderNativeRevision.revisionStore,
+              nativeManifestMode: "fulfillment_only",
+            }
+          : {}),
+        ...(!opts.acceptedProviderNativeRevision &&
+        configuredNativeSourceId(opts) &&
+        requestSelectsSource(body, configuredNativeSourceId(opts) as string)
+          ? { nativeManifestMode: "local_operator_provisioning" }
+          : {}),
+      }),
     nativeManifest: resolveNativeManifest(opts),
     resolveBaseUrl: (req: unknown) =>
       resolvePublicUrl(req as Parameters<typeof resolvePublicUrl>[0], explicitAsBaseUrl),
@@ -5688,6 +5914,19 @@ function buildRsApp(opts: ServerOpts = {}) {
   const rsOwnerSubjectId = resolveOwnerAuthPlaceholderConfig(opts).subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
   const trustedMetadataHosts =
     opts.trustedMetadataHosts ?? (opts.ignoreAmbientPublicUrls ? null : process.env.PDPP_TRUSTED_HOSTS);
+  const rsIntrospectionCredentials = opts.rsIntrospectionCredentials ?? readIntrospectionCredentialsFromEnv();
+  if (!rsIntrospectionCredentials) {
+    throw new Error("RS introspection credentials must be configured");
+  }
+  const introspectToken = createRemoteIntrospector({
+    ...rsIntrospectionCredentials,
+    endpoint: opts.rsIntrospectionEndpoint ?? `http://127.0.0.1:${opts.asPort ?? AS_PORT}/introspect`,
+    expectedAudience: opts.resolveIntrospectionAudience ?? (() => explicitResource ?? null),
+    expectedIssuer: opts.resolveIntrospectionIssuer ?? (() => opts.asIssuer ?? opts.asPublicUrl ?? null),
+    ...(opts.introspectionFetch ? { fetchImpl: opts.introspectionFetch } : {}),
+  });
+  const requireToken = (req: ReqLike, res: ResLike, next: () => void) =>
+    requireTokenWithIntrospection(req, res, next, introspectToken);
 
   app.use(((
     req: ReqLike & { headers: Record<string, string | string[] | undefined> },
@@ -5960,6 +6199,7 @@ function buildRsApp(opts: ServerOpts = {}) {
       }) || null) as { primary: string; note?: string } | null;
     },
     resolveSiblingPublicUrl,
+    resolveSourceDeclarationUri: () => opts.sourceDeclarationUri ?? null,
     shouldUseDirectRequestOrigin,
     trustedMetadataHosts,
   };
@@ -6539,6 +6779,7 @@ function buildRsApp(opts: ServerOpts = {}) {
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 export async function startServer(opts: ServerOpts = {}) {
+  const introspectionCredentials = resolveIntrospectionCredentials(opts);
   const logger = opts.logger ?? buildLogger({ quiet: !!opts.quiet });
   const connectorEnvironmentPolicy = resolveConnectorEnvironmentPolicy(opts);
   setConnectorSummaryReconcileObservationSink(createConnectorSummaryReconcileObservationSink(logger));
@@ -6959,9 +7200,11 @@ export async function startServer(opts: ServerOpts = {}) {
     connectorId: string;
     connectorInstanceId: string;
     connectionId?: string | null;
+    data: Record<string, unknown> | null;
     stream: string;
     version: number | null;
     emittedAt: string;
+    recordKey: string;
   }): Promise<void> {
     try {
       const subs = await listActiveSubscriptions();
@@ -6978,8 +7221,10 @@ export async function startServer(opts: ServerOpts = {}) {
           connectionId: change.connectionId ?? null,
           connectorId: change.connectorId,
           connectorInstanceId: change.connectorInstanceId,
+          data: change.data,
           emittedAt: change.emittedAt,
           ownerSubjectId: changedInstanceOwner,
+          recordKey: change.recordKey,
           stream: change.stream,
           version: Number(change.version) || 0,
         },
@@ -7025,9 +7270,11 @@ export async function startServer(opts: ServerOpts = {}) {
       connectorId: string;
       connectorInstanceId: string;
       connectionId?: string | null;
+      data: Record<string, unknown> | null;
       stream: string;
       version: number | null;
       emittedAt: string;
+      recordKey: string;
     }) => {
       const task = enqueueClientEvents(change);
       clientEventEnqueueTasks.add(task);
@@ -7043,6 +7290,7 @@ export async function startServer(opts: ServerOpts = {}) {
 
   const asApp = buildAsApp({
     acceptedCollectorProtocolVersions: opts.acceptedCollectorProtocolVersions,
+    acceptedProviderNativeRevision: opts.acceptedProviderNativeRevision,
     agentConnectTtlMs: opts.agentConnectTtlMs,
     asIssuer: configuredAsIssuer,
     asPublicUrl: configuredAsPublicUrl,
@@ -7052,6 +7300,7 @@ export async function startServer(opts: ServerOpts = {}) {
     dynamicClientRegistrationInitialAccessTokens: resolveDynamicClientRegistrationInitialAccessTokens(opts),
     enableDynamicClientRegistration: resolveDynamicClientRegistrationEnabled(opts),
     ignoreAmbientPublicUrls,
+    introspectionCallerCredentials: introspectionCredentials,
     isNekoProxyTargetApproved: opts.isNekoProxyTargetApproved,
     makePresentationAttachmentId: opts.makePresentationAttachmentId,
     makeStreamingBrowserSessionId: opts.makeStreamingBrowserSessionId,
@@ -7073,6 +7322,8 @@ export async function startServer(opts: ServerOpts = {}) {
     providerName,
     publicDynamicClientRegistrationRateLimit: opts.publicDynamicClientRegistrationRateLimit,
     referenceRevision: opts.referenceRevision,
+    resolveIntrospectionAudience: () => configuredRsPublicUrl || runtimeContext.rsUrl,
+    resolveIntrospectionIssuer: () => configuredAsIssuer || runtimeContext.referenceBaseUrl,
     staticSecretCredentialProber,
     streamingClearTimeout: opts.streamingClearTimeout,
     streamingCompanionFactory: opts.streamingCompanionFactory,
@@ -7147,6 +7398,7 @@ export async function startServer(opts: ServerOpts = {}) {
     // builder.
     hybridRetrievalSupported: opts.hybridRetrievalSupported,
     ignoreAmbientPublicUrls,
+    introspectionFetch: opts.introspectionFetch,
     lexicalRetrievalCapability: opts.lexicalRetrievalCapability,
     // Lexical retrieval extension knobs — see search.js + the metadata route.
     lexicalRetrievalSupported: opts.lexicalRetrievalSupported,
@@ -7160,11 +7412,15 @@ export async function startServer(opts: ServerOpts = {}) {
     onScheduleMutation: () => schedulerManager?.refresh(),
     providerName,
     referenceRevision: opts.referenceRevision,
+    resolveIntrospectionAudience: () => configuredRsPublicUrl || runtimeContext.rsUrl,
+    resolveIntrospectionIssuer: () => configuredAsIssuer || runtimeContext.referenceBaseUrl,
     // Explicitly-configured internal RS base for the hosted-MCP adapter's
     // child-grant self-calls (null when only the bare default would apply, so
     // the adapter falls back to the public resource). See explicitRsInternalUrl.
     // Spec: openspec/changes/route-hosted-mcp-adapter-self-calls-internally/
     rsInternalUrl: explicitRsInternalUrl,
+    rsIntrospectionCredentials: introspectionCredentials,
+    rsIntrospectionEndpoint: opts.rsIntrospectionEndpoint ?? `http://127.0.0.1:${asPort}/introspect`,
     rsPublicUrl: configuredRsPublicUrl,
     semanticRetrievalCapability: opts.semanticRetrievalCapability,
     // Semantic retrieval experimental extension knobs — see search-semantic.js
@@ -7172,6 +7428,7 @@ export async function startServer(opts: ServerOpts = {}) {
     // configs reach both the route registration gate and the advertisement
     // builder.
     semanticRetrievalSupported: opts.semanticRetrievalSupported,
+    sourceDeclarationUri: opts.sourceDeclarationUri,
     trustedMetadataHosts,
   } as unknown as ServerOpts);
   const rsServer = await rsApp.listen(requestedRsPort, bindHost);

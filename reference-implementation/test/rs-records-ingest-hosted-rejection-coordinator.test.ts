@@ -125,6 +125,7 @@ function manifest(connectorId: string) {
     connector_id: connectorId,
     connector_key: connectorId,
     display_name: "Hosted Rejection Coordinator Test",
+    manifest_uri: `https://registry.pdpp.dev/connectors/${connectorId}`,
     protocol_version: "0.1.0",
     streams: [
       {

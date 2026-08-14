@@ -17,7 +17,7 @@ If you want the public explainer and run/deploy posture first, start with [/refe
 
 Two boundaries matter when reading them:
 
-- Client requests are staged through `POST /oauth/par`, then approved through the current consent shell at `GET /consent?request_uri=...` and `POST /consent/approve`.
+- Client requests are staged through `POST /oauth/par`, reviewed through `POST /consent/review`, then approved through `POST /consent/approve` with the reviewed revision.
 - Owner self-export is a separate OAuth device flow using `POST /oauth/device_authorization`, `POST /device/approve`, and `POST /oauth/token`.
 
 Deliberately out of scope in these examples: a generic third-party authorization-code redirect flow.
@@ -26,7 +26,7 @@ The current reference proves request staging, public-client self-registration, c
 
 ## Example 1: Longview requests compensation data from Northstar HR
 
-This is the native-provider path. Longview requests compensation records from `Northstar HR`, so the request identifies the source with `source: { kind: "provider_native", id: "northstar_hr" }`.
+This is the native-provider path. Longview requests compensation records from `Northstar HR`, so the request identifies the source with `source: { kind: "provider_native", id: "https://northstar.example/sources/hr" }`.
 
 ### Step 1: Longview stages the request through PAR
 
@@ -47,7 +47,7 @@ Content-Type: application/json
       "type": "https://pdpp.dev/data-access",
       "source": {
         "kind": "provider_native",
-        "id": "northstar_hr"
+        "id": "https://northstar.example/sources/hr"
       },
       "purpose_code": "https://longview.example/purpose/career-move-planning",
       "purpose_description": "Compare salary, equity, benefits, and tax tradeoffs before a career move",
@@ -83,17 +83,32 @@ GET /consent?request_uri=urn%3Apdpp%3Apending-consent%3Adc_4f5f7c0f9b6a4f31
 
 The consent surface is server-rendered. It reads the staged request, shows the client identity and requested streams, and lets the user approve or deny it.
 
-### Step 3: Approval creates the grant and returns the client token
+### Step 3: The owner reviews the exact approval artifact
 
-The current reference implementation uses a direct approval shortcut instead of a full authorization-code redirect.
+Before approval, the client or hosted UI finalizes the exact artifact that will be approved. The response contains `approval_review` and `approval_review_revision`.
 
 ```http
-POST /consent/approve
+POST /consent/review
 Content-Type: application/json
 
 {
   "request_uri": "urn:pdpp:pending-consent:dc_4f5f7c0f9b6a4f31",
   "subject_id": "owner_local"
+}
+```
+
+### Step 4: Approval creates the grant and returns the client token
+
+The current reference implementation uses a direct approval shortcut instead of a full authorization-code redirect.
+
+```http
+POST /consent/approve
+Accept: application/json
+Content-Type: application/json
+
+{
+  "request_uri": "urn:pdpp:pending-consent:dc_4f5f7c0f9b6a4f31",
+  "approval_review_revision": "reference.approval-review.v1:sha256:...",
 }
 ```
 
@@ -113,7 +128,7 @@ Reference response:
     },
     "source": {
       "kind": "provider_native",
-      "id": "northstar_hr"
+      "id": "https://northstar.example/sources/hr"
     },
     "purpose_code": "https://longview.example/purpose/career-move-planning",
     "access_mode": "continuous",
@@ -312,7 +327,7 @@ Reference response for a **valid, active client-scoped token**:
     },
     "source": {
       "kind": "provider_native",
-      "id": "northstar_hr"
+      "id": "https://northstar.example/sources/hr"
     },
     "purpose_code": "https://longview.example/purpose/career-move-planning",
     "access_mode": "continuous",
@@ -426,12 +441,22 @@ curl -sX POST "$AS_URL/oauth/par" \
   }' | jq -r .request_uri
 ```
 
-### Step 2: Owner approval embeds resources[] in the grant
+### Step 2: Owner review freezes resources[] in the approval artifact
+
+```bash
+REVIEW=$(curl -sX POST "$AS_URL/consent/review" \
+  -H 'Content-Type: application/json' \
+  -d "{\"request_uri\": \"$REQUEST_URI\", \"subject_id\": \"owner_local\"}")
+REVIEW_REVISION=$(echo "$REVIEW" | jq -r .approval_review_revision)
+```
+
+### Step 3: Revision-only approval embeds resources[] in the grant
 
 ```bash
 APPROVED=$(curl -sX POST "$AS_URL/consent/approve" \
+  -H 'Accept: application/json' \
   -H 'Content-Type: application/json' \
-  -d "{\"request_uri\": \"$REQUEST_URI\", \"subject_id\": \"owner_local\"}")
+  -d "{\"request_uri\": \"$REQUEST_URI\", \"approval_review_revision\": \"$REVIEW_REVISION\"}")
 TOKEN=$(echo $APPROVED | jq -r .token)
 ```
 
@@ -447,7 +472,7 @@ The issued grant embeds `resources` on the stream:
 }
 ```
 
-### Step 3: RS enforces the resources[] list: only those records are visible
+### Step 4: RS enforces the resources[] list: only those records are visible
 
 ```bash
 curl -s "$RS_URL/v1/streams/top_artists/records" \
@@ -489,7 +514,7 @@ REQUEST_URI=$(curl -sX POST "$AS_URL/oauth/par" \
     "client_id": "longview",
     "authorization_details": [{
       "type": "https://pdpp.dev/data-access",
-      "source": { "kind": "connector", "id": "spotify" },
+      "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
       "purpose_code": "https://pdpp.dev/purpose/personalization",
       "purpose_description": "One-time recommendation bootstrap",
       "access_mode": "single_use",
@@ -498,12 +523,22 @@ REQUEST_URI=$(curl -sX POST "$AS_URL/oauth/par" \
   }' | jq -r .request_uri)
 ```
 
-### Step 2: Approval issues the first (and only) token
+### Step 2: Review the exact single-use approval artifact
+
+```bash
+REVIEW=$(curl -sX POST "$AS_URL/consent/review" \
+  -H 'Content-Type: application/json' \
+  -d "{\"request_uri\": \"$REQUEST_URI\", \"subject_id\": \"owner_local\"}")
+REVIEW_REVISION=$(echo "$REVIEW" | jq -r .approval_review_revision)
+```
+
+### Step 3: Revision-only approval issues the first (and only) token
 
 ```bash
 APPROVED=$(curl -sX POST "$AS_URL/consent/approve" \
+  -H 'Accept: application/json' \
   -H 'Content-Type: application/json' \
-  -d "{\"request_uri\": \"$REQUEST_URI\", \"subject_id\": \"owner_local\"}")
+  -d "{\"request_uri\": \"$REQUEST_URI\", \"approval_review_revision\": \"$REVIEW_REVISION\"}")
 TOKEN=$(echo "$APPROVED" | jq -r .token)
 ```
 
@@ -525,7 +560,7 @@ reference default is 24h from issuance:
       "registration_mode": "pre_registered_public",
       "client_display": { "name": "Longview" }
     },
-    "source": { "kind": "connector", "id": "spotify" },
+    "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
     "manifest_version": "1.0.0",
     "purpose_code": "https://pdpp.dev/purpose/personalization",
     "purpose_description": "One-time recommendation bootstrap",

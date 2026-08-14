@@ -89,6 +89,69 @@ test("validateResponse fails closed when payload violates declared response sche
   }
 });
 
+test("approveConsent accepts the closed batch approval response", () => {
+  const result = validateResponse("approveConsent", {
+    body: {
+      grant: {
+        child_grants: [{ grant_id: "grant_child_1", source: { id: "spotify" } }],
+        grant_id: "grant_package",
+        package: true,
+        package_id: "package_1",
+      },
+      package_id: "package_1",
+      token: "token_1",
+    },
+    status: 200,
+  });
+  assert.deepEqual(result, { ok: true, skipped: false });
+});
+
+test("OAuth token error contract accepts the refresh-reuse recovery marker", () => {
+  const result = validateResponse("exchangeOwnerDeviceToken", {
+    body: {
+      error: "invalid_grant",
+      error_description: "Refresh token reuse revoked its family; fresh authorization is required",
+      fresh_authorization_required: true,
+      request_id: "req_refresh_reuse",
+    },
+    status: 400,
+  });
+  assert.deepEqual(result, { ok: true, skipped: false });
+});
+
+test("approveConsent rejects extra fields in a batch approval response", () => {
+  const result = validateResponse("approveConsent", {
+    body: {
+      grant: {
+        child_grants: [{ grant_id: "grant_child_1", source: { id: "spotify" } }],
+        grant_id: "grant_package",
+        package: true,
+        package_id: "package_1",
+      },
+      package_id: "package_1",
+      token: "token_1",
+      unexpected: true,
+    },
+    status: 200,
+  });
+  assert.equal(result.ok, false);
+});
+
+test("introspection contract declares confidential caller authentication failure", () => {
+  const result = validateResponse("introspectToken", {
+    body: {
+      error: {
+        code: "context.authentication_failed",
+        message: "Introspection client authentication failed",
+        request_id: "req_introspection_auth",
+        type: "https://pdpp.org/errors/context.authentication_failed",
+      },
+    },
+    status: 401,
+  });
+  assert.deepEqual(result, { ok: true, skipped: false });
+});
+
 // `expand_capabilities` target-naming contract. Each entry SHALL carry both
 // `target_stream` (the related child stream) and `child_parent_key_field` (the
 // field on the child holding the parent's key). Pinned via getStreamMetadata's

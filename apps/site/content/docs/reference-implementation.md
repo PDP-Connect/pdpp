@@ -81,7 +81,7 @@ Client requests are staged through:
 
 - `POST /oauth/par`
 
-The live reference uses PAR to persist the RFC 9396 `authorization_details` request, then sends the user through the reference consent shell. Approval returns the grant and client bearer token directly. That direct-token return is a reference shortcut; it is not a generic OAuth authorization-code redirect profile.
+The live reference uses PAR to persist the RFC 9396 `authorization_details` request, then sends the user through the reference consent shell. The owner reviews an exact approval artifact before approval. Approval posts only the `request_uri` and `approval_review_revision`, then returns the grant and client bearer token directly. That direct-token return is a reference shortcut; it is not a generic OAuth authorization-code redirect profile.
 
 ### Client registration
 
@@ -104,10 +104,11 @@ The current reference contract expects a single RFC 9396 `authorization_details`
 The staged request is reviewed through:
 
 - `GET /consent?request_uri=...`
+- `POST /consent/review`
 - `POST /consent/approve`
 - `POST /consent/deny`
 
-Approval returns the issued grant and client bearer token directly (the reference shortcut noted under Client request start).
+`POST /consent/review` returns `approval_review` and `approval_review_revision`. `POST /consent/approve` must send that revision. It must not send stream, field, resource, or source choices again. Batch approval also requires `confirm_reviewed_decision`.
 
 ### Owner self-export
 
@@ -208,7 +209,7 @@ The reference is trying to prove one specific architectural point:
 
 That is why the same engine supports both:
 
-- `source: { kind: "provider_native", id: "northstar_hr" }` for native sources such as Northstar HR
+- `source: { kind: "provider_native", id: "https://northstar.example/sources/hr" }` for native sources such as Northstar HR
 - `source: { kind: "connector", id: "https://registry.pdpp.dev/connectors/spotify" }` for collected/polyfill sources such as Spotify
 
 ## What is still intentionally thin

@@ -47,6 +47,7 @@ import type { ConnectorSchemaItem } from "../operations/rs-schema-get/index.ts";
 const AMBIGUOUS_CONNECTION_LIST_LIMIT = 12;
 const EVENT_SUB_PATH_PATTERN = /^\/v1\/event-subscriptions\/([^/]+)$/;
 const PARSABLE_POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/;
+const STREAM_PATH_PATTERN = /^\/v1\/streams\/([^/]+)/;
 const TEST_EVENT_PATH_PATTERN = /^\/v1\/event-subscriptions\/([^/]+)\/test-event$/;
 const TRAILING_SLASH_PATTERN = /\/$/;
 
@@ -55,8 +56,8 @@ type JsonRow = JsonObject;
 type PackageRsResponse = RsResponse<unknown>;
 type PackageRsFetch = typeof globalThis.fetch;
 interface PackageRsMember {
-  connection_id: string;
-  grant?: { streams?: Array<{ name?: string }> };
+  connection_id?: string | null;
+  grant?: { streams?: Array<{ instance_ids?: string[]; name?: string }> };
   grant_id: string;
   source?: { display_name?: string; id?: string; [key: string]: unknown };
   token: string;
@@ -309,19 +310,18 @@ class PackageRsClient {
 
   async fanoutSchema({ query, headers }: RequestOptions): Promise<PackageRsResponse> {
     if (query?.connection_id) {
-      const scoped = pickChildByConnectionId(this.children, query.connection_id);
-      if (!scoped) {
-        return typedError(
-          "not_found",
-          `connection_id "${query.connection_id}" is not part of this package`,
-          this.children
-        );
+      const selected = this.selectChildOrError(query.connection_id, {
+        sourceId: sourceIdFromQuery(query),
+        streamNames: queryStringValues(query.stream),
+      });
+      if ("error" in selected) {
+        return selected.error;
       }
-      const result = await scoped.client.getJson(
+      const result = await selected.child.client.getJson(
         "/v1/schema",
-        rsRequestOptions({ headers, query: stripConnectionId(query) })
+        rsRequestOptions({ headers, query: stripPackageSelectors(query) })
       );
-      return mergeSchemaEnvelopes([scoped], [result]);
+      return mergeSchemaEnvelopes([selected.child], [result]);
     }
 
     if (query?.detail === "full") {
@@ -391,15 +391,16 @@ class PackageRsClient {
   async fanoutStreams({ query, headers }: RequestOptions): Promise<PackageRsResponse> {
     // If caller scoped to one connection_id, route to that child only.
     if (query?.connection_id) {
-      const scoped = pickChildByConnectionId(this.children, query.connection_id);
-      if (!scoped) {
-        return typedError(
-          "not_found",
-          `connection_id "${query.connection_id}" is not part of this package`,
-          this.children
-        );
+      const selected = this.selectChildOrError(query.connection_id, {
+        sourceId: sourceIdFromQuery(query),
+      });
+      if ("error" in selected) {
+        return selected.error;
       }
-      return scoped.client.getJson("/v1/streams", rsRequestOptions({ headers, query }));
+      return selected.child.client.getJson(
+        "/v1/streams",
+        rsRequestOptions({ headers, query: stripPackageSelectors(query) })
+      );
     }
 
     const results = await Promise.all(
@@ -410,15 +411,14 @@ class PackageRsClient {
 
   async fanoutSearch(path: string, { query, headers }: RequestOptions): Promise<PackageRsResponse> {
     if (query?.connection_id) {
-      const scoped = pickChildByConnectionId(this.children, query.connection_id);
-      if (!scoped) {
-        return typedError(
-          "not_found",
-          `connection_id "${query.connection_id}" is not part of this package`,
-          this.children
-        );
+      const selected = this.selectChildOrError(query.connection_id, {
+        sourceId: sourceIdFromQuery(query),
+        streamNames: requestedStreamsFromQuery(query),
+      });
+      if ("error" in selected) {
+        return selected.error;
       }
-      return scoped.client.getJson(path, rsRequestOptions({ headers, query }));
+      return selected.child.client.getJson(path, rsRequestOptions({ headers, query: stripPackageSelectors(query) }));
     }
 
     const results = await Promise.all(
@@ -438,7 +438,7 @@ class PackageRsClient {
     path: string,
     opts: RequestOptions
   ): Promise<PackageRsResponse> {
-    const child = await this.resolveChildOrError(opts);
+    const child = await this.resolveChildOrError(path, opts);
     if ("error" in child) {
       return child.error;
     }
@@ -452,27 +452,27 @@ class PackageRsClient {
     } else {
       clientMethod = "deleteJson";
     }
-    return child.child.client[clientMethod](path, rsRequestOptions(opts));
+    return child.child.client[clientMethod](
+      path,
+      rsRequestOptions({ ...opts, query: stripPackageSelectors(opts.query) })
+    );
   }
 
   async sourceRequiredRaw(_method: "GET", path: string, opts: RequestOptions): Promise<PackageRsResponse> {
-    const child = await this.resolveChildOrError(opts);
+    const child = await this.resolveChildOrError(path, opts);
     if ("error" in child) {
       return child.error;
     }
-    return child.child.client.getRaw(path, rsRequestOptions(opts));
+    return child.child.client.getRaw(path, rsRequestOptions({ ...opts, query: stripPackageSelectors(opts.query) }));
   }
 
-  async resolveChildOrError({ query }: RequestOptions): Promise<ChildLookup> {
+  async resolveChildOrError(path: string, { query }: RequestOptions): Promise<ChildLookup> {
     const connectionId = query?.connection_id;
     if (connectionId) {
-      const child = pickChildByConnectionId(this.children, connectionId);
-      if (child) {
-        return { child };
-      }
-      return {
-        error: typedError("not_found", `connection_id "${connectionId}" is not part of this package`, this.children),
-      };
+      return this.selectChildOrError(connectionId, {
+        sourceId: sourceIdFromQuery(query),
+        streamNames: queryStringValues(streamNameFromPath(path)),
+      });
     }
     if (this.children.length === 1 && this.children[0]) {
       return { child: this.children[0] };
@@ -488,6 +488,33 @@ class PackageRsClient {
     return Promise.resolve(typedError("ambiguous_connection", message, this.children));
   }
 
+  selectChildOrError(
+    connectionId: QueryValue,
+    { sourceId = null, streamNames = [] }: { sourceId?: string | null; streamNames?: string[] } = {}
+  ): ChildLookup {
+    const matches = matchingChildrenByConnectionId(this.children, connectionId, streamNames, sourceId);
+    if (matches.length === 1 && matches[0]) {
+      return { child: matches[0] };
+    }
+    if (matches.length > 1) {
+      return {
+        error: typedError(
+          "ambiguous_connection",
+          `connection_id "${String(connectionId)}" exists under multiple package sources; pass source_id to select one`,
+          matches,
+          { param: "source_id", retryWith: "source_id" }
+        ),
+      };
+    }
+    return {
+      error: typedError(
+        "not_found",
+        `connection_id "${String(connectionId)}" is not part of the selected package source and stream`,
+        this.children
+      ),
+    };
+  }
+
   // -------- event subscriptions --------
 
   async createEventSubForChild({ body, query, headers }: RequestOptions): Promise<PackageRsResponse> {
@@ -497,10 +524,13 @@ class PackageRsClient {
       (isRecord(body) && typeof body.connection_id === "string" ? body.connection_id : undefined);
     let child: PackageChild | undefined;
     if (sel) {
-      child = pickChildByConnectionId(this.children, sel) ?? undefined;
-      if (!child) {
-        return typedError("not_found", `connection_id "${sel}" is not part of this package`, this.children);
+      const selected = this.selectChildOrError(sel, {
+        sourceId: sourceIdFromRequest(query, body),
+      });
+      if ("error" in selected) {
+        return selected.error;
       }
+      ({ child } = selected);
     } else if (this.children.length === 1) {
       [child] = this.children;
     } else {
@@ -510,12 +540,14 @@ class PackageRsClient {
     }
     const childBody: JsonObject = isRecord(body) ? { ...body } : {};
     childBody.connection_id = undefined;
+    childBody.connector_id = undefined;
+    childBody.source_id = undefined;
     if (!child) {
       throw new Error("PackageRsClient has no active children");
     }
     return child.client.postJson(
       "/v1/event-subscriptions",
-      rsRequestOptions({ body: childBody, headers, query: stripConnectionId(query) })
+      rsRequestOptions({ body: childBody, headers, query: stripPackageSelectors(query, { connectionId: true }) })
     );
   }
 
@@ -629,19 +661,69 @@ function routeFor(method: string, path: string): Route {
 
 // -------- selectors --------
 
-function pickChildByConnectionId(children: PackageChild[], connectionId: string | QueryValue): PackageChild | null {
+function matchingChildrenByConnectionId(
+  children: PackageChild[],
+  connectionId: string | QueryValue,
+  streamNames: string[] = [],
+  sourceId: string | null = null
+): PackageChild[] {
   if (!connectionId) {
-    return null;
+    return [];
   }
-  return children.find(({ member }) => member.connection_id === connectionId) || null;
+  return children.filter(
+    ({ member }) =>
+      (!sourceId || member.source?.id === sourceId) && grantedInstanceIds(member, streamNames).has(String(connectionId))
+  );
 }
 
-function stripConnectionId(query: QueryParams | undefined): QueryParams | undefined {
+function grantedInstanceIds(member: PackageRsMember, streamNames: string[] = []): Set<string> {
+  const requestedStreams = new Set(streamNames);
+  const streams = Array.isArray(member.grant?.streams) ? member.grant.streams : [];
+  return new Set(
+    streams
+      .filter(
+        (stream) =>
+          requestedStreams.size === 0 || (typeof stream.name === "string" && requestedStreams.has(stream.name))
+      )
+      .flatMap((stream) => (Array.isArray(stream.instance_ids) ? stream.instance_ids : []))
+      .filter((instanceId) => typeof instanceId === "string" && instanceId.length > 0)
+  );
+}
+
+function streamNameFromPath(path: string): string | null {
+  const match = path.split("?")[0]?.match(STREAM_PATH_PATTERN);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+function stripPackageSelectors(
+  query: QueryParams | undefined,
+  { connectionId = false }: { connectionId?: boolean } = {}
+): QueryParams | undefined {
   if (!query || typeof query !== "object") {
     return query;
   }
-  const { connection_id: _omit, ...rest } = query;
+  const { connector_id: _connectorId, source_id: _sourceId, ...rest } = query;
+  if (connectionId) {
+    rest.connection_id = undefined;
+  }
   return rest;
+}
+
+function sourceIdFromQuery(query: QueryParams | undefined): string | null {
+  return firstNonEmptyString(query?.source_id, query?.connector_id) ?? null;
+}
+
+function sourceIdFromRequest(query: QueryParams | undefined, body: unknown): string | null {
+  const requestBody = isRecord(body) ? body : {};
+  return (
+    firstNonEmptyString(query?.source_id, query?.connector_id, requestBody.source_id, requestBody.connector_id) ?? null
+  );
+}
+
+function queryStringValues(value: QueryValue | string | null | undefined): string[] {
+  const values: string[] = [];
+  collectStreamQueryValues(values, value as QueryValue);
+  return values;
 }
 
 function searchQueryForChild(query: QueryParams | undefined, member: PackageRsMember): QueryParams | null | undefined {
@@ -726,7 +808,7 @@ function emptySearchResponse(): PackageRsResponse {
 function memberSourceTag(member: PackageRsMember): SourceTag {
   const connectorKey = member.source?.id ?? null;
   return {
-    connection_id: member.connection_id,
+    connection_id: member.connection_id ?? null,
     connector_id: connectorKey,
     connector_key: connectorKey,
     grant_id: member.grant_id,

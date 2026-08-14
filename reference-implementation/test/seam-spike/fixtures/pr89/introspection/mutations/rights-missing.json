@@ -1,0 +1,6 @@
+{
+  "kind": "response",
+  "path": "authorization_details",
+  "delete": true,
+  "expected": "context.rights_missing"
+}

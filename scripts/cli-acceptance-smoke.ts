@@ -9,8 +9,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 
-import { extractCsrfFieldValue, findSetCookiePair, getSetCookieList } from "./lib/owner-session.ts";
-
 const [, , mode] = process.argv;
 const repoRoot = new URL("..", import.meta.url).pathname;
 const cliBin = join(repoRoot, "packages/cli/bin/pdpp.ts");
@@ -250,31 +248,53 @@ async function approveAccess(approvalUrl: string): Promise<void> {
   if (!requestUri) {
     throw new Error(`FAIL approval URL missing request_uri: ${approvalUrl}`);
   }
-  const consentPage = await fetch(url, {
-    headers: { Accept: "text/html" },
-    redirect: "manual",
-  });
-  const csrfCookie = findSetCookiePair(getSetCookieList(consentPage), "pdpp_owner_csrf");
-  const csrfField = extractCsrfFieldValue(await consentPage.text());
-  const approveBody: Record<string, string> = { request_uri: requestUri, subject_id: "owner_local" };
-  if (csrfField) {
-    approveBody._csrf = csrfField;
-  }
-  const approveHeaders: Record<string, string> = {
-    Accept: "application/json",
-    "Content-Type": "application/x-www-form-urlencoded",
-  };
-  if (csrfCookie) {
-    approveHeaders.Cookie = csrfCookie;
-  }
-  const response = await fetch(new URL("/consent/approve", url), {
+
+  const reviewResponse = await fetch(new URL("/consent/review", url), {
+    body: JSON.stringify({ request_uri: requestUri }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
-    headers: approveHeaders,
-    body: new URLSearchParams(approveBody).toString(),
-    redirect: "manual",
   });
-  if (!(response.ok || response.status === 302 || response.status === 303)) {
-    throw new Error(`FAIL test approval failed: HTTP ${response.status}`);
+  const reviewText = await reviewResponse.text();
+  let reviewBody: unknown;
+  try {
+    reviewBody = JSON.parse(reviewText);
+  } catch (error) {
+    throw new Error(`FAIL consent review returned non-JSON (${reviewResponse.status}): ${reviewText}`, {
+      cause: error,
+    });
+  }
+  if (!reviewResponse.ok) {
+    throw new Error(`FAIL consent review failed: HTTP ${reviewResponse.status}: ${reviewText}`);
+  }
+  if (!reviewBody || typeof reviewBody !== "object" || Array.isArray(reviewBody)) {
+    throw new Error("FAIL consent review returned a non-object body");
+  }
+  const review = reviewBody as {
+    approval_review?: unknown;
+    approval_review_revision?: unknown;
+    request_uri?: unknown;
+  };
+  if (!review.approval_review || typeof review.approval_review !== "object" || Array.isArray(review.approval_review)) {
+    throw new Error("FAIL consent review returned without the exact approval artifact");
+  }
+  if (typeof review.approval_review_revision !== "string" || !review.approval_review_revision) {
+    throw new Error("FAIL consent review returned without approval_review_revision");
+  }
+  if (review.request_uri !== requestUri) {
+    throw new Error("FAIL consent review returned a different canonical request_uri");
+  }
+
+  const response = await fetch(new URL("/consent/approve", url), {
+    body: JSON.stringify({
+      approval_review_revision: review.approval_review_revision,
+      request_uri: review.request_uri,
+    }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`FAIL consent approval failed: HTTP ${response.status}: ${text}`);
   }
 }
 

@@ -2,26 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Introspection MUST fail closed on an unexpected manifest-store / storage fault.
- *
- * Regression guard for a fail-open defect: `introspect()`'s client-token branch
- * validated the persisted grant against its manifest inside a try/catch that
- * returned inactive ONLY for a `grant_invalid`-coded error and SILENTLY SWALLOWED
- * every other error, then fell through to mark the token `active: true`. An
- * infrastructure fault (manifest-store outage, DB error) therefore resolved into
- * an authorization "active" decision.
- *
- * The fix: a genuine `grant_invalid` still projects inactive; any other error
- * propagates, so introspection can never convert an outage into `active: true`.
- *
- * Behavior deliberately PRESERVED (not changed by the fix):
- *   - A grant bound to an UNREGISTERED connector (manifest resolves to null) keeps
- *     the token active; the read path resolves the connector connector-first and
- *     returns a precise not_found there. That is asserted by pdpp.test.js
- *     "polyfill client reads fail connector-first ...".
- *
- * SQLite path runs everywhere; Postgres path runs only when PDPP_TEST_POSTGRES_URL
- * is set.
+ * Introspection uses the closed resolved grant as authorization authority.
+ * Removing the mutable manifest catalog after issuance must not deactivate or
+ * reinterpret a valid grant. SQLite runs everywhere. Postgres runs only when
+ * PDPP_TEST_POSTGRES_URL is set.
  */
 
 import assert from "node:assert/strict";
@@ -33,11 +17,32 @@ import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../ser
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 const CONNECTOR_ID = "introspection_fail_closed";
+const DECLARATION_VERSION = "introspection-fail-closed-declaration-v1";
+const INSTANCE_ID = "cin_introspection_fail_closed";
+const SOURCE_ID = "https://registry.pdpp.dev/connectors/introspection-fail-closed";
 const SUBJECT_ID = "introspection_subject";
 const CLIENT_ID = "introspection_client";
 
 const MANIFEST = {
   connector_id: CONNECTOR_ID,
+  display_name: "Introspection fail closed fixture",
+  manifest_uri: "https://implementations.example/connectors/introspection-fail-closed",
+  protocol_version: "0.1.0",
+  source_declaration: {
+    declaration_version: DECLARATION_VERSION,
+    display: { name: "Introspection fail closed fixture" },
+    protocol_version: "0.1.0",
+    publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
+    source: { id: SOURCE_ID, kind: "connector" },
+    streams: [
+      {
+        name: "items",
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, type: "object" },
+        selection: { fields: true, resources: true },
+      },
+    ],
+  },
   streams: [
     {
       name: "items",
@@ -54,13 +59,15 @@ type Backend = "sqlite" | "postgres";
 function persistedGrant(grantId: string): string {
   return JSON.stringify({
     access_mode: "continuous",
-    client_id: CLIENT_ID,
+    client: { client_id: CLIENT_ID },
     grant_id: grantId,
-    manifest_version: MANIFEST.version,
+    issued_at: new Date().toISOString(),
     purpose_code: "https://pdpp.dev/purpose/analytics",
-    source: { id: CONNECTOR_ID, kind: "connector" },
-    streams: [{ name: "items" }],
-    subject_id: SUBJECT_ID,
+    source: { id: SOURCE_ID, kind: "connector" },
+    source_declaration: { version: DECLARATION_VERSION },
+    streams: [{ fields: ["id"], instance_ids: [INSTANCE_ID], name: "items" }],
+    subject: { id: SUBJECT_ID },
+    version: "0.1.0",
   });
 }
 
@@ -99,8 +106,7 @@ async function seedGrantToken(backend: Backend, grantId: string, tokenId: string
     .run(tokenId, grantId, SUBJECT_ID, CLIENT_ID);
 }
 
-async function breakManifestStorage(backend: Backend): Promise<void> {
-  // Simulate a manifest-store outage: the table introspection reads is gone.
+async function removeLiveManifestCatalog(backend: Backend): Promise<void> {
   if (backend === "postgres") {
     await postgresQuery("ALTER TABLE connectors RENAME TO connectors_unavailable");
     return;
@@ -108,7 +114,7 @@ async function breakManifestStorage(backend: Backend): Promise<void> {
   getDb().exec("DROP TABLE connectors");
 }
 
-async function runFailClosedCases(t: TestContext, backend: Backend): Promise<void> {
+async function runSnapshotAuthorityCases(t: TestContext, backend: Backend): Promise<void> {
   initDb(":memory:");
   if (backend === "postgres") {
     assert.ok(POSTGRES_URL, "Postgres URL is configured for the Postgres case");
@@ -125,18 +131,12 @@ async function runFailClosedCases(t: TestContext, backend: Backend): Promise<voi
       assert.equal(result.active, true);
     });
 
-    await t.test("an unexpected manifest-storage fault propagates and never marks active", async () => {
-      await breakManifestStorage(backend);
-      // The security property: introspection MUST NOT resolve an infrastructure
-      // outage into `active: true`. It fails closed by propagating.
-      await assert.rejects(
-        introspect(tokenId),
-        (error: unknown) => {
-          assert.ok(error instanceof Error, "rejection must be an Error");
-          return (error as Error & { code?: string }).code !== "grant_invalid";
-        },
-        "infra fault must propagate, not project the token active or as a clean grant_invalid"
-      );
+    await t.test("manifest catalog removal does not replace the resolved grant authority", async () => {
+      await removeLiveManifestCatalog(backend);
+      const result = await introspect(tokenId);
+      assert.equal(result.active, true);
+      const grant = result.grant as { source_declaration?: { version?: string } } | undefined;
+      assert.equal(grant?.source_declaration?.version, DECLARATION_VERSION);
     });
   } finally {
     if (backend === "postgres") {
@@ -146,12 +146,12 @@ async function runFailClosedCases(t: TestContext, backend: Backend): Promise<voi
   }
 }
 
-test("SQLite introspection fails closed on an unexpected manifest-storage fault", async (t) => {
-  await runFailClosedCases(t, "sqlite");
+test("SQLite introspection keeps the issued declaration snapshot authoritative", async (t) => {
+  await runSnapshotAuthorityCases(t, "sqlite");
 });
 
-test("Postgres introspection fails closed on an unexpected manifest-storage fault", {
+test("Postgres introspection keeps the issued declaration snapshot authoritative", {
   skip: !POSTGRES_URL,
 }, async (t) => {
-  await runFailClosedCases(t, "postgres");
+  await runSnapshotAuthorityCases(t, "postgres");
 });

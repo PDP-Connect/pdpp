@@ -175,6 +175,7 @@ export const OAuthErrorSchema: JsonSchema = {
   properties: {
     error: { type: "string" },
     error_description: { type: "string" },
+    fresh_authorization_required: { type: "boolean" },
     request_id: { type: "string" },
   },
   required: ["error", "request_id"],

@@ -1209,6 +1209,18 @@ export function postgresEmitSpineEventWithClient(
   return appendPostgresSpineEventInTransaction(client, input);
 }
 
+export async function postgresEmitSpineEventInTransaction(
+  client: PoolClient,
+  input: PostgresSpineEventInput = {}
+): Promise<SpineEventRecord | null> {
+  const event = normalize(input);
+  const result = await client.query<SpineEventRow>(SPINE_INSERT_EVENT_SQL, spineInsertEventParams(event));
+  if (isRunHistoryRelevantEventType(event.event_type)) {
+    await writePostgresRunHistoryForSpineEvent(client, toRunHistorySpineEvent(event, input.data));
+  }
+  return hydrate(result.rows[0]);
+}
+
 export async function postgresListSpineEventsPage(
   kind: string,
   id: string,

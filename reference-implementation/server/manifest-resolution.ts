@@ -26,10 +26,6 @@ function errorCode(error: unknown): string | undefined {
   return error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : undefined;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 export async function resolveOwnerManifestFromScope(ownerScope: OwnerScope, opts: SourceDescriptorOptions = {}) {
   let storageBinding = ownerScope.storage_binding || null;
   if (ownerScope.public_scope === "polyfill" && storageBinding?.connector_id) {
@@ -71,11 +67,7 @@ export async function resolveOwnerManifestFromScope(ownerScope: OwnerScope, opts
   const manifest = await getManifestForStorageBinding(manifestStorageBinding, manifestOptions);
   if (!manifest) {
     const err = Object.assign(
-      new Error(
-        ownerScope.source.kind === "provider_native"
-          ? `Unknown source: { kind: 'provider_native', id: '${ownerScope.source.id}' }`
-          : `Unknown connector: ${storageBinding?.connector_id || "unknown"}`
-      ),
+      new Error(`Unknown source: ${ownerScope.source.id || storageBinding?.connector_id || "unknown"}`),
       { code: "not_found" }
     );
     throw err;
@@ -92,43 +84,10 @@ export async function resolveGrantManifest(
   tokenInfo: TokenInfo | null | undefined,
   opts: SourceDescriptorOptions = {}
 ) {
-  let storageBinding = resolveGrantStorageBinding(tokenInfo);
-  // Only resolve a connector_instance namespace for polyfill connector
-  // sources. Native provider grants point at synthetic storage bindings
-  // whose connector_id is not registered in the `connectors` catalog, so
-  // forcing a connector_instances upsert would FK-fail and surface as
-  // a 500 instead of the intended client-error rejection downstream.
-  const grantSource = tokenInfo?.grant?.source;
-  const grantSourceKind = isRecord(grantSource) && grantSource.kind === "provider_native" ? "provider_native" : null;
-  if (storageBinding?.connector_id && grantSourceKind !== "provider_native") {
-    try {
-      const namespace = await resolveOwnerConnectorInstanceNamespace({
-        // Client/grant reads are also side-effect-free. A grant naming an
-        // unconnected connector must not create a default-account connection
-        // simply because the client inspected schema or streams.
-        allowDefaultAccount: false,
-        connectorId: storageBinding.connector_id,
-        ...(storageBinding.connector_instance_id ? { connectorInstanceId: storageBinding.connector_instance_id } : {}),
-        connectorInstanceStore: createRequestConnectorInstanceStore(),
-        displayName: storageBinding.connector_id,
-        ownerSubjectId: tokenInfo?.grant?.subject?.id || tokenInfo?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID,
-      });
-      storageBinding = storageTargetForConnectorNamespace(namespace);
-    } catch (err: unknown) {
-      // Tolerate multi-connection ambiguity: the route layer fans in over
-      // every active connection under the connector. The storage binding
-      // stays scoped to `connector_id` only; the route uses the
-      // fan-in resolver to pick / iterate concrete bindings.
-      if (errorCode(err) === "ambiguous_connector_instance") {
-        storageBinding = { connector_id: storageBinding.connector_id };
-      } else if (errorCode(err) !== "connector_instance_not_found") {
-        // If the connector is not registered, fall through to the
-        // manifest-not-found path below so the route returns a clean 404
-        // ("Unknown connector: …") instead of bubbling a 500.
-        throw err;
-      }
-    }
-  }
+  // The persisted storage binding and closed per-stream instance_ids are the
+  // serving authority. Do not re-resolve a current instance or dispatch on
+  // source.kind: kind is retained provenance, not a runtime type.
+  const storageBinding = resolveGrantStorageBinding(tokenInfo);
   const source: SourceDescriptor | null = buildClientSourceDescriptor(tokenInfo);
   const manifestOptions =
     opts.nativeManifest === undefined
@@ -136,12 +95,9 @@ export async function resolveGrantManifest(
       : { nativeManifest: opts.nativeManifest as unknown as Record<string, unknown> };
   const manifest = await getManifestForStorageBinding(storageBinding, manifestOptions);
   if (!manifest) {
-    const err = Object.assign(
-      source?.kind === "provider_native"
-        ? new Error(`Unknown source: { kind: 'provider_native', id: '${source.id}' }`)
-        : new Error(`Unknown connector: ${storageBinding?.connector_id || "unknown"}`),
-      { code: "not_found" }
-    );
+    const err = Object.assign(new Error(`Unknown source: ${source?.id || storageBinding?.connector_id || "unknown"}`), {
+      code: "not_found",
+    });
     throw err;
   }
   requireGrantContractAgainstManifest(tokenInfo?.grant, manifest);

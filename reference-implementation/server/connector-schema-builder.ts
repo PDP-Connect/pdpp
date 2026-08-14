@@ -14,7 +14,7 @@
 
 import { listGrantedConnectionsForStream } from "./connection-identity.ts";
 import {
-  getConnectorRunEvidenceSource,
+  getConnectorRunEvidenceConnectorId,
   getLatestConnectorRunSummary,
   getManifestRefreshPolicy,
   getMaximumStalenessSeconds,
@@ -46,9 +46,9 @@ interface Manifest {
 }
 
 export interface ConnectorSchemaGrantStream extends Record<string, unknown> {
-  connection_id?: string;
   fields?: string[];
   grantStreams?: Array<{ name: string }>;
+  instance_ids?: string[];
   name: string;
 }
 
@@ -101,13 +101,13 @@ function buildFreshness(lastUpdated = null) {
 }
 
 export async function getConnectorFreshnessEvidence({
-  source,
+  storageBinding,
   manifest,
 }: {
-  source: ConnectorSource | null | undefined;
+  storageBinding: unknown;
   manifest: Manifest;
 }): Promise<ConnectorFreshnessEvidence> {
-  const connectorId = getConnectorRunEvidenceSource(source);
+  const connectorId = getConnectorRunEvidenceConnectorId(storageBinding);
   const refreshPolicy = getManifestRefreshPolicy(manifest);
   const [lastRun, lastSuccessfulRun] = await Promise.all([
     getLatestConnectorRunSummary(connectorId),
@@ -176,9 +176,9 @@ export async function buildConnectorSchemaItem({
   manifest: Manifest;
   ownerSubjectId?: string | null;
   source: ConnectorSource | null | undefined;
-  storageBinding: unknown;
+  storageBinding: { connector_id?: string; [key: string]: unknown };
 }) {
-  const connectorId = source?.kind === "connector" ? source.id : null;
+  const connectorId = storageBinding.connector_id ?? null;
   const streamSummaries: Array<{ last_updated?: string | null; name: string }> = grant
     ? await Reflect.apply(listStreams, undefined, [storageBinding, grant, manifest])
     : await Reflect.apply(listAllStreams, undefined, [storageBinding]);
@@ -195,39 +195,30 @@ export async function buildConnectorSchemaItem({
   // Streams the loaded manifest declares — lets the expand-capabilities builder
   // distinguish "target stream not granted" from "target stream unknown".
   const manifestStreamNames = new Set(manifest.streams.map((stream) => stream.name));
-  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, source });
+  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, storageBinding });
 
-  // Look up granted connections once per connector. For polyfill connectors
-  // we batch a single owner+connector store query and reuse the result for
-  // every stream entry, narrowing per-stream by `grant.streams[].connection_id`
-  // when the grant pins a single connection. For provider_native sources we
-  // omit the field — those grants do not address a connection_id.
-  let activeBindings: Array<{ connection_id: string }> | null = null;
-  if (connectorId && ownerSubjectId) {
-    activeBindings = await listGrantedConnectionsForStream({
-      connectorId,
-      grantStreamConnectionId: null,
-      ownerSubjectId,
-    });
-  }
-
-  const streams = visibleStreams.map((manifestStream) => {
-    const lastUpdated = summaryByName.get(manifestStream.name)?.last_updated || null;
-    const streamGrant = grantStreamByName ? grantStreamByName.get(manifestStream.name) || null : null;
-    let grantedConnections: Array<{ connection_id: string }> | null = null;
-    if (activeBindings) {
-      const pin = streamGrant?.connection_id || null;
-      grantedConnections = pin ? activeBindings.filter((entry) => entry.connection_id === pin) : activeBindings;
-    }
-    return buildStreamMetadataEntry({
-      freshness: buildConnectorAwareFreshness(freshnessEvidence, lastUpdated),
-      grantedConnections,
-      grantStreams,
-      manifestStream,
-      manifestStreamNames,
-      streamGrant,
-    });
-  });
+  const streams = await Promise.all(
+    visibleStreams.map(async (manifestStream) => {
+      const lastUpdated = summaryByName.get(manifestStream.name)?.last_updated || null;
+      const streamGrant = grantStreamByName ? grantStreamByName.get(manifestStream.name) || null : null;
+      let grantedConnections: Array<{ connection_id: string }> | null = null;
+      if (connectorId && ownerSubjectId) {
+        grantedConnections = await listGrantedConnectionsForStream({
+          authorizedInstanceIds: grant ? streamGrant?.instance_ids || [] : null,
+          connectorId,
+          ownerSubjectId,
+        });
+      }
+      return buildStreamMetadataEntry({
+        freshness: buildConnectorAwareFreshness(freshnessEvidence, lastUpdated),
+        grantedConnections,
+        grantStreams,
+        manifestStream,
+        manifestStreamNames,
+        streamGrant,
+      });
+    })
+  );
 
   const item: {
     connector_id?: string;
@@ -251,18 +242,16 @@ export async function buildConnectorSchemaItem({
 
 export async function getVisibleStreamFreshness({
   tokenInfo,
-  source,
   storageBinding,
   stream,
   manifest,
 }: {
   manifest: Manifest;
-  source: ConnectorSource | null | undefined;
   storageBinding: unknown;
   stream: string;
   tokenInfo: { grant: Grant; pdpp_token_kind?: string } | null | undefined;
 }) {
-  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, source });
+  const freshnessEvidence = await getConnectorFreshnessEvidence({ manifest, storageBinding });
   if (tokenInfo?.pdpp_token_kind === "owner") {
     const summaries: Array<{ last_updated?: string | null; name: string }> = await Reflect.apply(
       listAllStreams,

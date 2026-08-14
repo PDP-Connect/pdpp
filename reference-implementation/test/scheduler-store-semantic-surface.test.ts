@@ -58,6 +58,7 @@ const SEMANTIC_MANIFEST = {
       name: "stream_x",
       primary_key: ["id"],
       schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      selection: { fields: true, resources: true },
       semantics: "mutable_state",
     },
   ],

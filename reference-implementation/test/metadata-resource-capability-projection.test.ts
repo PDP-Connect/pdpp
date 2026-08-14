@@ -31,6 +31,8 @@ import test from "node:test";
 
 import { buildProtectedResourceMetadata, buildSemanticRetrievalCapability } from "../server/metadata.ts";
 
+const INVALID_SOURCE_DECLARATION_POINTER = /Invalid provider-native source declaration pointer/;
+
 function baseMetadataInput(overrides = {}) {
   return {
     authorizationServers: ["https://as.example.com"],
@@ -80,6 +82,32 @@ test("buildProtectedResourceMetadata: optional discovery/agent/onboarding blocks
   assert.equal(meta.pdpp_discovery_hints, hints, "discovery hints passed through");
   assert.equal(meta.pdpp_agent_discovery, agent, "agent discovery passed through");
   assert.equal(meta.pdpp_owner_agent_onboarding, onboarding, "owner-agent onboarding passed through");
+});
+
+test("buildProtectedResourceMetadata: emits only a contract-valid provider-native declaration pointer", () => {
+  const sourceDeclarationUri = "https://declarations.example.com/source.json";
+  const metadata = buildProtectedResourceMetadata(baseMetadataInput({ sourceDeclarationUri }));
+  assert.equal(metadata.pdpp_source_declaration_uri, sourceDeclarationUri);
+
+  assert.throws(
+    () =>
+      buildProtectedResourceMetadata(
+        baseMetadataInput({ sourceDeclarationUri: "https://user@declarations.example.com/source.json" })
+      ),
+    INVALID_SOURCE_DECLARATION_POINTER
+  );
+  assert.throws(
+    () =>
+      buildProtectedResourceMetadata(
+        baseMetadataInput({ sourceDeclarationUri: "https://declarations.example.com/source.json#v1" })
+      ),
+    INVALID_SOURCE_DECLARATION_POINTER
+  );
+  assert.throws(
+    () => buildProtectedResourceMetadata(baseMetadataInput({ sourceDeclarationUri: "" })),
+    INVALID_SOURCE_DECLARATION_POINTER,
+    "an explicitly configured empty pointer must fail closed instead of being omitted"
+  );
 });
 
 test("buildProtectedResourceMetadata: capabilities emitted only when a NON-EMPTY object", () => {

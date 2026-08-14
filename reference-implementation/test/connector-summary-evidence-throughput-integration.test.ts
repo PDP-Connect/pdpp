@@ -82,6 +82,8 @@ function manifestFor(connectorKey: string, streams: readonly string[]) {
       name,
       primary_key: ["id"],
       schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      selection: { fields: true, resources: true },
+      semantics: "mutable_state",
     })),
     version: "1.0.0",
   };

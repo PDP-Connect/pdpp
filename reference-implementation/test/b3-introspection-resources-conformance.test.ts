@@ -22,11 +22,24 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { basicIntrospectionAuthorization } from "../server/introspection-http.ts";
+import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connector-instance-store.ts";
+import {
+  TEST_INTROSPECTION_SERVER_OPTS,
+  TEST_RS_INTROSPECTION_CREDENTIALS,
+} from "./helpers/introspection-test-credentials.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
 const MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, "manifests");
+const INTROSPECTION_AUTHORIZATION = basicIntrospectionAuthorization(TEST_RS_INTROSPECTION_CREDENTIALS);
+
+function introspectionHeaders(contentType = "application/json"): Record<string, string> {
+  return { Authorization: INTROSPECTION_AUTHORIZATION, "Content-Type": contentType };
+}
 
 // ─── shared helpers ─────────────────────────────────────────────────────────
 
@@ -91,7 +104,7 @@ interface ApprovedGrant {
   grant: {
     access_mode: string;
     grant_id: string;
-    source?: { kind: string };
+    source?: { id?: string; kind: string };
     streams: readonly ApprovedGrantStream[];
   };
   token: string;
@@ -108,16 +121,27 @@ interface IssueClientGrantParams {
 
 interface IntrospectionBody {
   active: boolean;
+  authorization_details?: readonly {
+    access_mode?: string;
+    source?: { id?: string; kind?: string };
+    streams?: readonly ApprovedGrantStream[];
+    type?: string;
+  }[];
   client_id?: string;
-  exp?: number | null;
+  exp?: number;
   grant?: {
     access_mode?: string;
     grant_id?: string;
-    source?: { kind?: string };
+    source?: { id?: string; kind?: string };
     streams?: readonly ApprovedGrantStream[];
   };
   grant_id?: string;
+  grant_storage_binding?: { connector_id?: string };
   inactive_reason?: string;
+  pdpp?: {
+    grant_id?: string;
+    source?: { id?: string; kind?: string };
+  };
   pdpp_token_kind?: string;
   subject_id?: string;
 }
@@ -149,6 +173,32 @@ interface SpotifyManifestStream {
 interface SpotifyManifest {
   connector_id: string;
   streams: SpotifyManifestStream[];
+}
+
+function sourceIdForConnectorId(connectorId: string): string {
+  return connectorId.includes("://") ? connectorId : `https://registry.pdpp.dev/connectors/${connectorId}`;
+}
+
+async function seedDefaultGrantInstance(connectorId: string, ownerSubjectId: string): Promise<void> {
+  const store = createRequestConnectorInstanceStore();
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
+  const connectorInstanceId = makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorKey);
+  if (await store.get(connectorInstanceId)) {
+    return;
+  }
+  const now = new Date().toISOString();
+  await store.upsert({
+    connectorId: connectorKey,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: "Spotify",
+    ownerSubjectId,
+    sourceBinding: { fixture: "b3-conformance-default-account" },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
 }
 
 /**
@@ -192,6 +242,7 @@ async function issueClientGrant(
   subjectId: string,
   params: IssueClientGrantParams
 ): Promise<ApprovedGrant> {
+  await seedDefaultGrantInstance(params.connector_id, subjectId);
   const { body: par } = await fetchJson<ParResponse>(`${asUrl}/oauth/par`, {
     body: JSON.stringify({
       authorization_details: [
@@ -199,23 +250,34 @@ async function issueClientGrant(
           access_mode: params.access_mode,
           purpose_code: params.purpose_code,
           purpose_description: params.purpose_description,
-          source: { id: params.connector_id, kind: "connector" },
+          source: { id: sourceIdForConnectorId(params.connector_id), kind: "connector" },
           streams: params.streams,
           type: "https://pdpp.dev/data-access",
         },
       ],
       client_id: params.client_id,
     }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   assert.ok(par, "PAR response should return a body");
+  const { body: review, status: reviewStatus } = await fetchJson<{ approval_review_revision?: unknown }>(
+    `${asUrl}/consent/review`,
+    {
+      body: JSON.stringify({ request_uri: par.request_uri, subject_id: subjectId }),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
+    }
+  );
+  assert.equal(reviewStatus, 200, JSON.stringify(review));
+  assert.ok(review, "consent review returns a body");
+  assert.equal(typeof review.approval_review_revision, "string", "consent review returns a revision");
   const { body: approved } = await fetchJson<ApprovedGrant>(`${asUrl}/consent/approve`, {
     body: JSON.stringify({
+      approval_review_revision: review.approval_review_revision,
       request_uri: par.request_uri,
-      subject_id: subjectId,
     }),
-    headers: { "Content-Type": "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   assert.ok(approved, "consent/approve should return a body");
@@ -267,6 +329,7 @@ async function withHarness(
     dbPath: ":memory:",
     quiet: true,
     rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
   })) as TestServer;
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -300,6 +363,42 @@ async function withHarness(
 
 // ─── B3.1 — active client token introspection shape ─────────────────────────
 
+test("introspection: confidential caller credentials are mandatory (B3)", async () => {
+  await withHarness(async ({ asUrl }) => {
+    const authorizations = [
+      undefined,
+      basicIntrospectionAuthorization({
+        clientId: TEST_RS_INTROSPECTION_CREDENTIALS.clientId,
+        clientSecret: "wrong-secret",
+      }),
+    ];
+    const responses = await Promise.all(
+      authorizations.map((authorization) =>
+        fetch(`${asUrl}/introspect`, {
+          body: new URLSearchParams({ token: "not-relevant" }).toString(),
+          headers: {
+            ...(authorization ? { Authorization: authorization } : {}),
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          method: "POST",
+        })
+      )
+    );
+    const results = await Promise.all(
+      responses.map(async (response) => ({
+        body: (await response.json()) as ErrorBody,
+        status: response.status,
+        wwwAuthenticate: response.headers.get("www-authenticate"),
+      }))
+    );
+    for (const { body, status, wwwAuthenticate } of results) {
+      assert.equal(status, 401);
+      assert.equal(wwwAuthenticate, 'Basic realm="introspection"');
+      assert.equal(typeof body.error === "object" ? body.error?.code : body.error, "context.authentication_failed");
+    }
+  });
+});
+
 test("introspection: active client token returns documented fields (B3)", async () => {
   await withHarness(async ({ asUrl, rsUrl, connectorId }) => {
     const ownerToken = await issueOwnerToken(asUrl, "b3_introspect_owner");
@@ -318,7 +417,7 @@ test("introspection: active client token returns documented fields (B3)", async 
 
     const { status, body } = await fetchJson<IntrospectionBody>(`${asUrl}/introspect`, {
       body: JSON.stringify({ token: approved.token }),
-      headers: { "Content-Type": "application/json" },
+      headers: introspectionHeaders(),
       method: "POST",
     });
 
@@ -332,23 +431,29 @@ test("introspection: active client token returns documented fields (B3)", async 
     assert.equal(body.grant_id, approved.grant.grant_id, "grant_id matches issued grant");
     assert.equal(body.client_id, "longview", "client_id matches requester");
 
-    // grant object must be present and contain the source + streams
-    assert.ok(body.grant, "grant object present");
-    assert.equal(body.grant.grant_id, approved.grant.grant_id, "grant.grant_id matches");
-    assert.equal(body.grant.source?.kind, "connector", "grant.source.kind = connector");
-    assert.equal(body.grant.access_mode, "continuous", "grant.access_mode matches");
-    assert.ok(Array.isArray(body.grant.streams), "grant.streams is an array");
-    const firstStream = body.grant.streams?.[0];
-    assert.ok(firstStream, "introspected grant has at least one stream");
+    // Public introspection projects the grant into RFC 9396 authorization_details
+    // plus PDPP context instead of exposing the AS-internal grant object.
+    assert.ok(Array.isArray(body.authorization_details), "authorization_details is an array");
+    const [detail] = body.authorization_details;
+    assert.ok(detail, "introspected grant has an authorization detail");
+    assert.equal(detail.type, "https://pdpp.dev/data-access", "authorization detail type is PDPP data access");
+    assert.equal(detail.source?.kind, "connector", "authorization detail source.kind = connector");
+    assert.equal(detail.access_mode, "continuous", "authorization detail access_mode matches");
+    assert.ok(Array.isArray(detail.streams), "authorization detail streams is an array");
+    const firstStream = detail.streams?.[0];
+    assert.ok(firstStream, "introspected authorization detail has at least one stream");
     assert.equal(firstStream.name, "top_artists", "stream name preserved");
+    assert.equal(body.pdpp?.grant_id, approved.grant.grant_id, "pdpp.grant_id matches");
+    assert.equal(body.pdpp?.source?.id, detail.source?.id, "pdpp.source matches authorization detail source");
 
-    // exp: either null or a number
-    assert.ok(body.exp === null || typeof body.exp === "number", "exp is null or numeric Unix timestamp");
+    // RFC 7662 omits exp when the token has no finite expiry.
+    assert.ok(body.exp === undefined || typeof body.exp === "number", "exp is omitted or a numeric Unix timestamp");
 
-    // grant_storage_binding MUST NOT appear in the public response (operation redacts it)
-    assert.ok(
-      !("grant_storage_binding" in body),
-      "grant_storage_binding must not appear in public introspection response"
+    // The confidential RS caller needs the physical binding to resolve the approved source.
+    assert.equal(
+      body.grant_storage_binding?.connector_id,
+      canonicalConnectorKey(detail.source?.id ?? null),
+      "storage binding matches approved source"
     );
   });
 });
@@ -356,7 +461,11 @@ test("introspection: active client token returns documented fields (B3)", async 
 // ─── B3.2 — inactive token: grant_revoked ───────────────────────────────────
 
 test("introspection: revoked grant returns active=false with inactive_reason (B3)", async () => {
-  await withHarness(async ({ asUrl, connectorId }) => {
+  await withHarness(async ({ asUrl, connectorId, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, "b3_revoke_owner");
+    await seedStream(rsUrl, ownerToken, connectorId, "top_artists", [
+      { id: "revoke_1", name: "Revocation fixture", source_updated_at: "2026-01-01T00:00:00Z" },
+    ]);
     const approved = await issueClientGrant(asUrl, "b3_revoke_owner", {
       access_mode: "continuous",
       client_id: "longview",
@@ -380,7 +489,7 @@ test("introspection: revoked grant returns active=false with inactive_reason (B3
 
     const { status, body } = await fetchJson<IntrospectionBody>(`${asUrl}/introspect`, {
       body: JSON.stringify({ token: approved.token }),
-      headers: { "Content-Type": "application/json" },
+      headers: introspectionHeaders(),
       method: "POST",
     });
 
@@ -402,7 +511,7 @@ test("introspection: missing token returns 400 invalid_request (B3)", async () =
   await withHarness(async ({ asUrl }) => {
     const { status, body } = await fetchJson<ErrorBody>(`${asUrl}/introspect`, {
       body: JSON.stringify({}),
-      headers: { "Content-Type": "application/json" },
+      headers: introspectionHeaders(),
       method: "POST",
     });
 
@@ -442,15 +551,15 @@ test("resources[] round-trip: grant contains resources, RS enforces them (B3)", 
       ],
     });
 
-    // 1. Introspection reflects resources[] in the grant object
+    // 1. Introspection reflects resources[] in authorization_details.
     const { body: introBody } = await fetchJson<IntrospectionBody>(`${asUrl}/introspect`, {
       body: JSON.stringify({ token: approved.token }),
-      headers: { "Content-Type": "application/json" },
+      headers: introspectionHeaders(),
       method: "POST",
     });
     assert.ok(introBody, "introspect should return a body");
     assert.equal(introBody.active, true, "token is active");
-    const introspectedStream = introBody.grant?.streams?.[0];
+    const introspectedStream = introBody.authorization_details?.[0]?.streams?.[0];
     assert.ok(introspectedStream, "stream present in introspected grant");
     assert.deepEqual(
       introspectedStream.resources,

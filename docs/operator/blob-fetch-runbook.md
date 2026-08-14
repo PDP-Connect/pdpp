@@ -48,7 +48,7 @@ stream with the `blob_ref` field, the RS decorates `blob_ref` with a
 ```
 
 `fetch_url` is a relative path. Prepend the RS base URL. The `GET /v1/blobs/:blob_id`
-route enforces grant scope — the token used to read the record is **the same
+route enforces grant scope - the token used to read the record is **the same
 token** used to fetch the blob. No extra credential is needed.
 
 ---
@@ -64,7 +64,7 @@ CONNECTOR_ID="https://registry.pdpp.dev/connectors/gmail"
 SUBJECT_ID="owner_local"
 ```
 
-### Step 1 — Upload the blob (connector/owner write path)
+### Step 1 - Upload the blob (connector/owner write path)
 
 The connector runtime normally writes blobs during a collection run. For manual
 replay, use the blob upload endpoint directly. Owner token required.
@@ -77,7 +77,7 @@ DEVICE=$(curl -s -X POST "$AS_URL/oauth/device_authorization" \
 USER_CODE=$(echo "$DEVICE" | jq -r .user_code)
 DEVICE_CODE=$(echo "$DEVICE" | jq -r .device_code)
 
-# Approve as owner (lab/local only — on a real deployment this happens in the UI)
+# Approve as owner (lab/local only - on a real deployment this happens in the UI)
 curl -s -X POST "$AS_URL/device/approve" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "user_code=$USER_CODE&subject_id=$SUBJECT_ID"
@@ -118,7 +118,7 @@ Upload response shape (`HTTP 200`):
 }
 ```
 
-### Step 2 — Seed the parent message and the attachment record
+### Step 2 - Seed the parent message and the attachment record
 
 Blobs are only reachable via a record that declares `blob_ref`. Seed both:
 
@@ -138,7 +138,7 @@ curl -s -X POST \
   -d "{\"key\":\"msg-1:2\",\"data\":{\"id\":\"msg-1:2\",\"message_id\":\"msg-1\",\"filename\":\"invoice.pdf\",\"content_type\":\"application/pdf\",\"size_bytes\":$BLOB_SIZE,\"content_id\":null,\"is_inline\":false,\"encoding\":\"base64\",\"part_index\":\"2\",\"message_received_at\":\"2025-11-01T10:00:00Z\",\"blob_ref\":{\"blob_id\":\"$BLOB_ID\",\"mime_type\":\"$BLOB_MIME\",\"size_bytes\":$BLOB_SIZE,\"sha256\":\"$BLOB_SHA256\"},\"content_sha256\":\"$BLOB_SHA256\",\"hydration_status\":\"hydrated\",\"hydration_error\":null},\"emitted_at\":\"2025-11-01T10:00:00Z\"}"
 ```
 
-### Step 3 — Issue a grant-scoped client token that includes `blob_ref`
+### Step 3 - Issue a grant-scoped client token that includes `blob_ref`
 
 ```bash
 PAR=$(curl -s -X POST "$AS_URL/oauth/par" \
@@ -165,17 +165,23 @@ PAR=$(curl -s -X POST "$AS_URL/oauth/par" \
   }")
 REQUEST_URI=$(echo "$PAR" | jq -r .request_uri)
 
-CLIENT_TOKEN=$(curl -s -X POST "$AS_URL/consent/approve" \
+REVIEW=$(curl -s -X POST "$AS_URL/consent/review" \
   -H "Content-Type: application/json" \
-  -d "{\"request_uri\": \"$REQUEST_URI\", \"subject_id\": \"$SUBJECT_ID\"}" \
+  -d "{\"request_uri\": \"$REQUEST_URI\", \"subject_id\": \"$SUBJECT_ID\"}")
+REVIEW_REVISION=$(echo "$REVIEW" | jq -r .approval_review_revision)
+
+CLIENT_TOKEN=$(curl -s -X POST "$AS_URL/consent/approve" \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d "{\"request_uri\": \"$REQUEST_URI\", \"approval_review_revision\": \"$REVIEW_REVISION\"}" \
   | jq -r .token)
 ```
 
 **Key point:** `blob_ref` must be listed in `streams[attachments].fields`.
 If it is absent, the RS redacts the `blob_ref` field before returning records
-and `fetch_url` is never decorated — the blob is not reachable via that token.
+and `fetch_url` is never decorated - the blob is not reachable via that token.
 
-### Step 4 — Query records and read the `fetch_url`
+### Step 4 - Query records and read the `fetch_url`
 
 ```bash
 RECORDS=$(curl -s \
@@ -221,7 +227,7 @@ Extract the fetch URL:
 FETCH_URL=$(echo "$RECORDS" | jq -r '.data[0].data.blob_ref.fetch_url')
 ```
 
-### Step 5 — Fetch the blob bytes
+### Step 5 - Fetch the blob bytes
 
 ```bash
 curl -s -o invoice_downloaded.pdf -D - \
@@ -245,7 +251,7 @@ sha256sum invoice_downloaded.pdf
 # must match $BLOB_SHA256
 ```
 
-### Step 6 — Grant enforcement: blob is invisible without a matching token
+### Step 6 - Grant enforcement: blob is invisible without a matching token
 
 Fetching the same blob with a **different token** that does not grant access to
 the `attachments` stream (or whose grant does not include `blob_ref` in its
@@ -271,7 +277,7 @@ The enforcement logic:
 3. If the grant projection does not include `blob_ref`, the field is stripped
    from the record response and the record is considered invisible.
 4. If no binding produces a visible record, the route returns `blob_not_found`.
-   The caller learns only that the blob does not exist — not which connector
+   The caller learns only that the blob does not exist - not which connector
    owns it.
 
 ---
@@ -287,7 +293,7 @@ The enforcement logic:
 | `Cache-Control` | `private, no-store` (always) |
 | `Content-Length` | Exact `size_bytes` stored at upload time |
 | Grant enforcement | Token's grant must grant visibility to the record that carries the `blob_ref`; otherwise `404 blob_not_found` |
-| `fetch_url` shape | Relative path `/v1/blobs/<blob_id>` — prepend RS base URL |
+| `fetch_url` shape | Relative path `/v1/blobs/<blob_id>` - prepend RS base URL |
 
 ---
 
@@ -297,7 +303,7 @@ The enforcement logic:
 authoritative conformance test for this surface:
 
 - `gmail messages expand hydrated attachments with grant-visible blob_ref fetch_url`
-  — proves Steps 3-5 above using an in-process harness
+  - proves Steps 3-5 above using an in-process harness
 - The test at L2913 proves the `blob_not_found` enforcement from Step 6
 
 The tests in `reference-implementation/test/b4-blob-fetch-conformance.test.js`
