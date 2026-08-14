@@ -14,6 +14,14 @@
  */
 
 [data-pdpp-doc-theme] {
+  /* Widest a figure (table, diagram) may grow. Prose holds --container-measure;
+     both live on the surface root so the hero and the body cannot drift onto
+     different edges. */
+  --container-figure: 860px;
+  /* How far a table may outdent past the prose measure on each side. Zero
+     below the point where the measure is already the full column width —
+     outdenting there would push the table under the rails. */
+  --table-outset: 0px;
   color: var(--pdpp-concept-ink);
   background: var(--pdpp-concept-paper);
 }
@@ -21,8 +29,14 @@
 /* ─── Fumadocs layout grid ───────────────────────────────────────────────── */
 
 [data-pdpp-doc-theme] #nd-docs-layout {
-  --fd-banner-height: 3rem;
-  --fd-docs-height: calc(100dvh - 3rem);
+  /* The real masthead measures ~70px (py-5 + an intrinsic nav row), not the
+     3rem fumadocs assumes. With the wrong value the rail and TOC rendered
+     below the header at rest and then snapped 22px upward on first scroll —
+     both panes lurching together. --pdpp-masthead-height is published by the
+     masthead itself (see masthead.tsx); 3rem stays as the pre-hydration
+     fallback so the first paint is never unstyled. */
+  --fd-banner-height: var(--pdpp-masthead-height, 3rem);
+  --fd-docs-height: calc(100dvh - var(--pdpp-masthead-height, 3rem));
   /* Match the `container max-w-page` wrapper in specification/shell.tsx —
      not --container-page directly: the grid lives inside container padding. */
   --fd-layout-width: 100%;
@@ -117,6 +131,11 @@
   /* Fumadocs #nd-page ships py-6 / md:pt-8 / xl:pt-14 — zero so hero top
      matches PdppConceptDoc pt (see .pdpp-docs-hero__content below). */
   padding-top: 0 !important;
+  /* Fumadocs' px-4/md:px-6/xl:px-8 resolved to 48px on the left and 0 on the
+     right here, which pushed every centred descendant half a gutter right and
+     made the two column gaps differ by exactly that 48px at every viewport.
+     Symmetric inline padding is what lets the measure centre honestly. */
+  padding-inline: var(--pdpp-docs-gutter);
   margin-inline: 0;
 }
 
@@ -177,8 +196,11 @@
 @media (min-width: 768px) {
   [data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
     --pdpp-docs-gutter: 1.5rem;
-    padding-inline-start: var(--spacing-gutter);
-    padding-inline-end: 0;
+    /* Symmetric. This was start: 48px / end: 0, which is the whole reason the
+       measure could not centre: every centred descendant inherited a column
+       that was 48px narrower on one side, so the rail-side and TOC-side gaps
+       differed by exactly 48px at 1280, 1440, 1920 and 2560 alike. */
+    padding-inline: var(--spacing-gutter);
   }
 }
 
@@ -214,11 +236,28 @@
 
 /* ─── Doc hero (front matter) ────────────────────────────────────────────── */
 
+/* The hero is a sibling of .pdpp-docs-body, not a child, so it cannot use the
+   document grid directly — it reproduces the same measure track instead. It
+   used to be pinned left while the body centred, putting the title and the
+   first paragraph beneath it on two different x positions. --container-figure
+   and --container-measure both come from the surface root. */
 [data-pdpp-doc-theme] .pdpp-docs-hero {
-  margin-inline: 0;
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1fr)
+    [measure-start] min(100%, var(--container-measure)) [measure-end]
+    minmax(0, 1fr);
+  width: 100%;
+  max-width: var(--container-figure);
+  margin-inline: auto;
   margin-bottom: 2.75rem;
   background: none;
   border: none;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-hero > * {
+  grid-column: measure;
+  min-width: 0;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-hero__content {
@@ -278,50 +317,82 @@
 
 /* ─── Prose body ─────────────────────────────────────────────────────────── */
 
-/* Track is full column; measure lives on prose nodes — same split as .pdpp-doc. */
+/* ── The document grid ───────────────────────────────────────────────────────
+ *
+ * One grid owns every horizontal edge in the article. Earlier revisions set
+ * max-width and margin per element — prose here, tables there, hero somewhere
+ * else — and the edges drifted apart: at 1920 the table started at 525, the
+ * prose at 595 and the hero at 703, three ragged edges down one page.
+ *
+ * The grid states the intent once instead. Three named columns:
+ *
+ *   [figure-start] ...bleed... [measure-start] ...text... [measure-end] ...bleed... [figure-end]
+ *
+ * Prose occupies `measure`. Figures that genuinely need more room — wide
+ * tables, diagrams — occupy `figure` and grow symmetrically about the same
+ * centre line, so a table is wider than the prose but still concentric with
+ * it. Nothing needs its own margin: the grid centres the whole stack, so the
+ * measure stays optically centred between the two rails at every viewport.
+ *
+ * This is the pattern Stripe and Cloudflare docs use (a measure column with an
+ * opt-in wide track), and it is why their edges hold steady while scrolling.
+ * The measure grows with the viewport rather than pinning at 600px — a fixed
+ * measure inside a widening column strands the article in the left third of a
+ * 2560 screen — and stays inside the 60-75 character convention at both ends.
+ */
 [data-pdpp-doc-theme] .pdpp-docs-body {
+  display: grid;
+  grid-template-columns:
+    [figure-start] minmax(0, 1fr)
+    [measure-start] min(100%, var(--container-measure)) [measure-end]
+    minmax(0, 1fr) [figure-end];
   width: 100%;
-  max-width: none;
+  max-width: var(--container-figure);
+  margin-inline: auto;
   font-family: var(--font-serif);
 }
 
-/* EVERY block in the article shares one right edge, prose and figures alike.
-   Listing only the prose tags left tables, code blocks and figures free to
-   stretch to the full column: at 1440 they ran 838px against the prose's 600,
-   and at 1920 they ran 1318px, so the right edge lurched in and out as the
-   reader scrolled. Cloudflare's docs, which this layout follows, hold prose
-   and code to the same edge at every width (648/646 at 1440, 784/782 at 1920).
-
-   The measure also GROWS with the viewport rather than pinning at 600px, for
-   the same reason theirs does: a fixed measure inside a widening column leaves
-   the article stranded in the left third of a 1920 screen. It stays inside the
-   60-75 character convention at both ends. */
-[data-pdpp-doc-theme] .pdpp-docs-body > *,
-[data-pdpp-doc-theme] .pdpp-docs-body .pdpp-docs-table-scroll,
-[data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note {
-  max-width: var(--container-measure);
+/* Everything is prose unless it opts out. */
+[data-pdpp-doc-theme] .pdpp-docs-body > * {
+  grid-column: measure;
+  min-width: 0;
 }
 
-/* Diagrams are figures and belong on the same edge as the prose they
-   illustrate. Mermaid renders into a bare centring div with no width of its
-   own, so diagrams ran 838px at 1440 and 1958px at 2560 while the prose held
-   600 - the right edge visibly moved as the reader scrolled past one. The SVG
-   scales down inside the measure rather than the box growing to fit it. */
+/* Tables get a small outset, not the full figure track. Measured on shipped
+   docs sites 2026-08-14: Stripe holds tables at the prose width exactly
+   (797 against 799 at 1440), GitHub likewise (720/720), and MDN — the only one
+   of four that outsets at all — goes just 77px wider. An earlier revision here
+   gave tables the full 860px figure track against 720px prose, a 140px break
+   that is wider than any of them and made the right edge jump as the reader
+   scrolled. The outset is enough to stop three-column tables wrapping every
+   cell to two words, without reading as a different column. */
+[data-pdpp-doc-theme] .pdpp-docs-body > .pdpp-docs-table-scroll {
+  grid-column: measure;
+  width: calc(100% + 2 * var(--table-outset));
+  margin-inline: calc(-1 * var(--table-outset));
+}
+
+/* Mermaid renders into a bare centring div with no width of its own, so
+   diagrams ran 838px at 1440 and 1958px at 2560 while the prose held 600 — the
+   right edge visibly moved as the reader scrolled past one. The SVG scales
+   inside its track rather than the box growing to fit it. */
 [data-pdpp-doc-theme] .pdpp-docs-body svg {
   max-width: 100%;
   height: auto;
 }
 
-/* The article column is wider than the measure, so the measure must be centred
-   in it or the whole document hugs the left rail. Unbalanced it is 296px off
-   at 1440 and 776px at 1920; Cloudflare, which this layout follows, stays
-   within 12px of centre at both. */
-[data-pdpp-doc-theme] .pdpp-docs-body > * {
-  margin-inline: auto;
+/* Scoped to the whole doc surface, not .pdpp-docs-body: the hero is a sibling
+   of the body and reproduces the same measure track, so a bump that lands on
+   only one of them splits the page onto two edges (h1 at 655 against prose at
+   595, measured at 1920 before this moved up). */
+@media (min-width: 1024px) {
+  [data-pdpp-doc-theme] {
+    --table-outset: 40px;
+  }
 }
 
 @media (min-width: 1600px) {
-  [data-pdpp-doc-theme] .pdpp-docs-body {
+  [data-pdpp-doc-theme] {
     --container-measure: 720px;
   }
 }
@@ -525,10 +596,11 @@
   border-radius: 0;
 }
 
+/* Width and placement come from the document grid's `figure` track; this rule
+   only owns the scrollport behaviour for the case where even that is too
+   narrow (many-column tables on small screens). */
 [data-pdpp-doc-theme] .pdpp-docs-table-scroll {
-  width: 100%;
-  max-width: 100%;
-  margin: 24px 0;
+  margin-block: 24px;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
 }
@@ -732,12 +804,28 @@
   }
 }
 
+/* The rail keeps its 1px divider. Without it the wide gutters that pinning
+   both rails to the viewport produces (643px each side at 2560) read as the
+   document having drifted rather than as deliberate structure — there is
+   nothing to say where the nav column ends and the reading column begins.
+   Cloudflare Docs, measured 2026-08-14, does exactly this: a 1px border on the
+   trailing edge of the sidebar and nothing on the TOC side, so the page has
+   one structural line rather than a symmetric frame. */
 [data-pdpp-doc-theme] #nd-sidebar {
   --fd-sidebar-width: var(--spacing-rail);
   font-family: var(--font-sans);
   font-size: 13px;
   background: none;
-  border-right: none;
+  border-right: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-ink) 12%, var(--pdpp-concept-paper));
+}
+
+/* The divider is a property of the two-column reading layout, so it goes when
+   the rail becomes a drawer. */
+@media (max-width: 767.98px) {
+  [data-pdpp-doc-theme] #nd-sidebar {
+    border-right: none;
+  }
 }
 
 [data-pdpp-doc-theme] #nd-sidebar [data-sidebar-placeholder] {

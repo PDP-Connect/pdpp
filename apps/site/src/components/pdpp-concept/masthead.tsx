@@ -83,6 +83,31 @@ export function PdppConceptMasthead() {
   // the nav stays visible regardless of this state.
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const navToggleRef = useRef<HTMLButtonElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
+
+  // The masthead's height is intrinsic — py-5 plus whatever the nav row wraps
+  // to — so nothing downstream can hardcode it. The docs layout needs it as a
+  // sticky offset for the rail and the TOC: fumadocs' own --fd-banner-height
+  // defaulted to 3rem while the real header measured 70px, so both panes sat
+  // correctly at rest and then jumped 22px up the instant the reader scrolled.
+  // Publishing the measured value keeps the offset honest across font loading,
+  // zoom, and the width where the nav row wraps.
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header) {
+      return;
+    }
+    const publish = () => {
+      document.documentElement.style.setProperty(
+        "--pdpp-masthead-height",
+        `${Math.round(header.getBoundingClientRect().height)}px`
+      );
+    };
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(header);
+    return () => observer.disconnect();
+  }, []);
 
   // Following a link closes the disclosure, matching the goal's own behavior
   // (site.js closes any open dropdown before it navigates elsewhere) — without
@@ -129,6 +154,7 @@ export function PdppConceptMasthead() {
       <header
         className={cn("sticky top-0 z-20 bg-background", pathname !== "/" && "border-b")}
         data-slot="pdpp-concept-masthead"
+        ref={headerRef}
       >
         <div
           className={cn(
