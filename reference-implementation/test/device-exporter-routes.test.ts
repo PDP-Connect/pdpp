@@ -1760,6 +1760,8 @@ test("enrollment against an owner-deleted binding fails closed with a typed 409,
       now: new Date().toISOString(),
       ownerSubjectId: ownerRow.owner_subject_id,
       purge: {
+        deleteRecordRejectionsPostgres: async () => 0,
+        deleteRecordRejectionsSqlite: () => 0,
         deleteRecordRowsPostgres: async () => 0,
         deleteRecordRowsSqlite: (id: string) => deleteConnectionRecordRowsSqlite(id),
         enumerateStreams: async (target: { connector_id: string; connector_instance_id: string }) => {

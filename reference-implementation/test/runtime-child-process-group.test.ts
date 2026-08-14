@@ -75,7 +75,14 @@ function startMockRs() {
       if (req.method === "POST" && pathname.startsWith("/v1/ingest/")) {
         const records_accepted = body.split("\n").filter(Boolean).length;
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ records_accepted, records_rejected: 0 }));
+        res.end(
+          JSON.stringify({
+            records_accepted,
+            records_attempted: records_accepted,
+            records_rejected: 0,
+            rejections: [],
+          })
+        );
         resolveIngested();
         return;
       }

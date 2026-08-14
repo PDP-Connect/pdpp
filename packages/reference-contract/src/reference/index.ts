@@ -255,6 +255,65 @@ const ConnectionQuerySchema = {
   type: "object",
 };
 
+const RecordRejectionParamsSchema = {
+  additionalProperties: false,
+  properties: {
+    connectorInstanceId: { minLength: 1, type: "string" },
+    receiptId: { minLength: 1, type: "string" },
+  },
+  required: ["connectorInstanceId", "receiptId"],
+  type: "object",
+};
+
+const RecordRejectionMetadataProperties = {
+  connection_id: { minLength: 1, type: "string" },
+  connector_id: { minLength: 1, type: "string" },
+  created_at: { format: "date-time", type: "string" },
+  first_input_index: { minimum: 0, type: "integer" },
+  last_seen_at: { format: "date-time", type: "string" },
+  latest_input_index: { minimum: 0, type: "integer" },
+  payload_bytes: { minimum: 0, type: "integer" },
+  payload_sha256: { pattern: "^[a-f0-9]{64}$", type: "string" },
+  quota_near_limit: { type: "boolean" },
+  reason_code: { minLength: 1, type: "string" },
+  receipt_id: { minLength: 1, type: "string" },
+  replay_count: { minimum: 0, type: "integer" },
+  run_id: { type: ["string", "null"] },
+  status: { const: "pending" },
+  stream: { minLength: 1, type: "string" },
+};
+
+const RecordRejectionMetadataSchema = {
+  additionalProperties: false,
+  properties: RecordRejectionMetadataProperties,
+  required: Object.keys(RecordRejectionMetadataProperties),
+  type: "object",
+};
+
+const RecordRejectionDetailSchema = {
+  additionalProperties: false,
+  properties: {
+    ...RecordRejectionMetadataProperties,
+    payload_base64: { type: "string" },
+    payload_encoding: { const: "base64" },
+    payload_text: { type: ["string", "null"] },
+  },
+  required: [...Object.keys(RecordRejectionMetadataProperties), "payload_base64", "payload_encoding", "payload_text"],
+  type: "object",
+};
+
+const RecordRejectionListResponseSchema = {
+  additionalProperties: false,
+  properties: {
+    data: { items: RecordRejectionMetadataSchema, type: "array" },
+    has_more: { type: "boolean" },
+    next_cursor: { type: ["string", "null"] },
+    object: { const: "list" },
+  },
+  required: ["object", "data", "has_more", "next_cursor"],
+  type: "object",
+};
+
 const RefConnectionSchema = {
   additionalProperties: true,
   properties: {
@@ -1957,6 +2016,36 @@ export const referenceManifests = [
       "List owner-facing configured connector connections with labels, lifecycle status, binding metadata, and schedules.",
     surface: "reference",
     tags: ["reference", "connections"],
+  },
+  {
+    id: "refListRecordRejections",
+    method: "GET",
+    path: "/_ref/connections/{connectorInstanceId}/record-rejections",
+    request: {
+      params: ConnectorInstanceIdParamSchema,
+      query: {
+        additionalProperties: false,
+        properties: {
+          cursor: { type: "string" },
+          limit: { maximum: 100, minimum: 1, type: "integer" },
+        },
+        type: "object",
+      },
+    },
+    responses: { 200: { schema: RecordRejectionListResponseSchema }, ...CommonErrors },
+    summary: "List metadata for pending durable record rejections on an owner-controlled connection.",
+    surface: "reference",
+    tags: ["reference", "connections", "record-rejections"],
+  },
+  {
+    id: "refGetRecordRejection",
+    method: "GET",
+    path: "/_ref/connections/{connectorInstanceId}/record-rejections/{receiptId}",
+    request: { params: RecordRejectionParamsSchema },
+    responses: { 200: { schema: RecordRejectionDetailSchema }, ...CommonErrors },
+    summary: "Get one retained record-rejection payload after owner and connection authorization.",
+    surface: "reference",
+    tags: ["reference", "connections", "record-rejections"],
   },
   {
     id: "refListConnectorInstances",

@@ -386,6 +386,7 @@ import {
   mountRefProviderAuthInitiate,
   type ProviderAuthExchanger,
 } from "./routes/ref-provider-auth.ts";
+import { mountRefRecordRejections } from "./routes/ref-record-rejections.ts";
 import { mountRefRunStatus } from "./routes/ref-run-status.ts";
 import { mountRefGrants, mountRefRuns, mountRefTraces } from "./routes/ref-spine-correlations.ts";
 import { mountRefGrantTimeline, mountRefRunTimeline, mountRefTraceTimeline } from "./routes/ref-spine-timelines.ts";
@@ -473,6 +474,15 @@ import {
   type PresentationScreenStateStore,
 } from "./stores/presentation-screen-state-store.ts";
 import { resolveProviderAuthRunEnv } from "./stores/provider-auth-run-credentials.ts";
+import {
+  createRecordRejectionStore,
+  deletePostgresRecordRejectionsForConnectionWithClient,
+  deleteSqliteRecordRejectionsForConnectionWithinTransaction,
+  type InsertOrReplayRecordRejectionInput,
+  insertOrReplayHostedRecordRejection,
+  markAcceptedRecordRejectionsStale,
+  type RecordRejectionReceipt,
+} from "./stores/record-rejection-store.ts";
 import {
   createResumableRunHistoryBackfillStage,
   runStartupRunHistoryBackfillToCompletion,
@@ -667,6 +677,7 @@ interface ServerOpts {
   deviceExporterStore?: unknown;
   dynamicClientRegistrationInitialAccessTokens?: readonly string[];
   enableDynamicClientRegistration?: boolean;
+  hostedRecordRejectionAfterInsertBeforeCommit?: (receipt: RecordRejectionReceipt) => Promise<void> | void;
   hybridRetrievalCapability?: unknown;
   hybridRetrievalSupported?: boolean;
   ignoreAmbientPublicUrls?: boolean;
@@ -681,6 +692,7 @@ interface ServerOpts {
   logger?: LoggerLike;
   makePresentationAttachmentId?: (() => string) | null;
   makeStreamingBrowserSessionId?: (() => string) | null;
+  maxRecordRejectionPageSize?: number;
   nativeManifest?: ConnectorManifest | null;
   nekoProxyAllowedHosts?: readonly string[] | null;
   nekoProxyAutoLogin?: boolean;
@@ -1824,6 +1836,10 @@ function createRequestManualUploadArtifactStore() {
   return isPostgresStorageBackend()
     ? createPostgresManualUploadArtifactStore()
     : createSqliteManualUploadArtifactStore();
+}
+
+function createRequestRecordRejectionStore() {
+  return createRecordRejectionStore();
 }
 
 // Lazily loads the pure static-secret injection helpers from the
@@ -4913,6 +4929,13 @@ export function buildAsApp(opts: ServerOpts = {}) {
       createRequestConnectorInstanceStore().deleteConnection(connectorInstanceId, {
         ...(options as Record<string, unknown>),
         purge: {
+          deleteRecordRejectionsPostgres: (client: unknown, id: string, ownerSubjectId: string) =>
+            deletePostgresRecordRejectionsForConnectionWithClient(
+              client as Parameters<typeof deletePostgresRecordRejectionsForConnectionWithClient>[0],
+              { connectorInstanceId: id, ownerSubjectId }
+            ),
+          deleteRecordRejectionsSqlite: (id: string, ownerSubjectId: string) =>
+            deleteSqliteRecordRejectionsForConnectionWithinTransaction({ connectorInstanceId: id, ownerSubjectId }),
           deleteRecordRowsPostgres: (client: unknown, id: string) =>
             deleteConnectionRecordRowsPostgres(client as Parameters<typeof deleteConnectionRecordRowsPostgres>[0], id),
           deleteRecordRowsSqlite: (id: string) => deleteConnectionRecordRowsSqlite(id),
@@ -5100,6 +5123,15 @@ export function buildAsApp(opts: ServerOpts = {}) {
     app,
     refConnectorsContext as unknown as Parameters<typeof mountRefConnectorInstanceDetail>[1]
   );
+  mountRefRecordRejections(app, {
+    createRequestConnectorInstanceStore,
+    createRequestRecordRejectionStore,
+    getOwnerSubjectId,
+    handleError,
+    maxRecordRejectionPageSize: opts.maxRecordRejectionPageSize,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+  } as unknown as Parameters<typeof mountRefRecordRejections>[1]);
   mountRefConnectionSetDisplayName(
     app,
     refConnectorsContext as unknown as Parameters<typeof mountRefConnectionSetDisplayName>[1]
@@ -5740,6 +5772,7 @@ function buildRsApp(opts: ServerOpts = {}) {
       (
         (await createRequestAcquisitionBatchStore().listByConnection(connectorInstanceId, { limit: 1 })) as unknown[]
       )[0] ?? null,
+    getOwnerTokenSubjectId,
     getSyncState,
     handleError,
     ingestRecord: (
@@ -5748,12 +5781,43 @@ function buildRsApp(opts: ServerOpts = {}) {
       options?: { requireConnectionAdmission?: boolean; runId?: string | null }
     ) =>
       ingestRecord(target as Parameters<typeof ingestRecord>[0], record as Parameters<typeof ingestRecord>[1], options),
+    insertOrReplayRecordRejection: async ({
+      code,
+      ...input
+    }: Omit<InsertOrReplayRecordRejectionInput, "reasonCode"> & { code: string }) => {
+      const receipt = await insertOrReplayHostedRecordRejection(
+        {
+          ...input,
+          reasonCode: code,
+        },
+        opts.hostedRecordRejectionAfterInsertBeforeCommit
+          ? { afterInsertOrReplayBeforeCommit: opts.hostedRecordRejectionAfterInsertBeforeCommit }
+          : {}
+      );
+      return {
+        code: receipt.code,
+        input_index: receipt.inputIndex,
+        receipt_id: receipt.receiptId,
+      };
+    },
     // Same cache the mutation routes below already invalidate on every other
     // connection-mutating action (revoke, reactivate, schedule, run, rename,
     // delete). `maybeActivateDraftAfterIngest` (rs-mutation.ts) calls this
     // after a first-ingest activation so the dashboard/Sources/Syncs summary
     // feed reflects draft -> active immediately.
     invalidateConnectorSummariesCache,
+    markAcceptedRecordRejectionsStale: async (input: {
+      auditActorId: string;
+      auditActorType: string;
+      auditTraceId: string | null;
+      connectorId: string;
+      connectorInstanceId: string;
+      ownerSubjectId: string;
+      rawLine: Buffer;
+      recordKey?: string | null;
+      runId?: string | null;
+      stream: string;
+    }) => await markAcceptedRecordRejectionsStale(input),
     markAcquisitionBatchCommitted: (connectorInstanceId: string, counts: unknown) =>
       // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       (
@@ -6241,6 +6305,13 @@ function buildRsApp(opts: ServerOpts = {}) {
       ).deleteConnection?.(connectorInstanceId, {
         ...(options as Record<string, unknown>),
         purge: {
+          deleteRecordRejectionsPostgres: (client: unknown, id: string, ownerSubjectId: string) =>
+            deletePostgresRecordRejectionsForConnectionWithClient(
+              client as Parameters<typeof deletePostgresRecordRejectionsForConnectionWithClient>[0],
+              { connectorInstanceId: id, ownerSubjectId }
+            ),
+          deleteRecordRejectionsSqlite: (id: string, ownerSubjectId: string) =>
+            deleteSqliteRecordRejectionsForConnectionWithinTransaction({ connectorInstanceId: id, ownerSubjectId }),
           deleteRecordRowsPostgres: (client: unknown, id: string) =>
             deleteConnectionRecordRowsPostgres(client as Parameters<typeof deleteConnectionRecordRowsPostgres>[0], id),
           deleteRecordRowsSqlite: (id: string) => deleteConnectionRecordRowsSqlite(id),
@@ -6984,6 +7055,7 @@ export async function startServer(opts: ServerOpts = {}) {
     isNekoProxyTargetApproved: opts.isNekoProxyTargetApproved,
     makePresentationAttachmentId: opts.makePresentationAttachmentId,
     makeStreamingBrowserSessionId: opts.makeStreamingBrowserSessionId,
+    maxRecordRejectionPageSize: opts.maxRecordRejectionPageSize,
     nativeManifest: nativeConfig?.nativeManifest || null,
     nekoProxyAllowedHosts: opts.nekoProxyAllowedHosts,
     nekoProxyAutoLogin: opts.nekoProxyAutoLogin,
@@ -7067,6 +7139,7 @@ export async function startServer(opts: ServerOpts = {}) {
     asPort,
     asPublicUrl,
     controller,
+    hostedRecordRejectionAfterInsertBeforeCommit: opts.hostedRecordRejectionAfterInsertBeforeCommit,
     hybridRetrievalCapability: opts.hybridRetrievalCapability,
     // Hybrid retrieval experimental extension knobs — see search-hybrid.js +
     // the metadata route. Forwarded verbatim so test harnesses and operator

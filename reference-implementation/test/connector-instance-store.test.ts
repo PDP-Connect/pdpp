@@ -24,10 +24,16 @@ import {
   makeDefaultAccountConnectorInstanceId,
   resolveOwnerConnectorInstanceNamespace,
 } from "../server/stores/connector-instance-store.ts";
+import {
+  deleteSqliteRecordRejectionsForConnectionWithinTransaction,
+  insertOrReplaySqliteRecordRejection,
+} from "../server/stores/record-rejection-store.ts";
 
 const TOP_REGEX_0 = /injected record-purge failure/;
 const TOP_REGEX_1 = /injected post-purge cleanup failure/;
+const POST_REJECTION_PURGE_FAILURE = /injected post-rejection-purge failure/;
 const noopDeleteRows = (_id: string) => undefined;
+const noopDeleteRejections = (_id: string, _ownerSubjectId: string) => undefined;
 
 function configuredPostgresUrl(): string {
   const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;
@@ -67,6 +73,12 @@ const teardownConnectionSearchProjection =
 // ../server/stores/connector-instance-store.ts (not exported) — the injected
 // collaborator `deleteConnection` consumes for its record-purge phase.
 interface ConnectorInstanceDeletePurgeLike {
+  deleteRecordRejectionsPostgres: (
+    client: unknown,
+    connectorInstanceId: string,
+    ownerSubjectId: string
+  ) => Promise<number>;
+  deleteRecordRejectionsSqlite: (connectorInstanceId: string, ownerSubjectId: string) => number;
   deleteRecordRowsPostgres: (client: unknown, connectorInstanceId: string) => Promise<number>;
   deleteRecordRowsSqlite: (connectorInstanceId: string) => number;
   enumerateStreams: (storageTarget: { connector_id: string; connector_instance_id: string }) => Promise<{
@@ -87,6 +99,8 @@ interface ConnectorInstanceDeletePurgeLike {
 // this; tests that only exercise the store's schedule/device/row arm can pass a
 // `purge` that stubs out the record phase (see `stubPurge`).
 const realSqlitePurge = {
+  deleteRecordRejectionsSqlite: (id: string, ownerSubjectId: string) =>
+    deleteSqliteRecordRejectionsForConnectionWithinTransaction({ connectorInstanceId: id, ownerSubjectId }),
   deleteRecordRowsSqlite: (id: string) => deleteConnectionRecordRowsSqlite(id),
   enumerateStreams: (storageTarget: { connector_id: string; connector_instance_id: string }) =>
     enumerateConnectionStreams(storageTarget),
@@ -107,11 +121,21 @@ const realSqlitePurge = {
 function stubPurge({
   deletedRecordCount = 0,
   onDeleteRows = noopDeleteRows,
+  onDeleteRejections = noopDeleteRejections,
 }: {
   deletedRecordCount?: number;
+  onDeleteRejections?: (id: string, ownerSubjectId: string) => void;
   onDeleteRows?: (id: string) => void;
 } = {}): ConnectorInstanceDeletePurgeLike {
   return {
+    deleteRecordRejectionsPostgres: (_client: unknown, id: string, ownerSubjectId: string) => {
+      onDeleteRejections(id, ownerSubjectId);
+      return Promise.resolve(0);
+    },
+    deleteRecordRejectionsSqlite: (id: string, ownerSubjectId: string) => {
+      onDeleteRejections(id, ownerSubjectId);
+      return 0;
+    },
     deleteRecordRowsPostgres: (_client: unknown, id: string) => {
       onDeleteRows(id);
       return Promise.resolve(deletedRecordCount);
@@ -1624,6 +1648,12 @@ test("SQLite deleteConnection is all-or-nothing: a record-purge failure rolls ba
           now: LATER,
           ownerSubjectId: "owner_1",
           purge: {
+            deleteRecordRejectionsPostgres: (): Promise<number> => {
+              throw new Error(
+                "unreachable: the SQLite connection-purge path never calls deleteRecordRejectionsPostgres"
+              );
+            },
+            deleteRecordRejectionsSqlite: () => 0,
             // This test's delete path never reaches the Postgres row-delete arm
             // (the SQLite `deleteConnection` implementation calls only
             // `deleteRecordRowsSqlite`) — a throwing stub documents that this
@@ -1675,6 +1705,12 @@ test("SQLite deleteConnection is all-or-nothing: a schedule/device/row failure A
           now: LATER,
           ownerSubjectId: "owner_1",
           purge: {
+            deleteRecordRejectionsPostgres: (): Promise<number> => {
+              throw new Error(
+                "unreachable: the SQLite connection-purge path never calls deleteRecordRejectionsPostgres"
+              );
+            },
+            deleteRecordRejectionsSqlite: realSqlitePurge.deleteRecordRejectionsSqlite,
             // This test's delete path never reaches the Postgres row-delete arm
             // (see the sibling I8 test above for the full rationale).
             deleteRecordRowsPostgres: (): Promise<number> => {
@@ -1708,6 +1744,96 @@ test("SQLite deleteConnection is all-or-nothing: a schedule/device/row failure A
     // The whole transaction rolled back, so the records the purge deleted
     // mid-transaction are restored — no half-deleted connection.
     fixture.assertFullyIntact();
+  } finally {
+    closeDb();
+  }
+});
+
+test("SQLite deleteConnection rolls back record-rejection receipt and quota when a later cascade step fails", async () => {
+  initDb();
+  try {
+    const store = createSqliteConnectorInstanceStore();
+    const fixture = await seedAtomicFixture(store, "cin_atomic");
+    const receipt = insertOrReplaySqliteRecordRejection({
+      connectorId: "reddit",
+      connectorInstanceId: "cin_atomic",
+      inputIndex: 0,
+      ownerSubjectId: "owner_1",
+      rawLine: '{"id":"bad"}',
+      reasonCode: "invalid_record_identity",
+      stream: "s",
+    });
+    const quotaBytes = () =>
+      (
+        getDb()
+          .prepare("SELECT pending_payload_bytes FROM record_rejection_quota WHERE owner_subject_id=?")
+          .get("owner_1") as { pending_payload_bytes: number }
+      ).pending_payload_bytes;
+
+    assert.equal(quotaBytes(), Buffer.byteLength('{"id":"bad"}', "utf8"), "rejection quota seeded");
+
+    let rejectionPurgeRan = false;
+    await assert.rejects(
+      () =>
+        store.deleteConnection("cin_atomic", {
+          now: LATER,
+          ownerSubjectId: "owner_1",
+          purge: {
+            deleteRecordRejectionsPostgres: (): Promise<number> => {
+              throw new Error(
+                "unreachable: the SQLite connection-purge path never calls deleteRecordRejectionsPostgres"
+              );
+            },
+            deleteRecordRejectionsSqlite: (id: string, ownerSubjectId: string): number => {
+              const deleted = deleteSqliteRecordRejectionsForConnectionWithinTransaction({
+                connectorInstanceId: id,
+                ownerSubjectId,
+              });
+              rejectionPurgeRan = true;
+              assert.equal(deleted, 1, "rejection receipt deleted mid-transaction");
+              assert.equal(quotaBytes(), 0, "rejection quota released mid-transaction");
+              throw new Error("injected post-rejection-purge failure");
+            },
+            deleteRecordRowsPostgres: (): Promise<number> => {
+              throw new Error("unreachable: the SQLite connection-purge path never calls deleteRecordRowsPostgres");
+            },
+            deleteRecordRowsSqlite: (id: string): number => deleteConnectionRecordRowsSqlite(id),
+            enumerateStreams: realSqlitePurge.enumerateStreams,
+            teardownProjection: realSqlitePurge.teardownProjection,
+          },
+        }),
+      POST_REJECTION_PURGE_FAILURE
+    );
+
+    assert.equal(rejectionPurgeRan, true, "the rejection purge DID run before the failure");
+    fixture.assertFullyIntact();
+    assert.equal(quotaBytes(), Buffer.byteLength('{"id":"bad"}', "utf8"), "rejection quota restored after rollback");
+    assert.ok(
+      getDb().prepare("SELECT receipt_id FROM record_rejections WHERE receipt_id=?").get(receipt.receiptId),
+      "rejection receipt restored after rollback"
+    );
+
+    await store.deleteConnection("cin_atomic", {
+      now: LATER,
+      ownerSubjectId: "owner_1",
+      purge: {
+        deleteRecordRejectionsPostgres: (): Promise<number> => {
+          throw new Error("unreachable: the SQLite connection-purge path never calls deleteRecordRejectionsPostgres");
+        },
+        deleteRecordRejectionsSqlite: realSqlitePurge.deleteRecordRejectionsSqlite,
+        deleteRecordRowsPostgres: (): Promise<number> => {
+          throw new Error("unreachable: the SQLite connection-purge path never calls deleteRecordRowsPostgres");
+        },
+        deleteRecordRowsSqlite: (id: string): number => deleteConnectionRecordRowsSqlite(id),
+        enumerateStreams: realSqlitePurge.enumerateStreams,
+        teardownProjection: realSqlitePurge.teardownProjection,
+      },
+    });
+    const remainingRejections = getDb()
+      .prepare("SELECT COUNT(*) n FROM record_rejections WHERE connector_instance_id=?")
+      .get("cin_atomic") as { n: number };
+    assert.equal(remainingRejections.n, 0, "normal delete removes rejection receipts");
+    assert.equal(quotaBytes(), 0, "normal delete releases rejection quota");
   } finally {
     closeDb();
   }

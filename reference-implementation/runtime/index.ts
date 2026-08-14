@@ -138,9 +138,10 @@ interface AvailableBindings {
   network: Record<string, never>;
 }
 
-/** RS ingest response, after `readIngestResponse` proves the two counters. */
+/** RS ingest response, after `readIngestResponse` proves the counters and receipt vector. */
 interface IngestResult {
   records_accepted: number;
+  records_attempted: number;
   records_rejected: number;
 }
 
@@ -533,7 +534,11 @@ export interface RuntimeRunConnectorResult {
   failure_origin?: RuntimeFailureOrigin;
   known_gaps?: Record<string, unknown>[] | null;
   message?: string;
+  records_accepted?: number;
+  records_attempted?: number;
   records_emitted?: number;
+  records_permanently_rejected?: number;
+  records_unresolved_retryable?: number;
   reported_records_emitted?: number | null;
   run_id?: string | null;
   state?: unknown;
@@ -2510,7 +2515,9 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // a stream that emitted nothing still appears as an honest `collected: 0`
   // (absence of records is a fact, not a missing entry).
   const emittedByStream = new Map<string, number>(startScope.streams.map((streamScope) => [streamScope.name, 0]));
-  let totalFlushed = 0;
+  let recordsAttempted = 0;
+  let recordsAccepted = 0;
+  let recordsPermanentlyRejected = 0;
   let finalStatus: RuntimeRunConnectorResult["status"] = "failed";
   let pendingInteraction: ConnectorMessage | null = null;
   let terminalEventRecorded = false;
@@ -2550,6 +2557,20 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
 
   function countBufferedRecords(): number {
     return Object.values(recordBatch).reduce((sum, batch) => sum + (batch?.length || 0), 0);
+  }
+
+  function recordsUnresolvedRetryable(): number {
+    return Math.max(0, recordsAttempted - recordsAccepted - recordsPermanentlyRejected);
+  }
+
+  function buildIngestAccountingFields(): Record<string, number> {
+    return {
+      records_accepted: recordsAccepted,
+      records_attempted: recordsAttempted,
+      records_flushed: recordsAccepted,
+      records_permanently_rejected: recordsPermanentlyRejected,
+      records_unresolved_retryable: recordsUnresolvedRetryable(),
+    };
   }
 
   function countStagedStateStreams() {
@@ -2839,7 +2860,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       grant_id: grantId,
       persist_state: persistState,
       records_emitted: recordsEmitted,
-      records_flushed: totalFlushed,
+      ...buildIngestAccountingFields(),
       source: runSource,
       state_streams_committed: stateStreamsCommitted,
       state_streams_staged: stateStreamsStaged,
@@ -2879,7 +2900,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       buffered_records_dropped: countBufferedRecords(),
       commit_status: checkpointCommitStatus(),
       mode: "checkpointed_streaming",
-      records_flushed: totalFlushed,
+      ...buildIngestAccountingFields(),
       state_streams_committed: stateStreamsCommitted,
       state_streams_staged: stateStreamsStaged,
     };
@@ -3003,6 +3024,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       ingestUrl.searchParams.set("connector_instance_id", connectorInstanceEnv.PDPP_CONNECTOR_INSTANCE_ID);
     }
     ingestUrl.searchParams.set("run_id", runId);
+    recordsAttempted += batch.length;
     const resp = await fetch(ingestUrl.toString(), {
       body: ndjson,
       headers: {
@@ -3032,7 +3054,8 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       }
       throw err;
     }
-    totalFlushed += batch.length;
+    recordsAccepted += result.records_accepted;
+    recordsPermanentlyRejected += result.records_rejected;
     await emitSpineEventTracked({
       actor_id: connectorId,
       actor_type: "runtime",
@@ -3040,9 +3063,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         batch_size: batch.length,
         grant_id: grantId,
         records_accepted: result.records_accepted,
+        records_attempted: result.records_attempted,
+        records_flushed: result.records_accepted,
+        records_permanently_rejected: result.records_rejected,
         records_rejected: result.records_rejected,
         source: runSource,
-        total_records_flushed: totalFlushed,
+        total_records_flushed: recordsAccepted,
       },
       event_type: "run.batch_ingested",
       object_id: runId,
@@ -3053,7 +3079,17 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       stream_id: stream,
       trace_id: traceContext.trace_id,
     });
-    onProgress({ accepted: result.records_accepted, rejected: result.records_rejected, stream, type: "ingest" });
+    onProgress({
+      accepted: result.records_accepted,
+      attempted: result.records_attempted,
+      records_accepted: result.records_accepted,
+      records_attempted: result.records_attempted,
+      records_permanently_rejected: result.records_rejected,
+      rejected: result.records_rejected,
+      stream,
+      total_records_flushed: recordsAccepted,
+      type: "ingest",
+    });
     recordBatch[stream] = [];
   }
 
@@ -4672,6 +4708,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         })),
         exit_code: code,
         known_gaps: buildKnownGapsForTerminal(resolution.reason, doneMessage?.error || null),
+        ...buildIngestAccountingFields(),
         records_emitted: totalEmitted,
         run_id: runId,
         state: newState,

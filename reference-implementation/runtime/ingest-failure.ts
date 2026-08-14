@@ -19,6 +19,19 @@ interface IngestHttpFailureError extends Error {
 
 type BuildHttpFailureFn = (message: string, status: number, bodyText: string) => IngestHttpFailureError;
 
+export interface IngestRejectionReceipt {
+  code: string;
+  input_index: number;
+  receipt_id: string;
+}
+
+export interface IngestResult {
+  records_accepted: number;
+  records_attempted: number;
+  records_rejected: number;
+  rejections: IngestRejectionReceipt[];
+}
+
 interface BuildHttpFailureDeps {
   buildHttpFailure: BuildHttpFailureFn;
 }
@@ -114,7 +127,7 @@ export async function readIngestResponse(
   stream: string,
   batchSize: number,
   { buildHttpFailure }: BuildHttpFailureDeps
-): Promise<{ records_accepted: number; records_rejected: number }> {
+): Promise<IngestResult> {
   const contentType = resp.headers.get("content-type");
   const bodyText = await resp.text();
   if (!resp.ok) {
@@ -138,16 +151,12 @@ export async function readIngestResponse(
     });
   }
 
-  if (
-    !result ||
-    typeof result !== "object" ||
-    !Number.isFinite((result as Record<string, unknown>).records_accepted) ||
-    !Number.isFinite((result as Record<string, unknown>).records_rejected)
-  ) {
+  const validationError = validateIngestResponseContract(result, batchSize);
+  if (validationError) {
     throw buildInvalidIngestResponseFailure({
       batchSize,
       bodyText,
-      cause: "expected numeric records_accepted and records_rejected",
+      cause: validationError,
       contentType,
       phase: "validate_response",
       status: resp.status,
@@ -155,5 +164,103 @@ export async function readIngestResponse(
     });
   }
 
-  return result as { records_accepted: number; records_rejected: number };
+  return result as IngestResult;
+}
+
+function validateIngestResponseContract(result: unknown, batchSize: number): string | null {
+  if (!result || typeof result !== "object") {
+    return "expected JSON object ingest response";
+  }
+
+  const record = result as Record<string, unknown>;
+  return validateIngestCounts(record, batchSize) || validateRejectionEnvelope(record, batchSize);
+}
+
+function validateIngestCounts(record: Record<string, unknown>, batchSize: number): string | null {
+  const recordsAttempted = record.records_attempted;
+  const recordsAccepted = record.records_accepted;
+  const recordsRejected = record.records_rejected;
+  if (
+    !(
+      isNonnegativeInteger(recordsAttempted) &&
+      isNonnegativeInteger(recordsAccepted) &&
+      isNonnegativeInteger(recordsRejected)
+    )
+  ) {
+    return "expected integer nonnegative records_attempted, records_accepted, and records_rejected";
+  }
+
+  if (recordsAttempted !== batchSize) {
+    return "records_attempted must equal submitted batch size";
+  }
+  if (recordsAttempted !== recordsAccepted + recordsRejected) {
+    return "records_attempted must equal records_accepted plus records_rejected";
+  }
+
+  return null;
+}
+
+function validateRejectionEnvelope(record: Record<string, unknown>, batchSize: number): string | null {
+  const recordsRejected = record.records_rejected;
+  if (!isNonnegativeInteger(recordsRejected)) {
+    return "expected integer nonnegative records_rejected";
+  }
+
+  if (!Array.isArray(record.rejections)) {
+    return "expected rejections array";
+  }
+  if (record.rejections.length !== recordsRejected) {
+    return "rejections length must equal records_rejected";
+  }
+
+  return validateRejectionVector(record.rejections, batchSize);
+}
+
+function validateRejectionVector(rejections: unknown[], batchSize: number): string | null {
+  const indexes = new Set<number>();
+  for (const rejection of rejections) {
+    const error = validateRejectionEntry(rejection, indexes, batchSize);
+    if (error) {
+      return error;
+    }
+  }
+
+  return null;
+}
+
+function validateRejectionEntry(rejection: unknown, indexes: Set<number>, batchSize: number): string | null {
+  if (!rejection || typeof rejection !== "object") {
+    return "expected rejection entries to be objects";
+  }
+  const entry = rejection as Record<string, unknown>;
+  return validateRejectionIndex(entry.input_index, indexes, batchSize) || validateRejectionReceiptFields(entry);
+}
+
+function validateRejectionIndex(inputIndex: unknown, indexes: Set<number>, batchSize: number): string | null {
+  if (!isNonnegativeInteger(inputIndex) || inputIndex >= batchSize) {
+    return "rejection input_index must be an integer inside the submitted batch";
+  }
+  if (indexes.has(inputIndex)) {
+    return "rejection input_index values must be unique";
+  }
+  indexes.add(inputIndex);
+  return null;
+}
+
+function validateRejectionReceiptFields(entry: Record<string, unknown>): string | null {
+  if (!isNonemptyString(entry.receipt_id)) {
+    return "rejection receipt_id must be a nonempty opaque string";
+  }
+  if (!isNonemptyString(entry.code)) {
+    return "rejection code must be a nonempty typed string";
+  }
+  return null;
+}
+
+function isNonnegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isNonemptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }

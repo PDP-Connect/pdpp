@@ -2105,7 +2105,7 @@ rl.on('line', (line) => {
       const url = new URL(req.url ?? "/", "http://localhost");
       if (req.method === "POST" && url.pathname.startsWith("/v1/ingest/")) {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+        res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
         return;
       }
 
@@ -2367,7 +2367,7 @@ rl.on('line', (line) => {
         const url = new URL(req.url ?? "/", "http://localhost");
         if (req.method === "POST" && url.pathname === "/v1/ingest/top_artists") {
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+          res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
           return;
         }
 

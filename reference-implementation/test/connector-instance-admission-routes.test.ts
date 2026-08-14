@@ -17,7 +17,7 @@ const REFERENCE_IMPL_DIR = join(__dirname, "..");
 const NOW = "2026-05-18T12:00:00.000Z";
 
 interface ErrorBody {
-  error: { code: string };
+  error: { code: string; message?: string };
 }
 
 interface StateBody {
@@ -397,7 +397,7 @@ test("owner-auth ingest route stores same record key under explicit connector in
   }
 });
 
-test("owner-auth ingest reports a post-resolution revoke as a 200 rejected line", async () => {
+test("owner-auth ingest fails systemically when a post-resolution revoke prevents a durable rejection receipt", async () => {
   const server = (await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 })) as TestServer;
   let releaseWriter: (() => void) | undefined;
   try {
@@ -423,7 +423,7 @@ test("owner-auth ingest reports a post-resolution revoke as a 200 rejected line"
       });
     });
 
-    const ingest = fetchJson<IngestBody>(
+    const ingest = fetchJson<ErrorBody>(
       `${rsUrl}/v1/ingest/top_artists?connector_id=${encodeURIComponent(connectorId)}&connector_instance_id=${connectorInstanceId}`,
       {
         body: `${JSON.stringify({ data: { id: "artist_revoked_race", name: "revoked race" }, key: "artist_revoked_race" })}\n`,
@@ -452,13 +452,10 @@ test("owner-auth ingest reports a post-resolution revoke as a 200 rejected line"
     releaseWriter();
 
     const response = await ingest;
-    assert.equal(response.status, 200);
-    assert.ok(response.body, "expected the batch rejection envelope");
-    assert.equal(response.body.records_accepted, 0);
-    assert.equal(response.body.records_rejected, 1);
-    assert.deepEqual(response.body.errors, [
-      `Connector instance '${connectorInstanceId}' is revoked; it may have been revoked concurrently with this write.`,
-    ]);
+    assert.equal(response.status, 503);
+    assert.ok(response.body, "expected the fail-closed systemic error");
+    assert.equal(response.body.error.code, "ingest_batch_storage_error");
+    assert.equal(response.body.error.message, "Ingest failed due to a transient storage error; retry later.");
   } finally {
     releaseWriter?.();
     recordsModule.__setAdmissionPreCheckPhaseHookForTest(null);

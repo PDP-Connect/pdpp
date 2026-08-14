@@ -382,7 +382,14 @@ test("runConnector: many large records with slow ingest do not trigger connector
       const records_accepted = body.split("\n").filter(Boolean).length;
       setTimeout(() => {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ records_accepted, records_rejected: 0 }));
+        res.end(
+          JSON.stringify({
+            records_accepted,
+            records_attempted: records_accepted,
+            records_rejected: 0,
+            rejections: [],
+          })
+        );
       }, INGEST_DELAY_MS);
     });
   });

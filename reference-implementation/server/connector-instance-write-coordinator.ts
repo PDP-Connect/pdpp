@@ -110,7 +110,7 @@ function queueLimit(): number {
   return configuredPositiveInteger("PDPP_INGEST_ADMISSION_QUEUE_LIMIT", DEFAULT_QUEUE_LIMIT);
 }
 
-function lockWaitMs(): number {
+export function connectorInstanceLockWaitMs(): number {
   return configuredPositiveInteger("PDPP_INGEST_LOCK_WAIT_MS", DEFAULT_LOCK_WAIT_MS);
 }
 
@@ -131,7 +131,7 @@ function boundedWait(waiters: Waiter[]): Promise<void> {
     const timer = setTimeout(() => {
       removeWaiter(waiters, waiter);
       reject(new ConnectorInstanceAdmissionError());
-    }, lockWaitMs());
+    }, connectorInstanceLockWaitMs());
     waiter = { reject, resolve, timer };
     waiters.push(waiter);
   });
@@ -185,7 +185,7 @@ function releaseKey(connectorInstanceId: string, gate: KeyedGate): void {
   }
 }
 
-function advisoryKey(connectorInstanceId: string): string {
+export function connectorInstanceAdvisoryLockKey(connectorInstanceId: string): string {
   const bytes = createHash("sha256")
     .update("pdpp:connector-instance-write:v1:\u0000")
     .update(connectorInstanceId)
@@ -249,8 +249,10 @@ function withDeadline<T>(promise: Promise<T>, timeoutMs: number, onLateResult: (
 
 async function boundedConnect(): Promise<ManagedPostgresLockClient> {
   const pool = postgresLockPoolForTest?.pool ?? getPostgresLockPool();
-  const client = await withDeadline(pool.connect() as Promise<PostgresLockClient>, lockWaitMs(), (lateClient) =>
-    manageClient(lateClient).dispose(true)
+  const client = await withDeadline(
+    pool.connect() as Promise<PostgresLockClient>,
+    connectorInstanceLockWaitMs(),
+    (lateClient) => manageClient(lateClient).dispose(true)
   );
   return manageClient(client);
 }
@@ -272,8 +274,8 @@ async function boundedQuery<T>(
 
 async function acquirePostgresAdvisoryLock(connectorInstanceId: string) {
   const managed = await boundedConnect();
-  const key = advisoryKey(connectorInstanceId);
-  const deadline = performance.now() + lockWaitMs();
+  const key = connectorInstanceAdvisoryLockKey(connectorInstanceId);
+  const deadline = performance.now() + connectorInstanceLockWaitMs();
   try {
     while (performance.now() < deadline) {
       // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.

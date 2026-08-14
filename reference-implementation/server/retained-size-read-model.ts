@@ -23,9 +23,11 @@ type RetainedSizeMeasure =
   | "current_record_json_bytes"
   | "record_history_json_bytes"
   | "blob_bytes"
+  | "record_rejection_payload_bytes"
   | "record_count"
   | "record_history_count"
-  | "blob_count";
+  | "blob_count"
+  | "record_rejection_count";
 type RetainedSizeNumericMeasure = Exclude<RetainedSizeMeasure, "total_retained_bytes">;
 type ProjectionError = Error & { code?: string };
 
@@ -57,6 +59,8 @@ interface RetainedSizeDelta {
   recordCountDelta?: number | null;
   recordHistoryCountDelta?: number | null;
   recordHistoryJsonBytesDelta?: number | null;
+  recordRejectionCountDelta?: number | null;
+  recordRejectionPayloadBytesDelta?: number | null;
   stream?: string | null;
 }
 
@@ -69,6 +73,8 @@ interface NormalizedRetainedSizeDelta {
   record_count_delta: number;
   record_history_count_delta: number;
   record_history_json_bytes_delta: number;
+  record_rejection_count_delta: number;
+  record_rejection_payload_bytes_delta: number;
   stream: string | null;
 }
 
@@ -117,9 +123,11 @@ type DeltaField =
   | "current_record_json_bytes_delta"
   | "record_history_json_bytes_delta"
   | "blob_bytes_delta"
+  | "record_rejection_payload_bytes_delta"
   | "record_count_delta"
   | "record_history_count_delta"
-  | "blob_count_delta";
+  | "blob_count_delta"
+  | "record_rejection_count_delta";
 
 const GLOBAL_KEY = "global";
 // Bound the top-N response. Bigger limits invite cardinality blow-ups and
@@ -135,17 +143,21 @@ const VALID_TOP_MEASURES = new Set<RetainedSizeMeasure>([
   "current_record_json_bytes",
   "record_history_json_bytes",
   "blob_bytes",
+  "record_rejection_payload_bytes",
   "record_count",
   "record_history_count",
   "blob_count",
+  "record_rejection_count",
 ]);
 const RETAINED_SIZE_MEASURE_FIELDS: readonly RetainedSizeNumericMeasure[] = [
   "current_record_json_bytes",
   "record_history_json_bytes",
   "blob_bytes",
+  "record_rejection_payload_bytes",
   "record_count",
   "record_history_count",
   "blob_count",
+  "record_rejection_count",
 ];
 const STREAM_FILTER_FIELDS: readonly (readonly [keyof StreamFilter, string])[] = [
   ["connectorInstanceId", "connector_instance_id"],
@@ -161,9 +173,11 @@ const RETAINED_SIZE_DELTA_FIELDS: readonly (readonly [keyof RetainedSizeDelta, D
   ["currentRecordJsonBytesDelta", "current_record_json_bytes_delta"],
   ["recordHistoryJsonBytesDelta", "record_history_json_bytes_delta"],
   ["blobBytesDelta", "blob_bytes_delta"],
+  ["recordRejectionPayloadBytesDelta", "record_rejection_payload_bytes_delta"],
   ["recordCountDelta", "record_count_delta"],
   ["recordHistoryCountDelta", "record_history_count_delta"],
   ["blobCountDelta", "blob_count_delta"],
+  ["recordRejectionCountDelta", "record_rejection_count_delta"],
 ];
 
 function nowIso(): string {
@@ -198,6 +212,8 @@ function emptyMeasures(): RetainedSizeMeasures {
     record_count: 0,
     record_history_count: 0,
     record_history_json_bytes: 0,
+    record_rejection_count: 0,
+    record_rejection_payload_bytes: 0,
   };
 }
 
@@ -237,7 +253,10 @@ function filterValues(filters: readonly SqlFilter[]): string[] {
 
 function totalBytesFromMeasures(m: RetainedSizeMeasures): number {
   return (
-    Number(m.current_record_json_bytes || 0) + Number(m.record_history_json_bytes || 0) + Number(m.blob_bytes || 0)
+    Number(m.current_record_json_bytes || 0) +
+    Number(m.record_history_json_bytes || 0) +
+    Number(m.blob_bytes || 0) +
+    Number(m.record_rejection_payload_bytes || 0)
   );
 }
 
@@ -265,7 +284,8 @@ function createRetainedSizePostgresStore() {
     async getGlobalRow() {
       const result = await postgresQuery(
         `SELECT current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+                record_count, record_history_count, blob_count, record_rejection_count,
                 dirty, computed_at, metadata_json
            FROM retained_size_global
           WHERE projection_key = $1`,
@@ -283,7 +303,8 @@ function createRetainedSizePostgresStore() {
       const result = await postgresQuery(
         `SELECT connector_instance_id, connector_id,
                 current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+                record_count, record_history_count, blob_count, record_rejection_count,
                 dirty, computed_at
            FROM retained_size_connection
            ${where}
@@ -302,7 +323,8 @@ function createRetainedSizePostgresStore() {
       const result = await postgresQuery(
         `SELECT connector_instance_id, connector_id, stream, record_family,
                 current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+                record_count, record_history_count, blob_count, record_rejection_count,
                 dirty, computed_at
            FROM retained_size_record_family
            ${where}
@@ -318,7 +340,8 @@ function createRetainedSizePostgresStore() {
       const result = await postgresQuery(
         `SELECT connector_instance_id, connector_id, stream,
                 current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+                record_count, record_history_count, blob_count, record_rejection_count,
                 dirty, computed_at
            FROM retained_size_stream
            ${where}
@@ -332,7 +355,8 @@ function createRetainedSizePostgresStore() {
         `SELECT scope, measure, rank, grain_key,
                 connector_instance_id, connector_id, stream, record_key, blob_id,
                 current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                total_retained_bytes, record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+                total_retained_bytes, record_count, record_history_count, blob_count, record_rejection_count,
                 dirty, computed_at, metadata_json
            FROM retained_size_top_rows
           WHERE scope = $1 AND measure = $2
@@ -407,7 +431,8 @@ function createRetainedSizeSqliteStore() {
       return getDb()
         .prepare(
           `SELECT current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                  record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+                  record_count, record_history_count, blob_count, record_rejection_count,
                   dirty, computed_at, metadata_json
              FROM retained_size_global
             WHERE projection_key = ?`
@@ -421,7 +446,8 @@ function createRetainedSizeSqliteStore() {
             .prepare(
               `SELECT connector_instance_id, connector_id,
                     current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                    record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+                    record_count, record_history_count, blob_count, record_rejection_count,
                     dirty, computed_at
                FROM retained_size_connection
               WHERE connector_instance_id = ?
@@ -432,7 +458,8 @@ function createRetainedSizeSqliteStore() {
             .prepare(
               `SELECT connector_instance_id, connector_id,
                     current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                    record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+                    record_count, record_history_count, blob_count, record_rejection_count,
                     dirty, computed_at
                FROM retained_size_connection
               ORDER BY connector_instance_id ASC`
@@ -443,7 +470,8 @@ function createRetainedSizeSqliteStore() {
       const db = getDb();
       let sql = `SELECT connector_instance_id, connector_id, stream, record_family,
                         current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                        record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+                        record_count, record_history_count, blob_count, record_rejection_count,
                         dirty, computed_at
                    FROM retained_size_record_family`;
       const filters = collectOptionalFilters(
@@ -459,7 +487,8 @@ function createRetainedSizeSqliteStore() {
       const db = getDb();
       let sql = `SELECT connector_instance_id, connector_id, stream,
                         current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                        record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+                        record_count, record_history_count, blob_count, record_rejection_count,
                         dirty, computed_at
                  FROM retained_size_stream`;
       const filters = collectOptionalFilters({ connectorId, connectorInstanceId, stream }, STREAM_FILTER_FIELDS);
@@ -474,7 +503,8 @@ function createRetainedSizeSqliteStore() {
           `SELECT scope, measure, rank, grain_key,
                   connector_instance_id, connector_id, stream, record_key, blob_id,
                   current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                  total_retained_bytes, record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+                  total_retained_bytes, record_count, record_history_count, blob_count, record_rejection_count,
                   dirty, computed_at, metadata_json
              FROM retained_size_top_rows
             WHERE scope = ? AND measure = ?
@@ -617,7 +647,8 @@ export async function listRetainedSizeConnectionsByInstanceIds(connectorInstance
     const result = await postgresQuery<RetainedSizeRow>(
       `SELECT connector_instance_id, connector_id,
               current_record_json_bytes, record_history_json_bytes, blob_bytes,
-              record_count, record_history_count, blob_count, dirty, computed_at
+                record_rejection_payload_bytes,
+              record_count, record_history_count, blob_count, record_rejection_count, dirty, computed_at
          FROM retained_size_connection
         WHERE connector_instance_id = ANY($1::text[])
         ORDER BY connector_instance_id ASC`,
@@ -632,7 +663,8 @@ export async function listRetainedSizeConnectionsByInstanceIds(connectorInstance
           .prepare(
             `SELECT connector_instance_id, connector_id,
                     current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                    record_count, record_history_count, blob_count, dirty, computed_at
+                record_rejection_payload_bytes,
+                    record_count, record_history_count, blob_count, record_rejection_count, dirty, computed_at
                FROM retained_size_connection
               WHERE connector_instance_id IN (${chunk.map(() => "?").join(", ")})
               ORDER BY connector_instance_id ASC`
@@ -667,41 +699,52 @@ export async function listRetainedSizeStreams({ connectorInstanceId, connectorId
   return (rows as RetainedSizeRow[]).map(shapeStreamRow);
 }
 
+/**
+ * Dual-backend row fetch for the stream grain, keyed by exact instance id
+ * (same shape as listRetainedSizeConnectionsByInstanceIds's fetch, one
+ * column wider). Callers own id dedup, the empty guard, and grouping.
+ */
+async function fetchRetainedSizeStreamRowsByInstanceIds(ids: readonly string[]): Promise<RetainedSizeRow[]> {
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery<RetainedSizeRow>(
+      `SELECT connector_instance_id, connector_id, stream,
+              current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                record_rejection_payload_bytes,
+              record_count, record_history_count, blob_count, record_rejection_count, dirty, computed_at
+         FROM retained_size_stream
+        WHERE connector_instance_id = ANY($1::text[])
+        ORDER BY connector_instance_id ASC, stream ASC`,
+      [ids]
+    );
+    return result.rows;
+  }
+  const rows: RetainedSizeRow[] = [];
+  for (let start = 0; start < ids.length; start += SQLITE_INSTANCE_ID_CHUNK_SIZE) {
+    const chunk = ids.slice(start, start + SQLITE_INSTANCE_ID_CHUNK_SIZE);
+    rows.push(
+      ...(getDb()
+        .prepare(
+          `SELECT connector_instance_id, connector_id, stream,
+                  current_record_json_bytes, record_history_json_bytes, blob_bytes,
+                record_rejection_payload_bytes,
+                  record_count, record_history_count, blob_count, record_rejection_count, dirty, computed_at
+             FROM retained_size_stream
+            WHERE connector_instance_id IN (${chunk.map(() => "?").join(", ")})
+            ORDER BY connector_instance_id ASC, stream ASC`
+        )
+        .all(...chunk) as RetainedSizeRow[])
+    );
+  }
+  return rows;
+}
+
 /** Page-scoped retained stream facts, grouped by exact instance id. */
 export async function listRetainedSizeStreamsByInstanceIds(connectorInstanceIds: readonly string[]) {
   const ids = [...new Set(connectorInstanceIds.filter((id) => typeof id === "string" && id.length > 0))];
   if (ids.length === 0) {
     return new Map<string, ReturnType<typeof shapeStreamRow>[]>();
   }
-  const rows: RetainedSizeRow[] = [];
-  if (isPostgresStorageBackend()) {
-    const result = await postgresQuery<RetainedSizeRow>(
-      `SELECT connector_instance_id, connector_id, stream,
-              current_record_json_bytes, record_history_json_bytes, blob_bytes,
-              record_count, record_history_count, blob_count, dirty, computed_at
-         FROM retained_size_stream
-        WHERE connector_instance_id = ANY($1::text[])
-        ORDER BY connector_instance_id ASC, stream ASC`,
-      [ids]
-    );
-    rows.push(...result.rows);
-  } else {
-    for (let start = 0; start < ids.length; start += SQLITE_INSTANCE_ID_CHUNK_SIZE) {
-      const chunk = ids.slice(start, start + SQLITE_INSTANCE_ID_CHUNK_SIZE);
-      rows.push(
-        ...(getDb()
-          .prepare(
-            `SELECT connector_instance_id, connector_id, stream,
-                    current_record_json_bytes, record_history_json_bytes, blob_bytes,
-                    record_count, record_history_count, blob_count, dirty, computed_at
-               FROM retained_size_stream
-              WHERE connector_instance_id IN (${chunk.map(() => "?").join(", ")})
-              ORDER BY connector_instance_id ASC, stream ASC`
-          )
-          .all(...chunk) as RetainedSizeRow[])
-      );
-    }
-  }
+  const rows = await fetchRetainedSizeStreamRowsByInstanceIds(ids);
   const result = new Map<string, ReturnType<typeof shapeStreamRow>[]>();
   for (const row of rows) {
     const shaped = shapeStreamRow(row);
@@ -857,6 +900,38 @@ export async function applyRetainedSizeBlobDelta(delta: RetainedSizeDelta): Prom
   }
 }
 
+export async function applyRetainedSizeRecordRejectionDelta(delta: RetainedSizeDelta): Promise<void> {
+  try {
+    if (isPostgresStorageBackend()) {
+      await applyRecordRejectionDeltaPostgres(delta);
+      return;
+    }
+    applyRecordRejectionDeltaSqlite(delta);
+  } catch (err) {
+    await markRetainedSizeDirty(`retained-size rejection delta failed: ${sanitizeProjectionError(err)}`);
+  }
+}
+
+function applyRecordRejectionDeltaSqlite(delta: RetainedSizeDelta): void {
+  const computedAt = nowIso();
+  getDb().transaction(() => {
+    upsertStreamRowSqlite(delta, computedAt);
+    upsertConnectionRowSqlite(delta, computedAt);
+    applyGlobalDeltaSqlite(delta, computedAt);
+    markTopRowsDirtySqlite(getDb(), "record rejection delta changed retained-size ordering", computedAt);
+  })();
+}
+
+async function applyRecordRejectionDeltaPostgres(delta: RetainedSizeDelta): Promise<void> {
+  const computedAt = nowIso();
+  await withPostgresTransaction(async (client: PoolClient) => {
+    await upsertStreamRowPostgres(client, delta, computedAt);
+    await upsertConnectionRowPostgres(client, delta, computedAt);
+    await applyGlobalDeltaPostgres(client, delta, computedAt);
+    await markTopRowsDirtyPostgres(client, "record rejection delta changed retained-size ordering", computedAt);
+  });
+}
+
 function applyRecordDeltaSqlite(delta: RetainedSizeDelta): void {
   const db = getDb();
   const computedAt = nowIso();
@@ -909,6 +984,8 @@ function normalizedDelta(delta: RetainedSizeDelta): NormalizedRetainedSizeDelta 
     record_count_delta: 0,
     record_history_count_delta: 0,
     record_history_json_bytes_delta: 0,
+    record_rejection_count_delta: 0,
+    record_rejection_payload_bytes_delta: 0,
     stream: delta.stream || null,
   };
   for (const [inputName, fieldName] of RETAINED_SIZE_DELTA_FIELDS) {
@@ -927,17 +1004,20 @@ function upsertStreamRowSqlite(rawDelta: RetainedSizeDelta, computedAt: string):
       `INSERT INTO retained_size_stream(
          connector_instance_id, connector_id, stream,
          current_record_json_bytes, record_history_json_bytes, blob_bytes,
-         record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+         record_count, record_history_count, blob_count, record_rejection_count,
          dirty, computed_at
        )
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
        ON CONFLICT(connector_instance_id, stream) DO UPDATE SET
          current_record_json_bytes = MAX(0, current_record_json_bytes + ?),
          record_history_json_bytes = MAX(0, record_history_json_bytes + ?),
          blob_bytes = MAX(0, blob_bytes + ?),
+         record_rejection_payload_bytes = MAX(0, record_rejection_payload_bytes + ?),
          record_count = MAX(0, record_count + ?),
          record_history_count = MAX(0, record_history_count + ?),
          blob_count = MAX(0, blob_count + ?),
+         record_rejection_count = MAX(0, record_rejection_count + ?),
          computed_at = ?`
     )
     .run(
@@ -947,16 +1027,20 @@ function upsertStreamRowSqlite(rawDelta: RetainedSizeDelta, computedAt: string):
       Math.max(0, delta.current_record_json_bytes_delta),
       Math.max(0, delta.record_history_json_bytes_delta),
       Math.max(0, delta.blob_bytes_delta),
+      Math.max(0, delta.record_rejection_payload_bytes_delta),
       Math.max(0, delta.record_count_delta),
       Math.max(0, delta.record_history_count_delta),
       Math.max(0, delta.blob_count_delta),
+      Math.max(0, delta.record_rejection_count_delta),
       computedAt,
       delta.current_record_json_bytes_delta,
       delta.record_history_json_bytes_delta,
       delta.blob_bytes_delta,
+      delta.record_rejection_payload_bytes_delta,
       delta.record_count_delta,
       delta.record_history_count_delta,
       delta.blob_count_delta,
+      delta.record_rejection_count_delta,
       computedAt
     );
 }
@@ -974,17 +1058,20 @@ async function upsertStreamRowPostgres(
     `INSERT INTO retained_size_stream(
        connector_instance_id, connector_id, stream,
        current_record_json_bytes, record_history_json_bytes, blob_bytes,
-       record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+       record_count, record_history_count, blob_count, record_rejection_count,
        dirty, computed_at
      )
-     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10)
+     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0, $12)
      ON CONFLICT (connector_instance_id, stream) DO UPDATE SET
-       current_record_json_bytes = GREATEST(0, retained_size_stream.current_record_json_bytes + $11),
-       record_history_json_bytes = GREATEST(0, retained_size_stream.record_history_json_bytes + $12),
-       blob_bytes = GREATEST(0, retained_size_stream.blob_bytes + $13),
-       record_count = GREATEST(0, retained_size_stream.record_count + $14),
-       record_history_count = GREATEST(0, retained_size_stream.record_history_count + $15),
-       blob_count = GREATEST(0, retained_size_stream.blob_count + $16),
+       current_record_json_bytes = GREATEST(0, retained_size_stream.current_record_json_bytes + $13),
+       record_history_json_bytes = GREATEST(0, retained_size_stream.record_history_json_bytes + $14),
+       blob_bytes = GREATEST(0, retained_size_stream.blob_bytes + $15),
+       record_rejection_payload_bytes = GREATEST(0, retained_size_stream.record_rejection_payload_bytes + $16),
+       record_count = GREATEST(0, retained_size_stream.record_count + $17),
+       record_history_count = GREATEST(0, retained_size_stream.record_history_count + $18),
+       blob_count = GREATEST(0, retained_size_stream.blob_count + $19),
+       record_rejection_count = GREATEST(0, retained_size_stream.record_rejection_count + $20),
        computed_at = EXCLUDED.computed_at`,
     [
       delta.connector_instance_id,
@@ -993,16 +1080,20 @@ async function upsertStreamRowPostgres(
       Math.max(0, delta.current_record_json_bytes_delta),
       Math.max(0, delta.record_history_json_bytes_delta),
       Math.max(0, delta.blob_bytes_delta),
+      Math.max(0, delta.record_rejection_payload_bytes_delta),
       Math.max(0, delta.record_count_delta),
       Math.max(0, delta.record_history_count_delta),
       Math.max(0, delta.blob_count_delta),
+      Math.max(0, delta.record_rejection_count_delta),
       computedAt,
       delta.current_record_json_bytes_delta,
       delta.record_history_json_bytes_delta,
       delta.blob_bytes_delta,
+      delta.record_rejection_payload_bytes_delta,
       delta.record_count_delta,
       delta.record_history_count_delta,
       delta.blob_count_delta,
+      delta.record_rejection_count_delta,
     ]
   );
 }
@@ -1017,17 +1108,20 @@ function upsertConnectionRowSqlite(rawDelta: RetainedSizeDelta, computedAt: stri
       `INSERT INTO retained_size_connection(
          connector_instance_id, connector_id,
          current_record_json_bytes, record_history_json_bytes, blob_bytes,
-         record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+         record_count, record_history_count, blob_count, record_rejection_count,
          dirty, computed_at
        )
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
        ON CONFLICT(connector_instance_id) DO UPDATE SET
          current_record_json_bytes = MAX(0, current_record_json_bytes + ?),
          record_history_json_bytes = MAX(0, record_history_json_bytes + ?),
          blob_bytes = MAX(0, blob_bytes + ?),
+         record_rejection_payload_bytes = MAX(0, record_rejection_payload_bytes + ?),
          record_count = MAX(0, record_count + ?),
          record_history_count = MAX(0, record_history_count + ?),
          blob_count = MAX(0, blob_count + ?),
+         record_rejection_count = MAX(0, record_rejection_count + ?),
          computed_at = ?`
     )
     .run(
@@ -1036,16 +1130,20 @@ function upsertConnectionRowSqlite(rawDelta: RetainedSizeDelta, computedAt: stri
       Math.max(0, delta.current_record_json_bytes_delta),
       Math.max(0, delta.record_history_json_bytes_delta),
       Math.max(0, delta.blob_bytes_delta),
+      Math.max(0, delta.record_rejection_payload_bytes_delta),
       Math.max(0, delta.record_count_delta),
       Math.max(0, delta.record_history_count_delta),
       Math.max(0, delta.blob_count_delta),
+      Math.max(0, delta.record_rejection_count_delta),
       computedAt,
       delta.current_record_json_bytes_delta,
       delta.record_history_json_bytes_delta,
       delta.blob_bytes_delta,
+      delta.record_rejection_payload_bytes_delta,
       delta.record_count_delta,
       delta.record_history_count_delta,
       delta.blob_count_delta,
+      delta.record_rejection_count_delta,
       computedAt
     );
 }
@@ -1063,34 +1161,41 @@ async function upsertConnectionRowPostgres(
     `INSERT INTO retained_size_connection(
        connector_instance_id, connector_id,
        current_record_json_bytes, record_history_json_bytes, blob_bytes,
-       record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+       record_count, record_history_count, blob_count, record_rejection_count,
        dirty, computed_at
      )
-     VALUES($1, $2, $3, $4, $5, $6, $7, $8, 0, $9)
+     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $11)
      ON CONFLICT (connector_instance_id) DO UPDATE SET
-       current_record_json_bytes = GREATEST(0, retained_size_connection.current_record_json_bytes + $10),
-       record_history_json_bytes = GREATEST(0, retained_size_connection.record_history_json_bytes + $11),
-       blob_bytes = GREATEST(0, retained_size_connection.blob_bytes + $12),
-       record_count = GREATEST(0, retained_size_connection.record_count + $13),
-       record_history_count = GREATEST(0, retained_size_connection.record_history_count + $14),
-       blob_count = GREATEST(0, retained_size_connection.blob_count + $15),
-       computed_at = $9`,
+       current_record_json_bytes = GREATEST(0, retained_size_connection.current_record_json_bytes + $12),
+       record_history_json_bytes = GREATEST(0, retained_size_connection.record_history_json_bytes + $13),
+       blob_bytes = GREATEST(0, retained_size_connection.blob_bytes + $14),
+       record_rejection_payload_bytes = GREATEST(0, retained_size_connection.record_rejection_payload_bytes + $15),
+       record_count = GREATEST(0, retained_size_connection.record_count + $16),
+       record_history_count = GREATEST(0, retained_size_connection.record_history_count + $17),
+       blob_count = GREATEST(0, retained_size_connection.blob_count + $18),
+       record_rejection_count = GREATEST(0, retained_size_connection.record_rejection_count + $19),
+       computed_at = $11`,
     [
       delta.connector_instance_id,
       delta.connector_id,
       Math.max(0, delta.current_record_json_bytes_delta),
       Math.max(0, delta.record_history_json_bytes_delta),
       Math.max(0, delta.blob_bytes_delta),
+      Math.max(0, delta.record_rejection_payload_bytes_delta),
       Math.max(0, delta.record_count_delta),
       Math.max(0, delta.record_history_count_delta),
       Math.max(0, delta.blob_count_delta),
+      Math.max(0, delta.record_rejection_count_delta),
       computedAt,
       delta.current_record_json_bytes_delta,
       delta.record_history_json_bytes_delta,
       delta.blob_bytes_delta,
+      delta.record_rejection_payload_bytes_delta,
       delta.record_count_delta,
       delta.record_history_count_delta,
       delta.blob_count_delta,
+      delta.record_rejection_count_delta,
     ]
   );
 }
@@ -1102,17 +1207,20 @@ function applyGlobalDeltaSqlite(rawDelta: RetainedSizeDelta, computedAt: string)
       `INSERT INTO retained_size_global(
          projection_key,
          current_record_json_bytes, record_history_json_bytes, blob_bytes,
-         record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+         record_count, record_history_count, blob_count, record_rejection_count,
          dirty, computed_at, metadata_json
        )
-       VALUES(?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
        ON CONFLICT(projection_key) DO UPDATE SET
          current_record_json_bytes = MAX(0, current_record_json_bytes + ?),
          record_history_json_bytes = MAX(0, record_history_json_bytes + ?),
          blob_bytes = MAX(0, blob_bytes + ?),
+         record_rejection_payload_bytes = MAX(0, record_rejection_payload_bytes + ?),
          record_count = MAX(0, record_count + ?),
          record_history_count = MAX(0, record_history_count + ?),
          blob_count = MAX(0, blob_count + ?),
+         record_rejection_count = MAX(0, record_rejection_count + ?),
          computed_at = ?`
     )
     .run(
@@ -1120,9 +1228,11 @@ function applyGlobalDeltaSqlite(rawDelta: RetainedSizeDelta, computedAt: string)
       Math.max(0, delta.current_record_json_bytes_delta),
       Math.max(0, delta.record_history_json_bytes_delta),
       Math.max(0, delta.blob_bytes_delta),
+      Math.max(0, delta.record_rejection_payload_bytes_delta),
       Math.max(0, delta.record_count_delta),
       Math.max(0, delta.record_history_count_delta),
       Math.max(0, delta.blob_count_delta),
+      Math.max(0, delta.record_rejection_count_delta),
       computedAt,
       JSON.stringify({
         last_error: null,
@@ -1133,9 +1243,11 @@ function applyGlobalDeltaSqlite(rawDelta: RetainedSizeDelta, computedAt: string)
       delta.current_record_json_bytes_delta,
       delta.record_history_json_bytes_delta,
       delta.blob_bytes_delta,
+      delta.record_rejection_payload_bytes_delta,
       delta.record_count_delta,
       delta.record_history_count_delta,
       delta.blob_count_delta,
+      delta.record_rejection_count_delta,
       computedAt
     );
 }
@@ -1150,26 +1262,31 @@ async function applyGlobalDeltaPostgres(
     `INSERT INTO retained_size_global(
        projection_key,
        current_record_json_bytes, record_history_json_bytes, blob_bytes,
-       record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+       record_count, record_history_count, blob_count, record_rejection_count,
        dirty, computed_at, metadata_json
      )
-     VALUES($1, $2, $3, $4, $5, $6, $7, 0, $8, $9::jsonb)
+     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10, $11::jsonb)
      ON CONFLICT (projection_key) DO UPDATE SET
-       current_record_json_bytes = GREATEST(0, retained_size_global.current_record_json_bytes + $10),
-       record_history_json_bytes = GREATEST(0, retained_size_global.record_history_json_bytes + $11),
-       blob_bytes = GREATEST(0, retained_size_global.blob_bytes + $12),
-       record_count = GREATEST(0, retained_size_global.record_count + $13),
-       record_history_count = GREATEST(0, retained_size_global.record_history_count + $14),
-       blob_count = GREATEST(0, retained_size_global.blob_count + $15),
-       computed_at = $8`,
+       current_record_json_bytes = GREATEST(0, retained_size_global.current_record_json_bytes + $12),
+       record_history_json_bytes = GREATEST(0, retained_size_global.record_history_json_bytes + $13),
+       blob_bytes = GREATEST(0, retained_size_global.blob_bytes + $14),
+       record_rejection_payload_bytes = GREATEST(0, retained_size_global.record_rejection_payload_bytes + $15),
+       record_count = GREATEST(0, retained_size_global.record_count + $16),
+       record_history_count = GREATEST(0, retained_size_global.record_history_count + $17),
+       blob_count = GREATEST(0, retained_size_global.blob_count + $18),
+       record_rejection_count = GREATEST(0, retained_size_global.record_rejection_count + $19),
+       computed_at = $10`,
     [
       GLOBAL_KEY,
       Math.max(0, delta.current_record_json_bytes_delta),
       Math.max(0, delta.record_history_json_bytes_delta),
       Math.max(0, delta.blob_bytes_delta),
+      Math.max(0, delta.record_rejection_payload_bytes_delta),
       Math.max(0, delta.record_count_delta),
       Math.max(0, delta.record_history_count_delta),
       Math.max(0, delta.blob_count_delta),
+      Math.max(0, delta.record_rejection_count_delta),
       computedAt,
       JSON.stringify({
         last_error: null,
@@ -1180,9 +1297,11 @@ async function applyGlobalDeltaPostgres(
       delta.current_record_json_bytes_delta,
       delta.record_history_json_bytes_delta,
       delta.blob_bytes_delta,
+      delta.record_rejection_payload_bytes_delta,
       delta.record_count_delta,
       delta.record_history_count_delta,
       delta.blob_count_delta,
+      delta.record_rejection_count_delta,
     ]
   );
 }
@@ -1340,21 +1459,32 @@ function rebuildSqlite(): void {
           GROUP BY blob_bindings.connector_instance_id, blob_bindings.connector_id, blob_bindings.stream`
       )
       .all();
+    const rejectionAgg = db
+      .prepare(
+        `SELECT connector_instance_id, connector_id, stream,
+                COUNT(*) AS record_rejection_count,
+                COALESCE(SUM(payload_bytes), 0) AS record_rejection_payload_bytes
+           FROM record_rejections
+          GROUP BY connector_instance_id, connector_id, stream`
+      )
+      .all();
 
     const merged = mergeAggregateRows(
       streamAgg as AggregateSourceRow[],
       changesAgg as AggregateSourceRow[],
-      blobsAgg as AggregateSourceRow[]
+      blobsAgg as AggregateSourceRow[],
+      rejectionAgg as AggregateSourceRow[]
     );
 
     const insertStream = db.prepare(
       `INSERT INTO retained_size_stream(
          connector_instance_id, connector_id, stream,
          current_record_json_bytes, record_history_json_bytes, blob_bytes,
-         record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+         record_count, record_history_count, blob_count, record_rejection_count,
          dirty, computed_at
        )
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
     );
     for (const row of merged.streams) {
       insertStream.run(
@@ -1364,9 +1494,11 @@ function rebuildSqlite(): void {
         row.current_record_json_bytes,
         row.record_history_json_bytes,
         row.blob_bytes,
+        row.record_rejection_payload_bytes,
         row.record_count,
         row.record_history_count,
         row.blob_count,
+        row.record_rejection_count,
         computedAt
       );
     }
@@ -1375,10 +1507,11 @@ function rebuildSqlite(): void {
       `INSERT INTO retained_size_connection(
          connector_instance_id, connector_id,
          current_record_json_bytes, record_history_json_bytes, blob_bytes,
-         record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+         record_count, record_history_count, blob_count, record_rejection_count,
          dirty, computed_at
        )
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
     );
     for (const row of merged.connections) {
       insertConnection.run(
@@ -1387,9 +1520,11 @@ function rebuildSqlite(): void {
         row.current_record_json_bytes,
         row.record_history_json_bytes,
         row.blob_bytes,
+        row.record_rejection_payload_bytes,
         row.record_count,
         row.record_history_count,
         row.blob_count,
+        row.record_rejection_count,
         computedAt
       );
     }
@@ -1401,17 +1536,20 @@ function rebuildSqlite(): void {
       `INSERT INTO retained_size_global(
          projection_key,
          current_record_json_bytes, record_history_json_bytes, blob_bytes,
-         record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+         record_count, record_history_count, blob_count, record_rejection_count,
          dirty, computed_at, metadata_json
        )
-       VALUES(?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
        ON CONFLICT(projection_key) DO UPDATE SET
          current_record_json_bytes = excluded.current_record_json_bytes,
          record_history_json_bytes = excluded.record_history_json_bytes,
          blob_bytes = excluded.blob_bytes,
+         record_rejection_payload_bytes = excluded.record_rejection_payload_bytes,
          record_count = excluded.record_count,
          record_history_count = excluded.record_history_count,
          blob_count = excluded.blob_count,
+         record_rejection_count = excluded.record_rejection_count,
          dirty = 0,
          computed_at = excluded.computed_at,
          metadata_json = excluded.metadata_json`
@@ -1420,9 +1558,11 @@ function rebuildSqlite(): void {
       globalRow.current_record_json_bytes,
       globalRow.record_history_json_bytes,
       globalRow.blob_bytes,
+      globalRow.record_rejection_payload_bytes,
       globalRow.record_count,
       globalRow.record_history_count,
       globalRow.blob_count,
+      globalRow.record_rejection_count,
       computedAt,
       JSON.stringify({
         last_error: null,
@@ -1466,17 +1606,25 @@ async function rebuildPostgres(): Promise<void> {
          JOIN blobs ON blobs.blob_id = blob_bindings.blob_id
         GROUP BY blob_bindings.connector_instance_id, blob_bindings.connector_id, blob_bindings.stream`
     );
-    const merged = mergeAggregateRows(streamAgg.rows, changesAgg.rows, blobsAgg.rows);
+    const rejectionAgg = await client.query(
+      `SELECT connector_instance_id, connector_id, stream,
+              COUNT(*)::bigint AS record_rejection_count,
+              COALESCE(SUM(payload_bytes), 0)::bigint AS record_rejection_payload_bytes
+         FROM record_rejections
+        GROUP BY connector_instance_id, connector_id, stream`
+    );
+    const merged = mergeAggregateRows(streamAgg.rows, changesAgg.rows, blobsAgg.rows, rejectionAgg.rows);
 
     await runSequentially(merged.streams, async (row) => {
       await client.query(
         `INSERT INTO retained_size_stream(
            connector_instance_id, connector_id, stream,
            current_record_json_bytes, record_history_json_bytes, blob_bytes,
-           record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+           record_count, record_history_count, blob_count, record_rejection_count,
            dirty, computed_at
          )
-         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10)`,
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0, $12)`,
         [
           row.connector_instance_id,
           row.connector_id,
@@ -1484,9 +1632,11 @@ async function rebuildPostgres(): Promise<void> {
           row.current_record_json_bytes,
           row.record_history_json_bytes,
           row.blob_bytes,
+          row.record_rejection_payload_bytes,
           row.record_count,
           row.record_history_count,
           row.blob_count,
+          row.record_rejection_count,
           computedAt,
         ]
       );
@@ -1497,19 +1647,22 @@ async function rebuildPostgres(): Promise<void> {
         `INSERT INTO retained_size_connection(
            connector_instance_id, connector_id,
            current_record_json_bytes, record_history_json_bytes, blob_bytes,
-           record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+           record_count, record_history_count, blob_count, record_rejection_count,
            dirty, computed_at
          )
-         VALUES($1, $2, $3, $4, $5, $6, $7, $8, 0, $9)`,
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $11)`,
         [
           row.connector_instance_id,
           row.connector_id,
           row.current_record_json_bytes,
           row.record_history_json_bytes,
           row.blob_bytes,
+          row.record_rejection_payload_bytes,
           row.record_count,
           row.record_history_count,
           row.blob_count,
+          row.record_rejection_count,
           computedAt,
         ]
       );
@@ -1521,17 +1674,20 @@ async function rebuildPostgres(): Promise<void> {
       `INSERT INTO retained_size_global(
          projection_key,
          current_record_json_bytes, record_history_json_bytes, blob_bytes,
-         record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+         record_count, record_history_count, blob_count, record_rejection_count,
          dirty, computed_at, metadata_json
        )
-       VALUES($1, $2, $3, $4, $5, $6, $7, 0, $8, $9::jsonb)
+       VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10, $11::jsonb)
        ON CONFLICT (projection_key) DO UPDATE SET
          current_record_json_bytes = EXCLUDED.current_record_json_bytes,
          record_history_json_bytes = EXCLUDED.record_history_json_bytes,
          blob_bytes = EXCLUDED.blob_bytes,
+         record_rejection_payload_bytes = EXCLUDED.record_rejection_payload_bytes,
          record_count = EXCLUDED.record_count,
          record_history_count = EXCLUDED.record_history_count,
          blob_count = EXCLUDED.blob_count,
+         record_rejection_count = EXCLUDED.record_rejection_count,
          dirty = 0,
          computed_at = EXCLUDED.computed_at,
          metadata_json = EXCLUDED.metadata_json`,
@@ -1540,9 +1696,11 @@ async function rebuildPostgres(): Promise<void> {
         g.current_record_json_bytes,
         g.record_history_json_bytes,
         g.blob_bytes,
+        g.record_rejection_payload_bytes,
         g.record_count,
         g.record_history_count,
         g.blob_count,
+        g.record_rejection_count,
         computedAt,
         JSON.stringify({
           last_error: null,
@@ -1558,9 +1716,10 @@ async function rebuildPostgres(): Promise<void> {
 function mergeAggregateRows(
   streamAgg: readonly AggregateSourceRow[],
   changesAgg: readonly AggregateSourceRow[],
-  blobsAgg: readonly AggregateSourceRow[]
+  blobsAgg: readonly AggregateSourceRow[],
+  rejectionAgg: readonly AggregateSourceRow[] = []
 ) {
-  const streams = mergeStreamAggregateRows(streamAgg, changesAgg, blobsAgg);
+  const streams = mergeStreamAggregateRows(streamAgg, changesAgg, blobsAgg, rejectionAgg);
   const connections = aggregateConnectionRows(streams);
   const global = aggregateMeasureRows(streams);
   return { connections, global, streams };
@@ -1569,7 +1728,8 @@ function mergeAggregateRows(
 function mergeStreamAggregateRows(
   streamAgg: readonly AggregateSourceRow[],
   changesAgg: readonly AggregateSourceRow[],
-  blobsAgg: readonly AggregateSourceRow[]
+  blobsAgg: readonly AggregateSourceRow[],
+  rejectionAgg: readonly AggregateSourceRow[] = []
 ): StreamAggregate[] {
   const map = new Map<string, StreamAggregate>();
   const ensure = (row: AggregateSourceRow): StreamAggregate => {
@@ -1596,6 +1756,9 @@ function mergeStreamAggregateRows(
   for (const row of blobsAgg) {
     applyBlobAggregate(ensure(row), row);
   }
+  for (const row of rejectionAgg) {
+    applyRejectionAggregate(ensure(row), row);
+  }
   return [...map.values()];
 }
 
@@ -1612,6 +1775,11 @@ function applyRecordHistoryAggregate(entry: StreamAggregate, row: AggregateSourc
 function applyBlobAggregate(entry: StreamAggregate, row: AggregateSourceRow): void {
   entry.blob_bytes = Number(row.blob_bytes || 0);
   entry.blob_count = Number(row.blob_count || 0);
+}
+
+function applyRejectionAggregate(entry: StreamAggregate, row: AggregateSourceRow): void {
+  entry.record_rejection_payload_bytes = Number(row.record_rejection_payload_bytes || 0);
+  entry.record_rejection_count = Number(row.record_rejection_count || 0);
 }
 
 function aggregateConnectionRows(streams: readonly StreamAggregate[]): ConnectionAggregate[] {
@@ -1690,10 +1858,12 @@ function topRowInsertValues(
     measures.current_record_json_bytes,
     measures.record_history_json_bytes,
     measures.blob_bytes,
+    measures.record_rejection_payload_bytes,
     Number(row.total_retained_bytes || totalBytesFromMeasures(measures)),
     measures.record_count,
     measures.record_history_count,
     measures.blob_count,
+    measures.record_rejection_count,
     computedAt,
     metadata,
   ];
@@ -1712,10 +1882,11 @@ function insertTopRowsSqlite(
        scope, measure, rank, grain_key,
        connector_instance_id, connector_id, stream, record_key, blob_id,
        current_record_json_bytes, record_history_json_bytes, blob_bytes,
-       total_retained_bytes, record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+       total_retained_bytes, record_count, record_history_count, blob_count, record_rejection_count,
        dirty, computed_at, metadata_json
      )
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
   );
   rows.forEach((row, index) => {
     insert.run(...topRowInsertValues(row, index + 1, scope, measure, computedAt, metadata));
@@ -1728,16 +1899,18 @@ function refreshRetainedSizeTopRowsSqlite(db: ReturnType<typeof getDb>, computed
     current_record_json_bytes,
     record_history_json_bytes,
     blob_bytes,
-    current_record_json_bytes + record_history_json_bytes + blob_bytes AS total_retained_bytes,
+    current_record_json_bytes + record_history_json_bytes + blob_bytes + record_rejection_payload_bytes AS total_retained_bytes,
+    record_rejection_payload_bytes,
     record_count,
     record_history_count,
-    blob_count
+    blob_count,
+    record_rejection_count
   `;
   const topMeasures = [...VALID_TOP_MEASURES];
   for (const measure of topMeasures) {
     const orderExpr =
       measure === "total_retained_bytes"
-        ? "current_record_json_bytes + record_history_json_bytes + blob_bytes"
+        ? "current_record_json_bytes + record_history_json_bytes + blob_bytes + record_rejection_payload_bytes"
         : measure;
     insertTopRowsSqlite(
       db,
@@ -1958,11 +2131,12 @@ async function insertTopRowsPostgres(
          scope, measure, rank, grain_key,
          connector_instance_id, connector_id, stream, record_key, blob_id,
          current_record_json_bytes, record_history_json_bytes, blob_bytes,
-         total_retained_bytes, record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+         total_retained_bytes, record_count, record_history_count, blob_count, record_rejection_count,
          dirty, computed_at, metadata_json
        )
        VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9,
-              $10, $11, $12, $13, $14, $15, $16, 0, $17, $18::jsonb)`,
+              $10, $11, $12, $13, $14, $15, $16, $17, $18, 0, $19, $20::jsonb)`,
       values
     );
   });
@@ -1974,7 +2148,7 @@ async function refreshRetainedSizeTopRowsPostgres(client: PoolClient, computedAt
   await runSequentially(topMeasures, async (measure) => {
     const orderExpr =
       measure === "total_retained_bytes"
-        ? "current_record_json_bytes + record_history_json_bytes + blob_bytes"
+        ? "current_record_json_bytes + record_history_json_bytes + blob_bytes + record_rejection_payload_bytes"
         : measure;
     const connectionRows = await client.query(
       `SELECT connector_instance_id AS grain_key,
@@ -1983,10 +2157,12 @@ async function refreshRetainedSizeTopRowsPostgres(client: PoolClient, computedAt
               current_record_json_bytes,
               record_history_json_bytes,
               blob_bytes,
-              current_record_json_bytes + record_history_json_bytes + blob_bytes AS total_retained_bytes,
+              current_record_json_bytes + record_history_json_bytes + blob_bytes + record_rejection_payload_bytes AS total_retained_bytes,
+              record_rejection_payload_bytes,
               record_count,
               record_history_count,
-              blob_count
+              blob_count,
+              record_rejection_count
          FROM retained_size_connection
         ORDER BY ${orderExpr} DESC, connector_instance_id ASC
         LIMIT $1`,
@@ -2001,10 +2177,12 @@ async function refreshRetainedSizeTopRowsPostgres(client: PoolClient, computedAt
               current_record_json_bytes,
               record_history_json_bytes,
               blob_bytes,
-              current_record_json_bytes + record_history_json_bytes + blob_bytes AS total_retained_bytes,
+              current_record_json_bytes + record_history_json_bytes + blob_bytes + record_rejection_payload_bytes AS total_retained_bytes,
+              record_rejection_payload_bytes,
               record_count,
               record_history_count,
-              blob_count
+              blob_count,
+              record_rejection_count
          FROM retained_size_stream
         ORDER BY ${orderExpr} DESC, connector_instance_id ASC, stream ASC
         LIMIT $1`,
@@ -2193,9 +2371,15 @@ function reconcileDirtyStreamSqlite(db: ReturnType<typeof getDb>, row: RetainedS
          (SELECT COUNT(*) FROM blob_bindings WHERE connector_instance_id = ? AND stream = ?) AS blob_count,
          (SELECT COALESCE(SUM(blobs.size_bytes), 0)
             FROM blob_bindings JOIN blobs ON blobs.blob_id = blob_bindings.blob_id
-           WHERE blob_bindings.connector_instance_id = ? AND blob_bindings.stream = ?) AS blob_bytes`
+           WHERE blob_bindings.connector_instance_id = ? AND blob_bindings.stream = ?) AS blob_bytes,
+         (SELECT COUNT(*) FROM record_rejections WHERE connector_instance_id = ? AND stream = ?) AS record_rejection_count,
+         (SELECT COALESCE(SUM(payload_bytes), 0) FROM record_rejections WHERE connector_instance_id = ? AND stream = ?) AS record_rejection_payload_bytes`
     )
     .get(
+      row.connector_instance_id,
+      row.stream,
+      row.connector_instance_id,
+      row.stream,
       row.connector_instance_id,
       row.stream,
       row.connector_instance_id,
@@ -2214,9 +2398,11 @@ function reconcileDirtyStreamSqlite(db: ReturnType<typeof getDb>, row: RetainedS
        current_record_json_bytes = ?,
        record_history_json_bytes = ?,
        blob_bytes = ?,
+       record_rejection_payload_bytes = ?,
        record_count = ?,
        record_history_count = ?,
        blob_count = ?,
+       record_rejection_count = ?,
        dirty = 0,
        computed_at = ?
      WHERE connector_instance_id = ? AND stream = ?`
@@ -2230,9 +2416,11 @@ function reconcileDirtyConnectionSqlite(db: ReturnType<typeof getDb>, row: Retai
          COALESCE(SUM(current_record_json_bytes), 0) AS current_record_json_bytes,
          COALESCE(SUM(record_history_json_bytes), 0) AS record_history_json_bytes,
          COALESCE(SUM(blob_bytes), 0) AS blob_bytes,
+         COALESCE(SUM(record_rejection_payload_bytes), 0) AS record_rejection_payload_bytes,
          COALESCE(SUM(record_count), 0) AS record_count,
          COALESCE(SUM(record_history_count), 0) AS record_history_count,
-         COALESCE(SUM(blob_count), 0) AS blob_count
+         COALESCE(SUM(blob_count), 0) AS blob_count,
+         COALESCE(SUM(record_rejection_count), 0) AS record_rejection_count
        FROM retained_size_stream
       WHERE connector_instance_id = ?`
     )
@@ -2242,9 +2430,11 @@ function reconcileDirtyConnectionSqlite(db: ReturnType<typeof getDb>, row: Retai
        current_record_json_bytes = ?,
        record_history_json_bytes = ?,
        blob_bytes = ?,
+       record_rejection_payload_bytes = ?,
        record_count = ?,
        record_history_count = ?,
        blob_count = ?,
+       record_rejection_count = ?,
        dirty = 0,
        computed_at = ?
      WHERE connector_instance_id = ?`
@@ -2266,9 +2456,11 @@ function recomputeGlobalFromConnectionsSqlite(): void {
          COALESCE(SUM(current_record_json_bytes), 0) AS current_record_json_bytes,
          COALESCE(SUM(record_history_json_bytes), 0) AS record_history_json_bytes,
          COALESCE(SUM(blob_bytes), 0) AS blob_bytes,
+         COALESCE(SUM(record_rejection_payload_bytes), 0) AS record_rejection_payload_bytes,
          COALESCE(SUM(record_count), 0) AS record_count,
          COALESCE(SUM(record_history_count), 0) AS record_history_count,
          COALESCE(SUM(blob_count), 0) AS blob_count,
+         COALESCE(SUM(record_rejection_count), 0) AS record_rejection_count,
          MAX(dirty) AS dirty
        FROM retained_size_connection`
     )
@@ -2280,17 +2472,20 @@ function recomputeGlobalFromConnectionsSqlite(): void {
       `INSERT INTO retained_size_global(
          projection_key,
          current_record_json_bytes, record_history_json_bytes, blob_bytes,
-         record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+         record_count, record_history_count, blob_count, record_rejection_count,
          dirty, computed_at, metadata_json
        )
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(projection_key) DO UPDATE SET
          current_record_json_bytes = excluded.current_record_json_bytes,
          record_history_json_bytes = excluded.record_history_json_bytes,
          blob_bytes = excluded.blob_bytes,
+         record_rejection_payload_bytes = excluded.record_rejection_payload_bytes,
          record_count = excluded.record_count,
          record_history_count = excluded.record_history_count,
          blob_count = excluded.blob_count,
+         record_rejection_count = excluded.record_rejection_count,
          dirty = excluded.dirty,
          computed_at = excluded.computed_at,
          metadata_json = excluded.metadata_json`
@@ -2354,7 +2549,9 @@ async function reconcileDirtyStreamPostgres(row: RetainedSizeRow): Promise<void>
        (SELECT COUNT(*) FROM blob_bindings WHERE connector_instance_id = $1 AND stream = $2)::bigint AS blob_count,
        (SELECT COALESCE(SUM(blobs.size_bytes), 0)
           FROM blob_bindings JOIN blobs ON blobs.blob_id = blob_bindings.blob_id
-         WHERE blob_bindings.connector_instance_id = $1 AND blob_bindings.stream = $2)::bigint AS blob_bytes`,
+         WHERE blob_bindings.connector_instance_id = $1 AND blob_bindings.stream = $2)::bigint AS blob_bytes,
+       (SELECT COUNT(*) FROM record_rejections WHERE connector_instance_id = $1 AND stream = $2)::bigint AS record_rejection_count,
+       (SELECT COALESCE(SUM(payload_bytes), 0) FROM record_rejections WHERE connector_instance_id = $1 AND stream = $2)::bigint AS record_rejection_payload_bytes`,
     [row.connector_instance_id, row.stream]
   );
   await postgresQuery(
@@ -2362,12 +2559,14 @@ async function reconcileDirtyStreamPostgres(row: RetainedSizeRow): Promise<void>
        current_record_json_bytes = $1,
        record_history_json_bytes = $2,
        blob_bytes = $3,
-       record_count = $4,
-       record_history_count = $5,
-       blob_count = $6,
+       record_rejection_payload_bytes = $4,
+       record_count = $5,
+       record_history_count = $6,
+       blob_count = $7,
+       record_rejection_count = $8,
        dirty = 0,
-       computed_at = $7
-     WHERE connector_instance_id = $8 AND stream = $9`,
+       computed_at = $9
+     WHERE connector_instance_id = $10 AND stream = $11`,
     reconciledStreamValues(recompute.rows[0] || {}, row)
   );
 }
@@ -2378,9 +2577,11 @@ async function reconcileDirtyConnectionPostgres(row: RetainedSizeRow): Promise<v
        COALESCE(SUM(current_record_json_bytes), 0)::bigint AS current_record_json_bytes,
        COALESCE(SUM(record_history_json_bytes), 0)::bigint AS record_history_json_bytes,
        COALESCE(SUM(blob_bytes), 0)::bigint AS blob_bytes,
+       COALESCE(SUM(record_rejection_payload_bytes), 0)::bigint AS record_rejection_payload_bytes,
        COALESCE(SUM(record_count), 0)::bigint AS record_count,
        COALESCE(SUM(record_history_count), 0)::bigint AS record_history_count,
-       COALESCE(SUM(blob_count), 0)::bigint AS blob_count
+       COALESCE(SUM(blob_count), 0)::bigint AS blob_count,
+       COALESCE(SUM(record_rejection_count), 0)::bigint AS record_rejection_count
      FROM retained_size_stream
     WHERE connector_instance_id = $1`,
     [row.connector_instance_id]
@@ -2390,12 +2591,14 @@ async function reconcileDirtyConnectionPostgres(row: RetainedSizeRow): Promise<v
        current_record_json_bytes = $1,
        record_history_json_bytes = $2,
        blob_bytes = $3,
-       record_count = $4,
-       record_history_count = $5,
-       blob_count = $6,
+       record_rejection_payload_bytes = $4,
+       record_count = $5,
+       record_history_count = $6,
+       blob_count = $7,
+       record_rejection_count = $8,
        dirty = 0,
-       computed_at = $7
-     WHERE connector_instance_id = $8`,
+       computed_at = $9
+     WHERE connector_instance_id = $10`,
     reconciledConnectionValues(sums.rows[0] || {}, row)
   );
 }
@@ -2406,9 +2609,11 @@ async function recomputeGlobalFromConnectionsPostgres(): Promise<void> {
        COALESCE(SUM(current_record_json_bytes), 0)::bigint AS current_record_json_bytes,
        COALESCE(SUM(record_history_json_bytes), 0)::bigint AS record_history_json_bytes,
        COALESCE(SUM(blob_bytes), 0)::bigint AS blob_bytes,
+       COALESCE(SUM(record_rejection_payload_bytes), 0)::bigint AS record_rejection_payload_bytes,
        COALESCE(SUM(record_count), 0)::bigint AS record_count,
        COALESCE(SUM(record_history_count), 0)::bigint AS record_history_count,
        COALESCE(SUM(blob_count), 0)::bigint AS blob_count,
+       COALESCE(SUM(record_rejection_count), 0)::bigint AS record_rejection_count,
        COALESCE(MAX(dirty), 0)::int AS dirty
      FROM retained_size_connection`
   );
@@ -2419,17 +2624,20 @@ async function recomputeGlobalFromConnectionsPostgres(): Promise<void> {
     `INSERT INTO retained_size_global(
        projection_key,
        current_record_json_bytes, record_history_json_bytes, blob_bytes,
-       record_count, record_history_count, blob_count,
+                record_rejection_payload_bytes,
+       record_count, record_history_count, blob_count, record_rejection_count,
        dirty, computed_at, metadata_json
      )
-     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
      ON CONFLICT (projection_key) DO UPDATE SET
        current_record_json_bytes = EXCLUDED.current_record_json_bytes,
        record_history_json_bytes = EXCLUDED.record_history_json_bytes,
        blob_bytes = EXCLUDED.blob_bytes,
+       record_rejection_payload_bytes = EXCLUDED.record_rejection_payload_bytes,
        record_count = EXCLUDED.record_count,
        record_history_count = EXCLUDED.record_history_count,
        blob_count = EXCLUDED.blob_count,
+       record_rejection_count = EXCLUDED.record_rejection_count,
        dirty = EXCLUDED.dirty,
        computed_at = EXCLUDED.computed_at,
        metadata_json = EXCLUDED.metadata_json`,

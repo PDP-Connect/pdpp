@@ -59,6 +59,7 @@ test("codeToStatus pins grant/auth and connector-instance code statuses", () => 
   assert.equal(codeToStatus.authentication_error, 401);
   assert.equal(codeToStatus.connector_instance_store_required, 500);
   assert.equal(codeToStatus.run_already_active, 409);
+  assert.equal(codeToStatus.run_not_writable, 409);
 });
 
 test("unknown error codes are absent so callers default to 500", () => {
