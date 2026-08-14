@@ -1120,21 +1120,18 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
     try {
       let storageNamespace: ConnectorNamespaceLike | null = null;
       let acquisitionBatchPromise: Promise<AcquisitionBatchLike | null> | null = null;
-      // A static-secret first connection is addressed by an explicit
-      // connector_instance_id while still `draft`; admit that status so first
-      // ingest can write into the draft. The connector-only path
-      // (no explicit instance id) stays active-only — `allowStatuses` is only
-      // consulted when an instance is addressed explicitly. See Decision 5.
-      // Draft admission is only added when an explicit instance id addresses the
-      // target; the connector-only path stays active-only. `allowStatuses` is
+      // Explicit owner ingest addresses a concrete storage namespace. Paused
+      // connections remain writable for owner-supplied backlog/manual ingest,
+      // while connector-only fan-in stays active-only. `allowStatuses` is
       // omitted (not set to undefined) so it doesn't trip exactOptionalPropertyTypes.
-      const draftAdmission = (cin: string | null) => (cin ? { allowStatuses: ["active", "draft"] as const } : {});
+      const explicitIngestAdmission = (cin: string | null) =>
+        cin ? { allowStatuses: ["active", "draft", "paused"] as const } : {};
       const resolveAdmittedNamespace = async (
         cid: string,
         requestedConnectorInstanceId: string | null
       ): Promise<ConnectorNamespaceLike> => {
         storageNamespace ??= await ctx.resolveOwnerConnectorNamespace(req, cid, {
-          ...draftAdmission(requestedConnectorInstanceId),
+          ...explicitIngestAdmission(requestedConnectorInstanceId),
           connectorInstanceId: requestedConnectorInstanceId,
         });
         if (!storageNamespace.connectorInstanceId) {
