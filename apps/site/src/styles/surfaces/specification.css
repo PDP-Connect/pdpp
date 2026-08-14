@@ -804,28 +804,20 @@
   }
 }
 
-/* The rail keeps its 1px divider. Without it the wide gutters that pinning
-   both rails to the viewport produces (643px each side at 2560) read as the
-   document having drifted rather than as deliberate structure — there is
-   nothing to say where the nav column ends and the reading column begins.
-   Cloudflare Docs, measured 2026-08-14, does exactly this: a 1px border on the
-   trailing edge of the sidebar and nothing on the TOC side, so the page has
-   one structural line rather than a symmetric frame. */
+/* No divider on the rail. Surveying shipped docs UIs (Mobbin, 2026-08-14),
+   the two patterns are: a rail on a FILLED panel whose edge a 1px line
+   terminates (Exa, Base44, GitBook, Cloudflare), or a transparent rail
+   separated by whitespace and type weight alone (Mintlify, OpenAI Platform).
+   This rail is transparent, so a border here is a line with nothing behind it
+   — the weaker half of one pattern and the wrong half of the other. It also
+   made /specification inconsistent with /self-host and /participate, which
+   carry the same rail with no line. Whitespace does the separating. */
 [data-pdpp-doc-theme] #nd-sidebar {
   --fd-sidebar-width: var(--spacing-rail);
   font-family: var(--font-sans);
   font-size: 13px;
   background: none;
-  border-right: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-ink) 12%, var(--pdpp-concept-paper));
-}
-
-/* The divider is a property of the two-column reading layout, so it goes when
-   the rail becomes a drawer. */
-@media (max-width: 767.98px) {
-  [data-pdpp-doc-theme] #nd-sidebar {
-    border-right: none;
-  }
+  border-right: none;
 }
 
 [data-pdpp-doc-theme] #nd-sidebar [data-sidebar-placeholder] {
