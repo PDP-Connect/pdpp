@@ -317,7 +317,13 @@ function createConnectorSummaryStore() {
         );
         return result.rows;
       },
-      async listPendingMaintenanceInstanceIds({ limit }: { limit: number }) {
+      async listPendingMaintenanceInstanceIds({
+        includeIncomplete,
+        limit,
+      }: {
+        includeIncomplete: boolean;
+        limit: number;
+      }) {
         const dirty = await postgresQuery(
           `SELECT connector_instance_id
              FROM connector_summary_evidence
@@ -328,6 +334,9 @@ function createConnectorSummaryStore() {
         );
         if (dirty.rows.length > 0) {
           return (dirty.rows as Row[]).map((row) => String(row.connector_instance_id));
+        }
+        if (!includeIncomplete) {
+          return [];
         }
         const incomplete = await postgresQuery(
           `SELECT connector_instance_id
@@ -503,7 +512,7 @@ function createConnectorSummaryStore() {
         ),
       ];
     },
-    listPendingMaintenanceInstanceIds({ limit }: { limit: number }) {
+    listPendingMaintenanceInstanceIds({ includeIncomplete, limit }: { includeIncomplete: boolean; limit: number }) {
       const dirty = getDb()
         .prepare(
           `SELECT connector_instance_id
@@ -515,6 +524,9 @@ function createConnectorSummaryStore() {
         .all(limit) as Row[];
       if (dirty.length > 0) {
         return dirty.map((row) => String(row.connector_instance_id));
+      }
+      if (!includeIncomplete) {
+        return [];
       }
       const incomplete = getDb()
         .prepare(
@@ -2907,9 +2919,12 @@ export async function reconcileDirtyConnectorSummaryEvidence(
  * instead of waiting for the fleet cursor to wrap. Best-effort by
  * construction: the cursor walk remains the correctness backstop.
  */
-async function readPendingMaintenanceInstanceIdPage(limit: number): Promise<readonly string[]> {
+async function readPendingMaintenanceInstanceIdPage(
+  limit: number,
+  includeIncomplete: boolean
+): Promise<readonly string[]> {
   try {
-    return await createConnectorSummaryStore().listPendingMaintenanceInstanceIds({ limit });
+    return await createConnectorSummaryStore().listPendingMaintenanceInstanceIds({ includeIncomplete, limit });
   } catch {
     return [];
   }
@@ -3122,6 +3137,7 @@ function emitScopedObservationUnit(
  */
 async function runDirtyPriorityAcceleration(args: {
   readonly deadline: number;
+  readonly includeIncomplete: boolean;
   readonly limit: number;
   readonly foldEventCap: { maxEvents?: number };
   readonly maintenanceLease?: ConnectorMaintenanceCursorLease;
@@ -3139,7 +3155,7 @@ async function runDirtyPriorityAcceleration(args: {
   if (sweepNow() >= args.deadline) {
     return empty;
   }
-  const pendingIds = await readPendingMaintenanceInstanceIdPage(args.limit);
+  const pendingIds = await readPendingMaintenanceInstanceIdPage(args.limit, args.includeIncomplete);
   testOnlySweepDiscoveryHook("acceleration_dirty_ids");
   if (pendingIds.length === 0) {
     return empty;
@@ -3431,6 +3447,11 @@ export async function runBoundedSummaryEvidenceSweep(options: {
         ? await runDirtyPriorityAcceleration({
             deadline,
             foldEventCap,
+            // Only the scheduler opts into alternating tranches. A direct
+            // sweep keeps its historical one-fold event cap; otherwise the
+            // walk and acceleration tranches can drain the same incomplete
+            // row twice in one call.
+            includeIncomplete: options.firstTranche !== undefined,
             limit: pageSize,
             ...(options.maintenanceLease ? { maintenanceLease: options.maintenanceLease } : {}),
             ...(options.onPageConverged ? { onPageConverged: options.onPageConverged } : {}),
