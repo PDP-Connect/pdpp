@@ -906,11 +906,12 @@ Three independent version axes exist in PDPP. They MUST NOT be conflated:
 | Source declaration revision | `grant.source_declaration.version` | Identifies the exact retained declaration snapshot used for consent and issuance. It is opaque evidence metadata. The RS enforces the resolved grant and does not fetch that revision for authorization. |
 | HTTP API contract version | `PDPP-Version` request header | Version of the RS HTTP API contract. RS returns 400 `unsupported_version` if the requested version is not supported. If the header is absent, the RS uses the current stable version and returns the selected version in the response header (see [Section 8](#resource-server-interface)). |
 
-The current persisted-authorization-state reader MUST reject pre-v0.1 state
-with `authorization_state.unsupported_legacy_shape` before its caller
-continues introspection or route handling. The reader MUST NOT reconstruct
-missing authorization or binding facts from current configuration. The user
-MUST complete fresh consent.
+The current persisted-authorization-state reader MUST reject any persisted
+authorization state whose version or shape it cannot validate against a
+supported contract before its caller continues introspection or route
+handling. The reader MUST NOT reconstruct missing authorization or binding
+facts from current configuration. A deployment that cannot support or
+explicitly migrate such state MUST require fresh consent.
 
 ### Access modes {#access-modes}
 
@@ -1392,7 +1393,7 @@ Every non-2xx response returns a structured error:
 | `unknown_field` | 400 | `invalid_request_error` | Requested field not in stream schema. |
 | `unsupported_version` | 400 | `invalid_request_error` | `PDPP-Version` header specifies unsupported version, or grant references unsupported schema version. |
 | `authentication_error` | 401 | `authentication_error` | Missing or invalid access token. |
-| `authorization_state.unsupported_legacy_shape` | 401 | `authentication_error` | Persisted authorization state predates v0.1. Fresh consent is required. |
+| `authorization_state.unsupported_legacy_shape` | 401 | `authentication_error` | Persisted authorization state does not match a supported shape. Fresh consent is required when no migration applies. |
 | `field_not_granted` | 403 | `permission_error` | Filter targets a field outside the grant's authorized projection. |
 | `insufficient_scope` | 403 | `permission_error` | Expansion requests a stream not in the grant. |
 | `grant_stream_not_allowed` | 403 | `permission_error` | Stream not in grant. |
@@ -1453,7 +1454,7 @@ A conformant authorization server:
 18. For a separated AS and RS, authenticates the RS at the RFC 7662 introspection endpoint and returns the complete grant enforcement context in one response.
 19. Consumes each OAuth authorization code atomically on its first successful redemption. Rejects every later redemption with `invalid_grant` and does not issue another token.
 20. Issues refresh tokens only for `continuous` grants, or for a grant package only when every child grant is `continuous`. It rotates refresh tokens by family. Reuse of a superseded token revokes the family and every family-linked access token, returns `invalid_grant`, and requires fresh authorization.
-21. Rejects pre-v0.1 persisted authorization state before introspection or request handling. Does not reconstruct missing facts from current configuration and requires fresh consent.
+21. Rejects unsupported persisted authorization state before introspection or request handling. Does not reconstruct missing facts from current configuration and requires fresh consent when no migration applies.
 
 ### Resource Server conformance
 
