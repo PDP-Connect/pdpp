@@ -25,6 +25,7 @@ import {
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 
 const CONNECTOR_ID = "record_ingest_admission_probe";
+const CONNECTOR_URI = "https://registry.pdpp.dev/connectors/record-ingest-admission-probe";
 const DEDICATED_POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
 const NOW = "2026-08-13T00:00:00.000Z";
 const STREAM = "events";
@@ -47,7 +48,9 @@ function manifest() {
   return {
     capabilities: { human_interaction: [] },
     connector_id: CONNECTOR_ID,
+    connector_key: CONNECTOR_ID,
     display_name: "Record ingest admission probe",
+    manifest_uri: CONNECTOR_URI,
     protocol_version: "0.1.0",
     streams: [
       {
@@ -58,6 +61,8 @@ function manifest() {
           required: ["id", "value"],
           type: "object",
         },
+        selection: { fields: true, resources: true },
+        semantics: "mutable_state",
       },
     ],
     version: "1.0.0",

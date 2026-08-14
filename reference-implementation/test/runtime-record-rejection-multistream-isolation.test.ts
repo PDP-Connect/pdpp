@@ -112,14 +112,32 @@ function streamSchema() {
 function manifest(connectorId: string) {
   return {
     connector_id: connectorId,
+    connector_key: connectorId,
     display_name: "Runtime Record Rejection Multistream Test Connector",
+    manifest_uri: `https://registry.pdpp.dev/connectors/${connectorId}`,
     protocol_version: "0.1.0",
     streams: [
-      { name: "stream_a", primary_key: ["id"], schema: streamSchema(), semantics: "append_only" },
-      { name: "stream_b", primary_key: ["id"], schema: streamSchema(), semantics: "append_only" },
+      {
+        name: "stream_a",
+        primary_key: ["id"],
+        schema: streamSchema(),
+        selection: { fields: true, resources: true },
+        semantics: "append_only",
+      },
+      {
+        name: "stream_b",
+        primary_key: ["id"],
+        schema: streamSchema(),
+        selection: { fields: true, resources: true },
+        semantics: "append_only",
+      },
     ],
     version: "1.0.0",
   };
+}
+
+function runtimeManifest(connectorId: string): Parameters<typeof runConnector>[0]["manifest"] {
+  return manifest(connectorId) as Parameters<typeof runConnector>[0]["manifest"];
 }
 
 function createTestConnector(messages: readonly Record<string, unknown>[]) {
@@ -263,7 +281,7 @@ test("runtime/server SQLite isolates durable record rejections and cursor commit
         connectorId,
         connectorInstanceId,
         connectorPath,
-        manifest: manifest(connectorId),
+        manifest: runtimeManifest(connectorId),
         onInteraction: async () => ({}),
         onProgress: (message) => progress.push(message),
         ownerToken,

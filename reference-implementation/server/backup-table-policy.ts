@@ -13,6 +13,10 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     classification: "backup_required",
     reason: "Manual/import acquisition history and artifact linkage are owner state.",
   },
+  agent_connect_attempts: {
+    classification: "backup_required",
+    reason: "Agent-connect handoff attempts and recovery bindings are durable authorization delivery state.",
+  },
   blob_bindings: {
     classification: "backup_required",
     reason: "Binds durable blob bytes to records and JSON paths.",
@@ -101,6 +105,10 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
   connectors: {
     classification: "backup_required",
     reason: "Connector catalog rows are required to interpret connections and records.",
+  },
+  consent_exchange_codes: {
+    classification: "ephemeral_crash_reconciled",
+    reason: "Consent exchange codes are short-lived single-use handoff state reconciled by expiry and redemption.",
   },
   controller_active_runs: {
     classification: "ephemeral_crash_reconciled",
