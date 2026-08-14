@@ -10,8 +10,10 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { registerConnector } from "../../../reference-implementation/server/auth.ts";
 import { startServer } from "../../../reference-implementation/server/index.ts";
 import { ingestRecord } from "../../../reference-implementation/server/records.ts";
+import { createRequestConnectorInstanceStore } from "../../../reference-implementation/server/request-store-factories.ts";
 import { runOwnerAgent } from "../src/owner-agent/command.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -163,19 +165,39 @@ function loadNorthstarManifest() {
 }
 
 async function seedNorthstar(nativeManifest) {
-  await ingestRecord(nativeManifest.storage_binding.connector_id, {
-    stream: "pay_statements",
-    key: "ps_owner_agent_cli_smoke_1",
-    data: {
-      statement_id: "ps_owner_agent_cli_smoke_1",
-      employer: "Northstar HR",
-      gross_pay: 5400,
-      net_pay: 3912,
-      currency: "USD",
-      employee_id: "emp_cli_smoke",
-    },
-    emitted_at: "2026-05-31T00:00:00Z",
+  await registerConnector({
+    connector_key: nativeManifest.storage_binding.connector_id,
+    declaration_version: nativeManifest.source_declaration.declaration_version,
+    name: nativeManifest.name,
+    source_declaration: nativeManifest.source_declaration,
+    streams: nativeManifest.streams,
+    version: nativeManifest.version,
   });
+  const instance = await createRequestConnectorInstanceStore().ensureDefaultAccountConnection({
+    connectorId: nativeManifest.storage_binding.connector_id,
+    displayName: "Northstar HR",
+    now: "2026-05-31T00:00:00Z",
+    ownerSubjectId: TEST_SUBJECT,
+  });
+  await ingestRecord(
+    {
+      connector_id: nativeManifest.storage_binding.connector_id,
+      connector_instance_id: instance.connectorInstanceId,
+    },
+    {
+      stream: "pay_statements",
+      key: "ps_owner_agent_cli_smoke_1",
+      data: {
+        statement_id: "ps_owner_agent_cli_smoke_1",
+        employer: "Northstar HR",
+        gross_pay: 5400,
+        net_pay: 3912,
+        currency: "USD",
+        employee_id: "emp_cli_smoke",
+      },
+      emitted_at: "2026-05-31T00:00:00Z",
+    }
+  );
 }
 
 async function approveDeviceCode(asUrl, sessionCookie, userCode) {
