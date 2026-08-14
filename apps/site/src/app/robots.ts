@@ -3,6 +3,7 @@
 
 import type { MetadataRoute } from "next";
 import { SITE_ORIGIN } from "@/components/pdpp-concept/site-facts.ts";
+import { REFERENCE_MATERIALS_SLUGS } from "@/lib/spec-nav-slugs.ts";
 
 // SEO/GEO standard MUST #1.5: robots.txt, page-level robots directives, and
 // application responses must agree with the approved access policy.
@@ -25,7 +26,17 @@ export default function robots(): MetadataRoute.Robots {
   return {
     rules: {
       allow: "/",
-      disallow: ["/design", "/palette", "/sandbox", "/specification/README", "/specification/reference-materials"],
+      // The four reference materials are disallowed alongside their index: the
+      // index alone was disallowed while the documents it links stayed open,
+      // so a crawler that never saw the index still indexed all four.
+      disallow: [
+        "/design",
+        "/palette",
+        "/sandbox",
+        "/specification/README",
+        "/specification/reference-materials",
+        ...REFERENCE_MATERIALS_SLUGS.map((slug) => `/specification/${slug}`),
+      ],
       userAgent: "*",
     },
     sitemap: `${SITE_ORIGIN}/sitemap.xml`,

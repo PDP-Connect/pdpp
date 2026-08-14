@@ -12,6 +12,7 @@ import { getMDXComponents } from "@/components/mdx.tsx";
 import { repoBlobUrl } from "@/components/pdpp-concept/site-facts.ts";
 import { Text } from "@/components/pdpp-concept/text.tsx";
 import { getPageMarkdownUrl, source } from "@/lib/docs-source.ts";
+import { REFERENCE_MATERIALS_SLUGS } from "@/lib/spec-nav-slugs.ts";
 
 interface DocsPageProps {
   params: Promise<{
@@ -137,8 +138,17 @@ export async function generateMetadata({ params }: DocsPageProps): Promise<Metad
   // reference-materials.md is a reference index for implementation notes and
   // design rationale — useful for maintainers but not part of the normative spec.
   // It is noindex'd so it remains accessible by URL but is not crawled or ranked.
+  //
+  // The documents that index LINKS TO get the same treatment. Noindexing only
+  // the index while leaving implementation notes, change tracking, auth design
+  // and reference topology fully indexable meant the four pages this move was
+  // meant to take out of the public surface were still crawlable and ranked —
+  // reachable directly from search even though nothing in the rail pointed at
+  // them. They stay live at their URLs; they just stop competing with the spec.
   const isInternalNotesPage = page.path === "README.md";
-  const isReferenceMaterialsPage = page.path === "reference-materials.md";
+  const isReferenceMaterialsPage =
+    page.path === "reference-materials.md" ||
+    REFERENCE_MATERIALS_SLUGS.some((slug) => page.path === `${slug}.md`);
   const canonicalUrl = isRootSlug ? "/specification" : page.url;
 
   return {

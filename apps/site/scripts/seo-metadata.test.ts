@@ -6,6 +6,7 @@ import { test } from "node:test";
 import robots from "@/app/robots.ts";
 import { SITE_ORIGIN } from "@/components/pdpp-concept/site-facts.ts";
 import { buildSitemap, type DocPageRef } from "@/lib/sitemap-entries.ts";
+import { REFERENCE_MATERIALS_SLUGS } from "@/lib/spec-nav-slugs.ts";
 
 // SEO/GEO standard MUST #1.5: robots.txt must agree with the approved access
 // policy. MUST #4.3: a sitemap must contain only canonical, indexable URLs.
@@ -34,6 +35,9 @@ test("robots.txt allows the public site and blocks non-canonical surfaces", () =
     "/sandbox",
     "/specification/README",
     "/specification/reference-materials",
+    // Disallowing only the index left the four documents it links crawlable,
+    // so a crawler that never saw the index still indexed all of them.
+    ...REFERENCE_MATERIALS_SLUGS.map((slug) => `/specification/${slug}`),
   ]) {
     assert.ok(disallow.includes(path), `robots.txt must disallow ${path}`);
   }
@@ -45,6 +49,13 @@ const FIXTURE_PAGES: DocPageRef[] = [
   { path: "reference-materials.md", url: "/specification/reference-materials" },
   { path: "spec-core.md", url: "/specification/spec-core" },
   { path: "spec-deferred.md", url: "/specification/spec-deferred" },
+  // The reference materials themselves, not just their index. These were
+  // absent from the fixture, which is why the suite stayed green while all
+  // four were leaking into the live sitemap.
+  ...REFERENCE_MATERIALS_SLUGS.map((slug) => ({
+    path: `${slug}.md`,
+    url: `/specification/${slug}`,
+  })),
 ];
 
 test("sitemap contains only canonical URLs, each exactly once", () => {
@@ -69,6 +80,12 @@ test("sitemap excludes contributor-facing authoring notes and reference material
     !urls.includes(`${SITE_ORIGIN}/specification/reference-materials`),
     "reference-materials.md is a reference index, not a canonical doc"
   );
+  for (const slug of REFERENCE_MATERIALS_SLUGS) {
+    assert.ok(
+      !urls.includes(`${SITE_ORIGIN}/specification/${slug}`),
+      `${slug} was moved off the specification rail and is noindex; listing it in the sitemap invites crawlers straight to it`
+    );
+  }
 });
 
 test("sitemap includes the front door, nav destinations, and every real doc page exactly once", () => {
