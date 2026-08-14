@@ -128,14 +128,14 @@
   gap: 0;
   width: 100%;
   max-width: none;
-  /* Fumadocs #nd-page ships py-6 / md:pt-8 / xl:pt-14 — zero so hero top
-     matches PdppConceptDoc pt (see .pdpp-docs-hero__content below). */
-  padding-top: 0 !important;
   /* Fumadocs' px-4/md:px-6/xl:px-8 resolved to 48px on the left and 0 on the
      right here, which pushed every centred descendant half a gutter right and
      made the two column gaps differ by exactly that 48px at every viewport.
      Symmetric inline padding is what lets the measure centre honestly. */
   padding-inline: var(--pdpp-docs-gutter);
+  /* Fumadocs #nd-page ships py-6 / md:pt-8 / xl:pt-14 — zero so hero top
+     matches PdppConceptDoc pt (see .pdpp-docs-hero__content below). */
+  padding-top: 0 !important;
   margin-inline: 0;
 }
 
@@ -596,10 +596,13 @@
   border-radius: 0;
 }
 
-/* Width and placement come from the document grid's `figure` track; this rule
-   only owns the scrollport behaviour for the case where even that is too
-   narrow (many-column tables on small screens). */
-[data-pdpp-doc-theme] .pdpp-docs-table-scroll {
+/* Width and placement come from the document grid above; this rule only owns
+   the scrollport behaviour for the case where even that is too narrow
+   (many-column tables on small screens). Scoped to a direct child of the body
+   to match the grid rule's specificity — a bare .pdpp-docs-table-scroll here
+   would be a lower-specificity selector appearing after a higher one, which is
+   both a lint error and a real ordering hazard. */
+[data-pdpp-doc-theme] .pdpp-docs-body > .pdpp-docs-table-scroll {
   margin-block: 24px;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
@@ -667,7 +670,9 @@
    nowrap is useful at reading widths, but on a narrow screen it can consume
    the table and leave the remaining cells as a thin, clipped strip. */
 @media (max-width: 767.98px) {
-  [data-pdpp-doc-theme] .pdpp-docs-table-scroll {
+  /* Same selector shape as the grid rule above, so this stays an override of
+     it rather than a lower-specificity rule that happens to come later. */
+  [data-pdpp-doc-theme] .pdpp-docs-body > .pdpp-docs-table-scroll {
     width: calc(100% + var(--spacing-pad));
     max-width: none;
     margin-inline-end: calc(-1 * var(--spacing-pad));

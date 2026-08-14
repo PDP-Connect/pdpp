@@ -148,7 +148,7 @@ export async function generateMetadata({ params }: DocsPageProps): Promise<Metad
   const isInternalNotesPage = page.path === "README.md";
   const isReferenceMaterialsPage =
     page.path === "reference-materials.md" ||
-    REFERENCE_MATERIALS_SLUGS.some((slug) => page.path === `${slug}.md`);
+    REFERENCE_MATERIALS_SLUGS.some((materialSlug) => page.path === `${materialSlug}.md`);
   const canonicalUrl = isRootSlug ? "/specification" : page.url;
 
   return {

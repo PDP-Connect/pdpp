@@ -83,7 +83,7 @@ export function PdppConceptMasthead() {
   // the nav stays visible regardless of this state.
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const navToggleRef = useRef<HTMLButtonElement>(null);
-  const headerRef = useRef<HTMLElement>(null);
+  const headerRef = useRef<HTMLElement | null>(null);
 
   // The masthead's height is intrinsic — py-5 plus whatever the nav row wraps
   // to — so nothing downstream can hardcode it. The docs layout needs it as a
@@ -93,10 +93,9 @@ export function PdppConceptMasthead() {
   // Publishing the measured value keeps the offset honest across font loading,
   // zoom, and the width where the nav row wraps.
   useEffect(() => {
-    const header = headerRef.current;
-    if (!header) {
-      return;
-    }
+    // The <header> below is rendered unconditionally, so the ref is populated
+    // before this effect runs — no null guard (Biome flags one here as dead).
+    const header = headerRef.current as HTMLElement;
     const publish = () => {
       document.documentElement.style.setProperty(
         "--pdpp-masthead-height",
