@@ -139,7 +139,7 @@ function dockerCommand(choices: SelfHostChoices): CommandSegment[] {
   if (!choices.semanticSearch) {
     segments.push({ text: "  -e PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0 \\\n" });
   }
-  segments.push({ emphasis: true, text: CORE_IMAGE });
+  segments.push({ text: "  " }, { emphasis: true, text: CORE_IMAGE });
   return segments;
 }
 

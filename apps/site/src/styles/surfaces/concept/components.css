@@ -606,6 +606,13 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   outline: 2px solid var(--pdpp-concept-onteal-deep);
   outline-offset: -2px;
 }
+/* Prose is not code. When there is no command to run, the PANEL ITSELF must
+   drop the teal-deep code ground rather than staying dark with a light box
+   pasted on top of it (that read as a broken nested panel, owner-flagged). */
+.pdpp-cmd__panel--blocked {
+  color: var(--pdpp-concept-ink);
+  background: var(--pdpp-concept-paper);
+}
 .pdpp-cmd__line {
   flex: 1 1 auto;
   min-width: 0;
@@ -777,14 +784,14 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   color: var(--pdpp-concept-ink-faint);
 }
 /* Shown instead of a command when the selected combination has no working
-   artifact. Use page background and normal body ink for WCAG 4.5:1 contrast. */
+   artifact. The paper ground, ink color, and padding live on
+   .pdpp-cmd__panel--blocked, the panel this sits inside — this is prose,
+   not a second surface. */
 .pdpp-cmd__blocked {
-  padding: 24px 28px;
   margin: 0;
   font-family: var(--font-sans);
   font-size: 14px;
-  color: var(--pdpp-concept-ink);
-  background: var(--pdpp-concept-paper);
+  color: inherit;
 }
 @media (max-width: 560px) {
   .pdpp-cmd__panel {

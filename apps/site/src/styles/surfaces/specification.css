@@ -39,6 +39,16 @@
   [data-pdpp-doc-theme] #nd-docs-layout {
     --fd-toc-width: 15rem;
   }
+
+  /* Rebinds the shared `max-w-page` utility's own var, scoped to this route's
+     container div only (concept masthead/footer keep --container-page: 1080px
+     everywhere else). Rail (240px) + TOC (240px) are both fixed regardless of
+     viewport, so at the site's 1080px container the prose measure lost 112px
+     (600px -> 488px) the moment the TOC opened at this same breakpoint. +112px
+     here restores the 600px measure without shrinking either rail or TOC. */
+  [data-pdpp-doc-theme] .container.max-w-page {
+    --container-page: 1192px;
+  }
 }
 
 /* Fumadocs ships `#nd-toc` with its own `max-xl:hidden` utility, but the
@@ -108,39 +118,44 @@
   [data-pdpp-doc-theme] #nd-docs-layout {
     --fd-banner-height: 4rem;
     --fd-docs-height: calc(100dvh - 4rem);
-    /* This row now carries only the drawer trigger (title is null, search is
-       hidden above) — the "On this page" popover sits directly under it as
-       its own full-width bar, so fumadocs' default 3.5rem header stacked on
-       the popover's 2.5rem (--fd-toc-popover-height, fumadocs' own default)
-       read as two mismatched, mostly-empty strips. Match the header row to
-       the popover row's height so the popover's border becomes the only seam
-       and the pair reads as one control row of equal-height halves. */
-    --fd-header-height: 2.5rem;
+    /* This row's own grid track is zeroed below (its only content, the drawer
+       trigger, is repositioned onto the popover row instead), so the popover
+       becomes the single sticky control row and this height no longer stacks
+       above it. */
+    --fd-header-height: 0px;
     /* The table scrollport outsets through the article's right inset. The grid
        otherwise clips that extra width before it reaches the outer container. */
     overflow-x: visible;
   }
 
-  /* Keep the sticky navigation row opaque while the TOC popover remains
-     available from its trigger. Its own border is dropped so it fuses with
-     the popover row directly under it into one visual band.
-     This row now carries only the drawer trigger (title is null, search is
-     hidden above): fumadocs places it last in DOM order after a flex-1
-     spacer, so it floats alone at the row's end with nothing to its start.
-     Reverse the row so the icon sits flush at the INLINE-START instead —
-     directly above the popover row's own leading icon underneath — so the
-     pair reads as one two-line control stack sharing a left edge, rather
-     than an icon-only bar disconnected from the labeled bar below it. */
+  /* This row carries only the drawer trigger (title is null, search is hidden
+     above). Giving it its own grid row stacked the trigger above the "On this
+     page" popover as two separate bars — row-reverse only changed which edge
+     the icon sat on, it did not merge the rows (fumadocs renders --fd-header-height
+     and --fd-toc-popover-height as two consecutive grid tracks; no amount of
+     flex-direction on the header's own content changes that it IS a second
+     track). Zero the track instead and let the header overlay the popover
+     row's trailing edge, sized to just the trigger button. */
   [data-pdpp-doc-theme] #nd-subnav {
-    flex-direction: row-reverse;
-    height: 2.5rem;
-    padding-inline-end: 1rem;
-    background: var(--pdpp-concept-paper) !important;
+    position: absolute;
+    inset-block-start: var(--fd-docs-row-1);
+    inset-inline-end: 0;
+    z-index: 20;
+    width: auto;
+    height: var(--fd-toc-popover-height);
+    padding-inline: 0.5rem;
+    background: none !important;
     border-bottom: none;
-    /* Paint over the table's right-hand bleed without extending the subnav
-       border or changing the position of its controls. */
-    box-shadow: var(--spacing-pad) 0 var(--pdpp-concept-paper);
     backdrop-filter: none;
+  }
+
+  /* The popover's own trigger is a single w-full button (fumadocs owns its
+     DOM; there is no slot to add a sibling control into that row), so the
+     drawer trigger above overlays its trailing edge instead of sharing flow.
+     Reserve room on that edge so the "On this page" label/chevron never sit
+     underneath the overlaid button. */
+  [data-pdpp-doc-theme] [data-toc-popover-trigger] {
+    padding-inline-end: calc(2.25rem + 0.5rem);
   }
 
   [data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
@@ -168,9 +183,9 @@
   color: var(--pdpp-concept-ink-soft);
 }
 
-/* The TOC's own h3 label is styled further down, after the prose h3 rules:
-   an id outranks them, so declaring it here reads as a descending-specificity
-   override even though the two subtrees never overlap. */
+/* The TOC link rung itself is styled further down, after the prose/action
+   link rules: an id outranks them, so declaring it here reads as a
+   descending-specificity override even though the two subtrees never overlap. */
 
 [data-pdpp-doc-theme] #nd-toc a.data-\[active\=true\],
 [data-pdpp-doc-theme] #nd-toc [data-active="true"] {
@@ -631,6 +646,18 @@
   overflow: hidden;
   -webkit-line-clamp: 2;
   white-space: normal;
+}
+
+/* The TOC is the SECTION list within one document; the left rail (.pdpp-rail__doc,
+   13px / 1.35 line-height) is the DOCUMENT list it sits opposite. Fumadocs ships
+   TOC links at its own 15px / 1.6 rung with a 4.39:1 muted gray — a size+leading
+   step up from the rail and just under the 4.5:1 gate. Match the rail's rung
+   exactly and use ink-faint (5.1:1) so the TOC reads as clearly subordinate.
+   Deferred from the TOC block above so it follows the prose/action link rules. */
+[data-pdpp-doc-theme] #nd-toc a {
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--pdpp-concept-ink-faint);
 }
 
 /* Deferred from the TOC block above so it follows the prose h3 rules. */
