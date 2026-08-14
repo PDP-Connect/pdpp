@@ -128,9 +128,7 @@ import {
   projectConnectorOutboxAxisFromHeartbeats,
   projectLocalDeviceProgress,
 } from "./connector-outbox-axis.ts";
-import {
-  listConnectorSummaryEvidence,
-} from "./connector-summary-read-model.ts";
+import { listConnectorSummaryEvidence } from "./connector-summary-read-model.ts";
 import { filterRunGapsProvenCompleteByReport } from "./continuation-proof.ts";
 import { getSqliteStoreCacheIdentity } from "./db.ts";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
@@ -2706,7 +2704,8 @@ export function refineConnectionHealthWithCollectionReport(
     collectionReport
   );
   const latestSettledRunInput =
-    healthInput.latestSettledRun ?? fallbackLatestSettledRun(healthInput.lastRun ?? null, healthInput.lastSuccessfulRun ?? null);
+    healthInput.latestSettledRun ??
+    fallbackLatestSettledRun(healthInput.lastRun ?? null, healthInput.lastSuccessfulRun ?? null);
   const latestSettledRun = filterRunGapsProvenCompleteByReport(latestSettledRunInput, collectionReport);
   const runEvidenceRefined =
     lastRun !== healthInput.lastRun ||
@@ -3268,6 +3267,22 @@ function checkpointProvesStreamCoverage(checkpoint: string | null): boolean {
   return checkpoint === "committed" || checkpoint === "disabled";
 }
 
+function collectionReportClassifyingRun(input: {
+  readonly lastRun: ConnectorRunSummary | null;
+  readonly lastSuccessfulRun: ConnectorRunSummary | null;
+  readonly latestSettledRun?: ConnectorRunSummary | null;
+  readonly localDeviceBacked?: boolean;
+}): ConnectorRunSummary | null {
+  if (input.localDeviceBacked) {
+    return null;
+  }
+  return coverageClassifyingRun(
+    input.lastRun,
+    input.lastSuccessfulRun,
+    input.latestSettledRun ?? fallbackLatestSettledRun(input.lastRun, input.lastSuccessfulRun)
+  );
+}
+
 /**
  * Project the per-stream Collection Report from the assembly inputs both the list
  * and detail surfaces already hold. The disposition's freshness and
@@ -3323,13 +3338,12 @@ export function projectCollectionReport(input: {
 }): CollectionReportEntry[] {
   // Select source authority before run precedence: local-device scheduler facts
   // are audit history, never coverage evidence.
-  const classifyingRun = input.localDeviceBacked
-    ? null
-    : coverageClassifyingRun(
-        input.lastRun,
-        input.lastSuccessfulRun ?? null,
-        input.latestSettledRun ?? fallbackLatestSettledRun(input.lastRun, input.lastSuccessfulRun ?? null)
-      );
+  const classifyingRun = collectionReportClassifyingRun({
+    lastRun: input.lastRun,
+    lastSuccessfulRun: input.lastSuccessfulRun ?? null,
+    latestSettledRun: input.latestSettledRun ?? null,
+    localDeviceBacked: input.localDeviceBacked === true,
+  });
   const { declaredCollectionScope: explicitCollectionScope, localCoverage } = input;
   let declaredCollectionScope = explicitCollectionScope;
   if (declaredCollectionScope === undefined && input.localDeviceBacked === true) {
@@ -6043,6 +6057,54 @@ async function readSummaryEvidenceRowsOrFailure(connectorInstanceIds: readonly s
   }
 }
 
+type SchedulerStore = ReturnType<typeof getDefaultSchedulerStore>;
+
+function readLatestRunHistoryBatch(
+  schedulerStore: SchedulerStore,
+  connectorInstanceIds: readonly string[] | null,
+  status: string | null
+): Promise<readonly ProductRunHistoryRecord[] | null> {
+  if (
+    connectorInstanceIds === null ||
+    typeof schedulerStore.listLatestRunHistoryForProductByConnectionIds !== "function"
+  ) {
+    return Promise.resolve(null);
+  }
+  return Promise.resolve(
+    schedulerStore.listLatestRunHistoryForProductByConnectionIds(connectorInstanceIds, status)
+  ).catch(() => null);
+}
+
+function readLatestSettledRunHistoryBatch(
+  schedulerStore: SchedulerStore,
+  connectorInstanceIds: readonly string[] | null
+): Promise<readonly ProductRunHistoryRecord[] | null> {
+  if (
+    connectorInstanceIds === null ||
+    typeof schedulerStore.listLatestSettledRunHistoryForProductByConnectionIds !== "function"
+  ) {
+    return Promise.resolve(null);
+  }
+  return Promise.resolve(
+    schedulerStore.listLatestSettledRunHistoryForProductByConnectionIds(connectorInstanceIds)
+  ).catch(() => null);
+}
+
+function selectBatchedRunHistory(
+  status: string | null,
+  latestRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null,
+  latestSuccessfulRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null,
+  latestSettledRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null
+): ReadonlyMap<string, ProductRunHistoryRecord> | null {
+  if (status === "settled") {
+    return latestSettledRunHistoryByInstanceId;
+  }
+  if (status === "succeeded") {
+    return latestSuccessfulRunHistoryByInstanceId;
+  }
+  return latestRunHistoryByInstanceId;
+}
+
 // R9.2 composition, extracted out of loadConnectorSummaryProjectionDeps's
 // returned closure to keep that function's cognitive complexity bounded.
 // Page-batch hit is the common case; the per-connection fallback (used
@@ -6072,15 +6134,16 @@ function resolveLatestRunSummaryForConnectionId({
    */
   readonly latestSettledRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null;
   readonly latestSuccessfulRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null;
-  readonly schedulerStore: ReturnType<typeof getDefaultSchedulerStore>;
+  readonly schedulerStore: SchedulerStore;
   readonly status: string | null;
 }): Promise<ConnectorRunSummary | null> {
   const isSettledRead = status === "settled";
-  const batched = isSettledRead
-    ? latestSettledRunHistoryByInstanceId
-    : status === "succeeded"
-      ? latestSuccessfulRunHistoryByInstanceId
-      : latestRunHistoryByInstanceId;
+  const batched = selectBatchedRunHistory(
+    status,
+    latestRunHistoryByInstanceId,
+    latestSuccessfulRunHistoryByInstanceId,
+    latestSettledRunHistoryByInstanceId
+  );
   const activeRun = activeRunsByInstanceId.get(connectorInstanceId) ?? null;
   if (batched !== null) {
     // The batch already covers exactly this render's connection scope —
@@ -6203,25 +6266,13 @@ async function loadConnectorSummaryProjectionDeps(
     // closed downstream via `evidenceReadFailed`), never to a projection
     // error.
     readSummaryEvidenceRowsOrFailure(options.connectorInstanceIds ?? null),
-    runHistoryScopeIds && typeof schedulerStore.listLatestRunHistoryForProductByConnectionIds === "function"
-      ? Promise.resolve(schedulerStore.listLatestRunHistoryForProductByConnectionIds(runHistoryScopeIds, null)).catch(
-          () => null
-        )
-      : Promise.resolve(null),
-    runHistoryScopeIds && typeof schedulerStore.listLatestRunHistoryForProductByConnectionIds === "function"
-      ? Promise.resolve(
-          schedulerStore.listLatestRunHistoryForProductByConnectionIds(runHistoryScopeIds, "succeeded")
-        ).catch(() => null)
-      : Promise.resolve(null),
+    readLatestRunHistoryBatch(schedulerStore, runHistoryScopeIds, null),
+    readLatestRunHistoryBatch(schedulerStore, runHistoryScopeIds, "succeeded"),
     // P1-1: the health/failure classification authority batch — newest
     // TERMINAL row per connection, regardless of whether something newer is
     // currently active. Distinct from the unfiltered `latestRunHistoryRows`
     // batch above, which may hold a still-active/pending row.
-    runHistoryScopeIds && typeof schedulerStore.listLatestSettledRunHistoryForProductByConnectionIds === "function"
-      ? Promise.resolve(
-          schedulerStore.listLatestSettledRunHistoryForProductByConnectionIds(runHistoryScopeIds)
-        ).catch(() => null)
-      : Promise.resolve(null),
+    readLatestSettledRunHistoryBatch(schedulerStore, runHistoryScopeIds),
     runHistoryScopeIds && typeof controller?.listSchedulesForConnections === "function"
       ? Promise.resolve(controller.listSchedulesForConnections(runHistoryScopeIds)).catch(() => null)
       : Promise.resolve(null),
