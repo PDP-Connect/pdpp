@@ -285,9 +285,45 @@
   font-family: var(--font-serif);
 }
 
-[data-pdpp-doc-theme] .pdpp-docs-body :where(h1, h2, h3, h4, p, li, blockquote),
+/* EVERY block in the article shares one right edge, prose and figures alike.
+   Listing only the prose tags left tables, code blocks and figures free to
+   stretch to the full column: at 1440 they ran 838px against the prose's 600,
+   and at 1920 they ran 1318px, so the right edge lurched in and out as the
+   reader scrolled. Cloudflare's docs, which this layout follows, hold prose
+   and code to the same edge at every width (648/646 at 1440, 784/782 at 1920).
+
+   The measure also GROWS with the viewport rather than pinning at 600px, for
+   the same reason theirs does: a fixed measure inside a widening column leaves
+   the article stranded in the left third of a 1920 screen. It stays inside the
+   60-75 character convention at both ends. */
+[data-pdpp-doc-theme] .pdpp-docs-body > *,
+[data-pdpp-doc-theme] .pdpp-docs-body .pdpp-docs-table-scroll,
 [data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note {
   max-width: var(--container-measure);
+}
+
+/* Diagrams are figures and belong on the same edge as the prose they
+   illustrate. Mermaid renders into a bare centring div with no width of its
+   own, so diagrams ran 838px at 1440 and 1958px at 2560 while the prose held
+   600 - the right edge visibly moved as the reader scrolled past one. The SVG
+   scales down inside the measure rather than the box growing to fit it. */
+[data-pdpp-doc-theme] .pdpp-docs-body svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* The article column is wider than the measure, so the measure must be centred
+   in it or the whole document hugs the left rail. Unbalanced it is 296px off
+   at 1440 and 776px at 1920; Cloudflare, which this layout follows, stays
+   within 12px of centre at both. */
+[data-pdpp-doc-theme] .pdpp-docs-body > * {
+  margin-inline: auto;
+}
+
+@media (min-width: 1600px) {
+  [data-pdpp-doc-theme] .pdpp-docs-body {
+    --container-measure: 720px;
+  }
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body.prose {
