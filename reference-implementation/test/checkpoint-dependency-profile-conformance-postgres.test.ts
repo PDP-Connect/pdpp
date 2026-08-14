@@ -36,7 +36,12 @@ import { startServer as startServerUntyped } from "../server/index.ts";
 import { closePostgresStorage } from "../server/postgres-storage.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
-import { runMultiParentScenario } from "./helpers/checkpoint-dependency-multi-parent-scenario.ts";
+import {
+  runMultiParentScenario,
+  runStaticParentEmitsCoverageScenario,
+  runSubsetParentCoverageScenario,
+  runUndeclaredParentScenario,
+} from "./helpers/checkpoint-dependency-multi-parent-scenario.ts";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
@@ -98,6 +103,81 @@ if (POSTGRES_URL) {
         admitOwnerRunConnection,
         asUrl,
         connectorId: "checkpoint-profile-postgres-parity-test",
+        createRequestConnectorInstanceStore,
+        rsUrl,
+        runConnector,
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  // Case 7: SQLite/Postgres parity for the core rejection + subset-withholding
+  // cases, run against the SAME scenario functions the SQLite conformance
+  // file uses (see checkpoint-dependency-multi-parent-scenario.ts).
+  test("case 1/5/6 (Postgres): a state_stream-declared stream emitting DETAIL_COVERAGE is rejected", async () => {
+    const server = await startServer({
+      asPort: 0,
+      databaseUrl: POSTGRES_URL,
+      quiet: true,
+      rsPort: 0,
+      storageBackend: "postgres",
+    });
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    try {
+      await runStaticParentEmitsCoverageScenario({
+        admitOwnerRunConnection,
+        asUrl,
+        connectorId: "checkpoint-profile-postgres-static-parent-violation-test",
+        createRequestConnectorInstanceStore,
+        rsUrl,
+        runConnector,
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  test("case 2 (Postgres): a parent_streams stream emitting DETAIL_COVERAGE naming an undeclared parent is rejected", async () => {
+    const server = await startServer({
+      asPort: 0,
+      databaseUrl: POSTGRES_URL,
+      quiet: true,
+      rsPort: 0,
+      storageBackend: "postgres",
+    });
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    try {
+      await runUndeclaredParentScenario({
+        admitOwnerRunConnection,
+        asUrl,
+        connectorId: "checkpoint-profile-postgres-undeclared-parent-test",
+        createRequestConnectorInstanceStore,
+        rsUrl,
+        runConnector,
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  test("case 3/4 (Postgres): a declared parent with no live coverage report is withheld", async () => {
+    const server = await startServer({
+      asPort: 0,
+      databaseUrl: POSTGRES_URL,
+      quiet: true,
+      rsPort: 0,
+      storageBackend: "postgres",
+    });
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    try {
+      await runSubsetParentCoverageScenario({
+        admitOwnerRunConnection,
+        asUrl,
+        connectorId: "checkpoint-profile-postgres-subset-parent-test",
         createRequestConnectorInstanceStore,
         rsUrl,
         runConnector,

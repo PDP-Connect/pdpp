@@ -49,7 +49,12 @@ import { runConnector } from "../runtime/index.ts";
 import { startServer as startServerUntyped } from "../server/index.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
-import { runMultiParentScenario } from "./helpers/checkpoint-dependency-multi-parent-scenario.ts";
+import {
+  runMultiParentScenario,
+  runStaticParentEmitsCoverageScenario,
+  runSubsetParentCoverageScenario,
+  runUndeclaredParentScenario,
+} from "./helpers/checkpoint-dependency-multi-parent-scenario.ts";
 
 const FAILING_STREAM_NAME_PATTERN = /sibling_b/;
 
@@ -519,6 +524,67 @@ test("SQLite/Postgres parity scenario (SQLite side): one detail stream independe
       admitOwnerRunConnection,
       asUrl,
       connectorId: "checkpoint-profile-sqlite-parity-test",
+      createRequestConnectorInstanceStore,
+      rsUrl,
+      runConnector,
+    });
+  } finally {
+    await closeServer(server);
+  }
+});
+
+// -----------------------------------------------------------------------
+// Manifest-authority adversarial cases (P1-2): live DETAIL_COVERAGE evidence
+// must never override or widen the manifest's declared checkpoint-parent
+// shape. Case numbers reference the review's "Required adversarial tests"
+// list under P1-2.
+// -----------------------------------------------------------------------
+
+test("case 1/5/6 (SQLite): a state_stream-declared stream emitting DETAIL_COVERAGE is rejected, preventing the unsafe commit", async () => {
+  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  try {
+    await runStaticParentEmitsCoverageScenario({
+      admitOwnerRunConnection,
+      asUrl,
+      connectorId: "checkpoint-profile-static-parent-violation-test",
+      createRequestConnectorInstanceStore,
+      rsUrl,
+      runConnector,
+    });
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("case 2 (SQLite): a parent_streams stream emitting DETAIL_COVERAGE naming an undeclared parent is rejected", async () => {
+  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  try {
+    await runUndeclaredParentScenario({
+      admitOwnerRunConnection,
+      asUrl,
+      connectorId: "checkpoint-profile-undeclared-parent-test",
+      createRequestConnectorInstanceStore,
+      rsUrl,
+      runConnector,
+    });
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("case 3/4 (SQLite): a declared parent with no live coverage report is withheld, not dropped or silently satisfied", async () => {
+  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  try {
+    await runSubsetParentCoverageScenario({
+      admitOwnerRunConnection,
+      asUrl,
+      connectorId: "checkpoint-profile-subset-parent-test",
       createRequestConnectorInstanceStore,
       rsUrl,
       runConnector,

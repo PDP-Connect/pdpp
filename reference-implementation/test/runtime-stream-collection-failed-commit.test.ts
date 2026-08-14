@@ -40,6 +40,8 @@ import { admitOwnerRunConnection } from "../server/stores/connector-instance-sto
 // (e.g. a state-PUT that itself fails mid-commit). Every test below awaits
 // the resolved result directly.
 
+const CHILD_B_STREAM_NAME_PATTERN = /child_b/;
+
 interface ClosableServer {
   asPort: number;
   asServer: { close: (cb: () => void) => void; closeAllConnections: () => void };
@@ -460,11 +462,15 @@ test("runConnector withholds a manifest-declared PARENT state_stream shared with
   }
 });
 
-test("runConnector withholds a state_stream the connector's own DETAIL_COVERAGE associated with the failed data stream", async () => {
-  // A connector's live DETAIL_COVERAGE{state_stream, stream} association
-  // supersedes the legacy singular manifest `state_stream` fallback. This is
-  // distinct from manifest `parent_streams`, whose complete set is retained
-  // and unioned with live multi-parent coverage evidence.
+test("runConnector rejects a state_stream-declared child that emits its own DETAIL_COVERAGE, preventing any commit", async () => {
+  // Manifest-authoritative model (spec "Precedence between manifest and
+  // run-time evidence"): a state_stream-declared child's checkpoint parent
+  // is ALWAYS the manifest's static declaration. Live DETAIL_COVERAGE can no
+  // longer supersede it — a state_stream-declared stream MUST NOT emit
+  // DETAIL_COVERAGE at all, and doing so is a protocol violation that fails
+  // the whole run (no commit for any staged stream, including the unrelated
+  // child_a). This replaces the old "live wins unconditionally" behavior
+  // this exact scenario used to exercise as a feature.
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -501,9 +507,8 @@ test("runConnector withholds a state_stream the connector's own DETAIL_COVERAGE 
     tmpDir,
     `
   process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'child_a', key: 'a-1', data: { id: 'a-1' }, emitted_at: new Date().toISOString() }) + '\\n');
-  process.stdout.write(JSON.stringify({ type: 'DETAIL_COVERAGE', reference_only: true, state_stream: 'runtime_parent', stream: 'child_a', required_keys: ['a-1'], hydrated_keys: ['a-1'] }) + '\\n');
-  process.stdout.write(JSON.stringify({ type: 'DETAIL_COVERAGE', reference_only: true, state_stream: 'runtime_parent', stream: 'child_b', required_keys: [], hydrated_keys: [] }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'runtime_parent', cursor: { cursor: 'runtime_parent_cursor_after_child_a' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_COVERAGE', reference_only: true, state_stream: 'runtime_parent', stream: 'child_b', required_keys: [], hydrated_keys: [] }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'SKIP_RESULT', stream: 'child_b', reason: 'stream_collection_failed', message: 'upstream 500' }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DONE', status: 'failed', records_emitted: 1, error: { code: 'stream_collection_failed', message: 'stream collection failed: child_b: upstream 500', retryable: true } }) + '\\n');
   rl.close();
@@ -520,13 +525,15 @@ test("runConnector withholds a state_stream the connector's own DETAIL_COVERAGE 
     assert.equal(registerResp.status, 201);
     const ownerToken = await issueOwnerToken(asUrl);
 
-    const result = await runStub({ asUrl, connectorPath, manifest, ownerToken, rsUrl });
-    assert.equal(result.status, "failed");
+    let rejection: Error | null = null;
+    try {
+      await runStub({ asUrl, connectorPath, manifest, ownerToken, rsUrl });
+    } catch (err) {
+      rejection = err as Error;
+    }
 
-    // child_b's live relationship supersedes its singular `state_stream`
-    // fallback, so runtime_parent is withheld.
-    assert.equal(result.checkpoint_summary?.state_streams_staged, 1);
-    assert.equal(result.checkpoint_summary?.state_streams_committed, 0);
+    assert.ok(rejection, "a state_stream-declared stream (child_b) emitting DETAIL_COVERAGE must be rejected");
+    assert.match(rejection?.message || "", CHILD_B_STREAM_NAME_PATTERN, "the rejection must name the offending stream");
 
     const stateResp = await fetch(`${rsUrl}/v1/state/${encodeURIComponent(manifest.connector_id)}`, {
       headers: { Authorization: `Bearer ${ownerToken}` },
@@ -535,7 +542,7 @@ test("runConnector withholds a state_stream the connector's own DETAIL_COVERAGE 
     assert.deepEqual(
       stateBody.state ?? {},
       {},
-      "the DETAIL_COVERAGE-associated shared checkpoint must not falsely commit"
+      "no checkpoint may advance once the connector violates the static state_stream contract, not even runtime_parent's own STATE"
     );
   } finally {
     rmSync(tmpDir, { force: true, recursive: true });
@@ -550,7 +557,11 @@ test("runConnector withholds every declared parent of a failed shared detail str
   const manifest = {
     connector_id: "runtime-stream-isolation-conflicting-detail-coverage-test",
     streams: [
-      ...testManifest("unused").streams,
+      {
+        name: "sibling_a",
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      },
       {
         name: "parent_a",
         primary_key: ["id"],
@@ -558,6 +569,22 @@ test("runConnector withholds every declared parent of a failed shared detail str
       },
       {
         name: "parent_b",
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      },
+      // sibling_b is a manifest-declared parent_detail_accounting stream with
+      // BOTH parent_a and parent_b as its declared parents. Under the
+      // manifest-authoritative model, its failure must withhold every
+      // DECLARED parent — including parent_b, which committed its own STATE
+      // this run but never got a live DETAIL_COVERAGE report for this failed
+      // run at all (see spec "Precedence between manifest and run-time
+      // evidence"). This is distinct from the old defect where an
+      // undeclared, ad-hoc live parent pair could be introduced with no
+      // manifest declaration at all.
+      {
+        coverage_strategy: "parent_detail_accounting",
+        name: "sibling_b",
+        parent_streams: ["parent_a", "parent_b"],
         primary_key: ["id"],
         schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
       },
@@ -570,8 +597,8 @@ test("runConnector withholds every declared parent of a failed shared detail str
     `
   process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'sibling_a', cursor: { cursor: 'sibling_a_cursor' } }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'parent_a', cursor: { cursor: 'parent_a_cursor' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'parent_b', cursor: { cursor: 'parent_b_cursor' } }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DETAIL_COVERAGE', reference_only: true, state_stream: 'parent_a', stream: 'sibling_b', required_keys: [], hydrated_keys: [] }) + '\\n');
-  process.stdout.write(JSON.stringify({ type: 'DETAIL_COVERAGE', reference_only: true, state_stream: 'parent_b', stream: 'sibling_b', required_keys: [], hydrated_keys: [] }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'SKIP_RESULT', stream: 'sibling_b', reason: 'stream_collection_failed', message: 'upstream 500' }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DONE', status: 'failed', records_emitted: 0, error: { code: 'stream_collection_failed', message: 'stream collection failed: sibling_b: upstream 500', retryable: true } }) + '\\n');
   rl.close();
@@ -591,7 +618,7 @@ test("runConnector withholds every declared parent of a failed shared detail str
     assert.equal(result.status, "failed");
     const runId = result.run_id;
     assert.ok(runId);
-    assert.equal(result.checkpoint_summary?.state_streams_staged, 2);
+    assert.equal(result.checkpoint_summary?.state_streams_staged, 3);
     assert.equal(result.checkpoint_summary?.state_streams_committed, 1);
 
     const stateResp = await fetch(`${rsUrl}/v1/state/${encodeURIComponent(manifest.connector_id)}`, {
@@ -601,7 +628,7 @@ test("runConnector withholds every declared parent of a failed shared detail str
     assert.deepEqual(
       stateBody.state ?? {},
       { sibling_a: { cursor: "sibling_a_cursor" } },
-      "every parent of the failed detail stream is withheld while an unrelated sibling still commits"
+      "every declared parent of the failed detail stream is withheld — including parent_b, which got no live coverage report this run — while an unrelated sibling still commits"
     );
 
     const { body: runTimeline } = await fetchJson<TraceTimelineBody>(

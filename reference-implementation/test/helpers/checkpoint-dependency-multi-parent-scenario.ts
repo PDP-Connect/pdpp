@@ -21,6 +21,10 @@ import type { runConnector as RunConnectorType } from "../../runtime/index.ts";
 
 type RunConnectorFn = typeof RunConnectorType;
 
+const REACTIONS_STREAM_NAME_PATTERN = /reactions/;
+const STATIC_STATE_STREAM_VIOLATION_PATTERN = /MUST NOT emit DETAIL_COVERAGE/;
+const UNRELATED_PARENT_NAME_PATTERN = /unrelated_parent/;
+
 interface FetchJsonResult<T> {
   body: T;
   status: number;
@@ -206,6 +210,348 @@ export async function runMultiParentScenario<Store>({
     assert.equal(stateResp.status, 200);
     const stateBody = (await stateResp.json()) as { state?: Record<string, unknown> };
     assert.deepEqual(stateBody.state, { activity: { page: "activity-1" } });
+  } finally {
+    rmSync(tmpDir, { force: true, recursive: true });
+  }
+}
+
+// -----------------------------------------------------------------------
+// Manifest-authority scenarios (checkpoint dependency P1-2): live
+// DETAIL_COVERAGE evidence is validated against the manifest's declared
+// parent shape, never allowed to introduce an undeclared parent or override
+// a static state_stream declaration. Shared by both the SQLite and Postgres
+// conformance test files so the parity claim compares identical scenarios.
+// -----------------------------------------------------------------------
+
+export function staticParentManifest(connectorId: string) {
+  return {
+    connector_id: connectorId,
+    streams: [
+      {
+        name: "messages",
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      },
+      {
+        name: "unrelated_channel",
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      },
+      {
+        coverage_strategy: "checkpoint_window",
+        name: "reactions",
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+        state_stream: "messages",
+      },
+    ],
+    version: "0.1.0",
+  };
+}
+
+/**
+ * Case 1 + case 6: a stream declared with a static `state_stream` parent
+ * (`reactions` -> `messages`) MUST NOT ever emit DETAIL_COVERAGE. A buggy
+ * connector that does so — here naming a DIFFERENT in-scope live
+ * `state_stream` (`unrelated_channel`) than the manifest's static
+ * declaration (`messages`), matching the review's concrete unsafe sequence —
+ * must be rejected as a protocol violation, and the rejection must prevent
+ * any checkpoint from advancing, not merely throw and leave the run's
+ * outcome unverified.
+ */
+export async function runStaticParentEmitsCoverageScenario<Store>({
+  asUrl,
+  rsUrl,
+  runConnector,
+  admitOwnerRunConnection,
+  createRequestConnectorInstanceStore,
+  connectorId,
+}: {
+  asUrl: string;
+  rsUrl: string;
+  runConnector: RunConnectorFn;
+  admitOwnerRunConnection: Parameters<typeof fakeAdmitRunConnection<Store>>[0];
+  createRequestConnectorInstanceStore: Parameters<typeof fakeAdmitRunConnection<Store>>[1];
+  connectorId: string;
+}): Promise<void> {
+  const manifest = staticParentManifest(connectorId);
+  const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-checkpoint-static-coverage-"));
+  const connectorPath = writeConnectorStub(
+    tmpDir,
+    `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'unrelated_channel', key: 'u-1', data: { id: 'u-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'unrelated_channel', cursor: { cursor: 'unrelated-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_COVERAGE', reference_only: true, stream: 'reactions', state_stream: 'unrelated_channel', required_keys: ['m-1'], hydrated_keys: ['m-1'] }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 2 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+  );
+
+  try {
+    const registerResp = await fetch(`${asUrl}/connectors`, {
+      body: JSON.stringify(manifest),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(registerResp.status, 201);
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    let rejection: Error | null = null;
+    try {
+      await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(admitOwnerRunConnection, createRequestConnectorInstanceStore),
+        collectionMode: "incremental",
+        connectorId: manifest.connector_id,
+        connectorPath,
+        manifest,
+        onInteraction: async () => ({}),
+        ownerToken,
+        persistState: true,
+        rsUrl,
+        state: null,
+      });
+    } catch (err) {
+      rejection = err as Error;
+    }
+
+    assert.ok(rejection, "a state_stream-declared stream emitting DETAIL_COVERAGE must be rejected");
+    assert.match(
+      rejection?.message || "",
+      REACTIONS_STREAM_NAME_PATTERN,
+      "the rejection must name the offending stream"
+    );
+    assert.match(
+      rejection?.message || "",
+      STATIC_STATE_STREAM_VIOLATION_PATTERN,
+      "the rejection must cite the static state_stream protocol violation, not an unrelated cause"
+    );
+
+    const stateResp = await fetch(`${rsUrl}/v1/state/${encodeURIComponent(manifest.connector_id)}`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(stateResp.status, 200);
+    const stateBody = (await stateResp.json()) as { state?: Record<string, unknown> };
+    assert.deepEqual(
+      stateBody.state,
+      {},
+      "no checkpoint may advance once the connector violates the static state_stream contract"
+    );
+  } finally {
+    rmSync(tmpDir, { force: true, recursive: true });
+  }
+}
+
+export function undeclaredParentManifest(connectorId: string) {
+  return {
+    connector_id: connectorId,
+    streams: [
+      {
+        name: "messages",
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      },
+      {
+        name: "unrelated_parent",
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      },
+      {
+        coverage_strategy: "parent_detail_accounting",
+        name: "attachments",
+        parent_streams: ["messages"],
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      },
+    ],
+    version: "0.1.0",
+  };
+}
+
+/**
+ * Case 2: a `parent_streams`-declared stream emits DETAIL_COVERAGE naming a
+ * live `state_stream` NOT in its declared set. This is the "undeclared
+ * parent" unsafe sequence at the heart of P1-2: the manifest declares only
+ * `messages` as attachments' parent, but the connector's live evidence
+ * claims a checkpoint relationship to `unrelated_parent`, which the manifest
+ * never authorized.
+ */
+export async function runUndeclaredParentScenario<Store>({
+  asUrl,
+  rsUrl,
+  runConnector,
+  admitOwnerRunConnection,
+  createRequestConnectorInstanceStore,
+  connectorId,
+}: {
+  asUrl: string;
+  rsUrl: string;
+  runConnector: RunConnectorFn;
+  admitOwnerRunConnection: Parameters<typeof fakeAdmitRunConnection<Store>>[0];
+  createRequestConnectorInstanceStore: Parameters<typeof fakeAdmitRunConnection<Store>>[1];
+  connectorId: string;
+}): Promise<void> {
+  const manifest = undeclaredParentManifest(connectorId);
+  const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-checkpoint-undeclared-parent-"));
+  const connectorPath = writeConnectorStub(
+    tmpDir,
+    `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'unrelated_parent', key: 'u-1', data: { id: 'u-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'unrelated_parent', cursor: { cursor: 'unrelated-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_COVERAGE', reference_only: true, stream: 'attachments', state_stream: 'unrelated_parent', required_keys: ['u-1'], hydrated_keys: ['u-1'] }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 2 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+  );
+
+  try {
+    const registerResp = await fetch(`${asUrl}/connectors`, {
+      body: JSON.stringify(manifest),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(registerResp.status, 201);
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    let rejection: Error | null = null;
+    try {
+      await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(admitOwnerRunConnection, createRequestConnectorInstanceStore),
+        collectionMode: "incremental",
+        connectorId: manifest.connector_id,
+        connectorPath,
+        manifest,
+        onInteraction: async () => ({}),
+        ownerToken,
+        persistState: true,
+        rsUrl,
+        state: null,
+      });
+    } catch (err) {
+      rejection = err as Error;
+    }
+
+    assert.ok(rejection, "DETAIL_COVERAGE naming an undeclared parent must be rejected");
+    assert.match(
+      rejection?.message || "",
+      UNRELATED_PARENT_NAME_PATTERN,
+      "the rejection must name the undeclared parent"
+    );
+  } finally {
+    rmSync(tmpDir, { force: true, recursive: true });
+  }
+}
+
+export function subsetParentManifest(connectorId: string) {
+  return {
+    connector_id: connectorId,
+    streams: [
+      {
+        name: "a",
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      },
+      {
+        name: "b",
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      },
+      {
+        coverage_strategy: "parent_detail_accounting",
+        name: "detail",
+        parent_streams: ["a", "b"],
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      },
+    ],
+    version: "0.1.0",
+  };
+}
+
+/**
+ * Case 3 + 4: live evidence covers only a proper subset of the declared
+ * parent set (only "a" reports this run; "b" gets no DETAIL_COVERAGE at
+ * all). The manifest still declares both "a" and "b" as attachments'
+ * parents, so "b" must be withheld as unproven — not silently dropped from
+ * the dependency set (which would make it appear self-mapped/unconstrained)
+ * and not silently treated as satisfied.
+ */
+export async function runSubsetParentCoverageScenario<Store>({
+  asUrl,
+  rsUrl,
+  runConnector,
+  admitOwnerRunConnection,
+  createRequestConnectorInstanceStore,
+  connectorId,
+}: {
+  asUrl: string;
+  rsUrl: string;
+  runConnector: RunConnectorFn;
+  admitOwnerRunConnection: Parameters<typeof fakeAdmitRunConnection<Store>>[0];
+  createRequestConnectorInstanceStore: Parameters<typeof fakeAdmitRunConnection<Store>>[1];
+  connectorId: string;
+}): Promise<void> {
+  const manifest = subsetParentManifest(connectorId);
+  const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-checkpoint-subset-parent-"));
+  const connectorPath = writeConnectorStub(
+    tmpDir,
+    `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'a', key: 'a-1', data: { id: 'a-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'b', key: 'b-1', data: { id: 'b-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_COVERAGE', reference_only: true, stream: 'detail', state_stream: 'a', required_keys: ['a-1'], hydrated_keys: ['a-1'] }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'a', cursor: { page: 'a-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'b', cursor: { page: 'b-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 2 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+  );
+
+  try {
+    const registerResp = await fetch(`${asUrl}/connectors`, {
+      body: JSON.stringify(manifest),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(registerResp.status, 201);
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    const result = await runConnector({
+      admitRunConnection: fakeAdmitRunConnection(admitOwnerRunConnection, createRequestConnectorInstanceStore),
+      collectionMode: "incremental",
+      connectorId: manifest.connector_id,
+      connectorPath,
+      manifest,
+      onInteraction: async () => ({}),
+      ownerToken,
+      persistState: true,
+      rsUrl,
+      state: null,
+    });
+
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.checkpoint_summary?.state_streams_staged, 2);
+    assert.equal(
+      result.checkpoint_summary?.state_streams_committed,
+      1,
+      "only the proven 'a' boundary commits; 'b' has no coverage report at all this run and must be withheld"
+    );
+
+    const stateResp = await fetch(`${rsUrl}/v1/state/${encodeURIComponent(manifest.connector_id)}`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(stateResp.status, 200);
+    const stateBody = (await stateResp.json()) as { state?: Record<string, unknown> };
+    assert.deepEqual(
+      stateBody.state,
+      { a: { page: "a-1" } },
+      "'b' must not be silently dropped from the dependency set nor treated as satisfied"
+    );
   } finally {
     rmSync(tmpDir, { force: true, recursive: true });
   }

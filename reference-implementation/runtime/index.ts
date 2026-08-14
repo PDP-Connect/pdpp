@@ -1437,7 +1437,41 @@ function validateCoverageKeySets(msg: ConnectorMessage): void {
   }
 }
 
-function validateDetailCoverageMessage(msg: ConnectorMessage, scopeByStream: ScopeByStream): void {
+// Manifest-authoritative guard on live DETAIL_COVERAGE evidence (see
+// spec-collection-profile.md, "Precedence between manifest and run-time
+// evidence"). The manifest declares the *permitted* parent shape; live
+// evidence may only select/report within it, never introduce a parent the
+// manifest didn't declare, and a `state_stream`-declared (static single
+// parent) stream must never emit DETAIL_COVERAGE at all — its checkpoint
+// status is always projected from the declared parent's own commit outcome.
+function validateDetailCoverageAgainstManifest(
+  msg: ConnectorMessage,
+  manifestStateStreamByStream: Map<string, string>,
+  manifestDetailParentStreamsByStream: Map<string, Set<string>>
+): void {
+  const coverageStream = msg.stream as string;
+  const coverageStateStream = msg.state_stream as string;
+  if (manifestStateStreamByStream.has(coverageStream)) {
+    throw new Error(
+      `Connector emitted DETAIL_COVERAGE for stream '${coverageStream}', which the manifest declares with a` +
+        " static state_stream parent; a state_stream-declared stream MUST NOT emit DETAIL_COVERAGE"
+    );
+  }
+  const declaredParents = manifestDetailParentStreamsByStream.get(coverageStream);
+  if (declaredParents && !declaredParents.has(coverageStateStream)) {
+    throw new Error(
+      `Connector emitted DETAIL_COVERAGE for stream '${coverageStream}' naming state_stream` +
+        ` '${coverageStateStream}', which is not in the manifest's declared parent_streams for that stream`
+    );
+  }
+}
+
+function validateDetailCoverageMessage(
+  msg: ConnectorMessage,
+  scopeByStream: ScopeByStream,
+  manifestStateStreamByStream: Map<string, string>,
+  manifestDetailParentStreamsByStream: Map<string, Set<string>>
+): void {
   if (msg.reference_only !== true) {
     throw new Error("Connector emitted invalid DETAIL_COVERAGE.reference_only: expected true");
   }
@@ -1461,6 +1495,7 @@ function validateDetailCoverageMessage(msg: ConnectorMessage, scopeByStream: Sco
     assertCoverageKeyArray(msg.optional_skip_keys, "optional_skip_keys");
   }
   validateCoverageKeySets(msg);
+  validateDetailCoverageAgainstManifest(msg, manifestStateStreamByStream, manifestDetailParentStreamsByStream);
 }
 
 function validateDetailGapRecoveredMessage(msg: ConnectorMessage, scopeByStream: ScopeByStream): void {
@@ -2729,14 +2764,6 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // attention-writer's open/byRequestId Maps) — no schema change on the hot spine
   // append path. The cross-run re-defer suppression is the discovered_run_id gate.
   const detailGapRecordedThisRun = new Set<string>();
-  // Retain every manifest-declared `parent_streams` relationship and union any
-  // live DETAIL_COVERAGE parent observed this run. One detail stream can have
-  // multiple independently checkpointed parents, each represented by its own
-  // coverage entry. The older singular `state_stream` mapping remains a
-  // fallback only when this multi-parent/live set is empty.
-  const detailCoverageStateStreamsByStream = new Map<string, Set<string>>(
-    [...manifestDetailParentStreamsByStream].map(([stream, parents]) => [stream, new Set(parents)])
-  );
   const detailCoverageByStateStream = new Map<string, DetailCoverageEntry[]>();
   // Latest `collection_rate` progress payload seen this run. Updated on each
   // rate-change PROGRESS event so the terminal event can carry the final
@@ -3105,9 +3132,6 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     // non-empty strings and the three key arrays are string/number arrays.
     const stateStream = msg.state_stream as string;
     const stream = msg.stream as string;
-    const parentStateStreams = detailCoverageStateStreamsByStream.get(stream) || new Set<string>();
-    parentStateStreams.add(stateStream);
-    detailCoverageStateStreamsByStream.set(stream, parentStateStreams);
     const entries = detailCoverageByStateStream.get(stateStream) || [];
     if (entries.some((entry) => entry.stream === stream)) {
       throw new Error(`Connector emitted duplicate DETAIL_COVERAGE for state_stream=${stateStream} stream=${stream}`);
@@ -3138,13 +3162,18 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     detailCoverageByStateStream.set(stateStream, entries);
   }
 
-  // Resolve every STATE_STREAM checkpoint key owned by a data stream. A
-  // detail stream may be fed by multiple independently checkpointed parents.
-  // The map retains every manifest-declared parent and unions any live
-  // DETAIL_COVERAGE relationship observed this run. The data stream's own name
-  // remains the fallback when neither source declares a relationship.
+  // Resolve every STATE_STREAM checkpoint key owned by a data stream, for
+  // excluding a failed stream's checkpoint parent(s) from commit. Manifest
+  // declaration is authoritative and takes precedence: a `parent_streams`
+  // stream's every declared parent is a candidate to withhold, whether or
+  // not that parent got a live DETAIL_COVERAGE report this run (a failed
+  // stream's live evidence is inherently incomplete, so under-excluding by
+  // trusting only what happened to arrive live would be unsafe). The static
+  // `state_stream` mapping is the fallback for a stream with no
+  // `parent_streams` declaration, and the data stream's own name is the
+  // final fallback for a self-mapped stream.
   function resolveStateStreamsForDataStream(dataStream: string): ReadonlySet<string> {
-    const declaredParents = detailCoverageStateStreamsByStream.get(dataStream);
+    const declaredParents = manifestDetailParentStreamsByStream.get(dataStream);
     if (declaredParents?.size) {
       return declaredParents;
     }
@@ -3848,7 +3877,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
 
     async function handleDetailCoverageMessage(msg: ConnectorMessage): Promise<void> {
-      validateDetailCoverageMessage(msg, scopeByStream);
+      validateDetailCoverageMessage(
+        msg,
+        scopeByStream,
+        manifestStateStreamByStream,
+        manifestDetailParentStreamsByStream
+      );
       // Proven by the validator: state_stream/stream are non-empty
       // in-scope names and the key arrays are string/number arrays.
       const coverageStateStream = msg.state_stream as string;
@@ -4983,17 +5017,19 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
           // SKIP_RESULT.stream names a DATA stream, but `newState`/`commitState`
           // are keyed by STATE_STREAM (the checkpoint's own key), which a
           // manifest may declare as a distinct parent key shared by several
-          // data streams (`stream.state_stream`, see buildManifestStateStreamMap)
-          // — and a connector's own DETAIL_COVERAGE messages independently
-          // assert a stream->state_stream association that is not required to
-          // match the manifest's declaration. Mapping the failed DATA stream
-          // straight through as if it were the STATE_STREAM key would filter
-          // nothing (no match in newState) and falsely commit the parent
-          // checkpoint a failed CHILD stream shares with untouched siblings.
-          // resolveStateStreamsForDataStream uses the union of static manifest
-          // parents and live DETAIL_COVERAGE relationships, falling back to the
-          // data stream name only when neither exists. The exclusion therefore
-          // targets every checkpoint key the failed stream may own.
+          // data streams (`stream.state_stream`, see buildManifestStateStreamMap).
+          // Mapping the failed DATA stream straight through as if it were the
+          // STATE_STREAM key would filter nothing (no match in newState) and
+          // falsely commit the parent checkpoint a failed CHILD stream shares
+          // with untouched siblings. `resolveStateStreamsForDataStream` resolves
+          // from the manifest's static declaration ONLY (`state_stream`, or the
+          // full declared `parent_streams` set) — never from live DETAIL_COVERAGE,
+          // which can only select/report within the declared set and must never
+          // widen or override it (see "Precedence between manifest and run-time
+          // evidence"). Using the full declared set here, not just the parents
+          // that happened to report live this run, is deliberately conservative:
+          // a failed stream's live evidence is inherently incomplete, so every
+          // declared parent is a candidate to withhold.
           const failedStateStreams = new Set(
             Array.from(streamCollectionFailedStreams).flatMap((stream) => [...resolveStateStreamsForDataStream(stream)])
           );

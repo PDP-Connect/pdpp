@@ -150,6 +150,26 @@ export interface SchedulerStore {
     connectorInstanceId: string,
     status?: string | null
   ) => Promise<ProductRunHistoryRecord | null> | ProductRunHistoryRecord | null;
+  /**
+   * Product-reader single-connection read of the newest TERMINAL/settled
+   * run-history row — `status <> 'running'` at the SQL layer, mirroring
+   * `getLatestRunHistoryForConnection`'s exclusion but WITHOUT the
+   * `scheduler_managed` scope (every run kind, like the other product
+   * readers). This is the health/failure classification authority
+   * (`healthClassifyingRun`, ref-control.ts): distinct from
+   * `getLatestRunHistoryForProductByConnectionId`, whose result may be a
+   * live in-progress row that has not settled yet and therefore cannot
+   * represent "the latest known failure/success". A `running` row with no
+   * live lease (an orphan) is excluded here at the DB level even though
+   * the JS-level `productRunHistoryToConnectorRunSummary` will eventually
+   * map it to `failed` once read through the unfiltered reader — until a
+   * maintenance sweep (or the next terminal write) resolves it, this falls
+   * back to the last row that actually settled, which is a sound (if
+   * temporarily stale) answer, never a fabricated one.
+   */
+  getLatestSettledRunHistoryForProductByConnectionId?: (
+    connectorInstanceId: string
+  ) => Promise<ProductRunHistoryRecord | null> | ProductRunHistoryRecord | null;
   /** Exact product run-history lookup fenced by the addressed connection. */
   getProductRunHistoryForConnectionRunId?: (
     connectorInstanceId: string,
@@ -184,6 +204,16 @@ export interface SchedulerStore {
   listLatestRunHistoryForProductByConnectionIds?: (
     connectorInstanceIds: readonly string[],
     status?: string | null
+  ) => Promise<readonly ProductRunHistoryRecord[]> | readonly ProductRunHistoryRecord[];
+  /**
+   * Batch counterpart of {@link getLatestSettledRunHistoryForProductByConnectionId}:
+   * the newest TERMINAL/settled (`status <> 'running'`) row per connection,
+   * every run kind, no `scheduler_managed` scope. Used by
+   * `loadConnectorSummaryProjectionDeps` (ref-control.ts) as the health/
+   * failure classification authority for the whole page render.
+   */
+  listLatestSettledRunHistoryForProductByConnectionIds?: (
+    connectorInstanceIds: readonly string[]
   ) => Promise<readonly ProductRunHistoryRecord[]> | readonly ProductRunHistoryRecord[];
   listRunHistory: (
     limit: number
@@ -497,6 +527,24 @@ export function createSqliteSchedulerStore(): SchedulerStore {
       return row ? rowToProductRunHistoryRecord(row) : null;
     },
 
+    getLatestSettledRunHistoryForProductByConnectionId(connectorInstanceId) {
+      // REVIEWED-DYNAMIC: single-connection settled/terminal read for the
+      // product reader — no scheduler_managed scope, `status <> 'running'`
+      // excludes only the live in-progress placeholder.
+      const row = [
+        ...iterateDynamicSqlAcknowledged<SchedulerRunHistoryRow>(
+          `SELECT ${PRODUCT_RUN_HISTORY_COLUMNS}
+           FROM run_history
+           WHERE connector_instance_id = ?
+             AND status <> 'running'
+           ORDER BY COALESCE(completed_at, started_at) DESC, id DESC
+           LIMIT 1`,
+          [connectorInstanceId]
+        ),
+      ].at(0);
+      return row ? rowToProductRunHistoryRecord(row) : null;
+    },
+
     getProductRunHistoryForConnectionRunId(connectorInstanceId, runId) {
       // REVIEWED-DYNAMIC: both values are bound; the fixed projection is the
       // existing product run-history reader. The composite predicate is the
@@ -656,6 +704,45 @@ export function createSqliteSchedulerStore(): SchedulerStore {
              WHERE row_rank = 1
              ORDER BY connector_id ASC, connector_instance_id ASC`,
               [...ids, status, status]
+            ),
+          ].map(rowToProductRunHistoryRecord)
+        );
+      }
+      return rows.sort(
+        (left, right) =>
+          left.connectorId.localeCompare(right.connectorId) ||
+          (left.connectorInstanceId ?? left.connectorId).localeCompare(right.connectorInstanceId ?? right.connectorId)
+      );
+    },
+
+    listLatestSettledRunHistoryForProductByConnectionIds(connectorInstanceIds) {
+      const chunks = connectionIdChunks(connectorInstanceIds);
+      if (chunks.length === 0) {
+        return [];
+      }
+      const rows: ProductRunHistoryRecord[] = [];
+      for (const ids of chunks) {
+        // REVIEWED-DYNAMIC: SQLite has no bound array type; ranks one
+        // TERMINAL/settled history row per bound page connection id, every
+        // run kind (no scheduler_managed filter). `status <> 'running'`
+        // excludes only the live in-progress placeholder.
+        rows.push(
+          ...[
+            ...iterateDynamicSqlAcknowledged<SchedulerRunHistoryRow>(
+              `SELECT ${PRODUCT_RUN_HISTORY_COLUMNS}
+             FROM (
+               SELECT ${PRODUCT_RUN_HISTORY_COLUMNS},
+                 ROW_NUMBER() OVER (
+                   PARTITION BY connector_instance_id
+                   ORDER BY COALESCE(completed_at, started_at) DESC, id DESC
+                 ) AS row_rank
+               FROM run_history
+               WHERE connector_instance_id IN (${sqliteMembershipPlaceholders(ids)})
+                 AND status <> 'running'
+            ) ranked
+             WHERE row_rank = 1
+             ORDER BY connector_id ASC, connector_instance_id ASC`,
+              ids
             ),
           ].map(rowToProductRunHistoryRecord)
         );
@@ -900,6 +987,19 @@ export function createPostgresSchedulerStore(): SchedulerStore {
       return result.rows[0] ? rowToProductRunHistoryRecord(result.rows[0] as SchedulerRunHistoryRow) : null;
     },
 
+    async getLatestSettledRunHistoryForProductByConnectionId(connectorInstanceId) {
+      const result = await postgresQuery(
+        `SELECT ${PRODUCT_RUN_HISTORY_COLUMNS}
+         FROM run_history
+         WHERE connector_instance_id = $1
+           AND status <> 'running'
+         ORDER BY COALESCE(completed_at, started_at) DESC, id DESC
+         LIMIT 1`,
+        [connectorInstanceId]
+      );
+      return result.rows[0] ? rowToProductRunHistoryRecord(result.rows[0] as SchedulerRunHistoryRow) : null;
+    },
+
     async getProductRunHistoryForConnectionRunId(connectorInstanceId, runId) {
       const result = await postgresQuery(
         `SELECT ${PRODUCT_RUN_HISTORY_COLUMNS}
@@ -1079,6 +1179,58 @@ export function createPostgresSchedulerStore(): SchedulerStore {
          WHERE row_rank = 1
          ORDER BY connector_id ASC, connector_instance_id ASC`,
           [ids, status]
+        );
+        rows.push(...(result.rows as SchedulerRunHistoryRow[]).map(rowToProductRunHistoryRecord));
+      }
+      return rows.sort(
+        (left, right) =>
+          left.connectorId.localeCompare(right.connectorId) ||
+          (left.connectorInstanceId ?? left.connectorId).localeCompare(right.connectorInstanceId ?? right.connectorId)
+      );
+    },
+
+    async listLatestSettledRunHistoryForProductByConnectionIds(connectorInstanceIds) {
+      const chunks = connectionIdChunksOfSize(connectorInstanceIds, POSTGRES_CONNECTION_ID_BATCH_SIZE);
+      if (chunks.length === 0) {
+        return [];
+      }
+      const rows: ProductRunHistoryRecord[] = [];
+      for (const ids of chunks) {
+        // biome-ignore lint/performance/noAwaitInLoops: bounded chunks preserve deterministic result order.
+        const result = await postgresQuery(
+          `WITH scoped_history AS (
+           SELECT history.id,
+                  history.connector_instance_id,
+                  history.connector_id,
+                  history.source_json,
+                  history.status,
+                  history.records_emitted,
+                  history.reported_records_emitted,
+                  history.checkpoint_summary_json,
+                  history.known_gaps_json,
+                  history.connector_error_json,
+                  history.run_id,
+                  history.trace_id,
+                  history.failure_reason,
+                  history.terminal_reason,
+                  history.started_at,
+                  history.completed_at,
+                  history.error,
+                  history.attempt,
+                  history.facts_json,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY history.connector_instance_id
+                    ORDER BY COALESCE(history.completed_at, history.started_at) DESC, history.id DESC
+                  ) AS row_rank
+           FROM unnest($1::text[]) AS input(connector_instance_id)
+           JOIN run_history AS history USING (connector_instance_id)
+           WHERE history.status <> 'running'
+         )
+         SELECT ${PRODUCT_RUN_HISTORY_COLUMNS}
+         FROM scoped_history
+         WHERE row_rank = 1
+         ORDER BY connector_id ASC, connector_instance_id ASC`,
+          [ids]
         );
         rows.push(...(result.rows as SchedulerRunHistoryRow[]).map(rowToProductRunHistoryRecord));
       }

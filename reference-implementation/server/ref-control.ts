@@ -2129,20 +2129,39 @@ function isSchedulerSkippedRun(run: ConnectorRunSummary | null): boolean {
   return run?.status === "skipped";
 }
 
-// Owner cancellation controls work; it is not provider or coverage evidence.
-// Preserve the prior success as health authority while keeping the cancelled
-// attempt visible in run history. Scheduler skips never contacted the provider.
+/**
+ * Health/failure classification authority (P1-1 fix). Reads `latestSettledRun`
+ * — the newest TERMINAL run regardless of what is active right now — never
+ * `lastRun` (which may be a still-running/pending retry that has not settled
+ * and therefore cannot represent "the current failure/success state").
+ *
+ * Before this fix, this function took the caller's literal newest run-history
+ * row (`lastRun`) and fell back to `lastSuccessfulRun` whenever that row was
+ * active. That silently skipped over a genuine settled FAILURE sitting
+ * strictly between the last success and an in-flight retry: success -> real
+ * failure -> retry begins -> `lastRun` is the retry (active) ->
+ * `lastSuccessfulRun` is the old success -> the failure vanishes from health
+ * entirely, and the connection reads healthy with a syncing badge until the
+ * retry itself terminates. `latestSettledRun` is a genuine third fact, read
+ * from the store's own newest-terminal-row query
+ * (`getLatestSettledRunHistoryForProductByConnectionId` /
+ * `listLatestSettledRunHistoryForProductByConnectionIds`,
+ * scheduler-store.ts), so it already reflects that intervening failure with
+ * no client-side reconstruction.
+ *
+ * Owner cancellation controls work; it is not provider or coverage evidence,
+ * so a cancelled `latestSettledRun` still defers to `lastSuccessfulRun`.
+ * Scheduler skips never contacted the provider, so they classify as no
+ * evidence (`null`), never a fabricated failure.
+ */
 function healthClassifyingRun(
-  run: ConnectorRunSummary | null,
+  latestSettledRun: ConnectorRunSummary | null,
   lastSuccessfulRun: ConnectorRunSummary | null = null
 ): ConnectorRunSummary | null {
-  if (isOwnerCancelledRun(run)) {
+  if (isOwnerCancelledRun(latestSettledRun)) {
     return lastSuccessfulRun;
   }
-  if (run && isActiveRunSummaryStatus(run.status)) {
-    return lastSuccessfulRun ?? null;
-  }
-  return isSchedulerSkippedRun(run) ? null : run;
+  return isSchedulerSkippedRun(latestSettledRun) ? null : latestSettledRun;
 }
 
 /**
@@ -2177,18 +2196,42 @@ function healthClassifyingRun(
  * case: a FAILED recovery-only run still carries a genuine failure signal
  * and is never substituted (the `latest` case below), exactly like an
  * ordinary terminal failure.
+ *
+ * P1-1 cross-surface fix: the active-run fallback used to key off `lastRun`
+ * alone (the literal newest row, including in-progress) and return
+ * `lastSuccessfulRun` outright — "is something running right now with no
+ * coverage evidence of its own." That question is honest for an active run
+ * with NO settled evidence between it and the last success, but it is wrong
+ * whenever a real settled failure/gap sits strictly between them: `lastRun`
+ * being active says nothing about whether `latestSettledRun` is that same
+ * old success or a genuine intervening failure, so blindly returning
+ * `lastSuccessfulRun` let the Collection Report (and any other coverage
+ * reader) show stale "complete" coverage for a stream a settled failure had
+ * already invalidated — disagreeing with the connection-health headline,
+ * which already reads `latestSettledRun` directly via `healthClassifyingRun`.
+ * The active-run fallback now applies ONLY when `latestSettledRun` itself
+ * carries no coverage evidence to lose (unset, or itself the same run as
+ * `lastSuccessfulRun`) — never when it is a distinct terminal failure/gap.
+ * `activeRun`/progress evidence remains a SEPARATE overlay either way, never
+ * folded into this function's coverage answer.
  */
 function coverageClassifyingRun(
   lastRun: ConnectorRunSummary | null,
-  lastSuccessfulRun: ConnectorRunSummary | null
+  lastSuccessfulRun: ConnectorRunSummary | null,
+  latestSettledRun: ConnectorRunSummary | null = lastRun
 ): ConnectorRunSummary | null {
-  if (lastRun && isActiveRunSummaryStatus(lastRun.status)) {
+  const settledIsIntervening =
+    latestSettledRun !== null &&
+    latestSettledRun !== lastSuccessfulRun &&
+    !isActiveRunSummaryStatus(latestSettledRun.status) &&
+    !isOwnerCancelledRun(latestSettledRun);
+  if (lastRun && isActiveRunSummaryStatus(lastRun.status) && !settledIsIntervening) {
     return lastSuccessfulRun ?? null;
   }
-  if (lastRun && lastRun.status === "succeeded" && lastRun.recovery_only) {
-    return lastSuccessfulRun ?? lastRun;
+  if (latestSettledRun && latestSettledRun.status === "succeeded" && latestSettledRun.recovery_only) {
+    return lastSuccessfulRun ?? latestSettledRun;
   }
-  return healthClassifyingRun(lastRun, lastSuccessfulRun);
+  return healthClassifyingRun(latestSettledRun, lastSuccessfulRun);
 }
 
 /**
@@ -2206,9 +2249,10 @@ function coverageClassifyingRun(
  */
 function classifiedRunForOwnerState(
   lastRun: ConnectorRunSummary | null,
-  lastSuccessfulRun: ConnectorRunSummary | null
+  lastSuccessfulRun: ConnectorRunSummary | null,
+  latestSettledRun: ConnectorRunSummary | null = lastRun
 ): ClassifiedRunForOwnerState | null {
-  const classifyingRun = coverageClassifyingRun(lastRun, lastSuccessfulRun);
+  const classifyingRun = coverageClassifyingRun(lastRun, lastSuccessfulRun, latestSettledRun);
   if (isNullish(classifyingRun)) {
     return null;
   }
@@ -2617,7 +2661,11 @@ function proofAgeFreshnessOverride(
     return null;
   }
   const current = healthInput.freshness;
-  const classifyingRun = coverageClassifyingRun(healthInput.lastRun ?? null, healthInput.lastSuccessfulRun ?? null);
+  const classifyingRun = coverageClassifyingRun(
+    healthInput.lastRun ?? null,
+    healthInput.lastSuccessfulRun ?? null,
+    healthInput.latestSettledRun ?? healthInput.lastRun ?? null
+  );
   const recomputed = deriveReferenceFreshness({
     lastAttemptedAt: classifyingRun ? classifyingRun.last_at : null,
     lastAttemptStatus: classifyingRun ? classifyingRun.status : null,
@@ -2642,8 +2690,15 @@ export function refineConnectionHealthWithCollectionReport(
     healthInput.lastSuccessfulRun ?? null,
     collectionReport
   );
-  const runEvidenceRefined = lastRun !== healthInput.lastRun || lastSuccessfulRun !== healthInput.lastSuccessfulRun;
-  const refinedHealthInput = runEvidenceRefined ? { ...healthInput, lastRun, lastSuccessfulRun } : healthInput;
+  const latestSettledRunInput = healthInput.latestSettledRun ?? healthInput.lastRun ?? null;
+  const latestSettledRun = filterRunGapsProvenCompleteByReport(latestSettledRunInput, collectionReport);
+  const runEvidenceRefined =
+    lastRun !== healthInput.lastRun ||
+    lastSuccessfulRun !== healthInput.lastSuccessfulRun ||
+    latestSettledRun !== latestSettledRunInput;
+  const refinedHealthInput = runEvidenceRefined
+    ? { ...healthInput, lastRun, lastSuccessfulRun, latestSettledRun }
+    : healthInput;
   const reportAlignedHealth = runEvidenceRefined
     ? projectConnectorSummaryConnectionHealth(refinedHealthInput)
     : initialConnectionHealth;
@@ -3209,6 +3264,17 @@ function checkpointProvesStreamCoverage(checkpoint: string | null): boolean {
 export function projectCollectionReport(input: {
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun?: ConnectorRunSummary | null;
+  /**
+   * The newest TERMINAL run (`status <> 'running'`), independent of whatever
+   * is currently active. P1-1: without this, a settled failure strictly
+   * between `lastSuccessfulRun` and an active retry is invisible to
+   * `coverageClassifyingRun` here, and the per-stream Collection Report can
+   * disagree with the (already-fixed) connection-health headline — showing
+   * the old success's coverage/gaps instead of the real intervening
+   * failure's. Defaults to `lastRun`, preserving prior behavior for callers
+   * that have not been wired to the settled-run read.
+   */
+  readonly latestSettledRun?: ConnectorRunSummary | null;
   readonly connectionHealth: ConnectionHealthSnapshot;
   readonly latestStreamFacts?: ReadonlyMap<string, LatestStreamFactRecord> | null;
   readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
@@ -3243,7 +3309,11 @@ export function projectCollectionReport(input: {
   // are audit history, never coverage evidence.
   const classifyingRun = input.localDeviceBacked
     ? null
-    : coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun ?? null);
+    : coverageClassifyingRun(
+        input.lastRun,
+        input.lastSuccessfulRun ?? null,
+        input.latestSettledRun ?? input.lastRun
+      );
   const { declaredCollectionScope: explicitCollectionScope, localCoverage } = input;
   let declaredCollectionScope = explicitCollectionScope;
   if (declaredCollectionScope === undefined && input.localDeviceBacked === true) {
@@ -4419,6 +4489,18 @@ export function projectConnectorSummaryConnectionHealth(input: {
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun: ConnectorRunSummary | null;
   /**
+   * Health/failure classification authority (P1-1): the newest TERMINAL run
+   * regardless of whether something newer is currently active — distinct
+   * from {@link lastRun}, which may be an in-progress/pending retry that has
+   * not settled. `healthClassifyingRun` reads this, never `lastRun`, so an
+   * active retry can never silently erase an intervening settled failure.
+   * Optional and defaults to `lastRun` so callers that have not been wired
+   * to the new settled-run read (e.g. older test fixtures) keep exactly
+   * their prior behavior — `lastRun` was always used for this purpose
+   * before this fix.
+   */
+  readonly latestSettledRun?: ConnectorRunSummary | null;
+  /**
    * Coverage axis derived from durable local-collector `coverage_diagnostics`
    * records, used only as a fallback when no spine run exists to anchor
    * run-derived coverage (local-device collectors push from a device outbox and
@@ -4516,19 +4598,26 @@ export function projectConnectorSummaryConnectionHealth(input: {
   const localDeviceBacked = input.localDeviceBacked === true;
   const authoritativeLastRun = localDeviceBacked ? null : input.lastRun;
   const authoritativeLastSuccessfulRun = localDeviceBacked ? null : input.lastSuccessfulRun;
+  const authoritativeLatestSettledRun = localDeviceBacked
+    ? null
+    : (input.latestSettledRun ?? input.lastRun);
   const authoritativeActiveRun = localDeviceBacked ? null : input.activeRun;
   const authoritativeCollectionRate = localDeviceBacked ? null : input.collectionRate;
   const authoritativeEphemeralBrowserRuntime = localDeviceBacked ? null : input.ephemeralBrowserRuntime;
   const authoritativeRemoteSurface = localDeviceBacked ? null : input.remoteSurface;
   const schedule = localDeviceBacked ? null : asScheduleRecord(input.schedule);
-  const latestRunForHealth = healthClassifyingRun(authoritativeLastRun, authoritativeLastSuccessfulRun);
+  const latestRunForHealth = healthClassifyingRun(authoritativeLatestSettledRun, authoritativeLastSuccessfulRun);
   const scheduleEvidence = projectConnectionHealthScheduleEvidence(
     schedule,
     authoritativeLastRun,
     authoritativeActiveRun ? authoritativeActiveRun.run_id : null
   );
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
-  const coverageRunForHealth = coverageClassifyingRun(authoritativeLastRun, authoritativeLastSuccessfulRun);
+  const coverageRunForHealth = coverageClassifyingRun(
+    authoritativeLastRun,
+    authoritativeLastSuccessfulRun,
+    authoritativeLatestSettledRun
+  );
   const nowIso = input.nowIso ?? new Date().toISOString();
   const attention = selectAttentionEvidence({
     attentionRecords: input.attentionRecords ?? [],
@@ -4652,12 +4741,19 @@ function projectSchedulerBackoffEvidence(input: {
 export function buildConnectorFreshness({
   lastRun,
   lastSuccessfulRun,
+  latestSettledRun,
   live,
   refreshPolicy,
   lastHeartbeatAt,
 }: {
   lastRun: ConnectorRunSummary | null;
   lastSuccessfulRun: ConnectorRunSummary | null;
+  /**
+   * Health/failure classification authority (P1-1). Defaults to `lastRun`
+   * when omitted, preserving prior behavior for callers not yet wired to
+   * the settled-run read.
+   */
+  latestSettledRun?: ConnectorRunSummary | null;
   live: RecordProjection;
   refreshPolicy: unknown;
   /**
@@ -4668,7 +4764,7 @@ export function buildConnectorFreshness({
   lastHeartbeatAt?: string | null;
 }): Freshness {
   const localProgressAt = lastHeartbeatAt ?? null;
-  const latestRun = healthClassifyingRun(lastRun, lastSuccessfulRun);
+  const latestRun = healthClassifyingRun(latestSettledRun ?? lastRun, lastSuccessfulRun);
   const maximumStalenessSeconds = getMaximumStalenessSeconds(refreshPolicy);
   const freshness = deriveReferenceFreshness({
     lastAttemptedAt: latestRun ? latestRun.last_at : null,
@@ -4887,6 +4983,15 @@ interface ConnectorSummaryProjectionDeps {
    * terminal-read-architecture-fable-0730.md §9/R9.2; replaces the R7
    * transitional `getLatestRunHistoryForConnection` +
    * `listRunSummariesForConnector` spine-first composition.
+   */
+  /**
+   * `status: "settled"` (a resolver-level sentinel, not a stored run status)
+   * routes to the health/failure classification authority — the newest
+   * TERMINAL run for this connection — via
+   * `getLatestSettledRunHistoryForProductByConnectionId`/
+   * `listLatestSettledRunHistoryForProductByConnectionIds` (P1-1). Every
+   * other `status` value (including `null`/omitted and `"succeeded"`)
+   * behaves exactly as before.
    */
   readonly getLatestRunSummaryForConnectionId: (
     connectorInstanceId: string,
@@ -5157,6 +5262,15 @@ interface ConnectorSummarySynthesisInput {
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun: ConnectorRunSummary | null;
   /**
+   * Health/failure classification authority (P1-1): the newest TERMINAL run
+   * for this connection, read via
+   * `getLatestSettledRunHistoryForProductByConnectionId`/
+   * `listLatestSettledRunHistoryForProductByConnectionIds`
+   * (scheduler-store.ts) — distinct from {@link lastRun}, which may be a
+   * still-active retry that has not settled.
+   */
+  readonly latestSettledRun: ConnectorRunSummary | null;
+  /**
    * Durable per-stream latest-attempt evidence for THIS connection from the
    * connector-summary read model, or `null` when none exists. Connection-
    * scoped by construction (keyed by connector_instance_id upstream).
@@ -5198,6 +5312,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     instance,
     lastRun,
     lastSuccessfulRun,
+    latestSettledRun,
     latestStreamFacts,
     live,
     localCoverage,
@@ -5216,6 +5331,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   const authoritativeEphemeralBrowserRuntime = localDeviceBacked ? null : ephemeralBrowserRuntime;
   const authoritativeLastRun = localDeviceBacked ? null : lastRun;
   const authoritativeLastSuccessfulRun = localDeviceBacked ? null : lastSuccessfulRun;
+  const authoritativeLatestSettledRun = localDeviceBacked ? null : (latestSettledRun ?? lastRun);
   const authoritativeLatestStreamFacts = localDeviceBacked ? null : latestStreamFacts;
   const terminalSetupDisposition =
     instance.status === "draft" && authoritativeLastRun
@@ -5250,6 +5366,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     lastHeartbeatAt: freshnessHeartbeatAt,
     lastRun: authoritativeLastRun,
     lastSuccessfulRun: authoritativeLastSuccessfulRun,
+    latestSettledRun: authoritativeLatestSettledRun,
     live,
     refreshPolicy,
   });
@@ -5263,6 +5380,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     freshness,
     lastRun: authoritativeLastRun,
     lastSuccessfulRun: authoritativeLastSuccessfulRun,
+    latestSettledRun: authoritativeLatestSettledRun,
     localCoverage,
     localDeviceBacked,
     manifestStreams: manifest.streams ?? [],
@@ -5290,6 +5408,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     connectionHealth: initialConnectionHealth,
     lastRun: authoritativeLastRun,
     lastSuccessfulRun: authoritativeLastSuccessfulRun,
+    latestSettledRun: authoritativeLatestSettledRun,
     latestStreamFacts: authoritativeLatestStreamFacts,
     localCoverage,
     localDeviceBacked,
@@ -5336,7 +5455,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // `as_of` is `null` — never fabricated from projection read time (design
   // gate #4).
   const causalEvidence = ownerStateCausalEvidenceFrom(
-    classifiedRunForOwnerState(authoritativeLastRun, authoritativeLastSuccessfulRun),
+    classifiedRunForOwnerState(authoritativeLastRun, authoritativeLastSuccessfulRun, authoritativeLatestSettledRun),
     freshness.captured_at ?? null
   );
   const ownerStateEvidence: OwnerStateEvidence = activeRun
@@ -5750,6 +5869,7 @@ async function projectConnectorSummaryForInstance(
     schedule,
     lastRun,
     lastSuccessfulRun,
+    latestSettledRun,
     detailGaps,
     outbox,
     attention,
@@ -5761,6 +5881,10 @@ async function projectConnectorSummaryForInstance(
     schedulePromise,
     hydrateRunSummaries ? getLatestRunSummaryForConnectionId(connectorInstanceId) : Promise.resolve(null),
     hydrateRunSummaries ? getLatestRunSummaryForConnectionId(connectorInstanceId, "succeeded") : Promise.resolve(null),
+    // P1-1: the health/failure classification authority — the newest
+    // TERMINAL run, independent of whether `lastRun` above is a still-
+    // active/pending retry.
+    hydrateRunSummaries ? getLatestRunSummaryForConnectionId(connectorInstanceId, "settled") : Promise.resolve(null),
     pageProductEvidence
       ? Promise.resolve(
           pageProductEvidence.detailGapsByInstanceId?.get(connectorInstanceId) ?? {
@@ -5858,6 +5982,7 @@ async function projectConnectorSummaryForInstance(
     instance,
     lastRun,
     lastSuccessfulRun,
+    latestSettledRun,
     latestStreamFacts: deps.latestStreamFactsByInstanceId.get(connectorInstanceId) ?? null,
     live,
     localCoverage,
@@ -5909,6 +6034,7 @@ function resolveLatestRunSummaryForConnectionId({
   connectorInstanceId,
   latestRunFactsJsonByRunId,
   latestRunHistoryByInstanceId,
+  latestSettledRunHistoryByInstanceId,
   latestSuccessfulRunHistoryByInstanceId,
   schedulerStore,
   status,
@@ -5917,17 +6043,41 @@ function resolveLatestRunSummaryForConnectionId({
   readonly connectorInstanceId: string;
   readonly latestRunFactsJsonByRunId: Map<string, Record<string, unknown> | null>;
   readonly latestRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null;
+  /**
+   * Batched newest-TERMINAL-row-per-connection map, keyed the same as
+   * {@link latestRunHistoryByInstanceId} / {@link latestSuccessfulRunHistoryByInstanceId}.
+   * `status: "settled"` reads this map (P1-1) — the health/failure
+   * classification authority.
+   */
+  readonly latestSettledRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null;
   readonly latestSuccessfulRunHistoryByInstanceId: ReadonlyMap<string, ProductRunHistoryRecord> | null;
   readonly schedulerStore: ReturnType<typeof getDefaultSchedulerStore>;
   readonly status: string | null;
 }): Promise<ConnectorRunSummary | null> {
-  const batched = status === "succeeded" ? latestSuccessfulRunHistoryByInstanceId : latestRunHistoryByInstanceId;
+  const isSettledRead = status === "settled";
+  const batched = isSettledRead
+    ? latestSettledRunHistoryByInstanceId
+    : status === "succeeded"
+      ? latestSuccessfulRunHistoryByInstanceId
+      : latestRunHistoryByInstanceId;
   const activeRun = activeRunsByInstanceId.get(connectorInstanceId) ?? null;
   if (batched !== null) {
     // The batch already covers exactly this render's connection scope —
     // a miss here is a genuine "no run history for this connection", not
     // a reason to fall back to a live per-connection read.
     return Promise.resolve(productRunHistoryToConnectorRunSummary(batched.get(connectorInstanceId) ?? null, activeRun));
+  }
+  if (isSettledRead) {
+    return Promise.resolve(
+      schedulerStore.getLatestSettledRunHistoryForProductByConnectionId?.(connectorInstanceId) ?? null
+    )
+      .then((history) => {
+        if (history?.runId) {
+          latestRunFactsJsonByRunId.set(history.runId, history.factsJson ?? null);
+        }
+        return productRunHistoryToConnectorRunSummary(history ?? null, activeRun);
+      })
+      .catch(() => null);
   }
   return Promise.resolve(schedulerStore.getLatestRunHistoryForProductByConnectionId?.(connectorInstanceId, status))
     .then((history) => {
@@ -6018,6 +6168,7 @@ async function loadConnectorSummaryProjectionDeps(
     summaryEvidenceRead,
     latestRunHistoryRows,
     latestSuccessfulRunHistoryRows,
+    latestSettledRunHistoryRows,
     scheduleRows,
   ] = await Promise.all([
     listRegisteredConnectorRows(),
@@ -6041,17 +6192,31 @@ async function loadConnectorSummaryProjectionDeps(
           schedulerStore.listLatestRunHistoryForProductByConnectionIds(runHistoryScopeIds, "succeeded")
         ).catch(() => null)
       : Promise.resolve(null),
+    // P1-1: the health/failure classification authority batch — newest
+    // TERMINAL row per connection, regardless of whether something newer is
+    // currently active. Distinct from the unfiltered `latestRunHistoryRows`
+    // batch above, which may hold a still-active/pending row.
+    runHistoryScopeIds && typeof schedulerStore.listLatestSettledRunHistoryForProductByConnectionIds === "function"
+      ? Promise.resolve(
+          schedulerStore.listLatestSettledRunHistoryForProductByConnectionIds(runHistoryScopeIds)
+        ).catch(() => null)
+      : Promise.resolve(null),
     runHistoryScopeIds && typeof controller?.listSchedulesForConnections === "function"
       ? Promise.resolve(controller.listSchedulesForConnections(runHistoryScopeIds)).catch(() => null)
       : Promise.resolve(null),
   ]);
   const latestRunHistoryByInstanceId = indexProductRunHistoryByInstanceId(latestRunHistoryRows);
   const latestSuccessfulRunHistoryByInstanceId = indexProductRunHistoryByInstanceId(latestSuccessfulRunHistoryRows);
+  const latestSettledRunHistoryByInstanceId = indexProductRunHistoryByInstanceId(latestSettledRunHistoryRows);
   // Populated from the SAME batched rows above (zero new reads); a
   // singular-fallback lookup (unscoped list census) adds its own entry as
   // it resolves, below.
   const latestRunFactsJsonByRunId = new Map<string, Record<string, unknown> | null>();
-  for (const row of [...(latestRunHistoryRows ?? []), ...(latestSuccessfulRunHistoryRows ?? [])]) {
+  for (const row of [
+    ...(latestRunHistoryRows ?? []),
+    ...(latestSuccessfulRunHistoryRows ?? []),
+    ...(latestSettledRunHistoryRows ?? []),
+  ]) {
     if (row.runId) {
       latestRunFactsJsonByRunId.set(row.runId, row.factsJson ?? null);
     }
@@ -6110,6 +6275,7 @@ async function loadConnectorSummaryProjectionDeps(
         connectorInstanceId,
         latestRunFactsJsonByRunId,
         latestRunHistoryByInstanceId,
+        latestSettledRunHistoryByInstanceId,
         latestSuccessfulRunHistoryByInstanceId,
         schedulerStore,
         status,

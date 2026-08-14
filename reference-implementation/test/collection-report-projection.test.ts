@@ -408,6 +408,69 @@ test("terminal failed latest run is NEVER substituted by a prior success (failur
   assert.notEqual(entry.coverage_condition, "complete");
 });
 
+// P1-1 cross-surface follow-up: `projectCollectionReport` must classify
+// coverage off `latestSettledRun` (the newest TERMINAL run), exactly like the
+// already-fixed connection-health headline (`healthClassifyingRun`) — not off
+// `lastRun` alone. Without threading `latestSettledRun` through, a settled
+// failure sitting strictly between the last success and an active retry is
+// invisible here: `lastRun` is the active retry (no coverage evidence of its
+// own), so `coverageClassifyingRun` falls back to `lastSuccessfulRun` and the
+// per-stream report reads the OLD success's complete coverage even though a
+// real failure happened after it and before the retry. This would let the
+// Collection Report disagree with the corrected connection-health headline
+// (degraded) by showing a stale "complete" stream.
+test("success -> settled failure -> active retry: report reflects the settled failure, not the old success", () => {
+  const successfulRun = makeRun({
+    collection_facts: {
+      streams: [fact({ collected: 0, considered: 1125, covered: 1125, stream: "messages" })],
+    },
+    event_count: 3,
+    finished_at: "2026-05-19T11:00:00.000Z",
+    last_at: "2026-05-19T11:00:00.000Z",
+    run_id: "run_success",
+    started_at: "2026-05-19T10:59:00.000Z",
+    status: "succeeded",
+  });
+  const settledFailedRun = makeRun({
+    collection_facts: null,
+    event_count: 0,
+    failure_reason: "credential_rejected",
+    finished_at: "2026-05-19T12:10:00.000Z",
+    last_at: "2026-05-19T12:10:00.000Z",
+    run_id: "run_settled_failure",
+    started_at: "2026-05-19T12:09:00.000Z",
+    status: "failed",
+    terminal_reason: "credential_rejected",
+  });
+  const activeRetryRun = makeRun({
+    collection_facts: null,
+    event_count: 0,
+    finished_at: null,
+    last_at: "2026-05-19T12:20:00.000Z",
+    run_id: "run_active_retry",
+    started_at: "2026-05-19T12:20:00.000Z",
+    status: "in_progress",
+  });
+  const entries = projectCollectionReport({
+    connectionHealth: makeHealth({ attention: "none", freshness: "stale" }),
+    lastRun: activeRetryRun,
+    lastSuccessfulRun: successfulRun,
+    latestSettledRun: settledFailedRun,
+    manifestStreams: [
+      { coverage_strategy: "checkpoint_window", freshness_strategy: "scheduled_window", name: "messages" },
+    ],
+    refreshPolicy: null,
+  });
+  const entry = entryFor(entries, "messages");
+
+  // The settled failure — not the active retry, and not the old success —
+  // is the coverage authority: it carries no collection_facts of its own and
+  // is not owner-cancelled, so it must read unknown, never the stale
+  // "complete" the old success would otherwise leave behind.
+  assert.equal(entry.coverage_condition, "unknown");
+  assert.notEqual(entry.coverage_condition, "complete");
+});
+
 // Live defect fix (2026-07-17): a connector with a durable non-pressure
 // recovery backlog (e.g. a large Gmail attachment-hydration queue) is
 // dispatched `recovery_only` on every scheduled/unscoped-manual run for as

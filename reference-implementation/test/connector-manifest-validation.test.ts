@@ -420,6 +420,73 @@ test("validateConnectorManifest rejects a stream declaring both state_stream and
   assert.throws(() => validateConnectorManifest(manifest), BOTH_STATE_STREAM_AND_PARENT_STREAMS_PATTERN);
 });
 
+// ─── Checkpoint-dependency cycle detection (spec Validation rule 6, P2-1) ──
+//
+// Rules 1-5 (self-reference, unknown parent, duplicate parent, both fields,
+// empty parent_streams) each inspect one stream's own declared edges in
+// isolation, so they cannot see a cycle formed by TWO OR MORE direct edges
+// (A -> B -> A, or a longer chain through direct edges only). These tests
+// build such graphs directly and prove genuine cycle detection fires — a
+// provider-neutral DFS over the declared dependency graph, no connector-
+// specific knowledge.
+
+const CYCLE_PATTERN = /Checkpoint-dependency cycle detected/;
+
+function streamStub(name: string, extra: Record<string, unknown> = {}) {
+  return {
+    name,
+    primary_key: ["id"],
+    schema: { properties: { id: { type: "string" } } },
+    ...extra,
+  };
+}
+
+test("validateConnectorManifest rejects a 2-cycle formed by two direct state_stream edges (A <-> B)", () => {
+  const manifest = {
+    connector_key: "test-manifest",
+    streams: [
+      streamStub("stream_a", { coverage_strategy: "checkpoint_window", state_stream: "stream_b" }),
+      streamStub("stream_b", { coverage_strategy: "checkpoint_window", state_stream: "stream_a" }),
+    ],
+  };
+  assert.throws(() => validateConnectorManifest(manifest), CYCLE_PATTERN);
+});
+
+test("validateConnectorManifest rejects a 3-cycle formed by direct state_stream edges (A -> B -> C -> A)", () => {
+  const manifest = {
+    connector_key: "test-manifest",
+    streams: [
+      streamStub("stream_a", { coverage_strategy: "checkpoint_window", state_stream: "stream_b" }),
+      streamStub("stream_b", { coverage_strategy: "checkpoint_window", state_stream: "stream_c" }),
+      streamStub("stream_c", { coverage_strategy: "checkpoint_window", state_stream: "stream_a" }),
+    ],
+  };
+  assert.throws(() => validateConnectorManifest(manifest), CYCLE_PATTERN);
+});
+
+test("validateConnectorManifest rejects a mixed state_stream/parent_streams cycle", () => {
+  const manifest = {
+    connector_key: "test-manifest",
+    streams: [
+      streamStub("stream_a", { coverage_strategy: "checkpoint_window", state_stream: "stream_b" }),
+      streamStub("stream_b", { coverage_strategy: "parent_detail_accounting", parent_streams: ["stream_a"] }),
+    ],
+  };
+  assert.throws(() => validateConnectorManifest(manifest), CYCLE_PATTERN);
+});
+
+test("validateConnectorManifest accepts an acyclic manifest where two streams share the same declared parent", () => {
+  const manifest = {
+    connector_key: "test-manifest",
+    streams: [
+      streamStub("shared_parent"),
+      streamStub("child_one", { coverage_strategy: "checkpoint_window", state_stream: "shared_parent" }),
+      streamStub("child_two", { coverage_strategy: "checkpoint_window", state_stream: "shared_parent" }),
+    ],
+  };
+  assert.doesNotThrow(() => validateConnectorManifest(manifest));
+});
+
 // ─── validateProvenCapability: adversarial direct tests ───────────────────
 //
 // The Cluster B closure made capabilities.proven a schema-validated,

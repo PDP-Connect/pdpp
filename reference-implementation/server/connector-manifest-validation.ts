@@ -1914,6 +1914,83 @@ function validateStreamAggregations({
   }
 }
 
+// Provider-neutral cycle detection over the manifest's declared checkpoint-
+// dependency graph (state_stream / parent_streams edges). Rules 1-5 above
+// only reject a stream naming itself directly; two or more direct edges can
+// still form a longer cycle (A.state_stream=B, B.state_stream=A, or
+// A -> B -> C -> A), which those per-stream checks cannot see because each
+// only inspects one stream's own declared edges in isolation. This performs
+// a DFS with a visiting/visited coloring over the whole graph, purely from
+// the declared edges — no connector-specific knowledge. See
+// spec-collection-profile.md, Checkpoint dependency > Validation, rule 6.
+function buildCheckpointDependencyGraph(
+  manifestStreamsByName: Map<string, Record<string, unknown>>
+): Map<string, string[]> {
+  const graph = new Map<string, string[]>();
+  for (const [name, stream] of manifestStreamsByName) {
+    const edges: string[] = [];
+    if (isNonEmptyString(stream.state_stream)) {
+      edges.push(stream.state_stream as string);
+    }
+    if (Array.isArray(stream.parent_streams)) {
+      for (const parent of stream.parent_streams as unknown[]) {
+        if (isNonEmptyString(parent)) {
+          edges.push(parent as string);
+        }
+      }
+    }
+    graph.set(name, edges);
+  }
+  return graph;
+}
+
+function findCheckpointDependencyCycle(graph: Map<string, string[]>): string[] | null {
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const path: string[] = [];
+
+  function visit(node: string): string[] | null {
+    if (visited.has(node)) {
+      return null;
+    }
+    if (visiting.has(node)) {
+      const cycleStart = path.indexOf(node);
+      return [...path.slice(cycleStart), node];
+    }
+    visiting.add(node);
+    path.push(node);
+    for (const neighbor of graph.get(node) || []) {
+      const cycle = visit(neighbor);
+      if (cycle) {
+        return cycle;
+      }
+    }
+    path.pop();
+    visiting.delete(node);
+    visited.add(node);
+    return null;
+  }
+
+  for (const node of graph.keys()) {
+    const cycle = visit(node);
+    if (cycle) {
+      return cycle;
+    }
+  }
+  return null;
+}
+
+function validateCheckpointDependencyAcyclic(
+  manifestStreamsByName: Map<string, Record<string, unknown>>,
+  code: string
+): void {
+  const graph = buildCheckpointDependencyGraph(manifestStreamsByName);
+  const cycle = findCheckpointDependencyCycle(graph);
+  if (cycle) {
+    throw invalidConnectorManifest(`Checkpoint-dependency cycle detected among streams: ${cycle.join(" -> ")}`, code);
+  }
+}
+
 function validateManifestStream({
   code,
   manifestStreamsByName,
@@ -2025,4 +2102,5 @@ export function validateConnectorManifest(
   for (const stream of streams) {
     validateManifestStream({ code, manifestStreamsByName, opts, seenStreamNames, stream });
   }
+  validateCheckpointDependencyAcyclic(manifestStreamsByName, code);
 }
