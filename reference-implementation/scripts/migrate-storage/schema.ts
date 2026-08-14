@@ -1,6 +1,13 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// biome-ignore lint/performance/noBarrelFile: Compatibility re-export for callers that previously read backup policy here.
+export {
+  BACKUP_TABLE_INVENTORY,
+  type BackupTableClassification,
+  type BackupTableInventoryEntry,
+} from "../../server/backup-table-policy.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const JSONB_RE = /\bJSONB\b/;
@@ -39,7 +46,8 @@ export interface TableMeta {
   skipMigration: boolean;
 }
 
-// Canonical table ordering respecting FK dependencies
+// Canonical logical migration ordering respecting FK dependencies. This is
+// migration-owned and intentionally narrower than backup/restore coverage.
 const TABLE_ORDER = [
   "connectors",
   "connector_instances",
@@ -76,7 +84,8 @@ const TABLE_ORDER = [
   "semantic_search_backfill_progress",
 ];
 
-// Tables that are derived/rebuilt by the runtime; should not be migrated
+// Tables rebuilt by runtime search/index repair. They stay in TABLE_ORDER so
+// schema parsing can inspect drift, but execute skips migrating their rows.
 const DERIVED_TABLE_NAMES = new Set([
   "lexical_search_index",
   "lexical_search_snapshots",
@@ -362,7 +371,9 @@ export function loadSchemaFromSource(): TableMeta[] {
     return cachedSchema;
   }
 
-  const ddlPath = join(__dirname, "..", "..", "server", "postgres-storage.js");
+  const compiledDdlPath = join(__dirname, "..", "..", "server", "postgres-storage.js");
+  const sourceDdlPath = join(__dirname, "..", "..", "server", "postgres-storage.ts");
+  const ddlPath = existsSync(compiledDdlPath) ? compiledDdlPath : sourceDdlPath;
   const ddlContent = readFileSync(ddlPath, "utf-8");
 
   const tables: TableMeta[] = [];
