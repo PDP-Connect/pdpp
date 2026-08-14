@@ -18,8 +18,8 @@
 // small — counts as substantive. This mirrors the W3C pattern described in
 // the task: stamp on a real edit, not on typo/header housekeeping.
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -172,10 +172,38 @@ function writeStaleDates(stale: StaleReport[]): void {
   const today = new Date().toISOString().slice(0, 10);
   for (const entry of stale) {
     const text = readFileSync(join(REPO_ROOT, entry.file), "utf8");
-    const updated = text.replace(DATE_LINE_PATTERN, `Date: ${today}`);
+    // Replace only the ISO date, never the whole line. Several of these carry
+    // an editorial tail — "(revised from 2026-03-30)", "(original); superseded
+    // 2026-04-12" — that is real provenance, and spec-check.ts compares the
+    // full string against the sidecar, so dropping it here would both destroy
+    // information and fail that check.
+    const updated = text.replace(DATE_LINE_PATTERN, (line) => line.replace(ISO_DATE_PATTERN, today));
     writeFileSync(join(REPO_ROOT, entry.file), updated);
     console.log(`${entry.file}: stamped Date: ${today} (was ${entry.declared})`);
+    stampSidecar(entry.file, today);
   }
+}
+
+// The site renders each spec through a committed header sidecar that repeats
+// the root's Status and Date inside a <Callout>. spec-check.ts compares the two
+// and fails on a mismatch, so stamping only the root would trade one red check
+// for another. Stamping both keeps them in step.
+//
+// The sidecar's date is prose, not a bare value: several read
+// "2026-07-07 (revised from 2026-03-30)". Only the leading date is replaced, so
+// that editorial tail survives.
+function stampSidecar(specFile: string, today: string): void {
+  const sidecar = join(REPO_ROOT, "apps/site/spec-headers", specFile.replace(/\.md$/, ".header.md"));
+  if (!existsSync(sidecar)) {
+    return;
+  }
+  const text = readFileSync(sidecar, "utf8");
+  const updated = text.replace(/^(\s*Date:\s*)\d{4}-\d{2}-\d{2}/m, `$1${today}`);
+  if (updated === text) {
+    return;
+  }
+  writeFileSync(sidecar, updated);
+  console.log(`  ${basename(sidecar)}: mirrored Date: ${today}`);
 }
 
 function reportFailures(stale: StaleReport[], errors: string[]): void {

@@ -1,7 +1,7 @@
 # Change Tracking Design
 
 Status: Informative
-Date: 2026-07-07 (revised from 2026-04-06)
+Date: 2026-08-14 (revised from 2026-04-06)
 
 ---
 
