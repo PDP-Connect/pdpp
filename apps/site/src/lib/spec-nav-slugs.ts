@@ -33,19 +33,25 @@ export const PRIMARY_SLUGS = [
   "spec-semantic-retrieval-extension",
 ] as const;
 
-// The supporting documents, in the order the specification-set table states
-// them. These render as a quiet, unlabeled cluster at the foot of the rail
+// The supporting documents that DO appear in the specification rail, in order.
+// These render as a quiet, unlabeled cluster at the foot of the rail
 // (see components/specification/rail.tsx): reachable in one click, visibly subordinate, never a
 // second peer list. A heading over them would make them a rival to the
 // specification and put all ten documents back on equal footing.
 export const SUPPORTING_SLUGS = [
-  "spec-architecture",
-  "spec-auth-design",
-  "spec-change-tracking",
   "spec-connector-ecosystem",
   "spec-deferred",
   "open-questions",
-  "reference-implementation",
   "reference-implementation-examples",
   "spec-data-query-api",
+] as const;
+
+// The reference materials: documents that remain accessible by their URLs
+// but do not appear in the main specification rail. They are listed instead
+// on a separate reference materials index page (see /specification/reference-materials).
+export const REFERENCE_MATERIALS_SLUGS = [
+  "spec-architecture",
+  "reference-implementation",
+  "spec-auth-design",
+  "spec-change-tracking",
 ] as const;

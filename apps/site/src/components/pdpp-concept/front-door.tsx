@@ -47,8 +47,8 @@ export function PdppFrontDoor() {
               Personal Data Portability Protocol (PDPP) is an open protocol for scoped access to personal data.
             </Text>
             <Text className="opacity-60" size="title" weight="medium">
-              A grant is how one person approves one application to read chosen records and fields, and a resource
-              server enforces it on every request.
+              Apps and agents get fine-grained access to records and fields based on grants a user approves, enforced by
+              the resource server on every request.
             </Text>
             <Text color="muted" size="body" wrap="balanced">
               It profiles{" "}
@@ -95,7 +95,7 @@ export function PdppFrontDoor() {
               render={<Link href="/self-host" />}
               variant="secondary"
             >
-              <span>Implement PDPP</span>
+              <span>Self-Host</span>
               <span aria-hidden="true" className="text-foreground-faint">
                 →
               </span>

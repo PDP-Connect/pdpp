@@ -66,13 +66,12 @@ export default async function Page({ params }: DocsPageProps) {
       className="pdpp-docs-page"
       footer={rootFooterItems ? { items: rootFooterItems } : undefined}
       full={page.data.full}
-      // The in-page table of contents lives in the LEFT rail, under "Contents",
-      // exactly as the concept states it — so fumadocs' own right-hand TOC
-      // column is turned off rather than left to render a second copy of the
-      // same list. The popover (the narrow-viewport affordance) stays: below
-      // the width the rail unmounts at, it is the only way to reach the
-      // headings. `toc` is still passed because the popover reads it.
-      tableOfContent={{ enabled: false }}
+      // The left rail lists DOCUMENTS (the spec's sibling files), not this
+      // page's own headings — it has no per-page section nav. Fumadocs' own
+      // right-hand TOC column supplies that, restyled in specification.css to
+      // sit as its own column distinct from the rail. The popover (the
+      // narrow-viewport affordance) stays: below the width the rail unmounts
+      // at, it is the only way to reach the headings.
       toc={toc}
     >
       <div className="pdpp-docs-hero">
@@ -134,14 +133,19 @@ export async function generateMetadata({ params }: DocsPageProps): Promise<Metad
   // without changing the docs source tree that other in-flight work depends
   // on (SEO/GEO standard MUST #1.5: robots directives must match the approved
   // access policy; this page was never meant to be a public spec page).
+  //
+  // reference-materials.md is a reference index for implementation notes and
+  // design rationale — useful for maintainers but not part of the normative spec.
+  // It is noindex'd so it remains accessible by URL but is not crawled or ranked.
   const isInternalNotesPage = page.path === "README.md";
+  const isReferenceMaterialsPage = page.path === "reference-materials.md";
   const canonicalUrl = isRootSlug ? "/specification" : page.url;
 
   return {
     alternates: { canonical: canonicalUrl },
     description: page.data.description,
     openGraph: { url: canonicalUrl },
-    robots: isInternalNotesPage ? { follow: false, index: false } : undefined,
+    robots: isInternalNotesPage || isReferenceMaterialsPage ? { follow: false, index: false } : undefined,
     title: page.data.title,
   };
 }

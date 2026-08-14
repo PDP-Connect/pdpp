@@ -15,15 +15,17 @@ import { SITE_ORIGIN } from "@/components/pdpp-concept/site-facts.ts";
 // governance decision the policy owner has not recorded; this file does not
 // invent one. /design and /palette (contributor-only, feature-flagged,
 // already `noindex, nofollow` in their own layouts), /sandbox (mock demo
-// data, already `noindex, nofollow` in its layout), and
-// /specification/README (contributor-facing authoring notes, already
-// `noindex, nofollow` in its own generateMetadata) are disallowed here too,
-// so the crawl policy holds even for a crawler that ignores meta robots.
+// data, already `noindex, nofollow` in its layout), /specification/README
+// (contributor-facing authoring notes, already `noindex, nofollow` in its own
+// generateMetadata), and /specification/reference-materials (reference index
+// not part of the normative spec, already `noindex, nofollow` in its own
+// generateMetadata) are disallowed here too, so the crawl policy holds even
+// for a crawler that ignores meta robots.
 export default function robots(): MetadataRoute.Robots {
   return {
     rules: {
       allow: "/",
-      disallow: ["/design", "/palette", "/sandbox", "/specification/README"],
+      disallow: ["/design", "/palette", "/sandbox", "/specification/README", "/specification/reference-materials"],
       userAgent: "*",
     },
     sitemap: `${SITE_ORIGIN}/sitemap.xml`,

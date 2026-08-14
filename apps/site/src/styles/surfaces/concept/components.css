@@ -639,11 +639,10 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   background: none;
   border-radius: 0;
 }
-/* The one token that says WHAT you are running: full-strength on-teal ink
-   (10.85:1) against the soft boilerplate around it. */
+/* Subtle color shift for image name; weight matches surrounding text. */
 .pdpp-cmd__em {
-  font-weight: 600;
-  color: var(--pdpp-concept-onteal-deep);
+  font-weight: 400;
+  color: var(--pdpp-concept-onteal-deep-soft);
 }
 /* On the teal-deep ground, so it takes the concept's own .terminal .copy-btn
    treatment (on-teal ink, a 35%-strength on-teal hairline) rather than the
@@ -681,7 +680,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   border: 0;
 }
 .pdpp-cmd__choice + .pdpp-cmd__choice {
-  margin-top: 10px;
+  margin-top: 6px;
 }
 .pdpp-cmd__choice-label {
   float: left;
@@ -732,7 +731,7 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
    PyTorch's install matrix freezes its geometry for the same reason. */
 .pdpp-cmd__reveal {
   visibility: hidden;
-  margin-top: 10px;
+  margin-top: 6px;
 }
 .pdpp-cmd__reveal.is-shown {
   visibility: visible;
@@ -778,13 +777,14 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   color: var(--pdpp-concept-ink-faint);
 }
 /* Shown instead of a command when the selected combination has no working
-   artifact. Same box as the command so the absence is deliberate, not a gap. */
+   artifact. Use page background and normal body ink for WCAG 4.5:1 contrast. */
 .pdpp-cmd__blocked {
-  padding: 2px 0;
+  padding: 24px 28px;
   margin: 0;
   font-family: var(--font-sans);
   font-size: 14px;
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-concept-ink);
+  background: var(--pdpp-concept-paper);
 }
 @media (max-width: 560px) {
   .pdpp-cmd__panel {

@@ -16,10 +16,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { PdppRailFrontMatter } from "@/components/pdpp-concept/rail-front-matter.tsx";
 import { PdppRailSectionLabel } from "@/components/pdpp-concept/rail-section-label.tsx";
-import { docsRoute, SUPPORTING_SLUGS } from "@/lib/spec-nav-slugs.ts";
+import { docsRoute, REFERENCE_MATERIALS_SLUGS, SUPPORTING_SLUGS } from "@/lib/spec-nav-slugs.ts";
 import { useSpecRailData } from "./rail-context.tsx";
 
 const supportingUrls = new Set(SUPPORTING_SLUGS.map((slug) => `${docsRoute}/${slug}`));
+const referenceMaterialsUrls = new Set(REFERENCE_MATERIALS_SLUGS.map((slug) => `${docsRoute}/${slug}`));
 
 // The `slots.sidebar.root` replacement.
 //
@@ -48,6 +49,7 @@ function RailItem({ item }: { item: PageTree.Item }) {
       aria-current={active ? "page" : undefined}
       className="pdpp-rail__doc"
       data-active={active ? "true" : undefined}
+      data-reference-materials={referenceMaterialsUrls.has(item.url) ? "true" : undefined}
       data-supporting={supportingUrls.has(item.url) ? "true" : undefined}
       href={item.url}
     >

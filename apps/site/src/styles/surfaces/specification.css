@@ -27,14 +27,31 @@
      not --container-page directly: the grid lives inside container padding. */
   --fd-layout-width: 100%;
   --fd-sidebar-width: var(--spacing-rail);
-  /* TOC lives in the left rail; keep the right column closed. */
+  /* Right column (per-page section nav) stays closed below xl: the document
+     rail + a TOC column + a readable measure don't fit in --container-page
+     (1080px) at once. It opens back up at the xl breakpoint below. */
   --fd-toc-width: 0px;
   font-family: var(--font-sans);
   background: transparent;
 }
 
-@media (min-width: 1280px) and (max-width: 1439.98px) {
-  [data-pdpp-doc-theme] #nd-docs-layout aside[class*="[grid-area:toc]"] {
+@media (min-width: 1280px) {
+  [data-pdpp-doc-theme] #nd-docs-layout {
+    --fd-toc-width: 15rem;
+  }
+}
+
+/* Fumadocs ships `#nd-toc` with its own `max-xl:hidden` utility, but the
+   concept surface compiles Tailwind in a SEPARATE build from fumadocs' own
+   preset (see concept/index.css), and that build's own unconditional
+   `.flex{display:flex}` chunk loads AFTER fumadocs' — same specificity, later
+   in the cascade, so it silently wins over the media-scoped `max-xl:hidden`
+   at every width, and `#nd-toc` never actually collapses below 1280px (it
+   renders `display:flex` at zero width instead). Force it here instead: this
+   file is unlayered plain CSS, which always outranks a `@layer utilities`
+   rule regardless of source order, so this is not itself racing the same bug. */
+@media (max-width: 1279.98px) {
+  [data-pdpp-doc-theme] #nd-toc {
     display: none;
   }
 }
@@ -86,22 +103,40 @@
    would add a second 1rem inset to the article. */
 @media (max-width: 767.98px) {
   /* The concept masthead is 4rem on mobile. Fumadocs uses this value as the
-     sticky subnav offset; 3rem let that row overlap the masthead on scroll. */
+     sticky subnav offset; the header row is shrunk to its own content's
+     footprint below (see next rule), so that row is the true sticky offset. */
   [data-pdpp-doc-theme] #nd-docs-layout {
     --fd-banner-height: 4rem;
     --fd-docs-height: calc(100dvh - 4rem);
-    /* Fumadocs reserves 3.5rem here by default, but the concept subnav is
-       3rem. Keep the grid row equal to the rendered header. */
-    --fd-header-height: 3rem;
+    /* This row now carries only the drawer trigger (title is null, search is
+       hidden above) — the "On this page" popover sits directly under it as
+       its own full-width bar, so fumadocs' default 3.5rem header stacked on
+       the popover's 2.5rem (--fd-toc-popover-height, fumadocs' own default)
+       read as two mismatched, mostly-empty strips. Match the header row to
+       the popover row's height so the popover's border becomes the only seam
+       and the pair reads as one control row of equal-height halves. */
+    --fd-header-height: 2.5rem;
     /* The table scrollport outsets through the article's right inset. The grid
        otherwise clips that extra width before it reaches the outer container. */
     overflow-x: visible;
   }
 
   /* Keep the sticky navigation row opaque while the TOC popover remains
-     available from its trigger. */
+     available from its trigger. Its own border is dropped so it fuses with
+     the popover row directly under it into one visual band.
+     This row now carries only the drawer trigger (title is null, search is
+     hidden above): fumadocs places it last in DOM order after a flex-1
+     spacer, so it floats alone at the row's end with nothing to its start.
+     Reverse the row so the icon sits flush at the INLINE-START instead —
+     directly above the popover row's own leading icon underneath — so the
+     pair reads as one two-line control stack sharing a left edge, rather
+     than an icon-only bar disconnected from the labeled bar below it. */
   [data-pdpp-doc-theme] #nd-subnav {
+    flex-direction: row-reverse;
+    height: 2.5rem;
+    padding-inline-end: 1rem;
     background: var(--pdpp-concept-paper) !important;
+    border-bottom: none;
     /* Paint over the table's right-hand bleed without extending the subnav
        border or changing the position of its controls. */
     box-shadow: var(--spacing-pad) 0 var(--pdpp-concept-paper);

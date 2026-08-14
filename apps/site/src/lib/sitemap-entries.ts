@@ -16,11 +16,12 @@ export interface DocPageRef {
   url: string;
 }
 
-// content/docs/README.md is contributor-facing authoring notes (see
-// sync-spec-docs.mjs and the [[...slug]] page's own generateMetadata
-// comment), not a protocol page. It must never appear in a sitemap that is
-// only for canonical indexable URLs (SEO/GEO standard MUST #4.3).
-const NON_CANONICAL_DOC_PATHS = new Set(["README.md"]);
+// Paths that are not canonical/indexable and must not appear in the sitemap
+// (SEO/GEO standard MUST #4.3):
+// - README.md: contributor-facing authoring notes (see sync-spec-docs.mjs)
+// - reference-materials.md: reference index for implementation notes and design
+//   rationale, not part of the normative spec (see [[...slug]]/page.tsx generateMetadata)
+const NON_CANONICAL_DOC_PATHS = new Set(["README.md", "reference-materials.md"]);
 
 // SEO/GEO standard MUST #4.3: a sitemap must contain only canonical,
 // indexable URLs, and `lastmod` must represent the last substantive change to

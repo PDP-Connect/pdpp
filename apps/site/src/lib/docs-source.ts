@@ -45,9 +45,13 @@ function pick(byUrl: Map<string, PageTree.Item>, slugs: readonly string[]): Page
     .filter((item): item is PageTree.Item => item !== undefined);
 }
 
-// The tree the rail renders: the five specification documents under a single
+// The tree the rail renders: the six specification documents under a single
 // "Specification" label, then a separator the rail draws as a bare hairline,
 // then the supporting documents.
+//
+// Reference materials (implementation notes, design rationale) are not included
+// here; they remain accessible by their URLs but are not rendered in the
+// specification rail. They are instead linked from /specification/reference-materials.
 //
 // The separator names are load-bearing — components/specification/rail.tsx renders "Specification"
 // as the rail's one label and every other separator as a rule with no heading.

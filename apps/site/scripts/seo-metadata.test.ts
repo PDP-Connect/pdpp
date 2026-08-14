@@ -28,7 +28,13 @@ test("robots.txt allows the public site and blocks non-canonical surfaces", () =
   assert.equal(rules.allow, "/");
 
   const disallow = Array.isArray(rules.disallow) ? rules.disallow : [rules.disallow];
-  for (const path of ["/design", "/palette", "/sandbox", "/specification/README"]) {
+  for (const path of [
+    "/design",
+    "/palette",
+    "/sandbox",
+    "/specification/README",
+    "/specification/reference-materials",
+  ]) {
     assert.ok(disallow.includes(path), `robots.txt must disallow ${path}`);
   }
 });
@@ -36,6 +42,7 @@ test("robots.txt allows the public site and blocks non-canonical surfaces", () =
 const FIXTURE_PAGES: DocPageRef[] = [
   { path: "index.mdx", url: "/specification" },
   { path: "README.md", url: "/specification/README" },
+  { path: "reference-materials.md", url: "/specification/reference-materials" },
   { path: "spec-core.md", url: "/specification/spec-core" },
   { path: "spec-deferred.md", url: "/specification/spec-deferred" },
 ];
@@ -54,10 +61,14 @@ test("sitemap contains only canonical URLs, each exactly once", () => {
   }
 });
 
-test("sitemap excludes contributor-facing authoring notes", () => {
+test("sitemap excludes contributor-facing authoring notes and reference materials index", () => {
   const urls = buildSitemap(SITE_ORIGIN, FIXTURE_PAGES, "2026-04-06").map((entry) => entry.url);
 
   assert.ok(!urls.includes(`${SITE_ORIGIN}/specification/README`), "README.md is authoring notes, not a spec page");
+  assert.ok(
+    !urls.includes(`${SITE_ORIGIN}/specification/reference-materials`),
+    "reference-materials.md is a reference index, not a canonical doc"
+  );
 });
 
 test("sitemap includes the front door, nav destinations, and every real doc page exactly once", () => {

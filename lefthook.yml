@@ -49,6 +49,10 @@ pre-commit:
       glob: "{spec-*.md,apps/site/content/docs/spec-*.md,apps/site/content/docs/README.md,scripts/spec-check.ts}"
       run: pnpm spec:check
 
+    - name: spec:dates
+      glob: "{spec-*.md,scripts/spec-date-check.ts}"
+      run: pnpm spec:dates
+
     # Bounded-statement wrapper enforcement.
     # Spec: openspec/changes/bound-spine-and-record-read-paths/specs/
     #       reference-implementation-architecture/spec.md
