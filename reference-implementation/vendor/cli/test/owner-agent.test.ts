@@ -15,6 +15,8 @@ import { discoverOwnerAgentProfile, normalizeEntrypointUrl } from "../src/owner-
 import { OwnerAgentError } from "../src/owner-agent/errors.ts";
 
 const SECRET = "super-secret-owner-bearer-value";
+const ACTIVE_STATUS_RE = /active: true/;
+const OWNER_TOKEN_KIND_RE = /token kind: owner/;
 const REG_TOKEN = "reg-access-token-value";
 
 function capture() {
@@ -473,6 +475,31 @@ test("status returns nonzero when token is inactive (revoked)", async () => {
     assert.equal(code, 1);
     // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
     assert.match(captured.stdout, /active: false/);
+  });
+});
+
+test("status falls back to the bearer-authenticated owner control surface", async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    let controlAuth: string | null = null;
+    const fetch = makeFetch([
+      { method: "POST", match: "/introspect", status: 401, body: { error: { code: "context.authentication_failed" } } },
+      {
+        method: "GET",
+        match: "/v1/owner/control",
+        handler: ({ opts }) => {
+          controlAuth = opts.headers?.Authorization ?? null;
+          return jsonResponse(200, { object: "owner_agent_control_surface" });
+        },
+      },
+    ]);
+    const code = await runOwnerAgent(["status", "--entrypoint", "https://ref.test"], captured.io, { fetch, home });
+    assert.equal(code, 0);
+    assert.match(captured.stdout, ACTIVE_STATUS_RE);
+    assert.match(captured.stdout, OWNER_TOKEN_KIND_RE);
+    assert.equal(controlAuth, `Bearer ${SECRET}`);
+    assert.doesNotMatch(captured.stdout, new RegExp(SECRET));
   });
 });
 

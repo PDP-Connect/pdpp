@@ -11,12 +11,18 @@ import { readFile } from "node:fs/promises";
 import { OwnerAgentError } from "./errors.ts";
 
 type FetchFn = typeof fetch;
+const TRAILING_SLASHES_RE = /\/+$/;
 
 export interface OwnerAgentCredentialRecord {
   access_token?: string;
-  credential?: { access_token?: string };
+  client_id?: string;
+  credential?: { access_token?: string; expires_at?: string | null; scope?: string | null };
+  expires_at?: string | null;
   introspection_endpoint?: string;
+  pdpp_token_kind?: string;
   registration_client_uri?: string;
+  resource?: string;
+  scope?: string | null;
   [key: string]: unknown;
 }
 
@@ -68,6 +74,14 @@ export async function introspectOwnerAgentCredential({
     throw new OwnerAgentError("request_failed", `Introspection request failed: ${(error as Error).message}.`);
   }
   if (!response.ok) {
+    // `/introspect` is AS↔RS infrastructure and, after the authorization
+    // hardening stack, requires the confidential RS caller credentials. An
+    // owner agent must not be given those credentials. When the deployment
+    // exposes the owner-agent control surface, use its bearer-authenticated
+    // capability document as the owner credential's liveness check instead.
+    if ((response.status === 401 || response.status === 403) && record.resource) {
+      return await checkOwnerAgentControlSurface({ fetchFn, record });
+    }
     throw new OwnerAgentError("introspection_failed", `Introspection failed with HTTP ${response.status}.`);
   }
   let json: {
@@ -93,6 +107,56 @@ export async function introspectOwnerAgentCredential({
     exp: json.exp ?? null,
     scope: json.scope ?? null,
   };
+}
+
+async function checkOwnerAgentControlSurface({
+  fetchFn,
+  record,
+}: IntrospectOwnerAgentCredentialArgs): Promise<IntrospectionResult> {
+  const token = getOwnerAgentAccessToken(record);
+  const resource = record.resource?.replace(TRAILING_SLASHES_RE, "");
+  if (!(token && resource)) {
+    throw new OwnerAgentError("credential_invalid", "Stored credential is missing an owner control resource.");
+  }
+  let response: Response;
+  try {
+    response = await fetchFn(`${resource}/v1/owner/control`, {
+      headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+    });
+  } catch (error) {
+    // biome-ignore lint/style/useErrorCause: OwnerAgentError has no cause slot; the original error's message is already folded into this one.
+    throw new OwnerAgentError("request_failed", `Owner-agent status request failed: ${(error as Error).message}.`);
+  }
+  if (response.status === 401 || response.status === 403) {
+    return {
+      active: false,
+      client_id: typeof record.client_id === "string" ? record.client_id : null,
+      exp: credentialExpiry(record),
+      scope: typeof record.scope === "string" ? record.scope : null,
+      sub: null,
+      token_kind: typeof record.pdpp_token_kind === "string" ? record.pdpp_token_kind : "owner",
+    };
+  }
+  if (!response.ok) {
+    throw new OwnerAgentError("introspection_failed", `Owner-agent status failed with HTTP ${response.status}.`);
+  }
+  return {
+    active: true,
+    client_id: typeof record.client_id === "string" ? record.client_id : null,
+    exp: credentialExpiry(record),
+    scope: typeof record.scope === "string" ? record.scope : null,
+    sub: null,
+    token_kind: typeof record.pdpp_token_kind === "string" ? record.pdpp_token_kind : "owner",
+  };
+}
+
+function credentialExpiry(record: OwnerAgentCredentialRecord): number | null {
+  const value = record.expires_at ?? record.credential?.expires_at ?? null;
+  if (typeof value !== "string") {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : null;
 }
 
 interface RevokeOwnerAgentCredentialArgs {
