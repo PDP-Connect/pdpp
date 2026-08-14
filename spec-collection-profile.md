@@ -372,8 +372,7 @@ Reports how completely a connector hydrated per-record detail for one checkpoint
   "state_stream": "messages",
   "required_keys": ["msg_1", "msg_2", "msg_3"],
   "hydrated_keys": ["msg_1", "msg_2"],
-  "gap_keys": ["msg_3"],
-  "optional_skip_keys": []
+  "gap_keys": ["msg_3"]
 }
 ```
 
@@ -385,29 +384,20 @@ Reports how completely a connector hydrated per-record detail for one checkpoint
 | `required_keys` | (string \| number)[] | The full set of record keys considered for detail under this parent boundary in this run. |
 | `hydrated_keys` | (string \| number)[] | The subset of `required_keys` successfully fetched and emitted as `RECORD`. |
 | `gap_keys` | (string \| number)[] | Optional. Keys for which a `DETAIL_GAP` was emitted this run. |
-| `optional_skip_keys` | (string \| number)[] | Optional. Keys the connector accepts as terminally unavailable under an explicit optional-detail policy (see below). |
 
 A connector with a list+detail lane MUST emit one `DETAIL_COVERAGE` message per distinct `state_stream` boundary after that boundary's detail work for the run settles, and MUST place it after the last `RECORD` or `DETAIL_GAP` it emits for that detail stream and boundary in the run. A connector exempt from a per-record detail fetch (flat streams only) is not required to emit `DETAIL_COVERAGE`.
 
 **Non-normative note:** this ordering rule is a conformance obligation on the connector; the reference implementation does not currently enforce message sequence/ordering for `DETAIL_COVERAGE` at the runtime level (it accepts the message whenever it arrives and evaluates coverage as of terminal DONE). A runtime MAY choose to validate ordering explicitly; the eligible-checkpoint algorithm's correctness in the reference implementation does not depend on runtime-side ordering enforcement, only on the connector honestly reporting complete state by the time DONE is evaluated.
 
-**Key-set validation.** Within one `DETAIL_COVERAGE` message:
+**Key-set validation.** Within one portable v0.1 `DETAIL_COVERAGE` message:
 
-- `required_keys`, `hydrated_keys`, `gap_keys`, and `optional_skip_keys` MUST each contain no duplicate key.
-- Every key in `hydrated_keys`, `gap_keys`, or `optional_skip_keys` MUST also appear in `required_keys`.
-- A single key MUST NOT appear in more than one of `hydrated_keys`, `gap_keys`, `optional_skip_keys` within the same message.
-- A key in `required_keys` that appears in none of the three outcome sets is an unaccounted key: its parent boundary's coverage is incomplete (see [Eligible-checkpoint algorithm](#eligible-checkpoint-algorithm)).
+- `required_keys`, `hydrated_keys`, and `gap_keys` MUST each contain no duplicate key.
+- Every key in `hydrated_keys` or `gap_keys` MUST also appear in `required_keys`.
+- A key in `required_keys` that appears in neither outcome set is an unaccounted key: its parent boundary's coverage is incomplete (see [Eligible-checkpoint algorithm](#eligible-checkpoint-algorithm)).
 
 **Multi-parent streams.** A detail stream declared with manifest `parent_streams` (see [Checkpoint dependency](#checkpoint-dependency)) MAY emit more than one `DETAIL_COVERAGE` message in the same run — one per parent boundary that settled. The runtime MUST evaluate and gate each declared parent's checkpoint independently from the others' coverage; it MUST NOT reject two `DETAIL_COVERAGE` messages solely because they share the same `stream` while their `state_stream` values differ. Every `state_stream` value reported MUST be a member of the stream's manifest-declared `parent_streams` set — a runtime MUST reject a `DETAIL_COVERAGE` naming a `state_stream` outside that set as a protocol violation (see [Precedence between manifest and run-time evidence](#precedence-between-manifest-and-run-time-evidence)).
 
-**`optional_skip_keys` evidence bar.** A connector MAY place a required key in `optional_skip_keys` only when both of the following hold:
-
-1. The declaring stream's contract makes that detail optional for this key — the connector affirmatively distinguishes provider-authored, record-specific accepted absence from operator or deployment configuration (for example, an env-var-driven "skip this detail" toggle) using per-record source evidence, not a manifest-level flag. **v0.1 does not define a normative manifest or wire shape for this condition.** No manifest field standardizes it, and the reference implementation does not read the manifest to check it: this is a connector-internal obligation, verified only by the affirmative absence check in condition 2 below and by connector-specific tests. A key placed in `optional_skip_keys` on the strength of operator/deployment configuration alone (with no per-record provider evidence) violates this condition even though nothing in the wire message or manifest schema can catch the violation mechanically.
-2. A connector-specific check affirmatively identifies a terminal, source-confirmed absence of that detail (for example, a provider's own "this object no longer exists" response), rather than an ambiguous failure.
-
-An HTTP status code alone, response age alone, transport failure, retry exhaustion, or a generic access-denied response MUST NOT by itself establish terminal unavailability. A connector that cannot affirmatively clear this bar MUST leave the key out of all three outcome sets (unaccounted) rather than placing it in `optional_skip_keys`; an unaccounted key withholds its parent's checkpoint and is retried on the next run, which is the fail-closed default.
-
-**Non-normative note (portability floor).** Because condition 1 has no standardized manifest or wire representation, `optional_skip_keys` acceptance is not yet a portable conformance guarantee: two independent runtimes cannot mechanically agree on whether a given key's absence was provider-authored and record-specific (condition 1) versus an operator/deployment deferral wrongly routed through this channel, since neither can inspect a manifest field for it. Runtime acceptance of a `DETAIL_COVERAGE` message's `optional_skip_keys` field (its key-set validation and its effect on checkpoint eligibility, per the [Eligible-checkpoint algorithm](#eligible-checkpoint-algorithm)) is normative and portable. Whether a specific key's presence in that set was justified is a connector-conformance property that v0.1 cannot verify at the protocol level. A future profile revision that wants a portable declaration MUST define the manifest field and value vocabulary for condition 1 before promoting it to a mechanically checkable rule; until then, connector implementations remain individually responsible for condition 1, and operator/deployment-driven skips (which are required-but-unaccounted, not accepted absence) MUST NOT be routed through `optional_skip_keys`.
+**Reference-implementation extension: `optional_skip_keys`.** The reference implementation accepts an additional `optional_skip_keys` outcome set as a non-portable extension. It MUST NOT be used to claim portable v0.1 conformance: an independent v0.1 runtime may reject the extension or treat those keys as unaccounted, and the v0.1 checkpoint algorithm below does not credit it. A runtime and connector that explicitly opt into the reference extension MAY credit a key only when the connector has affirmative, provider-authored evidence of a terminal, record-specific absence. Operator or deployment configuration alone is never sufficient. An HTTP status code alone, response age alone, transport failure, retry exhaustion, or generic access denial MUST leave the key unaccounted and therefore retryable. A future profile revision MUST standardize the manifest declaration and value vocabulary before accepted absence becomes a portable checkpoint outcome.
 
 #### DETAIL_GAP
 
@@ -498,7 +488,7 @@ For a certified stream-scoped failure, the runtime MAY persist staged STATE for 
 
 1. **Resolve each failed data stream to its checkpoint stream(s).** For each data stream named by an in-scope `SKIP_RESULT{reason: "stream_collection_failed"}`, compute its set of checkpoint parents using the manifest's static declaration, per [Precedence between manifest and run-time evidence](#precedence-between-manifest-and-run-time-evidence): the manifest's `state_stream` (single parent), or the manifest's full declared `parent_streams` set (every declared parent, whether or not it received a live `DETAIL_COVERAGE` report this run — a failed stream's live evidence is inherently incomplete, so every declared parent is a candidate to withhold); if neither is declared, the stream is self-mapped (its own name is its one checkpoint parent).
 2. **Union every failed data stream's checkpoint parents** into one set of ineligible checkpoint streams.
-3. **Compute detail-coverage shortfalls independently of the failure.** For every staged checkpoint stream, evaluate every `DETAIL_COVERAGE` report gating it: a report is incomplete if any `required_keys` entry is unaccounted (present in none of `hydrated_keys`, `optional_skip_keys`, or a `gap_keys` entry backed by a matching `DETAIL_GAP` for the same stream and parent boundary — see [DETAIL_GAP](#detail_gap)), or if a manifest-declared parent relationship for an in-scope detail stream has no `DETAIL_COVERAGE` report at all this run. Add every checkpoint stream with an incomplete report to the ineligible set.
+3. **Compute detail-coverage shortfalls independently of the failure.** For every staged checkpoint stream, evaluate every `DETAIL_COVERAGE` report gating it: a report is incomplete if any `required_keys` entry is unaccounted (present in neither `hydrated_keys` nor a `gap_keys` entry backed by a matching `DETAIL_GAP` for the same stream and parent boundary — see [DETAIL_GAP](#detail_gap)), or if a manifest-declared parent relationship for an in-scope detail stream has no `DETAIL_COVERAGE` report at all this run. Add every checkpoint stream with an incomplete report to the ineligible set. A reference-implementation extension MAY additionally credit its explicitly opted-in `optional_skip_keys`, but that is not portable v0.1 behavior.
 4. **Commit every staged checkpoint stream not in the ineligible set.** The runtime MUST NOT persist STATE for any checkpoint stream in the ineligible set (from step 2 or step 3).
 5. **Partial checkpoint-store failure.** If persisting an individual eligible checkpoint stream's STATE fails after the eligibility set is computed (for example, a resource-server write error), the runtime MUST fail the run as a runtime error. A partial commit failure MUST NOT be reported as `succeeded`, and any checkpoint stream not yet committed at the point of failure remains eligible for retry on the next run. The runtime MUST make the following observable, though not necessarily from a single field or object: the total count of checkpoint streams staged and the total count durably committed before the failure (a bounded numeric summary; this MAY be all a single terminal-result field exposes), the identity of the specific checkpoint stream whose persistence attempt failed (for example, in a diagnostic message or a dedicated failure event), and the identity of each checkpoint stream that was durably committed before the failure (for example, via a per-stream commit event emitted at the time of that commit, or by reading back the durably persisted state after the run). A runtime is not required to expose a single response field naming every staged-and-committed stream together; it MUST NOT expose only bounded counts with no path at all to recovering which specific streams committed.
 
@@ -550,7 +540,7 @@ A conformant connector:
 8. Exits with status 0 on `succeeded`, non-zero on `failed` or `cancelled`.
 9. Emits RECORD messages only within the `scope` provided in START: no undeclared streams, no records outside declared `resources` or `time_range`, and no extra top-level fields when `fields` is present.
 10. If it cannot honor a declared `resources`, `time_range`, or `fields` constraint, emits an explicit `SKIP_RESULT` or fails the run; it never silently broadens scope.
-11. If it runs a list+detail lane, emits `DETAIL_COVERAGE` per checkpoint-parent boundary per run, with every required key accounted in `hydrated_keys`, `gap_keys`, or `optional_skip_keys`, and only places a key in `optional_skip_keys` when it has affirmatively confirmed terminal unavailability (see [DETAIL_COVERAGE](#detail_coverage)).
+11. If it runs a list+detail lane, emits `DETAIL_COVERAGE` per checkpoint-parent boundary per run, with every required key accounted in `hydrated_keys` or `gap_keys` backed by a matching `DETAIL_GAP` (see [DETAIL_COVERAGE](#detail_coverage)). The reference implementation's `optional_skip_keys` extension is not required for portable v0.1 conformance.
 12. Scopes every `DETAIL_GAP` to the checkpoint-parent boundary it accounts for via `parent_stream` whenever the affected detail stream has more than one declared parent.
 
 ### A conformant connector runtime:
@@ -653,7 +643,6 @@ type ConnectorMessage =
       required_keys: (string | number)[];
       hydrated_keys: (string | number)[];
       gap_keys?: (string | number)[];
-      optional_skip_keys?: (string | number)[];
     }
   | {
       type: 'DETAIL_GAP';

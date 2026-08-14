@@ -2130,6 +2130,20 @@ function isSchedulerSkippedRun(run: ConnectorRunSummary | null): boolean {
 }
 
 /**
+ * Compatibility fallback for callers that have not yet supplied the store's
+ * newest-terminal run. An active `lastRun` is progress, not settled health;
+ * before the explicit settled-run read existed, the only honest fallback was
+ * the last successful terminal run. Callers with the new store field bypass
+ * this approximation and retain the intervening failure.
+ */
+function fallbackLatestSettledRun(
+  lastRun: ConnectorRunSummary | null,
+  lastSuccessfulRun: ConnectorRunSummary | null
+): ConnectorRunSummary | null {
+  return lastRun && isActiveRunSummaryStatus(lastRun.status) ? lastSuccessfulRun : lastRun;
+}
+
+/**
  * Health/failure classification authority (P1-1 fix). Reads `latestSettledRun`
  * — the newest TERMINAL run regardless of what is active right now — never
  * `lastRun` (which may be a still-running/pending retry that has not settled
@@ -2664,7 +2678,8 @@ function proofAgeFreshnessOverride(
   const classifyingRun = coverageClassifyingRun(
     healthInput.lastRun ?? null,
     healthInput.lastSuccessfulRun ?? null,
-    healthInput.latestSettledRun ?? healthInput.lastRun ?? null
+    healthInput.latestSettledRun ??
+      fallbackLatestSettledRun(healthInput.lastRun ?? null, healthInput.lastSuccessfulRun ?? null)
   );
   const recomputed = deriveReferenceFreshness({
     lastAttemptedAt: classifyingRun ? classifyingRun.last_at : null,
@@ -2690,7 +2705,8 @@ export function refineConnectionHealthWithCollectionReport(
     healthInput.lastSuccessfulRun ?? null,
     collectionReport
   );
-  const latestSettledRunInput = healthInput.latestSettledRun ?? healthInput.lastRun ?? null;
+  const latestSettledRunInput =
+    healthInput.latestSettledRun ?? fallbackLatestSettledRun(healthInput.lastRun ?? null, healthInput.lastSuccessfulRun ?? null);
   const latestSettledRun = filterRunGapsProvenCompleteByReport(latestSettledRunInput, collectionReport);
   const runEvidenceRefined =
     lastRun !== healthInput.lastRun ||
@@ -3312,7 +3328,7 @@ export function projectCollectionReport(input: {
     : coverageClassifyingRun(
         input.lastRun,
         input.lastSuccessfulRun ?? null,
-        input.latestSettledRun ?? input.lastRun
+        input.latestSettledRun ?? fallbackLatestSettledRun(input.lastRun, input.lastSuccessfulRun ?? null)
       );
   const { declaredCollectionScope: explicitCollectionScope, localCoverage } = input;
   let declaredCollectionScope = explicitCollectionScope;
@@ -4600,7 +4616,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
   const authoritativeLastSuccessfulRun = localDeviceBacked ? null : input.lastSuccessfulRun;
   const authoritativeLatestSettledRun = localDeviceBacked
     ? null
-    : (input.latestSettledRun ?? input.lastRun);
+    : (input.latestSettledRun ?? fallbackLatestSettledRun(input.lastRun, input.lastSuccessfulRun));
   const authoritativeActiveRun = localDeviceBacked ? null : input.activeRun;
   const authoritativeCollectionRate = localDeviceBacked ? null : input.collectionRate;
   const authoritativeEphemeralBrowserRuntime = localDeviceBacked ? null : input.ephemeralBrowserRuntime;
@@ -4764,7 +4780,10 @@ export function buildConnectorFreshness({
   lastHeartbeatAt?: string | null;
 }): Freshness {
   const localProgressAt = lastHeartbeatAt ?? null;
-  const latestRun = healthClassifyingRun(latestSettledRun ?? lastRun, lastSuccessfulRun);
+  const latestRun = healthClassifyingRun(
+    latestSettledRun ?? fallbackLatestSettledRun(lastRun, lastSuccessfulRun),
+    lastSuccessfulRun
+  );
   const maximumStalenessSeconds = getMaximumStalenessSeconds(refreshPolicy);
   const freshness = deriveReferenceFreshness({
     lastAttemptedAt: latestRun ? latestRun.last_at : null,
@@ -5331,7 +5350,9 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   const authoritativeEphemeralBrowserRuntime = localDeviceBacked ? null : ephemeralBrowserRuntime;
   const authoritativeLastRun = localDeviceBacked ? null : lastRun;
   const authoritativeLastSuccessfulRun = localDeviceBacked ? null : lastSuccessfulRun;
-  const authoritativeLatestSettledRun = localDeviceBacked ? null : (latestSettledRun ?? lastRun);
+  const authoritativeLatestSettledRun = localDeviceBacked
+    ? null
+    : (latestSettledRun ?? fallbackLatestSettledRun(lastRun, lastSuccessfulRun));
   const authoritativeLatestStreamFacts = localDeviceBacked ? null : latestStreamFacts;
   const terminalSetupDisposition =
     instance.status === "draft" && authoritativeLastRun
