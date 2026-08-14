@@ -332,10 +332,10 @@ function createConnectorSummaryStore() {
         const incomplete = await postgresQuery(
           `SELECT connector_instance_id
              FROM connector_summary_evidence
-            WHERE terminal_facts_reason_code = 'terminal_fold_incomplete'
+            WHERE terminal_facts_reason_code = $1
             ORDER BY connector_instance_id ASC
-            LIMIT $1`,
-          [limit]
+            LIMIT $2`,
+          [REASON_CODES.TERMINAL_FOLD_INCOMPLETE, limit]
         );
         return (incomplete.rows as Row[]).map((row) => String(row.connector_instance_id));
       },
@@ -520,11 +520,11 @@ function createConnectorSummaryStore() {
         .prepare(
           `SELECT connector_instance_id
              FROM connector_summary_evidence
-            WHERE terminal_facts_reason_code = 'terminal_fold_incomplete'
+            WHERE terminal_facts_reason_code = ?
             ORDER BY connector_instance_id ASC
             LIMIT ?`
         )
-        .all(limit) as Row[];
+        .all(REASON_CODES.TERMINAL_FOLD_INCOMPLETE, limit) as Row[];
       return incomplete.map((row) => String(row.connector_instance_id));
     },
     markAllDirty({ sanitized }: { sanitized?: string | null }) {
