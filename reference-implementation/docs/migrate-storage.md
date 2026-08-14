@@ -404,7 +404,15 @@ node scripts/migrate-storage/cli.ts plan \
 
 ## What gets migrated, what doesn't
 
-### Migrated tables (25 non-derived)
+This page describes the **logical migration subset** used by
+`scripts/migrate-storage`. It is not the complete backup/restore contract.
+Live schema tables that are not listed here must still be classified in
+`server/backup-table-policy.ts` as `backup_required`,
+`derived_rebuildable`, or `ephemeral_crash_reconciled`. A successful
+SQLite/Postgres migration does not prove that every durable table has been
+restored.
+
+### Migrated tables (26 non-derived)
 
 All owner/grant/connector/ingest/scheduling/runtime state:
 
@@ -425,7 +433,7 @@ All owner/grant/connector/ingest/scheduling/runtime state:
 - `grant_connector_state` — per-grant connector runtime state
 - `connector_schedules` — scheduled run timing
 - `controller_active_runs` — in-flight connector runs (if persistent across restarts)
-- `scheduler_run_history` — job queue history and statistics
+- `run_history` — terminal run history and statistics
 - `scheduler_last_run_times` — scheduler checkpoints for resumption
 - `version_counter` — global migration/schema versioning
 - `blobs` — raw ingested data (PII, structured records)
