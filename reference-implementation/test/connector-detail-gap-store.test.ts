@@ -519,7 +519,7 @@ async function withStateServer(fn: (ctx: StateServerContext) => Promise<void>): 
       for await (const _chunk of req) {
       }
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+      res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
       return;
     }
     res.writeHead(404, { "content-type": "application/json" });

@@ -14703,6 +14703,831 @@
         ]
       }
     },
+    "/_ref/connections/{connectorInstanceId}/record-rejections": {
+      "get": {
+        "operationId": "refListRecordRejections",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connectorInstanceId",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "connection_id": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "connector_id": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "first_input_index": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "last_seen_at": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "latest_input_index": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "payload_bytes": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "payload_sha256": {
+                            "pattern": "^[a-f0-9]{64}$",
+                            "type": "string"
+                          },
+                          "quota_near_limit": {
+                            "type": "boolean"
+                          },
+                          "reason_code": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "receipt_id": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "replay_count": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "run_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "status": {
+                            "const": "pending"
+                          },
+                          "stream": {
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "connection_id",
+                          "connector_id",
+                          "created_at",
+                          "first_input_index",
+                          "last_seen_at",
+                          "latest_input_index",
+                          "payload_bytes",
+                          "payload_sha256",
+                          "quota_near_limit",
+                          "reason_code",
+                          "receipt_id",
+                          "replay_count",
+                          "run_id",
+                          "status",
+                          "stream"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    },
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "object": {
+                      "const": "list"
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "data",
+                    "has_more",
+                    "next_cursor"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (e.g. run_already_active)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "summary": "List metadata for pending durable record rejections on an owner-controlled connection.",
+        "tags": [
+          "reference",
+          "connections",
+          "record-rejections"
+        ]
+      }
+    },
+    "/_ref/connections/{connectorInstanceId}/record-rejections/{receiptId}": {
+      "get": {
+        "operationId": "refGetRecordRejection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connectorInstanceId",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "receiptId",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "connection_id": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "connector_id": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "first_input_index": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "last_seen_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "latest_input_index": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "payload_bytes": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "payload_sha256": {
+                      "pattern": "^[a-f0-9]{64}$",
+                      "type": "string"
+                    },
+                    "quota_near_limit": {
+                      "type": "boolean"
+                    },
+                    "reason_code": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "receipt_id": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "replay_count": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "run_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "const": "pending"
+                    },
+                    "stream": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "payload_base64": {
+                      "type": "string"
+                    },
+                    "payload_encoding": {
+                      "const": "base64"
+                    },
+                    "payload_text": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "connection_id",
+                    "connector_id",
+                    "created_at",
+                    "first_input_index",
+                    "last_seen_at",
+                    "latest_input_index",
+                    "payload_bytes",
+                    "payload_sha256",
+                    "quota_near_limit",
+                    "reason_code",
+                    "receipt_id",
+                    "replay_count",
+                    "run_id",
+                    "status",
+                    "stream",
+                    "payload_base64",
+                    "payload_encoding",
+                    "payload_text"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (e.g. run_already_active)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "available_connections": {
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Get one retained record-rejection payload after owner and connection authorization.",
+        "tags": [
+          "reference",
+          "connections",
+          "record-rejections"
+        ]
+      }
+    },
     "/_ref/connector-instances": {
       "get": {
         "operationId": "refListConnectorInstances",

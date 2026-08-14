@@ -117,6 +117,10 @@ function seedSqliteRun(
 
 function sqlitePurge() {
   return {
+    deleteRecordRejectionsPostgres: () => {
+      throw new Error("Postgres rejection purge must not run for SQLite");
+    },
+    deleteRecordRejectionsSqlite: () => 0,
     deleteRecordRowsPostgres: () => {
       throw new Error("Postgres purge must not run for SQLite");
     },

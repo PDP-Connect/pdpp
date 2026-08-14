@@ -519,11 +519,31 @@ export function emitSpineEvent(
     return postgresEmitSpineEvent(input) as Promise<SpineEventRecord | null>;
   }
 
+  return Promise.resolve(insertSqliteSpineEvent(input, dbHandle));
+}
+
+function insertSqliteSpineEvent(input: SpineEventInput, dbHandle: SpineDatabase | null): SpineEventRecord | null {
   const db = dbHandle ?? (getDb() as SpineDatabase | undefined);
   if (!db) {
-    return Promise.resolve(null);
+    return null;
   }
-  return Promise.resolve(appendSqliteSpineEventInTransaction(input, db));
+  return appendSqliteSpineEventInTransaction(input, db);
+}
+
+/**
+ * Write one SQLite spine event before returning to a caller-owned transaction.
+ *
+ * This is the explicit atomic-audit seam for stores already running inside a
+ * synchronous better-sqlite3 transaction. Any validation or INSERT failure
+ * throws before this function returns, so the caller's transaction rolls back.
+ */
+export function emitSqliteSpineEventSynchronously(
+  input: SpineEventInput = {},
+  dbHandle: SpineDatabase | null = null
+): SpineEventRecord | null {
+  assertRunEventHasConnectorInstanceId(input);
+  assertRunStartedIsStamped(input);
+  return insertSqliteSpineEvent(input, dbHandle);
 }
 
 function toRunHistorySpineEvent(event: NormalizedSpineEvent, rawData: unknown): RunHistorySpineEvent {

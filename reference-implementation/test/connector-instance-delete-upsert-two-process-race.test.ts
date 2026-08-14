@@ -212,6 +212,10 @@ test("two genuine OS processes racing deleteConnection and upsert for the SAME i
           now: LATER,
           ownerSubjectId,
           purge: {
+            deleteRecordRejectionsPostgres: () => Promise.resolve(0),
+            deleteRecordRejectionsSqlite: () => {
+              throw new Error("deleteRecordRejectionsSqlite must not be called by the Postgres store");
+            },
             deleteRecordRowsPostgres: () => Promise.resolve(0),
             deleteRecordRowsSqlite: () => {
               throw new Error("deleteRecordRowsSqlite must not be called by the Postgres store");

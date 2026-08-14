@@ -995,15 +995,15 @@ test("the PostgreSQL profile declares its exact live-gate skip baseline", async 
 });
 // FIFTH-PASS GATE FIX (2026-07-30): this hardcoded literal must track
 // test-accounting.manifest.json's memory-default skip map exactly. The current
-// branch carries six additional PostgreSQL-only tests plus two self-describing
-// PostgreSQL skips, for a final baseline of 167 skips.
+// branch carries the current PostgreSQL-gated coverage, including durable
+// record-rejection receipt and retained-size parity rows.
 test("the memory-default profile declares the exact current skip baseline", async () => {
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
   const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
   const memoryDefault = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "memory-default");
   assert.deepEqual(typeof memoryDefault === "string" ? undefined : memoryDefault?.skip_reasons, {
-    "PDPP_TEST_POSTGRES_URL unset": 144,
+    "PDPP_TEST_POSTGRES_URL unset": 153,
     "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
     "dedicated disposable URL not selected": 1,
     "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,

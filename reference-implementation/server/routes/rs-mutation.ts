@@ -74,13 +74,18 @@ import {
 } from "../../operations/rs-records-delete-stream/index.ts";
 import {
   executeRecordsIngest,
+  type InsertOrReplayRejectionInput,
+  parseLines as parseIngestLines,
   type RecordsIngestDependencies,
   RecordsIngestInvalidRequestError,
   RecordsIngestNotFoundError,
   type RecordsIngestOutput,
+  RecordsIngestResourceLimitError,
   RecordsIngestSystemicFailureError,
+  type RejectionReceipt,
 } from "../../operations/rs-records-ingest/index.ts";
 import { canonicalConnectorKey } from "../connector-key.ts";
+import { HOSTED_INGEST_MAX_LINE_BYTES } from "../hosted-ingest-limits.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -99,42 +104,6 @@ interface RouteResponse {
   json: (body: unknown) => unknown;
   setHeader: (name: string, value: string) => unknown;
   status: (code: number) => RouteResponse;
-}
-
-interface ClassifiedIngestFailureLike {
-  readonly code: string;
-  readonly message: string;
-  readonly retryable: boolean;
-}
-
-const SYSTEMIC_INGEST_PUBLIC_MESSAGE = "Ingest failed due to a transient storage error; retry later.";
-
-function mapSystemicIngestError(err: unknown): (Error & { code?: string }) | null {
-  if (!(err instanceof RecordsIngestSystemicFailureError)) {
-    return null;
-  }
-  console.warn(
-    `[records-ingest] systemic ingest failure code=${err.code} retryable_failure_count=${err.retryableFailureCount}`
-  );
-  const mapped = new Error(SYSTEMIC_INGEST_PUBLIC_MESSAGE) as Error & { code?: string };
-  mapped.code = err.code;
-  return mapped;
-}
-
-function mapPublicRecordsIngestOperationError(err: unknown): (Error & { code?: string }) | null {
-  const systemicError = mapSystemicIngestError(err);
-  if (systemicError) {
-    return systemicError;
-  }
-  if (!(err instanceof RecordsIngestInvalidRequestError || err instanceof RecordsIngestNotFoundError)) {
-    return null;
-  }
-  const mapped = new Error(err.message) as Error & { code?: string };
-  const errCode = (err as { code?: string }).code;
-  if (errCode !== undefined) {
-    mapped.code = errCode;
-  }
-  return mapped;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
@@ -257,6 +226,34 @@ async function maybeRecordAcquisitionProvenance(
   });
 }
 
+// The single-record capability throws raw host errors. Classify via the
+// injected capability, but only convert permanent per-record failures into the
+// typed shape the operation needs for line-level rejection receipts. Systemic
+// failures keep the original error object so the existing batch-level
+// redaction path does not inherit host-private text.
+async function ingestRecordClassified(
+  ctx: MountRsMutationContext,
+  namespace: ConnectorNamespaceLike,
+  record: Record<string, unknown>,
+  runId: string | null
+): Promise<unknown> {
+  try {
+    return await ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record, {
+      requireConnectionAdmission: Boolean(namespace.connectorInstanceId),
+      runId,
+    });
+  } catch (err) {
+    const classified = ctx.classifyIngestFailure(err);
+    if (!classified.retryable) {
+      const lineError = new Error(classified.message) as Error & { code: string; retryable: false };
+      lineError.code = classified.code;
+      lineError.retryable = false;
+      throw lineError;
+    }
+    throw err;
+  }
+}
+
 interface TokenInfo {
   readonly client_id?: string | null;
   readonly grant?: GrantLike | null;
@@ -362,7 +359,13 @@ export interface MountRsMutationContext {
       requestedStreams?: string[] | null;
     }
   ) => StateContext;
-  readonly classifyIngestFailure: (err: unknown) => ClassifiedIngestFailureLike;
+  // Capability: classify a thrown ingest-write error as PERMANENT (a
+  // per-record data defect, `retryable: false`) or SYSTEMIC (storage/
+  // coordination failure, or unknown, `retryable: true`) by its own typed
+  // `.code` field only — see records.ts's `classifyIngestFailure`. Used to
+  // convert permanent single-record failures into the operation layer's
+  // typed line-error shape without importing records.ts here.
+  readonly classifyIngestFailure: (err: unknown) => { code: string; message: string; retryable: boolean };
   readonly deleteAllRecords: (target: StorageTargetLike, streamName: string) => Promise<unknown>;
   readonly deleteRecord: (target: StorageTargetLike, streamName: string, recordId: string) => Promise<unknown>;
   readonly emitMutationEvent: (
@@ -388,6 +391,7 @@ export interface MountRsMutationContext {
   readonly getLatestAcquisitionBatchForConnection?: (
     connectorInstanceId: string
   ) => Promise<AcquisitionBatchLike | null> | AcquisitionBatchLike | null;
+  readonly getOwnerTokenSubjectId?: (req: RouteRequest) => string;
   readonly getSyncState: (target: StorageTargetLike, args: unknown) => Promise<unknown>;
 
   // Capability: error handler for untyped errors
@@ -397,6 +401,19 @@ export interface MountRsMutationContext {
     record: unknown,
     options?: { requireConnectionAdmission?: boolean; runId?: string | null }
   ) => Promise<unknown>;
+  readonly insertOrReplayRecordRejection?: (input: {
+    auditActorId: string;
+    auditActorType: string;
+    auditTraceId: string | null;
+    code: string;
+    connectorId: string;
+    connectorInstanceId: string;
+    inputIndex: number;
+    ownerSubjectId: string;
+    rawLine: Buffer;
+    runId?: string | null;
+    stream: string;
+  }) => Promise<RejectionReceipt> | RejectionReceipt;
   // Every other owner-connection mutation route (revoke, reactivate,
   // schedule, run, rename, delete — see routes/owner-connection-*.ts,
   // ref-connectors.ts) invalidates the dashboard/Sources/Syncs summary cache
@@ -405,6 +422,18 @@ export interface MountRsMutationContext {
   // above is the same kind of mutation (draft -> active) and must invalidate
   // too — see `maybeActivateDraftAfterIngest`.
   readonly invalidateConnectorSummariesCache?: () => void;
+  readonly markAcceptedRecordRejectionsStale?: (input: {
+    auditActorId: string;
+    auditActorType: string;
+    auditTraceId: string | null;
+    connectorId: string;
+    connectorInstanceId: string;
+    ownerSubjectId: string;
+    rawLine: Buffer;
+    recordKey?: string | null;
+    runId?: string | null;
+    stream: string;
+  }) => Promise<unknown> | unknown;
   readonly markAcquisitionBatchCommitted?: (
     connectorInstanceId: string,
     counts: { acceptedCount?: number; failedCount?: number; updatedAt?: string }
@@ -473,24 +502,37 @@ export interface MountRsMutationContext {
   readonly toPublicConnectorStateProjection: (state: unknown) => unknown;
 }
 
-async function ingestRecordClassified(
+function insertHostedRejectionReceipt(
   ctx: MountRsMutationContext,
+  req: RouteRequest,
+  input: InsertOrReplayRejectionInput,
   namespace: ConnectorNamespaceLike,
-  record: Record<string, unknown>,
-  runId: string | null
-): Promise<unknown> {
-  try {
-    return await ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record, {
-      requireConnectionAdmission: Boolean(namespace.connectorInstanceId),
-      runId,
-    });
-  } catch (err) {
-    const classified = ctx.classifyIngestFailure(err);
-    if (err instanceof Error) {
-      (err as Error & { retryable?: boolean }).retryable = classified.retryable;
-    }
-    throw err;
+  runId: string | null,
+  traceId: string | null
+): Promise<RejectionReceipt> | RejectionReceipt {
+  if (!ctx.insertOrReplayRecordRejection) {
+    throw new Error("hosted rejection receipt persistence is not configured");
   }
+  const ownerSubjectId = ctx.getOwnerTokenSubjectId?.(req) ?? req.tokenInfo?.subject_id;
+  if (!ownerSubjectId) {
+    throw new Error("owner-token subject is not available for rejection receipt persistence");
+  }
+  if (!namespace.connectorInstanceId) {
+    throw new Error("connector instance is required for rejection receipt persistence");
+  }
+  return ctx.insertOrReplayRecordRejection({
+    auditActorId: ownerSubjectId,
+    auditActorType: "subject",
+    auditTraceId: traceId,
+    code: input.code,
+    connectorId: namespace.connectorId ?? input.connectorId,
+    connectorInstanceId: namespace.connectorInstanceId,
+    inputIndex: input.inputIndex,
+    ownerSubjectId,
+    rawLine: input.rawLine,
+    runId,
+    stream: input.stream,
+  });
 }
 
 // POST /v1/blobs
@@ -1040,18 +1082,33 @@ export function mountRsRecordsDelete(app: AppLike, ctx: MountRsMutationContext):
 // response writing. It MUST NOT recompute line splitting, connector_id
 // presence, manifest visibility, JSON parse handling, the
 // accepted/rejected counters, or the response envelope locally.
+function requestBodyBytes(body: unknown): Buffer {
+  if (Buffer.isBuffer(body)) {
+    return body;
+  }
+  if (typeof body === "string") {
+    return Buffer.from(body);
+  }
+  return Buffer.alloc(0);
+}
+
 export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext): void {
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this route adapter is the audited HTTP boundary for ingest admission, instrumentation, hosted rejection receipts, and response mapping; splitting it during the durable-rejection fix would obscure the unchanged route contract.
   app.post("/v1/ingest/:stream", ctx.requireToken, ctx.requireOwner, async (req: RouteRequest, res: RouteResponse) => {
     const connectorId = canonicalizeConnectorId(ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id));
     const connectorInstanceId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
+    // Run-bound connector ingestion threads its run_id through so the storage
+    // layer can fence a write already admitted before cancellation against
+    // the run's own terminal state (see harden-ingest-run-admission-fence).
+    // Absent for owner/API ingestion that has no run concept — the fence is
+    // opt-in and those callers are unaffected.
     const runId = ctx.resolveSingleConnectorIdQueryValue(req.query.run_id);
     // parseLines is imported inside executeRecordsIngest; the line-count for
     // the mutation context must be computed here using the same parser.
     // Index.js imported `parseLines as parseIngestLines` from the operation
     // module and called it here. We replicate that call with the same body arg.
-    const rawBody = typeof req.body === "string" ? req.body : "";
-    // Inline line-count: split on newlines, filter empty — mirrors parseLines.
-    const lineCount = rawBody.split("\n").filter((l: string) => l.trim().length > 0).length;
+    const rawBody = requestBodyBytes(req.body);
+    const lineCount = parseIngestLines(rawBody, { maxLineBytes: HOSTED_INGEST_MAX_LINE_BYTES }).length;
     const mutationContext = ctx.buildMutationContext(req, res, {
       connectorId,
       connectorInstanceId,
@@ -1063,31 +1120,32 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
     try {
       let storageNamespace: ConnectorNamespaceLike | null = null;
       let acquisitionBatchPromise: Promise<AcquisitionBatchLike | null> | null = null;
-      // Explicit owner-ingest addresses a concrete storage namespace. Paused
+      // Explicit owner ingest addresses a concrete storage namespace. Paused
       // connections remain writable for owner-supplied backlog/manual ingest,
       // while connector-only fan-in stays active-only. `allowStatuses` is
       // omitted (not set to undefined) so it doesn't trip exactOptionalPropertyTypes.
       const explicitIngestAdmission = (cin: string | null) =>
         cin ? { allowStatuses: ["active", "draft", "paused"] as const } : {};
+      const resolveAdmittedNamespace = async (
+        cid: string,
+        requestedConnectorInstanceId: string | null
+      ): Promise<ConnectorNamespaceLike> => {
+        storageNamespace ??= await ctx.resolveOwnerConnectorNamespace(req, cid, {
+          ...explicitIngestAdmission(requestedConnectorInstanceId),
+          connectorInstanceId: requestedConnectorInstanceId,
+        });
+        if (!storageNamespace.connectorInstanceId) {
+          throw new Error("connector instance is required for hosted ingest");
+        }
+        return storageNamespace;
+      };
       const dependencies: RecordsIngestDependencies = {
         hasManifestStream: async (cid: string, streamName: string) => {
           const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
-          const visible = Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
-          if (visible) {
-            storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, cid, {
-              ...explicitIngestAdmission(connectorInstanceId),
-              connectorInstanceId,
-            });
-          }
-          return visible;
+          return Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
         },
-        ingestRecord: async (cid: string, cin: string | null, record: Record<string, unknown>) => {
-          const namespace =
-            storageNamespace ??
-            (await ctx.resolveOwnerConnectorNamespace(req, cid, {
-              ...explicitIngestAdmission(cin),
-              connectorInstanceId: cin,
-            }));
+        ingestRecord: async (cid: string, _cin: string | null, record: Record<string, unknown>) => {
+          const namespace = storageNamespace ?? (await resolveAdmittedNamespace(cid, _cin));
           const result = await ingestRecordClassified(ctx, namespace, record, runId);
           if (ctx.getLatestAcquisitionBatchForConnection && namespace.connectorInstanceId) {
             acquisitionBatchPromise ??= Promise.resolve(
@@ -1104,6 +1162,33 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
           }
           return result;
         },
+        insertOrReplayRejection: async (input) => {
+          const namespace =
+            storageNamespace ?? (await resolveAdmittedNamespace(input.connectorId, input.connectorInstanceId ?? null));
+          return insertHostedRejectionReceipt(ctx, req, input, namespace, runId, mutationContext.traceId);
+        },
+        markAcceptedRecordRejectionsStale: async (input) => {
+          const ownerSubjectId = ctx.getOwnerTokenSubjectId?.(req) ?? req.tokenInfo?.subject_id;
+          if (!(ctx.markAcceptedRecordRejectionsStale && ownerSubjectId)) {
+            return;
+          }
+          await ctx.markAcceptedRecordRejectionsStale({
+            auditActorId: ownerSubjectId,
+            auditActorType: "subject",
+            auditTraceId: mutationContext.traceId,
+            connectorId: input.connectorId,
+            connectorInstanceId: input.connectorInstanceId,
+            ownerSubjectId,
+            rawLine: input.rawLine,
+            recordKey: input.recordKey ?? null,
+            runId: input.runId ?? runId,
+            stream: input.stream,
+          });
+        },
+        resolveAdmittedConnectorInstance: async (cid: string, requestedConnectorInstanceId: string | null) => {
+          const namespace = await resolveAdmittedNamespace(cid, requestedConnectorInstanceId);
+          return namespace.connectorInstanceId;
+        },
       };
       let output: RecordsIngestOutput;
       try {
@@ -1117,15 +1202,39 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
             body: rawBody,
             connectorId,
             connectorInstanceId,
+            hostedRejectionReceipts: true,
+            maxLineBytes: HOSTED_INGEST_MAX_LINE_BYTES,
+            runId,
             // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
             streamName: req.params.stream ?? "",
           },
           dependencies
         );
       } catch (opErr) {
-        const publicError = mapPublicRecordsIngestOperationError(opErr);
-        if (publicError) {
-          return await ctx.rejectMutation(res, req, mutationContext, publicError);
+        if (
+          opErr instanceof RecordsIngestInvalidRequestError ||
+          opErr instanceof RecordsIngestNotFoundError ||
+          opErr instanceof RecordsIngestResourceLimitError ||
+          opErr instanceof RecordsIngestSystemicFailureError
+        ) {
+          const mappedMessage =
+            opErr instanceof RecordsIngestSystemicFailureError
+              ? "Ingest failed due to a transient storage error; retry later."
+              : (opErr as Error).message;
+          const mapped = new Error(mappedMessage) as Error & {
+            code?: string;
+          };
+          const errCode3 = (opErr as { code?: string }).code;
+          if (errCode3 !== undefined) {
+            mapped.code = errCode3;
+          }
+          if (opErr instanceof RecordsIngestSystemicFailureError) {
+            console.warn("rs.records.ingest systemic failure", {
+              code: mapped.code,
+              retryable_failure_count: opErr.retryableFailureCount,
+            });
+          }
+          return await ctx.rejectMutation(res, req, mutationContext, mapped);
         }
         throw opErr;
       }
@@ -1135,7 +1244,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
         recordsRejected: output.envelope.records_rejected,
       });
       await ctx.emitMutationEvent(req, mutationContext, "mutation.completed", "succeeded", {
-        error_count: output.envelope.errors.length,
+        error_count: output.envelope.records_rejected,
         records_accepted: output.envelope.records_accepted,
         records_rejected: output.envelope.records_rejected,
       });

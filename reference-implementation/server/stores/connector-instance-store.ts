@@ -130,6 +130,12 @@ interface ConnectorInstanceStoreLike {
 // and `teardownConnectionSearchProjection` in `server/records.js`. Injected
 // (rather than imported) to avoid a records.js <-> store import cycle.
 interface ConnectorInstanceDeletePurge {
+  deleteRecordRejectionsPostgres: (
+    client: unknown,
+    connectorInstanceId: string,
+    ownerSubjectId: string
+  ) => Promise<number>;
+  deleteRecordRejectionsSqlite: (connectorInstanceId: string, ownerSubjectId: string) => number;
   deleteRecordRowsPostgres: (client: unknown, connectorInstanceId: string) => Promise<number>;
   deleteRecordRowsSqlite: (connectorInstanceId: string) => number;
   enumerateStreams: (storageTarget: { connector_id: string; connector_instance_id: string }) => Promise<{
@@ -1231,6 +1237,7 @@ export function createSqliteConnectorInstanceStore() {
         // (no inner transaction of its own), so it is atomic with the schedule /
         // device / row deletes below.
         const recordCount = purge.deleteRecordRowsSqlite(connectorInstanceId);
+        purge.deleteRecordRejectionsSqlite(connectorInstanceId, instance.ownerSubjectId);
         exec(referenceQueries.connectorInstancesDeleteManifestWriteViolationsByConnectorInstance, [
           connectorInstanceId,
         ]);
@@ -1889,6 +1896,7 @@ export function createPostgresConnectorInstanceStore() {
           // Record-family + blob + attention purge runs against the SAME client,
           // so it is atomic with the schedule / device / row deletes below.
           const recordCount = await purge.deleteRecordRowsPostgres(client, connectorInstanceId);
+          await purge.deleteRecordRejectionsPostgres(client, connectorInstanceId, instance.ownerSubjectId);
           await client.query("DELETE FROM manifest_write_violations WHERE connector_instance_id = $1", [
             connectorInstanceId,
           ]);

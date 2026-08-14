@@ -27,6 +27,8 @@ import {
   makeConnectorInstanceSourceBindingKey as canonicalSourceBindingKey,
 } from "./connector-instance-utils.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
+import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "./record-rejection-replay-key.ts";
+import { bumpStorageGeneration } from "./storage-generation.ts";
 
 const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000;
 const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = "owner_local";
@@ -300,6 +302,10 @@ export function closeDb(): void {
   }
   sqliteStoreCacheGeneration += 1;
   sqliteStoreCacheIdentity = `sqlite:closed:${sqliteStoreCacheGeneration}`;
+  // Storage-lifecycle fence (server/storage-generation.ts): any deferred
+  // index-maintenance work scheduled against the handle this just closed
+  // must never run against whatever handle a later initDb() attaches.
+  bumpStorageGeneration();
 }
 
 /**
@@ -325,6 +331,11 @@ function detachDb(): void {
   db = null;
   sqliteStoreCacheGeneration += 1;
   sqliteStoreCacheIdentity = `sqlite:closed:${sqliteStoreCacheGeneration}`;
+  // Storage-lifecycle fence: the handle a caller previously attached is no
+  // longer the module's current handle, even though it may still be open
+  // and usable by whoever holds it directly. Deferred work that only holds
+  // a GENERATION (not the handle itself) must re-check before running.
+  bumpStorageGeneration();
 }
 
 function resolveSqliteBusyTimeoutMs(
@@ -532,6 +543,45 @@ CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_connector_status
 CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_identity_page
   ON connector_instances(owner_subject_id, connector_id, created_at, connector_instance_id);
 
+CREATE TABLE IF NOT EXISTS record_rejection_quota (
+  owner_subject_id      TEXT PRIMARY KEY,
+  pending_payload_bytes INTEGER NOT NULL DEFAULT 0 CHECK (pending_payload_bytes >= 0),
+  pending_receipt_count INTEGER NOT NULL DEFAULT 0 CHECK (pending_receipt_count >= 0),
+  updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS record_rejections (
+  receipt_id            TEXT PRIMARY KEY,
+  owner_subject_id      TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
+  connector_id          TEXT NOT NULL,
+  stream                TEXT NOT NULL,
+  run_id                TEXT,
+  first_input_index     INTEGER NOT NULL CHECK (first_input_index >= 0),
+  latest_input_index    INTEGER NOT NULL CHECK (latest_input_index >= 0),
+  first_run_id          TEXT,
+  latest_run_id         TEXT,
+  reason_code           TEXT NOT NULL,
+  payload               BLOB NOT NULL,
+  payload_sha256        TEXT NOT NULL,
+  payload_bytes         INTEGER NOT NULL CHECK (payload_bytes >= 0),
+  rejection_generation  TEXT NOT NULL DEFAULT '${RECORD_REJECTION_GENERATION}',
+  replay_key            TEXT NOT NULL UNIQUE,
+  replay_count          INTEGER NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
+  status                TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'stale_after_acceptance')),
+  accepted_run_id       TEXT,
+  accepted_record_key   TEXT,
+  accepted_at           TEXT,
+  created_at            TEXT NOT NULL,
+  last_seen_at          TEXT NOT NULL,
+  FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+  FOREIGN KEY(owner_subject_id) REFERENCES record_rejection_quota(owner_subject_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_record_rejections_connection_page
+  ON record_rejections(owner_subject_id, connector_instance_id, created_at, receipt_id);
+CREATE INDEX IF NOT EXISTS idx_record_rejections_connection_receipt
+  ON record_rejections(owner_subject_id, connector_instance_id, receipt_id);
+
 -- Durable record that a connector-instance IDENTITY was owner-deleted.
 -- connector_instance_id is deterministic (hash of owner + connector +
 -- source_kind + source_binding_key), so once deleteConnection removes the
@@ -562,7 +612,7 @@ CREATE TABLE IF NOT EXISTS connector_instance_tombstones (
 CREATE TABLE IF NOT EXISTS connector_instance_credentials (
   connector_instance_id TEXT PRIMARY KEY,
   owner_subject_id      TEXT NOT NULL,
-  credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
+  credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('access_token', 'api_key', 'app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
   sealed_secret         TEXT NOT NULL,
   fingerprint           TEXT,
   status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked', 'rejected')),
@@ -798,6 +848,7 @@ CREATE TABLE IF NOT EXISTS device_enrollment_codes (
   expires_at          TEXT NOT NULL,
   consumed_at         TEXT,
   revoked_at          TEXT,
+  collection_scope_json TEXT,
   FOREIGN KEY(device_id) REFERENCES device_exporters(device_id) ON DELETE SET NULL
 );
 
@@ -1578,7 +1629,8 @@ CREATE INDEX IF NOT EXISTS idx_connector_attention_dedupe
 -- additive; existing rows are backfilled in initDb post-schema. New
 -- inserts compute event_seq via a (SELECT MAX(event_seq) + 1 FROM ...)
 -- subquery inside the INSERT, which is safe under SQLite's single-writer
--- lock model.
+-- lock model. The startup backfill preserves any sequence already assigned
+-- by an interleaved writer and allocates the remaining legacy rows above it.
 -- Spec: openspec/changes/replace-spine-rowid-cursor-with-event-seq/specs/
 --       reference-implementation-architecture/spec.md
 CREATE TABLE IF NOT EXISTS spine_events (
@@ -1758,9 +1810,11 @@ CREATE TABLE IF NOT EXISTS retained_size_global (
   current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
   record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
   blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_payload_bytes INTEGER NOT NULL DEFAULT 0,
   record_count                  INTEGER NOT NULL DEFAULT 0,
   record_history_count          INTEGER NOT NULL DEFAULT 0,
   blob_count                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_count       INTEGER NOT NULL DEFAULT 0,
   -- 1 means a write happened that the projection could not safely
   -- incrementally apply (e.g. a bulk delete). Hot reads must surface this
   -- as 'stale' rather than presenting the row as fresh truth.
@@ -1778,9 +1832,11 @@ CREATE TABLE IF NOT EXISTS retained_size_connection (
   current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
   record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
   blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_payload_bytes INTEGER NOT NULL DEFAULT 0,
   record_count                  INTEGER NOT NULL DEFAULT 0,
   record_history_count          INTEGER NOT NULL DEFAULT 0,
   blob_count                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_count       INTEGER NOT NULL DEFAULT 0,
   dirty                         INTEGER NOT NULL DEFAULT 1,
   computed_at                   TEXT,
   PRIMARY KEY(connector_instance_id)
@@ -1795,9 +1851,11 @@ CREATE TABLE IF NOT EXISTS retained_size_stream (
   current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
   record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
   blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_payload_bytes INTEGER NOT NULL DEFAULT 0,
   record_count                  INTEGER NOT NULL DEFAULT 0,
   record_history_count          INTEGER NOT NULL DEFAULT 0,
   blob_count                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_count       INTEGER NOT NULL DEFAULT 0,
   dirty                         INTEGER NOT NULL DEFAULT 1,
   computed_at                   TEXT,
   PRIMARY KEY(connector_instance_id, stream)
@@ -1811,9 +1869,11 @@ CREATE TABLE IF NOT EXISTS retained_size_record_family (
   current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
   record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
   blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_payload_bytes INTEGER NOT NULL DEFAULT 0,
   record_count                  INTEGER NOT NULL DEFAULT 0,
   record_history_count          INTEGER NOT NULL DEFAULT 0,
   blob_count                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_count       INTEGER NOT NULL DEFAULT 0,
   dirty                         INTEGER NOT NULL DEFAULT 1,
   computed_at                   TEXT,
   PRIMARY KEY(connector_instance_id, stream, record_family)
@@ -1832,10 +1892,12 @@ CREATE TABLE IF NOT EXISTS retained_size_top_rows (
   current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
   record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
   blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_payload_bytes INTEGER NOT NULL DEFAULT 0,
   total_retained_bytes          INTEGER NOT NULL DEFAULT 0,
   record_count                  INTEGER NOT NULL DEFAULT 0,
   record_history_count          INTEGER NOT NULL DEFAULT 0,
   blob_count                    INTEGER NOT NULL DEFAULT 0,
+  record_rejection_count       INTEGER NOT NULL DEFAULT 0,
   dirty                         INTEGER NOT NULL DEFAULT 1,
   computed_at                   TEXT,
   metadata_json                 TEXT,
@@ -1938,6 +2000,60 @@ CREATE TABLE IF NOT EXISTS manifest_write_violations (
   observed_at           TEXT NOT NULL,
   PRIMARY KEY(connector_instance_id, stream, manifest_generation)
 );
+
+-- Scope-keyed (never per-record) dirty flag for lexical+semantic derived
+-- index maintenance, mirroring retained_size_stream's dirty-flag shape
+-- (db.ts:1770-1783) at the SAME (connector_instance_id, stream) grain the
+-- lexical/semantic drift-check backfills already key on. Set to dirty=1
+-- INSIDE the same durable write transaction as the record mutation that
+-- caused it (ingestSqliteRecord/postgresIngestRecord) -- unlike the
+-- best-effort post-commit connector-summary marker, this flag has no
+-- independent future re-trigger if a scope receives no further writes, so
+-- the same-transaction write is required, not optional (see
+-- record-index-dirty-store.ts). Cleared (dirty=0) only after a reconcile
+-- pass proves the lexical+semantic drift-checks for this scope both report
+-- in-sync. A present dirty=1 row is a hint to re-check, not proof of actual
+-- drift -- the existing exact-comparison drift-checks (search.ts
+-- backfillLexicalStream, search-semantic.ts semanticBackfillIndexIsInSync)
+-- remain the source of truth for whether a rebuild is actually needed.
+-- attempts/next_attempt_at implement backoff-based starvation avoidance: a
+-- scope that fails reconcile repeatedly must not occupy the front of the
+-- oldest-first queue forever (its marked_at never changes on failure,
+-- unlike a genuinely re-dirtied scope). Each failure increments attempts
+-- and pushes next_attempt_at forward by an exponential-ish delay; the
+-- listing query excludes rows still in backoff, so a permanently-failing
+-- scope rotates out of contention and a later healthy scope can take its
+-- page slot, while the failing scope still gets retried periodically.
+CREATE TABLE IF NOT EXISTS search_index_dirty (
+  connector_instance_id TEXT NOT NULL,
+  connector_id          TEXT NOT NULL,
+  stream                TEXT NOT NULL,
+  dirty                 INTEGER NOT NULL DEFAULT 1,
+  marked_at             TEXT NOT NULL,
+  reconciled_at         TEXT,
+  last_error            TEXT,
+  attempts              INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at       TEXT,
+  PRIMARY KEY(connector_instance_id, stream)
+);
+CREATE INDEX IF NOT EXISTS idx_search_index_dirty_pending
+  ON search_index_dirty(dirty);
+
+-- Deployment-scoped provider app config (e.g. a shared OAuth client
+-- id/secret), keyed generically by (identity_group, logical_key) -- never
+-- by an env-var literal. sealed_value is ALWAYS the AES-256-GCM token from
+-- credential-encryption.js, for every entry -- there is no plaintext path
+-- here, even for a non-secret entry (e.g. a client id). The
+-- manifest-declared 'secret' flag is read only by the caller (to decide
+-- masked-vs-visible display), never by this table. See
+-- provider-app-config-store.ts.
+CREATE TABLE IF NOT EXISTS provider_app_config (
+  identity_group TEXT NOT NULL,
+  logical_key    TEXT NOT NULL,
+  sealed_value   TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
+  PRIMARY KEY (identity_group, logical_key)
+);
 `;
 
 /**
@@ -1993,6 +2109,206 @@ function addColumnIfMissing(raw: SqliteDatabase, table: string, column: string, 
     return;
   }
   raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+}
+
+function rekeyRecordRejectionReplayKeys(raw: SqliteDatabase): void {
+  const rows = raw
+    .prepare(
+      `SELECT receipt_id, owner_subject_id, connector_instance_id, stream, payload, reason_code
+         FROM record_rejections
+        WHERE rejection_generation <> ?`
+    )
+    .all<{
+      connector_instance_id: string;
+      owner_subject_id: string;
+      payload: Buffer;
+      reason_code: string;
+      receipt_id: string;
+      stream: string;
+    }>(RECORD_REJECTION_GENERATION);
+  const update = raw.prepare(
+    "UPDATE record_rejections SET replay_key = ?, rejection_generation = ? WHERE receipt_id = ?"
+  );
+  for (const row of rows) {
+    update.run(
+      recordRejectionReplayKey({
+        connectorInstanceId: row.connector_instance_id,
+        ownerSubjectId: row.owner_subject_id,
+        payload: row.payload,
+        reasonCode: row.reason_code,
+        stream: row.stream,
+      }),
+      RECORD_REJECTION_GENERATION,
+      row.receipt_id
+    );
+  }
+}
+
+function migrateRecordRejectionBytePayload(raw: SqliteDatabase): void {
+  raw.exec("BEGIN IMMEDIATE");
+  try {
+    addColumnIfMissing(raw, "record_rejection_quota", "pending_receipt_count", "INTEGER NOT NULL DEFAULT 0");
+    const columns = raw.prepare("PRAGMA table_info(record_rejections)").all<{ name: string }>();
+    const hasPayloadText = columns.some((column) => column.name === "payload_text");
+    const hasPayload = columns.some((column) => column.name === "payload");
+    const hasGeneration = columns.some((column) => column.name === "rejection_generation");
+    addColumnIfMissing(raw, "record_rejections", "first_run_id", "TEXT");
+    addColumnIfMissing(raw, "record_rejections", "latest_run_id", "TEXT");
+    addColumnIfMissing(raw, "record_rejections", "accepted_run_id", "TEXT");
+    addColumnIfMissing(raw, "record_rejections", "accepted_record_key", "TEXT");
+    addColumnIfMissing(raw, "record_rejections", "accepted_at", "TEXT");
+    raw.exec(`
+      UPDATE record_rejections
+         SET first_run_id = COALESCE(first_run_id, run_id),
+             latest_run_id = COALESCE(latest_run_id, run_id)
+       WHERE first_run_id IS NULL OR latest_run_id IS NULL
+    `);
+    if (!hasGeneration) {
+      addColumnIfMissing(
+        raw,
+        "record_rejections",
+        "rejection_generation",
+        "TEXT NOT NULL DEFAULT 'record-rejection-v1'"
+      );
+    }
+    if (hasPayloadText && hasPayload) {
+      raw.exec(`
+        UPDATE record_rejections
+           SET payload = COALESCE(payload, CAST(payload_text AS BLOB));
+        ALTER TABLE record_rejections DROP COLUMN payload_text;
+      `);
+    } else if (hasPayloadText) {
+      raw.exec("DROP TABLE IF EXISTS record_rejections_text_payload");
+      raw.exec(`
+        ALTER TABLE record_rejections RENAME TO record_rejections_text_payload;
+    CREATE TABLE record_rejections (
+      receipt_id            TEXT PRIMARY KEY,
+      owner_subject_id      TEXT NOT NULL,
+      connector_instance_id TEXT NOT NULL,
+      connector_id          TEXT NOT NULL,
+      stream                TEXT NOT NULL,
+      run_id                TEXT,
+      first_input_index     INTEGER NOT NULL CHECK (first_input_index >= 0),
+      latest_input_index    INTEGER NOT NULL CHECK (latest_input_index >= 0),
+      first_run_id          TEXT,
+      latest_run_id         TEXT,
+      reason_code           TEXT NOT NULL,
+      payload               BLOB NOT NULL,
+      payload_sha256        TEXT NOT NULL,
+      payload_bytes         INTEGER NOT NULL CHECK (payload_bytes >= 0),
+      rejection_generation  TEXT NOT NULL DEFAULT 'record-rejection-v1',
+      replay_key            TEXT NOT NULL UNIQUE,
+      replay_count          INTEGER NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
+      status                TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'stale_after_acceptance')),
+      accepted_run_id       TEXT,
+      accepted_record_key   TEXT,
+      accepted_at           TEXT,
+      created_at            TEXT NOT NULL,
+      last_seen_at          TEXT NOT NULL,
+      FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+      FOREIGN KEY(owner_subject_id) REFERENCES record_rejection_quota(owner_subject_id) ON DELETE RESTRICT
+    );
+      `);
+      const payloadExpression = hasPayload
+        ? "COALESCE(payload, CAST(payload_text AS BLOB))"
+        : "CAST(payload_text AS BLOB)";
+      raw.exec(`
+    INSERT INTO record_rejections(
+      receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
+      first_input_index, latest_input_index, first_run_id, latest_run_id, reason_code, payload, payload_sha256,
+      payload_bytes, rejection_generation, replay_key, replay_count, status, accepted_run_id, accepted_record_key,
+      accepted_at, created_at, last_seen_at
+    )
+    SELECT receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
+           first_input_index, latest_input_index, run_id, run_id, reason_code, ${payloadExpression}, payload_sha256,
+           payload_bytes, 'record-rejection-v1', replay_key, replay_count, status, NULL, NULL,
+           NULL, created_at, last_seen_at
+      FROM record_rejections_text_payload;
+    DROP TABLE record_rejections_text_payload;
+    CREATE INDEX IF NOT EXISTS idx_record_rejections_connection_page
+      ON record_rejections(owner_subject_id, connector_instance_id, created_at, receipt_id);
+    CREATE INDEX IF NOT EXISTS idx_record_rejections_connection_receipt
+      ON record_rejections(owner_subject_id, connector_instance_id, receipt_id);
+      `);
+    }
+    const recordRejectionsSql =
+      raw
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'record_rejections'")
+        .get<{ sql?: string }>()?.sql ?? "";
+    if (recordRejectionsSql.includes("CHECK (status = 'pending')")) {
+      raw.exec("DROP TABLE IF EXISTS record_rejections_lifecycle_migration");
+      raw.exec(`
+        ALTER TABLE record_rejections RENAME TO record_rejections_lifecycle_migration;
+        CREATE TABLE record_rejections (
+          receipt_id            TEXT PRIMARY KEY,
+          owner_subject_id      TEXT NOT NULL,
+          connector_instance_id TEXT NOT NULL,
+          connector_id          TEXT NOT NULL,
+          stream                TEXT NOT NULL,
+          run_id                TEXT,
+          first_input_index     INTEGER NOT NULL CHECK (first_input_index >= 0),
+          latest_input_index    INTEGER NOT NULL CHECK (latest_input_index >= 0),
+          first_run_id          TEXT,
+          latest_run_id         TEXT,
+          reason_code           TEXT NOT NULL,
+          payload               BLOB NOT NULL,
+          payload_sha256        TEXT NOT NULL,
+          payload_bytes         INTEGER NOT NULL CHECK (payload_bytes >= 0),
+          rejection_generation  TEXT NOT NULL DEFAULT 'record-rejection-v1',
+          replay_key            TEXT NOT NULL UNIQUE,
+          replay_count          INTEGER NOT NULL DEFAULT 0 CHECK (replay_count >= 0),
+          status                TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'stale_after_acceptance')),
+          accepted_run_id       TEXT,
+          accepted_record_key   TEXT,
+          accepted_at           TEXT,
+          created_at            TEXT NOT NULL,
+          last_seen_at          TEXT NOT NULL,
+          FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+          FOREIGN KEY(owner_subject_id) REFERENCES record_rejection_quota(owner_subject_id) ON DELETE RESTRICT
+        );
+        INSERT INTO record_rejections(
+          receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
+          first_input_index, latest_input_index, first_run_id, latest_run_id, reason_code, payload, payload_sha256,
+          payload_bytes, rejection_generation, replay_key, replay_count, status, accepted_run_id, accepted_record_key,
+          accepted_at, created_at, last_seen_at
+        )
+        SELECT receipt_id, owner_subject_id, connector_instance_id, connector_id, stream, run_id,
+               first_input_index, latest_input_index, first_run_id, latest_run_id, reason_code, payload, payload_sha256,
+               payload_bytes, rejection_generation, replay_key, replay_count, status, accepted_run_id, accepted_record_key,
+               accepted_at, created_at, last_seen_at
+          FROM record_rejections_lifecycle_migration;
+        DROP TABLE record_rejections_lifecycle_migration;
+        CREATE INDEX IF NOT EXISTS idx_record_rejections_connection_page
+          ON record_rejections(owner_subject_id, connector_instance_id, created_at, receipt_id);
+        CREATE INDEX IF NOT EXISTS idx_record_rejections_connection_receipt
+          ON record_rejections(owner_subject_id, connector_instance_id, receipt_id);
+      `);
+    }
+    raw.exec(`
+    UPDATE record_rejection_quota
+       SET pending_payload_bytes = (
+           SELECT COALESCE(SUM(payload_bytes), 0) FROM record_rejections
+            WHERE record_rejections.owner_subject_id = record_rejection_quota.owner_subject_id
+       ),
+           pending_receipt_count = (
+          SELECT COUNT(*) FROM record_rejections
+           WHERE record_rejections.owner_subject_id = record_rejection_quota.owner_subject_id
+       )
+     WHERE pending_payload_bytes <> (
+           SELECT COALESCE(SUM(payload_bytes), 0) FROM record_rejections
+            WHERE record_rejections.owner_subject_id = record_rejection_quota.owner_subject_id
+        )
+        OR pending_receipt_count <> (
+           SELECT COUNT(*) FROM record_rejections
+            WHERE record_rejections.owner_subject_id = record_rejection_quota.owner_subject_id
+        )
+  `);
+    rekeyRecordRejectionReplayKeys(raw);
+    raw.exec("COMMIT");
+  } catch (error) {
+    raw.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function migrateDeviceIngestBatchOutcomes(raw: SqliteDatabase): void {
@@ -2057,6 +2373,23 @@ function ensureRecordResetGenerationColumn(raw: SqliteDatabase): void {
   addColumnIfMissing(raw, "connector_instances", "record_reset_generation", "INTEGER NOT NULL DEFAULT 0");
 }
 
+// Generic, connector-agnostic record-identity-generation checkpoint: the
+// value of a manifest's own declared `capabilities.record_identity.generation`
+// (an integer a connector author bumps when their record_key derivation
+// changes in a way that breaks idempotency against previously-emitted
+// records) that THIS instance's records were last reconciled against.
+// Defaults to 0, matching "no manifest has ever declared a generation" —
+// the same default an absent/legacy manifest field resolves to. The RI
+// reconcile loop (polyfill-manifest-reconcile.ts) compares this per-
+// INSTANCE value against the shipped manifest's declared generation and
+// invalidates ONLY instances still behind, using deleteAllRecordsForConnector's
+// instanceIdFilter -- never the whole connector type. RI holds no
+// knowledge of what a "record-identity-generation transition" means for
+// any specific connector; it only compares two integers.
+function ensureRecordIdentityGenerationColumn(raw: SqliteDatabase): void {
+  addColumnIfMissing(raw, "connector_instances", "record_identity_generation", "INTEGER NOT NULL DEFAULT 0");
+}
+
 function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
   addColumnIfMissing(raw, "connector_summary_evidence", "last_record_updated_at", "TEXT");
   addColumnIfMissing(raw, "connector_summary_evidence", "stream_records_json", "TEXT NOT NULL DEFAULT '[]'");
@@ -2118,6 +2451,40 @@ function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
   );
   addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_reason_code", "TEXT");
   addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_computed_at", "TEXT");
+}
+
+function ensureRetainedSizeRejectionColumns(raw: SqliteDatabase): void {
+  const needsRepair = (raw.prepare("PRAGMA table_info(retained_size_global)").all() as { name: string }[]).every(
+    (column) => column.name !== "record_rejection_payload_bytes"
+  );
+  for (const table of [
+    "retained_size_global",
+    "retained_size_connection",
+    "retained_size_stream",
+    "retained_size_record_family",
+    "retained_size_top_rows",
+  ]) {
+    addColumnIfMissing(raw, table, "record_rejection_payload_bytes", "INTEGER NOT NULL DEFAULT 0");
+    addColumnIfMissing(raw, table, "record_rejection_count", "INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!needsRepair) {
+    return;
+  }
+  raw.exec(`
+    INSERT INTO retained_size_stream(connector_instance_id, connector_id, stream, dirty)
+    SELECT connector_instance_id, MAX(connector_id), stream, 1
+      FROM record_rejections
+     GROUP BY connector_instance_id, stream
+    ON CONFLICT(connector_instance_id, stream) DO UPDATE SET dirty = 1;
+    INSERT INTO retained_size_connection(connector_instance_id, connector_id, dirty)
+    SELECT connector_instance_id, MAX(connector_id), 1
+      FROM record_rejections
+     GROUP BY connector_instance_id
+    ON CONFLICT(connector_instance_id) DO UPDATE SET dirty = 1;
+    UPDATE retained_size_global
+       SET dirty = 1
+     WHERE EXISTS (SELECT 1 FROM record_rejections);
+  `);
 }
 
 function ensureConnectorMaintenanceCursorColumns(raw: SqliteDatabase): void {
@@ -4645,6 +5012,80 @@ function migrateConnectorCredentialStatusRejected(raw: SqliteDatabase, opts: Mig
   return result;
 }
 
+// Widen the connector_instance_credentials.credential_kind CHECK to admit
+// 'access_token' and 'api_key' — the shapes needed to reach static-secret
+// connectors (GroupMe, Steam, Jellyfin) whose manifest credential_capture.kind
+// is neither an app password nor a generic PAT. Existing rows are copied
+// byte-for-byte; only the CHECK vocabulary changes.
+function migrateConnectorCredentialKindCheckAccessTokenApiKey(raw: SqliteDatabase, opts: MigrationOptions = {}) {
+  const table = raw
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connector_instance_credentials'`)
+    .get<SqliteMasterRow>();
+  if (!table?.sql || (table.sql.includes("'access_token'") && table.sql.includes("'api_key'"))) {
+    return { rebuilt: false };
+  }
+
+  const migration = raw.transaction(() => {
+    raw.exec(`
+      ALTER TABLE connector_instance_credentials RENAME TO connector_instance_credentials_old_kind_token;
+      DROP INDEX IF EXISTS idx_connector_instance_credentials_owner_status;
+
+      CREATE TABLE connector_instance_credentials (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id      TEXT NOT NULL,
+        credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('access_token', 'api_key', 'app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
+        sealed_secret         TEXT NOT NULL,
+        fingerprint           TEXT,
+        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked', 'rejected')),
+        captured_at           TEXT NOT NULL,
+        rotated_at            TEXT,
+        revoked_at            TEXT,
+        rejected_at           TEXT,
+        rejection_reason      TEXT,
+        FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
+      );
+
+      INSERT INTO connector_instance_credentials(
+        connector_instance_id,
+        owner_subject_id,
+        credential_kind,
+        sealed_secret,
+        fingerprint,
+        status,
+        captured_at,
+        rotated_at,
+        revoked_at,
+        rejected_at,
+        rejection_reason
+      )
+      SELECT
+        connector_instance_id,
+        owner_subject_id,
+        credential_kind,
+        sealed_secret,
+        fingerprint,
+        status,
+        captured_at,
+        rotated_at,
+        revoked_at,
+        rejected_at,
+        rejection_reason
+      FROM connector_instance_credentials_old_kind_token;
+
+      DROP TABLE connector_instance_credentials_old_kind_token;
+      CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
+        ON connector_instance_credentials(owner_subject_id, status);
+    `);
+    return { rebuilt: true };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === "function") {
+    opts.onSchemaMigration({ name: "connector_credential_kind_check_access_token_api_key", ...result });
+  }
+  return result;
+}
+
 // Boot-safe spine source schema migration (SQLite). Installs the
 // `source_kind`/`source_id` columns and their index and drops the superseded
 // `provider_id` column. Bounded, idempotent DDL only — it does NOT scan or
@@ -5045,6 +5486,7 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
     addColumnIfMissing(raw, "device_enrollment_codes", "local_binding_id", "TEXT NOT NULL DEFAULT 'default'")
   );
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_enrollment_codes", "display_name", "TEXT"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_enrollment_codes", "collection_scope_json", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_source_instances", "connector_instance_id", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_source_instances", "source_kind", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_source_instances", "last_error_json", "TEXT"));
@@ -5086,9 +5528,18 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   runWithSqliteBusyRetrySync(() => migrateBrowserSurfaceLeaseEnumChecks(raw));
   runWithSqliteBusyRetrySync(() => ensureBrowserSurfaceLeaseIndexes(raw));
   runWithSqliteBusyRetrySync(() => ensureConnectorSummaryEvidenceColumns(raw));
+  runWithSqliteBusyRetrySync(() => ensureRetainedSizeRejectionColumns(raw));
   runWithSqliteBusyRetrySync(() => ensureConnectorMaintenanceCursorColumns(raw));
   runWithSqliteBusyRetrySync(() => migrateManifestWriteViolations(raw));
+  // Starvation-avoidance backoff columns for search_index_dirty (see the
+  // CREATE TABLE comment above): a pre-existing reference DB created the
+  // table before these columns existed on it.
+  runWithSqliteBusyRetrySync(() =>
+    addColumnIfMissing(raw, "search_index_dirty", "attempts", "INTEGER NOT NULL DEFAULT 0")
+  );
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "search_index_dirty", "next_attempt_at", "TEXT"));
   runWithSqliteBusyRetrySync(() => ensureRecordResetGenerationColumn(raw));
+  runWithSqliteBusyRetrySync(() => ensureRecordIdentityGenerationColumn(raw));
   // Incremental add-source linkage: a later same-client ceremony records the
   // prior package it extends via `parent_package_id`. Pre-existing reference
   // DBs predate the column; add it non-destructively (NULL = a root package
@@ -5104,14 +5555,31 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   });
   // Disclosure-spine `event_seq` migration. Pre-existing reference DBs were
   // created before `event_seq` existed; add the column non-destructively and
-  // seed it for any rows that lack a value. The seed orders by `rowid` —
-  // SQLite's physical row identity at the moment of backfill — purely as a
-  // one-shot reconstruction of historical append order. After backfill,
-  // `event_seq` is the only ordering surface readers and cursors consult;
-  // the cursor contract no longer reads `rowid`.
+  // seed any rows that lack a value. An interrupted boot can leave the column
+  // present while a concurrent writer has already assigned sequences, so
+  // preserve those values and allocate NULL rows above the current maximum,
+  // ordered by `rowid`. After backfill, `event_seq` is the only ordering
+  // surface readers and cursors consult; the cursor contract no longer reads
+  // `rowid`.
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "spine_events", "event_seq", "INTEGER"));
   runWithSqliteBusyRetrySync(() => {
-    raw.exec("UPDATE spine_events SET event_seq = rowid WHERE event_seq IS NULL");
+    raw.exec(`
+      WITH pending AS (
+        SELECT rowid, ROW_NUMBER() OVER (ORDER BY rowid) AS ordinal
+          FROM spine_events
+         WHERE event_seq IS NULL
+      ), current AS (
+        SELECT COALESCE(MAX(event_seq), 0) AS max_seq
+          FROM spine_events
+      )
+      UPDATE spine_events
+         SET event_seq = (
+           SELECT current.max_seq + pending.ordinal
+             FROM pending, current
+            WHERE pending.rowid = spine_events.rowid
+         )
+       WHERE rowid IN (SELECT rowid FROM pending)
+    `);
   });
   runWithSqliteBusyRetrySync(() => migrateSpineSourceColumns(raw, opts));
   // blob_bindings gains a json_path column (RFC 6901 JSON Pointer or
@@ -5148,8 +5616,10 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindCheck(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindBrowserCollector(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesStatusDraft(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateRecordRejectionBytePayload(raw));
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheck(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialStatusRejected(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheckAccessTokenApiKey(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateClientEventSubscriptionAuthority(raw));
   runWithSqliteBusyRetrySync(() => ensureClientEventSubscriptionAuthorityIndex(raw));
   raw.exec(
