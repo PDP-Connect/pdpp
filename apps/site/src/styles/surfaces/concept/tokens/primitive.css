@@ -22,13 +22,13 @@
   --pdpp-concept-ink-soft: #4e5052;
   --pdpp-concept-ink-faint: #67696b;
   --pdpp-concept-teal: oklch(0.42 0.07 245);
-  --pdpp-concept-teal-deep: #253d53;
+  --pdpp-concept-teal-deep: #1d3041;
   --pdpp-concept-teal-wash: #e4e7ea;
   --pdpp-concept-teal-on-wash: #181b1d;
   --pdpp-concept-onteal-deep: #f4f5f6;
-  --pdpp-concept-onteal-deep-soft: #ccd1d7;
-  --pdpp-concept-onteal-deep-label: #99a3ae;
-  --pdpp-concept-onteal-deep-wash: #e2e5e8;
+  --pdpp-concept-onteal-deep-soft: #caced3;
+  --pdpp-concept-onteal-deep-label: #949ca5;
+  --pdpp-concept-onteal-deep-wash: #e1e3e6;
 }
 
 [data-theme="dark"] {
@@ -39,11 +39,11 @@
   --pdpp-concept-ink-soft: #aaacae;
   --pdpp-concept-ink-faint: #8f9192;
   --pdpp-concept-teal: oklch(0.7 0.1 245);
-  --pdpp-concept-teal-deep: #98bde1;
+  --pdpp-concept-teal-deep: #3e5c78;
   --pdpp-concept-teal-wash: #1d2227;
   --pdpp-concept-teal-on-wash: #edeff0;
-  --pdpp-concept-onteal-deep: #17181a;
-  --pdpp-concept-onteal-deep-soft: #2c3138;
-  --pdpp-concept-onteal-deep-label: #495765;
-  --pdpp-concept-onteal-deep-wash: #202327;
+  --pdpp-concept-onteal-deep: #edeff0;
+  --pdpp-concept-onteal-deep-soft: #ccd3d9;
+  --pdpp-concept-onteal-deep-label: #a2aebc;
+  --pdpp-concept-onteal-deep-wash: #dee2e6;
 }

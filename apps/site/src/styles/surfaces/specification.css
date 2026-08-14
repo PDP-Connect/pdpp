@@ -40,14 +40,25 @@
     --fd-toc-width: 15rem;
   }
 
-  /* Rebinds the shared `max-w-page` utility's own var, scoped to this route's
-     container div only (concept masthead/footer keep --container-page: 1080px
-     everywhere else). Rail (240px) + TOC (240px) are both fixed regardless of
-     viewport, so at the site's 1080px container the prose measure lost 112px
-     (600px -> 488px) the moment the TOC opened at this same breakpoint. +112px
-     here restores the 600px measure without shrinking either rail or TOC. */
+  /* Full-bleed grid, not a wider container: rail (240px) + TOC (240px) are
+     fixed regardless of viewport, so ANY fixed container here (marketing's
+     1080px, or a wider spec-only cap) leaves the center track at
+     container-minus-480px. A wider container just relocates the ceiling —
+     #nd-page's own max-w-[900px] mx-auto then clamps *inside* that center
+     track and centers with slack on both sides once the track exceeds 900px,
+     which reads as a dead gap between prose and the TOC rather than real
+     margin (measured live, 2026-08-14: ~300px of empty space between the end
+     of prose text and #nd-toc at 1920 under a 1520px container). Removing
+     the container's max-width instead lets the grid itself span the
+     viewport: rail and TOC sit near the true viewport edges (Cloudflare
+     Docs' pattern, verified live 2026-08-14 — no container, both rails
+     pinned to the viewport, only prose is measured), and #nd-page's own
+     600px-driven measure (via --container-measure on the text elements)
+     governs prose width independent of how much track space exists. Rail
+     and TOC therefore cost the reading column nothing: they sit in space a
+     fixed container would have wasted as background margin anyway. */
   [data-pdpp-doc-theme] .container.max-w-page {
-    --container-page: 1192px;
+    max-width: none;
   }
 }
 
