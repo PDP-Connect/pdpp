@@ -163,3 +163,59 @@ test("connector summary page request parses the Sources page's sources_visibilit
     "sources_visibility must not compose with a profile"
   );
 });
+
+test("a cursor issued on the Sources (sources_visibility) surface is rejected when replayed on the unfiltered/Explore surface, and vice versa", () => {
+  // Direct encode/decode: the Sources-only cursor must not decode for an
+  // unfiltered request, and an unfiltered cursor must not decode for a
+  // Sources request — the exact review finding: without sources_visibility
+  // bound into the scope digest, a boundary tuple valid under one surface's
+  // keyset ordering is not a valid resume position under the other's (rows
+  // are excluded differently), so a cross-surface replay could skip visible
+  // rows or leak a hidden fragment past the exclusion.
+  const sourcesCursor = encodeConnectorSummaryPageCursor(boundary, "owner_a", cursorKey, null, true);
+  const unfilteredCursor = encodeConnectorSummaryPageCursor(boundary, "owner_a", cursorKey, null, false);
+
+  assert.deepEqual(
+    decodeConnectorSummaryPageCursor(sourcesCursor, "owner_a", null, cursorKey, true),
+    boundary,
+    "a Sources-issued cursor decodes correctly when replayed on the Sources surface"
+  );
+  assert.deepEqual(
+    decodeConnectorSummaryPageCursor(unfilteredCursor, "owner_a", null, cursorKey, false),
+    boundary,
+    "an unfiltered-issued cursor decodes correctly when replayed on the unfiltered surface"
+  );
+  assert.throws(
+    () => decodeConnectorSummaryPageCursor(sourcesCursor, "owner_a", null, cursorKey, false),
+    ConnectorSummaryPageCursorError,
+    "a Sources-issued cursor must not decode on the unfiltered/Explore surface"
+  );
+  assert.throws(
+    () => decodeConnectorSummaryPageCursor(unfilteredCursor, "owner_a", null, cursorKey, true),
+    ConnectorSummaryPageCursorError,
+    "an unfiltered-issued cursor must not decode on the Sources surface"
+  );
+
+  // Full request-parse-layer replay: a real `?cursor=...` from one surface
+  // fed into the other surface's request (sources_visibility flag flipped)
+  // must fail closed at parse time, not silently resolve a wrong page.
+  assert.throws(
+    () => parseConnectorSummaryPageRequest({ cursor: sourcesCursor, limit: "10" }, "owner_a"),
+    ConnectorSummaryPageCursorError,
+    "a Sources cursor replayed on a plain (non-sources_visibility) request must be rejected"
+  );
+  assert.throws(
+    () =>
+      parseConnectorSummaryPageRequest({ cursor: unfilteredCursor, limit: "10", sources_visibility: "1" }, "owner_a"),
+    ConnectorSummaryPageCursorError,
+    "an unfiltered cursor replayed on a sources_visibility request must be rejected"
+  );
+
+  // Round-trip through the parse layer on the MATCHING surface still works.
+  const parsedSourcesRequest = parseConnectorSummaryPageRequest(
+    { cursor: sourcesCursor, limit: "10", sources_visibility: "1" },
+    "owner_a"
+  );
+  assert.deepEqual(parsedSourcesRequest?.cursor, boundary);
+  assert.equal(parsedSourcesRequest?.sourcesVisibility, true);
+});
