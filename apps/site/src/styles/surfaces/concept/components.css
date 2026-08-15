@@ -113,19 +113,25 @@
      leaving the nav at the old width — measured 175px of split between the
      wordmark and the rail on /self-host. The shell contains both, so both move
      together and the wordmark stays put across surfaces. */
-  /* Split rather than grouped, and ordered low-specificity first: these two
-     differ ((0,3,0) then (0,4,0)), so grouping them - or writing them in
-     the other order - puts a weaker selector after a stronger one, which
-     is a lint error and a real ordering hazard. Neither overrides the
-     other; they select disjoint surfaces. */
-  [data-pdpp-doc-theme] .container.max-w-page {
-    max-width: 1560px;
-  }
 
-  [data-surface="concept"]:has([data-slot="pdpp-concept-rail"])
-    .container.max-w-page {
-    max-width: 1560px;
-  }
+  /* ONE container for every page and every part of it — chrome and body
+     alike. There is no railed-surface override, and that single fact is what
+     holds all three properties the reference class holds at once: the
+     masthead sits at the same x on the front door and on /specification, the
+     rail's links line up with the wordmark, and the measure stays centred.
+
+     Two narrower schemes were built and reverted. A railed-only override at
+     1560 aligned the rail but moved the masthead 75px between landing and
+     docs. Pinning the chrome back to the landing width fixed the masthead but
+     pushed the rail 75px outside it. Both are false trades: measured
+     2026-08-15, the three same-origin sites that hold one masthead position
+     (OpenTelemetry, MCP, Better Stack) also align rail to wordmark within
+     16px, because one container drives both.
+
+     The cost is a 640px measure at 1920 instead of 720. That is inside the
+     class — Better Stack ships 616 on a comparable three-track page, GitHub
+     720, Cloudflare 784, OpenTelemetry 976 — and the resulting rail-to-TOC
+     span of 1216px sits between Better Stack's 1146 and MCP's 1408. */
 
   /* The document track keeps the figure bound so the widened container buys
      margin, not line length. Capping individual tables does not work — they
