@@ -55,15 +55,26 @@
   @apply bg-background font-serif text-body text-foreground oldstyle-nums;
 }
 
-/* The page container is a fixed 1080px with no upper relief, so past about
-   1600px these pages stop using the screen: at 2560 the shell held 1080 of
+/* The page container was a fixed 1080px with no upper relief, so past about
+   1600px these pages stopped using the screen: at 2560 the shell held 1080 of
    2560px (42%) and kept shrinking away from the viewport as it grew, while
    /specification — which overrides this cap on its own surface — spanned 2486.
    Clicking between them moved the whole page, masthead included.
-   Measured 2026-08-14, no comparable site caps this way at 1920: Tailscale's
-   community page and Proton's both run the full 1920, Vercel's docs 1905,
-   Tailscale's docs 1680. The cap stays for the reading measure's sake below
-   that; above it the container widens so the two surfaces converge. */
+
+   Surveyed 24 protocol/standards and open-source infrastructure pages at 1920
+   on 2026-08-14 (W3C, IETF, MCP, Matrix, OpenAPI, OAuth.net, ActivityPub,
+   OpenTelemetry, CNCF, Kubernetes, Rust, Deno, Astro, SQLite, Let's Encrypt,
+   Node.js, and others). Only 2 of 16 pages that cap at all cap at or below
+   1080; the median is 1312 and eight run the full viewport. 1400 sits inside
+   that band. The reading measure is unaffected — this buys margin, not line
+   length.
+
+   The same survey is why the lists below stay single-column: among standards
+   bodies specifically, comparable heading-plus-sentence lists are kept in one
+   column even with room for two (IETF participate, 4 items at 17 words in a
+   1300px block; Kubernetes contribute, 7 items at 28 words in 1204px; W3C get
+   involved; OpenTelemetry, a 19-item list at 1220px). Multi-column grids in
+   this class are overwhelmingly link cards, which .pdpp-channels already is. */
 @media (min-width: 1600px) {
   [data-surface="concept"] .container.max-w-page {
     max-width: 1400px;
@@ -211,26 +222,6 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   border-top: 1px solid var(--border);
 }
 
-/* Same two-column treatment as .pdpp-features, and for the same reason: these
-   are heading-plus-sentence entries, not prose to be read in sequence. The
-   plain variant only — the numbered variant reads as ordered steps, and
-   columns would break the reading order (1,2 above 3,4 scans as 1,3 / 2,4). */
-@media (min-width: 900px) {
-  .pdpp-ruled-list--plain {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    column-gap: 40px;
-    max-width: var(--container-concept-figure);
-  }
-
-  .pdpp-ruled-list--plain
-    .pdpp-ruled-list__item:nth-last-child(-n + 2):nth-child(2n + 1),
-  .pdpp-ruled-list--plain
-    .pdpp-ruled-list__item:nth-last-child(-n + 2):nth-child(2n + 1)
-    ~ .pdpp-ruled-list__item {
-    border-bottom: none;
-  }
-}
 .pdpp-ruled-list__item {
   display: grid;
   grid-template-columns: 3.2em 1fr auto;
@@ -533,35 +524,6 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   border-bottom: none;
 }
 
-/* Two columns once there is room for them. Each item is a short
-   label-plus-sentence, so a single column left most of the line length unused
-   and made the section a long scroll of stubs. Community and product pages that
-   carry this kind of list — Proton's community grid, Vercel's framework cards,
-   Tailscale's socials — all put them in a multi-column grid rather than a
-   stack; measured 2026-08-14, none of those shells caps below the viewport.
-   Two, not three: these items carry a full sentence, and a third column takes
-   each below a readable line length. */
-@media (min-width: 900px) {
-  .pdpp-features {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    column-gap: 40px;
-    /* Capped, not free: unbounded, two columns plus the widened container ran
-       the list's right edge 448px past the prose above it at 1920 — the same
-       ragged multi-edge problem the specification grid exists to prevent. The
-       figure width is the widest any block may go; prose keeps its measure. */
-    max-width: var(--container-concept-figure);
-  }
-
-  /* In a two-column grid "last child" is no longer the only item with nothing
-     beneath it — the item above the last one in the first column is too, and
-     the final row's rules would otherwise hang under both columns unevenly.
-     Suppress the rule on every item in the final row instead. */
-  .pdpp-features li:nth-last-child(-n + 2):nth-child(2n + 1),
-  .pdpp-features li:nth-last-child(-n + 2):nth-child(2n + 1) ~ li {
-    border-bottom: none;
-  }
-}
 .pdpp-features strong {
   margin-right: 10px;
   font-family: var(--font-sans);
