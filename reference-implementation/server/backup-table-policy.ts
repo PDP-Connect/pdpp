@@ -107,8 +107,8 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     reason: "Connector catalog rows are required to interpret connections and records.",
   },
   consent_exchange_codes: {
-    classification: "ephemeral_crash_reconciled",
-    reason: "Consent exchange codes are short-lived single-use handoff state reconciled by expiry and redemption.",
+    classification: "backup_required",
+    reason: "Consent exchange state is durable owner authorization state until expiry or redemption.",
   },
   controller_active_runs: {
     classification: "backup_required",
