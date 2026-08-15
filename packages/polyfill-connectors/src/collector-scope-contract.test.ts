@@ -18,12 +18,12 @@
 // assuming it.
 
 import assert from "node:assert/strict";
-import { canonicalTerminalRunCommitEnvelope } from "@pdpp/reference-contract/common";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { canonicalTerminalRunCommitEnvelope } from "@pdpp/reference-contract/common";
 
 import {
   buildCollectorStartMessage,
@@ -34,8 +34,8 @@ import {
   resolveScopedStreamTimeRanges,
   runCollectorConnector,
 } from "./collector-runner.ts";
-import { hashCanonicalJson } from "./local-device-envelope.ts";
 import type { TerminalRunCommitRequest } from "./local-device-client.ts";
+import { hashCanonicalJson } from "./local-device-envelope.ts";
 
 const SINCE = "2026-06-01T00:00:00.000Z";
 /** Mirrors the claude_code/codex manifest split: 3 timed streams, the rest not. */

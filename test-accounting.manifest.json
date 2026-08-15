@@ -81,6 +81,7 @@
         "scripts/lib/*.test.ts",
         "scripts/perf/*.test.ts",
         "scripts/ri-suite/*.test.ts",
+        "scripts/stream-health-audit/*.test.ts",
         "scripts/test-accounting/*.test.ts",
         "scripts/test-migration/*.test.ts"
       ]
