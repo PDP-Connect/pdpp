@@ -7,7 +7,10 @@ import test from "node:test";
 // biome-ignore lint/correctness/noUnresolvedImports: localized test assertion preserves its explicit contract.
 import type { BrowserSurface, BrowserSurfaceAllocator, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
 import { createReplacementLifecycleHooks } from "../runtime/browser-surface/replacement-lifecycle-hooks.ts";
-import type { ReplacementReceipt } from "../runtime/browser-surface/replacement-receipt-ledger.ts";
+import type {
+  ReplacementCompletionInput,
+  ReplacementReceipt,
+} from "../runtime/browser-surface/replacement-receipt-ledger.ts";
 import {
   createBrowserSurfaceReplacementLedger,
   createReplacementObservingAllocator,
@@ -21,6 +24,11 @@ import type {
   BrowserSurfaceWithPersistenceMetadata,
 } from "../server/stores/browser-surface-lease-store.ts";
 import { createSqliteBrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
+import type {
+  BrowserSurfacePersistenceUnitOfWork,
+  BrowserSurfacePersistenceUnitOfWorkStores,
+} from "../server/stores/browser-surface-persistence-unit-of-work.ts";
+import { createBrowserSurfacePersistenceUnitOfWork } from "../server/stores/browser-surface-persistence-unit-of-work.ts";
 import type { BrowserSurfaceReplacementReceiptStore } from "../server/stores/browser-surface-replacement-ledger-store.ts";
 import { createSqliteBrowserSurfaceReplacementReceiptStore } from "../server/stores/browser-surface-replacement-ledger-store.ts";
 
@@ -425,6 +433,7 @@ test("independent stop attempts survive SQLite terminality and exact rotated rea
       allocator: null,
       leaseStore,
       log: {},
+      persistenceUnitOfWork: createBrowserSurfacePersistenceUnitOfWork(leaseStore, receiptStore),
       receiptStore,
     });
     await hooks.recordBrowserGeneration(minimalLease("lease-2"), rotatedSurface, surface.connector_id, "run-2", {
@@ -602,64 +611,219 @@ test("successful ensure followed by receipt persistence failure does not invoke 
   assert.equal(firstAttempted.cause, "allocator_internal_ensure_surface");
 });
 
-test("complete and terminate replay paths validate every supplied immutable field", () => {
+function assertHydratedReceiptReplayMutationMatrix(started: ReplacementReceipt, completed: ReplacementReceipt): void {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const expected = [started, completed];
+  ledger.hydrate(expected);
+
+  const canonicalized = [
+    ["event_seq", { ...started, event_seq: started.event_seq + 1000 }],
+    ["observed_at", { ...started, observed_at: "2099-01-01T00:00:00.000Z" }],
+    ["run_id", { ...started, run_id: "replay-observer-b" }],
+  ] as const;
+  for (const [field, replay] of canonicalized) {
+    ledger.hydrate([replay]);
+    assert.deepEqual(ledger.list(), expected, `${field} must retain the canonical started receipt`);
+  }
+
+  const startedRejected = [
+    ["replacement_id", { ...started, replacement_id: "other-started-replacement" }],
+    ["idempotency_key", { ...started, idempotency_key: "other-started-key" }],
+    ["scope", { ...started, scope: "other-scope" }],
+    ["connection_id", { ...started, connection_id: "other-connection" }],
+    ["connector_id", { ...started, connector_id: "other-connector" }],
+    ["profile_key", { ...started, profile_key: "other-profile" }],
+    ["surface_subject_id", { ...started, surface_subject_id: "other-subject" }],
+    ["lease_id", { ...started, lease_id: "other-lease" }],
+    ["surface_id", { ...started, surface_id: "other-surface" }],
+    ["previous_generation_hash", { ...started, previous_generation_hash: "c".repeat(64) }],
+    ["next_generation_hash", { ...started, next_generation_hash: "d".repeat(64) }],
+    ["cause", { ...started, cause: "idle_ttl" }],
+    ["terminal_outcome", { ...started, terminal_outcome: "failed" }],
+  ] as const;
+  for (const [field, replay] of startedRejected) {
+    assert.throws(
+      () => ledger.hydrate([replay]),
+      ReplacementReplayConflictError,
+      `${field} mutation must be rejected for a hydrated started receipt replay`
+    );
+  }
+
+  const completedCanonicalized = [
+    ["event_seq", { ...completed, event_seq: completed.event_seq + 1000 }],
+    ["observed_at", { ...completed, observed_at: "2099-01-01T00:00:01.000Z" }],
+    ["run_id", { ...completed, run_id: "replay-observer-c" }],
+  ] as const;
+  for (const [field, replay] of completedCanonicalized) {
+    ledger.hydrate([replay]);
+    assert.deepEqual(ledger.list(), expected, `${field} must retain the canonical completed receipt`);
+  }
+
+  const completedRejected = [
+    ["replacement_id", { ...completed, replacement_id: "other-completed-replacement" }],
+    ["idempotency_key", { ...completed, idempotency_key: "other-completed-key" }],
+    ["scope", { ...completed, scope: "other-completed-scope" }],
+    ["connection_id", { ...completed, connection_id: "other-completed-connection" }],
+    ["connector_id", { ...completed, connector_id: "other-completed-connector" }],
+    ["profile_key", { ...completed, profile_key: "other-completed-profile" }],
+    ["surface_subject_id", { ...completed, surface_subject_id: "other-completed-subject" }],
+    ["lease_id", { ...completed, lease_id: "other-completed-lease" }],
+    ["surface_id", { ...completed, surface_id: "other-completed-surface" }],
+    ["previous_generation_hash", { ...completed, previous_generation_hash: "c".repeat(64) }],
+    ["next_generation_hash", { ...completed, next_generation_hash: "d".repeat(64) }],
+    ["cause", { ...completed, cause: "idle_ttl" }],
+    ["terminal_outcome", { ...completed, terminal_outcome: "failed" }],
+  ] as const;
+  for (const [field, replay] of completedRejected) {
+    assert.throws(
+      () => ledger.hydrate([replay]),
+      ReplacementReplayConflictError,
+      `${field} mutation must be rejected for a hydrated completed receipt replay`
+    );
+  }
+}
+
+test("replacement replay uses one canonical field matrix", () => {
   const ledger = createBrowserSurfaceReplacementLedger();
   const started = ledger.start({
-    cause: "allocator_internal_ensure_surface",
-    connection_id: "connection-1",
-    connector_id: "chatgpt",
-    idempotency_key: "replay-start",
-    profile_key: "profile-1",
-    surface_id: "surface-1",
-    surface_subject_id: "subject-1",
+    cause: "same_container_browser_generation_change",
+    connection_id: "matrix-connection",
+    connector_id: "matrix-connector",
+    idempotency_key: "matrix-start",
+    lease_id: "matrix-lease",
+    observed_at: "2026-07-16T12:00:00.000Z",
+    previous_generation_hash: "a".repeat(64),
+    profile_key: "matrix-profile",
+    run_id: "matrix-run-a",
+    surface_id: "matrix-surface",
+    surface_subject_id: "matrix-subject",
   });
-  const completed = ledger.complete({
-    connection_id: started.connection_id,
-    profile_key: started.profile_key,
-    replacement_id: started.replacement_id,
-    ...(started.surface_subject_id ? { surface_subject_id: started.surface_subject_id } : {}),
-    ...(started.surface_id ? { surface_id: started.surface_id } : {}),
+  const completionInput: ReplacementCompletionInput = {
+    cause: "same_container_browser_generation_change",
+    connection_id: "matrix-connection",
+    connector_id: "matrix-connector",
+    idempotency_key: "matrix-completion",
+    lease_id: "matrix-lease",
     next_generation: 2,
-  });
+    observed_at: "2026-07-16T12:00:01.000Z",
+    profile_key: "matrix-profile",
+    replacement_id: started.replacement_id,
+    run_id: "matrix-run-a",
+    surface_id: "matrix-surface",
+    surface_subject_id: "matrix-subject",
+  };
+  const completed = ledger.complete(completionInput);
 
-  assert.throws(
-    () =>
-      ledger.complete({
-        connection_id: completed.connection_id,
-        next_generation: 2,
-        profile_key: completed.profile_key,
-        replacement_id: completed.replacement_id,
-        surface_id: "other-surface",
-      }),
-    ReplacementReplayConflictError
-  );
+  const acceptedMutations: readonly [string, ReplacementCompletionInput][] = [
+    ["observed_at", { ...completionInput, observed_at: "2026-07-16T12:00:02.000Z" }],
+    ["run_id", { ...completionInput, run_id: "matrix-run-b" }],
+  ];
+  for (const [field, replay] of acceptedMutations) {
+    assert.deepEqual(
+      ledger.complete(replay),
+      completed,
+      `${field} is canonicalized by the authoritative completion receipt`
+    );
+  }
+
+  const rejectedMutations: readonly [string, ReplacementCompletionInput][] = [
+    ["cause", { ...completionInput, cause: "idle_ttl" }],
+    ["connection_id", { ...completionInput, connection_id: "other-connection" }],
+    ["connector_id", { ...completionInput, connector_id: "other-connector" }],
+    ["idempotency_key", { ...completionInput, idempotency_key: "other-completion" }],
+    ["lease_id", { ...completionInput, lease_id: "other-lease" }],
+    ["next_generation", { ...completionInput, next_generation: 3 }],
+    ["next_generation_hash", { ...completionInput, next_generation_hash: "c".repeat(64) }],
+    ["profile_key", { ...completionInput, profile_key: "other-profile" }],
+    ["replacement_id", { ...completionInput, replacement_id: "other-replacement" }],
+    ["surface_id", { ...completionInput, surface_id: "other-surface" }],
+    ["surface_subject_id", { ...completionInput, surface_subject_id: "other-subject" }],
+  ];
+  for (const [field, replay] of rejectedMutations) {
+    assert.throws(
+      () => ledger.complete(replay),
+      ReplacementReplayConflictError,
+      `${field} mutation must be rejected on completion replay`
+    );
+  }
 
   const terminalStarted = ledger.start({
     cause: "idle_ttl",
-    connection_id: "connection-2",
-    idempotency_key: "terminal-start",
-    profile_key: "profile-2",
-    surface_id: "surface-2",
+    connection_id: "terminal-matrix-connection",
+    idempotency_key: "terminal-matrix-start",
+    profile_key: "terminal-matrix-profile",
+    surface_id: "terminal-matrix-surface",
   });
-  const terminal = ledger.terminate({
-    connection_id: terminalStarted.connection_id,
-    profile_key: terminalStarted.profile_key,
-    replacement_id: terminalStarted.replacement_id,
-    ...(terminalStarted.surface_id ? { surface_id: terminalStarted.surface_id } : {}),
-    cause: terminalStarted.cause,
+  const terminalInput = {
+    cause: "idle_ttl",
+    connection_id: "terminal-matrix-connection",
+    idempotency_key: "terminal-matrix-completion",
     outcome: "failed",
-  });
+    profile_key: "terminal-matrix-profile",
+    replacement_id: terminalStarted.replacement_id,
+    surface_id: "terminal-matrix-surface",
+  } as const;
+  const terminal = ledger.terminate(terminalInput);
+  assert.deepEqual(
+    ledger.terminate({ ...terminalInput, observed_at: "2026-07-16T12:00:03.000Z", run_id: "matrix-run-b" }),
+    terminal,
+    "terminal observed_at and run_id replays use the canonical receipt"
+  );
   assert.throws(
-    () =>
-      ledger.terminate({
-        cause: terminal.cause,
-        connection_id: terminal.connection_id,
-        outcome: "failed",
-        profile_key: terminal.profile_key,
-        replacement_id: terminal.replacement_id,
-        surface_id: "other-surface",
-      }),
-    ReplacementReplayConflictError
+    () => ledger.terminate({ ...terminalInput, outcome: "abandoned" }),
+    ReplacementReplayConflictError,
+    "terminal outcome mutations must be rejected"
+  );
+  assert.throws(
+    () => ledger.terminate({ ...terminalInput, idempotency_key: "other-terminal" }),
+    ReplacementReplayConflictError,
+    "terminal idempotency mutations must be rejected"
+  );
+
+  assertHydratedReceiptReplayMutationMatrix(started, completed);
+});
+
+test("readiness replay treats run id as attribution while retaining immutable mutation guards", () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const startInput = {
+    cause: "same_container_browser_generation_change",
+    connection_id: "connection-observer-replay",
+    idempotency_key: "observer-replay-start",
+    previous_generation_hash: "a".repeat(64),
+    profile_key: "profile-observer-replay",
+    run_id: "run-owner-a",
+    surface_id: "surface-observer-replay",
+  } as const;
+  const started = ledger.start(startInput);
+  const replayed = ledger.start({ ...startInput, run_id: "run-owner-b" });
+
+  assert.equal(replayed.replacement_id, started.replacement_id);
+  assert.equal(replayed.run_id, "run-owner-a", "the authoritative observer attribution remains durable");
+
+  const derivedStart = ledger.start({
+    cause: "same_container_browser_generation_change",
+    connection_id: "connection-derived-observer-replay",
+    previous_generation_hash: "b".repeat(64),
+    profile_key: "profile-observer-replay",
+    run_id: "run-owner-a",
+    surface_id: "surface-observer-replay",
+  });
+  const derivedReplay = ledger.start({
+    cause: "same_container_browser_generation_change",
+    connection_id: "connection-derived-observer-replay",
+    previous_generation_hash: "b".repeat(64),
+    profile_key: "profile-observer-replay",
+    run_id: "run-owner-b",
+    surface_id: "surface-observer-replay",
+  });
+  assert.equal(derivedReplay.idempotency_key, derivedStart.idempotency_key);
+  assert.equal(derivedReplay.replacement_id, derivedStart.replacement_id);
+  assert.equal(derivedReplay.run_id, "run-owner-a");
+
+  assert.throws(
+    () => ledger.start({ ...startInput, cause: "external_or_host_loss" }),
+    ReplacementReplayConflictError,
+    "a changed transition cause remains a replay conflict"
   );
 });
 
@@ -771,6 +935,7 @@ function notImplementedInLifecycleFake(method: string): never {
 
 function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetadata): {
   readonly leaseStore: BrowserSurfaceLeaseStore;
+  readonly persistenceUnitOfWork: BrowserSurfacePersistenceUnitOfWork;
   readonly receiptStore: BrowserSurfaceReplacementReceiptStore;
   readonly receipts: ReplacementReceipt[];
   readonly getSurface: () => BrowserSurfaceWithPersistenceMetadata;
@@ -795,6 +960,7 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
     upsertLease: async () => notImplementedInLifecycleFake("upsertLease"),
     upsertSurface: async () => notImplementedInLifecycleFake("upsertSurface"),
     withLeaseTransaction: async () => notImplementedInLifecycleFake("withLeaseTransaction"),
+    withPersistenceUnitOfWork: async () => notImplementedInLifecycleFake("withPersistenceUnitOfWork"),
   };
   const receiptStore: BrowserSurfaceReplacementReceiptStore = {
     // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
@@ -804,6 +970,7 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
     },
     applySelectionOverride: async () => notImplementedInLifecycleFake("applySelectionOverride"),
     applySelectionOverrideBatch: async () => notImplementedInLifecycleFake("applySelectionOverrideBatch"),
+    bindToTransaction: () => notImplementedInLifecycleFake("bindToTransaction"),
     dryRunSelectionOverrideBatch: async () => notImplementedInLifecycleFake("dryRunSelectionOverrideBatch"),
     findPendingForScope: async ({ connection_id, surface_subject_id, profile_key }) =>
       receipts
@@ -853,9 +1020,27 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
     },
     verifySelectionOverrideBatch: async () => notImplementedInLifecycleFake("verifySelectionOverrideBatch"),
   };
+  const persistenceUnitOfWork: BrowserSurfacePersistenceUnitOfWork = {
+    withTransaction: async <T>(fn: (stores: BrowserSurfacePersistenceUnitOfWorkStores) => Promise<T> | T) =>
+      fn({
+        leaseStore: {
+          getSurface: (surfaceId) => leaseStore.getSurface(surfaceId),
+          updateBrowserGenerationHash: (surfaceId, browserGenerationHash) =>
+            leaseStore.updateBrowserGenerationHash(surfaceId, browserGenerationHash),
+          upsertSurface: (nextSurface) => leaseStore.upsertSurface(nextSurface),
+        },
+        replacementReceiptStore: {
+          append: (receipt) => receiptStore.append(receipt),
+          findPendingForScope: (input) => receiptStore.findPendingForScope(input),
+          findPendingForSurface: (surfaceId) => receiptStore.findPendingForSurface(surfaceId),
+          selectSystemActionable: (input) => receiptStore.selectSystemActionable(input),
+        },
+      }),
+  };
   return {
     getSurface: () => surface,
     leaseStore,
+    persistenceUnitOfWork,
     receiptStore,
     receipts,
   };
@@ -867,6 +1052,7 @@ test("mid-wait browser generation records stable-container change, unchanged is 
     allocator: null,
     leaseStore: persistence.leaseStore,
     log: {},
+    persistenceUnitOfWork: persistence.persistenceUnitOfWork,
     receiptStore: persistence.receiptStore,
   });
   const lease = minimalLease("lease-generation");
@@ -932,6 +1118,7 @@ test("readiness completes a durable pending stop after cleanup rotates the surfa
     allocator: null,
     leaseStore: persistence.leaseStore,
     log: {},
+    persistenceUnitOfWork: persistence.persistenceUnitOfWork,
     receiptStore: persistence.receiptStore,
   });
   await hooksAfterRestart.recordBrowserGeneration(
@@ -959,6 +1146,7 @@ test("external loss stays pending until a scoped successor proves its generation
     allocator: null,
     leaseStore: persistence.leaseStore,
     log: {},
+    persistenceUnitOfWork: persistence.persistenceUnitOfWork,
     receiptStore: persistence.receiptStore,
   });
 
@@ -999,6 +1187,7 @@ test("a failed successor terminalizes the scoped external-loss receipt", async (
     },
     leaseStore: persistence.leaseStore,
     log: {},
+    persistenceUnitOfWork: persistence.persistenceUnitOfWork,
     receiptStore: persistence.receiptStore,
   });
 

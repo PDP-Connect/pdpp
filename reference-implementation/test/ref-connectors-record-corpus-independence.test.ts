@@ -81,7 +81,7 @@ function iso(offsetSeconds: number): string {
 
 function manifest(connectorId: string): Record<string, unknown> {
   return {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: connectorId,
     display_name: "Record corpus independence proof",
     protocol_version: "0.1.0",

@@ -13,11 +13,12 @@
  * own. The dashboard (apps/console) reaches lexical retrieval through the same
  * public route over HTTP, so there is no second contract.
  *
- * Maintenance hooks (lexicalIndexUpsert, lexicalIndexDelete,
- * lexicalIndexDeleteByConnectorStream) are called from records.js at every
- * record write/update/delete site. JS-side rather than SQLite triggers
- * because index population needs to consult the connector manifest at write
- * time to know which fields are searchable — triggers cannot see manifests.
+ * Maintenance hooks (computeLexicalFields, applyLexicalFieldsWithClient/Sync,
+ * applyLexicalDeleteWithClient/Sync, lexicalIndexDeleteByConnectorStream) are
+ * called from records.js at every record write/update/delete site. JS-side
+ * rather than SQLite triggers because index population needs to consult the
+ * connector manifest at write time to know which fields are searchable —
+ * triggers cannot see manifests.
  */
 
 import { randomBytes } from "node:crypto";
@@ -61,20 +62,24 @@ import {
   postgresLexicalIndexCountByStream,
   postgresLexicalIndexDelete,
   postgresLexicalIndexDeleteByConnectorStream,
+  postgresLexicalIndexDeleteWithClient,
   postgresLexicalIndexInsertMany,
-  postgresLexicalIndexUpsert,
+  postgresLexicalIndexPublishWithClient,
   postgresLexicalMetaGetFingerprint,
   postgresLexicalMetaListStreamsForConnector,
   postgresLexicalMetaUpsertFingerprint,
+  postgresLexicalMetaUpsertFingerprintWithClient,
   postgresLexicalRecordsCountNonDeleted,
   postgresLexicalRecordsPageNonDeleted,
   postgresLexicalSearch,
 } from "./postgres-search.ts";
+import type { PostgresTransactionClient } from "./postgres-storage.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 import { compileRequestFilters, passesGrantRecordConstraints, passesRequestFilters } from "./record-filters.ts";
 import { mapSearchFanout } from "./search-fanout.ts";
 import { sqliteCountIndexableTextValues } from "./search-index-counts.ts";
 import { makeDefaultAccountConnectorInstanceId } from "./stores/connector-instance-store.ts";
+import { countDirtySearchIndexScopes } from "./stores/search-index-dirty-store.ts";
 
 type JsonObject = Record<string, unknown>;
 type SqlBindValue = string | number | bigint | null | Uint8Array;
@@ -118,6 +123,12 @@ interface LexicalIndexEntry {
   field: string;
   recordKey: string;
   text: string;
+  version: number;
+}
+interface CurrentLexicalBackfillRow {
+  deleted: boolean | number;
+  version: number;
+  [key: string]: unknown;
 }
 type LexicalHit = SearchLexicalSnapshotResult & { score: number };
 type LexicalQueryPlanEntry = SearchLexicalPlanEntry & {
@@ -381,6 +392,29 @@ export function getLexicalIndexBackfillProgress() {
   return job ? publicLexicalBackfillJob(job) : null;
 }
 
+/**
+ * Honest public index_state for capabilities.lexical_retrieval (I7:
+ * public parity with the pre-existing semantic_retrieval.index_state).
+ * Mirrors search-semantic.ts's computeIndexState's shape ('built' |
+ * 'building' | 'stale') and precedence (an active backfill always wins
+ * over the dirty-backlog check, same as semantic's isSemanticIndexBackfillActive
+ * short-circuit).
+ *
+ * "stale" is derived from the scope-dirty backlog (search_index_dirty),
+ * not a fingerprint/backend-identity comparison the way semantic's version
+ * is: lexical has no analogous "embedding backend changed" concept, and
+ * after this design's I2 fix, a nonempty dirty backlog IS the accurate
+ * signal that at least one scope's lexical index has not yet been proven
+ * in sync with its durable records.
+ */
+export async function computeLexicalIndexState(): Promise<"built" | "building" | "stale"> {
+  if (isLexicalIndexBackfillActive()) {
+    return "building";
+  }
+  const dirtyCount = await countDirtySearchIndexScopes();
+  return dirtyCount > 0 ? "stale" : "built";
+}
+
 function resolveLexicalConnectorInstanceId(connectorId: string, connectorInstanceId: string | null = null): string {
   if (typeof connectorInstanceId === "string" && connectorInstanceId.trim()) {
     return connectorInstanceId.trim();
@@ -576,96 +610,142 @@ async function getStreamLexicalFields(connectorId: string, stream: string): Prom
 
 // ─── Index maintenance (called from records.js) ────────────────────────────
 
+export interface ComputedLexicalFields {
+  declared: string[];
+  fields: Record<string, string>;
+}
+
 /**
- * Upsert FTS rows for a record's declared lexical_fields. No-op for streams
- * that don't participate. Replaces all rows for this (connector_id, stream,
- * record_key) atomically.
- *
- * `data` is the parsed record payload object (i.e. JSON.parse(record_json)),
- * not the JSON string.
+ * Computes the lexical field values a record's declared `lexical_fields`
+ * require. Cheap (no embedding I/O, unlike the semantic counterpart) but
+ * kept as its own step for the same reason: callers combine this with
+ * `computeSemanticEntries` (search-semantic.ts) and pass BOTH to a SINGLE
+ * version-gated transaction (`records.ts`'s `maintainRecordIndexesWithinPermit`)
+ * so lexical and semantic publish/delete land atomically together, gated on
+ * ONE re-read of `records.version` — never as two independently-gated CAS
+ * transactions, which would let a newer write's own publish interleave
+ * between this record's lexical and semantic halves and leave the two index
+ * families pointing at different versions. Returns `null` when the stream
+ * declares no lexical fields. See
+ * harden-connector-instance-write-fence-transaction-native.
  */
-export async function lexicalIndexUpsert({
+export async function computeLexicalFields({
   connectorId,
-  connectorInstanceId,
   stream,
-  recordKey,
   data,
   declaredFields,
 }: {
   connectorId: string;
-  connectorInstanceId?: string | null;
   stream: string;
-  recordKey: string;
   data?: JsonObject | null;
   declaredFields?: string[];
-}): Promise<void> {
+}): Promise<ComputedLexicalFields | null> {
   const declared = declaredFields === undefined ? await getStreamLexicalFields(connectorId, stream) : declaredFields;
   if (!declared) {
-    return;
+    return null;
   }
-  const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
+  const fields = Object.fromEntries(
+    declared
+      .map((field): [string, unknown] => [field, data?.[field]])
+      .filter(([, value]) => typeof value === "string" && value.length > 0)
+  ) as Record<string, string>;
+  return { declared, fields };
+}
 
-  if (isPostgresStorageBackend()) {
-    const fields = Object.fromEntries(
-      declared
-        .map((field): [string, unknown] => [field, data?.[field]])
-        .filter(([, value]) => typeof value === "string" && value.length > 0)
-    );
-    await postgresLexicalIndexUpsert({
-      connectorId,
-      connectorInstanceId: resolvedConnectorInstanceId,
-      fields,
-      recordKey,
-      stream,
-    });
-  } else {
-    exec(referenceQueries.searchIndexDeleteByRecordKey, [resolvedConnectorInstanceId, stream, recordKey]);
-
-    for (const field of declared) {
-      const value = data?.[field];
-      if (typeof value !== "string" || value.length === 0) {
-        continue;
-      }
-      exec(referenceQueries.searchIndexInsertRow, [
-        connectorId,
-        resolvedConnectorInstanceId,
-        stream,
-        recordKey,
-        field,
-        value,
-      ]);
-    }
-  }
-  await lexicalMetaUpsertFingerprint({
+/**
+ * Applies already-computed lexical field values using the CALLER's existing
+ * Postgres transaction client — no version check, no transaction of its
+ * own. See `computeLexicalFields`'s header: the caller owns the single
+ * version-gated transaction both this and the semantic equivalent write
+ * into.
+ */
+export async function applyLexicalFieldsWithClient(
+  client: PostgresTransactionClient,
+  {
     connectorId,
-    connectorInstanceId: resolvedConnectorInstanceId,
-    fieldsFingerprint: fingerprintLexicalFields(declared),
+    connectorInstanceId,
+    stream,
+    recordKey,
+    computed,
+  }: {
+    connectorId: string;
+    connectorInstanceId: string;
+    stream: string;
+    recordKey: string;
+    computed: ComputedLexicalFields;
+  }
+): Promise<void> {
+  await postgresLexicalIndexPublishWithClient(client, {
+    connectorId,
+    connectorInstanceId,
+    fields: computed.fields,
+    recordKey,
+    stream,
+  });
+  await postgresLexicalMetaUpsertFingerprintWithClient(client, {
+    connectorId,
+    connectorInstanceId,
+    fieldsFingerprint: fingerprintLexicalFields(computed.declared),
     stream,
     updatedAt: new Date().toISOString(),
   });
 }
 
+/** Postgres client-scoped lexical delete — see `applyLexicalFieldsWithClient`'s header. */
+export async function applyLexicalDeleteWithClient(
+  client: PostgresTransactionClient,
+  { connectorInstanceId, stream, recordKey }: { connectorInstanceId: string; stream: string; recordKey: string }
+): Promise<void> {
+  await postgresLexicalIndexDeleteWithClient(client, { connectorInstanceId, recordKey, stream });
+}
+
 /**
- * Delete all FTS rows for a single record. Called on hard or soft delete.
+ * Applies already-computed lexical field values synchronously for the
+ * SQLite backend, from INSIDE the caller's own `writeTransaction` callback
+ * (must be fully synchronous). See `applyLexicalFieldsWithClient`'s header
+ * for why this is not independently version-gated.
  */
-export async function lexicalIndexDelete({
+export function applyLexicalFieldsSync({
   connectorId,
   connectorInstanceId,
   stream,
   recordKey,
+  computed,
 }: {
   connectorId: string;
-  connectorInstanceId?: string | null;
+  connectorInstanceId: string;
   stream: string;
   recordKey: string;
-}): Promise<void> {
-  const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
-  await getSearchIndexStore().indexDelete({
+  computed: ComputedLexicalFields;
+}): void {
+  exec(referenceQueries.searchIndexDeleteByRecordKey, [connectorInstanceId, stream, recordKey]);
+  for (const field of computed.declared) {
+    const value = computed.fields[field];
+    if (typeof value !== "string" || value.length === 0) {
+      continue;
+    }
+    exec(referenceQueries.searchIndexInsertRow, [connectorId, connectorInstanceId, stream, recordKey, field, value]);
+  }
+  exec(referenceQueries.searchMetaUpsertFingerprint, [
     connectorId,
-    connectorInstanceId: resolvedConnectorInstanceId,
-    recordKey,
+    connectorInstanceId,
     stream,
-  });
+    fingerprintLexicalFields(computed.declared),
+    new Date().toISOString(),
+  ]);
+}
+
+/** SQLite synchronous lexical delete — see `applyLexicalFieldsSync`'s header. */
+export function applyLexicalDeleteSync({
+  connectorInstanceId,
+  stream,
+  recordKey,
+}: {
+  connectorInstanceId: string;
+  stream: string;
+  recordKey: string;
+}): void {
+  exec(referenceQueries.searchIndexDeleteByRecordKey, [connectorInstanceId, stream, recordKey]);
 }
 
 /**
@@ -758,8 +838,23 @@ async function rebuildLexicalInsertEntries(
       stream,
     });
   } else {
+    // Version-guarded, matching the Postgres branch: each entry's `version`
+    // is the `records.version` its text was read at during the backfill
+    // page read. Re-checked against the CURRENT row, inside the SAME
+    // transaction as the insert, immediately before writing — a row a
+    // concurrent delete/newer-write has since superseded is skipped rather
+    // than resurrected/overwritten. See
+    // harden-connector-instance-write-fence-transaction-native.
     transaction(() => {
       for (const entry of entries) {
+        const current = getOne<CurrentLexicalBackfillRow>(referenceQueries.recordsIngestGetCurrentRecordState, [
+          resolvedConnectorInstanceId,
+          stream,
+          entry.recordKey,
+        ]);
+        if (!current || current.deleted || current.version !== entry.version) {
+          continue;
+        }
         exec(referenceQueries.searchIndexInsertRow, [
           connectorId,
           resolvedConnectorInstanceId,
@@ -804,12 +899,13 @@ function parseLexicalIndexRecordsPage(
       // record stays intact for whoever needs to repair it.
       continue;
     }
+    const version = Number(row.version);
     for (const field of declaredFields) {
       const value = data?.[field];
       if (typeof value !== "string" || value.length === 0) {
         continue;
       }
-      entries.push({ field, recordKey: row.record_key, text: value });
+      entries.push({ field, recordKey: row.record_key, text: value, version });
     }
   }
 
@@ -835,7 +931,13 @@ async function rebuildLexicalIndexForStream({
 }): Promise<number> {
   const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
   const usePostgres = isPostgresStorageBackend();
-  await rebuildLexicalDeleteStreamIndex(usePostgres, { connectorId, resolvedConnectorInstanceId, stream });
+  // Fenced ONLY for this one bounded, indexed DELETE — not for the scan
+  // that follows. See the per-page write below for why: a same-instance
+  // live write racing this delete is not lost, only deferred to the next
+  // reconcile sweep via search_index_dirty's atomic, write-transaction-scoped mark.
+  await withConnectorInstanceWrite(resolvedConnectorInstanceId, () =>
+    rebuildLexicalDeleteStreamIndex(usePostgres, { connectorId, resolvedConnectorInstanceId, stream })
+  );
 
   // Stream the records page-by-page so we don't pull the whole table into
   // memory on big stores.
@@ -850,6 +952,13 @@ async function rebuildLexicalIndexForStream({
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error("lexical backfill aborted");
     }
+    // UNFENCED scan + field extraction: no connector-instance writer-admission
+    // slot held here. This is the expensive/unbounded-duration part of a
+    // rebuild (arbitrarily large record counts); holding a shared admission
+    // slot across it is what starved unrelated live ingest in the UAT
+    // startup-backfill incident. Matches records.ts's
+    // maintainRecordIndexesWithinPermit: "expensive/unlocked compute first
+    // ... THEN one short transaction."
     const rows = await rebuildLexicalFetchRecordsPage(usePostgres, {
       lastId,
       limit: PAGE,
@@ -869,12 +978,21 @@ async function rebuildLexicalIndexForStream({
     const nextScanned = scanned + scannedRecords;
     let nextIndexed = indexed;
     if (entries.length > 0) {
-      await rebuildLexicalInsertEntries(usePostgres, {
-        connectorId,
-        entries,
-        resolvedConnectorInstanceId,
-        stream,
-      });
+      // Fenced ONLY for this page's bounded, already version-CAS'd write
+      // (rebuildLexicalInsertEntries re-reads records.version per entry
+      // immediately before writing, inside the same transaction — a row a
+      // concurrent delete/newer-write has since superseded is skipped, not
+      // resurrected). The fence here is a short in-process mutual-exclusion
+      // convenience, not a correctness requirement the write itself lacks;
+      // it is held for O(one page's write), never O(the whole rebuild).
+      await withConnectorInstanceWrite(resolvedConnectorInstanceId, () =>
+        rebuildLexicalInsertEntries(usePostgres, {
+          connectorId,
+          entries,
+          resolvedConnectorInstanceId,
+          stream,
+        })
+      );
       nextIndexed += indexEntries;
     }
     if (progressJob) {
@@ -1057,11 +1175,12 @@ async function resolveLexicalBackfillConnectorInstanceIds({
  * Drift-detect + rebuild the lexical index for every participating stream of
  * a manifest. Idempotent and safe to call repeatedly.
  *
- * Why this exists: write-path maintenance (lexicalIndexUpsert et al) only
- * keeps records that arrived AFTER the manifest declared lexical_fields in
- * sync. It cannot help with records that already existed when the extension
- * was enabled, or with streams whose lexical_fields declaration changed
- * across a restart. This pass closes that gap.
+ * Why this exists: write-path maintenance (computeLexicalFields/
+ * applyLexicalFieldsWithClient/Sync et al) only keeps records that arrived
+ * AFTER the manifest declared lexical_fields in sync. It cannot help with
+ * records that already existed when the extension was enabled, or with
+ * streams whose lexical_fields declaration changed across a restart. This
+ * pass closes that gap.
  *
  * Called from:
  *   - startServer (native mode: backfills the configured native connector)
@@ -1128,7 +1247,9 @@ async function backfillLexicalStream({
         `[PDPP] Lexical index: stream='${stream}' connector='${connectorId}' ` +
           "no longer declares lexical_fields — dropping stale index + meta"
       );
-      await lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream });
+      await withConnectorInstanceWrite(connectorInstanceId, () =>
+        lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream })
+      );
     }
     return progressJob;
   }
@@ -1207,13 +1328,15 @@ async function backfillLexicalStream({
   );
 
   // Persist the new fingerprint so subsequent backfill calls can skip.
-  await lexicalMetaUpsertFingerprint({
-    connectorId,
-    connectorInstanceId,
-    fieldsFingerprint: newFingerprint,
-    stream,
-    updatedAt: new Date().toISOString(),
-  });
+  await withConnectorInstanceWrite(connectorInstanceId, () =>
+    lexicalMetaUpsertFingerprint({
+      connectorId,
+      connectorInstanceId,
+      fieldsFingerprint: newFingerprint,
+      stream,
+      updatedAt: new Date().toISOString(),
+    })
+  );
   return progressJob;
 }
 
@@ -1277,7 +1400,9 @@ async function backfillLexicalConnectorInstance(
       `[PDPP] Lexical index: stream='${row.stream}' connector='${connectorId}' ` +
         "no longer in manifest — dropping stale index + meta"
     );
-    await lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream: row.stream });
+    await withConnectorInstanceWrite(connectorInstanceId, () =>
+      lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream: row.stream })
+    );
   });
 
   return currentProgressJob;
@@ -1323,8 +1448,30 @@ export async function lexicalIndexBackfillForManifest({
         connectorId,
         connectorInstanceId,
       });
-      progressJob = await withConnectorInstanceWrite(connectorInstanceId, () =>
-        backfillLexicalConnectorInstance(connectorId, connectorInstanceId, manifest.streams, progressJob, log, signal)
+      // No connector-instance writer-admission fence here. The scan +
+      // per-page durable write below is the SAME shape records.ts's
+      // maintainRecordIndexesWithinPermit already uses for live-ingest
+      // derived-index maintenance: expensive/unlocked read work first, then
+      // a short version-CAS'd write (rebuildLexicalInsertEntries already
+      // re-checks records.version immediately before writing, skipping any
+      // row a concurrent write has since superseded). Holding
+      // withConnectorInstanceWrite across the WHOLE scan+write here — as
+      // this used to — meant one connector instance's rebuild occupied a
+      // GLOBAL admission slot for the full scan duration, starving
+      // unrelated live ingest for other instances until its own bounded
+      // wait elapsed (the UAT startup-backfill-vs-GroupMe-ingest incident).
+      // A concurrent same-instance write this scan misses is not lost: the
+      // write path's own atomic search_index_dirty mark re-flags the scope
+      // for the next reconcile sweep (search-index-reconcile.ts), which is
+      // itself CAS'd on marked_at so it can never clear a mark a concurrent
+      // write just set.
+      progressJob = await backfillLexicalConnectorInstance(
+        connectorId,
+        connectorInstanceId,
+        manifest.streams,
+        progressJob,
+        log,
+        signal
       );
     });
     return progressJob;

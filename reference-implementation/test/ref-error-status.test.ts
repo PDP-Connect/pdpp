@@ -56,6 +56,7 @@ test("codeToStatus pins grant/auth and connector-instance code statuses", () => 
   ]) {
     assert.equal(codeToStatus[code], 403, `${code} must be 403`);
   }
+  assert.equal(codeToStatus.connector_instance_busy, 503);
   assert.equal(codeToStatus.authentication_error, 401);
   assert.equal(codeToStatus.connector_instance_store_required, 500);
   assert.equal(codeToStatus.run_already_active, 409);

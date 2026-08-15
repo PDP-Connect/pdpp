@@ -18,6 +18,7 @@ const REF_UPLOAD_ENDPOINT = /\/_ref\/connectors\/.*manual-upload-staged-artifact
 const REF_ARTIFACT_POLL_ENDPOINT = /\/_ref\/manual-upload\/artifacts/;
 const REF_PREVIEW_ENDPOINT = /\/_ref\/connectors\/.*manual-upload-validation-preview/;
 const REF_RUN_ENDPOINT = /\/_ref\/connections\/.*\/run/;
+const REF_RUN_SETUP_ADMISSION = /run_admission:\s*"setup"/;
 const STAGED_CONTENT_TYPE = /application\/vnd\.pdpp\.manual-upload/;
 const FILE_INPUT = /type="file"/;
 const MULTIPLE_FILES = /\bmultiple\b/;
@@ -26,8 +27,9 @@ const ACCEPT_EXTENSIONS = /accepted_file_extensions/;
 const SIZE_PREFLIGHT = /max_file_bytes/;
 const HELP_URL = /help_url/;
 const NEW_TAB = /target="_blank"/;
+const NEW_TAB_COPY = /in a new tab/;
 const NOREFERRER = /rel="noreferrer"/;
-const SECURITY_BOUNDARY_COPY = /never returned to agents, MCP clients, REST reads/i;
+const SECURITY_BOUNDARY_COPY = /stored for this source and is not exposed to connected apps or clients/i;
 const NO_CONNECTOR_BRANCH = /connectorId\s*===/;
 const NO_PROVIDER_COPY = /\bGoogle\b|\bTimeline\b|\bMaps\b/i;
 
@@ -39,7 +41,7 @@ const OPTIONAL_PREVIEW_COPY = /Preview checks one file/;
 const WHAT_PDPP_FOUND_COPY = /What PDPP found/;
 const TARGET_CHOICE_COPY = /Create a new source for these files/;
 const EXISTING_SOURCE_COPY = /Add these files to an existing source/;
-const LABEL_INPUT = /name="display_name"/;
+const LABEL_INPUT = /name=\{connectionName\.name\}/;
 const NO_SERVER_ACTION = /useActionState|manualUploadConnectionFormAction|action=\{formAction\}/;
 const NO_SECRET_LOG = /console\.(log|error|warn)\([\s\S]*secret/;
 
@@ -70,6 +72,7 @@ test("manual-upload form imports directly and offers preview without connector-s
   assert.match(src, REF_ARTIFACT_POLL_ENDPOINT);
   assert.match(src, REF_PREVIEW_ENDPOINT);
   assert.match(src, REF_RUN_ENDPOINT);
+  assert.match(src, REF_RUN_SETUP_ADMISSION);
   assert.match(src, STAGED_CONTENT_TYPE);
   assert.match(src, FILE_INPUT);
   assert.match(src, MULTIPLE_FILES);
@@ -78,6 +81,7 @@ test("manual-upload form imports directly and offers preview without connector-s
   assert.match(src, SIZE_PREFLIGHT);
   assert.match(src, HELP_URL);
   assert.match(src, NEW_TAB);
+  assert.match(src, NEW_TAB_COPY);
   assert.match(src, NOREFERRER);
   assert.match(src, PREVIEW_ONLY_COPY);
   assert.match(src, IMPORT_FILE_COPY);
@@ -97,4 +101,25 @@ test("manual-upload no longer posts large multipart bodies through a Server Acti
   assert.doesNotMatch(src, REQUIRE_ACCESS);
   assert.doesNotMatch(src, NO_SERVER_ACTION);
   assert.doesNotMatch(src, NO_SECRET_LOG);
+});
+
+test("manual-upload-final-redteam-0810 #2: the Preview button's request declares the streamed content type, not the default octet-stream fallback", async () => {
+  // Regression test for the exact defect the independent red team found:
+  // sendRawFile()'s XHR defaults Content-Type to "application/octet-stream"
+  // unless the caller passes an explicit `contentType` -- previewManualUpload
+  // omitted it, so the RS's streaming-only content-type gate fell through to
+  // the wildcard whole-buffer parser for the "Preview" button specifically
+  // (a real, easily-triggered user journey with no client-side size gate).
+  // Isolate previewManualUpload's own function body (not just "the string
+  // appears somewhere in the file") so a future refactor that moves the
+  // streamed call elsewhere in the file still fails this test honestly.
+  const src = await readFile(FORM_FILE, "utf8");
+  const bodyMatch = src.match(/async function previewManualUpload\([\s\S]*?\n\}\n/);
+  assert.ok(bodyMatch, "expected to locate previewManualUpload's function body in manual-upload-form.tsx");
+  const body = bodyMatch[0];
+  assert.match(
+    body,
+    STAGED_CONTENT_TYPE,
+    "previewManualUpload must pass contentType: 'application/vnd.pdpp.manual-upload' to sendRawFile"
+  );
 });

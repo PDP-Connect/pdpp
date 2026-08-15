@@ -16,6 +16,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { findManifestForConnectorId } from "../sources/lib/relationships.ts";
+import type { OwnerConnectorTemplateLike } from "./connection-catalog.ts";
 import { isActiveConnectorRunSummaryStatus } from "./connector-run-summary-status.ts";
 import {
   getOwnerToken,
@@ -63,6 +64,13 @@ export interface StreamRecord {
   emitted_at: string;
   id: string;
   object: "record";
+  /**
+   * Logical byte length of this record's current `record_json`. Only
+   * populated on the single-record-detail read (`getRecord()` below) — the
+   * records-list read never carries this field. `undefined` when unmeasured
+   * or when this record came from a list response; render `—`, never `0`.
+   */
+  record_json_bytes?: number;
   stream: string;
   /**
    * Canonical `meta.warnings`, surfaced when this record was fetched via a
@@ -142,9 +150,27 @@ export interface StreamMetadata {
 }
 
 export interface ConnectorManifest {
+  capabilities?: {
+    auth?: {
+      deployment_config?: readonly string[] | null;
+      kind?: string | null;
+      mode?: string | null;
+      required?: readonly string[] | null;
+      type?: string | null;
+    } | null;
+    public_listing?: {
+      tier?: "supported" | "preview" | "development" | null;
+    } | null;
+  } | null;
   connector_id: string;
   connector_key?: string;
   display_name?: string;
+  /** Optional manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
+  icon?: {
+    color?: string | null;
+    kind?: string | null;
+    svg?: string | null;
+  } | null;
   name?: string;
   provider_id?: string;
   /**
@@ -787,6 +813,14 @@ export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
   const manifests = parsed.filter((m): m is ConnectorManifest => Boolean(m?.connector_id));
   manifests.sort((a, b) => a.connector_id.localeCompare(b.connector_id));
   return manifests;
+}
+
+/** Server-owned catalog projection consumed by the live Add Source surface. */
+export type OwnerConnectorTemplate = OwnerConnectorTemplateLike;
+
+export async function listOwnerConnectorTemplates(): Promise<OwnerConnectorTemplate[]> {
+  const body = (await authedFetch("/v1/owner/connector-templates")) as { data?: OwnerConnectorTemplate[] };
+  return Array.isArray(body.data) ? body.data : [];
 }
 
 export interface ConnectorOverview {

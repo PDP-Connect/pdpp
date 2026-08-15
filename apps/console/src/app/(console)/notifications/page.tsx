@@ -5,7 +5,7 @@ import { PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import type { Metadata } from "next";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { WebPushSettings } from "@/app/(console)/components/web-push-settings.tsx";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { getWebPushConfig, listWebPushSubscriptions } from "../lib/ref-client.ts";
 
@@ -59,12 +59,12 @@ export default async function NotificationsPage() {
               reconnects, syncs waiting on you, and other events where this instance needs your attention.
             </p>
             <p>
-              <strong className="text-foreground">No record content.</strong> Notification payloads stay non-secret and
-              route you back to the owner-authenticated console for details.
+              <strong className="text-foreground">Headline only.</strong> Payloads stay non-secret and route you back to
+              the owner-authenticated console for the details.
             </p>
             <p>
-              <strong className="text-foreground">Per device.</strong> Installing the PWA adds an app icon; it does not
-              subscribe this browser until you enable this device here.
+              <strong className="text-foreground">Per device.</strong> Installing the PWA adds an app icon; this browser
+              starts receiving alerts once you enable it here.
             </p>
           </div>
         </Section>

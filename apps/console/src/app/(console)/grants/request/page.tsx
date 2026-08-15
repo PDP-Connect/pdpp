@@ -285,10 +285,7 @@ function WorkspaceStateSection({ workspace }: { workspace: Workspace | null }) {
 
 function DriveConsentSection({ ownerLoginUrl, workspace }: { ownerLoginUrl: string; workspace: Workspace }) {
   return (
-    <Section
-      description="Approve or deny the staged request via the public consent routes. In placeholder-owner-auth mode these direct buttons are disabled — use owner access instead."
-      title="3. Drive consent"
-    >
+    <Section description="Approve or deny the staged request via the public consent routes." title="3. Drive consent">
       <form className="flex flex-wrap items-center gap-2">
         <input name="workspace_id" type="hidden" value={workspace.workspaceId} />
         <IcButton formAction={approveGrantRequestAction} size="sm" type="submit">
@@ -350,7 +347,7 @@ export default async function GrantRequestPage({ searchParams }: { searchParams:
         breadcrumbs={[{ href: "/grants", label: "Grants" }, { label: "Grant request" }]}
         description="Register a public client, stage a real PAR request with PDPP authorization details, then drive the resulting consent through the public approval path."
         meta={<HeaderMeta workspace={workspace} />}
-        title="Grant request workspace"
+        title="Grant request"
       />
 
       {error ? <WorkspaceError message={error} /> : null}

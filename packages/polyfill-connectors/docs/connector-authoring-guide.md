@@ -637,8 +637,10 @@ don't invent a stream-specific download URL. The contract is fixed:
    the owner-authorized session it already holds (IMAP, signed Slack
    token, scrape session, on-disk filesystem path).
 2. The connector uploads bytes to the reference RS via
-   `POST /v1/blobs?connector_id=…&stream=…&record_key=…`. The RS
-   stores them content-addressed (sha256) and returns a `blob_ref`.
+   `POST /v1/blobs?connector_id=…&stream=…&record_key=…&mime_type=…`
+   through `makeReferenceBlobUploader`. The helper keeps the binary transport
+   type separate from the stored MIME type. The RS stores the exact bytes
+   content-addressed (sha256) and returns a `blob_ref`.
 3. The connector emits a record whose `data.blob_ref` carries
    `{ blob_id, mime_type, size_bytes, sha256 }`, plus
    `content_sha256` (mirrors the blob sha) and `hydration_status`.

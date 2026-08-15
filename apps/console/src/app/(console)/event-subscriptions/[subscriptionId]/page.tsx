@@ -42,7 +42,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../../components/shell.tsx";
+import { ServerUnreachable } from "../../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import {
   type ClientEventSubscriptionAttempt,

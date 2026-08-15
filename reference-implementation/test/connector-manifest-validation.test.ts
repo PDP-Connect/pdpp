@@ -12,6 +12,33 @@ const TOP_LEVEL_REGEX_11 = /state_stream must name a different parent stream, no
 const TOP_LEVEL_REGEX_12 = /state_stream must be a non-empty string/;
 const TOP_LEVEL_REGEX_13 = /state_stream, which is only valid with coverage_strategy "checkpoint_window"/;
 const TOP_LEVEL_REGEX_14 = /state_stream, which is only valid with coverage_strategy "checkpoint_window"/;
+const PARENT_STREAMS_ARRAY_PATTERN = /parent_streams must be a non-empty string array/;
+const PARENT_STREAMS_DUPLICATE_PATTERN = /parent_streams must not contain duplicates/;
+const PARENT_STREAMS_UNKNOWN_PATTERN = /parent_streams entry 'ghost' must name another declared stream/;
+const PARENT_STREAMS_SELF_PATTERN = /parent_streams must not name the stream itself/;
+const PARENT_STREAMS_STRATEGY_PATTERN =
+  /parent_streams, which is only valid with coverage_strategy "parent_detail_accounting"/;
+const BOTH_STATE_STREAM_AND_PARENT_STREAMS_PATTERN = /must not declare both state_stream and parent_streams/;
+const TOP_LEVEL_REGEX_15 = /capabilities\.proven must be an object when declared/;
+const TOP_LEVEL_REGEX_16 = /capabilities\.proven has unsupported keys: bogus_key/;
+const TOP_LEVEL_REGEX_17 = /capabilities\.proven\.local_collector must be a boolean when declared/;
+const TOP_LEVEL_REGEX_18 = /capabilities\.proven\.provider_auth_lifecycle must be a boolean when declared/;
+const TOP_LEVEL_REGEX_19 = /capabilities\.proven\.static_secret_live must be an object when declared/;
+const TOP_LEVEL_REGEX_20 = /capabilities\.proven\.static_secret_live has unsupported keys: bogus_key/;
+const TOP_LEVEL_REGEX_21 = /capabilities\.proven\.static_secret_live\.proven must be a boolean/;
+const TOP_LEVEL_REGEX_22 =
+  /capabilities\.proven\.static_secret_live\.run_id must be a non-empty string or null when declared/;
+const TOP_LEVEL_REGEX_23 =
+  /capabilities\.proven\.static_secret_live\.date must be an ISO yyyy-mm-dd string when declared/;
+const TOP_LEVEL_REGEX_24 = /capabilities\.proven\.static_secret_live\.note must be a non-empty string when declared/;
+const TOP_LEVEL_REGEX_25 =
+  /capabilities\.proven\.static_secret_live\.proven=true requires setup\.modality "static_secret"/;
+const TOP_LEVEL_REGEX_26 =
+  /capabilities\.proven\.provider_auth_lifecycle=true requires setup\.modality "provider_authorization"/;
+const TOP_LEVEL_REGEX_27 =
+  /capabilities\.proven\.local_collector=true requires runtime_requirements\.bindings\.filesystem/;
+const TOP_LEVEL_REGEX_28 = /credential_capture field 'password' is a secret field .* with no label/;
+const TOP_LEVEL_REGEX_29 = /credential_capture field 'password' is a secret field with zero env aliases/;
 
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
@@ -21,7 +48,8 @@ const TOP_LEVEL_REGEX_14 = /state_stream, which is only valid with coverage_stra
  * validator.
  *
  * connector-manifest-validation.ts is a pure module (imports only
- * connector-key.js). Only resolveManifestSensitivity is covered elsewhere
+ * connector-key.js and the shared static-secret-credential-capture
+ * normalizer). Only resolveManifestSensitivity is covered elsewhere
  * (manifest-sensitivity.test.js); the schema-predicate classifiers and the
  * blob_ref shape validator were unpinned. All functions here are pure.
  * Coverage:
@@ -48,6 +76,7 @@ import {
   schemaTypeIncludes,
   validateBlobRefSchemaDeclaration,
   validateConnectorManifest,
+  validateProvenCapability,
 } from "../server/connector-manifest-validation.ts";
 
 function manifestWithStream(stream = {}) {
@@ -316,4 +345,436 @@ test("validateConnectorManifest rejects state_stream without an explicit checkpo
     () => validateConnectorManifest({ ...manifest, streams: [manifest.streams[0], stateStream] }),
     TOP_LEVEL_REGEX_14
   );
+});
+
+test("validateConnectorManifest accepts a parent-detail stream with multiple declared parents", () => {
+  const manifest = manifestWithChildStateStream();
+  assert.doesNotThrow(() =>
+    validateConnectorManifest({
+      ...manifest,
+      streams: [
+        manifest.streams[0],
+        { name: "other_parent", primary_key: ["id"], schema: { properties: { id: { type: "string" } } } },
+        {
+          coverage_strategy: "parent_detail_accounting",
+          name: "details",
+          parent_streams: ["items", "other_parent"],
+          primary_key: ["id"],
+          schema: { properties: { id: { type: "string" } } },
+        },
+      ],
+    })
+  );
+});
+
+test("validateConnectorManifest rejects ambiguous parent_streams declarations", () => {
+  const manifest = manifestWithChildStateStream();
+  const detail = (parent_streams: unknown, coverage_strategy = "parent_detail_accounting") => ({
+    coverage_strategy,
+    name: "details",
+    parent_streams,
+    primary_key: ["id"],
+    schema: { properties: { id: { type: "string" } } },
+  });
+  const base = [
+    manifest.streams[0],
+    { name: "other_parent", primary_key: ["id"], schema: { properties: { id: { type: "string" } } } },
+  ];
+
+  assert.throws(
+    () => validateConnectorManifest({ ...manifest, streams: [...base, detail([])] }),
+    PARENT_STREAMS_ARRAY_PATTERN
+  );
+  assert.throws(
+    () => validateConnectorManifest({ ...manifest, streams: [...base, detail(["items", "items"])] }),
+    PARENT_STREAMS_DUPLICATE_PATTERN
+  );
+  assert.throws(
+    () => validateConnectorManifest({ ...manifest, streams: [...base, detail(["ghost"])] }),
+    PARENT_STREAMS_UNKNOWN_PATTERN
+  );
+  assert.throws(
+    () => validateConnectorManifest({ ...manifest, streams: [...base, detail(["details"])] }),
+    PARENT_STREAMS_SELF_PATTERN
+  );
+  assert.throws(
+    () => validateConnectorManifest({ ...manifest, streams: [...base, detail(["items"], "full_inventory")] }),
+    PARENT_STREAMS_STRATEGY_PATTERN
+  );
+});
+
+// Direct discriminator for spec Validation rule 4 ("both fields present").
+// `state_stream` and `parent_streams` are each gated to a different,
+// mutually exclusive `coverage_strategy` value, which makes this combination
+// unrepresentable as an incidental side effect of that gate today — but the
+// rule is normative on its own and must be enforced directly, not merely as
+// a side effect of the two single-field coverage_strategy checks. This test
+// crafts a stream that would otherwise satisfy state_stream's own checks
+// (coverage_strategy: "checkpoint_window", valid state_stream target) while
+// also declaring parent_streams, to prove the explicit joint check fires
+// before either individual field validator gets a chance to pass it.
+test("validateConnectorManifest rejects a stream declaring both state_stream and parent_streams", () => {
+  const manifest = manifestWithChildStateStream({
+    parent_streams: ["items"],
+  });
+  assert.throws(() => validateConnectorManifest(manifest), BOTH_STATE_STREAM_AND_PARENT_STREAMS_PATTERN);
+});
+
+// ─── Checkpoint-dependency cycle detection (spec Validation rule 6, P2-1) ──
+//
+// Rules 1-5 (self-reference, unknown parent, duplicate parent, both fields,
+// empty parent_streams) each inspect one stream's own declared edges in
+// isolation, so they cannot see a cycle formed by TWO OR MORE direct edges
+// (A -> B -> A, or a longer chain through direct edges only). These tests
+// build such graphs directly and prove genuine cycle detection fires — a
+// provider-neutral DFS over the declared dependency graph, no connector-
+// specific knowledge.
+
+const CYCLE_PATTERN = /Checkpoint-dependency cycle detected/;
+
+function streamStub(name: string, extra: Record<string, unknown> = {}) {
+  return {
+    name,
+    primary_key: ["id"],
+    schema: { properties: { id: { type: "string" } } },
+    ...extra,
+  };
+}
+
+test("validateConnectorManifest rejects a 2-cycle formed by two direct state_stream edges (A <-> B)", () => {
+  const manifest = {
+    connector_key: "test-manifest",
+    streams: [
+      streamStub("stream_a", { coverage_strategy: "checkpoint_window", state_stream: "stream_b" }),
+      streamStub("stream_b", { coverage_strategy: "checkpoint_window", state_stream: "stream_a" }),
+    ],
+  };
+  assert.throws(() => validateConnectorManifest(manifest), CYCLE_PATTERN);
+});
+
+test("validateConnectorManifest rejects a 3-cycle formed by direct state_stream edges (A -> B -> C -> A)", () => {
+  const manifest = {
+    connector_key: "test-manifest",
+    streams: [
+      streamStub("stream_a", { coverage_strategy: "checkpoint_window", state_stream: "stream_b" }),
+      streamStub("stream_b", { coverage_strategy: "checkpoint_window", state_stream: "stream_c" }),
+      streamStub("stream_c", { coverage_strategy: "checkpoint_window", state_stream: "stream_a" }),
+    ],
+  };
+  assert.throws(() => validateConnectorManifest(manifest), CYCLE_PATTERN);
+});
+
+test("validateConnectorManifest rejects a mixed state_stream/parent_streams cycle", () => {
+  const manifest = {
+    connector_key: "test-manifest",
+    streams: [
+      streamStub("stream_a", { coverage_strategy: "checkpoint_window", state_stream: "stream_b" }),
+      streamStub("stream_b", { coverage_strategy: "parent_detail_accounting", parent_streams: ["stream_a"] }),
+    ],
+  };
+  assert.throws(() => validateConnectorManifest(manifest), CYCLE_PATTERN);
+});
+
+test("validateConnectorManifest accepts an acyclic manifest where two streams share the same declared parent", () => {
+  const manifest = {
+    connector_key: "test-manifest",
+    streams: [
+      streamStub("shared_parent"),
+      streamStub("child_one", { coverage_strategy: "checkpoint_window", state_stream: "shared_parent" }),
+      streamStub("child_two", { coverage_strategy: "checkpoint_window", state_stream: "shared_parent" }),
+    ],
+  };
+  assert.doesNotThrow(() => validateConnectorManifest(manifest));
+});
+
+// ─── validateProvenCapability: adversarial direct tests ───────────────────
+//
+// The Cluster B closure made capabilities.proven a schema-validated,
+// cross-field-checked declaration (server/connection-setup-plan.ts reads
+// these traits instead of a hardcoded connector-id allowlist). Every
+// rejection branch below is exercised directly against a manifest crafted
+// to trip exactly that branch and nothing else — proving each cross-field
+// consistency check actually fires, not just that real shipped manifests
+// happen to pass.
+
+function manifestWithCapabilities(capabilities: unknown, extra: Record<string, unknown> = {}) {
+  return { capabilities, connector_key: "test-manifest", ...extra };
+}
+
+test("validateProvenCapability accepts a manifest with no capabilities or no proven declaration", () => {
+  assert.doesNotThrow(() => validateProvenCapability({ connector_key: "test-manifest" }, "invalid_request"));
+  assert.doesNotThrow(() => validateProvenCapability(manifestWithCapabilities({}), "invalid_request"));
+  assert.doesNotThrow(() => validateProvenCapability(manifestWithCapabilities(undefined), "invalid_request"));
+});
+
+test("validateProvenCapability rejects capabilities.proven that is not an object", () => {
+  assert.throws(
+    () => validateProvenCapability(manifestWithCapabilities({ proven: "yes" }), "invalid_request"),
+    TOP_LEVEL_REGEX_15
+  );
+  assert.throws(
+    () => validateProvenCapability(manifestWithCapabilities({ proven: ["local_collector"] }), "invalid_request"),
+    TOP_LEVEL_REGEX_15
+  );
+});
+
+test("validateProvenCapability rejects an unsupported key under capabilities.proven", () => {
+  assert.throws(
+    () => validateProvenCapability(manifestWithCapabilities({ proven: { bogus_key: true } }), "invalid_request"),
+    TOP_LEVEL_REGEX_16
+  );
+});
+
+test("validateProvenCapability rejects non-boolean local_collector / provider_auth_lifecycle", () => {
+  assert.throws(
+    () =>
+      validateProvenCapability(manifestWithCapabilities({ proven: { local_collector: "true" } }), "invalid_request"),
+    TOP_LEVEL_REGEX_17
+  );
+  assert.throws(
+    () =>
+      validateProvenCapability(manifestWithCapabilities({ proven: { provider_auth_lifecycle: 1 } }), "invalid_request"),
+    TOP_LEVEL_REGEX_18
+  );
+});
+
+test("validateProvenCapability rejects a non-object static_secret_live", () => {
+  assert.throws(
+    () =>
+      validateProvenCapability(manifestWithCapabilities({ proven: { static_secret_live: true } }), "invalid_request"),
+    TOP_LEVEL_REGEX_19
+  );
+  assert.throws(
+    () => validateProvenCapability(manifestWithCapabilities({ proven: { static_secret_live: [] } }), "invalid_request"),
+    TOP_LEVEL_REGEX_19
+  );
+});
+
+test("validateProvenCapability rejects an unsupported key under capabilities.proven.static_secret_live", () => {
+  assert.throws(
+    () =>
+      validateProvenCapability(
+        manifestWithCapabilities({ proven: { static_secret_live: { bogus_key: true, proven: true } } }),
+        "invalid_request"
+      ),
+    TOP_LEVEL_REGEX_20
+  );
+});
+
+test("validateProvenCapability rejects static_secret_live.proven that is not a boolean", () => {
+  assert.throws(
+    () =>
+      validateProvenCapability(
+        manifestWithCapabilities({ proven: { static_secret_live: { proven: "true" } } }),
+        "invalid_request"
+      ),
+    TOP_LEVEL_REGEX_21
+  );
+});
+
+test("validateProvenCapability rejects a run_id that is present but not a non-empty string or null", () => {
+  assert.throws(
+    () =>
+      validateProvenCapability(
+        manifestWithCapabilities({ proven: { static_secret_live: { proven: true, run_id: "" } } }),
+        "invalid_request"
+      ),
+    TOP_LEVEL_REGEX_22
+  );
+  assert.throws(
+    () =>
+      validateProvenCapability(
+        manifestWithCapabilities({ proven: { static_secret_live: { proven: true, run_id: 42 } } }),
+        "invalid_request"
+      ),
+    TOP_LEVEL_REGEX_22
+  );
+});
+
+test("validateProvenCapability accepts a null run_id", () => {
+  assert.doesNotThrow(() =>
+    validateProvenCapability(
+      manifestWithCapabilities(
+        { proven: { static_secret_live: { proven: true, run_id: null } } },
+        { setup: { modality: "static_secret" } }
+      ),
+      "invalid_request"
+    )
+  );
+});
+
+test("validateProvenCapability rejects a date that is not an ISO yyyy-mm-dd string", () => {
+  assert.throws(
+    () =>
+      validateProvenCapability(
+        manifestWithCapabilities({ proven: { static_secret_live: { date: "08/09/2026", proven: true } } }),
+        "invalid_request"
+      ),
+    TOP_LEVEL_REGEX_23
+  );
+  assert.throws(
+    () =>
+      validateProvenCapability(
+        manifestWithCapabilities({ proven: { static_secret_live: { date: "2026-8-9", proven: true } } }),
+        "invalid_request"
+      ),
+    TOP_LEVEL_REGEX_23
+  );
+});
+
+test("validateProvenCapability rejects a note that is present but not a non-empty string", () => {
+  assert.throws(
+    () =>
+      validateProvenCapability(
+        manifestWithCapabilities({ proven: { static_secret_live: { note: "", proven: true } } }),
+        "invalid_request"
+      ),
+    TOP_LEVEL_REGEX_24
+  );
+});
+
+test("validateProvenCapability rejects static_secret_live.proven=true without setup.modality static_secret", () => {
+  assert.throws(
+    () =>
+      validateProvenCapability(
+        manifestWithCapabilities({ proven: { static_secret_live: { proven: true } } }),
+        "invalid_request"
+      ),
+    TOP_LEVEL_REGEX_25
+  );
+  assert.throws(
+    () =>
+      validateProvenCapability(
+        manifestWithCapabilities(
+          { proven: { static_secret_live: { proven: true } } },
+          { setup: { modality: "provider_authorization" } }
+        ),
+        "invalid_request"
+      ),
+    TOP_LEVEL_REGEX_25
+  );
+});
+
+test("validateProvenCapability accepts static_secret_live.proven=true with setup.modality static_secret", () => {
+  assert.doesNotThrow(() =>
+    validateProvenCapability(
+      manifestWithCapabilities(
+        { proven: { static_secret_live: { proven: true } } },
+        { setup: { modality: "static_secret" } }
+      ),
+      "invalid_request"
+    )
+  );
+});
+
+test("validateProvenCapability rejects provider_auth_lifecycle=true without setup.modality provider_authorization", () => {
+  assert.throws(
+    () =>
+      validateProvenCapability(
+        manifestWithCapabilities({ proven: { provider_auth_lifecycle: true } }),
+        "invalid_request"
+      ),
+    TOP_LEVEL_REGEX_26
+  );
+  assert.throws(
+    () =>
+      validateProvenCapability(
+        manifestWithCapabilities(
+          { proven: { provider_auth_lifecycle: true } },
+          { setup: { modality: "static_secret" } }
+        ),
+        "invalid_request"
+      ),
+    TOP_LEVEL_REGEX_26
+  );
+});
+
+test("validateProvenCapability accepts provider_auth_lifecycle=true with setup.modality provider_authorization", () => {
+  assert.doesNotThrow(() =>
+    validateProvenCapability(
+      manifestWithCapabilities(
+        { proven: { provider_auth_lifecycle: true } },
+        { setup: { modality: "provider_authorization" } }
+      ),
+      "invalid_request"
+    )
+  );
+});
+
+test("validateProvenCapability rejects local_collector=true without runtime_requirements.bindings.filesystem", () => {
+  assert.throws(
+    () => validateProvenCapability(manifestWithCapabilities({ proven: { local_collector: true } }), "invalid_request"),
+    TOP_LEVEL_REGEX_27
+  );
+  assert.throws(
+    () =>
+      validateProvenCapability(
+        manifestWithCapabilities(
+          { proven: { local_collector: true } },
+          { runtime_requirements: { bindings: { browser: {} } } }
+        ),
+        "invalid_request"
+      ),
+    TOP_LEVEL_REGEX_27
+  );
+});
+
+test("validateProvenCapability accepts local_collector=true with runtime_requirements.bindings.filesystem", () => {
+  assert.doesNotThrow(() =>
+    validateProvenCapability(
+      manifestWithCapabilities(
+        { proven: { local_collector: true } },
+        { runtime_requirements: { bindings: { filesystem: {} } } }
+      ),
+      "invalid_request"
+    )
+  );
+});
+
+test("validateProvenCapability rejects local_collector=false paired with an unrelated proof failure but does not itself require a binding", () => {
+  // local_collector: false must never trigger the filesystem-binding
+  // requirement — only local_collector === true does. This proves the
+  // modality-consistency check reads the exact boolean, not truthiness.
+  assert.doesNotThrow(() =>
+    validateProvenCapability(manifestWithCapabilities({ proven: { local_collector: false } }), "invalid_request")
+  );
+});
+
+function manifestWithCredentialCapture(field = {}) {
+  return {
+    ...manifestWithStream({}),
+    setup: {
+      credential_capture: {
+        credential_kind: "static_secret",
+        fields: [{ name: "password", secret: true, ...field }],
+      },
+    },
+  };
+}
+
+test("validateConnectorManifest rejects a secret credential_capture field missing label at registration", () => {
+  // P2-2 (see final-combined-uat-redteam-0811.md): this contract violation
+  // must fail here, at registration, not later as a runtime 500 when setup
+  // or runtime injection reads the same manifest.
+  assert.throws(
+    () => validateConnectorManifest(manifestWithCredentialCapture({ env: ["TEST_PASSWORD"], label: undefined })),
+    TOP_LEVEL_REGEX_28
+  );
+});
+
+test("validateConnectorManifest rejects a secret credential_capture field with zero env aliases at registration", () => {
+  assert.throws(
+    () => validateConnectorManifest(manifestWithCredentialCapture({ env: [], label: "Password" })),
+    TOP_LEVEL_REGEX_29
+  );
+});
+
+test("validateConnectorManifest accepts a well-formed secret credential_capture field", () => {
+  assert.doesNotThrow(() =>
+    validateConnectorManifest(manifestWithCredentialCapture({ env: ["TEST_PASSWORD"], label: "Password" }))
+  );
+});
+
+test("validateConnectorManifest accepts a manifest with no credential_capture at all", () => {
+  assert.doesNotThrow(() => validateConnectorManifest(manifestWithStream({})));
 });

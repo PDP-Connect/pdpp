@@ -23,8 +23,11 @@
  */
 
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import type { DetailGapStartEntry, EmittedMessage, RecordData, ValidateRecord } from "./connector-runtime.ts";
 import { stringifyForJsonl } from "./safe-emit.ts";
+
+const VM_RSS_STATUS_RE = /VmRSS:\s*(\d+)\s*kB/;
 
 /** A record that passed (or bypassed) shape-check and would flow
  *  downstream as a RECORD in production. */
@@ -67,6 +70,19 @@ export interface RecordingEmit {
 export interface ConnectorSubprocessResult {
   code: number | null;
   messages: EmittedMessage[];
+  /** Peak resident set size (bytes) sampled from /proc/<pid>/status while
+   *  the child ran, at `peakRssPollIntervalMs` resolution. `null` when
+   *  `peakRssPollIntervalMs` was not requested, or on a platform without
+   *  /proc (non-Linux) — callers that need this proof should assert it is
+   *  non-null rather than silently skip on an unsupported platform, so a
+   *  CI environment that can't run the check is visible, not silently
+   *  green. A sampled peak (not a V8 heap-limit flag): --max-old-space-size
+   *  only bounds the V8-managed heap, NOT Buffer/ArrayBuffer allocations
+   *  (Buffers live in Node's external/arrayBuffers memory) — the exact
+   *  allocation shape a whole-file readFile()/ZipEntry.data() produces. RSS
+   *  sampling has no such blind spot: it measures real process memory
+   *  regardless of which allocator produced it. */
+  peakRssBytes: number | null;
   rawStdout: string;
   signal: NodeJS.Signals | null;
   stderr: string;
@@ -77,6 +93,11 @@ export interface ConnectorSubprocessOptions {
   cwd: string;
   entrypoint: string;
   env?: NodeJS.ProcessEnv;
+  /** When set, poll /proc/<pid>/status at this interval (ms) for VmRSS and
+   *  report the peak via the result's `peakRssBytes`. Opt-in: the extra
+   *  poll timer is pure overhead for the many tests that don't need a
+   *  memory proof. */
+  peakRssPollIntervalMs?: number;
   start: {
     /** Currently-pending detail gaps to replay on START, mirroring the real runtime's `detail_gaps` field. */
     detail_gaps?: readonly DetailGapStartEntry[];
@@ -152,6 +173,26 @@ export function runConnectorProtocolSubprocess(
       stdio: ["pipe", "pipe", "pipe"],
     });
 
+    let peakRssBytes: number | null = null;
+    let rssPoller: NodeJS.Timeout | undefined;
+    const { pid } = child;
+    if (options.peakRssPollIntervalMs && pid) {
+      rssPoller = setInterval(() => {
+        try {
+          const status = readFileSync(`/proc/${pid}/status`, "utf8");
+          const match = VM_RSS_STATUS_RE.exec(status);
+          if (match?.[1]) {
+            const bytes = Number.parseInt(match[1], 10) * 1024;
+            peakRssBytes = peakRssBytes === null ? bytes : Math.max(peakRssBytes, bytes);
+          }
+        } catch {
+          // /proc/<pid>/status is unavailable (non-Linux, or the process
+          // already exited between the tick firing and the read) -- leave
+          // peakRssBytes at its last known value.
+        }
+      }, options.peakRssPollIntervalMs);
+    }
+
     const messages: EmittedMessage[] = [];
     let rawStdout = "";
     let stderr = "";
@@ -165,6 +206,9 @@ export function runConnectorProtocolSubprocess(
       }
       settled = true;
       clearTimeout(timer);
+      if (rssPoller) {
+        clearInterval(rssPoller);
+      }
       fn();
     };
 
@@ -236,7 +280,7 @@ export function runConnectorProtocolSubprocess(
         return;
       }
       if (done.status === "failed" && options.allowFailedDone === true) {
-        finish(() => resolve({ code, signal, stderr, rawStdout, messages }));
+        finish(() => resolve({ code, messages, peakRssBytes, rawStdout, signal, stderr }));
         return;
       }
       if (code !== 0 || signal) {
@@ -259,7 +303,7 @@ export function runConnectorProtocolSubprocess(
         );
         return;
       }
-      finish(() => resolve({ code, signal, stderr, rawStdout, messages }));
+      finish(() => resolve({ code, messages, peakRssBytes, rawStdout, signal, stderr }));
     });
 
     child.stdin?.end(stringifyForJsonl(options.start));

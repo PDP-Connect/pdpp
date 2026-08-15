@@ -19,8 +19,13 @@ interface ResolveFingerprintOptions {
 }
 interface FixtureFiles {
   baseline?: { files: MassObject; total: number };
+  // `fingerprintOmitted: true` distinguishes "no fingerprint field in the
+  // written baseline at all" (legacy-shape fixtures) from "field present but
+  // unset", which an optional `fingerprint` alone can't express without a
+  // string-keyed presence check on the fixture object itself.
+  fingerprint?: FixtureFingerprint;
+  fingerprintOmitted?: true;
   justifications?: Record<string, { allowed_mass: number; date: string; reason: string }>;
-  meta?: FixtureFingerprint;
 }
 interface FixturePaths {
   baselinePath: string;
@@ -32,7 +37,7 @@ async function withFixture(files: FixtureFiles, fn: (paths: FixturePaths) => Pro
   const baselinePath = path.join(dir, "mass-baseline.json");
   const justificationsPath = path.join(dir, "mass-justifications.json");
   const baseline = files.baseline ?? { files: {}, total: 0 };
-  const meta = "meta" in files ? files.meta : FIXTURE_FINGERPRINT;
+  const meta = files.fingerprintOmitted ? undefined : (files.fingerprint ?? FIXTURE_FINGERPRINT);
   await writeFile(baselinePath, `${JSON.stringify({ ...baseline, meta }, null, 2)}\n`);
   await writeFile(justificationsPath, `${JSON.stringify(files.justifications ?? {}, null, 2)}\n`);
   try {
@@ -220,7 +225,7 @@ test("baseline fingerprint mismatch fails closed instead of comparing or tighten
   await withFixture(
     {
       baseline: { files: { "server/a.js": 3 }, total: 3 },
-      meta: OTHER_FINGERPRINT,
+      fingerprint: OTHER_FINGERPRINT,
     },
     async ({ baselinePath, justificationsPath }) => {
       await assert.rejects(
@@ -248,7 +253,7 @@ test("missing baseline fingerprint fails closed", async () => {
   await withFixture(
     {
       baseline: { files: { "server/a.js": 3 }, total: 3 },
-      meta: null,
+      fingerprintOmitted: true,
     },
     async ({ baselinePath, justificationsPath }) => {
       await assert.rejects(

@@ -8,6 +8,12 @@
  * owner-device exchanges, and /v1 data reads all land here as protocol
  * artifacts. This is an honest audit log — every row is immutable record.
  *
+ * Exemption: this page's own server-side data fetches (and every other
+ * console page's) go through a separate, non-trace-logged /_ref owner-session
+ * surface — browsing this console never appears in this log. Only /v1 reads
+ * (an external client/agent reading data under a grant) and explicit
+ * mutations (revoke, run, schedule change, connect, DCR) emit trace events.
+ *
  * Layout: filter band → Table (status | subject | kinds | events | time)
  * with an optional Sheet peek panel on the right when ?peek= is set.
  *
@@ -18,7 +24,6 @@
 import {
   buttonVariants,
   Endorse,
-  Eyebrow,
   IcButton,
   IcInput,
   IcSelect,
@@ -40,7 +45,7 @@ import {
 import { traceRowLabel } from "@pdpp/display";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   getTraceTimeline,
@@ -50,6 +55,7 @@ import {
   type TraceSummary,
 } from "../lib/ref-client.ts";
 import { traceEndorseStatus } from "./trace-endorse-status.ts";
+import { traceKindLabel } from "./trace-kind-label.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -143,9 +149,6 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
 function TracesHeader() {
   return (
     <header style={{ marginBottom: 24, maxWidth: 640 }}>
-      <Eyebrow as="p" style={{ marginBottom: 6 }}>
-        Sharing
-      </Eyebrow>
       <h1 className="pdpp-heading text-foreground" style={{ margin: "0 0 4px" }}>
         Audit
       </h1>
@@ -157,7 +160,7 @@ function TracesHeader() {
           margin: 0,
         }}
       >
-        provider-connect · owner device · /v1 reads · every protocol interaction recorded
+        connected apps · device logins · external API reads — not your own console browsing
       </p>
     </header>
   );
@@ -253,9 +256,10 @@ function TracesResults({
 function TracesDesktopTable({ traces, params }: { traces: TraceSummary[]; params: Params }) {
   return (
     <div className="rr-traces-table-wrap hidden sm:block">
-      <Table cols="80px minmax(0,1.4fr) minmax(0,1fr) 64px 128px">
+      <Table cols="80px 128px minmax(0,1.4fr) minmax(0,1fr) 64px 128px">
         <TableHeaderRow>
           <TableHeader>Status</TableHeader>
+          <TableHeader>Type</TableHeader>
           <TableHeader>Subject</TableHeader>
           <TableHeader>Kinds</TableHeader>
           <TableHeader numeric>Events</TableHeader>
@@ -270,6 +274,9 @@ function TracesDesktopTable({ traces, params }: { traces: TraceSummary[]; params
             <TableRow className={peeked ? "pdpp-table__row--active" : undefined} key={trace.trace_id}>
               <TableCell>
                 <Endorse label={trace.status} status={traceEndorseStatus(trace.status)} />
+              </TableCell>
+              <TableCell>
+                <Tag>{traceKindLabel(trace.kinds)}</Tag>
               </TableCell>
               <TableCell>
                 <TraceSubjectLink href={peekHref} label={label} traceId={trace.trace_id} />
@@ -395,6 +402,7 @@ function TraceMobileCard({
           }}
         >
           <Endorse label={trace.status} status={traceEndorseStatus(trace.status)} />
+          <Tag>{traceKindLabel(trace.kinds)}</Tag>
           {kinds ? <TypedSm style={{ color: "var(--muted-foreground)" }}>{kinds}</TypedSm> : null}
           <TypedSm style={{ color: "var(--muted-foreground)" }}>{trace.event_count} events</TypedSm>
           <TypedSm style={{ color: "var(--muted-foreground)" }}>
@@ -485,7 +493,7 @@ function TracesEmptyState({ hasFilters }: { hasFilters: boolean }) {
           margin: "0 0 6px",
         }}
       >
-        {hasFilters ? "No matching traces" : "No traces yet"}
+        {hasFilters ? "No matching audit events" : "No audit events yet"}
       </p>
       <p
         style={{

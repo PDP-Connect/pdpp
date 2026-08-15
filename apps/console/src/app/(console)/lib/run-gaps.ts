@@ -103,6 +103,25 @@ export function resolvePartialCoverageCue({
   return connectorHasPartialCoverageHint({ lastRunKnownGaps, totalRecords });
 }
 
+/**
+ * Normalize a `known_gaps` / `known_gaps_summary` pair. Shared by the
+ * page-scanned extractor below (fed a terminal event's `data` payload) and
+ * by the window-independent run-status projection (`RunStatusEnvelope`,
+ * which carries the same two fields off the runtime's `LIMIT 1`
+ * terminal-event query instead of the paginated timeline).
+ */
+export function extractKnownGapsFromEventData(
+  data: { known_gaps?: unknown; known_gaps_summary?: unknown } | null | undefined
+): {
+  gaps: KnownGap[];
+  summary: KnownGapSummary | null;
+} {
+  return {
+    gaps: normalizeKnownGaps(data?.known_gaps),
+    summary: normalizeKnownGapSummary(data?.known_gaps_summary),
+  };
+}
+
 export function extractTerminalKnownGaps(events: readonly SpineEvent[]): {
   gaps: KnownGap[];
   summary: KnownGapSummary | null;
@@ -117,8 +136,7 @@ export function extractTerminalKnownGaps(events: readonly SpineEvent[]): {
       continue;
     }
     return {
-      gaps: normalizeKnownGaps(event.data?.known_gaps),
-      summary: normalizeKnownGapSummary(event.data?.known_gaps_summary),
+      ...extractKnownGapsFromEventData(event.data),
       terminalEvent: event,
     };
   }
@@ -127,6 +145,107 @@ export function extractTerminalKnownGaps(events: readonly SpineEvent[]): {
     summary: null,
     terminalEvent: null,
   };
+}
+
+/**
+ * A `run.stream_skipped` event is emitted once per SKIP_RESULT the connector
+ * sent, and a connector may send one per RECORD it dropped. So the event count
+ * is a count of skipped ITEMS, never of streams — the streams it touched are
+ * the distinct `stream_id`s across those events. Reporting the event count as
+ * a stream count told the owner "304 streams were skipped" for 304 records
+ * dropped inside a single stream.
+ */
+export interface SkippedStreamSummary {
+  /** Total `run.stream_skipped` events — a count of skipped items, not streams. */
+  count: number;
+  /** Skip reasons the connector DID record, with an item count each. */
+  reasons: { count: number; diagnostics: SkipDiagnosticsDigest | null; reason: string }[];
+  /** Distinct `stream_id`s the skips touched. Empty when no skip named a stream. */
+  streams: string[];
+  /** How many skip events carried no `reason` at all. Only these are unexplained. */
+  unexplainedCount: number;
+}
+
+/**
+ * The parts of a skip's connector-authored diagnostics that are worth putting
+ * on the page: which field failed and what was wrong with it. The runtime has
+ * already bounded and redacted this payload (see connector-gap-bounding.ts);
+ * this only picks a display projection out of it.
+ */
+export interface SkipDiagnosticsDigest {
+  /** The validator's message for that path. */
+  message: string;
+  /** First failing field path, e.g. `attachments.0.url`. */
+  path: string;
+}
+
+/**
+ * Summarize the run's `run.stream_skipped` events by the reason the connector
+ * recorded, so the page can say WHY things were skipped instead of counting
+ * them and declaring no reason was given. The reason is on the event payload
+ * (`data.reason`) — the previous copy read the recovery hint instead and
+ * concluded the connector had recorded nothing.
+ */
+export function summarizeSkippedStreams(events: readonly SpineEvent[]): SkippedStreamSummary {
+  const skips = events.filter((event) => event.event_type === "run.stream_skipped");
+  const streams = new Set<string>();
+  const byReason = new Map<string, { count: number; diagnostics: SkipDiagnosticsDigest | null }>();
+  let unexplainedCount = 0;
+  for (const skip of skips) {
+    const stream = nonEmptyString(skip.stream_id) ?? nonEmptyString(skip.data?.stream);
+    if (stream) {
+      streams.add(stream);
+    }
+    const reason = nonEmptyString(skip.data?.reason);
+    if (!reason) {
+      unexplainedCount += 1;
+      continue;
+    }
+    const existing = byReason.get(reason);
+    if (existing) {
+      existing.count += 1;
+      // Keep the first digest seen: every skip sharing a reason carries the
+      // same shape of evidence, and one worked example is what the owner needs.
+      existing.diagnostics = existing.diagnostics ?? digestSkipDiagnostics(skip.data?.diagnostics);
+      continue;
+    }
+    byReason.set(reason, { count: 1, diagnostics: digestSkipDiagnostics(skip.data?.diagnostics) });
+  }
+  return {
+    count: skips.length,
+    reasons: [...byReason.entries()]
+      .map(([reason, entry]) => ({ count: entry.count, diagnostics: entry.diagnostics, reason }))
+      .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason)),
+    streams: [...streams].sort(),
+    unexplainedCount,
+  };
+}
+
+/**
+ * Pull the first `{ path, message }` out of a skip's `diagnostics.issues`.
+ * Shape-check skips carry the failing field there; other skip reasons carry
+ * other shapes, so a miss is normal and yields null rather than guessing.
+ */
+function digestSkipDiagnostics(raw: unknown): SkipDiagnosticsDigest | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const { issues } = raw as { issues?: unknown };
+  if (!Array.isArray(issues)) {
+    return null;
+  }
+  for (const issue of issues) {
+    if (!issue || typeof issue !== "object" || Array.isArray(issue)) {
+      continue;
+    }
+    const { message, path } = issue as { message?: unknown; path?: unknown };
+    const normalizedPath = nonEmptyString(path);
+    const normalizedMessage = nonEmptyString(message);
+    if (normalizedPath && normalizedMessage) {
+      return { message: normalizedMessage, path: normalizedPath };
+    }
+  }
+  return null;
 }
 
 export function formatGapReason(reason: string): string {

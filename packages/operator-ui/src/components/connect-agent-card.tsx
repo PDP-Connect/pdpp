@@ -32,10 +32,10 @@ export function ConnectAgentCard({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="pdpp-eyebrow text-muted-foreground">{label}</div>
-          <h2 className="pdpp-title mt-1 text-foreground">Connect an AI app</h2>
+          <h2 className="pdpp-title mt-1 text-foreground">Connect an app</h2>
           <p className="pdpp-caption mt-1 max-w-2xl text-muted-foreground">
-            Copy the MCP URL here, or open the setup page for Claude Code, Codex, ChatGPT, Claude.ai, and local agent
-            entrypoints.
+            Copy the MCP URL here, or open the setup page for Claude Code, Codex, ChatGPT, Claude.ai, or another local
+            client.
           </p>
         </div>
         {connectHref ? (
@@ -54,7 +54,7 @@ export function ConnectAgentCard({
         <CopyButton ariaLabel="Copy MCP server URL" value={mcpUrl} />
       </div>
       <p className="pdpp-caption mt-3 text-muted-foreground">
-        {posture} The owner approves scoped access in the browser; no owner bearer token is pasted into the agent.
+        {posture} You approve scoped access in the browser; no owner bearer token is pasted into the client.
       </p>
     </section>
   );

@@ -76,7 +76,7 @@ function MethodCard({ method }: { method: AcquisitionMethod }) {
           rel="noreferrer"
           target="_blank"
         >
-          Open instructions
+          Open instructions in a new tab
         </a>
       ) : null}
     </div>
@@ -121,7 +121,7 @@ export default async function ManualUploadConnectPage({
           </Link>
         }
         breadcrumbs={[{ href: "/sources", label: "Sources" }, { label: `Import ${setup.display_name}` }]}
-        description="Bring your exported data in. Pick the supported file you have. PDPP validates it before anything is committed, then imports it and shows a durable coverage receipt you can revisit."
+        description="Pick a supported export file. PDPP validates it, imports it, and gives you a coverage receipt you can revisit."
         title={targetConnectionId ? `Import another ${setup.display_name} file` : `Import ${setup.display_name}`}
       />
 
@@ -130,7 +130,7 @@ export default async function ManualUploadConnectPage({
       <Section
         description={
           setup.description ??
-          "This form is generated from the connector manifest. The uploaded file is stored for this connection and is never returned to agents, MCP clients, REST reads, or audit payloads."
+          "The uploaded file is stored for this source and is not exposed to connected apps or clients."
         }
         title={setup.label}
       >

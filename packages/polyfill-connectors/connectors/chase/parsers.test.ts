@@ -656,21 +656,28 @@ test("chooseActivity: explicit time_range → date_range", () => {
   const requested = new Map([
     ["transactions", { time_range: { since: "2026-01-01T00:00:00Z", until: "2026-04-01T00:00:00Z" } }],
   ]);
-  const choice = chooseActivity(requested, {}, "transactions", "ID");
+  const choice = chooseActivity(requested, {}, "transactions", "ID", "2026-08-13T12:00:00Z");
   assert.equal(choice.activity, "date_range");
   assert.deepEqual(choice.dateRange, { from: "2026-01-01", to: "2026-04-01" });
+});
+
+test("chooseActivity: a since-only scope closes at the deterministic run date", () => {
+  const requested = new Map([["transactions", { time_range: { since: "2026-05-01T00:00:00Z" } }]]);
+  const choice = chooseActivity(requested, {}, "transactions", "ID", "2026-08-13T12:34:56Z");
+  assert.equal(choice.activity, "date_range");
+  assert.deepEqual(choice.dateRange, { from: "2026-05-01", to: "2026-08-13" });
 });
 
 test("chooseActivity: cursor max_seen_date → since_last_statement", () => {
   const state: TransactionsStateShape = {
     per_account: { ID: { max_seen_date: "2026-03-01" } },
   };
-  const choice = chooseActivity(new Map(), state, "transactions", "ID");
+  const choice = chooseActivity(new Map(), state, "transactions", "ID", "2026-08-13T12:00:00Z");
   assert.equal(choice.activity, "since_last_statement");
 });
 
 test("chooseActivity: no hints → all (bootstrap)", () => {
-  assert.equal(chooseActivity(new Map(), {}, "transactions", "ID").activity, "all");
+  assert.equal(chooseActivity(new Map(), {}, "transactions", "ID", "2026-08-13T12:00:00Z").activity, "all");
 });
 
 // ─── Real-fixture gates (skipped if no local raw captures) ───────────────

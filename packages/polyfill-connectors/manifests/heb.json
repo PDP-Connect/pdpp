@@ -57,8 +57,7 @@
       "rationale": "H-E-B is fronted by Imperva Incapsula and supports passkeys plus verification codes; manual by default because sign-in and bot challenges are common. Parsers are verified against real logged-in heb.com DOM (order list + order detail). background_safe:true makes background scheduling available once the owner opts in after authenticating; recommended_mode stays manual so it never auto-runs unattended."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "tier": "supported"
     }
   },
   "streams": [
@@ -318,5 +317,16 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "empty_page_before_max_page": "We hit an empty page of orders before we expected to, so we stopped to check rather than assume we were done",
+    "list_page_navigation_failed": "We couldn't load a page of your H-E-B order history and didn't want to assume that meant the end",
+    "list_page_shape_check_failed": "The page didn't look like we expected",
+    "pagination_exhausted": "We reached the end of the available pages",
+    "pagination_metadata_absent": "H-E-B didn't tell us how many pages of orders there are, so we stopped to avoid missing any",
+    "pagination_metadata_contradictory": "H-E-B gave us conflicting page-count information, so we stopped to avoid missing any orders",
+    "selector_drift": "The page layout changed and we couldn't find what we needed",
+    "source_auth_or_challenge": "We need you to sign in or pass a verification check to continue",
+    "unparseable_order_date": "We skipped some orders because their dates couldn't be read"
+  }
 }

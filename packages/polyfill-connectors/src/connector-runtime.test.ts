@@ -13,7 +13,9 @@ import {
   closeBrowserContextPagesExcept,
   closeBrowserPage,
   composeNormalizedTerminalError,
+  createConnectorFailure,
   decorateBrowserManualAction,
+  describeUnexpectedFailure,
   emitDetailCoverage,
   emitDetailGap,
   type InteractionRequest,
@@ -551,6 +553,13 @@ test("makeBrowserInteractionKeepalive records browser disconnect timing in diagn
   let connected = true;
   let disconnectedListener: (() => void) | undefined;
   let detachCalls = 0;
+  let resolvePing: (() => void) | undefined;
+  const pingReady = new Promise<void>((resolve) => {
+    resolvePing = resolve;
+  });
+  let resolveInteraction:
+    | ((value: { request_id: string; status: "success"; type: "INTERACTION_RESPONSE" }) => void)
+    | undefined;
   const browser: KeepaliveTestBrowser = {
     isConnected: () => connected,
     newBrowserCDPSession: () =>
@@ -559,7 +568,10 @@ test("makeBrowserInteractionKeepalive records browser disconnect timing in diagn
           detachCalls += 1;
           return Promise.resolve();
         },
-        send: () => Promise.resolve({}),
+        send: () => {
+          resolvePing?.();
+          return Promise.resolve({});
+        },
       }),
     off: (_event, offListener) => {
       if (disconnectedListener === offListener) {
@@ -575,33 +587,31 @@ test("makeBrowserInteractionKeepalive records browser disconnect timing in diagn
   const wrapped = makeBrowserInteractionKeepalive({
     context: makeKeepaliveContext(browser),
     diagnostics: true,
-    intervalMs: 5,
+    intervalMs: 1000,
     progress: (message) => {
       progressMessages.push(message);
       return Promise.resolve();
     },
-    sendInteraction: async (req) =>
-      new Promise((resolve) =>
-        setTimeout(
-          () =>
-            resolve({
-              request_id: req.request_id ?? "int_test",
-              status: "success",
-              type: "INTERACTION_RESPONSE",
-            }),
-          35
-        )
-      ),
+    sendInteraction: (req) =>
+      new Promise((resolve) => {
+        resolveInteraction = () =>
+          resolve({
+            request_id: req.request_id ?? "int_test",
+            status: "success",
+            type: "INTERACTION_RESPONSE",
+          });
+      }),
   });
 
   const responsePromise = wrapped({ kind: "otp", message: "Enter OTP", request_id: "int_test" });
-  await delay(10);
+  await pingReady;
   connected = false;
   const listener = disconnectedListener;
   if (!listener) {
     assert.fail("expected keepalive to attach a browser disconnected listener");
   }
   listener();
+  resolveInteraction?.({ request_id: "int_test", status: "success", type: "INTERACTION_RESPONSE" });
   assert.equal((await responsePromise).status, "success");
 
   const responseDiagnostic = JSON.parse(
@@ -622,6 +632,73 @@ test("makeBrowserInteractionKeepalive records browser disconnect timing in diagn
   assert.equal(typeof responseDiagnostic.keepalive?.lastSuccessfulPingElapsedMs, "number");
   assert.equal(detachCalls, 1);
   assert.equal(disconnectedListener, undefined);
+});
+
+test("makeBrowserInteractionKeepalive records poll-only disconnect timing without an event listener", async () => {
+  const progressMessages: string[] = [];
+  let connected = true;
+  let resolvePollObserved: (() => void) | undefined;
+  const pollObserved = new Promise<void>((resolve) => {
+    resolvePollObserved = resolve;
+  });
+  const browser: KeepaliveTestBrowser = {
+    isConnected: () => {
+      if (!connected) {
+        resolvePollObserved?.();
+      }
+      return connected;
+    },
+    newBrowserCDPSession: () =>
+      Promise.resolve({
+        detach: () => Promise.resolve(),
+        send: () =>
+          Promise.resolve({}).then(() => {
+            connected = false;
+            return {};
+          }),
+      }),
+  };
+  const wrapped = makeBrowserInteractionKeepalive({
+    context: makeKeepaliveContext(browser),
+    diagnostics: true,
+    intervalMs: 1,
+    progress: (message) => {
+      progressMessages.push(message);
+      return Promise.resolve();
+    },
+    sendInteraction: async (req) => {
+      await pollObserved;
+      return {
+        request_id: req.request_id ?? "poll_test",
+        status: "success",
+        type: "INTERACTION_RESPONSE",
+      };
+    },
+  });
+
+  // The production readline owner keeps the event loop alive while waiting
+  // for input. Keep that ownership explicit in this synthetic poll-only test;
+  // the keepalive timer itself is intentionally unref'ed.
+  const inputOwner = setTimeout(() => undefined, 100);
+  try {
+    assert.equal((await wrapped({ kind: "otp", message: "Enter OTP" })).status, "success");
+    const responseDiagnostic = JSON.parse(
+      progressMessages.at(-1)?.replace(/^browser_surface\.diagnostic /u, "") ?? "{}"
+    ) as {
+      keepalive?: {
+        disconnectEventElapsedMs?: number;
+        firstObservedDisconnectedElapsedMs?: number;
+        pingAttempts: number;
+        skippedDisconnected: number;
+      };
+    };
+    assert.equal(responseDiagnostic.keepalive?.disconnectEventElapsedMs, undefined);
+    assert.equal(typeof responseDiagnostic.keepalive?.firstObservedDisconnectedElapsedMs, "number");
+    assert.equal(responseDiagnostic.keepalive?.skippedDisconnected, 1);
+    assert.equal(responseDiagnostic.keepalive?.pingAttempts, 1);
+  } finally {
+    clearTimeout(inputOwner);
+  }
 });
 
 function delay(ms: number): Promise<void> {
@@ -1241,4 +1318,146 @@ test("ChatGPT's real normalizeChatGptTerminalError (which destructures only mess
   });
   assert.equal(result.code, "browser_surface_attach_exhausted");
   assert.match(result.message, /runtime_exception/, "ChatGPT's own message wrapping is preserved");
+});
+
+// ─── createConnectorFailure: the one shared constructor for a typed, ───────
+// validated connector failure code ───────────────────────────────────────
+//
+// `error.code` / `connector_error_code` is copied verbatim onto
+// `connector_error_json` with NO redaction (unlike `error.message`, which
+// always goes through `boundConnectorErrorMessage`/`redactStderrTail`). That
+// is safe only because `code` is constrained to a small, connector-declared
+// vocabulary that a connector author writes deliberately at each throw
+// site — never derived by pattern-matching arbitrary caught text. These
+// tests pin `createConnectorFailure` as the one validated entry point onto
+// that channel: a well-formed code survives, a malformed/oversized code
+// fails closed (throws, does not silently pass through or get truncated),
+// and `message` is ordinary text with no special treatment.
+
+test("createConnectorFailure attaches a well-formed code, message, and retryable bit to a TerminalError-shaped throw", () => {
+  const err = createConnectorFailure("auth_failed", "Apple ID or app-specific password was rejected", {
+    retryable: false,
+  }) as Error & { code?: string; retryable?: boolean };
+  assert.equal(err.message, "Apple ID or app-specific password was rejected");
+  assert.equal(err.code, "auth_failed");
+  assert.equal(err.retryable, false);
+});
+
+test("createConnectorFailure defaults retryable to false when omitted", () => {
+  const err = createConnectorFailure("discovery_failed", "discovery failed") as Error & { retryable?: boolean };
+  assert.equal(err.retryable, false);
+});
+
+test("createConnectorFailure accepts an explicit retryable: true", () => {
+  const err = createConnectorFailure("carddav_request_failed", "sync failed", { retryable: true }) as Error & {
+    retryable?: boolean;
+  };
+  assert.equal(err.retryable, true);
+});
+
+test("createConnectorFailure fails closed on a code that is too long", () => {
+  const maxLength = `a${"b".repeat(63)}`; // 64 chars total: the maximum allowed length.
+  assert.doesNotThrow(
+    () => createConnectorFailure(maxLength, "message"),
+    "the max-length code itself must be accepted"
+  );
+  const tooLong = `a${"b".repeat(64)}`; // 65 chars: one over the cap.
+  assert.throws(() => createConnectorFailure(tooLong, "message"), /connector_failure_invalid_code/);
+});
+
+test("createConnectorFailure fails closed on a code with disallowed characters", () => {
+  const badCodes = [
+    "Auth_Failed", // uppercase
+    "auth-failed", // hyphen (message-redaction charset, not the code charset)
+    "auth failed", // space
+    "auth.failed", // punctuation
+    "1auth_failed", // must start with a letter
+    "", // empty
+    "a", // single char, below the 2-char minimum
+  ];
+  for (const code of badCodes) {
+    assert.throws(
+      () => createConnectorFailure(code, "message"),
+      /connector_failure_invalid_code/,
+      `expected "${code}" to be rejected`
+    );
+  }
+});
+
+test("createConnectorFailure fails closed rather than truncating or stripping an invalid code into something valid", () => {
+  // A naive "sanitize" implementation might slice/lowercase/strip an
+  // invalid code down to something that passes — that would silently
+  // accept a connector bug (or a deliberately malformed code trying to
+  // smuggle content through the unredacted, un-length-capped-below-64
+  // channel) instead of surfacing it. Mixed-case, punctuation-bearing
+  // strings are exactly the shape a real secret (an API key, a bearer
+  // token) would take, and exactly what a naive lowercase()+truncate()
+  // "fix" would silently coerce into something charset-valid. This proves
+  // createConnectorFailure throws instead of coercing.
+  const mixedCaseCode = "sk_LIVE_AbCdEfGhIjKlMnOpQrStUvWxYz012345";
+  assert.throws(() => createConnectorFailure(mixedCaseCode, "message"), /connector_failure_invalid_code/);
+  // Sanity: a lowered/truncated rewrite of the same string DOES pass —
+  // proving createConnectorFailure never performs that rewrite itself; the
+  // exception above is the only outcome for the original invalid input.
+  const rewritten = mixedCaseCode.toLowerCase().slice(0, 20);
+  assert.doesNotThrow(() => createConnectorFailure(rewritten, "message"));
+});
+
+test("createConnectorFailure's message is ordinary text with no code-channel special treatment", () => {
+  // message is NOT validated by createConnectorFailure at all — it is
+  // free-form text that goes through the SAME redaction as any other
+  // connector-authored message later in the pipeline (boundConnectorErrorMessage
+  // / redactStderrTail), never through the strict code charset check.
+  const err = createConnectorFailure("carddav_request_failed", "status=401, Authorization: Bearer abc123") as Error;
+  assert.equal(err.message, "status=401, Authorization: Bearer abc123");
+});
+
+// ─── describeUnexpectedFailure: an unclassified throw's own .message can be ─
+// contentless while the real explanation sits on a side field ──────────────
+//
+// Regression for a live-DB gmail run (run_1786142622018_1) that reached
+// connector_error_json as {"message":"Command failed","retryable":false} with
+// zero further detail. imapflow (the gmail connector's IMAP client) throws
+// `new Error('Command failed')` for every IMAP NO/BAD server response
+// (imap-flow.js's settleRequest) and puts the actual explanation on
+// `.responseText` (the server's own error text) and `.executedCommand` (the
+// IMAP command line, password arguments already redacted by imapflow's own
+// isLogging compiler). The generic `run().catch` in this file used to read
+// only `.message`, discarding both. See docs/inbox/report-gmail-command-failed.md.
+
+test("describeUnexpectedFailure folds an imapflow-shaped error's responseText and executedCommand into the message", () => {
+  const err = new Error("Command failed") as Error & { executedCommand?: string; responseText?: string };
+  err.responseText = "[AUTHENTICATIONFAILED] Invalid credentials (Failure)";
+  err.executedCommand = 'A2 LOGIN "user@gmail.com" "(* value hidden *)"';
+  const message = describeUnexpectedFailure(err);
+  assert.match(message, /Command failed/);
+  assert.match(
+    message,
+    /AUTHENTICATIONFAILED/,
+    "the server's own explanation must survive, not just the generic message"
+  );
+  assert.match(message, /A2 LOGIN/, "the executed command must survive for diagnosis");
+  assert.match(
+    message,
+    /value hidden/,
+    "sanity: the fixture's password arg is already imapflow-redacted upstream, not re-exposed here"
+  );
+});
+
+test("describeUnexpectedFailure is a no-op passthrough for a plain Error with no known side fields", () => {
+  const message = describeUnexpectedFailure(new Error("ECONNRESET"));
+  assert.equal(message, "ECONNRESET");
+});
+
+test("describeUnexpectedFailure stringifies a non-Error throw exactly as the old inline ternary did", () => {
+  assert.equal(describeUnexpectedFailure("raw string throw"), "raw string throw");
+  assert.equal(describeUnexpectedFailure(42), "42");
+});
+
+test("describeUnexpectedFailure bounds a pathological responseText so it cannot bloat the terminal row", () => {
+  const err = new Error("Command failed") as Error & { responseText?: string };
+  err.responseText = "x".repeat(5000);
+  const message = describeUnexpectedFailure(err);
+  assert.ok(message.length <= 301, `expected bounded length, got ${message.length}`);
+  assert.match(message, /…$/);
 });

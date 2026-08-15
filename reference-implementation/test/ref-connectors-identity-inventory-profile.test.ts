@@ -120,7 +120,7 @@ function withBothBackends(name: string, fn: () => Promise<void>): void {
 
 async function seedConnector(): Promise<void> {
   const manifest = {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: CONNECTOR_ID,
     display_name: "Identity Inventory Profile Test Connector",
     protocol_version: "0.1.0",

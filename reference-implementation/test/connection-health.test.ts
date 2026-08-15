@@ -17,6 +17,7 @@ const TOP_LEVEL_REGEX_16 = /saved records that failed to upload/i;
 const TOP_LEVEL_REGEX_17 = /recover local collector uploads/i;
 const TOP_LEVEL_REGEX_18 = /dead[- ]letter/i;
 const TOP_LEVEL_REGEX_19 = /temporary server or network errors/i;
+const TOP_LEVEL_REGEX_20 = /runs only when you sync it/i;
 
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
@@ -53,6 +54,8 @@ const STALE_MS = 30 * 60 * 1000;
 const NOW = "2026-05-19T12:00:00.000Z";
 const FRESH = "2026-05-19T11:55:00.000Z"; // 5 min ago
 const OLD = "2026-05-19T11:00:00.000Z"; // 60 min ago — past 30-min stale threshold
+const BACKLOG_FRESH = "2026-05-19T10:00:00.000Z"; // 2h ago — well under the 24h backlog-age threshold
+const BACKLOG_OLD = "2026-05-18T11:59:00.000Z"; // ~24h01m ago — past the 24h backlog-age threshold
 const ACCEPTED_COVERAGE_AXES: readonly CoverageAxis[] = ["unsupported", "unavailable", "deferred", "inventory_only"];
 
 function heartbeat(overrides: Partial<HeartbeatOutboxEvidence> = {}): HeartbeatOutboxEvidence {
@@ -663,16 +666,54 @@ test("conditions: credential diagnostics redact token-shaped source details", ()
 
 // ─── 5. Cooling off ───────────────────────────────────────────────────────
 
-test("cooling_off: backoffApplied with sub-threshold streak", () => {
+test("degraded: failed collection outranks sub-threshold backoff", () => {
   const snap = computeConnectionHealth(
     input({
       backoff: backoff({ consecutiveFailures: 3, reasonClass: "failure:network_timeout" }),
       run: run({ lastSuccessAt: "2026-05-10T00:00:00.000Z", latestStatus: "failed" }),
     })
   );
-  assert.equal(snap.state, "cooling_off");
+  assert.equal(snap.state, "degraded");
   assert.equal(snap.reason_code, "network_timeout");
   assert.equal(snap.next_attempt_at, "2026-05-19T01:00:00.000Z");
+  assert.equal(findCondition(snap, "CollectionSucceeded")?.status, "false");
+});
+
+test("degraded: partial and stale evidence also outrank active backoff", () => {
+  const partial = computeConnectionHealth(
+    input({
+      backoff: backoff({ reasonClass: "failure:network_timeout" }),
+      coverage: { axis: "partial" },
+      freshness: { axis: "fresh" },
+      run: run({ latestStatus: "failed" }),
+    })
+  );
+  assert.equal(partial.state, "degraded");
+  assert.equal(partial.axes.coverage, "partial");
+
+  const stale = computeConnectionHealth(
+    input({
+      backoff: backoff({ reasonClass: "failure:network_timeout" }),
+      coverage: { axis: "complete" },
+      freshness: { axis: "stale" },
+      run: run(),
+    })
+  );
+  assert.equal(stale.state, "degraded");
+  assert.equal(stale.axes.freshness, "stale");
+});
+
+test("unknown: active backoff without affirmative coverage/freshness evidence is not passive cooling", () => {
+  const snap = computeConnectionHealth(
+    input({
+      backoff: backoff({ reasonClass: "failure:network_timeout" }),
+      run: run(),
+    })
+  );
+  assert.equal(snap.state, "unknown");
+  assert.equal(snap.next_attempt_at, "2026-05-19T01:00:00.000Z");
+  assert.equal(findCondition(snap, "SourceCoverageComplete")?.status, "unknown");
+  assert.equal(findCondition(snap, "Fresh")?.status, "unknown");
 });
 
 test("cooling_off: source-pressure cooldown surfaces reason_code source_pressure (no failures)", () => {
@@ -685,6 +726,8 @@ test("cooling_off: source-pressure cooldown surfaces reason_code source_pressure
   const snap = computeConnectionHealth(
     input({
       backoff: backoff({ consecutiveFailures: 0, reasonClass: "source_pressure" }),
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
       run: run({ latestStatus: "succeeded" }),
     })
   );
@@ -1836,6 +1879,163 @@ test("outbox axis: pending work + stale heartbeat degrades to stale_pending stal
   assert.equal(r.cause, "stale_pending");
 });
 
+// ─── Outbox axis: old-but-fresh-heartbeat backlog (explicit-transient retry-forever) ──
+//
+// Keyed on oldestRetryingAt — the oldest row with REAL retry evidence
+// (attempt_count > 0) — never on the oldest ready row overall. A large
+// healthy first drain enqueues rows that sit ready for hours before their
+// first attempt without ever failing; using oldest-ready age here would
+// fabricate failure evidence and false-red a slow but progressing import.
+
+test("outbox axis: fresh heartbeat with a fresh retrying backlog stays active (no false-red)", () => {
+  // A genuinely live retry loop: the heartbeat is fresh AND the oldest
+  // actually-retried row is fresh. Must not be mistaken for a stuck backlog
+  // just because the connector is retrying.
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestRetryingAt: BACKLOG_FRESH,
+      recordsPending: 3,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "active");
+  assert.equal(r.cause, null);
+});
+
+test("outbox axis: fresh heartbeat with an old ACTUALLY-RETRIED backlog is stalled/transient_upload_failure, not active forever", () => {
+  // The gap this closes: explicit-transient rows (structured 408/429/5xx,
+  // timeout, recognized network fault) retry indefinitely by design
+  // (collector-runner.ts's classifyLocalDeviceFailure) and never dead-letter,
+  // so the heartbeat keeps reporting "retrying" with a live-looking check-in
+  // even when the same row has been stuck for weeks. oldestRetryingAt is
+  // real retry evidence (attempt_count > 0), not merely "oldest ready" — the
+  // signal a live heartbeat can't fake.
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestRetryingAt: BACKLOG_OLD,
+      recordsPending: 3,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "stalled");
+  // Reuses the existing system-handled, no-owner-action cause — this is not
+  // a new dead-letter/owner-action state, only a visibility change on top of
+  // the already-durable, already-retrying outbox row.
+  assert.equal(r.cause, "transient_upload_failure");
+});
+
+test("outbox axis: an old NEVER-FAILED pending backlog stays active — age alone is not failure evidence", () => {
+  // The defect this counterweight guards: a large healthy first drain (a
+  // slow but progressing multi-GB local import) can have its oldest queued
+  // row sit ready for many hours before its first attempt without ever
+  // failing once. oldestRetryingAt is null in that case (no row has
+  // attempt_count > 0 yet), so the age check must never fire, even though
+  // the backlog itself is old and pending > 0.
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestRetryingAt: null,
+      recordsPending: 500,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "active");
+  assert.equal(r.cause, null);
+});
+
+test("outbox axis: fresh heartbeat with an old actually-retried PENDING (not retrying-status) backlog also stalls", () => {
+  // The `healthy`-status + `recordsPending > 0` shape (not just
+  // starting/retrying) must get the same backlog-age check, since a
+  // permanently-stuck row can surface under either heartbeat status.
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "healthy",
+      oldestRetryingAt: BACKLOG_OLD,
+      recordsPending: 1,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "stalled");
+  assert.equal(r.cause, "transient_upload_failure");
+});
+
+test("outbox axis: missing oldestRetryingAt never triggers the backlog-age stall (fails conservatively)", () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestRetryingAt: null,
+      recordsPending: 3,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "active");
+  assert.equal(r.cause, null);
+});
+
+test("outbox axis: malformed oldestRetryingAt never triggers the backlog-age stall (fails conservatively)", () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestRetryingAt: "not-a-timestamp",
+      recordsPending: 3,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "active");
+  assert.equal(r.cause, null);
+});
+
+test("outbox axis: old actually-retried backlog with zero pending never stalls (age check requires pending > 0)", () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "healthy",
+      oldestRetryingAt: BACKLOG_OLD,
+      recordsPending: 0,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "idle");
+  assert.equal(r.cause, null);
+});
+
+test("outbox axis: an old actually-retried backlog that later recovers (drains) returns active/idle, not stuck stalled", () => {
+  // Recovery path: once the row finally succeeds, recordsPending drops to 0
+  // (or oldestRetryingAt resets to null / the next-oldest failed row's own
+  // age) and the axis must climb back out of `stalled` — this is a pure
+  // re-derivation from evidence, not a sticky/latched state.
+  const stalled = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestRetryingAt: BACKLOG_OLD,
+      recordsPending: 1,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(stalled.axis, "stalled");
+
+  const recovered = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "healthy",
+      oldestRetryingAt: null,
+      recordsPending: 0,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(recovered.axis, "idle");
+  assert.equal(recovered.cause, null);
+});
+
 // ─── Stalled cause drives specific, non-generic projection copy ──────────
 
 test("local exporter: state_read_failed renders re-run copy, not generic stalled", () => {
@@ -1898,6 +2098,109 @@ test("local exporter: transient_upload_failure is degraded but system-handled", 
     findCondition(snap, "BacklogClear")?.reason,
     CONNECTION_CONDITION_REASONS.OUTBOX_TRANSIENT_UPLOAD_FAILURE
   );
+});
+
+test("end-to-end: an old-but-fresh-heartbeat ACTUALLY-RETRIED backlog projects as degraded/system-handled, not stuck-active-forever", () => {
+  // Full pipeline: deriveOutboxAxisFromHeartbeat's age-based axis/cause feeds
+  // directly into computeConnectionHealth, proving the operational gap this
+  // closes end to end — an explicit-transient row that retries indefinitely
+  // (by design, per collector-runner.ts) now surfaces as visible and
+  // self-handled instead of silently reading as healthy/active forever.
+  const derived = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestRetryingAt: BACKLOG_OLD,
+      recordsPending: 1,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
+      outbox: { axis: derived.axis, cause: derived.cause },
+      run: run(),
+    })
+  );
+  assert.equal(snap.state, "degraded");
+  assert.equal(snap.axes.outbox, "stalled");
+  const exporter = findCondition(snap, "LocalExporterAvailable");
+  assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_TRANSIENT_UPLOAD_FAILURE);
+  assert.equal(exporter?.severity, "warning");
+  assert.equal(exporter?.remediation?.action, "wait");
+  assert.match(exporter?.message ?? "", TOP_LEVEL_REGEX_2);
+});
+
+test("end-to-end: a genuinely live fresh retrying backlog projects as healthy, not a false-red degrade", () => {
+  const derived = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestRetryingAt: BACKLOG_FRESH,
+      recordsPending: 1,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
+      outbox: { axis: derived.axis, cause: derived.cause },
+      run: run(),
+    })
+  );
+  assert.equal(snap.state, "healthy");
+  assert.equal(snap.axes.outbox, "active");
+});
+
+test("end-to-end: an old but NEVER-FAILED backlog (large healthy first drain) projects as healthy, not a false-red degrade", () => {
+  // The exact scenario the reviewer flagged: a large, slow but progressing
+  // multi-GB local import can have queued rows sitting ready for hours
+  // before their first attempt without ever failing once. Age alone is not
+  // failure evidence — oldestRetryingAt (attempt_count > 0) stays null, so
+  // this must never project as degraded no matter how old the backlog is.
+  const derived = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "retrying",
+      oldestRetryingAt: null,
+      recordsPending: 5000,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
+      outbox: { axis: derived.axis, cause: derived.cause },
+      run: run(),
+    })
+  );
+  assert.equal(snap.state, "healthy");
+  assert.equal(snap.axes.outbox, "active");
+});
+
+test("end-to-end: recovery after the backlog drains returns to green, not latched degraded", () => {
+  const recoveredDerived = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      lastHeartbeatAt: FRESH,
+      lastHeartbeatStatus: "healthy",
+      oldestRetryingAt: null,
+      recordsPending: 0,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  const snap = computeConnectionHealth(
+    input({
+      coverage: { axis: "complete" },
+      freshness: { axis: "fresh" },
+      outbox: { axis: recoveredDerived.axis, cause: recoveredDerived.cause },
+      run: run(),
+    })
+  );
+  assert.equal(snap.state, "healthy");
+  assert.equal(snap.axes.outbox, "idle");
 });
 
 test("local exporter: stale_pending names the stopped heartbeat, not a backlog", () => {
@@ -2035,6 +2338,27 @@ test("rollupOutboxDiagnosticCounts: ignores negative / non-finite counts", () =>
 test("rollupOutboxDiagnosticCounts: surfaces oldest_pending_at even with no numeric counts", () => {
   const r = rollupOutboxDiagnosticCounts([{ oldest_pending_at: "2026-05-19T09:00:00.000Z" }]);
   assert.deepEqual(r, { oldest_pending_at: "2026-05-19T09:00:00.000Z" });
+});
+
+test("rollupOutboxDiagnosticCounts: keeps the earliest oldest_retrying_at independently of oldest_pending_at", () => {
+  const r = rollupOutboxDiagnosticCounts([
+    { oldest_pending_at: "2026-05-19T08:00:00.000Z", oldest_retrying_at: "2026-05-19T11:00:00.000Z", retrying: 1 },
+    { oldest_pending_at: "2026-05-19T10:00:00.000Z", oldest_retrying_at: "2026-05-19T09:30:00.000Z", retrying: 1 },
+  ]);
+  assert.ok(r);
+  assert.equal(r.retrying, 2);
+  // pending-only source (older, never-failed) still wins oldest_pending_at...
+  assert.equal(r.oldest_pending_at, "2026-05-19T08:00:00.000Z");
+  // ...but oldest_retrying_at is scoped to actual retry evidence and picks
+  // its own independently-earliest value, not derived from oldest_pending_at.
+  assert.equal(r.oldest_retrying_at, "2026-05-19T09:30:00.000Z");
+});
+
+test("rollupOutboxDiagnosticCounts: a source with no retry evidence contributes no oldest_retrying_at", () => {
+  const r = rollupOutboxDiagnosticCounts([{ oldest_pending_at: "2026-05-19T08:00:00.000Z", pending: 5000 }]);
+  assert.ok(r);
+  assert.equal(r.oldest_pending_at, "2026-05-19T08:00:00.000Z");
+  assert.equal(r.oldest_retrying_at, undefined);
 });
 
 // ─── next_action CTA derivation ──────────────────────────────────────────
@@ -2303,6 +2627,138 @@ test("collection_rate: surfaced on degraded connections too (annotation, not a h
   );
   assert.equal(snap.state, "degraded");
   assert.deepEqual(snap.collection_rate, rate, "collection_rate is available even when the connection is degraded");
+});
+
+// ─── not_applicable: settled absence, not a pending verdict ───────────────
+
+/**
+ * The shape of the owner's healthy self-hosted Reddit connection: a server-side
+ * browser-backed connector with no enrolled local collector, no
+ * `@opendatalabs/remote-surface` package, and no schedule row yet.
+ */
+function healthySelfHostedInput(overrides: Partial<ComputeConnectionHealthInput> = {}) {
+  return input({
+    coverage: { axis: "complete" },
+    freshness: { axis: "fresh" },
+    localDeviceBacked: false,
+    outbox: null,
+    remoteSurface: null,
+    run: run(),
+    schedule: null,
+    ...overrides,
+  });
+}
+
+function supportingTypes(snap: ConnectionHealthSnapshot): readonly string[] {
+  const byId = new Map(snap.conditions.map((item) => [item.id, item]));
+  return (snap.supporting_condition_ids ?? []).flatMap((id) => {
+    const found = byId.get(id);
+    return found ? [found.type] : [];
+  });
+}
+
+test("a healthy connection with no local device and no remote surface surfaces none of those conditions", () => {
+  const snap = computeConnectionHealth(healthySelfHostedInput());
+
+  assert.equal(snap.state, "healthy");
+  // Each of these is structurally unanswerable in this deployment: there is no
+  // exporter, no managed surface, no browser process and no schedule row. The
+  // projection knows that, so none may sit in the owner's list as "Unknown".
+  for (const type of [
+    "BacklogClear",
+    "LocalExporterAvailable",
+    "RemoteSurfaceAvailable",
+    "RuntimeAvailable",
+    "CredentialContinuity",
+    "ScheduleEligible",
+  ] as const) {
+    assert.equal(findCondition(snap, type)?.status, "not_applicable", `${type} must be settled, not unknown`);
+  }
+  assert.deepEqual(supportingTypes(snap), [], "a healthy self-hosted connection shows an empty conditions list");
+});
+
+test("not_applicable conditions stay on the snapshot for machine consumers", () => {
+  const snap = computeConnectionHealth(healthySelfHostedInput());
+  // Filtered from the owner-facing list, never dropped from the evidence.
+  assert.ok(
+    snap.conditions.some((item) => item.status === "not_applicable"),
+    "the full condition set still carries the settled answers"
+  );
+});
+
+test("a local-device-backed connection with no heartbeat keeps an honest unknown outbox", () => {
+  const snap = computeConnectionHealth(healthySelfHostedInput({ localDeviceBacked: true }));
+
+  // Here the evidence really is outstanding — the collector is enrolled and has
+  // simply not checked in — so `unknown` is the honest answer and must survive.
+  assert.equal(findCondition(snap, "BacklogClear")?.status, "unknown");
+  assert.equal(findCondition(snap, "LocalExporterAvailable")?.status, "unknown");
+  const shown = supportingTypes(snap);
+  assert.ok(shown.includes("BacklogClear"), "a bound-but-silent collector is still worth showing");
+  assert.ok(shown.includes("LocalExporterAvailable"));
+});
+
+test("a stalled outbox still degrades and surfaces, regardless of the not_applicable filter", () => {
+  const snap = computeConnectionHealth(
+    healthySelfHostedInput({
+      localDeviceBacked: true,
+      outbox: { axis: "stalled", cause: "dead_letter_backlog" },
+    })
+  );
+
+  // The scope fix must not suppress the real, actionable local-device failure.
+  assert.equal(snap.state, "degraded");
+  assert.equal(findCondition(snap, "LocalExporterAvailable")?.status, "false");
+  assert.ok(supportingTypes(snap).includes("LocalExporterAvailable"));
+});
+
+test("CredentialContinuity can render true when the runtime proves continuity", async () => {
+  const { projectEphemeralBrowserSurfaceHealth } = await import(
+    "../runtime/browser-surface/ephemeral-health-projection.ts"
+  );
+  const runtime = projectEphemeralBrowserSurfaceHealth({
+    active_lease: null,
+    allocator_observation: { expires_at: "2026-05-19T12:05:00.000Z", observed_at: NOW, status: "available" },
+    connection_id: "reddit",
+    connection_kind: "browser-runtime",
+    current_compatible_idle_surfaces: 0,
+    demand: "none",
+    surface_mode: "dynamic-managed",
+  });
+  const snap = computeConnectionHealth(
+    healthySelfHostedInput({
+      ephemeralBrowserRuntime: { ...runtime, credential_continuity: "continuity_proven" },
+    })
+  );
+
+  const continuity = findCondition(snap, "CredentialContinuity");
+  // Before this branch existed the runtime computed the proof and then threw it
+  // away, so a proven session and an unprobed one were the same pixel.
+  assert.equal(continuity?.status, "true");
+  assert.equal(continuity?.reason, "credential_continuity_proven");
+  assert.equal(snap.state, "healthy");
+  assert.ok(!supportingTypes(snap).includes("CredentialContinuity"), "a proven true+info condition is not noise");
+});
+
+test("ScheduleEligible reports a missing schedule as settled, without demoting health to owner-paused", () => {
+  const snap = computeConnectionHealth(healthySelfHostedInput());
+  const schedule = findCondition(snap, "ScheduleEligible");
+
+  assert.equal(schedule?.status, "not_applicable");
+  assert.equal(schedule?.reason, "schedule_not_configured");
+  assert.match(schedule?.message ?? "", TOP_LEVEL_REGEX_20);
+  // `classifyOwnerPaused` claims any FALSE ScheduleEligible as an intentional
+  // pause. Encoding "no schedule row" as false would silently demote every
+  // unscheduled healthy connection to idle.
+  assert.equal(snap.state, "healthy", "an unscheduled connection is not owner-paused");
+});
+
+test("a paused schedule is still false, and still owns the idle headline", () => {
+  const snap = computeConnectionHealth(healthySelfHostedInput({ schedule: { enabled: false } }));
+
+  assert.equal(findCondition(snap, "ScheduleEligible")?.status, "false");
+  assert.equal(snap.state, "idle");
+  assert.equal(snap.dominant_condition_id, "ScheduleEligible:schedule_paused");
 });
 
 function findCondition(snap: ConnectionHealthSnapshot, type: ConnectionHealthCondition["type"]) {

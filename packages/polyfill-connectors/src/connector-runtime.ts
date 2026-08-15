@@ -51,7 +51,6 @@ import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
 import { type AuthConfig, resolveAuth } from "./auth.ts";
 import {
   DEADLINE_TIMEOUT,
-  manualAction,
   prepareBrowserInteractionTarget,
   unregisterBrowserInteractionTarget,
   withDeadline,
@@ -70,6 +69,7 @@ import type {
   InteractionResponse,
   ProgressExtra,
   RecordData,
+  ShapeAnomaly,
   StartMessage,
   StreamScope,
   ValidateRecord,
@@ -77,6 +77,14 @@ import type {
 import { type CaptureSession, createCaptureSession } from "./fixture-capture.ts";
 import { emitToStdout } from "./safe-emit.ts";
 import { resourceSet } from "./scope-filters.ts";
+import {
+  DEFAULT_RETRYABLE_PATTERN,
+  type EnsureSessionArgs,
+  establishSession,
+  type ProbeSessionArgs,
+  type SessionCheckpointFn,
+} from "./session-establish.ts";
+import { assertValidConnectorErrorCode, TerminalError, type TerminalErrorDetails } from "./terminal-error.ts";
 
 // ─── Protocol message shapes (re-exported from connector-runtime-protocol.ts) ──
 //
@@ -111,10 +119,43 @@ export type {
   ProgressExtra,
   ProviderBudgetProgress,
   RecordData,
+  ShapeAnomaly,
   StartMessage,
   StreamScope,
   ValidateRecord,
 } from "./connector-runtime-protocol.ts";
+
+// The session-establishment flow and the typed terminal-error primitive live
+// in `session-establish.ts` / `terminal-error.ts` (this runtime is their
+// production consumer — see `runInBrowser`). The types connectors implement
+// are re-exported here so connector and auto-login code keeps a single
+// runtime import surface; `createConnectorFailure` below is that surface's
+// value-level counterpart.
+export type { EnsureSessionArgs, ProbeSessionArgs, SessionCheckpointFn } from "./session-establish.ts";
+export type { TerminalErrorDetails } from "./terminal-error.ts";
+
+/**
+ * The one shared constructor for a connector-declared typed terminal
+ * failure. Every connector that wants a stable `error.code` on its DONE
+ * message (rather than relying purely on free-form, redacted `message`
+ * text) should throw `createConnectorFailure(...)` instead of hand-rolling
+ * `throw new Error(...)` or an ad hoc `{ code, message }` object — this is
+ * the single point that validates `code` before it can ever reach the
+ * unredacted `connector_error_code` column.
+ *
+ * `message` is ordinary human-readable free-form text: it still goes
+ * through `boundConnectorErrorMessage`/`redactStderrTail` exactly like any
+ * other connector-authored message, so it must never itself be treated as
+ * safe — write it as you would write any other diagnostic string.
+ */
+export function createConnectorFailure(
+  code: string,
+  message: string,
+  options: { cause?: unknown; retryable?: boolean } = {}
+): Error {
+  assertValidConnectorErrorCode(code);
+  return new TerminalError(message, { ...options, code });
+}
 
 // ─── Collect context ────────────────────────────────────────────────────
 
@@ -127,6 +168,23 @@ interface EmitRecordOptions {
 interface BaseCollectContext {
   assist: (req: AssistanceRequest) => Promise<string>;
   capture: CaptureSession | null;
+  /**
+   * Threaded from the START message's `collection_mode` field (already sent
+   * on the wire by RI; this is the connector-runtime-side surfacing of it).
+   * `"full_refresh"` is an explicit owner/operator bypass: a connector with
+   * its own incremental bookkeeping (checkpoints, anchors, frontiers) MUST
+   * ignore that bookkeeping for this run and walk each stream to its natural
+   * end, providing a repair path for state a narrower incremental walk would
+   * never revisit (e.g. a mutable field that changed further back than any
+   * per-record change-detection window). Optional, matching `recoveryOnly`'s
+   * precedent, so hand-built `CollectContext` literals elsewhere in the
+   * codebase (tests, other connectors) that predate this field keep
+   * compiling unchanged. A connector reading this MUST treat `undefined` the
+   * same as `"incremental"` — the runtime's real construction site always
+   * sets it explicitly (see `run()` below), so `undefined` only ever reaches
+   * a connector via a test harness that hasn't been updated yet.
+   */
+  collectionMode?: "full_refresh" | "incremental";
   completeAssistance: (
     assistanceRequestId: string,
     status: AssistanceCompletionStatus,
@@ -145,6 +203,17 @@ interface BaseCollectContext {
    * optional so connectors that do not implement recovery-only ignore it.
    */
   recoveryOnly?: boolean;
+  /**
+   * Report a stream-level collection failure while allowing independent
+   * streams to finish. The runtime emits bounded failure evidence immediately
+   * and converts the eventual terminal DONE to `failed`; a connector must not
+   * turn a failed stream into a successful run merely by returning from
+   * `collect()`.
+   *
+   * Optional for compatibility with hand-built test contexts. The real runtime
+   * always supplies it.
+   */
+  reportStreamFailure?: (stream: string, message: string, options?: { retryable?: boolean }) => Promise<void>;
   requestDetailGapPage: (req?: {
     maxBytes?: number;
     streams?: readonly string[];
@@ -209,43 +278,6 @@ export type BrowserLaunchSource =
  */
 export type BrowserSurfaceRuntimeKind = BrowserLaunchSource["kind"];
 
-/**
- * Mark a named session-establishment phase. Calling this updates the run's
- * last-establishment-progress marker (which the watchdog reads) and, when
- * capture is active, triggers a best-effort durable diagnostic capture for the
- * phase. Best-effort and bounded: a checkpoint SHALL NOT be able to hang the
- * watchdog and a failed capture never fails the run.
- */
-export type SessionCheckpointFn = (label: string) => Promise<void>;
-
-export interface EnsureSessionArgs {
-  assist: BaseCollectContext["assist"];
-  capture: CaptureSession | null;
-  /**
-   * Mark a session-establishment phase (e.g. "sign-in-loaded", "email-submit",
-   * "2fa-decision", "final-verify"). Resets the watchdog's no-progress deadline
-   * and captures a phase diagnostic. Optional for connectors that do not adopt
-   * checkpoints; the runtime still frames the window with its own checkpoints.
-   */
-  checkpoint: SessionCheckpointFn;
-  completeAssistance: BaseCollectContext["completeAssistance"];
-  context: BrowserContext;
-  page: Page;
-  progress: BaseCollectContext["progress"];
-  sendInteraction: BaseCollectContext["sendInteraction"];
-}
-
-export interface ProbeSessionArgs {
-  context: BrowserContext;
-  page: Page;
-}
-
-export interface TerminalErrorDetails {
-  code?: string;
-  message: string;
-  retryable: boolean;
-}
-
 export type NormalizeTerminalError = (error: TerminalErrorDetails) => TerminalErrorDetails;
 
 /** Fields shared by browser and non-browser configs. */
@@ -305,30 +337,7 @@ export type RunConnectorConfig = NonBrowserConnectorConfig | BrowserConnectorCon
 type ClosableBrowserPage = Pick<Page, "close" | "isClosed">;
 type ReusableBrowserPage = Pick<Page, "isClosed" | "url">;
 
-const DEFAULT_RETRYABLE_PATTERN = /ECONN|ETIMEDOUT|timeout/i;
 const TRACE_TIMESTAMP_UNSAFE = /[:.]/g;
-
-/**
- * A failure that the runtime should convert to a terminal DONE rather than
- * let it bubble as an unhandled rejection. Carries an explicit `retryable`
- * bit so the outer catch doesn't have to heuristically pattern-match the
- * message. The optional `code` carries a stable, infrastructure-set
- * machine-actionable code (e.g. `browser_surface_attach_exhausted`) through
- * to `DONE.error.code` — see `emitFailed`'s composition with a connector's
- * `normalizeTerminalError` for how this survives connector overrides.
- */
-class TerminalError extends Error {
-  readonly code?: string;
-  readonly retryable: boolean;
-  constructor(message: string, options: { cause?: unknown; code?: string; retryable?: boolean } = {}) {
-    super(message, options.cause === undefined ? undefined : { cause: options.cause });
-    this.name = "TerminalError";
-    this.retryable = options.retryable ?? false;
-    if (options.code !== undefined) {
-      this.code = options.code;
-    }
-  }
-}
 
 /**
  * Compose a stable, infrastructure-set terminal-error `code` (e.g.
@@ -366,6 +375,59 @@ export function composeNormalizedTerminalError({
   return code && !normalized.code ? { ...normalized, code } : normalized;
 }
 
+const UNEXPECTED_FAILURE_DETAIL_MAX = 300;
+
+/**
+ * Known third-party error shapes that carry their real diagnostic detail on
+ * SIDE FIELDS rather than in `.message` — e.g. imapflow's protocol errors
+ * (`new Error('Command failed')`, imap-flow.js's `settleRequest`) always use
+ * the same generic message and put the server's actual NO/BAD explanation on
+ * `.responseText`, with the IMAP command that triggered it on
+ * `.executedCommand`. `run().catch` below used to read only `.message`,
+ * so every IMAP auth/throttle/quota rejection reached the owner as the
+ * indistinguishable, contentless "Command failed" (see docs/inbox/
+ * report-gmail-command-failed.md). `executedCommand` is safe to surface:
+ * imapflow's compiler is built with `isLogging: true` for this exact field,
+ * which replaces any field marked `sensitive` (LOGIN's password argument)
+ * with the literal string `(* value hidden *)` before it ever reaches this
+ * object -- see imap-flow.js's settleRequest and commands/login.js.
+ */
+function extractKnownErrorDetail(err: Error): string | null {
+  const withDetail = err as Error & {
+    executedCommand?: unknown;
+    responseText?: unknown;
+  };
+  const parts: string[] = [];
+  if (typeof withDetail.responseText === "string" && withDetail.responseText.length > 0) {
+    parts.push(`server: ${withDetail.responseText}`);
+  }
+  if (typeof withDetail.executedCommand === "string" && withDetail.executedCommand.length > 0) {
+    parts.push(`command: ${withDetail.executedCommand}`);
+  }
+  return parts.length > 0 ? parts.join("; ") : null;
+}
+
+/**
+ * Builds the message an UNEXPECTED (non-`TerminalError`) throw carries into
+ * `DONE.error.message` -- an unexpected throw's own `.message` alone is
+ * sometimes a generic, contentless string (imapflow's `'Command failed'`
+ * for every IMAP NO/BAD response) while the real explanation sits on a
+ * side field the generic catch previously never looked at. Bounded so a
+ * pathological response body can't bloat the terminal DB row; must never
+ * include credential material (see `extractKnownErrorDetail`'s doc comment
+ * on why `executedCommand` is already redacted at the source).
+ */
+export function describeUnexpectedFailure(err: unknown): string {
+  if (!(err instanceof Error)) {
+    return String(err);
+  }
+  const detail = extractKnownErrorDetail(err);
+  const combined = detail ? `${err.message} (${detail})` : err.message;
+  return combined.length > UNEXPECTED_FAILURE_DETAIL_MAX
+    ? `${combined.slice(0, UNEXPECTED_FAILURE_DETAIL_MAX)}…`
+    : combined;
+}
+
 /** Returns true if the scope's time_range excludes this record's date value. */
 function isOutsideTimeRange(timeRange: { since?: string; until?: string }, dateValue: unknown): boolean {
   if (typeof dateValue !== "string" || !dateValue) {
@@ -393,6 +455,32 @@ function makeShapeCheckSkip(
     reason: "shape_check_failed",
     message,
     diagnostics: { id: data.id, issues, record: data },
+  };
+}
+
+/**
+ * Build the SKIP_RESULT-shaped diagnostic for a record that was RETAINED
+ * despite carrying a value the schema does not model (see `makeValidateRecord`).
+ *
+ * This is a report, not a skip: the record emits normally and this rides
+ * alongside it. It reuses the SKIP_RESULT envelope because that is the existing
+ * per-record diagnostic channel the console already surfaces, and carries a
+ * distinct `reason` so a reader can tell "we kept this and here is the drift"
+ * from "we dropped this". Values are reported verbatim so the operator can see
+ * what the vendor actually sent and widen the schema against real data.
+ */
+function makeShapeAnomalyReport(
+  stream: string,
+  data: RecordData,
+  anomalies: readonly ShapeAnomaly[]
+): Extract<EmittedMessage, { type: "SKIP_RESULT" }> {
+  const detail = anomalies.map((a) => `${a.path}: unmodeled value ${JSON.stringify(a.value)}`).join("; ");
+  return {
+    type: "SKIP_RESULT",
+    stream,
+    reason: "shape_check_unmodeled_value",
+    message: `${String(data.id)}: retained with ${detail}`,
+    diagnostics: { id: data.id, anomalies, retained: true },
   };
 }
 
@@ -441,9 +529,11 @@ export interface DetailCoverageParams {
 }
 
 /**
- * Build the per-run DETAIL_COVERAGE message a list+detail connector emits once
- * after its detail lane. Pure: the caller owns when/whether to emit. Empty
- * optional key sets are omitted so a fully hydrated run carries no gap fields.
+ * Build one parent-boundary DETAIL_COVERAGE message after that detail work
+ * settles. A shared detail stream emits one message per independently
+ * checkpointed parent. Pure: the caller owns when/whether to emit. Empty
+ * optional key sets are omitted so a fully hydrated boundary carries no gap
+ * fields.
  */
 export function buildDetailCoverageMessage(params: DetailCoverageParams): DetailCoverageMessage {
   const { stream, stateStream, requiredKeys, hydratedKeys, gapKeys, optionalSkipKeys, considered, covered } = params;
@@ -465,6 +555,33 @@ export function buildDetailCoverageMessage(params: DetailCoverageParams): Detail
     ...(gapKeys?.length ? { gap_keys: [...gapKeys] } : {}),
     ...(optionalSkipKeys?.length ? { optional_skip_keys: [...optionalSkipKeys] } : {}),
   };
+}
+
+/**
+ * Build the self-coverage DETAIL_COVERAGE for a full-scan stream: one whose
+ * whole boundary is re-enumerated every run and which has no separate detail
+ * hydration phase, so the key sets stay empty and `stream === state_stream`.
+ *
+ * `considered` is the enumerated boundary size, measured at the enumeration
+ * site — never the emitted count (see `DetailCoverageParams.considered`). Every
+ * in-boundary item is either emitted or suppressed as unchanged, so `covered`
+ * equals `considered` and a steady-state run reads covered rather than a false
+ * `partial`. A successful enumeration that found nothing declares
+ * `considered === covered === 0`: proven-empty is a fact, and it is the only
+ * way an empty stream can prove coverage rather than merely lack evidence.
+ *
+ * The caller owns when to emit, and MUST emit only on a successful
+ * enumeration — a fetch or parse failure never proves an empty boundary.
+ */
+export function buildFullScanCoverageMessage(stream: string, considered: number): DetailCoverageMessage {
+  return buildDetailCoverageMessage({
+    stream,
+    stateStream: stream,
+    requiredKeys: [],
+    hydratedKeys: [],
+    considered,
+    covered: considered,
+  });
 }
 
 /**
@@ -685,6 +802,7 @@ export function runConnector(config: RunConnectorConfig): void {
   };
 
   let observedCounters: { totalEmitted: number; totalSkipped: number } | null = null;
+  let reportedStreamFailure: { message: string; retryable: boolean; stream: string } | null = null;
 
   const emitFailed = (
     message: string,
@@ -692,6 +810,10 @@ export function runConnector(config: RunConnectorConfig): void {
     records_emitted = observedCounters?.totalEmitted ?? 0,
     code?: string
   ): void => {
+    // The runtime ACK handshake may outlive every ref'd process handle. Mark
+    // the natural exit path before emitting DONE so it cannot contradict the
+    // failed terminal status if Node exits before the explicit callback.
+    process.exitCode = 1;
     const terminalError = composeNormalizedTerminalError({ message, retryable, code, normalizeTerminalError });
     // Fire-and-forget. emit() resolves after stdout drains; we're about to
     // exit(1) anyway, so we don't need to block. If it rejects (the write
@@ -734,18 +856,41 @@ export function runConnector(config: RunConnectorConfig): void {
     // Fire the INTERACTION; response arrives separately on stdin.
     emit(wrapped).catch((): undefined => undefined);
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = (): void => {
+        rl.off("line", onLine);
+        rl.off("close", onClose);
+        process.stdin.off("end", onClose);
+        process.stdin.off("error", onError);
+      };
+      const settle = (fn: () => void): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        fn();
+      };
       const onLine = (line: string): void => {
         try {
           const parsed = JSON.parse(line) as InteractionResponse;
           if (parsed.type === "INTERACTION_RESPONSE" && parsed.request_id === request_id) {
-            rl.off("line", onLine);
-            resolve(parsed);
+            settle(() => resolve(parsed));
           }
         } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)));
+          settle(() => reject(err instanceof Error ? err : new Error(String(err))));
         }
       };
+      const onClose = (): void => {
+        settle(() => reject(new Error(`Interaction ${request_id} ended before a response`)));
+      };
+      const onError = (err: Error): void => {
+        settle(() => reject(new Error(`Interaction ${request_id} stdin error: ${err.message}`)));
+      };
       rl.on("line", onLine);
+      rl.once("close", onClose);
+      process.stdin.once("end", onClose);
+      process.stdin.once("error", onError);
     });
   };
 
@@ -836,6 +981,29 @@ export function runConnector(config: RunConnectorConfig): void {
   const completeAssistance: BaseCollectContext["completeAssistance"] = (assistanceRequestId, status, extra = {}) =>
     emit({ type: "ASSISTANCE_STATUS", assistance_request_id: assistanceRequestId, status, ...extra });
 
+  const reportStreamFailure: NonNullable<BaseCollectContext["reportStreamFailure"]> = async (
+    stream,
+    message,
+    options = {}
+  ): Promise<void> => {
+    if (!stream.trim()) {
+      throw new TerminalError("Stream failure report is missing a stream", { code: "stream_failure_invalid" });
+    }
+    const normalizedMessage = message.trim();
+    if (!normalizedMessage) {
+      throw new TerminalError("Stream failure report is missing a message", { code: "stream_failure_invalid" });
+    }
+    const retryable = options.retryable === true;
+    reportedStreamFailure ??= { message: normalizedMessage, retryable, stream };
+    await emit({
+      type: "SKIP_RESULT",
+      stream,
+      reason: "stream_collection_failed",
+      message: normalizedMessage,
+      recovery_hint: { action: "retry_by_runtime", retryable },
+    });
+  };
+
   // Kick off the run. The outer catch distinguishes TerminalError (which
   // the runtime threw deliberately with an explicit retryable bit) from
   // unexpected throws (where we pattern-match the message).
@@ -844,7 +1012,7 @@ export function runConnector(config: RunConnectorConfig): void {
       emitFailed(err.message, err.retryable, undefined, err.code);
       return;
     }
-    const message = err instanceof Error ? err.message : String(err);
+    const message = describeUnexpectedFailure(err);
     emitFailed(message, retryablePattern.test(message));
   });
 
@@ -877,6 +1045,7 @@ export function runConnector(config: RunConnectorConfig): void {
       assist,
       completeAssistance,
       progress,
+      reportStreamFailure,
       capture,
       sendInteraction,
       emittedAt,
@@ -885,6 +1054,10 @@ export function runConnector(config: RunConnectorConfig): void {
       // §4.3: forward recovery_only from the START message so connectors can
       // suppress the forward walk while draining non-pressure detail gaps.
       recoveryOnly: startMsg.recovery_only === true,
+      // Defaults to "incremental" when absent — see BaseCollectContext's doc
+      // comment: an ordinary run (no collection_mode on the wire) must behave
+      // exactly as before this field existed.
+      collectionMode: startMsg.collection_mode === "full_refresh" ? "full_refresh" : "incremental",
     };
 
     if (browser) {
@@ -906,6 +1079,15 @@ export function runConnector(config: RunConnectorConfig): void {
       await collect(baseCtx);
     }
 
+    if (reportedStreamFailure) {
+      emitFailed(
+        `stream collection failed: ${reportedStreamFailure.stream}: ${reportedStreamFailure.message}`,
+        reportedStreamFailure.retryable,
+        emitRecord.counters.totalEmitted,
+        "stream_collection_failed"
+      );
+      return;
+    }
     await finalizeRun(emitRecord.counters, progress, emit);
     flushAndExit(0);
   }
@@ -964,10 +1146,12 @@ function makeEmitRecord(deps: {
   timeRangeFieldFor: (stream: string) => string;
 }): {
   emit: (stream: string, data: RecordData) => Promise<void>;
-  counters: { totalEmitted: number; totalSkipped: number };
+  counters: { totalEmitted: number; totalSkipped: number; totalAnomalous: number };
 } {
   const { requested, emit, emittedAt, validateRecord, isTombstone, timeRangeFieldFor } = deps;
-  const counters = { totalEmitted: 0, totalSkipped: 0 };
+  // `totalAnomalous` counts records RETAINED despite unmodeled values; it is a
+  // subset of totalEmitted, not a sibling of totalSkipped.
+  const counters = { totalEmitted: 0, totalSkipped: 0, totalAnomalous: 0 };
   const resFilters = new Map<string, ReadonlySet<string> | null>();
   for (const [streamName, scope] of requested) {
     resFilters.set(streamName, resourceSet(scope));
@@ -988,7 +1172,7 @@ function makeEmitRecord(deps: {
       return emit({
         type: "RECORD",
         stream,
-        key: data.id,
+        key: String(data.id),
         data: { id: data.id },
         emitted_at: emittedAt,
         op: "delete",
@@ -1001,21 +1185,31 @@ function makeEmitRecord(deps: {
       return Promise.resolve();
     }
 
-    if (validateRecord) {
-      const result = validateRecord(stream, data);
-      if (!result.ok) {
-        counters.totalSkipped += 1;
-        return emit(makeShapeCheckSkip(stream, data, result.issues));
-      }
+    const validation = validateRecord?.(stream, data);
+    if (validation && !validation.ok) {
+      counters.totalSkipped += 1;
+      return emit(makeShapeCheckSkip(stream, data, validation.issues));
     }
+    // Present only when the record was RETAINED despite carrying a value the
+    // schema does not model (see makeValidateRecord in schema-registry.ts).
+    const anomalies = validation?.anomalies;
     counters.totalEmitted += 1;
-    return emit({
+    const record: EmittedMessage = {
       type: "RECORD",
       stream,
-      key: data.id,
+      key: String(data.id),
       data,
       emitted_at: emittedAt,
-    });
+    };
+    // A retained-with-drift record still emits; its diagnostic rides alongside
+    // so the unmodeled value is visible rather than silently tolerated. Reported
+    // BEFORE the RECORD so a truncated stream never shows the record without the
+    // caveat attached to it.
+    if (anomalies?.length) {
+      counters.totalAnomalous += 1;
+      return emit(makeShapeAnomalyReport(stream, data, anomalies)).then(() => emit(record));
+    }
+    return emit(record);
   };
 
   return { emit: emitRecord, counters };
@@ -1148,6 +1342,7 @@ async function runInBrowser(args: {
           checkpoint: watchdog.checkpoint,
           completeAssistance: watchdog.wrapCompleteAssistance(browserCompleteAssistance),
           context: ctx,
+          credentials: baseCtx.credentials,
           page: page as Page,
           name,
           progress,
@@ -1503,10 +1698,10 @@ function startBrowserConnectionKeepalive(
   const browserConnectedAtStart = browser.isConnected();
   const removeDisconnectedListener = attachBrowserDisconnectedDiagnostic(browser, () => {
     disconnectEventCount += 1;
-    disconnectEventElapsedMs ??= Date.now() - startedAt;
-    process.stderr.write(
-      `[browser-keepalive] browser disconnected during interaction after ${disconnectEventElapsedMs}ms\n`
-    );
+    const elapsedMs = Date.now() - startedAt;
+    disconnectEventElapsedMs ??= elapsedMs;
+    firstObservedDisconnectedElapsedMs ??= elapsedMs;
+    process.stderr.write(`[browser-keepalive] browser disconnected during interaction after ${elapsedMs}ms\n`);
   });
   const sessionFor = (connectedBrowser: Browser): Promise<CDPSession> => {
     sessionPromise ??= connectedBrowser.newBrowserCDPSession();
@@ -1583,12 +1778,20 @@ function attachBrowserDisconnectedDiagnostic(browser: Browser, onDisconnected: (
 
 /** Emit the final PROGRESS summary (if any skips) and the succeeded DONE. */
 async function finalizeRun(
-  counters: { totalEmitted: number; totalSkipped: number },
+  counters: { totalEmitted: number; totalSkipped: number; totalAnomalous?: number },
   progress: BaseCollectContext["progress"],
   emit: (msg: EmittedMessage) => Promise<void>
 ): Promise<void> {
   if (counters.totalSkipped > 0) {
     await progress(`shape-check skipped ${String(counters.totalSkipped)} record(s); see SKIP_RESULT events above`);
+  }
+  // Retained-with-drift records are emitted, so they are absent from the skip
+  // line above; surfacing the count keeps schema drift from going unnoticed
+  // simply because nothing was lost to it.
+  if (counters.totalAnomalous) {
+    await progress(
+      `shape-check retained ${String(counters.totalAnomalous)} record(s) carrying unmodeled values; see SKIP_RESULT events above`
+    );
   }
   await emit({
     type: "DONE",
@@ -1947,118 +2150,6 @@ export function makeSessionEstablishWatchdog(args: {
   };
 
   return { checkpoint, wrapAssist, wrapCompleteAssistance, wrapSendInteraction, run };
-}
-
-interface SessionEstablishArgs {
-  assist: BaseCollectContext["assist"];
-  capture: CaptureSession | null;
-  checkpoint: SessionCheckpointFn;
-  completeAssistance: BaseCollectContext["completeAssistance"];
-  context: BrowserContext;
-  name: string;
-  page: Page;
-  progress: BaseCollectContext["progress"];
-  retryablePattern: RegExp;
-  sendInteraction: BaseCollectContext["sendInteraction"];
-}
-
-function retryablePatternMatches(pattern: RegExp, value: string): boolean {
-  pattern.lastIndex = 0;
-  const matched = pattern.test(value);
-  pattern.lastIndex = 0;
-  return matched;
-}
-
-export function buildSessionEstablishTerminalError(
-  name: string,
-  message: string,
-  retryablePattern: RegExp = DEFAULT_RETRYABLE_PATTERN
-): TerminalErrorDetails {
-  const terminalMessage = `${name}_session_failed: ${message}`;
-  return {
-    message: terminalMessage,
-    retryable:
-      retryablePatternMatches(retryablePattern, message) || retryablePatternMatches(retryablePattern, terminalMessage),
-  };
-}
-
-/**
- * Run whichever session-management flow the connector configured.
- * Throws TerminalError if the session is dead and we couldn't recover.
- *
- * Priority: ensureSession (automated re-auth) > probeSession (read-only
- * + manual_action fallback) > nothing (connector assumes session is live).
- *
- * The runtime frames the window with a `begin` checkpoint before delegating
- * and a `probe` checkpoint around the read-only probe path so the watchdog
- * has progress markers even for connectors that do not checkpoint themselves.
- */
-async function establishSession(
-  hooks: {
-    ensureSession: ((args: EnsureSessionArgs) => Promise<void>) | undefined;
-    probeSession: ((args: ProbeSessionArgs) => Promise<boolean>) | undefined;
-  },
-  args: SessionEstablishArgs
-): Promise<void> {
-  const { ensureSession, probeSession } = hooks;
-  const {
-    assist,
-    capture,
-    checkpoint,
-    completeAssistance,
-    context,
-    page,
-    name,
-    retryablePattern,
-    sendInteraction,
-    progress,
-  } = args;
-
-  await checkpoint("session-establish:begin");
-
-  if (typeof ensureSession === "function") {
-    try {
-      await ensureSession({
-        assist,
-        capture,
-        checkpoint,
-        completeAssistance,
-        context,
-        page,
-        sendInteraction,
-        progress,
-      });
-      return;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const terminalError = buildSessionEstablishTerminalError(name, message, retryablePattern);
-      throw new TerminalError(terminalError.message, { retryable: terminalError.retryable, cause: err });
-    }
-  }
-
-  if (typeof probeSession !== "function") {
-    return;
-  }
-  await checkpoint("session-establish:probe");
-  if (await probeSession({ context, page })) {
-    return;
-  }
-
-  await manualAction(
-    {
-      page,
-      reason: "login",
-      message: `${name} session expired. Open the browser and re-authenticate, then continue.`,
-      timeoutSeconds: 1800,
-    },
-    sendInteraction
-  );
-  await checkpoint("session-establish:probe-after-manual");
-  if (await probeSession({ context, page })) {
-    return;
-  }
-
-  throw new TerminalError(`${name}_session_required`);
 }
 
 // ─── Playwright tracing helper ──────────────────────────────────────────

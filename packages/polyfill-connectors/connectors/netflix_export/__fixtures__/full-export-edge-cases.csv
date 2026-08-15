@@ -1,0 +1,9 @@
+Profile Name,Start Time (UTC),Duration (H:MM:SS),Attributes,Title,Supplemental Video Type,Device Type,Bookmark,Latest Bookmark,Country
+"Main Account","2024-01-20 08:00:00","1:00:00","","The Office: Season 1","","Laptop","1:00:00","1:00:00","US"
+"User Profile","2024-01-19 21:30:00","0:25:00","","Movie with ""Quotes"" Inside","","TV","0:25:00","0:25:00","US"
+"Main Account","2024-01-18 12:00:00","0:37:30","","Long Title That Has, Commas, In It","","Phone","0:37:30","0:37:30","US"
+"User Profile","","0:15:00","","No Start Time","","TV","0:15:00","0:15:00","US"
+"User Profile","2024-01-16 10:30:00","","","No Duration","","Laptop","","","US"
+"User Profile","2024-01-15 14:22:00","0:10:00","","Duplicate Entry","","Phone","0:10:00","0:10:00","US"
+"User Profile","2024-01-15 14:22:00","0:10:00","","Duplicate Entry","","Phone","0:10:00","0:10:00","US"
+"Café Watcher","2024-01-14 09:00:00","0:44:00","","Special Characters: café, naïve","","TV","0:44:00","0:44:00","FR"

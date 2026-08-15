@@ -92,8 +92,13 @@ function BearerBlock({
                 <span className="rr-bearer__how">
                   {b.how} · {b.issuedLabel} <IcTimestamp value={b.issuedAt} />
                 </span>
-                <a className="rr-rel__revoke" href={b.revokeHref}>
-                  revoke
+                {/* NAV, not a mutation. This opens the owner-tokens page; the
+                    actual revoke ceremony lives there. It previously read
+                    "revoke" in a `rr-rel__revoke` slot — destructive wording and
+                    destructive chrome on a link that only navigates. The name
+                    now matches what the click does. */}
+                <a className="rr-rel__revoke rr-rel__manage" href={b.revokeHref}>
+                  Manage →
                 </a>
               </div>
             );
@@ -160,16 +165,17 @@ function RelationshipsBlock({
                 {r.reads} · <Endorse status={r.status} />
               </span>
               <span className="rr-rel__meta">{r.terms}</span>
-              <a className="rr-rel__revoke" href={r.actionHref}>
+              {/* NAV, not a mutation: opens the grant (or the filtered grants
+                  list when the group has no single subject). The label is
+                  supplied by the view-model and already carries the arrow. */}
+              <a className="rr-rel__revoke rr-rel__manage" href={r.actionHref}>
                 {r.actionLabel}
               </a>
             </div>
           ))}
         </div>
       ) : (
-        <p className="rr-stand-empty">
-          No grant is out. Nothing is shared — only you and what you've given a token read this server.
-        </p>
+        <p className="rr-stand-empty">No grants are active. No connected app can read this instance yet.</p>
       )}
     </section>
   );
@@ -207,34 +213,52 @@ function LatelyBlock({ lately, tracesHref }: { lately: StandingData["lately"]; t
   );
 }
 
+/**
+ * Source attention is projected once by the shared source-work model. The
+ * overview shows each row's owner-safe label and next step, while Syncs stays
+ * the deeper recovery surface.
+ */
 function AttentionBlock({
   sections,
   fleetHealth,
+  healthySourceCount,
+  syncsHref,
 }: {
   sections: StandingData["sourceWorkSections"];
   fleetHealth: StandingData["fleetHealth"];
+  healthySourceCount: StandingData["healthySourceCount"];
+  syncsHref: string;
 }) {
   const rowCount = sections.reduce((sum, section) => sum + section.rows.length, 0);
   return (
     <section className="rr-stand-block">
       <h2 className="rr-stand-block__title">Source attention</h2>
+      {healthySourceCount !== null && healthySourceCount > 0 ? (
+        <p className="rr-stand-empty">
+          {healthySourceCount} {healthySourceCount === 1 ? "source is" : "sources are"} healthy and need no action.
+        </p>
+      ) : null}
       {rowCount > 0 ? (
         <div className="rr-attn" data-row-count={rowCount}>
           {sections.map((section) => (
-            <div className={["rr-attn__section", `is-${section.tone}`].join(" ")} key={section.id}>
-              <div className="rr-attn__section-head">
-                <h3 className="rr-attn__section-title">{section.title}</h3>
+            <div className="rr-attn__section" key={section.id}>
+              <div className={["rr-attn__section-summary", `is-${section.tone}`].join(" ")}>
+                <span className="rr-attn__section-title">{section.title}</span>
                 <span className="rr-attn__section-count">{section.countLabel}</span>
               </div>
-              {section.rows.map((a) => (
-                <a className={["rr-attn__row", `is-${section.tone}`].join(" ")} href={a.href} key={a.id}>
-                  <span className="rr-attn__what">{a.what}</span>
-                  <span className="rr-rel__meta">look →</span>
-                  <span className="rr-attn__why">{a.why}</span>
-                </a>
+              {section.rows.map((row) => (
+                <div className={["rr-attn__row", `is-${section.tone}`].join(" ")} key={row.id}>
+                  <a className="rr-attn__what" href={row.href}>
+                    {row.what}
+                  </a>
+                  <span className="rr-attn__why">{row.why}</span>
+                </div>
               ))}
             </div>
           ))}
+          <a className="rr-link rr-attn__syncs-link" href={syncsHref}>
+            Review in Syncs →
+          </a>
         </div>
       ) : (
         <div className="rr-allclear">
@@ -249,19 +273,24 @@ function AttentionBlock({
   );
 }
 
-function NotificationsBlock({ href }: { href: string }) {
+const NOTIFICATIONS_SETUP_COPY: Readonly<Record<StandingData["notificationsSetup"], string>> = {
+  configured:
+    "At least one device is enrolled for alerts on source reconnects, syncs waiting on you, and other owner-action events.",
+  not_configured:
+    "No device is enrolled yet. Enable browser or installed-app alerts for source reconnects, syncs waiting on you, and other owner-action events.",
+  unknown: "Could not check whether any device is enrolled for alerts right now.",
+};
+
+function NotificationsBlock({ href, setup }: { href: string; setup: StandingData["notificationsSetup"] }) {
   return (
     <section className="rr-stand-block">
       <div className="rr-stand-block__head">
         <h2 className="rr-stand-block__title">Notifications</h2>
         <a className="rr-link" href={href}>
-          setup →
+          {setup === "configured" ? "manage →" : "setup →"}
         </a>
       </div>
-      <p className="rr-stand-empty">
-        Enable browser or installed-app alerts for source reconnects, syncs waiting on you, and other owner-action
-        events.
-      </p>
+      <p className="rr-stand-empty">{NOTIFICATIONS_SETUP_COPY[setup]}</p>
     </section>
   );
 }
@@ -272,6 +301,8 @@ export interface StandingOverviewProps {
   /** Optional banner above the view (e.g. seeded-demo notice). */
   notice?: string;
   notificationsHref: string;
+  /** Where "Review in Syncs →" points — the one place attention items are listed in full. */
+  syncsHref: string;
   tokensHref: string;
   tracesHref: string;
 }
@@ -280,6 +311,7 @@ export function StandingOverview({
   data,
   grantsHref,
   notificationsHref,
+  syncsHref,
   tokensHref,
   tracesHref,
   notice,
@@ -301,8 +333,13 @@ export function StandingOverview({
         />
         <LatelyBlock lately={data.lately} tracesHref={tracesHref} />
       </div>
-      <AttentionBlock fleetHealth={data.fleetHealth} sections={data.sourceWorkSections} />
-      <NotificationsBlock href={notificationsHref} />
+      <AttentionBlock
+        fleetHealth={data.fleetHealth}
+        healthySourceCount={data.healthySourceCount}
+        sections={data.sourceWorkSections}
+        syncsHref={syncsHref}
+      />
+      <NotificationsBlock href={notificationsHref} setup={data.notificationsSetup} />
     </div>
   );
 }

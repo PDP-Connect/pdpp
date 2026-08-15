@@ -30,6 +30,9 @@
   },
   "capabilities": {
     "human_interaction": [],
+    "proven": {
+      "local_collector": true
+    },
     "refresh_policy": {
       "recommended_mode": "automatic",
       "recommended_interval_seconds": 3600,
@@ -42,14 +45,19 @@
       "rationale": "Claude Code session logs live on local disk; re-reading them is cheap and has no platform cost."
     },
     "public_listing": {
-      "listed": true,
-      "status": "proven"
+      "tier": "supported"
     }
   },
   "streams": [
     {
       "name": "sessions",
+      "required": true,
       "description": "Claude Code sessions. One session = one CLI invocation in a specific project directory.",
+      "compaction_class": "recurring_snapshot",
+      "compaction_class_note": "aggregated per-session record; message_count/last_event_at widen on growth; never compactable, never re-alarms as growth accumulates.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Claude Code sessions",
         "detail": "Session start time, duration, project directory, git branch, Claude Code version, total message count."
@@ -128,7 +136,11 @@
     },
     {
       "name": "messages",
+      "required": true,
       "description": "Messages within Claude Code sessions: user prompts and assistant responses. Includes both top-level session transcripts and nested subagent (sidechain) transcripts.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Claude Code messages",
         "detail": "Role (user/assistant), text content, timestamp, parent message (for threading), session reference, subagent id when the message came from a sidechain run."
@@ -215,7 +227,11 @@
     },
     {
       "name": "attachments",
+      "required": true,
       "description": "Non-message events: hook outputs, tool uses, file snapshots, plus tool-results blob files written to disk.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Claude Code events",
         "detail": "System events attached to sessions: tool calls, hook outputs, file-history snapshots, permission-mode changes, and persisted tool-result files."
@@ -292,7 +308,11 @@
     },
     {
       "name": "skills",
+      "required": true,
       "description": "User-authored Claude Code skills installed under ~/.claude/skills/<skill>/SKILL.md. Each record captures frontmatter metadata and the full body (capped at 20k chars).",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Claude Code skills",
         "detail": "Skill name, description, full SKILL.md body, frontmatter, and on-disk path."
@@ -352,7 +372,11 @@
     },
     {
       "name": "memory_notes",
+      "required": true,
       "description": "Project-scoped Claude Code memory notes under ~/.claude/projects/<project>/memory/*.md. Each record captures frontmatter metadata and the note body (capped at 20k chars).",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Claude Code memory notes",
         "detail": "Project path, note path, name, description, body, frontmatter, and on-disk path."
@@ -421,7 +445,11 @@
     },
     {
       "name": "slash_commands",
+      "required": true,
       "description": "User-authored Claude Code slash commands under ~/.claude/commands/*.md. Each record captures frontmatter, the command body (capped at 20k chars), and the file's absolute path.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your custom slash commands",
         "detail": "Command name, description, full command body, frontmatter, and on-disk path."
@@ -478,6 +506,9 @@
     {
       "name": "file_history",
       "description": "Metadata-only inventory for Claude Code file-history stores. Does not emit file-history payload content.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -537,6 +568,9 @@
     {
       "name": "cache_inventory",
       "description": "Metadata-only inventory for Claude Code cache stores; raw cache payloads are not collected.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -631,126 +665,11 @@
       "freshness_strategy": "device_heartbeat"
     },
     {
-      "name": "debug_artifacts",
-      "description": "Deferred Claude Code debug artifact inventory; payloads require deterministic redaction before collection.",
-      "semantics": "mutable_state",
-      "schema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "store": {
-            "type": "string"
-          },
-          "relative_path": {
-            "type": "string",
-            "x_pdpp_role": "primary-title"
-          },
-          "path_hash": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string"
-          },
-          "size_bytes": {
-            "type": ["integer", "null"]
-          },
-          "mtime_epoch": {
-            "type": ["integer", "null"],
-            "x_pdpp_role": "event-time"
-          },
-          "classification": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "store",
-          "relative_path",
-          "path_hash",
-          "type",
-          "classification",
-          "reason"
-        ]
-      },
-      "primary_key": ["id"],
-      "cursor_field": "mtime_epoch",
-      "selection": {
-        "fields": true,
-        "resources": true
-      },
-      "incremental": false,
-      "required": false,
-      "coverage_policy": "deferred",
-      "coverage_strategy": "snapshot_import_receipt",
-      "freshness_strategy": "device_heartbeat"
-    },
-    {
-      "name": "downloads",
-      "description": "Deferred Claude Code downloads inventory; payloads require owner approval before collection.",
-      "semantics": "mutable_state",
-      "schema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "store": {
-            "type": "string"
-          },
-          "relative_path": {
-            "type": "string",
-            "x_pdpp_role": "primary-title"
-          },
-          "path_hash": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string"
-          },
-          "size_bytes": {
-            "type": ["integer", "null"]
-          },
-          "mtime_epoch": {
-            "type": ["integer", "null"],
-            "x_pdpp_role": "event-time"
-          },
-          "classification": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "store",
-          "relative_path",
-          "path_hash",
-          "type",
-          "classification",
-          "reason"
-        ]
-      },
-      "primary_key": ["id"],
-      "cursor_field": "mtime_epoch",
-      "selection": {
-        "fields": true,
-        "resources": true
-      },
-      "incremental": false,
-      "required": false,
-      "coverage_policy": "deferred",
-      "coverage_strategy": "snapshot_import_receipt",
-      "freshness_strategy": "device_heartbeat"
-    },
-    {
       "name": "backup_inventory",
       "description": "Metadata-only inventory for Claude Code backup stores; raw backup payloads are not collected.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -810,6 +729,9 @@
     {
       "name": "config_inventory",
       "description": "Metadata-only inventory for non-secret Claude Code configuration; raw config payloads are not collected.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -919,5 +841,9 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "claude_dir_not_found": "We couldn't find your Claude Code data folder",
+    "scope_matched_no_sources": "None of your configured project folders matched any Claude Code projects"
+  }
 }

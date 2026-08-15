@@ -57,7 +57,6 @@ const BULK_WRITE_UNKNOWN_CONNECTION_RE = /bulk write on unknown connection/;
 const CODE_FIX_RE = /code fix/;
 const DID_NOT_LOAD_RE = /did not load/;
 const EXPIRED_OR_CREDENTIAL_RE = /grant had expired|you never allowed it|state_expired|github_credential/;
-const INCOMPLETE_OR_GAP_RE = /incomplete|gap/;
 const LATELY_READ_RE = /read 412 records/;
 const LATEST_SAVED_POSTS_RE = /latest saved posts/;
 const MAINTAINER_ACTION_RE = /maintainer action/;
@@ -83,6 +82,7 @@ function baseInputs(over: Partial<StandingInputs> = {}): StandingInputs {
     fleetHealth: null,
     grants: [],
     hrefs: HREFS,
+    notificationsSetup: "not_configured",
     now: NOW,
     overviewLoadIssues: [],
     pendingApprovals: [],
@@ -302,6 +302,7 @@ function connector(over: Partial<RefConnectorSummary>): RefConnectorSummary {
     manifest_version: null,
     next_action: null,
     schedule: null,
+    source_work: "none",
     streams: [],
     total_records: 0,
     ...over,
@@ -362,11 +363,17 @@ function verdict(
 
 test("attention truth: only attention-channel connections with an owner-satisfiable action count", () => {
   const connectors: RefConnectorSummary[] = [
-    connector({ connection_id: "cin_laptop", connector_id: "claude-code", rendered_verdict: verdict({}) }), // ✓ attention + owner action
-    connector({ connector_id: "calm-source", rendered_verdict: verdict({ channel: "calm" }) }), // ✗ calm
+    connector({
+      connection_id: "cin_laptop",
+      connector_id: "claude-code",
+      rendered_verdict: verdict({}),
+      source_work: "needs_owner",
+    }), // ✓ attention + owner action
+    connector({ connector_id: "calm-source", rendered_verdict: verdict({ channel: "calm" }), source_work: "none" }), // ✗ calm
     connector({ connector_id: "ynab", rendered_verdict: null }), // ✗ no verdict (e.g. healthy)
     connector({
       connector_id: "maintainer-only",
+      source_work: "system_issue",
       rendered_verdict: verdict({
         required_actions: [
           {
@@ -381,7 +388,12 @@ test("attention truth: only attention-channel connections with an owner-satisfia
         ],
       }),
     }), // ✗ attention but no owner-satisfiable action (S1 — code_fix is the maintainer's, not the owner's)
-    connector({ connector_id: "revoked", rendered_verdict: verdict({}), revoked_at: "2026-06-01T00:00:00Z" }), // ✗ revoked
+    connector({
+      connector_id: "revoked",
+      rendered_verdict: verdict({}),
+      revoked_at: "2026-06-01T00:00:00Z",
+      source_work: "none",
+    }), // ✗ revoked
   ];
   const attention = attentionConnectionsFromConnectors(connectors);
   assert.deepEqual(
@@ -395,7 +407,7 @@ test("attention truth: only attention-channel connections with an owner-satisfia
   assert.equal(attention[0]?.deviceLocal, true);
 });
 
-test("attention truth falls back to legacy blocked health when rendered verdict is absent", () => {
+test("attention truth does not classify legacy blocked health without a server work projection", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
       connection_health: legacyHealth("blocked"),
@@ -407,10 +419,7 @@ test("attention truth falls back to legacy blocked health when rendered verdict 
   ];
 
   const attention = attentionConnectionsFromConnectors(connectors);
-  assert.equal(attention.length, 1);
-  assert.equal(attention[0]?.connectorKey, "chase");
-  assert.equal(attention[0]?.routeId, "cin_chase");
-  assert.equal(attention[0]?.actionLabel, "Reconnect");
+  assert.equal(attention.length, 0);
 
   const hero = computeHero(baseInputs({ attentionConnections: attention }));
   assert.equal(hero.tone, "calm");
@@ -422,6 +431,7 @@ test("source issues show non-owner material verdicts without alarming as owner a
       connection_id: "cin_chase",
       connector_id: "chase",
       display_name: "Chase",
+      source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "This connector needs a code fix before it can collect again.",
@@ -441,10 +451,12 @@ test("source issues show non-owner material verdicts without alarming as owner a
     }),
     connector({
       connector_id: "healthy",
+      source_work: "none",
       rendered_verdict: verdict({ channel: "calm", pill: { label: "Healthy", tone: "green" } }),
     }),
     connector({
       connector_id: "revoked",
+      source_work: "none",
       rendered_verdict: verdict({ pill: { label: "Can't collect", tone: "red" } }),
       revoked_at: "2026-06-01T00:00:00Z",
     }),
@@ -455,13 +467,13 @@ test("source issues show non-owner material verdicts without alarming as owner a
   const sourceIssues = sourceIssueConnectionsFromConnectors(connectors);
   assert.equal(sourceIssues.length, 1);
   assert.equal(sourceIssues[0]?.label, "Chase");
-  assert.equal(sourceIssues[0]?.status, "can't collect");
+  assert.equal(sourceIssues[0]?.status, "is degraded");
   assert.equal(sourceIssues[0]?.routeId, "cin_chase");
 
   const data = buildStandingData(baseInputs({ sourceIssues }));
   assert.equal(data.attention.length, 0);
   assert.equal(data.sourceIssues.length, 1);
-  assert.equal(data.sourceIssues[0]?.what, "Chase can't collect");
+  assert.equal(data.sourceIssues[0]?.what, "Chase is degraded");
   // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
   assert.match(data.sourceIssues[0]?.why ?? "", CODE_FIX_RE);
 });
@@ -472,6 +484,7 @@ test("advisory owner actions surface non-urgent Amazon retry work without calm a
       connection_id: "cin_amazon",
       connector_id: "amazon",
       display_name: "Amazon - Personal",
+      source_work: "review",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Some order detail is still outstanding. Retry this source to collect the missing detail.",
@@ -508,6 +521,7 @@ test("advisory owner actions surface Reddit refresh work in the home summary", (
       connection_id: "cin_reddit",
       connector_id: "reddit",
       display_name: "Reddit",
+      source_work: "review",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Run a refresh when you want the latest saved posts.",
@@ -542,6 +556,7 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
       connection_id: "cin_chatgpt",
       connector_id: "chatgpt",
       display_name: "ChatGPT - personal",
+      source_work: "needs_owner",
       rendered_verdict: verdict({
         channel: "attention",
         forward_statement: "Reconnect this account and collection resumes.",
@@ -563,6 +578,7 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
       connection_id: "cin_usaa",
       connector_id: "usaa",
       display_name: "USAA - Personal",
+      source_work: "needs_owner",
       rendered_verdict: verdict({
         channel: "attention",
         forward_statement: "Reconnect this account and collection resumes.",
@@ -584,12 +600,14 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
       connection_id: "cin_claude",
       connector_id: "claude-code",
       display_name: "Local Claude Code",
+      source_work: "needs_owner",
       rendered_verdict: verdict({}),
     }),
     connector({
       connection_id: "cin_amazon",
       connector_id: "amazon",
       display_name: "Amazon - Personal",
+      source_work: "review",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Run a refresh to bring this up to date.",
@@ -611,6 +629,7 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
       connection_id: "cin_chase",
       connector_id: "chase",
       display_name: "Chase - Personal",
+      source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Latest collection completed with known coverage gaps.",
@@ -632,6 +651,7 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
       connection_id: "cin_github",
       connector_id: "github",
       display_name: "GitHub - Personal",
+      source_work: "not_measured",
       rendered_verdict: verdict({
         channel: "calm",
         forward_statement: "Coverage has not been measured yet.",
@@ -659,6 +679,10 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
   assert.equal(data.sourceWorkSections[2]?.title, "System or connector issue");
   assert.equal(data.sourceWorkSections[3]?.title, "Not measured");
   assert.equal(data.sourceWorkSections[3]?.rows[0]?.what, "GitHub - Personal: Coverage has not been measured yet.");
+  const chatgptRow = data.sourceWorkSections
+    .flatMap((section) => section.rows)
+    .find((row) => row.what.startsWith("ChatGPT - personal"));
+  assert.equal(chatgptRow?.what, "ChatGPT - personal: Reconnect this account");
 });
 
 // ─── Cross-surface acceptance (recovery governor UI tranche, tasks 4.4/4.6) ───
@@ -675,7 +699,7 @@ const DASHBOARD_PASSIVE_RECOVERY_RE = /catching up|syncing details|safe to retry
 function deferredRecoveryVerdict(): RefConnectorSummary["rendered_verdict"] {
   return verdict({
     channel: "calm",
-    forward_statement: "The next run is expected to fill the remaining data.",
+    forward_statement: "Catching up on the remaining data.",
     pill: { label: "Degraded", tone: "amber" },
     required_actions: [
       {
@@ -716,6 +740,7 @@ test("dashboard cross-surface: every source-work section count equals its render
       connection_id: "cin_chatgpt",
       connector_id: "chatgpt",
       display_name: "ChatGPT - personal",
+      source_work: "needs_owner",
       rendered_verdict: verdict({
         channel: "attention",
         forward_statement: "Reconnect this account and collection resumes.",
@@ -739,12 +764,14 @@ test("dashboard cross-surface: every source-work section count equals its render
       connection_id: "cin_amazon",
       connector_id: "amazon",
       display_name: "Amazon - Personal",
+      source_work: "working",
       rendered_verdict: deferredRecoveryVerdict(),
     }),
     connector({
       connection_id: "cin_reddit",
       connector_id: "reddit",
       display_name: "Reddit - Personal",
+      source_work: "review",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Run a refresh to bring this up to date.",
@@ -766,6 +793,7 @@ test("dashboard cross-surface: every source-work section count equals its render
       connection_id: "cin_chase",
       connector_id: "chase",
       display_name: "Chase - Personal",
+      source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Connector code needs a fix before this can collect again.",
@@ -809,6 +837,68 @@ test("dashboard cross-surface: every source-work section count equals its render
   }
 });
 
+test("dashboard keeps unavailable source-work rows connector-keyed and navigable", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({ connection_id: "cin_absent", display_name: "Absent source", source_work: undefined }),
+    connector({
+      connection_id: "cin_malformed",
+      display_name: "Malformed source",
+      source_work: "bogus" as never,
+    }),
+    connector({ connection_id: "cin_unavailable", display_name: "Unavailable source", source_work: null as never }),
+    ...(["constructor", "toString", "__proto__"] as const).map((source_work, index) =>
+      connector({
+        connection_id: `cin_collision_${index}`,
+        display_name: `${source_work} source`,
+        source_work: source_work as never,
+      })
+    ),
+    connector({ connection_id: "cin_none", display_name: "Calm source", source_work: "none" }),
+    connector({ connection_id: "cin_working", display_name: "Working source", source_work: "working" }),
+    connector({ connection_id: "cin_review", display_name: "Review source", source_work: "review" }),
+  ];
+
+  const data = buildStandingData(baseInputs({ sourceCount: 9, sourceWork: sourceWorkFromConnectors(connectors) }));
+  const unavailable = data.sourceWorkSections.find((section) => section.id === "unavailable");
+
+  assert.ok(unavailable);
+  assert.equal(unavailable.countLabel, "6 sources");
+  assert.deepEqual(
+    unavailable.rows.map((row) => ({ href: row.href, id: row.id, what: row.what })),
+    [
+      { href: "/sources/cin_absent", id: "unavailable:cin_absent", what: "Absent source status unavailable" },
+      { href: "/sources/cin_malformed", id: "unavailable:cin_malformed", what: "Malformed source status unavailable" },
+      {
+        href: "/sources/cin_unavailable",
+        id: "unavailable:cin_unavailable",
+        what: "Unavailable source status unavailable",
+      },
+      {
+        href: "/sources/cin_collision_0",
+        id: "unavailable:cin_collision_0",
+        what: "constructor source status unavailable",
+      },
+      {
+        href: "/sources/cin_collision_1",
+        id: "unavailable:cin_collision_1",
+        what: "toString source status unavailable",
+      },
+      {
+        href: "/sources/cin_collision_2",
+        id: "unavailable:cin_collision_2",
+        what: "__proto__ source status unavailable",
+      },
+    ]
+  );
+  assert.equal(data.sourceWorkSections.find((section) => section.id === "working")?.rows.length, 1);
+  assert.equal(data.sourceWorkSections.find((section) => section.id === "review")?.rows.length, 1);
+  assert.equal(
+    data.sourceWorkSections.find((section) => section.id === "needsOwner"),
+    undefined
+  );
+  assert.equal(data.healthySourceCount, 1);
+});
+
 test("dashboard cross-surface: an inactive queued recovery row is passive progress, never a Checking or degraded row", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
@@ -816,6 +906,7 @@ test("dashboard cross-surface: an inactive queued recovery row is passive progre
       connection_id: "cin_amazon",
       connector_id: "amazon",
       display_name: "Amazon - Personal",
+      source_work: "working",
       rendered_verdict: deferredRecoveryVerdict(),
     }),
   ];
@@ -843,6 +934,7 @@ test("reviewable degraded source appears once rather than as review plus source 
       connection_id: "cin_amazon",
       connector_id: "amazon",
       display_name: "Amazon - Personal",
+      source_work: "review",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Retry now to give the recoverable gap another run.",
@@ -878,6 +970,7 @@ test("source actionability follows primary-action parity with push policy", () =
       connection_id: "cin_mixed",
       connector_id: "mixed",
       display_name: "Mixed-action source",
+      source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "attention",
         forward_statement: "Connector code needs a fix before this can collect again.",
@@ -919,6 +1012,7 @@ test("maintainer-only actions are not advisory owner actions", () => {
       connection_id: "cin_maintainer",
       connector_id: "maintainer-only",
       display_name: "Maintainer-only source",
+      source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "This source needs a connector code fix before it can make progress.",
@@ -949,6 +1043,7 @@ test("source issues omit healthy advisory refresh hints", () => {
       connection_id: "cin_reddit",
       connector_id: "reddit",
       display_name: "Reddit - dondochaka",
+      source_work: "review",
       rendered_verdict: verdict({
         channel: "advisory",
         forward_statement: "Run a refresh to bring this up to date.",
@@ -982,6 +1077,7 @@ test("source issues surface attention verdicts that have no owner action, even w
       connection_id: "cin_maintainer",
       connector_id: "maintainer-only",
       display_name: "Maintainer-only source",
+      source_work: "system_issue",
       rendered_verdict: verdict({
         channel: "attention",
         forward_statement: "This source needs a maintainer action before it can make progress.",
@@ -1012,7 +1108,7 @@ test("source issues surface attention verdicts that have no owner action, even w
   assert.match(sourceIssues[0]?.what ?? "", MAINTAINER_ACTION_RE);
 });
 
-test("source issues fall back to legacy degraded health when rendered verdict is absent", () => {
+test("source issues do not classify legacy degraded health without a server work projection", () => {
   const connectors: RefConnectorSummary[] = [
     connector({
       connection_health: legacyHealth("degraded"),
@@ -1026,16 +1122,11 @@ test("source issues fall back to legacy degraded health when rendered verdict is
   assert.equal(attentionConnectionsFromConnectors(connectors).length, 0);
 
   const sourceIssues = sourceIssueConnectionsFromConnectors(connectors);
-  assert.equal(sourceIssues.length, 1);
-  assert.equal(sourceIssues[0]?.label, "USAA - Personal");
-  assert.equal(sourceIssues[0]?.routeId, "cin_usaa");
-  assert.equal(sourceIssues[0]?.status, "is degraded");
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: array/Map-lookup access under noUncheckedIndexedAccess is genuinely T | undefined; tsc rejects removing this guard (Biome's type-aware pass doesn't honor that tsconfig flag here).
-  assert.match(sourceIssues[0]?.what ?? "", INCOMPLETE_OR_GAP_RE);
+  assert.equal(sourceIssues.length, 0);
 
   const data = buildStandingData(baseInputs({ sourceIssues }));
   assert.equal(data.hero.tone, "calm");
-  assert.equal(data.sourceIssues.length, 1);
+  assert.equal(data.sourceIssues.length, 0);
   assert.equal(data.attention.length, 0);
 });
 
@@ -1049,12 +1140,14 @@ test("attention routeId targets the EXACT connection instance, not the connector
     connector({
       connection_id: "cin_simon",
       connector_id: "claude-code",
+      source_work: "none",
       rendered_verdict: verdict({ channel: "calm" }),
     }), // healthy, first
     connector({
       connection_id: "cin_laptop",
       connector_id: "claude-code",
       connector_instance_id: "ci_laptop",
+      source_work: "needs_owner",
       rendered_verdict: verdict({}),
     }), // the attention one
   ];
@@ -1191,12 +1284,50 @@ test("a locally alarming source row cannot override a healthy server fleet verdi
         notMeasured: [],
         review: [],
         systemIssues: [],
+        unavailable: [],
         working: [],
       },
     })
   );
   assert.equal(hero.tone, "calm");
   assert.equal(hero.kicker, "Where you stand");
+});
+
+test("overview counts healthy sources without adding them to the attention groups", () => {
+  const data = buildStandingData(
+    baseInputs({
+      sourceCount: 3,
+      sourceWork: {
+        needsOwner: [],
+        notMeasured: [],
+        review: [
+          {
+            actionLabel: "Retry now",
+            connectorKey: "chase",
+            deviceLocal: false,
+            group: "review",
+            id: "conn_chase",
+            label: "Chase",
+            routeId: "conn_chase",
+            statusLabel: "Retry now",
+            what: "Retry this source.",
+          },
+        ],
+        systemIssues: [],
+        unavailable: [],
+        working: [],
+      },
+    })
+  );
+  assert.equal(data.healthySourceCount, 2);
+  assert.equal(data.sourceWorkSections.flatMap((section) => section.rows).length, 1);
+});
+
+test("overview with partial source data does not claim an exact healthy-source count", () => {
+  const data = buildStandingData(
+    baseInputs({ overviewLoadIssues: ["source_status_page_unavailable"], sourceCount: 3 })
+  );
+  assert.equal(data.healthySourceCount, null);
 });
 
 test("hero is CALM with reassurance when all is well", () => {
@@ -1492,7 +1623,9 @@ test("buildStandingData wires bearers, relationships, lately, attention", () => 
   assert.match(data.bearers[0]?.how ?? "", BEARER_HOW_RE);
   assert.equal(data.relationships.length, 1);
   assert.equal(data.relationships[0]?.reads, "reads only your pay");
-  assert.equal(data.relationships[0]?.actionLabel, "review");
+  // The action only NAVIGATES, so it is labeled as navigation (trailing arrow,
+  // no destructive verb) and drills into the one identifiable grant.
+  assert.equal(data.relationships[0]?.actionLabel, "Review grant →");
   assert.equal(data.relationships[0]?.actionHref, HREFS.grant("g1"));
   assert.equal(data.lately.length, 1);
   assert.equal(data.lately[0]?.deny, false);
@@ -1785,7 +1918,9 @@ test("relationships summarize grants by client instead of repeating one row per 
     "reads only token activity, read requests, data disclosures, and rejected reads"
   );
   assert.equal(data.relationships[0]?.terms, "last active yesterday · 2 grants");
-  assert.equal(data.relationships[0]?.actionLabel, "review");
+  // Two distinct grants under one client: no single grant is the subject, so the
+  // link degrades to the grants list and SAYS how many it covers.
+  assert.equal(data.relationships[0]?.actionLabel, "Review 2 grants →");
   assert.equal(data.relationships[0]?.actionHref, HREFS.grants);
 });
 
@@ -1923,4 +2058,15 @@ test("revoked grants are excluded from relationships", () => {
   };
   const data = buildStandingData(baseInputs({ grants: [revoked] }));
   assert.equal(data.relationships.length, 0);
+});
+
+// NotificationsBlock used to render identical "set up alerts" copy regardless
+// of whether push notifications were already configured on this deployment —
+// the only Overview block with no data-driven state (2026-08-07 IA audit,
+// finding 5). notificationsSetup carries the honest tri-state signal through.
+test("notificationsSetup passes through buildStandingData verbatim, honoring the unknown/configured/not_configured tri-state", () => {
+  for (const setup of ["configured", "not_configured", "unknown"] as const) {
+    const data = buildStandingData(baseInputs({ notificationsSetup: setup }));
+    assert.equal(data.notificationsSetup, setup);
+  }
 });

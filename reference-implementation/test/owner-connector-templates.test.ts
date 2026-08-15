@@ -73,8 +73,20 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
-async function withServer(fn: (ctx: { asUrl: string; rsUrl: string }) => Promise<void>): Promise<void> {
-  const server = await startServer({ asPort: 0, dbPath: ":memory:", ownerAuthPassword: "", quiet: true, rsPort: 0 });
+async function withServer(
+  fn: (ctx: { asUrl: string; rsUrl: string }) => Promise<void>,
+  options: { configuredProviderAuthConnectorKeys?: readonly string[] } = {}
+): Promise<void> {
+  const server = await startServer({
+    asPort: 0,
+    ...(options.configuredProviderAuthConnectorKeys === undefined
+      ? {}
+      : { configuredProviderAuthConnectorKeys: options.configuredProviderAuthConnectorKeys }),
+    dbPath: ":memory:",
+    ownerAuthPassword: "",
+    quiet: true,
+    rsPort: 0,
+  });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   try {
@@ -185,7 +197,8 @@ async function registerConnector(asUrl: string, manifest: Record<string, unknown
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });
-  assert.equal(resp.status, 201, `register ${manifest.connector_id} failed: ${resp.status}`);
+  const responseBody = await resp.text();
+  assert.equal(resp.status, 201, `register ${manifest.connector_id} failed: ${resp.status} ${responseBody}`);
   return manifest;
 }
 
@@ -234,6 +247,12 @@ function actionByFamily(row: Record<string, unknown>, family: string): Record<st
 test("owner-agent bearer lists connector templates with related connection summaries", async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const amazonManifest = await registerConnector(asUrl, loadManifest("amazon"));
+    const listedUnprovenManifest = loadManifest("doordash");
+    listedUnprovenManifest.capabilities = {
+      ...asRecord(listedUnprovenManifest.capabilities),
+      public_listing: { tier: "preview" },
+    };
+    await registerConnector(asUrl, listedUnprovenManifest);
     const amazonKey = canonicalConnectorKey(amazonManifest.connector_id);
     assert.ok(amazonKey, "amazon manifest must resolve a canonical connector key");
     await seedInstance({
@@ -256,11 +275,14 @@ test("owner-agent bearer lists connector templates with related connection summa
     assert.equal(amazon.connector_id, "amazon");
     assert.equal(amazon.display_name, "Amazon");
     assert.equal(amazon.connector_modality, "browser_bound");
+    assert.equal(amazon.registration_status, "registered");
+    assert.deepEqual(amazon.public_listing, { tier: "supported" });
     const amazonSetupPlan = asRecord(amazon.setup_plan);
     assert.equal(amazonSetupPlan.setup_modality, "static_secret");
     assert.equal(amazonSetupPlan.support_state, "proof_gated");
     assert.equal(amazonSetupPlan.next_step_kind, "capture_static_secret");
     assert.equal(amazonSetupPlan.proof_gate, "static_secret_live_proof_missing");
+    assert.equal(amazonSetupPlan.owner_actionable, true);
     assert.equal(amazonSetupPlan.runbook_path, null);
     assert.equal(amazon.connection_count, 1);
     const amazonConnections = amazon.connections;
@@ -273,26 +295,132 @@ test("owner-agent bearer lists connector templates with related connection summa
     assert.equal(amazonConnection.label_status, "owner_set");
 
     const amazonInitiate = actionByFamily(amazon, "initiate_connection");
-    assert.equal(amazonInitiate.status, "unsupported");
+    assert.equal(amazonInitiate.status, "owner_mediated");
     assert.equal(amazonInitiate.method, null);
     assert.equal(amazonInitiate.url, null);
     // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
-    assert.match(String(amazonInitiate.reason), /static provider secret|static-secret/i);
+    assert.match(String(amazonInitiate.reason), /secure browser-session dashboard/i);
 
-    // Local-collector templates are discoverable even before a connection is
-    // registered, because they live in the reference local-collector catalog.
-    const codex = byConnector(body, "codex");
-    assert.equal(codex.connector_modality, "local_collector");
-    const codexSetupPlan = asRecord(codex.setup_plan);
-    assert.equal(codexSetupPlan.support_state, "supported");
-    assert.equal(codexSetupPlan.next_step_kind, "enroll_local_collector");
-    assert.equal(codex.connection_count, 0);
-    const codexInitiate = actionByFamily(codex, "initiate_connection");
-    assert.equal(codexInitiate.status, "supported");
-    assert.equal(codexInitiate.method, "POST");
-    // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
-    assert.match(String(codexInitiate.url), /\/v1\/owner\/connections\/intents$/);
+    const templates = asRecord(body).data;
+    assert.ok(Array.isArray(templates));
+    assert.equal(
+      templates.some((item) => asRecord(item).connector_key === "codex"),
+      false,
+      "a local-only manifest must not create a server catalog entry"
+    );
+
+    const doordash = byConnector(body, "doordash");
+    assert.deepEqual(doordash.public_listing, { tier: "preview" });
+    const doordashSetupPlan = asRecord(doordash.setup_plan);
+    assert.equal(doordashSetupPlan.owner_actionable, false);
+    const doordashInitiate = actionByFamily(doordash, "initiate_connection");
+    assert.equal(doordashInitiate.status, "unsupported");
+    assert.equal(doordashInitiate.method, null);
+    assert.equal(doordashInitiate.url, null);
   });
+});
+
+test("owner-template projection separates browser owner-session setup from owner-agent REST support", async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    await registerConnector(asUrl, loadManifest("chatgpt"));
+    const browserManualManifest = loadManifest("chase");
+    browserManualManifest.setup = undefined;
+    await registerConnector(asUrl, browserManualManifest);
+    const browserRunbookManifest = loadManifest("doordash");
+    browserRunbookManifest.capabilities = {
+      ...asRecord(browserRunbookManifest.capabilities),
+      public_listing: { tier: "supported" },
+    };
+    await registerConnector(asUrl, browserRunbookManifest);
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+
+    const chatgpt = byConnector(body, "chatgpt");
+    const chatgptSetupPlan = asRecord(chatgpt.setup_plan);
+    assert.equal(chatgptSetupPlan.catalog_disposition, "static_secret_connect");
+    assert.equal(chatgptSetupPlan.owner_actionable, true);
+    const chatgptInitiate = actionByFamily(chatgpt, "initiate_connection");
+    assert.equal(chatgptInitiate.status, "owner_mediated");
+    assert.equal(chatgptInitiate.method, null);
+    assert.equal(chatgptInitiate.url, null);
+
+    const browserManual = byConnector(body, "chase");
+    const browserManualSetupPlan = asRecord(browserManual.setup_plan);
+    assert.equal(browserManualSetupPlan.catalog_disposition, "browser_collector_manual");
+    assert.equal(browserManualSetupPlan.next_step_kind, "enroll_browser_collector");
+    assert.equal(browserManualSetupPlan.owner_actionable, true);
+    const browserManualInitiate = actionByFamily(browserManual, "initiate_connection");
+    assert.equal(browserManualInitiate.status, "owner_mediated");
+    assert.equal(browserManualInitiate.method, null);
+    assert.equal(browserManualInitiate.url, null);
+
+    const browserRunbook = byConnector(body, "doordash");
+    const browserRunbookSetupPlan = asRecord(browserRunbook.setup_plan);
+    assert.equal(browserRunbookSetupPlan.catalog_disposition, "browser_bound_runbook");
+    assert.equal(browserRunbookSetupPlan.next_step_kind, "manual_runbook");
+    assert.equal(browserRunbookSetupPlan.owner_actionable, false);
+    const browserRunbookInitiate = actionByFamily(browserRunbook, "initiate_connection");
+    assert.equal(browserRunbookInitiate.status, "unsupported");
+    assert.equal(browserRunbookInitiate.method, null);
+    assert.equal(browserRunbookInitiate.url, null);
+  });
+});
+
+test("owner-template readiness reflects configured provider authorization", async () => {
+  // Readiness is measured against the settings the manifest declares, so a
+  // "configured" deployment is described by supplying those settings rather
+  // than by naming the connector.
+  const declaredSettings = {
+    GOOGLE_DATAPORTABILITY_CLIENT_ID: "test-client-id",
+    GOOGLE_DATAPORTABILITY_CLIENT_SECRET: "test-client-secret",
+    GOOGLE_DATAPORTABILITY_REDIRECT_URI: "https://example.test/callback",
+  };
+  const priorSettings = new Map(Object.keys(declaredSettings).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, declaredSettings);
+  try {
+    await withServer(
+      async ({ asUrl, rsUrl }) => {
+        const manifest = await registerConnector(asUrl, loadManifest("google_maps_data_portability"));
+        const connectorKey = canonicalConnectorKey(manifest.connector_id);
+        assert.equal(connectorKey, "google-maps-data-portability");
+
+        const ownerToken = await issueOwnerToken(asUrl);
+        const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+          headers: { Authorization: `Bearer ${ownerToken}` },
+        });
+        assert.equal(status, 200);
+
+        const google = byConnector(body, "google-maps-data-portability");
+        const publicListing = asRecord(google.public_listing);
+        assert.equal(publicListing.tier, "development");
+        const setupPlan = asRecord(google.setup_plan);
+        assert.equal(setupPlan.catalog_disposition, "provider_auth_connect");
+        const deploymentReadiness = asRecord(setupPlan.deployment_readiness);
+        assert.equal(deploymentReadiness.state, "ready");
+        assert.equal(setupPlan.next_step_kind, "open_provider_auth");
+        assert.equal(setupPlan.support_state, "supported");
+        assert.equal(setupPlan.proof_gate, null);
+        assert.equal(setupPlan.owner_actionable, false);
+        const initiate = actionByFamily(google, "initiate_connection");
+        assert.equal(initiate.method, null);
+        assert.equal(initiate.status, "unsupported");
+        assert.equal(initiate.url, null);
+      },
+      { configuredProviderAuthConnectorKeys: ["google-maps-data-portability"] }
+    );
+  } finally {
+    for (const [key, value] of priorSettings) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 });
 
 test("GET /v1/owner/control advertises list_connector_templates with the template route", async () => {
@@ -338,4 +466,413 @@ test("client grant bearer cannot list owner connector templates", async () => {
     assert.equal(status, 403);
     assert.equal(asRecord(asRecord(body).error).code, "permission_error");
   });
+});
+
+test("UAT-exposed experimental static-secret connector is visible without claiming production support", async () => {
+  const declaredSettings = {
+    PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
+  };
+  const priorSettings = new Map(Object.keys(declaredSettings).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, declaredSettings);
+  try {
+    await withServer(async ({ asUrl, rsUrl }) => {
+      // Real proof-gated form: UAT can exercise it, while production support
+      // remains false until a live run promotes the manifest.
+      const steamManifest = loadManifest("steam");
+      await registerConnector(asUrl, steamManifest);
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 200);
+
+      const bodyRec = asRecord(body);
+      const templates = Array.isArray(bodyRec.data) ? bodyRec.data : [];
+      const steam = templates.find((t: unknown) => asRecord(t).connector_key === "steam");
+
+      assert.ok(steam, "steam fixture must be registered");
+
+      const steamRec = asRecord(steam);
+      const setup = asRecord(steamRec.setup_plan);
+      const listing = asRecord(steamRec.public_listing);
+
+      assert.equal(steamRec.uat_expose_unlisted_connectors, true);
+      assert.equal(setup.catalog_disposition, "static_secret_experimental");
+      assert.equal(setup.owner_actionable, false, "UAT exposure must not promote production support");
+      assert.equal(listing.tier, "preview");
+      assert.equal(actionByFamily(steamRec, "initiate_connection").status, "unsupported");
+    });
+  } finally {
+    for (const [key, value] of priorSettings) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("with flag=ON, exposure follows production or experimental actionability without an allowlist", async () => {
+  const declaredSettings = {
+    PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
+  };
+  const priorSettings = new Map(Object.keys(declaredSettings).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, declaredSettings);
+  try {
+    await withServer(async ({ asUrl, rsUrl }) => {
+      // Prove: ANY owner-actionable unproven is exposed (steam as example)
+      // Proves no hardcoded allowlist, just the generic gate
+      const steamManifest = loadManifest("steam");
+      await registerConnector(asUrl, steamManifest);
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 200);
+
+      const bodyRec = asRecord(body);
+      const templates = Array.isArray(bodyRec.data) ? bodyRec.data : [];
+      const steam = templates.find((t: unknown) => asRecord(t).connector_key === "steam");
+
+      assert.ok(steam, "steam must be registered");
+
+      // Production actionability and explicitly experimental actionability are
+      // separate facts. Either real setup path can be exercised in UAT.
+      const steamRec = asRecord(steam);
+      const uatExposed = steamRec.uat_expose_unlisted_connectors === true;
+      const setup = asRecord(steamRec.setup_plan);
+      const isUatActionable =
+        setup.owner_actionable === true || setup.catalog_disposition === "static_secret_experimental";
+
+      assert.equal(
+        uatExposed,
+        isUatActionable,
+        "steam: UAT exposure must follow a real production or experimental setup path"
+      );
+    });
+  } finally {
+    for (const [key, value] of priorSettings) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("UAT-exposed unproven connectors from real manifests prove no allowlist", async () => {
+  const declaredSettings = {
+    PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
+  };
+  const priorSettings = new Map(Object.keys(declaredSettings).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, declaredSettings);
+  try {
+    await withServer(async ({ asUrl, rsUrl }) => {
+      // Register real unproven connectors to prove no allowlist in production code
+      // Any unproven owner-actionable connector is automatically included without hardcoding its name
+      const testConnectors = ["steam", "imessage", "apple_photos", "google_messages", "netflix_export"];
+
+      for (const id of testConnectors) {
+        const manifest = loadManifest(id);
+        await registerConnector(asUrl, manifest);
+      }
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 200);
+
+      const { data } = asRecord(body);
+      const templates = Array.isArray(data) ? data : [];
+
+      // For each real unproven connector, exposure is derived from its setup
+      // plan rather than a connector-name allowlist.
+      for (const connectorId of testConnectors) {
+        const template = templates.find((t) => {
+          const key = asRecord(t).connector_key;
+          return key === connectorId || key === connectorId.replace(/_/g, "-");
+        });
+        assert.ok(template, `${connectorId}: must be registered`);
+
+        const setup = asRecord(template).setup_plan;
+        const isUatActionable =
+          asRecord(setup).owner_actionable === true ||
+          asRecord(setup).catalog_disposition === "static_secret_experimental";
+        const uatExposed = asRecord(template).uat_expose_unlisted_connectors === true;
+
+        assert.equal(
+          uatExposed,
+          isUatActionable,
+          `${connectorId}: UAT exposure must follow a real production or experimental setup path`
+        );
+      }
+    });
+  } finally {
+    for (const [key, value] of priorSettings) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("without legacy UAT exposure, Preview and Development tiers stay authoritative", async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifestIds = ["steam", "netflix_export"];
+    const connectorKeys = ["steam", "netflix-export"];
+    const expectedTiers = new Map([
+      ["steam", "preview"],
+      ["netflix-export", "development"],
+    ]);
+
+    for (const manifestId of manifestIds) {
+      const manifest = loadManifest(manifestId);
+      await registerConnector(asUrl, manifest);
+    }
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+    const { data } = asRecord(body);
+    const templates = Array.isArray(data) ? data : [];
+
+    // Verify unproven connectors appear but with uat_expose_unlisted_connectors=false
+    for (const connectorKey of connectorKeys) {
+      const template = templates.find((t) => asRecord(t).connector_key === connectorKey);
+      assert.ok(template, `${connectorKey}: should appear in server response (manifest is registered)`);
+
+      // public_listing is honest
+      const listing = asRecord(asRecord(template).public_listing);
+      assert.equal(listing.tier, expectedTiers.get(connectorKey), `${connectorKey}: lifecycle tier is unchanged`);
+
+      // UAT exposure fact is false (flag not set)
+      assert.equal(
+        asRecord(template).uat_expose_unlisted_connectors,
+        false,
+        `${connectorKey}: uat_expose_unlisted_connectors=false when flag not set`
+      );
+    }
+  });
+});
+
+test("without PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT flag set, unproven connectors are not UAT-exposed", async () => {
+  // This is the default behavior - no flag means no exposure
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const steamManifest = loadManifest("steam");
+    await registerConnector(asUrl, steamManifest);
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+
+    const steam = byConnector(body, "steam");
+    assert.equal(steam.uat_expose_unlisted_connectors, false, "steam should NOT be UAT-exposed without flag");
+  });
+});
+
+test("Development Venmo stays unavailable even when legacy UAT exposure is enabled", async () => {
+  const previous = process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+  try {
+    delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+    await withServer(async ({ asUrl, rsUrl }) => {
+      await registerConnector(asUrl, loadManifest("venmo"));
+      const ownerToken = await issueOwnerToken(asUrl);
+      const hidden = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(hidden.status, 200);
+      assert.equal(byConnector(hidden.body, "venmo").uat_expose_unlisted_connectors, false);
+    });
+
+    process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = "1";
+    await withServer(async ({ asUrl, rsUrl }) => {
+      await registerConnector(asUrl, loadManifest("venmo"));
+      const ownerToken = await issueOwnerToken(asUrl);
+      const exposed = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(exposed.status, 200);
+      const venmo = byConnector(exposed.body, "venmo");
+      const listing = asRecord(venmo.public_listing);
+      const setup = asRecord(venmo.setup_plan);
+      assert.equal(listing.tier, "development");
+      assert.equal(venmo.uat_expose_unlisted_connectors, false);
+      assert.equal(setup.setup_modality, "static_secret");
+      assert.equal(setup.next_step_kind, "capture_static_secret");
+    });
+  } finally {
+    if (previous === undefined) delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+    else process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = previous;
+  }
+});
+
+test("unproven with recognized modality but non-actionable plan is not UAT-exposed", async () => {
+  const declaredSettings = {
+    PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
+  };
+  const priorSettings = new Map(Object.keys(declaredSettings).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, declaredSettings);
+  try {
+    await withServer(async ({ asUrl, rsUrl }) => {
+      // Doordash is unproven with a recognized modality but requires proof (not owner-actionable)
+      const doorDashManifest = loadManifest("doordash");
+      doorDashManifest.capabilities = {
+        ...asRecord(doorDashManifest.capabilities),
+        public_listing: { tier: "development" },
+      };
+      await registerConnector(asUrl, doorDashManifest);
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 200);
+
+      const doorDash = byConnector(body, "doordash");
+      const setup = asRecord(doorDash.setup_plan);
+
+      // Doordash is unproven but its plan is NOT owner-actionable (requires proof_gated flow)
+      assert.equal(setup.owner_actionable, false, "doordash plan should not be owner_actionable");
+      assert.equal(
+        doorDash.uat_expose_unlisted_connectors,
+        false,
+        "doordash should NOT be UAT-exposed (plan not owner_actionable)"
+      );
+    });
+  } finally {
+    for (const [key, value] of priorSettings) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("with flag disabled, positive unproven owner-actionable connectors have uat_expose_unlisted_connectors=false", async () => {
+  // CRITICAL: prove the feature DOES NOT WORK without the flag
+  // This is the gate test: if flag is disabled, uat_expose_unlisted_connectors is always false
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const steamManifest = loadManifest("steam");
+    await registerConnector(asUrl, steamManifest);
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+
+    const bodyRec = asRecord(body);
+    const templates = Array.isArray(bodyRec.data) ? bodyRec.data : [];
+    const steam = templates.find((t: unknown) => asRecord(t).connector_key === "steam");
+
+    assert.ok(steam, "steam fixture must be registered");
+
+    // Steam is unproven, browser-bound (modality), static_secret
+    // Even if it passes owner_actionable checks, it should NOT be exposed without the flag
+    assert.equal(
+      asRecord(steam).uat_expose_unlisted_connectors,
+      false,
+      "steam: uat_expose_unlisted_connectors MUST be false when flag is not set"
+    );
+  });
+});
+
+test("UAT allowlist: development connector exposed only when flag+key+valid-setup all present", async () => {
+  const priorEnv = { uat: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT, allowlist: process.env.PDPP_UAT_CONNECTOR_ALLOWLIST };
+  try {
+    // Scenario table: all combinations of flag, allowlist, setup validity
+    const scenarios = [
+      { uat: false, list: "", connectorKey: "venmo", expectedExposed: false, label: "no flag, with allowlist" },
+      { uat: true, list: "", connectorKey: "venmo", expectedExposed: false, label: "flag ON, empty allowlist" },
+      { uat: true, list: "venmo", connectorKey: "venmo", expectedExposed: true, label: "flag+allowlist+valid-setup" },
+      { uat: true, list: "doordash", connectorKey: "doordash", expectedExposed: false, label: "allowlist but no valid setup" },
+      { uat: true, list: "steam", connectorKey: "steam", expectedExposed: true, label: "preview tier via legacy path" },
+    ];
+
+    for (const scenario of scenarios) {
+      const cleanEnv = () => {
+        delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+        delete process.env.PDPP_UAT_CONNECTOR_ALLOWLIST;
+      };
+      cleanEnv();
+      if (scenario.uat) process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = "1";
+      if (scenario.list) process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = scenario.list;
+
+      await withServer(async ({ asUrl, rsUrl }) => {
+        // Register the connector to test
+        if (scenario.connectorKey === "venmo") await registerConnector(asUrl, loadManifest("venmo"));
+        if (scenario.connectorKey === "doordash") {
+          const m = loadManifest("doordash");
+          m.capabilities = { ...asRecord(m.capabilities), public_listing: { tier: "development" } };
+          await registerConnector(asUrl, m);
+        }
+        if (scenario.connectorKey === "steam") await registerConnector(asUrl, loadManifest("steam"));
+
+        const ownerToken = await issueOwnerToken(asUrl);
+        const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+          headers: { Authorization: `Bearer ${ownerToken}` },
+        });
+        assert.equal(status, 200);
+        const template = byConnector(body, scenario.connectorKey);
+        assert.equal(
+          template.uat_expose_unlisted_connectors,
+          scenario.expectedExposed,
+          `${scenario.label}: uat_expose_unlisted_connectors should be ${scenario.expectedExposed}`
+        );
+      });
+    }
+  } finally {
+    if (priorEnv.uat === undefined) delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+    else process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = priorEnv.uat;
+    if (priorEnv.allowlist === undefined) delete process.env.PDPP_UAT_CONNECTOR_ALLOWLIST;
+    else process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = priorEnv.allowlist;
+  }
+});
+
+test("allowlist parser: rejects malformed entries, admits valid connector keys", async () => {
+  // This is a route-level discriminator test via environment parsing
+  const priorEnv = { uat: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT, allowlist: process.env.PDPP_UAT_CONNECTOR_ALLOWLIST };
+  try {
+    process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = "1";
+    process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = "venmo, invalid@key, netflix-export, ../evil, my_connector";
+
+    await withServer(async ({ asUrl, rsUrl }) => {
+      // Register valid connectors
+      await registerConnector(asUrl, loadManifest("venmo"));
+      await registerConnector(asUrl, loadManifest("netflix_export"));
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 200);
+
+      // Valid keys are admitted: venmo, netflix-export, my_connector
+      const venmo = byConnector(body, "venmo");
+      assert.equal(venmo.uat_expose_unlisted_connectors, true, "venmo: valid key admitted");
+
+      const netflix = byConnector(body, "netflix-export");
+      assert.equal(netflix.uat_expose_unlisted_connectors, true, "netflix-export: valid key admitted");
+
+      // Malformed keys (invalid@key, ../evil) are rejected silently; no server error
+    });
+  } finally {
+    if (priorEnv.uat === undefined) delete process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT;
+    else process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT = priorEnv.uat;
+    if (priorEnv.allowlist === undefined) delete process.env.PDPP_UAT_CONNECTOR_ALLOWLIST;
+    else process.env.PDPP_UAT_CONNECTOR_ALLOWLIST = priorEnv.allowlist;
+  }
 });

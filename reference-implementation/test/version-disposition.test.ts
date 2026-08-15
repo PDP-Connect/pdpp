@@ -3,7 +3,18 @@
 
 /**
  * Unit tests for the pure server-side version_disposition AND version_remediation
- * classifiers.
+ * classifiers, plus the reviewed-compaction-residue operator-state reader.
+ *
+ * `ri-zero-knowledge-terminal-revise-0810`: version-disposition.ts no longer
+ * reads any RI-committed JSON registry. `classifyVersionDisposition` and
+ * `classifyVersionRemediation` take their reference-controlled inputs
+ * (`compactionClass`, `hasCompactionPolicy`, `reviewedAt`,
+ * `pendingRemediation`) directly as parameters, pre-resolved by the caller
+ * (record-version-stats.ts) from the connector's own manifest
+ * (`getConnectorManifest`) and from operator runtime state
+ * (`readReviewedCompactionResidueMap`, at `PDPP_COMPACTION_RESIDUE_REVIEW_PATH`).
+ * These tests pin the CLASSIFICATION LOGIC precedence, which is unchanged
+ * from the prior list-lookup design — only the SOURCE of the inputs moved.
  *
  * The first half exercises the five-way disposition derivation directly (no DB),
  * pinning the acceptance criteria from the OpenSpec change
@@ -11,33 +22,34 @@
  *
  *   AC-3 unclassified high/watch → active_defect_or_unclassified
  *   AC-4 reviewed residue re-alarms after review timestamp
- *   AC-5 sessions → recurring_point_in_time_snapshot (no re-alarm on growth)
- *   AC-6 split residual entity stream → point_in_time_retained_history
- *   AC-7 disposition reads only reference signals (no connector-authored value)
+ *   AC-5 sessions (compactionClass="recurring_snapshot") → recurring_point_in_time_snapshot (no re-alarm on growth)
+ *   AC-6 split residual entity stream (compactionClass="point_in_time_real_field") → point_in_time_retained_history
+ *   AC-7 disposition reads only reference-controlled parameters (no connector-authored value)
  *
  * The second half exercises the orthogonal `classifyVersionRemediation`, pinning
  * the acceptance criteria from `add-version-remediation-disposition` (AC-3..AC-8
- * there): the statement rows are fingerprint-pending, usaa/accounts is
- * migration-pending and distinct from them, sessions are retention-policy, every
- * other row is none, no connector input participates, and remediation never
- * contradicts the disposition it consumes.
+ * there): a `pendingRemediation: "content_fingerprint_pending"` row reads
+ * content_fingerprint_pending, `"owner_migration_pending"` reads
+ * owner_migration_pending and is distinct from it, a
+ * `recurring_point_in_time_snapshot` disposition always reads
+ * owner_retention_policy, every other row is none, no connector input
+ * participates, and remediation never contradicts the disposition it consumes.
  *
  * Both labels are independent of the numeric risk classification — these tests
  * never pass a risk level and the classifiers never consult one.
  */
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
-  CONTENT_FINGERPRINT_PENDING_STREAMS,
   classifyVersionDisposition,
   classifyVersionRemediation,
   normalizeConnectorId,
-  OWNER_MIGRATION_PENDING_STREAMS,
-  OWNER_RETENTION_POLICY_STREAMS,
-  POINT_IN_TIME_REAL_FIELD_STREAMS,
-  RECURRING_POINT_IN_TIME_SNAPSHOT_STREAMS,
-  REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT,
+  readReviewedCompactionResidueMap,
+  resetReviewedCompactionResidueCacheForTests,
   VERSION_DISPOSITIONS,
   VERSION_REMEDIATIONS,
 } from "../server/version-disposition.ts";
@@ -46,29 +58,19 @@ function oneMillisecondAfter(iso: string): string {
   return new Date(new Date(iso).getTime() + 1).toISOString();
 }
 
+const USAA_ACCOUNTS_REVIEWED_AT = "2026-06-05T13:57:05.707Z";
+const CHASE_STATEMENTS_REVIEWED_AT = "2026-06-05T13:57:05.707Z";
+
 // ─── Recurring point-in-time snapshots (disposition #5, the new construction) ─
 
-test("classifyVersionDisposition: claude-code/sessions is a recurring point-in-time snapshot", () => {
+test("classifyVersionDisposition: compactionClass=recurring_snapshot is a recurring point-in-time snapshot", () => {
   assert.equal(
     classifyVersionDisposition({
-      connectorId: "claude-code",
+      compactionClass: "recurring_snapshot",
       // sessions DO have a registered compaction policy — the recurring-snapshot
-      // list must take precedence so it does not read as a candidate.
+      // signal must take precedence so it does not read as a candidate.
       hasCompactionPolicy: true,
       lastHistoryAt: "2026-06-04T19:15:01.028Z",
-      stream: "sessions",
-    }),
-    "recurring_point_in_time_snapshot"
-  );
-});
-
-test("classifyVersionDisposition: codex/sessions is a recurring point-in-time snapshot", () => {
-  assert.equal(
-    classifyVersionDisposition({
-      connectorId: "codex",
-      hasCompactionPolicy: true,
-      lastHistoryAt: "2026-06-04T19:15:01.028Z",
-      stream: "sessions",
     }),
     "recurring_point_in_time_snapshot"
   );
@@ -85,31 +87,26 @@ test("classifyVersionDisposition: a recurring snapshot does NOT re-alarm when hi
   ]) {
     assert.equal(
       classifyVersionDisposition({
-        connectorId: "claude-code",
+        compactionClass: "recurring_snapshot",
         hasCompactionPolicy: true,
         lastHistoryAt,
-        stream: "sessions",
       }),
       "recurring_point_in_time_snapshot",
-      `claude-code/sessions must stay #5 for last_history_at=${lastHistoryAt}`
+      `must stay #5 for last_history_at=${lastHistoryAt}`
     );
   }
 });
 
-test("classifyVersionDisposition: recurring snapshot resolves local-device and registry-URL id forms", () => {
+test("classifyVersionDisposition: recurring snapshot wins even with a reviewedAt on record", () => {
+  // Precedence guard: compactionClass is checked BEFORE reviewedAt, so a stale
+  // or incorrect reviewed-residue entry cannot pull a recurring-snapshot row
+  // out of its correct disposition.
   assert.equal(
     classifyVersionDisposition({
-      connectorId: "local-device:claude-code",
+      compactionClass: "recurring_snapshot",
       hasCompactionPolicy: true,
-      stream: "sessions",
-    }),
-    "recurring_point_in_time_snapshot"
-  );
-  assert.equal(
-    classifyVersionDisposition({
-      connectorId: "https://registry.pdpp.dev/connectors/codex",
-      hasCompactionPolicy: true,
-      stream: "sessions",
+      lastHistoryAt: "2030-01-01T00:00:00.000Z",
+      reviewedAt: "2020-01-01T00:00:00.000Z",
     }),
     "recurring_point_in_time_snapshot"
   );
@@ -117,28 +114,9 @@ test("classifyVersionDisposition: recurring snapshot resolves local-device and r
 
 // ─── Point-in-time retained history (disposition #3) ─────────────────────────
 
-test("classifyVersionDisposition: split residual entity streams are point_in_time_retained_history (AC-6)", () => {
-  const splitStreams: [string, string][] = [
-    ["github", "user"],
-    ["slack", "channels"],
-    ["ynab", "accounts"],
-  ];
-  for (const [connectorId, stream] of splitStreams) {
-    assert.equal(
-      classifyVersionDisposition({ connectorId, hasCompactionPolicy: false, stream }),
-      "point_in_time_retained_history",
-      `${connectorId}/${stream} must be point_in_time_retained_history`
-    );
-  }
-});
-
-test("classifyVersionDisposition: point-in-time resolves the registry-URL id form", () => {
+test("classifyVersionDisposition: compactionClass=point_in_time_real_field is point_in_time_retained_history (AC-6)", () => {
   assert.equal(
-    classifyVersionDisposition({
-      connectorId: "https://registry.pdpp.dev/connectors/github",
-      hasCompactionPolicy: false,
-      stream: "user",
-    }),
+    classifyVersionDisposition({ compactionClass: "point_in_time_real_field", hasCompactionPolicy: false }),
     "point_in_time_retained_history"
   );
 });
@@ -148,49 +126,43 @@ test("classifyVersionDisposition: point-in-time resolves the registry-URL id for
 test("classifyVersionDisposition: reviewed residue classifies #2 within the review window", () => {
   assert.equal(
     classifyVersionDisposition({
-      connectorId: "usaa",
+      compactionClass: null,
       hasCompactionPolicy: true,
       lastHistoryAt: "2026-06-03T12:00:00.000Z",
-      stream: "accounts",
+      reviewedAt: USAA_ACCOUNTS_REVIEWED_AT,
     }),
     "reviewed_historical_residue"
   );
 });
 
 test("classifyVersionDisposition: reviewed residue classifies #2 when last_history_at equals reviewedAt exactly", () => {
-  const reviewedAt = REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.get("usaa/accounts");
-  assert.ok(reviewedAt);
   assert.equal(
     classifyVersionDisposition({
-      connectorId: "usaa",
+      compactionClass: null,
       hasCompactionPolicy: true,
-      lastHistoryAt: reviewedAt,
-      stream: "accounts",
+      lastHistoryAt: USAA_ACCOUNTS_REVIEWED_AT,
+      reviewedAt: USAA_ACCOUNTS_REVIEWED_AT,
     }),
     "reviewed_historical_residue"
   );
 });
 
 test("classifyVersionDisposition: reviewed residue re-alarms to #4 after the review timestamp (AC-4)", () => {
-  const usaaReviewedAt = REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.get("usaa/accounts");
-  const chaseReviewedAt = REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.get("chase/statements");
-  assert.ok(usaaReviewedAt);
-  assert.ok(chaseReviewedAt);
   assert.equal(
     classifyVersionDisposition({
-      connectorId: "usaa",
+      compactionClass: null,
       hasCompactionPolicy: true,
-      lastHistoryAt: oneMillisecondAfter(usaaReviewedAt),
-      stream: "accounts",
+      lastHistoryAt: oneMillisecondAfter(USAA_ACCOUNTS_REVIEWED_AT),
+      reviewedAt: USAA_ACCOUNTS_REVIEWED_AT,
     }),
     "lossless_compaction_candidate"
   );
   assert.equal(
     classifyVersionDisposition({
-      connectorId: "chase",
+      compactionClass: null,
       hasCompactionPolicy: true,
-      lastHistoryAt: oneMillisecondAfter(chaseReviewedAt),
-      stream: "statements",
+      lastHistoryAt: oneMillisecondAfter(CHASE_STATEMENTS_REVIEWED_AT),
+      reviewedAt: CHASE_STATEMENTS_REVIEWED_AT,
     }),
     "lossless_compaction_candidate"
   );
@@ -200,10 +172,21 @@ test("classifyVersionDisposition: reviewed residue re-alarms to #4 when last_his
   // Unverifiable guard → re-alarm rather than silently suppress.
   assert.equal(
     classifyVersionDisposition({
-      connectorId: "usaa",
+      compactionClass: null,
       hasCompactionPolicy: true,
       lastHistoryAt: null,
-      stream: "statements",
+      reviewedAt: USAA_ACCOUNTS_REVIEWED_AT,
+    }),
+    "lossless_compaction_candidate"
+  );
+});
+
+test("classifyVersionDisposition: no reviewedAt on record is never #2", () => {
+  assert.equal(
+    classifyVersionDisposition({
+      compactionClass: null,
+      hasCompactionPolicy: true,
+      lastHistoryAt: "2026-06-03T12:00:00.000Z",
     }),
     "lossless_compaction_candidate"
   );
@@ -211,13 +194,9 @@ test("classifyVersionDisposition: reviewed residue re-alarms to #4 when last_his
 
 // ─── Lossless compaction candidate (disposition #4) ──────────────────────────
 
-test("classifyVersionDisposition: a policied stream with no recognized list is a compaction candidate", () => {
+test("classifyVersionDisposition: a policied stream with no recognized class/review is a compaction candidate", () => {
   assert.equal(
-    classifyVersionDisposition({ connectorId: "gmail", hasCompactionPolicy: true, stream: "labels" }),
-    "lossless_compaction_candidate"
-  );
-  assert.equal(
-    classifyVersionDisposition({ connectorId: "amazon", hasCompactionPolicy: true, stream: "orders" }),
+    classifyVersionDisposition({ compactionClass: null, hasCompactionPolicy: true }),
     "lossless_compaction_candidate"
   );
 });
@@ -226,34 +205,41 @@ test("classifyVersionDisposition: a policied stream with no recognized list is a
 
 test("classifyVersionDisposition: an unknown high/watch stream is active_defect_or_unclassified (AC-3)", () => {
   assert.equal(
-    classifyVersionDisposition({ connectorId: "mystery", hasCompactionPolicy: false, stream: "widgets" }),
-    "active_defect_or_unclassified"
-  );
-  // A real connector but an unmodeled stream with no policy.
-  assert.equal(
-    classifyVersionDisposition({ connectorId: "github", hasCompactionPolicy: false, stream: "repos" }),
+    classifyVersionDisposition({ compactionClass: null, hasCompactionPolicy: false }),
     "active_defect_or_unclassified"
   );
 });
 
-test("classifyVersionDisposition: a null connector_id is active_defect_or_unclassified", () => {
-  assert.equal(
-    classifyVersionDisposition({ connectorId: null, hasCompactionPolicy: false, stream: "whatever" }),
-    "active_defect_or_unclassified"
-  );
+test("classifyVersionDisposition: called with no arguments is active_defect_or_unclassified", () => {
+  assert.equal(classifyVersionDisposition(), "active_defect_or_unclassified");
 });
 
 // ─── Anti-self-declaration (AC-7) ────────────────────────────────────────────
 
+test("classifyVersionDisposition: an unrecognized compactionClass string is treated as null, not trusted as an override", () => {
+  // A connector's manifest could only ever carry the two enumerated values in
+  // practice (connector-manifest-validation.ts governs that), but this proves
+  // the classifier ITSELF is the backstop: any other string is inert, exactly
+  // like a null/absent class, so a manifest field can never invent a third
+  // disposition this module does not define.
+  const hostileCompactionClass = "self_declared_never_compact" as unknown as null;
+  assert.equal(
+    classifyVersionDisposition({ compactionClass: hostileCompactionClass, hasCompactionPolicy: false }),
+    "active_defect_or_unclassified"
+  );
+});
+
 test("classifyVersionDisposition: only reference-controlled inputs participate; payload fields are ignored", () => {
   // Spread connector-authored junk into the input. The classifier signature
-  // only reads connectorId/stream/lastHistoryAt/hasCompactionPolicy; any other
-  // property (a connector trying to assert its own disposition) is inert.
-  // Held in an intermediate, non-fresh-literal binding so TS's excess-property
-  // check (which only fires on object literals passed inline) does not flag
-  // the deliberately-hostile extra fields this test proves are ignored at
-  // runtime by the plain destructuring in classifyVersionDisposition's body.
+  // only reads compactionClass/lastHistoryAt/hasCompactionPolicy/reviewedAt;
+  // any other property (a connector trying to assert its own disposition) is
+  // inert. Held in an intermediate, non-fresh-literal binding so TS's
+  // excess-property check (which only fires on object literals passed
+  // inline) does not flag the deliberately-hostile extra fields this test
+  // proves are ignored at runtime by the plain destructuring in
+  // classifyVersionDisposition's body.
   const hostilePayload: Record<string, unknown> = {
+    compactionClass: null,
     connectorId: "mystery",
     disposition: "recurring_point_in_time_snapshot",
     hasCompactionPolicy: false,
@@ -271,23 +257,6 @@ test("classifyVersionDisposition: only reference-controlled inputs participate; 
   );
 });
 
-// ─── Precedence guard ────────────────────────────────────────────────────────
-
-test("classifyVersionDisposition: recurring-snapshot precedence beats both the reviewed map and the policy signal", () => {
-  // Even if claude-code/sessions were (incorrectly) added to the reviewed map
-  // and reports a policy, the recurring-snapshot list wins because it is checked
-  // first. This pins the precedence the design relies on.
-  assert.equal(
-    classifyVersionDisposition({
-      connectorId: "claude-code",
-      hasCompactionPolicy: true,
-      lastHistoryAt: "2030-01-01T00:00:00.000Z",
-      stream: "sessions",
-    }),
-    "recurring_point_in_time_snapshot"
-  );
-});
-
 // ─── Registry shape invariants ───────────────────────────────────────────────
 
 test("the five dispositions are exactly the documented set", () => {
@@ -300,25 +269,9 @@ test("the five dispositions are exactly the documented set", () => {
   ]);
 });
 
-test("point-in-time and recurring-snapshot stream lists are disjoint", () => {
-  const piKeys = new Set(POINT_IN_TIME_REAL_FIELD_STREAMS.map((e) => `${e.connector}/${e.stream}`));
-  for (const entry of RECURRING_POINT_IN_TIME_SNAPSHOT_STREAMS) {
-    assert.equal(
-      piKeys.has(`${entry.connector}/${entry.stream}`),
-      false,
-      `${entry.connector}/${entry.stream} cannot be both point-in-time and recurring-snapshot`
-    );
-  }
-});
-
-test("claude-code/sessions is NOT in the reviewed-residue map (it is now a recurring snapshot)", () => {
-  assert.equal(REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.has("claude-code/sessions"), false);
-  assert.equal(REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.has("codex/sessions"), false);
-});
-
 test("normalizeConnectorId strips registry-URL and local-device forms", () => {
   assert.equal(normalizeConnectorId("github"), "github");
-  assert.equal(normalizeConnectorId("https://registry.pdpp.dev/connectors/github"), "github");
+  assert.equal(normalizeConnectorId("https://registry.pdpp.org/connectors/github"), "github");
   assert.equal(normalizeConnectorId("local-device:claude-code"), "claude-code");
   assert.equal(normalizeConnectorId(null), null);
 });
@@ -327,9 +280,9 @@ test("normalizeConnectorId strips registry-URL and local-device forms", () => {
 // version_remediation — the orthogonal next-action axis
 // (OpenSpec add-version-remediation-disposition)
 //
-//   AC-3 chase/usaa statements → content_fingerprint_pending
-//   AC-4 usaa/accounts → owner_migration_pending (distinct from statements)
-//   AC-5 claude-code/codex sessions → owner_retention_policy
+//   AC-3 pendingRemediation="content_fingerprint_pending" → content_fingerprint_pending
+//   AC-4 pendingRemediation="owner_migration_pending" → owner_migration_pending (distinct from AC-3)
+//   AC-5 recurring_point_in_time_snapshot disposition → owner_retention_policy
 //   AC-6 candidate / unlisted point-in-time / defect → none
 //   AC-7 remediation reads only reference signals (no connector-authored value)
 //   AC-8 remediation never contradicts disposition (consistency guard)
@@ -337,131 +290,91 @@ test("normalizeConnectorId strips registry-URL and local-device forms", () => {
 
 // ─── AC-3 content_fingerprint_pending (the statement rows) ───────────────────
 
-test("classifyVersionRemediation: chase/statements reviewed residue is content_fingerprint_pending (AC-3)", () => {
+test("classifyVersionRemediation: pendingRemediation=content_fingerprint_pending on reviewed residue reads content_fingerprint_pending (AC-3)", () => {
   assert.equal(
     classifyVersionRemediation({
-      connectorId: "chase",
-      stream: "statements",
+      pendingRemediation: "content_fingerprint_pending",
       versionDisposition: "reviewed_historical_residue",
     }),
     "content_fingerprint_pending"
   );
 });
 
-test("classifyVersionRemediation: usaa/statements reviewed residue is content_fingerprint_pending (AC-3)", () => {
-  assert.equal(
-    classifyVersionRemediation({
-      connectorId: "usaa",
-      stream: "statements",
-      versionDisposition: "reviewed_historical_residue",
-    }),
-    "content_fingerprint_pending"
-  );
-  // Same answer via the registry-URL connector_id form.
-  assert.equal(
-    classifyVersionRemediation({
-      connectorId: "https://registry.pdpp.dev/connectors/usaa",
-      stream: "statements",
-      versionDisposition: "reviewed_historical_residue",
-    }),
-    "content_fingerprint_pending"
-  );
-});
+// ─── AC-4 owner_migration_pending, distinct from content_fingerprint_pending ──
 
-// ─── AC-4 owner_migration_pending (usaa/accounts), distinct from statements ───
-
-test("classifyVersionRemediation: usaa/accounts reviewed residue is owner_migration_pending (AC-4)", () => {
-  const accounts = classifyVersionRemediation({
-    connectorId: "usaa",
-    stream: "accounts",
+test("classifyVersionRemediation: pendingRemediation=owner_migration_pending on reviewed residue reads owner_migration_pending (AC-4)", () => {
+  const migrationPending = classifyVersionRemediation({
+    pendingRemediation: "owner_migration_pending",
     versionDisposition: "reviewed_historical_residue",
   });
-  assert.equal(accounts, "owner_migration_pending");
+  assert.equal(migrationPending, "owner_migration_pending");
 
-  // Distinct from the statement rows even though both share the
+  // Distinct from the fingerprint-pending rows even though both share the
   // reviewed_historical_residue disposition — the whole point of the axis.
-  const statements = classifyVersionRemediation({
-    connectorId: "usaa",
-    stream: "statements",
+  const fingerprintPending = classifyVersionRemediation({
+    pendingRemediation: "content_fingerprint_pending",
     versionDisposition: "reviewed_historical_residue",
   });
-  assert.notEqual(accounts, statements);
+  assert.notEqual(migrationPending, fingerprintPending);
 });
 
 // ─── AC-5 owner_retention_policy (sessions) ──────────────────────────────────
 
-test("classifyVersionRemediation: sessions recurring snapshots are owner_retention_policy (AC-5)", () => {
-  for (const connectorId of ["claude-code", "codex", "local-device:claude-code"]) {
-    assert.equal(
-      classifyVersionRemediation({
-        connectorId,
-        stream: "sessions",
-        versionDisposition: "recurring_point_in_time_snapshot",
-      }),
-      "owner_retention_policy",
-      `${connectorId}/sessions must be owner_retention_policy`
-    );
-  }
+test("classifyVersionRemediation: recurring_point_in_time_snapshot disposition is always owner_retention_policy (AC-5)", () => {
+  assert.equal(
+    classifyVersionRemediation({
+      pendingRemediation: null,
+      versionDisposition: "recurring_point_in_time_snapshot",
+    }),
+    "owner_retention_policy"
+  );
+  // Even if a pendingRemediation happens to be set, recurring-snapshot wins —
+  // pinned separately below (AC-8-adjacent precedence).
+  assert.equal(
+    classifyVersionRemediation({
+      pendingRemediation: "content_fingerprint_pending",
+      versionDisposition: "recurring_point_in_time_snapshot",
+    }),
+    "owner_retention_policy"
+  );
 });
 
 // ─── AC-6 none defaults ──────────────────────────────────────────────────────
 
 test("classifyVersionRemediation: a lossless_compaction_candidate is always none (AC-6)", () => {
   assert.equal(
-    classifyVersionRemediation({
-      connectorId: "gmail",
-      stream: "labels",
-      versionDisposition: "lossless_compaction_candidate",
-    }),
+    classifyVersionRemediation({ pendingRemediation: null, versionDisposition: "lossless_compaction_candidate" }),
     "none"
   );
 });
 
 test("classifyVersionRemediation: an unlisted point_in_time_retained_history is none (AC-6)", () => {
   assert.equal(
-    classifyVersionRemediation({
-      connectorId: "github",
-      stream: "user",
-      versionDisposition: "point_in_time_retained_history",
-    }),
+    classifyVersionRemediation({ pendingRemediation: null, versionDisposition: "point_in_time_retained_history" }),
     "none"
   );
 });
 
 test("classifyVersionRemediation: active_defect_or_unclassified is always none (AC-6)", () => {
   assert.equal(
-    classifyVersionRemediation({
-      connectorId: "mystery",
-      stream: "widgets",
-      versionDisposition: "active_defect_or_unclassified",
-    }),
+    classifyVersionRemediation({ pendingRemediation: null, versionDisposition: "active_defect_or_unclassified" }),
     "none"
   );
 });
 
-test("classifyVersionRemediation: a null connector_id is none", () => {
-  assert.equal(
-    classifyVersionRemediation({
-      connectorId: null,
-      stream: "whatever",
-      versionDisposition: "reviewed_historical_residue",
-    }),
-    "none"
-  );
+test("classifyVersionRemediation: called with no arguments is none", () => {
+  assert.equal(classifyVersionRemediation(), "none");
 });
 
 // ─── AC-7 anti-self-declaration ──────────────────────────────────────────────
 
 test("classifyVersionRemediation: only reference-controlled inputs participate; payload fields are ignored (AC-7)", () => {
-  // The signature reads connectorId/stream/versionDisposition only. A connector
-  // spreading a hostile self-declared remediation cannot change the answer: an
-  // unlisted stream stays none regardless of the junk fields.
-  // See the intermediate-binding note on the classifyVersionDisposition
-  // anti-self-declaration test above: this sidesteps TS's excess-property
-  // check on a fresh literal, which would otherwise block a payload this
-  // test deliberately constructs to prove ignored at runtime.
+  // The signature reads versionDisposition/pendingRemediation only. A
+  // connector spreading a hostile self-declared remediation cannot change the
+  // answer: an unlisted stream stays none regardless of the junk fields.
   const hostilePayload: Record<string, unknown> = {
     connectorId: "mystery",
+    pendingRemediation: null,
     remediation: "owner_retention_policy",
     stream: "widgets",
     suppress: true,
@@ -475,37 +388,27 @@ test("classifyVersionRemediation: only reference-controlled inputs participate; 
 // ─── AC-8 consistency guard (remediation never contradicts disposition) ──────
 
 test("classifyVersionRemediation: owner_retention_policy requires the recurring-snapshot disposition (AC-8)", () => {
-  // A sessions stream is on the retention list, but if its disposition is NOT
-  // recurring_point_in_time_snapshot the guard withholds owner_retention_policy.
-  // (This pairing should never occur in practice — the lists are aligned — but
-  // the guard makes the invariant explicit and regression-pinned.)
-  assert.equal(
-    classifyVersionRemediation({
-      connectorId: "claude-code",
-      stream: "sessions",
-      versionDisposition: "reviewed_historical_residue",
-    }),
-    "none",
-    "retention-policy only applies when the disposition is the recurring snapshot"
+  // pendingRemediation alone (without the recurring-snapshot disposition)
+  // never produces owner_retention_policy.
+  assert.notEqual(
+    classifyVersionRemediation({ pendingRemediation: null, versionDisposition: "reviewed_historical_residue" }),
+    "owner_retention_policy"
   );
 });
 
-test("classifyVersionRemediation: a candidate/defect on a remediation list cannot be overridden (AC-8)", () => {
-  // Even if a fingerprint-listed stream somehow arrived as a candidate or a
-  // defect, the hard guard keeps it none — its action is already the dry-run
-  // command or "review it".
+test("classifyVersionRemediation: a candidate/defect disposition cannot be overridden by pendingRemediation (AC-8)", () => {
+  // Even if pendingRemediation is set, the hard guard keeps a candidate/defect
+  // row none — its action is already the dry-run command or "review it".
   assert.equal(
     classifyVersionRemediation({
-      connectorId: "chase",
-      stream: "statements",
+      pendingRemediation: "content_fingerprint_pending",
       versionDisposition: "lossless_compaction_candidate",
     }),
     "none"
   );
   assert.equal(
     classifyVersionRemediation({
-      connectorId: "usaa",
-      stream: "accounts",
+      pendingRemediation: "owner_migration_pending",
       versionDisposition: "active_defect_or_unclassified",
     }),
     "none"
@@ -513,14 +416,12 @@ test("classifyVersionRemediation: a candidate/defect on a remediation list canno
 });
 
 test("classifyVersionRemediation: migration precedence beats fingerprint when both could match", () => {
-  // usaa/accounts is only on the migration list, but assert the precedence order
-  // directly: migration is checked before fingerprint, so an entry on both lists
-  // would resolve to migration. Pins the documented precedence.
-  assert.equal(OWNER_MIGRATION_PENDING_STREAMS.length >= 1, true);
+  // pendingRemediation only ever carries ONE value per row (the caller
+  // resolves a single reviewed-residue entry per connector/stream), but pin
+  // the precedence order directly: migration is checked before fingerprint.
   assert.equal(
     classifyVersionRemediation({
-      connectorId: "usaa",
-      stream: "accounts",
+      pendingRemediation: "owner_migration_pending",
       versionDisposition: "reviewed_historical_residue",
     }),
     "owner_migration_pending"
@@ -538,39 +439,122 @@ test("the four remediations are exactly the documented set", () => {
   ]);
 });
 
-test("the remediation lists hold exactly the evidence-named streams", () => {
-  assert.deepEqual(CONTENT_FINGERPRINT_PENDING_STREAMS.map((e) => `${e.connector}/${e.stream}`).sort(), [
-    "chase/statements",
-    "usaa/statements",
-  ]);
-  assert.deepEqual(OWNER_MIGRATION_PENDING_STREAMS.map((e) => `${e.connector}/${e.stream}`).sort(), ["usaa/accounts"]);
-  assert.deepEqual(OWNER_RETENTION_POLICY_STREAMS.map((e) => `${e.connector}/${e.stream}`).sort(), [
-    "claude-code/sessions",
-    "codex/sessions",
-  ]);
-});
+// ═══════════════════════════════════════════════════════════════════════════
+// readReviewedCompactionResidueMap — operator runtime state, not RI-committed
+// JSON (ri-zero-knowledge-terminal-revise-0810)
+// ═══════════════════════════════════════════════════════════════════════════
 
-test("the owner-retention-policy list is aligned with the recurring-snapshot list", () => {
-  // The guard in classifyVersionRemediation relies on every retention-policy
-  // stream also being a recurring snapshot. Pin that alignment so a future edit
-  // to one list that forgets the other is caught.
-  const recurringKeys = new Set(RECURRING_POINT_IN_TIME_SNAPSHOT_STREAMS.map((e) => `${e.connector}/${e.stream}`));
-  for (const entry of OWNER_RETENTION_POLICY_STREAMS) {
-    assert.equal(
-      recurringKeys.has(`${entry.connector}/${entry.stream}`),
-      true,
-      `${entry.connector}/${entry.stream} must also be a recurring snapshot`
-    );
+test("readReviewedCompactionResidueMap: defaults to empty when PDPP_COMPACTION_RESIDUE_REVIEW_PATH is unset and the default path does not exist", () => {
+  const previous = process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH;
+  delete process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH;
+  resetReviewedCompactionResidueCacheForTests();
+  try {
+    // The default path is /var/lib/pdpp/compaction-residue-review.json, which
+    // does not exist in this test environment (and must never be committed
+    // with real data per the owner ruling) — this must not throw.
+    assert.equal(existsSync("/var/lib/pdpp/compaction-residue-review.json"), false);
+    const map = readReviewedCompactionResidueMap();
+    assert.equal(map.size, 0);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH;
+    } else {
+      process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH = previous;
+    }
+    resetReviewedCompactionResidueCacheForTests();
   }
 });
 
-test("a fingerprint-pending stream is never also migration-pending", () => {
-  const migrationKeys = new Set(OWNER_MIGRATION_PENDING_STREAMS.map((e) => `${e.connector}/${e.stream}`));
-  for (const entry of CONTENT_FINGERPRINT_PENDING_STREAMS) {
-    assert.equal(
-      migrationKeys.has(`${entry.connector}/${entry.stream}`),
-      false,
-      `${entry.connector}/${entry.stream} cannot be both fingerprint- and migration-pending`
-    );
+test("readReviewedCompactionResidueMap: defaults to empty (never throws) when the configured path does not exist", () => {
+  const previous = process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH;
+  const dir = mkdtempSync(join(tmpdir(), "compaction-residue-review-"));
+  const missingPath = join(dir, "does-not-exist.json");
+  process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH = missingPath;
+  resetReviewedCompactionResidueCacheForTests();
+  try {
+    assert.doesNotThrow(() => readReviewedCompactionResidueMap());
+    const map = readReviewedCompactionResidueMap();
+    assert.equal(map.size, 0);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+    if (previous === undefined) {
+      delete process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH;
+    } else {
+      process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH = previous;
+    }
+    resetReviewedCompactionResidueCacheForTests();
+  }
+});
+
+test("readReviewedCompactionResidueMap: reads a bare ISO timestamp entry as reviewedAt with null pendingRemediation", () => {
+  const previous = process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH;
+  const dir = mkdtempSync(join(tmpdir(), "compaction-residue-review-"));
+  const filePath = join(dir, "review.json");
+  writeFileSync(filePath, JSON.stringify({ "usaa/accounts": USAA_ACCOUNTS_REVIEWED_AT }));
+  process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH = filePath;
+  resetReviewedCompactionResidueCacheForTests();
+  try {
+    const map = readReviewedCompactionResidueMap();
+    const entry = map.get("usaa/accounts");
+    assert.ok(entry);
+    assert.equal(entry.reviewedAt, USAA_ACCOUNTS_REVIEWED_AT);
+    assert.equal(entry.pendingRemediation, null);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+    if (previous === undefined) {
+      delete process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH;
+    } else {
+      process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH = previous;
+    }
+    resetReviewedCompactionResidueCacheForTests();
+  }
+});
+
+test("readReviewedCompactionResidueMap: reads an object entry with pendingRemediation", () => {
+  const previous = process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH;
+  const dir = mkdtempSync(join(tmpdir(), "compaction-residue-review-"));
+  const filePath = join(dir, "review.json");
+  writeFileSync(
+    filePath,
+    JSON.stringify({
+      "usaa/accounts": { pendingRemediation: "owner_migration_pending", reviewedAt: USAA_ACCOUNTS_REVIEWED_AT },
+      "usaa/statements": { pendingRemediation: "content_fingerprint_pending", reviewedAt: USAA_ACCOUNTS_REVIEWED_AT },
+    })
+  );
+  process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH = filePath;
+  resetReviewedCompactionResidueCacheForTests();
+  try {
+    const map = readReviewedCompactionResidueMap();
+    assert.equal(map.get("usaa/accounts")?.pendingRemediation, "owner_migration_pending");
+    assert.equal(map.get("usaa/statements")?.pendingRemediation, "content_fingerprint_pending");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+    if (previous === undefined) {
+      delete process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH;
+    } else {
+      process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH = previous;
+    }
+    resetReviewedCompactionResidueCacheForTests();
+  }
+});
+
+test("readReviewedCompactionResidueMap: a malformed file reads as empty, never throws", () => {
+  const previous = process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH;
+  const dir = mkdtempSync(join(tmpdir(), "compaction-residue-review-"));
+  const filePath = join(dir, "review.json");
+  writeFileSync(filePath, "{ not valid json");
+  process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH = filePath;
+  resetReviewedCompactionResidueCacheForTests();
+  try {
+    assert.doesNotThrow(() => readReviewedCompactionResidueMap());
+    assert.equal(readReviewedCompactionResidueMap().size, 0);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+    if (previous === undefined) {
+      delete process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH;
+    } else {
+      process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH = previous;
+    }
+    resetReviewedCompactionResidueCacheForTests();
   }
 });

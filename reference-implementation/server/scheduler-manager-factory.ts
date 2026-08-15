@@ -17,6 +17,7 @@ import { isHealthRelevant as isAttentionHealthRelevant } from "../runtime/attent
 import type { ConnectorEnvironmentPolicy } from "../runtime/connector-child-environment.ts";
 import { getScheduleIneligibilityReason, resolveDefaultConnectorPath } from "../runtime/controller.ts";
 import { hasForwardEvidenceDebt } from "../runtime/recovery-decision.ts";
+import { matchesRecoveryInstance } from "../runtime/scheduler/recovery-instance-scope.ts";
 import type {
   ConnectorError,
   ConnectorSchedule,
@@ -38,6 +39,7 @@ import { getSyncState, putSyncState } from "./records.ts";
 import { getConnectorAttentionProjection, getConnectorSummaryForRoute } from "./ref-control.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.ts";
+import { admitOwnerRunConnection } from "./stores/connector-instance-store.ts";
 import { getDefaultSchedulerStore } from "./stores/scheduler-store.ts";
 import type { StaticSecretCredentialStore } from "./stores/static-secret-run-credentials.ts";
 import {
@@ -73,8 +75,10 @@ interface Controller {
     connectorId: string,
     options: {
       connectorInstanceId: string;
+      ownerSubjectId: string;
       ownerToken: string;
       priorityClass: "background";
+      recoveryOnly?: boolean;
       triggerKind: "scheduled";
       rsUrl?: string;
       referenceBaseUrl?: string | null;
@@ -96,9 +100,7 @@ interface TerminalEvent {
   readonly data?: unknown;
 }
 
-interface ConnectorInstanceStore {
-  get: (connectorInstanceId: string) => Promise<{ sourceBinding?: unknown } | null>;
-}
+type ConnectorInstanceStore = Parameters<typeof admitOwnerRunConnection>[0]["connectorInstanceStore"];
 
 type ConnectorInstanceCredentialStore = StaticSecretCredentialStore;
 
@@ -178,13 +180,13 @@ function lastPressureAt(row: GapRow): string | null {
   return null;
 }
 
-function mapPressureGaps(rows: readonly GapRow[], instanceKey: string): PressureGap[] {
+function mapPressureGaps(rows: readonly GapRow[], instanceKey: string, defaultInstanceId: string): PressureGap[] {
   const gaps: PressureGap[] = [];
   for (const row of rows) {
     if (typeof row.reason !== "string" || !SOURCE_PRESSURE_GAP_REASONS.has(row.reason)) {
       continue;
     }
-    if ((row.connector_instance_id || instanceKey) !== instanceKey) {
+    if (!matchesRecoveryInstance(row.connector_instance_id, instanceKey, defaultInstanceId)) {
       continue;
     }
     gaps.push({
@@ -197,13 +199,13 @@ function mapPressureGaps(rows: readonly GapRow[], instanceKey: string): Pressure
   return gaps;
 }
 
-function countNonPressureGaps(rows: readonly GapRow[], instanceKey: string): number {
+function countNonPressureGaps(rows: readonly GapRow[], instanceKey: string, defaultInstanceId: string): number {
   let count = 0;
   for (const row of rows) {
     if (typeof row.reason === "string" && SOURCE_PRESSURE_GAP_REASONS.has(row.reason)) {
       continue;
     }
-    if ((row.connector_instance_id || instanceKey) !== instanceKey) {
+    if (!matchesRecoveryInstance(row.connector_instance_id, instanceKey, defaultInstanceId)) {
       continue;
     }
     count += 1;
@@ -324,7 +326,7 @@ function projectManagedControllerTerminalRun(
   };
 }
 
-function createRunManagedConnectorViaController(
+export function createRunManagedConnectorViaController(
   controller: Controller
 ): SchedulerOptions["runManagedConnectorViaController"] {
   const leaseManager = controller.browserSurfaceLeaseManager;
@@ -340,8 +342,10 @@ function createRunManagedConnectorViaController(
     }
     const handle = await controller.runNow(connectorId, {
       connectorInstanceId: opts.connectorInstanceId,
+      ownerSubjectId: opts.ownerSubjectId,
       ownerToken: opts.ownerToken,
       priorityClass: opts.priorityClass,
+      recoveryOnly: opts.recoveryOnly === true,
       triggerKind: opts.triggerKind,
       ...(opts.rsUrl === undefined ? {} : { rsUrl: opts.rsUrl }),
       ...(opts.referenceBaseUrl === undefined ? {} : { referenceBaseUrl: opts.referenceBaseUrl }),
@@ -355,10 +359,12 @@ function createRunManagedConnectorViaController(
     // Run was dispatched (status "started"). Await its real terminal
     // outcome so the scheduler records the true succeeded/failed status
     // and its failure-streak / back-off machinery fires correctly.
-    // controller.awaitRun waits for activeRunPromises[runId] to settle
-    // (the .finally() cleanup chain), then reads the spine terminal event.
-    // No deadlock risk: the run has its own wall-clock budget; a hung run
-    // is the run's responsibility, matching the old runConnector await.
+    // controller.awaitRun races activeRunPromises[runId] (the .finally()
+    // cleanup chain) against the run's own watchdog settlement, then reads
+    // the spine terminal event — see awaitRun's own doc comment for why
+    // that race exists. This call cannot hang even if runConnectorImpl
+    // itself never settles: the watchdog (maxRunWallClockMs) force-finalizes
+    // the run and resolves the race independently of the raw promise.
     const terminalStatus = await controller.awaitRun(handle.run_id);
     const terminalEvent = (await getRunTerminalEvent(handle.run_id)) as TerminalEvent | null;
     return projectManagedControllerTerminalRun(handle, terminalStatus, terminalEvent);
@@ -398,10 +404,17 @@ export function createReferenceSchedulerManager({
   const resolveScheduledConnectionScopedRunEnv = ({
     connectorId,
     connectorInstanceId,
+    ownerSubjectId: requestedOwnerSubjectId,
   }: {
     connectorId: string;
     connectorInstanceId: string;
-  }) => connectionScopedRunEnvResolver({ connectorId, connectorInstanceId, ownerSubjectId });
+    ownerSubjectId: string;
+  }) =>
+    connectionScopedRunEnvResolver({
+      connectorId,
+      connectorInstanceId,
+      ownerSubjectId: requestedOwnerSubjectId,
+    });
 
   async function buildConnectors() {
     const schedules = await Promise.resolve(schedulerStore.listSchedules());
@@ -447,6 +460,7 @@ export function createReferenceSchedulerManager({
             connectorPath,
             intervalMs: Math.max(1, schedule.interval_seconds) * 1000,
             manifest,
+            ownerSubjectId,
             ownerToken: await controller.issueRuntimeOwnerToken(),
           };
         } catch (err) {
@@ -477,6 +491,22 @@ export function createReferenceSchedulerManager({
     }
     const managedRunner = createRunManagedConnectorViaController(controller);
     scheduler = createScheduler({
+      admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+        if (typeof requestedOwnerSubjectId !== "string" || requestedOwnerSubjectId.trim().length === 0) {
+          throw new Error("scheduler ownerSubjectId is required for connection admission");
+        }
+        const namespace = await admitOwnerRunConnection({
+          connectorId,
+          connectorInstanceId,
+          connectorInstanceStore: createConnectorInstanceStore(),
+          ownerSubjectId: requestedOwnerSubjectId,
+        });
+        return {
+          connectorId: namespace.connectorId,
+          connectorInstanceId: namespace.connectorInstanceId,
+          ownerSubjectId: namespace.ownerSubjectId,
+        };
+      },
       connectors,
       ...(connectorEnvironmentPolicy?.approvedBindings.length
         ? { approvedEnvironmentBindings: connectorEnvironmentPolicy.approvedBindings }
@@ -578,8 +608,8 @@ export function createReferenceSchedulerManager({
         try {
           const store = getDefaultConnectorDetailGapStore() as unknown as GapStore;
           const rows = await store.listPendingGapsForConnector(connectorId, { limit: 200 });
-          const instanceKey = connectorInstanceId || connectorId;
-          return countNonPressureGaps(rows, instanceKey);
+          const instanceKey = connectorInstanceId ?? connectorId;
+          return countNonPressureGaps(rows, instanceKey, connectorId);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           logger.error({ err: message }, `[scheduler] non-pressure recovery probe failed for ${connectorId}`);
@@ -600,8 +630,8 @@ export function createReferenceSchedulerManager({
         // fail-open stance as the attention probe above.
         const store = getDefaultConnectorDetailGapStore() as unknown as GapStore;
         const rows = await store.listPendingGapsForConnector(connectorId, { limit: 200 });
-        const instanceKey = connectorInstanceId || connectorId;
-        return mapPressureGaps(rows, instanceKey);
+        const instanceKey = connectorInstanceId ?? connectorId;
+        return mapPressureGaps(rows, instanceKey, connectorId);
       },
       getState: async (connectorId, connectorInstanceId) => {
         // Read scheduler state from the connection-instance namespace by

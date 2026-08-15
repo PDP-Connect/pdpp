@@ -46,6 +46,7 @@ import { createMockCompanion, type MockCompanion } from "../server/streaming/cdp
 import { createNekoCompanion as createNekoCompanionUntyped } from "../server/streaming/neko-adapter.ts";
 import { normalizeReferenceWireViewportPayload } from "../server/streaming/protocol-wire.ts";
 import { createStreamingSessionStore } from "../server/streaming/sessions.ts";
+import { resolveCredentialFreeFixtureRunEnv } from "./helpers/credential-free-run-fixture.ts";
 
 const REGEXP_1 = /retry/i;
 const REGEXP_2 = /retry/i;
@@ -112,6 +113,7 @@ interface StartServerOptions {
   asPort?: number;
   browserSurfaceLeaseManager?: unknown;
   browserSurfaceReadinessProbe?: unknown;
+  connectionScopedRunEnvResolver?: typeof resolveCredentialFreeFixtureRunEnv;
   connectorPathResolver?: () => string;
   dbPath?: string;
   isNekoProxyTargetApproved?: unknown;
@@ -848,6 +850,7 @@ async function withHarness(options: HarnessOptions | null, fn: (ctx: HarnessCont
     asPort: 0,
     browserSurfaceLeaseManager: harnessOptions.browserSurfaceLeaseManager,
     browserSurfaceReadinessProbe: harnessOptions.browserSurfaceReadinessProbe,
+    connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
     connectorPathResolver: () => connectorPath,
     dbPath: ":memory:",
     isNekoProxyTargetApproved: harnessOptions.isNekoProxyTargetApproved,
@@ -3063,6 +3066,7 @@ test("SSE delivers multiple frames and acks each, even when ack rejects", async 
   try {
     const server = await startServer({
       asPort: 0,
+      connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
       connectorPathResolver: () => connectorPath,
       dbPath: ":memory:",
       quiet: true,
@@ -3170,6 +3174,7 @@ test("mint fails closed with 503 streaming_companion_unavailable when no compani
   try {
     const server = await startServer({
       asPort: 0,
+      connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
       connectorPathResolver: () => connectorPath,
       dbPath: ":memory:",
       quiet: true,

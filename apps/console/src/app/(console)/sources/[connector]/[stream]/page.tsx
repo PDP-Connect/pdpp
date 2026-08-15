@@ -8,6 +8,8 @@ import {
   type DeclaredFieldTypes,
   deriveDeclaredFieldTypes,
   formatDeclaredAmount,
+  formatStructuredCell,
+  humanizeFieldLabel,
   type RecordPreview,
 } from "@pdpp/display";
 import { DataList, PageHeader, Pager, Section } from "@pdpp/operator-ui/components/primitives";
@@ -18,9 +20,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../../../components/shell.tsx";
+import { ServerUnreachable } from "../../../components/server-unreachable.tsx";
 import { WarningsBanner } from "../../../components/warnings-banner.tsx";
 import { formatStreamCollectionFacts, type StreamCollectionFacts } from "../../../lib/collection-report.ts";
+import { connectorRunSummaryId } from "../../../lib/connector-run-summary-status.ts";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../lib/owner-token.ts";
 import { pickSemanticTimestamp, primaryTimestamp } from "../../../lib/record-timestamps.ts";
 import type { RefCollectionReportEntry, RefConnectorRunSummary } from "../../../lib/ref-client.ts";
@@ -295,22 +298,22 @@ export default async function StreamPage({
             breadcrumbs={[
               { href: "/sources", label: "Sources" },
               { href: `/sources/${encodeURIComponent(connectionId)}`, label: sourceLabel },
-              { label: streamName },
+              { label: humanizeFieldLabel(streamName) },
             ]}
-            title={<code className="font-mono">{streamName}</code>}
+            title={<span title={streamName}>{humanizeFieldLabel(streamName)}</span>}
           />
           <div className="rounded-md border border-border/70 bg-muted/30 p-4">
             <p className="pdpp-caption text-foreground">
-              This stream is not available for <code className="font-mono">{connectionId}</code>.
+              This stream is not available for <span title={connectionId}>{sourceLabel}</span>.
             </p>
             <p className="pdpp-caption mt-2 text-muted-foreground">
-              The connector no longer advertises a stream named <code className="font-mono">{streamName}</code>. It may
-              have been renamed or retired in a newer manifest, or the stream list is showing a stale entry that has not
-              yet been reconciled. Return to{" "}
+              The connector's current manifest no longer lists{" "}
+              <span title={streamName}>{humanizeFieldLabel(streamName)}</span> — it was likely renamed or retired, or
+              this link is a stale entry. Open{" "}
               <Link className="underline underline-offset-2" href={`/sources/${encodeURIComponent(connectionId)}`}>
                 the connection page
               </Link>{" "}
-              to see currently available streams.
+              for the streams available now.
             </p>
           </div>
         </RecordroomShellWithPalette>
@@ -374,13 +377,19 @@ export default async function StreamPage({
     return null;
   };
 
-  // Format a non-linked cell, preferring declared-currency formatting (chase
-  // `amount` → `$30.00`) over plain stringification. Returns "" for absent
-  // values, matching `stringifyCell` so the existing empty-cell handling holds.
+  // Format a non-linked cell: declared-currency formatting (chase `amount` ->
+  // `$30.00`) first, then a readable array/object rendering (a `cc` array of
+  // `{name,email}` reads as names, not raw JSON) before falling back to plain
+  // stringification. Returns "" for absent values, matching `stringifyCell` so
+  // the existing empty-cell handling holds.
   const cellText = (record: StreamRecord, column: string): string => {
     const value = record.data?.[column];
     const amount = formatDeclaredAmount(value, declaredFieldTypes[column]);
-    return amount ? amount.text : stringifyCell(value);
+    if (amount) {
+      return amount.text;
+    }
+    const structured = formatStructuredCell(value);
+    return structured ? structured.text : stringifyCell(value);
   };
 
   // The declared role map for this stream (constant per page) — the ONE seam that
@@ -439,7 +448,7 @@ export default async function StreamPage({
         breadcrumbs={[
           { href: "/sources", label: "Sources" },
           { href: `/sources/${encodeURIComponent(connectionId)}`, label: sourceLabel },
-          { label: streamName },
+          { label: humanizeFieldLabel(streamName) },
         ]}
         count={headerCount}
         description={
@@ -447,7 +456,7 @@ export default async function StreamPage({
             Source <span className="text-foreground">{sourceLabel}</span>
           </>
         }
-        title={<code className="font-mono">{streamName}</code>}
+        title={<span title={streamName}>{humanizeFieldLabel(streamName)}</span>}
       />
 
       <StreamEvidenceSection
@@ -511,8 +520,8 @@ export default async function StreamPage({
                       quiet mono token + the row link. */}
                   <th className={TH}>record</th>
                   {columns.map((c) => (
-                    <th className={TH} key={c}>
-                      {c}
+                    <th className={TH} key={c} title={c}>
+                      {humanizeFieldLabel(c)}
                     </th>
                   ))}
                   {hasReverseChildEdges && <th className={TH}>related</th>}
@@ -561,7 +570,11 @@ export default async function StreamPage({
                         const display = cellText(r, c);
                         return (
                           <td className={`${TD} align-top`} key={c}>
-                            <Link className="block" href={recordHref(r.id)}>
+                            <Link
+                              aria-label={display ? undefined : `Open record, ${humanizeFieldLabel(c)} not set`}
+                              className="block"
+                              href={recordHref(r.id)}
+                            >
                               <span className="block max-w-[24rem] truncate" title={display}>
                                 {display}
                               </span>
@@ -618,12 +631,12 @@ function StreamEvidenceSection({
   const latestStreamRun = latestStreamRunEvidence(streamCollectionFacts, latestSourceRun);
   return (
     <Section
-      description="This is a paginated saved-record view for one stream, not a bounded sample. It also shows the latest stream-level collection fact when the runtime reported one."
+      description="Every saved record in this stream, paginated, plus the latest stream-level collection fact the runtime reported."
       title="Stream evidence"
     >
       <DataList ariaLabel="Stream evidence">
         <StreamEvidenceRow
-          detail={`Source ${sourceLabel} · stream ${streamName}`}
+          detail={`Source ${sourceLabel} · stream ${humanizeFieldLabel(streamName)}`}
           href={sourceHref}
           label="Scope"
           value="Open source"
@@ -645,12 +658,12 @@ function StreamEvidenceSection({
           value={latestStreamRun.value}
         />
         <StreamEvidenceRow
-          detail={filtered ? exactFilterEvidenceLabel(filters) : "No exact filters are applied."}
+          detail={filtered ? exactFilterEvidenceLabel(filters) : "Showing every record in this stream."}
           label="Filters"
           value={filtered ? `${Object.keys(filters).length.toLocaleString()} exact` : "none"}
         />
         <StreamEvidenceRow
-          detail="Filters Syncs to this exact source, not every source of the same connector type."
+          detail="Scoped to this exact source, not every source of the same connector type."
           href={syncsHref}
           label="Run history"
           value="Open source-scoped Syncs"
@@ -664,18 +677,19 @@ function latestStreamRunEvidence(
   facts: StreamCollectionFacts | null,
   latestRun: RefConnectorRunSummary | null
 ): { detail: string; href: string | null; value: string } {
-  const href = latestRun ? `/syncs/${encodeURIComponent(latestRun.run_id)}` : null;
+  const runId = connectorRunSummaryId(latestRun?.run_id);
+  const href = runId ? `/syncs/${encodeURIComponent(runId)}` : null;
   if (!facts) {
     return {
       detail: latestRun
-        ? "The latest source run did not include stream-level collection facts for this stream."
-        : "No attributed source run has reached this dashboard yet.",
+        ? "The latest source run reported facts for other streams only."
+        : "This dashboard is still waiting on its first attributed source run.",
       href,
       value: latestRun ? "stream report unavailable" : "not seen yet",
     };
   }
   const detailParts = [
-    latestRun ? `run ${latestRun.run_id}` : null,
+    runId ? `run ${runId}` : null,
     `coverage ${facts.coverage.value}`,
     facts.disposition ? `next run: ${facts.disposition.label}` : null,
     facts.pendingDetailGapsLabel,
@@ -721,9 +735,9 @@ function StreamEvidenceRow({
 
 function streamTotalEvidenceLabel(totalHeld: number | null): string {
   if (totalHeld === null) {
-    return "The retained total is not available yet; the page still shows the current saved records it received.";
+    return "The retained total is still unknown; the records below are what this page received.";
   }
-  return "Basis: retained records for this stream from stream metadata or the source summary.";
+  return "Retained records for this stream, from stream metadata or the source summary.";
 }
 
 function exactFilterEvidenceLabel(filters: Record<string, string>): string {
@@ -832,15 +846,28 @@ function RecordCard({
           </>
         ) : null}
         {columns.map((c) => {
-          const amount = formatDeclaredAmount(record.data?.[c], declaredFieldTypes[c]);
-          const v = amount ? amount.text : stringifyCell(record.data?.[c]);
+          const raw = record.data?.[c];
+          const amount = formatDeclaredAmount(raw, declaredFieldTypes[c]);
+          const structured = amount ? null : formatStructuredCell(raw);
+          let v: string;
+          if (amount) {
+            v = amount.text;
+          } else if (structured) {
+            v = structured.text;
+          } else {
+            v = stringifyCell(raw);
+          }
           if (!v) {
             return null;
           }
           return (
             <Fragment key={c}>
-              <dt className="truncate text-muted-foreground">{c}</dt>
-              <dd className="break-words">{truncate(v, 120)}</dd>
+              <dt className="truncate text-muted-foreground" title={c}>
+                {humanizeFieldLabel(c)}
+              </dt>
+              <dd className="break-words" title={structured?.detail}>
+                {truncate(v, 120)}
+              </dd>
             </Fragment>
           );
         })}

@@ -45,26 +45,30 @@
     }
   },
   "capabilities": {
-    "human_interaction": ["manual_action"],
+    "human_interaction": ["manual_action", "otp"],
+    "browser_surface_kind": "usaa_transaction_export",
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,
       "maximum_staleness_seconds": 86400,
-      "interaction_posture": "manual_action_likely",
+      "interaction_posture": "otp_likely",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "high",
       "background_safe": false,
-      "rationale": "USAA requires interactive login and short sessions; refresh manually so the owner is present."
+      "rationale": "USAA requires interactive login, may request a one-time code, and uses short sessions; refresh manually so the owner is present."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "tier": "supported"
     }
   },
   "streams": [
     {
       "name": "accounts",
+      "required": true,
       "description": "USAA retail accounts (checking, savings, credit cards, loans). Identity and settings only; point-in-time balances are in the `account_stats` observation stream.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["fetched_at"]
+      },
       "display": {
         "label": "Your USAA accounts",
         "detail": "Account names, types, last-four, and open/closed status. Current and historical balances are in the daily `account_stats` stream."
@@ -177,7 +181,11 @@
     },
     {
       "name": "transactions",
+      "required": true,
       "description": "USAA transactions. Primary key is a stable synthetic hash of (account_id, date, amount, original_description, ordinal-within-tuple) because USAA's CSV export does not expose transaction IDs. Amounts are in cents (integer, signed). Transactions come from two provenances: the 18-month CSV export (`source: 'csv_export'`) and parsed statement PDFs for older history (`source: 'pdf_statement_<YYYY-MM>'`). Because the id-hash input is identical across both paths, a CSV and a PDF record of the same logical transaction collapse to the same id on ingest.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["fetched_at"]
+      },
       "display": {
         "label": "Your USAA transactions",
         "detail": "Date, signed amount in cents, cleaned payee name, original statement description, USAA-assigned category, check number (parsed from original description), and running balance when available. Pending transactions included if visible."
@@ -296,7 +304,22 @@
     },
     {
       "name": "statements",
+      "required": true,
       "description": "Statement index per account. Always includes title, delivery date, and account reference. When the connector successfully hydrates a statement PDF (by driving the 'Options → Download' menu on /my/documents), the row additionally carries `document_url` (file:// URI of the stored PDF), `pdf_path` (absolute on-disk path), and `pdf_sha256` (content hash). The PDFs themselves are stored under ~/.pdpp/usaa-statements/<account_slug>/<YYYY-MM>-<sha8>.pdf — per owner direction the archive is persistent, not scratch.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["fetched_at"],
+        "change_model": "immutable_semantic",
+        "representative_policy": "current",
+        "content_gate": {
+          "presence_fields": ["pdf_text_sha256", "pdf_page_count"],
+          "gated_exclude_keys": [
+            "pdf_sha256",
+            "pdf_path",
+            "document_url",
+            "fetched_at"
+          ]
+        }
+      },
       "display": {
         "label": "Your USAA statements",
         "detail": "Monthly statements across all accounts: document title, delivery date, and account reference. PDF download URL, local path, and content hash are populated when blob hydration has run; otherwise null."
@@ -385,7 +408,11 @@
     },
     {
       "name": "inbox_messages",
+      "required": true,
       "description": "Bank-generated messages in the USAA secure inbox.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["fetched_at"]
+      },
       "display": {
         "label": "Your USAA inbox",
         "detail": "Messages from USAA (statement alerts, new documents, service notices). Read/unread status and previews captured; full message bodies deferred."
@@ -445,7 +472,11 @@
     },
     {
       "name": "credit_card_billing",
+      "required": true,
       "description": "Per-credit-card identity and settings: nickname, credit limit, APRs, card holders. Point-in-time balances, available credit, rewards, and cycle billing status are in the `credit_card_billing_stats` observation stream.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["fetched_at"]
+      },
       "display": {
         "label": "Your credit card billing details",
         "detail": "For each USAA-issued credit card: nickname, credit limit, APRs, and card holder names. Current and historical balances, available credit, rewards, and minimum-payment status are in the daily `credit_card_billing_stats` stream."
@@ -608,5 +639,28 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "credit_card_export_unverified": "We couldn't confirm the credit card export",
+    "csv_no_data_rows": "The transactions file had no rows to import",
+    "csv_no_usable_transactions": "We couldn't find any usable transactions in that file",
+    "export_affordance_missing": "We couldn't find the export controls on this page — the site may have changed",
+    "export_error": "The export couldn't be downloaded",
+    "export_no_download": "The export didn't produce a downloadable file",
+    "hydrate_crashed": "Something went wrong while loading the page",
+    "pdf_download_click_failed": "We couldn't click the download option for a statement PDF",
+    "pdf_download_direct_link_failed": "We couldn't download a statement PDF from its direct link",
+    "pdf_download_empty": "A statement PDF download didn't produce any file",
+    "pdf_download_no_download_menuitem": "We couldn't find the download option for a statement",
+    "pdf_download_no_options_affordance": "We couldn't find any way to download a statement",
+    "pdf_download_options_click_failed": "We couldn't open the options menu for a statement",
+    "pdf_download_persist_failed": "We downloaded a statement PDF but couldn't save it",
+    "pdf_download_row_missing": "A statement row disappeared before we could download it",
+    "pdf_download_timeout": "A statement PDF download took too long and was skipped",
+    "pdf_parse_failed": "We couldn't read one of the statement PDFs",
+    "pdf_template_unknown": "We don't recognize the format of this statement yet",
+    "scrape_failed": "We couldn't read the page contents",
+    "selectors_pending": "Support for this part of the connector isn't complete yet",
+    "session_dead_reauth_failed": "Your sign-in expired and we couldn't refresh it"
+  }
 }

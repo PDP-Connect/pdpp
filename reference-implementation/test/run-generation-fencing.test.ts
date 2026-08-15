@@ -16,7 +16,14 @@
  *   (a) generation starts at 1 for the first run on a connector_instance
  *   (b) generation increments to 2 when a new run is admitted (reclaim path)
  *   (c) a zombie run (stale generation) does NOT emit a terminal spine event
- *       after a new run has been admitted; the new run is unaffected
+ *       after a new run has been admitted; the replacement keeps its terminal
+ *       stream, its activeRuns slot, and its own ability to settle
+ *
+ * Oracle note for (c): the replacement run is admitted with a wall-clock budget
+ * it cannot reach during the test. Without that, the replacement's OWN watchdog
+ * fires inside the observation window and writes it a legitimate `run_timed_out`
+ * terminal — which made the "no terminal events" assertion depend on scheduler
+ * timing rather than on the fence, so it passed alone and failed in-file.
  *   (d) REGRESSION: a normal run (current generation) commits records and
  *       emits terminal fine — generation does not block valid runs
  *   (e) generation counter is reflected in the persisted controller_active_runs
@@ -35,6 +42,10 @@ import type { ActiveRunRecord, SchedulerStore } from "../server/stores/scheduler
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
 const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/generation-fence-test";
+// A wall-clock budget the replacement run cannot reach inside a test. Its own
+// watchdog must never fire, so any terminal event on that run is necessarily a
+// stale write from its superseded predecessor — see scenario (c).
+const REPLACEMENT_RUN_UNREACHABLE_BUDGET_MS = 600_000;
 const MANIFEST = {
   connector_id: CONNECTOR_ID,
   name: "Generation Fence Test",
@@ -204,43 +215,29 @@ test("generation increments to 2 when a stale run is reclaimed and a new run is 
   // Wait for watchdog to reclaim.
   await new Promise((res) => setTimeout(res, 300).unref());
 
-  // Admit a second run for the same connector_instance. (Note: runNow has no
-  // per-call runConnectorImpl override — the controller-level `hang.impl` set
-  // above applies to every run; this call's outcome is soft-checked below.)
-  await controller
-    .runNow(CONNECTOR_ID, {
-      connectorInstanceId: "cin_gen_b",
-      manifest: MANIFEST,
-      ownerToken: "owner-token",
-      runId: "run_gen_b_2",
-    })
-    // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
-    .catch(() => {}); // may 409 if watchdog hasn't fully cleaned yet; retry below
+  // The watchdog has reclaimed run 1 by now (its 20ms budget elapsed 300ms
+  // ago), so admitting run 2 must SUCCEED. Letting a 409 pass silently here
+  // would let the generation assertion below go vacuous — the previous version
+  // of this test swallowed the error and then guarded the assertion with
+  // `if (upserts.length > 0)`, so a controller that never admitted a second run
+  // at all would still have passed.
+  await controller.runNow(CONNECTOR_ID, {
+    connectorInstanceId: "cin_gen_b",
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_gen_b_2",
+  });
 
-  // The store upsert log should show generation 2 for the second run.
-  // Allow a brief settle for the watchdog's async cleanup to finish.
-  await new Promise((res) => setTimeout(res, 50).unref());
+  const gen2Upsert = store._upsertLog.find((r) => r.run_id === "run_gen_b_2");
+  assert.ok(gen2Upsert, "the reclaimed slot must have admitted run_gen_b_2");
+  assert.equal(gen2Upsert.run_generation, 2, "the run admitted after a reclaim must bump the generation to 2");
 
-  // Try a second run-now (may succeed now that watchdog has cleaned up).
-  try {
-    await controller.runNow(CONNECTOR_ID, {
-      connectorInstanceId: "cin_gen_b",
-      manifest: MANIFEST,
-      ownerToken: "owner-token",
-      runId: "run_gen_b_2b",
-    });
-  } catch {
-    // still 409 — watchdog may still be mid-cleanup; not the focus of this test
-  }
-
-  const gen2Upserts = store._upsertLog.filter((r) => r.run_id === "run_gen_b_2" || r.run_id === "run_gen_b_2b");
-  if (gen2Upserts.length > 0) {
-    for (const u of gen2Upserts) {
-      assert.ok(u.run_generation > 1, `second run must have run_generation > 1, got ${u.run_generation}`);
-    }
-  }
-  // Primary assertion: first run had generation 1.
-  assert.equal(gen1Upsert?.run_generation, 1);
+  // The fencing token is monotonic per connector_instance: the replacement
+  // strictly supersedes its predecessor.
+  assert.ok(
+    gen2Upsert.run_generation > (gen1Upsert?.run_generation ?? 0),
+    "run_generation must increase monotonically across a reclaim"
+  );
 
   hang.release();
   await controller.drainActiveRuns(1000);
@@ -253,7 +250,7 @@ test("zombie run (stale generation) is refused when emitting launch-failure term
 
   // This tests the .catch() fence path: if runConnectorImpl rejects AFTER
   // the watchdog has reclaimed the slot and bumped the generation, the catch
-  // handler must detect the stale generation and skip the emit.
+  // handler must not corrupt run_2's stream.
   //
   // We simulate this by:
   //   1. Starting a run with a runConnectorImpl that we can make reject on demand.
@@ -261,6 +258,16 @@ test("zombie run (stale generation) is refused when emitting launch-failure term
   //   3. Admitting run_2 (generation bumps to 2).
   //   4. Making run_1's impl reject (zombie path).
   //   5. Asserting run_2 has no corrupted terminal events from run_1.
+  //
+  // Caveat (do not remove without reading): in THIS scenario the watchdog's
+  // own run_timed_out write for run_1 succeeds before the zombie .catch()
+  // fires, so runAlreadyTerminal(run_1) is already true by then — the
+  // generation-mismatch check below is never the sole thing preventing a
+  // second write here (confirmed by mutation: deleting only the fence's
+  // `return;` still leaves this test green). The generation check's OWN
+  // discriminating coverage — the case where the watchdog's terminal write
+  // itself fails and runAlreadyTerminal is false — lives in
+  // run-generation-fencing-terminal-write-failure.test.ts.
 
   const store = createCapturingSchedulerStore();
   // Capture each call's reject independently so we can fire the right one.
@@ -271,12 +278,33 @@ test("zombie run (stale generation) is refused when emitting launch-failure term
     });
 
   const warnLines: string[] = [];
+  // Run 1 gets a short budget so the watchdog reclaims it promptly. Run 2 is
+  // admitted through a SECOND controller with an unreachable budget — the two
+  // share the module-scoped activeRuns/runGenerations state, so this is the
+  // same connector_instance from the fencing logic's point of view.
+  //
+  // Splitting the budgets is what makes this oracle DISCRIMINATING. With one
+  // controller at 20ms, run 2's OWN watchdog fires ~20ms after admission and
+  // legitimately writes it a `run_timed_out` terminal — so "run 2 has a
+  // terminal" would be true whether or not the fence works, and the assertion
+  // below would be measuring the test's own timing rather than the fence.
+  // Giving run 2 a budget it cannot reach within the test means the ONLY way
+  // it can acquire a terminal event is a stale write from run 1.
   const controller = createController({
     admitRunConnection: fakeAdmitRunConnection(),
     connectorPathResolver: () => "/tmp/connector.js",
     // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
     logger: { error: () => {}, warn: (l: unknown) => warnLines.push(String(l)) },
     maxRunWallClockMs: 20,
+    runConnectorImpl: zombieImpl,
+    schedulerStore: store,
+  });
+  const replacementController = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    connectorPathResolver: () => "/tmp/connector.js",
+    // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+    logger: { error: () => {}, warn: (l: unknown) => warnLines.push(String(l)) },
+    maxRunWallClockMs: REPLACEMENT_RUN_UNREACHABLE_BUDGET_MS,
     runConnectorImpl: zombieImpl,
     schedulerStore: store,
   });
@@ -307,7 +335,7 @@ test("zombie run (stale generation) is refused when emitting launch-failure term
   // biome-ignore lint/suspicious/noImplicitAnyLet: the test initializes the value from runtime fixture state before its stable type is known.
   let handle2;
   try {
-    handle2 = await controller.runNow(CONNECTOR_ID, {
+    handle2 = await replacementController.runNow(CONNECTOR_ID, {
       connectorInstanceId: "cin_zombie",
       manifest: MANIFEST,
       ownerToken: "owner-token",
@@ -339,16 +367,38 @@ test("zombie run (stale generation) is refused when emitting launch-failure term
     "run_zombie_1 must have exactly 1 terminal (watchdog's); zombie catch must not emit a second"
   );
 
-  // A run_superseded warning must appear in the log.
-  const supersededWarn = warnLines.find((l) => l.includes("run_superseded") && l.includes("run_zombie_1"));
-  assert.ok(supersededWarn, `expected a run_superseded warning for run_zombie_1 (got: ${JSON.stringify(warnLines)})`);
-
   // run_zombie_2 must be unaffected — no phantom terminal from run_zombie_1.
+  // run_zombie_2's own watchdog cannot fire here (see the budget constant), so
+  // a terminal on it could only have come from the stale predecessor.
   assert.equal(
     countTerminalEvents("run_zombie_2"),
     0,
     "run_zombie_2 must have no terminal events (it is still in flight)"
   );
+
+  // The stale predecessor must not have EVICTED the replacement either: losing
+  // the activeRuns entry is the same ownership bug as a stale terminal write,
+  // and it is what lets a later 409 guard hand the slot to a third run while
+  // run_zombie_2 is still executing.
+  const stillActive = replacementController.getActiveRun(CONNECTOR_ID, { connectorInstanceId: "cin_zombie" });
+  assert.equal(stillActive?.run_id, "run_zombie_2", "run_zombie_2 must still own the connector_instance slot");
+  assert.equal(stillActive?.run_generation, 2, "the surviving active-run entry must carry the current generation");
+
+  // ...and the CURRENT generation must still be able to terminalize itself.
+  // Without this, the assertions above would also pass if the fence were
+  // implemented as "refuse every terminal write", which would be a worse bug.
+  rejectFns[1]?.(new Error("replacement run fails normally"));
+  await replacementController.drainActiveRuns(1000);
+  assert.equal(
+    countTerminalEvents("run_zombie_2"),
+    1,
+    "the current-generation run must still be able to write its own terminal"
+  );
+
+  // Observability, asserted last so a fence regression surfaces as the data
+  // defect it is rather than as a missing log line.
+  const supersededWarn = warnLines.find((l) => l.includes("run_superseded") && l.includes("run_zombie_1"));
+  assert.ok(supersededWarn, `expected a run_superseded warning for run_zombie_1 (got: ${JSON.stringify(warnLines)})`);
 
   await controller.drainActiveRuns(1000);
 });

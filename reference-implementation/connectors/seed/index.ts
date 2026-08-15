@@ -13,8 +13,7 @@
  */
 
 import { createInterface } from "node:readline";
-
-const rl = createInterface({ input: process.stdin, terminal: false });
+import { pathToFileURL } from "node:url";
 
 type JsonPrimitive = boolean | null | number | string;
 type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -517,10 +516,121 @@ const REDDIT_SAVED = [
   },
 ];
 
+// ─── Connector-owned fixture registry ──────────────────────────────────────
+//
+// One declarative entry per fixture family: its connector_key, the stream
+// names that select it, and the handler that emits it. Both
+// SUPPORTED_SEED_CONNECTOR_KEYS (what `pdpp seed` may request) and main()'s
+// dispatch (what actually runs) derive mechanically from this array, so a
+// fixture family can no longer exist in one without the other — the prior
+// shape had a hand-typed SUPPORTED_SEED_CONNECTOR_KEYS literal and a
+// separate `wants(...)` block per family in main(), two lists a future
+// contributor could edit out of sync.
+type EmitRecordFn = (stream: string, record: SeedRecord) => void;
+
+interface SeedFixtureHandler {
+  connectorKey: string;
+  run: (emitRecord: EmitRecordFn) => void;
+  streamNames: readonly string[];
+}
+
+const SEED_FIXTURE_HANDLERS: readonly SeedFixtureHandler[] = [
+  {
+    connectorKey: "spotify",
+    run(emitRecord) {
+      emit({ message: `Emitting ${SPOTIFY_ARTISTS.length} artists`, stream: "top_artists", type: "PROGRESS" });
+      for (const artist of SPOTIFY_ARTISTS) {
+        emitRecord("top_artists", artist);
+      }
+      emit({
+        cursor: { last_updated: firstRecord(SPOTIFY_ARTISTS, "top_artists").source_updated_at },
+        stream: "top_artists",
+        type: "STATE",
+      });
+
+      emit({ message: `Emitting ${SPOTIFY_SAVED_TRACKS.length} tracks`, stream: "saved_tracks", type: "PROGRESS" });
+      for (const track of SPOTIFY_SAVED_TRACKS) {
+        emitRecord("saved_tracks", track);
+      }
+      emit({
+        cursor: { last_saved_at: firstRecord(SPOTIFY_SAVED_TRACKS, "saved_tracks").saved_at },
+        stream: "saved_tracks",
+        type: "STATE",
+      });
+
+      emit({
+        message: `Emitting ${SPOTIFY_RECENTLY_PLAYED.length} plays`,
+        stream: "recently_played",
+        type: "PROGRESS",
+      });
+      for (const play of SPOTIFY_RECENTLY_PLAYED) {
+        emitRecord("recently_played", play);
+      }
+    },
+    streamNames: ["top_artists", "saved_tracks", "recently_played"],
+  },
+  {
+    connectorKey: "github",
+    run(emitRecord) {
+      emit({ message: `Emitting ${GITHUB_REPOS.length} repos`, stream: "repositories", type: "PROGRESS" });
+      for (const repo of GITHUB_REPOS) {
+        emitRecord("repositories", repo);
+      }
+      emit({
+        cursor: { last_updated: firstRecord(GITHUB_REPOS, "repositories").source_updated_at },
+        stream: "repositories",
+        type: "STATE",
+      });
+
+      emit({ message: `Emitting ${GITHUB_STARRED.length} starred repos`, stream: "starred", type: "PROGRESS" });
+      for (const star of GITHUB_STARRED) {
+        emitRecord("starred", star);
+      }
+    },
+    streamNames: ["repositories", "starred"],
+  },
+  {
+    connectorKey: "reddit",
+    run(emitRecord) {
+      emit({ message: `Emitting ${REDDIT_POSTS.length} posts`, stream: "posts", type: "PROGRESS" });
+      for (const post of REDDIT_POSTS) {
+        emitRecord("posts", post);
+      }
+      emit({ cursor: { after: firstRecord(REDDIT_POSTS, "posts").id }, stream: "posts", type: "STATE" });
+
+      emit({ message: `Emitting ${REDDIT_COMMENTS.length} comments`, stream: "comments", type: "PROGRESS" });
+      for (const comment of REDDIT_COMMENTS) {
+        emitRecord("comments", comment);
+      }
+      emit({ cursor: { after: firstRecord(REDDIT_COMMENTS, "comments").id }, stream: "comments", type: "STATE" });
+
+      emit({ message: `Emitting ${REDDIT_SAVED.length} saved items`, stream: "saved", type: "PROGRESS" });
+      for (const saved of REDDIT_SAVED) {
+        emitRecord("saved", saved);
+      }
+    },
+    streamNames: ["posts", "comments", "saved"],
+  },
+];
+
+/**
+ * The connector_key of every fixture family this file actually has emit
+ * logic for. This is the connector-owned fact of what the seed connector can
+ * emit — callers (e.g. `pdpp seed`) that need to know which connectors are
+ * seedable must read this export rather than re-deriving the answer from
+ * manifest metadata, which only proves a connector_id was declared, not that
+ * this file emits fixtures for it. Derived from SEED_FIXTURE_HANDLERS, the
+ * same registry main() dispatches against, so this can never drift from what
+ * main() actually runs.
+ */
+export const SUPPORTED_SEED_CONNECTOR_KEYS: readonly string[] = Object.freeze(
+  SEED_FIXTURE_HANDLERS.map((handler) => handler.connectorKey)
+);
+
 // ─── Protocol ─────────────────────────────────────────────────────────────────
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
 async function main(): Promise<void> {
+  const rl = createInterface({ input: process.stdin, terminal: false });
   const startMsg = await new Promise<StartMessage>((resolve, reject) => {
     rl.once("line", (line) => {
       try {
@@ -554,13 +664,10 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const wants = (...streamNames: string[]): boolean =>
-    streamNames.some((streamName) => requestedStreams.has(streamName));
   const emittedAt = new Date().toISOString();
-
   let totalEmitted = 0;
 
-  function emitRecord(stream: string, record: SeedRecord): void {
+  const emitRecord: EmitRecordFn = (stream, record) => {
     emit({
       data: record,
       emitted_at: emittedAt,
@@ -569,71 +676,11 @@ async function main(): Promise<void> {
       type: "RECORD",
     });
     totalEmitted += 1;
-  }
+  };
 
-  // Spotify
-  if (wants("top_artists", "saved_tracks", "recently_played")) {
-    emit({ message: `Emitting ${SPOTIFY_ARTISTS.length} artists`, stream: "top_artists", type: "PROGRESS" });
-    for (const artist of SPOTIFY_ARTISTS) {
-      emitRecord("top_artists", artist);
-    }
-    emit({
-      cursor: { last_updated: firstRecord(SPOTIFY_ARTISTS, "top_artists").source_updated_at },
-      stream: "top_artists",
-      type: "STATE",
-    });
-
-    emit({ message: `Emitting ${SPOTIFY_SAVED_TRACKS.length} tracks`, stream: "saved_tracks", type: "PROGRESS" });
-    for (const track of SPOTIFY_SAVED_TRACKS) {
-      emitRecord("saved_tracks", track);
-    }
-    emit({
-      cursor: { last_saved_at: firstRecord(SPOTIFY_SAVED_TRACKS, "saved_tracks").saved_at },
-      stream: "saved_tracks",
-      type: "STATE",
-    });
-
-    emit({ message: `Emitting ${SPOTIFY_RECENTLY_PLAYED.length} plays`, stream: "recently_played", type: "PROGRESS" });
-    for (const play of SPOTIFY_RECENTLY_PLAYED) {
-      emitRecord("recently_played", play);
-    }
-  }
-
-  // GitHub
-  if (wants("repositories", "starred")) {
-    emit({ message: `Emitting ${GITHUB_REPOS.length} repos`, stream: "repositories", type: "PROGRESS" });
-    for (const repo of GITHUB_REPOS) {
-      emitRecord("repositories", repo);
-    }
-    emit({
-      cursor: { last_updated: firstRecord(GITHUB_REPOS, "repositories").source_updated_at },
-      stream: "repositories",
-      type: "STATE",
-    });
-
-    emit({ message: `Emitting ${GITHUB_STARRED.length} starred repos`, stream: "starred", type: "PROGRESS" });
-    for (const star of GITHUB_STARRED) {
-      emitRecord("starred", star);
-    }
-  }
-
-  // Reddit
-  if (wants("posts", "comments", "saved")) {
-    emit({ message: `Emitting ${REDDIT_POSTS.length} posts`, stream: "posts", type: "PROGRESS" });
-    for (const post of REDDIT_POSTS) {
-      emitRecord("posts", post);
-    }
-    emit({ cursor: { after: firstRecord(REDDIT_POSTS, "posts").id }, stream: "posts", type: "STATE" });
-
-    emit({ message: `Emitting ${REDDIT_COMMENTS.length} comments`, stream: "comments", type: "PROGRESS" });
-    for (const comment of REDDIT_COMMENTS) {
-      emitRecord("comments", comment);
-    }
-    emit({ cursor: { after: firstRecord(REDDIT_COMMENTS, "comments").id }, stream: "comments", type: "STATE" });
-
-    emit({ message: `Emitting ${REDDIT_SAVED.length} saved items`, stream: "saved", type: "PROGRESS" });
-    for (const saved of REDDIT_SAVED) {
-      emitRecord("saved", saved);
+  for (const handler of SEED_FIXTURE_HANDLERS) {
+    if (handler.streamNames.some((streamName) => requestedStreams.has(streamName))) {
+      handler.run(emitRecord);
     }
   }
 
@@ -641,12 +688,18 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-main().catch((error: unknown) => {
-  emit({
-    error: { message: messageFromError(error), retryable: false },
-    records_emitted: 0,
-    status: "failed",
-    type: "DONE",
+// Guarded so `SUPPORTED_SEED_CONNECTOR_KEYS` can be imported (e.g. by
+// cli/commands/seed.ts) without also starting the stdin protocol loop —
+// main() must run only when this file is the process entrypoint (how the
+// runtime spawns it: `node --import tsx/esm connectors/seed/index.ts`).
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  main().catch((error: unknown) => {
+    emit({
+      error: { message: messageFromError(error), retryable: false },
+      records_emitted: 0,
+      status: "failed",
+      type: "DONE",
+    });
+    process.exit(1);
   });
-  process.exit(1);
-});
+}

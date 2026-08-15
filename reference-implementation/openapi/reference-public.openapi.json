@@ -9162,6 +9162,10 @@
                           "object": {
                             "const": "record"
                           },
+                          "record_json_bytes": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
                           "stream": {
                             "type": "string"
                           }
@@ -10515,6 +10519,10 @@
                     },
                     "object": {
                       "const": "record"
+                    },
+                    "record_json_bytes": {
+                      "minimum": 0,
+                      "type": "integer"
                     },
                     "stream": {
                       "type": "string"

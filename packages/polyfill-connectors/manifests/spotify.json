@@ -5,6 +5,28 @@
   "manifest_uri": "https://registry.pdpp.dev/connectors/spotify",
   "version": "0.1.0",
   "display_name": "Spotify",
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "access_token",
+      "label": "Spotify access token",
+      "description": "Paste a Spotify Web API access token with the scopes needed for this source.",
+      "submit_label": "Save Spotify token and start first sync",
+      "fields": [
+        {
+          "name": "secret",
+          "label": "Spotify access token",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_url": "https://developer.spotify.com/documentation/web-api/concepts/access-token",
+          "help_text": "Create or obtain a Spotify Web API access token, then paste it here.",
+          "env": ["SPOTIFY_ACCESS_TOKEN"]
+        }
+      ]
+    }
+  },
   "runtime_requirements": {
     "bindings": {
       "network": {
@@ -15,8 +37,7 @@
   "capabilities": {
     "human_interaction": ["credentials"],
     "public_listing": {
-      "listed": false,
-      "status": "unproven",
+      "tier": "development",
       "rationale": "Hidden from the reference dashboard catalog until a credentialed run proves useful records in the deployment."
     },
     "refresh_policy": {
@@ -204,7 +225,7 @@
     },
     {
       "name": "recently_played",
-      "description": "Recent play events (max 50 via Web API).",
+      "description": "Recent play events returned by Spotify; the Web API limits each page to 50 items and the connector follows cursor pagination.",
       "display": {
         "label": "Your recent plays",
         "detail": "Recent track plays with played_at timestamps. API limited to last 50."

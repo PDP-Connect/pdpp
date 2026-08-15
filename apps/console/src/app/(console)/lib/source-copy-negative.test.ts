@@ -52,6 +52,8 @@ const OVERRULED_STATUS_LABEL_RE = /Not self-service yet/;
 const CONTRADICTORY_CHIP_RE = /moves into the dashboard soon/i;
 const RUNBOOK_COPY_RE = /runbook/i;
 const BROWSER_COLLECTOR_ACTION_HREF_RE = /\/connect\/browser-session\/stub-browser_collector_manual/;
+const PREVIEW_GUIDANCE_RE = /^Preview:/;
+const LIVE_VALIDATION_CAVEAT_RE = /not completed live validation/;
 
 /**
  * Forbidden owner-facing copy. Each entry is a human-readable class + the regex
@@ -84,10 +86,77 @@ function stripComments(src: string): string {
 
 /** A minimal catalog entry stub for a given disposition. */
 function entryForDisposition(disposition: ConnectorCatalogEntry["disposition"]): ConnectorCatalogEntry {
+  const supported = new Set<ConnectorCatalogEntry["disposition"]>([
+    "local_collector_enroll",
+    "static_secret_connect",
+    "manual_upload_connect",
+    "browser_collector_manual",
+    "provider_auth_connect",
+  ]).has(disposition);
+  const proofGated = new Set<ConnectorCatalogEntry["disposition"]>([
+    "local_collector_unproven",
+    "provider_auth_proof_gated",
+    "browser_bound_runbook",
+    "manual_upload_pending",
+  ]).has(disposition);
+  const providerDeploymentBlocked = disposition === "provider_auth_deployment_blocked";
+  let setupModality = "unsupported";
+  if (disposition === "static_secret_connect") {
+    setupModality = "static_secret";
+  } else if (disposition === "manual_upload_connect" || disposition === "manual_upload_pending") {
+    setupModality = "manual_or_upload";
+  } else if (
+    disposition === "provider_auth_connect" ||
+    providerDeploymentBlocked ||
+    disposition === "provider_auth_proof_gated"
+  ) {
+    setupModality = "provider_authorization";
+  } else if (disposition === "browser_collector_manual" || disposition === "browser_bound_runbook") {
+    setupModality = "browser_bound";
+  } else if (disposition === "local_collector_enroll" || disposition === "local_collector_unproven") {
+    setupModality = "local_collector";
+  }
+
+  let nextStepKind = "unsupported";
+  if (disposition === "local_collector_enroll") {
+    nextStepKind = "enroll_local_collector";
+  } else if (disposition === "browser_collector_manual") {
+    nextStepKind = "enroll_browser_collector";
+  } else if (disposition === "static_secret_connect") {
+    nextStepKind = "capture_static_secret";
+  } else if (disposition === "provider_auth_connect") {
+    nextStepKind = "open_provider_auth";
+  } else if (providerDeploymentBlocked) {
+    nextStepKind = "needs_deployment_config";
+  } else if (disposition === "manual_upload_connect" || disposition === "manual_upload_pending") {
+    nextStepKind = "provide_import_file";
+  } else if (disposition === "browser_bound_runbook" || disposition === "provider_auth_proof_gated") {
+    nextStepKind = "manual_runbook";
+  }
+  let supportState = "unsupported";
+  if (providerDeploymentBlocked) {
+    supportState = "needs_deployment_config";
+  } else if (supported) {
+    supportState = "supported";
+  } else if (disposition === "static_secret_experimental") {
+    supportState = "experimental";
+  } else if (proofGated) {
+    supportState = "proof_gated";
+  }
   return {
     connectorKey: `stub-${disposition}`,
-    deploymentReadiness: { blockers: [], ready: true },
+    deploymentReadiness: {
+      blockers: [],
+      guidance: null,
+      state: providerDeploymentBlocked ? "needs_config" : "ready",
+    },
     disposition,
+    nextStepKind,
+    ownerActionMethod: supported ? "POST" : null,
+    ownerActionUrl: supported ? "/v1/owner/connections/intents" : null,
+    proofGate: proofGated ? "setup_proof_missing" : null,
+    setupModality,
+    supportState,
   } as unknown as ConnectorCatalogEntry;
 }
 
@@ -99,6 +168,7 @@ const ALL_DISPOSITIONS: readonly ConnectorCatalogEntry["disposition"][] = [
   "manual_upload_connect",
   "manual_upload_pending",
   "provider_auth_deployment_blocked",
+  "provider_auth_connect",
   "browser_bound_runbook",
   "local_collector_unproven",
   "provider_auth_proof_gated",
@@ -127,8 +197,9 @@ test("only self-service and server-setup dispositions expose primary actions", (
     "static_secret_connect",
     "manual_upload_connect",
     "browser_collector_manual",
-    "provider_auth_deployment_blocked",
+    "provider_auth_connect",
   ]);
+  const serverSetupDisposition = "provider_auth_deployment_blocked" as const;
   for (const disposition of ALL_DISPOSITIONS) {
     const entry = entryForDisposition(disposition);
     const action = sourceSetupAction(entry);
@@ -136,6 +207,11 @@ test("only self-service and server-setup dispositions expose primary actions", (
     if (expectedActionDispositions.has(disposition)) {
       assert.ok(action, `${disposition} should expose a real in-product next action`);
       assert.notEqual(availability, "not_available_here");
+      continue;
+    }
+    if (disposition === serverSetupDisposition) {
+      assert.equal(action, null, "blocked provider authorization must not render a dead action");
+      assert.equal(availability, "requires_server_setup");
       continue;
     }
     assert.equal(action, null, `${disposition} must not render a fake primary setup action`);
@@ -148,11 +224,29 @@ test("browser_collector_manual is an explicit Connect account route", () => {
   const status = sourceSetupStatus(entry);
   const action = sourceSetupAction(entry);
 
-  assert.equal(status.label, "Connect account");
+  assert.equal(status.label, "Supported");
   assert.equal(sourceSetupAvailability(entry), "available_now");
   assert.ok(action);
   assert.equal(action.label, "Connect account");
   assert.match(action.href, BROWSER_COLLECTOR_ACTION_HREF_RE);
+});
+
+test("public setup tiers are Supported or Preview, while actions retain their verbs", () => {
+  const supported = entryForDisposition("static_secret_connect");
+  const preview = entryForDisposition("static_secret_experimental");
+
+  assert.equal(sourceSetupStatus(supported).label, "Supported");
+  assert.deepEqual(sourceSetupAction(supported), {
+    href: "/connect/static-secret/stub-static_secret_connect",
+    label: "Add account",
+  });
+  assert.equal(sourceSetupStatus(preview).label, "Preview");
+  assert.match(sourceSetupGuidance(preview), PREVIEW_GUIDANCE_RE);
+  assert.match(sourceSetupGuidance(preview), LIVE_VALIDATION_CAVEAT_RE);
+  assert.deepEqual(sourceSetupAction(preview), {
+    href: "/connect/static-secret/stub-static_secret_experimental",
+    label: "Add account",
+  });
 });
 
 test("every first-account setup guidance line is free of forbidden copy", () => {
@@ -172,7 +266,10 @@ test("the agreed add-account labels are exactly the realignment-plan vocabulary"
       display_name: "ynab",
       runtime_requirements: { bindings: { network: {} } },
       setup: {
-        credential_capture: { credential_kind: "api_token", fields: [{ label: "T", name: "t", secret: true }] },
+        credential_capture: {
+          credential_kind: "api_token",
+          fields: [{ env: ["YNAB_PERSONAL_ACCESS_TOKEN"], label: "T", name: "t", secret: true }],
+        },
         modality: "static_secret",
       },
     } as never,
@@ -186,9 +283,9 @@ test("the agreed add-account labels are exactly the realignment-plan vocabulary"
   assert.ok(labels.length > 0, "projection must produce at least one label");
   const AGREED = new Set([
     "Add another account",
-    "Add path not packaged",
+    "Adding another account is not available yet",
     "Server setup required to add another account",
-    "Add path not available here",
+    "Adding another account is not available here",
   ]);
   for (const label of labels) {
     assertCleanCopy(label, "addAccountSupport label");

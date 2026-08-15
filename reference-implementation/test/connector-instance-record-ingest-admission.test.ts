@@ -158,7 +158,7 @@ test("SQLite: direct callers retain connector-agnostic ingest unless they opt in
   try {
     await registerConnector(manifest());
     const outcome = await ingestRecord(target("unregistered_compatibility_instance"), record("compatibility"));
-    assert.deepEqual(outcome, { accepted: true, changed: true });
+    assert.deepEqual(outcome, { accepted: true, changed: true, version: 1 });
   } finally {
     closeDb();
   }
@@ -233,7 +233,7 @@ for (const status of ["active", "draft", "paused"]) {
       const outcome = await ingestRecord(target(connectorInstanceId), record(status), {
         requireConnectionAdmission: true,
       });
-      assert.deepEqual(outcome, { accepted: true, changed: true });
+      assert.deepEqual(outcome, { accepted: true, changed: true, version: 1 });
     } finally {
       closeDb();
     }
@@ -252,7 +252,7 @@ test("SQLite: active connection with running run is admitted", async () => {
       requireConnectionAdmission: true,
       runId,
     });
-    assert.deepEqual(outcome, { accepted: true, changed: true });
+    assert.deepEqual(outcome, { accepted: true, changed: true, version: 1 });
   } finally {
     closeDb();
   }
@@ -394,7 +394,7 @@ test("SQLite: release-before-cancel central race preserves the committed write",
       runId,
     });
     terminalizeSqliteRun(connectorInstanceId, runId);
-    assert.deepEqual(outcome, { accepted: true, changed: true });
+    assert.deepEqual(outcome, { accepted: true, changed: true, version: 1 });
     assert.equal(sqliteRecordCount(connectorInstanceId), 1);
   } finally {
     closeDb();

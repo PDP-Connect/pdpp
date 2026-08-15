@@ -1,11 +1,14 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
+import { setImmediate as yieldImmediate } from "node:timers/promises";
 import { parseCoverageDiagnosticsStateSnapshot } from "../../packages/polyfill-connectors/src/local-source-inventory.ts";
 /**
  * PDPP Resource Server — record storage and grant-enforced query
  */
 import { getDb } from "./db.ts";
 import { assertGrantedManifestReadAuthority, assertManifestReadAuthority } from "./manifest-read-authority.ts";
+import type { ComputedLexicalFields } from "./search.ts";
+import type { ComputedSemanticEntries } from "./search-semantic.ts";
 
 // Optional post-commit hook for outbound client event subscriptions. The
 // hook is invoked after a `record_changes` row has been durably committed
@@ -37,7 +40,6 @@ import {
   getOne,
   iterate,
   iterateDynamicSqlAcknowledged,
-  type ReadOneQuery,
   referenceQueries,
   writeTransaction,
 } from "../lib/db.ts";
@@ -57,7 +59,6 @@ import {
   resolveRecordIdentityForBinding,
   resolveRequestBindings,
 } from "./connection-identity.ts";
-import { assertConnectorInstanceWritableStatus } from "./connector-instance-admission.ts";
 import {
   type ConnectorInstanceWriteOwnership,
   withConnectorInstanceWrite,
@@ -65,6 +66,8 @@ import {
 import { canonicalConnectorKey } from "./connector-key.ts";
 import { markConnectorSummaryEvidenceDirty } from "./connector-summary-read-model.ts";
 import { applyDatasetSummaryRecordDelta, markDatasetSummaryProjectionStale } from "./dataset-summary-read-model.ts";
+import { COLLECTION_SCOPE_STATE_KEY, readStoredCollectionScope } from "./local-collection-scope.ts";
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "./owner-auth.ts";
 import {
   postgresDeleteAllRecords,
   postgresDeleteRecord,
@@ -116,15 +119,22 @@ import {
   markRetainedSizeConnectionDirty,
   markRetainedSizeStreamDirty,
 } from "./retained-size-read-model.ts";
+import { firstSemanticTimeValue, SEMANTIC_TIME_UNKNOWN } from "./semantic-time-coercion.ts";
 import { createStorageBackend } from "./storage-backend.ts";
+import { currentStorageGeneration, isCurrentStorageGeneration } from "./storage-generation.ts";
 import {
   getChangeHistoryLimit,
   nowIso,
   resolveStorageConnectorId,
   resolveStorageConnectorInstanceId,
 } from "./storage-utils.ts";
+import {
+  ConnectorInstanceResolutionError,
+  makeDefaultAccountConnectorInstanceId,
+} from "./stores/connector-instance-store.ts";
 import { getDefaultConnectorStateStore } from "./stores/connector-state-store.ts";
 import { advanceSqliteDeviceIngestPrefix } from "./stores/device-exporter-store.ts";
+import { markSearchIndexDirtySqlite, recordSearchIndexDirtyFailure } from "./stores/search-index-dirty-store.ts";
 
 export { resolveRecordIdentityForBinding } from "./connection-identity.ts";
 
@@ -133,46 +143,18 @@ export { resolveRecordIdentityForBinding } from "./connection-identity.ts";
 // that boundary instead of creating a static route/import cycle.
 const LEXICAL_INDEX_MODULE = "./search.ts";
 const SEMANTIC_INDEX_MODULE = "./search-semantic.ts";
-interface RecordIndexIdentity {
-  connectorId: string;
-  connectorInstanceId: string;
-  recordKey: string;
-  stream: string;
-}
-
 interface RecordIndexStreamIdentity {
   connectorId: string;
   connectorInstanceId: string;
   stream: string;
 }
 
-interface RecordIndexUpsert extends RecordIndexIdentity {
-  data: unknown;
-  declaredFields?: string[] | undefined;
-}
-
-async function lexicalIndexDelete(args: RecordIndexIdentity): Promise<void> {
-  await (await import(LEXICAL_INDEX_MODULE)).lexicalIndexDelete(args);
-}
-
 async function lexicalIndexDeleteByConnectorStream(args: RecordIndexStreamIdentity): Promise<void> {
   await (await import(LEXICAL_INDEX_MODULE)).lexicalIndexDeleteByConnectorStream(args);
 }
 
-async function lexicalIndexUpsert(args: RecordIndexUpsert): Promise<void> {
-  await (await import(LEXICAL_INDEX_MODULE)).lexicalIndexUpsert(args);
-}
-
-async function semanticIndexDelete(args: RecordIndexIdentity): Promise<void> {
-  await (await import(SEMANTIC_INDEX_MODULE)).semanticIndexDelete(args);
-}
-
 async function semanticIndexDeleteByConnectorStream(args: RecordIndexStreamIdentity): Promise<void> {
   await (await import(SEMANTIC_INDEX_MODULE)).semanticIndexDeleteByConnectorStream(args);
-}
-
-async function semanticIndexUpsert(args: RecordIndexUpsert): Promise<void> {
-  await (await import(SEMANTIC_INDEX_MODULE)).semanticIndexUpsert(args);
 }
 
 type HookContext = Record<string, unknown>;
@@ -205,22 +187,35 @@ interface AttemptContext {
   streams?: Record<string, AttemptStreamFacts>;
 }
 type DeviceReservation = Record<string, unknown> & { inputIndex: number };
-export interface RecordIngestOptions {
+interface RecordIngestOptions {
   attemptContext?: AttemptContext;
   coordinatorOwnership?: ConnectorInstanceWriteOwnership;
   deferIndexes?: boolean;
   deviceFinalInputIndex?: number;
   deviceReservation?: DeviceReservation;
   /**
-   * Require a current, non-revoked connector-instance row before the durable
-   * record mutation. Omitted callers keep the connector-agnostic storage
-   * primitive behavior used by repair and compatibility paths.
+   * Opt-in re-check, inside the SAME `withConnectorInstanceWrite` fence this
+   * call already acquires, that the `connector_instances` row still exists
+   * before writing. Closes the delete/write TOCTOU a bare fence does not
+   * close on its own: the fence only serializes a delete against a write for
+   * the SAME identity, it does not reject a write that acquires the fence
+   * AFTER a delete already committed and removed the row (see
+   * `assertConnectorInstanceWritable`). Opt-in (default false/omitted) so
+   * `ingestRecord`/`ingestRecords` stay usable as a connector-agnostic
+   * durable storage primitive by direct callers (tests, internal repair
+   * paths) that never enroll a `connector_instances` row; HTTP routes that
+   * admit an external caller after resolving a real connection set this
+   * true.
    */
   requireConnectionAdmission?: boolean;
   /**
-   * The run this write belongs to, when known. Present values are checked
-   * inside the durable write transaction and fail closed unless the matching
-   * run_history row for this connector instance is still running.
+   * The run this write belongs to, when known. When present, the durable
+   * mutation checks run_history for (runId, connectorInstanceId) inside the
+   * same write transaction and refuses the write if the run is already
+   * terminal — the runtime's own AbortSignal is a client-side socket-close
+   * heuristic and cannot prevent a write already admitted into the
+   * connector-instance write coordinator from committing after cancellation.
+   * See harden-ingest-run-admission-fence.
    */
   runId?: string | null;
 }
@@ -251,12 +246,27 @@ interface RecordIngestOutcome {
   self_healed?: boolean;
   version?: number;
 }
-export interface ClassifiedIngestFailure {
-  code: string;
-  message: string;
-  retryable: boolean;
-}
 type DeviceRecordPlanEntry = { inputIndex: number; record: RecordEnvelope } & Record<string, unknown>;
+
+export type RecordIngestBatchOutcome = RecordIngestOutcome & {
+  /**
+   * Present when the durable write or its derived-index phase failed.
+   * Structured (not a bare string) so a caller can distinguish a permanent
+   * per-record data defect from a systemic/retryable storage failure without
+   * ever matching on `.message` text — see `classifyIngestFailure`.
+   */
+  error?: ClassifiedIngestFailure;
+};
+type RecordIngestAfterRecord = (record: RecordEnvelope, outcome: RecordIngestBatchOutcome) => void | Promise<void>;
+interface DeferredRecordIndex {
+  index: number;
+  record: RecordEnvelope;
+  version: number;
+}
+interface IngestRecordsWithinCoordinatorResult {
+  changedRecords: DeferredRecordIndex[];
+  outcomes: RecordIngestBatchOutcome[];
+}
 interface JsonSchema {
   format?: string;
   properties?: Record<string, JsonSchema>;
@@ -279,6 +289,7 @@ interface ManifestStream {
 }
 type RequestParams = Record<string, unknown>;
 interface StreamGrant {
+  connection_id?: string;
   fields?: string[] | null;
   instance_ids?: string[];
   resources?: string[];
@@ -294,6 +305,10 @@ interface StoredRecordRow {
   __fk?: unknown;
   emitted_at: string;
   record_json: string;
+  // Only populated by `recordsGetLiveRecordByKey` (the single-record-detail
+  // point read). List/paginated queries against `StoredRecordRow` do not
+  // select this column, so it is `undefined` there — never a fabricated `0`.
+  record_json_bytes?: number;
   record_key: string;
 }
 interface VisibleRecordRow {
@@ -329,6 +344,12 @@ interface ResponseRecord {
   id: string;
   meta?: RecordResponseMeta;
   object: "record";
+  // Logical byte length of this record's current `record_json` (SQLite:
+  // LENGTH(CAST(record_json AS BLOB)); Postgres: octet_length(record_json)).
+  // Only populated on the single-record-detail read path
+  // (`getRecordAcrossBindings`/`postgresGetRecord`) — never on a list
+  // response. `undefined`/absent, not `0`, when unmeasured.
+  record_json_bytes?: number;
   stream: string;
 }
 type EffectiveParentRow = VisibleRecordRow & { responseRecord: ResponseRecord };
@@ -566,12 +587,19 @@ interface StorageBinding {
   connector_instance_id?: string;
 }
 interface ReadRequestBindingsArgs {
-  grant: ReadGrant;
+  grant: ReadGrant | null;
+  nativeProviderStorage?: boolean;
   ownerRead?: boolean;
   ownerSubjectId?: string;
   requestParams: RequestParams;
   storageBinding?: StorageBinding | null;
   streamName: string | null;
+}
+interface ReadRequestBinding {
+  connectorId: string;
+  connectorInstanceId: string;
+  displayName?: string | null;
+  [key: string]: unknown;
 }
 interface SyncStateOptions {
   allowedStreams?: Iterable<string> | null;
@@ -636,9 +664,7 @@ interface ClientEventChange {
   connectionId: string;
   connectorId: string;
   connectorInstanceId: string;
-  data: Record<string, unknown> | null;
   emittedAt: string;
-  recordKey: string;
   stream: string;
   version: number | null;
 }
@@ -779,6 +805,25 @@ const FAN_IN_READ_CONCURRENCY = 8;
 const DEFAULT_INDEX_WORK_LIMIT = 4;
 const DEFAULT_INDEX_WORK_QUEUE_LIMIT = 32;
 const DEFAULT_INDEX_WORK_ACQUIRE_DEADLINE_MS = 30_000;
+// Each record's durable write is a synchronous better-sqlite3 transaction
+// (writeTransaction in lib/db.ts); the batch loop below has no other await
+// that yields to libuv between records. Without a periodic yield, a large
+// batch runs as one uninterrupted event-loop turn and starves every other
+// request on the process (readiness/heartbeat/enroll included) for the
+// whole batch's synchronous duration. Yielding on a wall-time budget (not a
+// fixed record count) keeps the worst-case starvation window bounded
+// regardless of per-record cost, which varies with payload size and index
+// fan-out. Matches the yieldImmediate() cadence already used per-page in
+// search.ts/search-semantic.ts backfills.
+//
+// 1ms was chosen from a 5-run-per-config local benchmark (8k and 20k
+// records/batch): setImmediate's own overhead is small enough that yielding
+// this often costs no measurable ingest throughput (+4.0% median wall time
+// at 20k records vs. never yielding, well inside run-to-run noise) while
+// cutting worst-case starvation of a concurrent lightweight request from
+// >2000ms to <20ms at the same scale. Wider budgets (5/10/50ms) traded
+// materially worse worst-case latency for no measurable throughput gain.
+const INGEST_BATCH_YIELD_BUDGET_MS = 1;
 
 export class RecordIndexAdmissionError extends Error {
   code: string;
@@ -789,12 +834,40 @@ export class RecordIndexAdmissionError extends Error {
   }
 }
 
+/**
+ * Bounded allowlist of `.code` values this module KNOWS represent a
+ * permanent, per-record data defect — the same input will fail identically
+ * on every retry (a malformed primary key, a schema-invalid field shape).
+ * Deliberately NOT a denylist and NOT message-string matching: an error code
+ * this module has never seen (a raw SQLite/Postgres driver error, a future
+ * typed error class, a bare `Error`/`TypeError` with no `.code`) falls to the
+ * SYSTEMIC default in `classifyIngestFailure` below. That default direction
+ * is load-bearing: misclassifying an unknown failure as "permanent" is
+ * exactly the silent-data-loss shape this classifier exists to close (a real
+ * storage/coordination failure would be reported as an ordinary rejected
+ * record and never retried). Misclassifying a genuine permanent failure as
+ * "systemic" only costs a harmless retry that fails again identically — safe
+ * by construction, not a correctness bug.
+ */
 const PERMANENT_INGEST_FAILURE_CODES: ReadonlySet<string> = new Set([
   "connector_instance_not_found",
   "connector_instance_not_writable",
   "invalid_record_identity",
 ]);
 
+export interface ClassifiedIngestFailure {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+/**
+ * Classify a thrown ingest-write error as PERMANENT (per-record data defect,
+ * `retryable: false`) or SYSTEMIC (storage/coordination failure, or unknown,
+ * `retryable: true`) by its own typed `.code` field ONLY — never by matching
+ * `.message` text, which drifts silently as messages are edited. See
+ * `PERMANENT_INGEST_FAILURE_CODES` for why "unknown" defaults to systemic.
+ */
 export function classifyIngestFailure(err: unknown): ClassifiedIngestFailure {
   const message = err instanceof Error ? err.message : String(err);
   const codeField = (err as { code?: unknown } | null)?.code;
@@ -805,9 +878,14 @@ export function classifyIngestFailure(err: unknown): ClassifiedIngestFailure {
   return { code: code || "ingest_storage_error", message, retryable: true };
 }
 
+// A write already admitted into the per-connector-instance write coordinator
+// for a run that has since reached a terminal state (owner-cancelled, timed
+// out, or otherwise closed). The runtime's own cancellation signal is a
+// client-side AbortSignal that cannot retroactively un-admit a write the
+// server already accepted; this is the storage-layer fence that refuses it
+// instead. See harden-ingest-run-admission-fence.
 export class RecordIngestRunTerminalError extends Error {
   code: string;
-
   constructor(runId: string) {
     super(`run ${runId} is already terminal; refusing to commit an ingest write admitted before cancellation`);
     this.name = "RecordIngestRunTerminalError";
@@ -815,8 +893,36 @@ export class RecordIngestRunTerminalError extends Error {
   }
 }
 
-let activeIndexWork = 0;
-const indexWorkWaiters: IndexWorkWaiter[] = [];
+// Admission accounting is GENERATION-SCOPED (one bucket per
+// server/storage-generation.ts generation), not a single shared counter.
+// Rationale: a deferred index job captures its storage generation at
+// schedule time (scheduleRecordIndexMaintenance/runDeferredRecordIndexes)
+// and can still be legitimately computing when storage closes/reinitializes
+// underneath it (the fence makes it skip touching the NEW generation's
+// storage, but it does not — and must not — instantly stop; it drains on
+// its own). If admission accounting were one shared counter, that draining
+// old-generation job's eventual release() would decrement the NEW
+// generation's count, permitting oversubscription of the new generation's
+// concurrency policy purely because an unrelated old job happened to finish
+// around then — a cross-generation corruption bug, not a fix. Keying by
+// generation means an old bucket drains independently to zero and is simply
+// left as a small, self-contained, garbage-collectable entry; the current
+// generation's bucket is never written to by any other generation's
+// acquire/release calls.
+interface IndexWorkGenerationState {
+  active: number;
+  readonly waiters: IndexWorkWaiter[];
+}
+const indexWorkByGeneration = new Map<number, IndexWorkGenerationState>();
+
+function indexWorkStateFor(generation: number): IndexWorkGenerationState {
+  let state = indexWorkByGeneration.get(generation);
+  if (!state) {
+    state = { active: 0, waiters: [] };
+    indexWorkByGeneration.set(generation, state);
+  }
+  return state;
+}
 
 function configuredIndexWorkLimit() {
   const parsed = Number.parseInt(process.env.PDPP_INGEST_INDEX_WORK_LIMIT || "", 10);
@@ -833,72 +939,353 @@ function configuredIndexWorkAcquireDeadlineMs() {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_INDEX_WORK_ACQUIRE_DEADLINE_MS;
 }
 
-function removeIndexWorkWaiter(waiter: IndexWorkWaiter): void {
-  const index = indexWorkWaiters.indexOf(waiter);
+function removeIndexWorkWaiter(state: IndexWorkGenerationState, waiter: IndexWorkWaiter): void {
+  const index = state.waiters.indexOf(waiter);
   if (index >= 0) {
-    indexWorkWaiters.splice(index, 1);
+    state.waiters.splice(index, 1);
   }
 }
 
-async function acquireIndexWork(): Promise<void> {
-  if (activeIndexWork < configuredIndexWorkLimit() && indexWorkWaiters.length === 0) {
-    activeIndexWork += 1;
+// Shared cleanup predicate for a generation's admission bucket: drop it
+// only when it is genuinely idle (nothing acquired, nothing queued) AND it
+// is not the current generation (the current generation's bucket is kept
+// around for reuse, not recreated on every call). Called from BOTH
+// releaseIndexWork (the normal "job finished" path) and
+// dropIndexWorkStateIfIdleAndStale (LAND review finding #2: a rejected or
+// timed-out acquisition attempt never reaches releaseIndexWork at all,
+// since withIndexWork's try/finally only wraps the operation AFTER
+// `await acquireIndexWork(...)` returns -- a throw from acquireIndexWork
+// itself propagates before that finally block exists. Without this second
+// call site, a stale generation whose only admission attempts were ALL
+// rejected/timed-out would never have its bucket cleaned up, silently
+// contradicting the "old-generation buckets never revisited... drop them"
+// invariant documented below).
+function dropIndexWorkStateIfIdleAndStale(generation: number): void {
+  const state = indexWorkByGeneration.get(generation);
+  if (state && state.active === 0 && state.waiters.length === 0 && generation !== currentStorageGeneration()) {
+    indexWorkByGeneration.delete(generation);
+  }
+}
+
+async function acquireIndexWork(generation: number): Promise<void> {
+  const state = indexWorkStateFor(generation);
+  if (state.active < configuredIndexWorkLimit() && state.waiters.length === 0) {
+    state.active += 1;
     return;
   }
-  if (indexWorkWaiters.length >= configuredIndexWorkQueueLimit()) {
+  if (state.waiters.length >= configuredIndexWorkQueueLimit()) {
+    // Immediate rejection: this generation's bucket was just created (or
+    // already existed) but this attempt never became a waiter and never
+    // incremented `active`, so it never reaches releaseIndexWork's cleanup.
+    // Clean up here instead if the bucket turns out to be idle and stale.
+    dropIndexWorkStateIfIdleAndStale(generation);
     throw new RecordIndexAdmissionError();
   }
-  await new Promise<void>((resolve, reject) => {
-    const waiter: IndexWorkWaiter = {
-      resolve: () => {
-        if (waiter.settled) {
-          return;
-        }
-        waiter.settled = true;
-        clearTimeout(waiter.timer);
-        resolve();
-      },
-      settled: false,
-      timer: setTimeout(() => {
-        if (waiter.settled) {
-          return;
-        }
-        waiter.settled = true;
-        removeIndexWorkWaiter(waiter);
-        reject(new RecordIndexAdmissionError());
-      }, configuredIndexWorkAcquireDeadlineMs()),
-    };
-    indexWorkWaiters.push(waiter);
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const waiter: IndexWorkWaiter = {
+        resolve: () => {
+          if (waiter.settled) {
+            return;
+          }
+          waiter.settled = true;
+          clearTimeout(waiter.timer);
+          resolve();
+        },
+        settled: false,
+        timer: setTimeout(() => {
+          if (waiter.settled) {
+            return;
+          }
+          waiter.settled = true;
+          removeIndexWorkWaiter(state, waiter);
+          reject(new RecordIndexAdmissionError());
+        }, configuredIndexWorkAcquireDeadlineMs()),
+      };
+      state.waiters.push(waiter);
+    });
+  } catch (err) {
+    // Waiter-timeout rejection: removeIndexWorkWaiter already ran inside
+    // the timer callback above, so by the time this catch runs the waiter
+    // is gone from state.waiters. If that was the bucket's last trace of
+    // activity (no other waiter, nothing ever acquired against this
+    // generation), it is now idle and stale -- clean it up here since this
+    // rejection also never reaches releaseIndexWork.
+    dropIndexWorkStateIfIdleAndStale(generation);
+    throw err;
+  }
 }
 
-function releaseIndexWork(): void {
-  while (indexWorkWaiters.length > 0) {
-    const next = indexWorkWaiters.shift();
+function releaseIndexWork(generation: number): void {
+  const state = indexWorkByGeneration.get(generation);
+  if (!state) {
+    return;
+  }
+  while (state.waiters.length > 0) {
+    const next = state.waiters.shift();
     if (!next || next.settled) {
       continue;
     }
     next.resolve();
     return;
   }
-  activeIndexWork = Math.max(0, activeIndexWork - 1);
+  state.active = Math.max(0, state.active - 1);
+  // Old-generation buckets are never revisited once idle (no future
+  // acquire will target them: schedule-time generation capture only ever
+  // points at generations that already existed at capture time). Drop them
+  // so this map cannot grow across a long-running process's history of
+  // restarts/reinits.
+  dropIndexWorkStateIfIdleAndStale(generation);
 }
 
-async function withIndexWork<T>(operation: () => Promise<T>): Promise<T> {
-  await acquireIndexWork();
-  try {
-    return await operation();
-  } finally {
-    releaseIndexWork();
+/**
+ * Thrown by `withIndexWork` when the storage generation changed while a job
+ * was queued on the index-work admission semaphore. This is NOT a caller-
+ * visible error: every call site that can run against a stale generation
+ * (the deferred/fire-and-forget paths) catches it as a normal "storage
+ * generation changed" drop, identical in effect to the earlier top-of-job
+ * generation check -- this is the SAME fence, re-asserted at the true last
+ * gate before any storage touch, because a job can pass the earlier check
+ * and then queue behind another generation's held admission permit for an
+ * arbitrarily long time before actually running its operation.
+ */
+class StaleStorageGenerationError extends Error {
+  constructor() {
+    super("storage generation changed while queued for index-work admission");
+    this.name = "StaleStorageGenerationError";
   }
 }
 
+async function withIndexWork<T>(operation: () => Promise<T>, generation = currentStorageGeneration()): Promise<T> {
+  await acquireIndexWork(generation);
+  try {
+    // Re-assert the fence immediately before touching storage: acquiring
+    // the semaphore can itself have waited an arbitrary amount of time
+    // (queued behind another generation's held permit), during which
+    // storage may have closed/reinitialized. This is the LAST gate, not a
+    // duplicate of the schedule-time check — that check only proves the
+    // generation was current at schedule time, not at the moment this job
+    // actually gets to run its operation.
+    if (generation !== currentStorageGeneration()) {
+      throw new StaleStorageGenerationError();
+    }
+    return await operation();
+  } finally {
+    releaseIndexWork(generation);
+  }
+}
+
+// Index work is derived state. Keep it ordered for one connector instance so
+// a newer record writer cannot race an older batch's lexical/semantic repair,
+// but do not make that derived queue another connector-instance writer fence.
+// A batch schedules its work before releasing the authoritative fence and
+// supplies a start barrier, so later batches cannot overtake it while blobs
+// remain free to acquire the writer fence.
+const connectorInstanceIndexTails = new Map<string, Promise<void>>();
+
+function enqueueConnectorInstanceIndexWork(
+  connectorInstanceId: string,
+  operation: () => Promise<void>,
+  startAfter?: Promise<void>
+): Promise<void> {
+  const previous = connectorInstanceIndexTails.get(connectorInstanceId) ?? Promise.resolve();
+  const next = previous.then(async () => {
+    if (startAfter) {
+      await startAfter;
+    }
+    await operation();
+  });
+  let tail: Promise<void>;
+  tail = next.then(
+    () => {
+      if (connectorInstanceIndexTails.get(connectorInstanceId) === tail) {
+        connectorInstanceIndexTails.delete(connectorInstanceId);
+      }
+    },
+    () => {
+      if (connectorInstanceIndexTails.get(connectorInstanceId) === tail) {
+        connectorInstanceIndexTails.delete(connectorInstanceId);
+      }
+    }
+  );
+  connectorInstanceIndexTails.set(connectorInstanceId, tail);
+  return next;
+}
+
+/**
+ * Reports ONLY the current storage generation's admission bucket. An old
+ * generation's still-draining bucket (see the generation-scoped accounting
+ * comment above `indexWorkByGeneration`) is deliberately invisible here: it
+ * is neither this process's current concurrency policy nor a leak, just a
+ * prior epoch's own work finishing on its own.
+ */
 export function recordIndexWorkStatsForTests(): { active: number; queued: number } {
-  return { active: activeIndexWork, queued: indexWorkWaiters.length };
+  const state = indexWorkByGeneration.get(currentStorageGeneration());
+  return { active: state?.active ?? 0, queued: state?.waiters.length ?? 0 };
+}
+
+/** Test-only: inspect an ARBITRARY generation's bucket, not just the current one. */
+export function recordIndexWorkStatsForGenerationForTests(generation: number): { active: number; queued: number } {
+  const state = indexWorkByGeneration.get(generation);
+  return { active: state?.active ?? 0, queued: state?.waiters.length ?? 0 };
+}
+
+/**
+ * Test-only: whether a generation's admission bucket exists in the Map at
+ * all (distinct from "exists but active:0, queued:0" -- see LAND review
+ * finding #2, a bucket that only ever saw rejected/timed-out acquisitions
+ * must still be removable, not merely quiescent).
+ */
+export function recordIndexWorkGenerationBucketExistsForTests(generation: number): boolean {
+  return indexWorkByGeneration.has(generation);
 }
 
 export function withRecordIndexWorkForTests<T>(operation: () => Promise<T>): Promise<T> {
   return withIndexWork(operation);
+}
+
+/**
+ * Thrown by `drainConnectorInstanceIndexWork` when the deferred lane does
+ * not reach quiescence within the deadline. Deliberately NOT a silent
+ * false-success: a caller that got this must not proceed as though the lane
+ * drained -- see the two call sites (CLI shutdown, test barriers) for what
+ * "not draining" means for each.
+ */
+export class ConnectorInstanceIndexWorkDrainTimeoutError extends Error {
+  readonly pendingConnectorInstanceCount: number;
+  constructor(pendingConnectorInstanceCount: number, timeoutMs: number) {
+    super(
+      `deferred index work did not drain within ${timeoutMs}ms: ${pendingConnectorInstanceCount} connector instance(s) still have in-flight/queued work`
+    );
+    this.name = "ConnectorInstanceIndexWorkDrainTimeoutError";
+    this.pendingConnectorInstanceCount = pendingConnectorInstanceCount;
+  }
+}
+
+/**
+ * Deterministic settlement barrier for the deferred per-connector-instance
+ * index lane (`enqueueConnectorInstanceIndexWork`'s tail chain). Awaits
+ * every in-flight/queued tail to quiescence -- looping because draining a
+ * snapshot of tails can itself let a new record's deferred job get enqueued
+ * before that snapshot settles, which would otherwise leave a fresh tail
+ * unobserved.
+ *
+ * Throws `ConnectorInstanceIndexWorkDrainTimeoutError` if the lane has not
+ * reached quiescence by `timeoutMs` -- returning normally on timeout would
+ * let a caller (shutdown, a test assertion) proceed as though every job had
+ * settled when one is still genuinely in flight, which is exactly the false
+ * confidence this barrier exists to rule out. Never rejects for any OTHER
+ * reason: each enqueued operation (fire-and-forget index maintenance)
+ * already swallows its own operation failure internally, so a tail promise
+ * rejecting here would only ever be enqueueConnectorInstanceIndexWork's own
+ * bookkeeping, which this function does not propagate.
+ *
+ * This is the primitive BOTH shutdown (closeDb must not run out from under
+ * an in-flight job's storage handle -- the "[db] No database is open"
+ * defect) and tests (asserting on lexical/semantic content after a write)
+ * need: a real barrier owned by the scheduler, not a counter poll.
+ */
+export async function drainConnectorInstanceIndexWork(timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const tails = Array.from(connectorInstanceIndexTails.values());
+    if (tails.length === 0) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw new ConnectorInstanceIndexWorkDrainTimeoutError(tails.length, timeoutMs);
+    }
+    // Each loop iteration awaits a bounded race between "every tail
+    // currently in the snapshot settles" and "the remaining deadline
+    // elapses," THEN re-snapshots the tails map -- a newly-enqueued tail
+    // (another record's deferred job scheduled while this round was
+    // waiting) is only visible on the NEXT iteration's fresh snapshot, so
+    // the loop cannot be replaced by a single non-looping await over one
+    // upfront collection. The round-boundary timer is cleared in BOTH race
+    // outcomes (not just left to expire): an uncleared ref'ed setTimeout
+    // keeps the event loop alive for its full remaining duration even after
+    // Promise.allSettled already won the race, which would retain the
+    // process for up to `timeoutMs` on every successful drain -- including
+    // a near-instant one.
+    // biome-ignore lint/performance/noAwaitInLoops: Each round's wait depends on the PRIOR round's tail snapshot; collapsing to Promise.all over one upfront snapshot would miss tails enqueued mid-drain.
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const timer = setTimeout(
+        () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          resolve();
+        },
+        Math.max(0, deadline - Date.now())
+      );
+      Promise.allSettled(tails).then(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+}
+
+/** Test-only alias, named for the call sites that only ever run in tests. */
+export function drainConnectorInstanceIndexWorkForTests(timeoutMs?: number): Promise<void> {
+  return drainConnectorInstanceIndexWork(timeoutMs);
+}
+
+/**
+ * Device-exporter entry point onto the SAME per-connector-instance ordered
+ * index lane every other writer uses (`scheduleRecordIndexMaintenance` for
+ * direct upsert/delete, `runDeferredRecordIndexes` for HTTP batches). This is
+ * NOT merely a queue for throughput — the lane's strict FIFO processing (one
+ * job's operation fully completes, including its actual index write, before
+ * the next job's operation even starts) is what makes "the LAST job to
+ * enqueue publishes the index" equivalent to "the index reflects the CURRENT
+ * durable row," with no separate version check needed: every writer enqueues
+ * its own index job synchronously, immediately after its OWN durable commit,
+ * and durable commits for the same key are themselves strictly ordered by
+ * the connector-instance write fence (in-process key gate; on Postgres, the
+ * per-record `pg_advisory_xact_lock`) — so enqueue order always matches
+ * commit order. A device-exporter batch that instead ran
+ * `maintainRecordIndexes` inline, decoupled from this lane, could publish a
+ * STALE snapshot after a same-instance direct writer's own (correctly
+ * lane-ordered) publication already ran, corrupting the derived index
+ * relative to the winning durable record — this closes that gap. The caller
+ * AWAITS the returned promise (unlike the HTTP batch path's fire-and-forget
+ * use of the same lane) to preserve the device-exporter contract that its
+ * 201 response implies lexical/semantic state already reflects the accepted
+ * write. See harden-connector-instance-write-fence-transaction-native.
+ */
+export function enqueueDeviceIndexMaintenance(
+  connectorInstanceId: string,
+  operation: () => Promise<void>
+): Promise<void> {
+  return enqueueConnectorInstanceIndexWork(connectorInstanceId, operation);
+}
+
+/**
+ * Test-only: enqueue an arbitrary operation onto the SAME per-connector-
+ * instance tail chain `drainConnectorInstanceIndexWork` reads, so a test can
+ * hold a tail open indefinitely (a controlled stand-in for a genuinely stuck
+ * deferred index job) and prove the barrier's own timeout contract.
+ */
+export function enqueueConnectorInstanceIndexWorkForTests(
+  connectorInstanceId: string,
+  operation: () => Promise<void>
+): Promise<void> {
+  return enqueueConnectorInstanceIndexWork(connectorInstanceId, operation);
+}
+
+/** Test-only: hold an index-work permit under an EXPLICIT (possibly stale) generation. */
+export function withRecordIndexWorkForGenerationForTests<T>(
+  generation: number,
+  operation: () => Promise<T>
+): Promise<T> {
+  return withIndexWork(operation, generation);
 }
 
 function fanInReadConcurrency(opts: { concurrency?: unknown } | null | undefined): number {
@@ -1070,6 +1457,7 @@ let ingestFaultHook: FaultHook | null = null;
 let deleteFaultHook: FaultHook | null = null;
 let recordIndexFaultHook: FaultHook | null = null;
 let sqliteRecordSortBackfillPhaseHook: AsyncFaultHook | null = null;
+let indexPublishPhaseHook: AsyncFaultHook | null = null;
 let admissionPreCheckPhaseHook: AsyncFaultHook | null = null;
 
 export function __setIngestFaultHookForTest(hook: unknown): void {
@@ -1088,33 +1476,51 @@ export function __setRecordIndexFaultHookForTest(hook: unknown): void {
   recordIndexFaultHook = isFaultHook(hook) ? hook : null;
 }
 
+/**
+ * Async pause seam at the exact boundary `maintainRecordIndexesWithinPermit`
+ * crosses from "expensive/unlocked compute done" to "the short version-gated
+ * publish transaction is about to open." Lets a test suspend an OLDER
+ * writer's publish here (after its own embedding/lexical compute finished,
+ * mirroring a slow provider call) while a NEWER writer's publish runs to
+ * completion, then resume — the adversarial interleaving the version-CAS
+ * exists to close. Fires with `{ connectorInstanceId, expectedVersion, op,
+ * recordKey, stream }` at point `"before-publish-transaction"`.
+ */
+export function __setIndexPublishPhaseHookForTest(hook: unknown): void {
+  indexPublishPhaseHook = isAsyncFaultHook(hook) ? hook : null;
+}
+
+async function maybeIndexPublishPhase(point: string, context: HookContext): Promise<void> {
+  await indexPublishPhaseHook?.(point, context);
+}
+
 /** Test-only seam for deterministic manifest registration ordering. */
 export function __setSqliteRecordSortBackfillPhaseHookForTest(hook: unknown): void {
   sqliteRecordSortBackfillPhaseHook = isAsyncFaultHook(hook) ? hook : null;
 }
 
-/** Test-only pause seam between the early admission check and durable write. */
+/**
+ * Async pause seam at the exact boundary `ingestRecord` crosses from "the
+ * pre-transaction `assertConnectorInstanceWritable` early-exit check passed"
+ * to "the durable write transaction is about to open." This is the genuine
+ * async gap a revoke (or delete) can land in: `withConnectorInstanceWrite`
+ * provides no atomicity between this check and the transaction, and
+ * `updateStatus` shares no lock with the ingest fence. Lets a test suspend a
+ * writer here, commit a concurrent revoke, then resume — proving the
+ * IN-TRANSACTION re-check (not this pre-check) is what actually closes the
+ * race. Fires with `{ connectorInstanceId }` at point
+ * `"after-admission-pre-check"`.
+ */
 export function __setAdmissionPreCheckPhaseHookForTest(hook: unknown): void {
   admissionPreCheckPhaseHook = isAsyncFaultHook(hook) ? hook : null;
-}
-
-async function maybeSqliteRecordSortBackfillPhaseForTest(point: string, context: HookContext): Promise<void> {
-  await sqliteRecordSortBackfillPhaseHook?.(point, context);
 }
 
 async function maybeAfterAdmissionPreCheckPhase(point: string, context: HookContext): Promise<void> {
   await admissionPreCheckPhaseHook?.(point, context);
 }
 
-function assertSqliteRunStillAdmitted(runId: string | null | undefined, connectorInstanceId: string): void {
-  if (!runId) {
-    return;
-  }
-  const query = referenceQueries.controllerGetRunHistoryStatusForRun as ReadOneQuery;
-  const runStatus = getOne<{ status: string }>(query, [runId, connectorInstanceId]);
-  if (runStatus?.status !== "running") {
-    throw new RecordIngestRunTerminalError(runId);
-  }
+async function maybeSqliteRecordSortBackfillPhaseForTest(point: string, context: HookContext): Promise<void> {
+  await sqliteRecordSortBackfillPhaseHook?.(point, context);
 }
 
 function maybeFault(point: string, ctx: HookContext): void {
@@ -1136,9 +1542,89 @@ function maybeRecordIndexFault(point: string, ctx: HookContext): void {
 }
 
 /**
- * Early refusal only. The transaction-native checks below are authoritative:
- * a revoke or delete can commit after this async read returns.
+ * A record/blob write must be refused for a `connector_instance_id` whose
+ * `connector_instances` row is gone, OR whose row exists but is `revoked` —
+ * closing a delete/write and a revoke/write TOCTOU the coordinator fence's
+ * mutual exclusion alone does not close: the fence only serializes a
+ * delete/revoke against a write for the SAME identity, it does not reject a
+ * write that acquires the fence AFTER a delete or revoke already committed.
+ * Neither the SQLite nor the Postgres schema declares a foreign key from
+ * `records`/`record_changes`/`blobs`/`blob_bindings` to `connector_instances`,
+ * so without the existence half of this check a post-delete write silently
+ * resurrects a live `records` row for a tombstoned, no-longer-existent
+ * connection; without the status half, a post-revoke write silently lands
+ * for a connection the owner explicitly stopped.
+ *
+ * `active` and `draft` both admit writes — `draft` is the pre-activation
+ * state a static-secret connection's first successful ingest must itself be
+ * able to reach (activateDraft flips draft -> active only AFTER a write
+ * succeeds). `paused` is deliberately left unaffected: it is a
+ * scheduler/refresh-run policy signal, not a per-write admission gate, and
+ * narrowing it without evidence a fresh defect exists there is out of scope
+ * for this fix.
+ *
+ * `ingestRecord`/`ingestRecords` stay a connector-agnostic durable storage
+ * primitive for direct callers by default (internal repair paths, and
+ * dozens of existing tests that ingest without ever enrolling a
+ * `connector_instances` row) — this check is opted into ONLY via
+ * `RecordIngestOptions.requireConnectionAdmission`. Owner HTTP ingest
+ * (server/routes/rs-mutation.ts) and device-exporter ingest
+ * (server/routes/ref-device-exporters.ts) both opt in on EVERY record, not
+ * once per batch. Source-webhook ingest (server/routes/source-webhooks.ts)
+ * is deliberately NOT wired to this check: it is connector-id-only generic
+ * ingest with no per-connection admission concept at that layer, so it is
+ * out of scope for this fix.
+ *
+ * THIS async function is only the cheap pre-check both backends run BEFORE
+ * their durable write transaction opens — an early exit for the common case,
+ * not the correctness guarantee. It cannot close the TOCTOU on its own: it
+ * is a separate `await` from the write transaction, so a revoke committed in
+ * the gap between this check passing and the transaction opening would slip
+ * through undetected. The AUTHORITATIVE, race-closing check runs INSIDE each
+ * backend's own durable write transaction, using the SAME
+ * `assertConnectorInstanceStatusWritable` predicate this function also
+ * calls: `assertPostgresConnectorInstanceWritable` (postgres-records.ts,
+ * called with the transaction's own client, inside the transaction-scoped
+ * advisory lock) and `assertSqliteConnectorInstanceWritableWithinTransaction`
+ * (this file, called from inside `writeTransaction` — no `await` between
+ * that read and the write it gates, so SQLite's single-writer connection
+ * makes it atomic with the mutation). `persistContentAddressedBlob`
+ * (blob writes, server/index.ts) is fenced the same way: no pre-check at the
+ * `withConnectorInstanceWrite` level (that fence is in-process only and, on
+ * Postgres, ends before the advisory lock is even acquired), only the
+ * in-transaction call on each backend's own write path.
+ *
+ * Reuses `ConnectorInstanceResolutionError`'s `connector_instance_not_found`
+ * code for a missing row — the same typed outcome `deleteConnection`'s own
+ * ownership check raises — so callers already handling that code (e.g. a
+ * route's `handleError` mapping to 404) require no new branch. A revoked row
+ * raises the distinct `connector_instance_not_writable` code, since the row
+ * DOES exist and conflating the two would misreport a revoke as a delete.
+ * See harden-connector-instance-write-fence-transaction-native.
  */
+/**
+ * Pure predicate shared by every writability check on every backend, so the
+ * status→error-code mapping can only ever drift in one place. `status: null`
+ * means "no row" (existence check already failed upstream of this call);
+ * everything else is the row's own `connector_instances.status`.
+ */
+function assertConnectorInstanceStatusWritable(status: string | null, connectorInstanceId: string): void {
+  if (status === null) {
+    throw new ConnectorInstanceResolutionError(
+      "connector_instance_not_found",
+      `Connector instance '${connectorInstanceId}' does not exist; it may have been deleted concurrently with this write.`,
+      { connectorInstanceId }
+    );
+  }
+  if (status === "revoked") {
+    throw new ConnectorInstanceResolutionError(
+      "connector_instance_not_writable",
+      `Connector instance '${connectorInstanceId}' is revoked; it may have been revoked concurrently with this write.`,
+      { connectorInstanceId }
+    );
+  }
+}
+
 export async function assertConnectorInstanceWritable(connectorInstanceId: string): Promise<void> {
   const status = isPostgresStorageBackend()
     ? ((
@@ -1149,18 +1635,28 @@ export async function assertConnectorInstanceWritable(connectorInstanceId: strin
       ).rows[0]?.status ?? null)
     : ((getOne(referenceQueries.connectorInstancesGetById, [connectorInstanceId]) as { status?: string } | null)
         ?.status ?? null);
-  assertConnectorInstanceWritableStatus(status, connectorInstanceId);
+  assertConnectorInstanceStatusWritable(status, connectorInstanceId);
 }
 
 /**
- * SQLite's synchronous transaction callback leaves no await between this
- * status read and the record mutation it admits.
+ * SQLite in-transaction re-check, mirroring `assertSqliteRunStillAdmitted`'s
+ * exact shape and rationale: the pre-transaction `assertConnectorInstanceWritable`
+ * check above closes nothing on its own — it is a separate `await` from the
+ * durable write's own `writeTransaction`, so a revoke (`updateStatus`, which
+ * is NOT wrapped in `withConnectorInstanceWrite` and shares no lock with the
+ * ingest fence) can commit in the gap between the pre-check passing and the
+ * write transaction opening. SQLite's single-writer connection makes THIS
+ * check atomic with the mutation it guards, because both run inside the SAME
+ * synchronous transaction callback — there is no `await` between this read
+ * and the write it gates. Must be called from inside the durable write
+ * transaction, never before it. See
+ * harden-connector-instance-write-fence-transaction-native.
  */
 export function assertSqliteConnectorInstanceWritableWithinTransaction(connectorInstanceId: string): void {
   const status =
     (getOne(referenceQueries.connectorInstancesGetById, [connectorInstanceId]) as { status?: string } | null)?.status ??
     null;
-  assertConnectorInstanceWritableStatus(status, connectorInstanceId);
+  assertConnectorInstanceStatusWritable(status, connectorInstanceId);
 }
 
 /**
@@ -1204,6 +1700,269 @@ export async function ingestRecord(
     },
     options.coordinatorOwnership
   );
+}
+
+/**
+ * Ingest one HTTP batch, EACH RECORD under its own short-lived
+ * connector-instance fence — never one fence held for the whole batch.
+ *
+ * Ordering (record N+1 never starts before record N, and its `afterRecord`,
+ * finish) comes from this function's own sequential `for` loop, not from
+ * holding a lease: the loop already awaits each record before starting the
+ * next, so no external lock is needed to enforce that order. `afterRecord`
+ * runs between two independently-acquired-and-released fences — it is
+ * never inside any lifecycle critical section (in-process key gate on
+ * either backend, or the Postgres transaction-scoped advisory lock) — so a
+ * slow `afterRecord` cannot make an UNRELATED same-instance writer (e.g. a
+ * concurrent blob upload) queue behind the whole batch's duration. Derived
+ * index work is serialized on a separate per-instance lane after the LAST
+ * record's fence releases, so embedding and index latency still cannot
+ * starve blob writers.
+ *
+ * This closes the exact live-incident shape (GroupMe run_1786382625843_1,
+ * GitHub run_1786382759095): a batch/afterRecord no longer holds ANY
+ * exclusion mechanism — Postgres advisory lock, in-process key gate, or
+ * admission slot — for longer than one record's own durable unit of work.
+ * See harden-connector-instance-write-fence-transaction-native.
+ */
+export async function ingestRecords(
+  storageTarget: RecordStorageTarget,
+  records: readonly RecordEnvelope[],
+  afterRecord?: RecordIngestAfterRecord,
+  options: Pick<RecordIngestOptions, "requireConnectionAdmission" | "runId"> = {}
+): Promise<RecordIngestBatchOutcome[]> {
+  const coordinationConnectorId = connectorIdForStorageTarget(storageTarget);
+  const coordinationInstanceId = resolveStorageConnectorInstanceId(storageTarget, coordinationConnectorId);
+  let releaseFence: (() => void) | undefined;
+  const fenceReleasedPromise = new Promise<void>((resolve) => {
+    releaseFence = resolve;
+  });
+  try {
+    const batch = await ingestRecordsWithinCoordinator(
+      storageTarget,
+      records,
+      afterRecord,
+      options.runId,
+      options.requireConnectionAdmission
+    );
+    if (batch.changedRecords.length > 0) {
+      // Fire-and-forget: the HTTP batch ack must not await derived index
+      // work (see the single-record path's identical reasoning at
+      // scheduleRecordIndexMaintenance). Every changed record's stream
+      // already got its scope marked dirty inside its own commit
+      // transaction (ingestSqliteRecord/postgresIngestRecord run with
+      // deferIndexes: true below, which skips ONLY the inline
+      // maintainRecordIndexes call, never the durable dirty mark), so a
+      // crash here still converges via the reconcile sweep. `void`
+      // intentionally detaches this from the batch's own outcome array:
+      // derived-index failure must never retroactively flip an
+      // already-accepted outcome (see runDeferredRecordIndexes header).
+      // Storage-lifecycle fence: captured NOW, at schedule time -- see
+      // scheduleRecordIndexMaintenance's identical reasoning.
+      const scheduledGeneration = currentStorageGeneration();
+      enqueueConnectorInstanceIndexWork(
+        coordinationInstanceId,
+        () => runDeferredRecordIndexes(storageTarget, batch, scheduledGeneration),
+        fenceReleasedPromise
+      ).catch(() => {
+        // runDeferredRecordIndexes already catches every per-record
+        // failure internally; this only guards against the enclosing
+        // promise chain itself (e.g. enqueueConnectorInstanceIndexWork's
+        // own bookkeeping) ever rejecting unobserved.
+      });
+    }
+    releaseFence?.();
+    return batch.outcomes;
+  } finally {
+    releaseFence?.();
+  }
+}
+
+/**
+ * Runs each changed record's derived index maintenance. A failure is
+ * deliberately NOT surfaced back onto `batch.outcomes`: those outcomes were
+ * already returned to the HTTP caller as accepted durable writes by the
+ * time this runs (invariant: accepted durable records are never
+ * retroactively rejected by derived-index failure). Each affected scope's
+ * dirty flag was already set inside its own record's commit transaction;
+ * this function records structured failure evidence (I6) on that same row
+ * rather than only a console.warn line, and leaves the flag set for the
+ * bounded reconcile sweep to retry.
+ */
+async function runDeferredRecordIndexes(
+  storageTarget: RecordStorageTarget,
+  batch: IngestRecordsWithinCoordinatorResult,
+  scheduledGeneration: number
+): Promise<void> {
+  const connectorId = connectorIdForStorageTarget(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+  for (const { record, version } of batch.changedRecords) {
+    const { stream } = record;
+    // Storage-lifecycle fence (server/storage-generation.ts), re-checked per
+    // record: if storage closed/reinitialized partway through this batch's
+    // deferred work, stop touching it immediately rather than continuing
+    // against a generation this job was never scheduled against. Every
+    // remaining record's scope is still durably marked dirty from its own
+    // commit transaction, so the new generation's reconcile still converges
+    // them.
+    if (!isCurrentStorageGeneration(scheduledGeneration)) {
+      console.warn(
+        `[records] dropping remaining deferred batch index maintenance for ${connectorInstanceId}: storage generation changed since scheduling (crash/restart-safe by design)`
+      );
+      return;
+    }
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: One connector instance's derived index repairs are intentionally ordered.
+      await withIndexWork(
+        () => maintainRecordIndexesWithinPermit(storageTarget, record, version, {}),
+        scheduledGeneration
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (isCurrentStorageGeneration(scheduledGeneration)) {
+        await recordSearchIndexDirtyFailure({ connectorInstanceId, stream }, message).catch(() => {
+          // Evidence write is itself best-effort; never mask the original failure.
+        });
+      }
+      console.warn(
+        `[records] deferred batch index maintenance failed for ${connectorInstanceId}/${stream}, scope stays dirty for the reconcile sweep: ${message}`
+      );
+    }
+  }
+}
+
+/**
+ * Pure decision for whether the batch loop below should yield before moving
+ * to the next record. Kept independent of `setImmediate`/timing side
+ * effects so it can be unit-tested directly (see
+ * ingest-batch-yield-decision.test.ts).
+ *
+ * SQLite only: `ingestSqliteRecord`'s durable write is a fully synchronous
+ * better-sqlite3 transaction with no libuv yield of its own (the mechanism
+ * this fix addresses). `ingestPostgresRecord` already performs multiple
+ * real `await client.query(...)` round-trips per record — genuine I/O that
+ * already yields to the event loop — so an explicit yield there is pure
+ * unnecessary scheduler-hop overhead with no starvation to fix.
+ *
+ * Never on the last record: no further batch work follows it before the
+ * function returns, so yielding there buys nothing.
+ */
+export function shouldYieldBeforeNextIngestRecord(args: {
+  backendIsSqlite: boolean;
+  isLastRecord: boolean;
+  lastYieldAt: number;
+  now: number;
+}): boolean {
+  if (!args.backendIsSqlite || args.isLastRecord) {
+    return false;
+  }
+  return args.now - args.lastYieldAt >= INGEST_BATCH_YIELD_BUDGET_MS;
+}
+
+/**
+ * Thin async wrapper around `shouldYieldBeforeNextIngestRecord` — isolates
+ * the actual `setImmediate` side effect from the pure decision above so the
+ * decision itself stays unit-testable without timing.
+ */
+async function yieldIfIngestBatchRecordDecidesTo(args: {
+  backendIsSqlite: boolean;
+  isLastRecord: boolean;
+  lastYieldAt: number;
+}): Promise<number> {
+  const now = performance.now();
+  if (!shouldYieldBeforeNextIngestRecord({ ...args, now })) {
+    return args.lastYieldAt;
+  }
+  await yieldImmediate();
+  return performance.now();
+}
+
+async function ingestRecordsWithinCoordinator(
+  storageTarget: RecordStorageTarget,
+  records: readonly RecordEnvelope[],
+  afterRecord?: RecordIngestAfterRecord,
+  runId?: string | null,
+  requireConnectionAdmission?: boolean
+): Promise<IngestRecordsWithinCoordinatorResult> {
+  const outcomes: Array<RecordIngestBatchOutcome | undefined> = new Array(records.length);
+  const changedRecords: DeferredRecordIndex[] = [];
+  const perRecordOptions: RecordIngestOptions = {
+    deferIndexes: true,
+    // Re-verified inside EVERY record's own durable write transaction on
+    // BOTH backends (Postgres: postgresIngestRecord's requireConnectionAdmission
+    // handling, inside the transaction-scoped advisory lock; SQLite:
+    // assertSqliteConnectorInstanceWritableWithinTransaction, inside
+    // writeTransaction), not once before the loop: neither backend holds
+    // any lock across the whole batch, so only a per-record, in-transaction
+    // check closes the delete-or-revoke/write TOCTOU for every record, not
+    // just the first.
+    ...(requireConnectionAdmission ? { requireConnectionAdmission } : {}),
+    ...(runId ? { runId } : {}),
+  };
+  // Computed once per batch, not per record: the storage backend cannot
+  // change mid-batch, and this decides whether the explicit yield below
+  // applies at all (SQLite only — see shouldYieldBeforeNextIngestRecord).
+  const backendIsSqlite = !isPostgresStorageBackend();
+  let lastYieldAt = performance.now();
+  const lastIndex = records.length - 1;
+
+  for (const [index, record] of records.entries()) {
+    let outcome: RecordIngestBatchOutcome;
+    try {
+      // `ingestRecord`, NOT a shared batch-held `coordinatorOwnership`: each
+      // record acquires and releases its OWN short-lived connector-instance
+      // fence (in-process key gate, admission slot, and — on Postgres —
+      // its own transaction-scoped advisory lock). The `for` loop's own
+      // sequential `await` is what preserves per-request ordering; no
+      // lease needs to be held across records for that. This is what keeps
+      // an unrelated same-instance writer (e.g. a concurrent blob upload)
+      // from queuing behind the WHOLE batch's duration — see
+      // harden-connector-instance-write-fence-transaction-native.
+      // biome-ignore lint/performance/noAwaitInLoops: Durable version allocation and same-instance state transitions are intentionally ordered.
+      outcome = await ingestRecord(storageTarget, record, perRecordOptions);
+      if (outcome.accepted && outcome.changed && typeof outcome.version === "number") {
+        changedRecords.push({ index, record, version: outcome.version });
+      }
+    } catch (err) {
+      outcome = {
+        accepted: false,
+        changed: false,
+        error: classifyIngestFailure(err),
+      };
+    }
+    if (afterRecord && outcome.accepted) {
+      try {
+        // The callback is part of the per-record completion boundary. It must
+        // finish before the next record enters storage so host-side provenance
+        // and similar effects preserve the established store->effect order.
+        await afterRecord(record, outcome);
+      } catch (err) {
+        outcome = {
+          accepted: false,
+          changed: false,
+          error: classifyIngestFailure(err),
+        };
+      }
+    }
+    outcomes[index] = outcome;
+    lastYieldAt = await yieldIfIngestBatchRecordDecidesTo({
+      backendIsSqlite,
+      isLastRecord: index === lastIndex,
+      lastYieldAt,
+    });
+  }
+
+  return {
+    changedRecords,
+    outcomes: outcomes.map(
+      (outcome) =>
+        outcome ?? {
+          accepted: false,
+          changed: false,
+          error: { code: "ingest_storage_error", message: "ingest batch did not produce a result", retryable: true },
+        }
+    ),
+  };
 }
 
 function ingestRecordWithinCoordinator(
@@ -1263,7 +2022,7 @@ function toPostgresIngestOptions(options: RecordIngestOptions) {
   return {
     ...(attemptContext ? { attemptContext } : {}),
     ...(options.deviceReservation ? { deviceReservation: options.deviceReservation } : {}),
-    ...(options.requireConnectionAdmission ? { requireConnectionAdmission: true } : {}),
+    ...(options.requireConnectionAdmission ? { requireConnectionAdmission: options.requireConnectionAdmission } : {}),
     ...(options.runId ? { runId: options.runId } : {}),
   };
 }
@@ -1325,23 +2084,17 @@ async function ingestPostgresRecord(
       connectorInstanceId,
       reason: "record ingest changed connection count/stream evidence",
     });
-    if (!options.deferIndexes) {
-      await maintainRecordIndexes(
-        storageTarget,
-        record,
-        options.attemptContext ? { attemptContext: options.attemptContext } : {}
-      );
+    // Fire-and-forget, same reasoning as ingestSqliteRecord: this scope's
+    // dirty flag (written inside postgresIngestRecord's own transaction) is
+    // what makes it safe not to await this before returning the ack.
+    if (!options.deferIndexes && typeof outcome.version === "number") {
+      scheduleRecordIndexMaintenance(connectorInstanceId, stream, storageTarget, record, outcome.version, options);
     }
     __invokeClientEventEnqueueHook({
       connectionId: connectorInstanceId,
       connectorId,
       connectorInstanceId,
-      data:
-        record.data && typeof record.data === "object" && !Array.isArray(record.data)
-          ? (record.data as Record<string, unknown>)
-          : null,
       emittedAt: record.emitted_at ?? nowIso(),
-      recordKey: encodeKey(record.key),
       stream,
       version: outcome.version ?? null,
     });
@@ -1455,6 +2208,31 @@ function pruneRecordChangeHistory(
   return { prunedBytesForDelta, prunedRowsForDelta };
 }
 
+// Run-admission fence: SQLite's single writer connection makes this
+// read-then-write atomic with run_history's terminal write (both go through
+// the same synchronous handle — see run-history-writer.ts header). Fails
+// CLOSED: a caller that supplies a runId is asserting run-bound ingestion,
+// and runtime/index.ts always awaits the run.started spine write (which
+// durably inserts this row with status='running') before spawning the child
+// that could ever call flushBatch — so a genuine run-bound write is
+// guaranteed to find its row. A missing row for a supplied runId means the
+// id is spoofed, mistyped, or belongs to a run this process never started;
+// none of those should be admitted. Must be called from inside the durable
+// write transaction so no other write can land between this check and the
+// mutation it guards. See harden-ingest-run-admission-fence.
+function assertSqliteRunStillAdmitted(runId: string | null | undefined, connectorInstanceId: string): void {
+  if (!runId) {
+    return;
+  }
+  const runStatus = getOne<{ status: string }>(referenceQueries.controllerGetRunHistoryStatusForRun, [
+    runId,
+    connectorInstanceId,
+  ]);
+  if (runStatus?.status !== "running") {
+    throw new RecordIngestRunTerminalError(runId);
+  }
+}
+
 async function ingestSqliteRecord(
   storageTarget: RecordStorageTarget,
   record: RecordEnvelope,
@@ -1483,22 +2261,21 @@ async function ingestSqliteRecord(
   const effectiveEmittedAt = emitted_at || nowIso();
   // SEMANTIC time (when the thing happened) for the Explore merged-timeline sort.
   // Resolved from the manifest consent_time_field/cursor_field of `data`,
-  // epoch-aware, falling back to emitted_at. Only meaningful for upserts (a
-  // delete keeps the row's existing semantic_time); computed unconditionally for
-  // a simpler, branch-free bind below — the delete path does not write it.
+  // epoch-aware, or SEMANTIC_TIME_UNKNOWN when the record carries no real date.
+  // Only meaningful for upserts (a delete keeps the row's existing
+  // semantic_time); computed unconditionally for a simpler, branch-free bind
+  // below — the delete path does not write it.
   const semanticTime =
-    op === "delete"
-      ? effectiveEmittedAt
-      : computeIngestSemanticTime(connectorId, stream, data, effectiveEmittedAt, attemptStreamFacts);
+    op === "delete" ? SEMANTIC_TIME_UNKNOWN : computeIngestSemanticTime(connectorId, stream, data, attemptStreamFacts);
   const changeHistoryLimit = getChangeHistoryLimit();
 
   // Durable mutation unit: returns the operation outcome so derived index
   // maintenance can run *after* the commit succeeds.
   const outcome = writeTransaction<DurableIngestOutcome>(() => {
+    assertSqliteRunStillAdmitted(options.runId, connectorInstanceId);
     if (options.requireConnectionAdmission) {
       assertSqliteConnectorInstanceWritableWithinTransaction(connectorInstanceId);
     }
-    assertSqliteRunStillAdmitted(options.runId, connectorInstanceId);
     const finishDurableOutcome = (value: DurableIngestOutcome): DurableIngestOutcome => {
       if (options.deviceReservation) {
         advanceSqliteDeviceIngestPrefix(options.deviceReservation, options.deviceReservation.inputIndex);
@@ -1577,6 +2354,14 @@ async function ingestSqliteRecord(
 
     maybeFault("after-record-changes-append", { connectorId, connectorInstanceId, nextVersion, op, recordKey, stream });
 
+    // Scope-keyed dirty mark, inside the SAME transaction as the record
+    // mutation above: this scope's lexical/semantic index may now be stale,
+    // and unlike the best-effort connector-summary marker below, this flag
+    // has no independent future re-trigger if the scope receives no further
+    // writes -- so the mark must be atomic with the write, not best-effort
+    // after it. See server/stores/search-index-dirty-store.ts.
+    markSearchIndexDirtySqlite({ connectorId, connectorInstanceId, stream }, nowIso());
+
     const insertedChangeJsonBytes = byteLength(op === "delete" ? current?.record_json : recordJson);
     const { prunedBytesForDelta, prunedRowsForDelta } = pruneRecordChangeHistory(
       connectorInstanceId,
@@ -1607,15 +2392,15 @@ async function ingestSqliteRecord(
     return { accepted: true, changed: false };
   }
 
-  // Derived index maintenance runs after the durable commit. Failures here
-  // are not allowed to retroactively roll back the durable record mutation;
-  // recovery is the search-index drift detector's job.
+  // Derived index maintenance is scheduled after the durable commit but is
+  // NOT awaited here: the HTTP ack must not block on lexical/semantic index
+  // latency. This stays safe against a crash before the scheduled work runs
+  // because the scope-dirty flag (written inside the transaction above) is
+  // the durable fact that survives the crash -- the bounded reconcile sweep
+  // and read-time self-heal both check it. See scheduleRecordIndexMaintenance
+  // and server/stores/search-index-dirty-store.ts.
   if (!options.deferIndexes) {
-    await maintainRecordIndexes(
-      storageTarget,
-      record,
-      options.attemptContext ? { attemptContext: options.attemptContext } : {}
-    );
+    scheduleRecordIndexMaintenance(connectorInstanceId, stream, storageTarget, record, outcome.version, options);
   }
 
   // Colocated with the retained-size delta applied in the committed
@@ -1635,12 +2420,7 @@ async function ingestSqliteRecord(
     connectionId: connectorInstanceId,
     connectorId,
     connectorInstanceId,
-    data:
-      record.data && typeof record.data === "object" && !Array.isArray(record.data)
-        ? (record.data as Record<string, unknown>)
-        : null,
     emittedAt: effectiveEmittedAt,
-    recordKey: encodeKey(record.key),
     stream,
     version: outcome.version,
   });
@@ -1653,6 +2433,7 @@ async function ingestSqliteRecord(
   const result: RecordIngestOutcome = {
     accepted: true,
     changed: true,
+    version: outcome.version,
   };
   if (outcome.selfHeal) {
     result.self_healed = true;
@@ -1662,15 +2443,102 @@ async function ingestSqliteRecord(
 
 /**
  * Repair lexical and semantic derived state for an already committed record.
- * This is deliberately version-free; callers holding an instance fence may
- * invoke it after a committed durable phase or to repair a no-op replay.
+ * `expectedVersion` MUST be the durable `records.version` this `record`/its
+ * `data` snapshot was read or committed at — every derived-index write below
+ * is gated on that version still being current at publish time (see
+ * `maintainRecordIndexesWithinPermit`'s header). Callers holding an instance
+ * fence may invoke this after a committed durable phase or to repair a no-op
+ * replay, as long as they pass that replay's own current version, not a
+ * stale one.
  */
 export async function maintainRecordIndexes(
   storageTarget: RecordStorageTarget,
   record: RecordEnvelope,
-  options: RecordIngestOptions = {}
+  expectedVersion: number,
+  options: RecordIngestOptions = {},
+  generation: number = currentStorageGeneration()
 ): Promise<void> {
-  return await withIndexWork(() => maintainRecordIndexesWithinPermit(storageTarget, record, options));
+  return await withIndexWork(
+    () => maintainRecordIndexesWithinPermit(storageTarget, record, expectedVersion, options),
+    generation
+  );
+}
+
+/**
+ * Ack-independent index maintenance: schedules `maintainRecordIndexes` on
+ * the connector instance's ordered derived-work lane (never awaited by the
+ * HTTP ack path) and, on failure, records structured evidence on this
+ * scope's dirty row (I6) instead of only a console.warn line. Deliberately
+ * does NOT clear the scope-dirty flag on success: this call only proves ONE
+ * record's own maintenance succeeded, not that the whole
+ * (connector_instance_id, stream) scope is back in sync (another
+ * in-flight/failed record could still be dirty) -- clearing the flag is the
+ * bounded reconcile's job (reconcileSearchIndexDirtyScope), which re-checks
+ * the whole scope with the existing exact-comparison drift-checks before
+ * clearing.
+ */
+function scheduleRecordIndexMaintenance(
+  connectorInstanceId: string,
+  stream: string,
+  storageTarget: RecordStorageTarget,
+  record: RecordEnvelope,
+  version: number,
+  options: RecordIngestOptions,
+  startAfter?: Promise<void>
+): Promise<void> {
+  // Storage-lifecycle fence (server/storage-generation.ts): captured NOW,
+  // while the durable write that just committed is still the current
+  // generation. If storage is closed/reinitialized (test teardown, a
+  // future controlled-shutdown-then-restart-in-process path) before this
+  // deferred work actually runs, the generation check below drops the job
+  // instead of touching whatever storage handle/pool is current by then.
+  // The scope's dirty flag (already durably written inside that same
+  // committed transaction) is the fact the NEW generation's own startup
+  // reconcile picks up -- this job's disappearance is not a correctness
+  // gap, it is the fence doing its job.
+  const scheduledGeneration = currentStorageGeneration();
+  return enqueueConnectorInstanceIndexWork(
+    connectorInstanceId,
+    async () => {
+      if (!isCurrentStorageGeneration(scheduledGeneration)) {
+        console.warn(
+          `[records] dropping deferred index maintenance for ${connectorInstanceId}/${stream}: storage generation changed since scheduling (crash/restart-safe by design; the scope-dirty flag converges on the new generation's reconcile)`
+        );
+        return;
+      }
+      try {
+        await maintainRecordIndexes(
+          storageTarget,
+          record,
+          version,
+          options.attemptContext ? { attemptContext: options.attemptContext } : {},
+          scheduledGeneration
+        );
+      } catch (err) {
+        // Deliberately swallowed here: this call is fire-and-forget from the
+        // HTTP ack path, so an unobserved rejection would surface as an
+        // unhandled-rejection process warning, not a caller-visible
+        // failure. The scope's dirty flag (already 1 from the durable
+        // write) is left as-is; structured evidence lands on that same row
+        // so an operator/reconcile pass can see WHY, not just THAT it
+        // failed.
+        const message = err instanceof Error ? err.message : String(err);
+        // Re-check the fence: the failure itself may BE storage having
+        // closed mid-flight, in which case writing failure evidence would
+        // touch a different generation's table under the same scope key.
+        if (isCurrentStorageGeneration(scheduledGeneration)) {
+          await recordSearchIndexDirtyFailure({ connectorInstanceId, stream }, message).catch(() => {
+            // Evidence write is itself best-effort; never let it mask the
+            // original failure or throw out of a fire-and-forget lane.
+          });
+        }
+        console.warn(
+          `[records] deferred index maintenance failed for ${connectorInstanceId}/${stream}, scope stays dirty for the reconcile sweep: ${message}`
+        );
+      }
+    },
+    startAfter
+  );
 }
 
 /**
@@ -1692,6 +2560,16 @@ export async function prepareDeviceFinalRecords(
   durablePrefixCount = 0,
   coordinatorOwnership?: ConnectorInstanceWriteOwnership
 ) {
+  // No fence acquisition at all when there is nothing to repair: a
+  // first-attempt (non-retried) batch has every plan entry's inputIndex >=
+  // durablePrefixCount, so prepareDeviceFinalRecordsWithinCoordinator would
+  // immediately no-op anyway (see its own `skipped.length === 0` check
+  // below). Checking here, before acquiring, keeps a first-attempt batch
+  // from taking an extra connector-instance fence acquisition for work it
+  // was always going to skip.
+  if (plan.every((entry) => entry.inputIndex >= durablePrefixCount)) {
+    return [...plan];
+  }
   const connectorId = connectorIdForStorageTarget(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   return await withConnectorInstanceWrite(
@@ -1706,10 +2584,18 @@ function authoritativeFinalRecord(
   current: CurrentRecordRow | null
 ): DeviceRecordPlanEntry {
   const input = entry.record;
+  // `current.version` becomes this entry's `expectedVersion` for derived-index
+  // publication: a repair rereads the row fresh, so the version it carries IS
+  // the version the repaired `data`/`op` snapshot below was read at. When no
+  // row exists at all, there is nothing to gate a delete-publish against (no
+  // durable row was ever the basis for this entry); `version` is left
+  // undefined and the final index-maintenance step treats that as "already
+  // absent, no gated repair possible or needed."
   if (!current || current.deleted) {
     return {
       ...entry,
       record: { ...input, data: {}, op: "delete" },
+      version: current?.version,
     };
   }
   let data = current.record_json;
@@ -1724,6 +2610,7 @@ function authoritativeFinalRecord(
       emitted_at: current.emitted_at ?? input.emitted_at,
       op: "upsert",
     },
+    version: current.version,
   };
 }
 
@@ -1777,13 +2664,7 @@ async function prepareDeviceFinalRecordsWithinCoordinator(
       const resolved = authoritativeFinalRecord(entry, current);
       if (current && !current.deleted) {
         const facts = attemptContext?.streams?.[input.stream] ?? null;
-        const semanticTime = computeIngestSemanticTime(
-          connectorId,
-          input.stream,
-          resolved.record.data,
-          current.emitted_at ?? input.emitted_at ?? nowIso(),
-          facts
-        );
+        const semanticTime = computeIngestSemanticTime(connectorId, input.stream, resolved.record.data, facts);
         exec(referenceQueries.recordsIngestRepairCurrentDerivedFacts, [
           semanticTime,
           connectorInstanceId,
@@ -1797,17 +2678,89 @@ async function prepareDeviceFinalRecordsWithinCoordinator(
   });
 }
 
+/**
+ * The version-CAS guard: an upsert publish is only current for a LIVE row
+ * at `expectedVersion`; a delete publish is only current for a TOMBSTONED
+ * row at `expectedVersion`. Version alone is a unique, monotonic-per-mutation
+ * token — `deleted` is written atomically WITH `version` in every durable
+ * mutation, so in principle "current version == expectedVersion" already
+ * implies "current deleted state matches whatever THAT mutation set." This
+ * explicit check makes that invariant load-bearing in the guard itself
+ * rather than an implicit property callers must never violate. Shared by
+ * both backend branches of `maintainRecordIndexesWithinPermit` — only the
+ * row-shape normalization differs (Postgres returns `version` as
+ * string|number and `deleted` as boolean; SQLite returns `version` as
+ * number and `deleted` as boolean|number). See
+ * harden-connector-instance-write-fence-transaction-native.
+ */
+function isRecordStillCurrent(
+  current: { version: number | string; deleted: boolean | number } | null | undefined,
+  expectedVersion: number,
+  op: "upsert" | "delete"
+): boolean {
+  return (
+    current !== null &&
+    current !== undefined &&
+    Number(current.version) === expectedVersion &&
+    Boolean(current.deleted) === (op === "delete")
+  );
+}
+
+/**
+ * Publishes lexical AND semantic derived state for one record inside ONE
+ * short atomic transaction, gated on a SINGLE re-read of `records.version`
+ * still equalling `expectedVersion` at the moment that transaction commits.
+ * `expectedVersion` MUST be the version this specific `record`/`data`
+ * snapshot was durably committed at or computed from — passing a stale or
+ * synthetic version defeats the guard.
+ *
+ * Both index families are re-checked and written against the SAME version
+ * read, inside the SAME transaction/critical section — never as two
+ * independently-gated publishes. Two separately-gated CAS transactions
+ * would each individually be correct in isolation, but a newer write's own
+ * publish could complete in the window BETWEEN them, leaving lexical and
+ * semantic pointing at two different versions of the same record (mixed
+ * derived state) even though neither transaction was individually
+ * incorrect. This is the ONLY correctness mechanism against the
+ * stale-overwrite race (an older write's derived-index publish finishing
+ * after a newer write's own publish already landed): scheduling order —
+ * which lane a caller enqueues onto, FIFO or otherwise — is irrelevant to
+ * correctness here and must not be relied on as a substitute. A caller MAY
+ * still use a lane for throughput/scheduling reasons (e.g. keeping slow
+ * embedding work off an unrelated writer's critical path); this function's
+ * own single CAS is what makes that safe regardless of enqueue/completion
+ * order.
+ *
+ * Sequence: expensive/unlocked compute first (lexical field extraction,
+ * `embedDocumentWithAdmission`) — see `computeLexicalFields`/
+ * `computeSemanticEntries` — THEN one short transaction that re-reads
+ * `records.version`/`deleted` once and, only if still current, applies both
+ * families' already-computed writes together before releasing. No provider
+ * I/O or embedding call ever runs inside that transaction. A stale caller
+ * (current version has already moved past `expectedVersion`) silently
+ * no-ops — a newer writer's own publish is authoritative.
+ */
 async function maintainRecordIndexesWithinPermit(
   storageTarget: RecordStorageTarget,
   record: RecordEnvelope,
+  expectedVersion: number,
   options: RecordIngestOptions
 ): Promise<void> {
   const connectorId = connectorIdForStorageTarget(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const { stream, key, data, op = "upsert" } = record;
   const recordKey = encodeKey(key);
+  const attemptFacts = options.attemptContext?.streams?.[stream] ?? null;
+
+  const lexicalModule = await import(LEXICAL_INDEX_MODULE);
+  const semanticModule = await import(SEMANTIC_INDEX_MODULE);
+
+  let computedLexical: ComputedLexicalFields | null = null;
+  let computedSemantic: ComputedSemanticEntries | null = null;
   if (op === "delete") {
-    await lexicalIndexDelete({ connectorId, connectorInstanceId, recordKey, stream });
+    // No compute phase for a delete — the fault-hook points still fire at
+    // the same conceptual boundary (after each family's "work," before the
+    // atomic transaction), preserving existing tests' fault-injection shape.
     maybeRecordIndexFault("after-lexical-index", {
       connectorId,
       connectorInstanceId,
@@ -1815,7 +2768,6 @@ async function maintainRecordIndexesWithinPermit(
       recordKey,
       stream,
     });
-    await semanticIndexDelete({ connectorId, connectorInstanceId, recordKey, stream });
     maybeRecordIndexFault("after-semantic-index", {
       connectorId,
       connectorInstanceId,
@@ -1823,38 +2775,116 @@ async function maintainRecordIndexesWithinPermit(
       recordKey,
       stream,
     });
-    return;
+  } else {
+    // Expensive/unlocked compute — must complete BEFORE the transaction
+    // below. Neither call touches any table.
+    computedLexical = await lexicalModule.computeLexicalFields({
+      connectorId,
+      data,
+      declaredFields: options.attemptContext ? (attemptFacts?.lexicalFields ?? []) : undefined,
+      stream,
+    });
+    maybeRecordIndexFault("after-lexical-index", {
+      connectorId,
+      connectorInstanceId,
+      finalInputIndex: options.deviceFinalInputIndex ?? null,
+      recordKey,
+      stream,
+    });
+    computedSemantic = await semanticModule.computeSemanticEntries({
+      connectorId,
+      connectorInstanceId,
+      data,
+      declaredFields: options.attemptContext ? (attemptFacts?.semanticFields ?? []) : undefined,
+      recordKey,
+      stream,
+    });
+    maybeRecordIndexFault("after-semantic-index", {
+      connectorId,
+      connectorInstanceId,
+      finalInputIndex: options.deviceFinalInputIndex ?? null,
+      recordKey,
+      stream,
+    });
   }
-  const attemptFacts = options.attemptContext?.streams?.[stream] ?? null;
-  await lexicalIndexUpsert({
-    connectorId,
+
+  await maybeIndexPublishPhase("before-publish-transaction", {
     connectorInstanceId,
-    data,
-    declaredFields: options.attemptContext ? (attemptFacts?.lexicalFields ?? []) : undefined,
+    expectedVersion,
+    op,
     recordKey,
     stream,
   });
-  maybeRecordIndexFault("after-lexical-index", {
-    connectorId,
-    connectorInstanceId,
-    finalInputIndex: options.deviceFinalInputIndex ?? null,
-    recordKey,
-    stream,
-  });
-  await semanticIndexUpsert({
-    connectorId,
-    connectorInstanceId,
-    data,
-    declaredFields: options.attemptContext ? (attemptFacts?.semanticFields ?? []) : undefined,
-    recordKey,
-    stream,
-  });
-  maybeRecordIndexFault("after-semantic-index", {
-    connectorId,
-    connectorInstanceId,
-    finalInputIndex: options.deviceFinalInputIndex ?? null,
-    recordKey,
-    stream,
+
+  if (isPostgresStorageBackend()) {
+    return withPostgresTransaction(async (client) => {
+      const current = await client.query<{ version: string | number; deleted: boolean }>(
+        `SELECT version, deleted FROM records
+          WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3
+          FOR UPDATE`,
+        [connectorInstanceId, stream, recordKey]
+      );
+      if (!isRecordStillCurrent(current.rows[0], expectedVersion, op)) {
+        return;
+      }
+      if (op === "delete") {
+        await lexicalModule.applyLexicalDeleteWithClient(client, { connectorInstanceId, recordKey, stream });
+        await semanticModule.applySemanticDeleteWithClient(client, { connectorInstanceId, recordKey, stream });
+        return;
+      }
+      if (computedLexical) {
+        await lexicalModule.applyLexicalFieldsWithClient(client, {
+          computed: computedLexical,
+          connectorId,
+          connectorInstanceId,
+          recordKey,
+          stream,
+        });
+      }
+      if (computedSemantic) {
+        await semanticModule.applySemanticEntriesWithClient(client, {
+          computed: computedSemantic,
+          connectorId,
+          connectorInstanceId,
+          recordKey,
+          stream,
+        });
+      }
+    });
+  }
+
+  return writeTransaction(() => {
+    const current = getOne<CurrentRecordRow>(referenceQueries.recordsIngestGetCurrentRecordState, [
+      connectorInstanceId,
+      stream,
+      recordKey,
+    ]);
+    if (!isRecordStillCurrent(current, expectedVersion, op)) {
+      return;
+    }
+    if (op === "delete") {
+      lexicalModule.applyLexicalDeleteSync({ connectorInstanceId, recordKey, stream });
+      semanticModule.applySemanticDeleteSync({ connectorId, connectorInstanceId, recordKey, stream });
+      return;
+    }
+    if (computedLexical) {
+      lexicalModule.applyLexicalFieldsSync({
+        computed: computedLexical,
+        connectorId,
+        connectorInstanceId,
+        recordKey,
+        stream,
+      });
+    }
+    if (computedSemantic) {
+      semanticModule.applySemanticEntriesSync({
+        computed: computedSemantic,
+        connectorId,
+        connectorInstanceId,
+        recordKey,
+        stream,
+      });
+    }
   });
 }
 
@@ -2996,7 +4026,7 @@ function fetchVisibleRecordRowsInMemory({
   `;
 
   // REVIEWED-DYNAMIC: in-memory fallback for streams whose cursor_field is
-  // not SQL-safe; WHERE clause varies with grant time_constraint / resources;
+  // not SQL-safe; WHERE clause varies with grant time_range / resources;
   // intentionally no LIMIT — JS sort/seek needs the full visible set.
   const visible: VisibleRecordRow[] = [];
   for (const row of iterateDynamicSqlAcknowledged<StoredRecordRow>(sql, whereBinds)) {
@@ -3151,7 +4181,7 @@ function fetchVisibleRecordRowsPaginated({
     LIMIT ?
   `;
 
-  // REVIEWED-DYNAMIC: WHERE clause varies with grant time_constraint / resources
+  // REVIEWED-DYNAMIC: WHERE clause varies with grant time_range / resources
   // / cursor seek; SQL composed in JS as today; LIMIT N+1 included.
   const collected: VisibleRecordRow[] = [];
   let scanned = 0;
@@ -3318,13 +4348,13 @@ function assignExpansionToParentRow(
  * Slice-2 replacement for the per-child full-scan. Builds one window-function
  * SQL query that:
  *   - narrows by `foreign_key IN (?, ?, ...)` to the current parent page,
- *   - applies the child grant's access-control filters (time_constraint, resources)
+ *   - applies the child grant's access-control filters (time_range, resources)
  *     in SQL,
  *   - assigns ROW_NUMBER() per foreign-key partition ordered by the child's
  *     manifest-declared (cursor_field, primary_key) basis,
  *   - clips the per-partition rank to (has_many: limit + 1) or (has_one: 1).
  *
- * Grant filtering stays in SQL: the child's time_constraint/resources come from
+ * Grant filtering stays in SQL: the child's time_range/resources come from
  * `childEffective` (derived from `expansion.childGrant`) and are pushed into
  * WHERE exactly as the primary path does.
  *
@@ -3506,7 +4536,7 @@ function fetchExpansionChildrenGroupedByForeignKey({
   `;
 
   // REVIEWED-DYNAMIC: SQL-pushdown expansion; WHERE clause varies with
-  // child grant time_constraint / resources and parent foreign-key IN-list;
+  // child grant time_range / resources and parent foreign-key IN-list;
   // ORDER BY varies with the child manifest's cursor_field /
   // primary_key; per-partition rank bound (__rn <= ?) caps each parent's
   // child set instead of a top-level LIMIT.
@@ -3648,6 +4678,34 @@ function getSnapshotAtVersion(
  */
 const LOCAL_COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
 
+/**
+ * The connection's DECLARED boundary lives in its own reserved
+ * `connector_state` row, not inside the coverage snapshot — that snapshot is
+ * validated against an exact key set (`fetched_at`/`stores`), so the boundary
+ * structurally cannot travel inside it. Both coverage readers therefore project
+ * this row alongside the snapshot and surface the fingerprint as its own field.
+ *
+ * Without it the coverage axis read the declared boundary off the snapshot
+ * payload, always resolved `unscoped`, and the staleness comparison that
+ * declassifies evidence measured elsewhere trivially agreed — letting a
+ * whole-corpus pass prove a narrowed horizon it never enforced.
+ */
+function declaredCollectionScopeFingerprint(stateJson: unknown): string {
+  const parsed = typeof stateJson === "string" ? safeJsonParse(stateJson) : stateJson;
+  // Re-wrap under the reserved key so the canonical reader stays the single
+  // authority on what a stored boundary means (it recomputes the fingerprint
+  // from the bounds rather than trusting the stored string).
+  return readStoredCollectionScope({ [COLLECTION_SCOPE_STATE_KEY]: parsed ?? null }).fingerprint;
+}
+
+function safeJsonParse(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
 const SAFE_COVERAGE_STATUSES = new Set([
   "collected",
   "inventory_only",
@@ -3658,7 +4716,9 @@ const SAFE_COVERAGE_STATUSES = new Set([
   "unaccounted",
 ]);
 
-function projectCoverageRow(rawData: unknown): { status: string; store: string; stream: string | null } | null {
+function projectCoverageRow(
+  rawData: unknown
+): { collectionScope: string | null; status: string; store: string; stream: string | null } | null {
   if (!isRecordData(rawData)) {
     return null;
   }
@@ -3669,10 +4729,17 @@ function projectCoverageRow(rawData: unknown): { status: string; store: string; 
   const status =
     typeof rawData.status === "string" && SAFE_COVERAGE_STATUSES.has(rawData.status) ? rawData.status : "unaccounted";
   const stream = typeof rawData.stream === "string" && rawData.stream ? rawData.stream : null;
+  // The boundary this row was measured under, carried on the row itself so it
+  // cannot drift from the coverage it qualifies. Safe: a fingerprint is a
+  // declared bound, never payload.
+  const collectionScope =
+    typeof rawData.collection_scope === "string" && rawData.collection_scope.trim()
+      ? rawData.collection_scope.trim()
+      : null;
   // Deliberately omit `id`, `reason`, and anything else: the operator
-  // diagnostic only needs the safe store/stream/status triple, never the
-  // reason free-text or any payload.
-  return { status, store, stream };
+  // diagnostic only needs the safe store/stream/status triple plus the boundary,
+  // never the reason free-text or any payload.
+  return { collectionScope, status, store, stream };
 }
 
 /**
@@ -3692,7 +4759,10 @@ export async function listLocalCoverageDiagnostics(storageTarget: RecordStorageT
     return [];
   }
 
-  const byStore = new Map<string, { status: string; store: string; stream: string | null }>();
+  const byStore = new Map<
+    string,
+    { collectionScope: string | null; status: string; store: string; stream: string | null }
+  >();
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery(
       `SELECT record_key, record_json FROM records
@@ -3754,6 +4824,17 @@ export async function readCommittedLocalCoverageDiagnostics(storageTarget: Recor
     grantId: null,
   });
   const state = stateProjection.state[LOCAL_COVERAGE_DIAGNOSTICS_STREAM] ?? null;
+  // Read the declared boundary in its OWN projection rather than widening the
+  // one above: that projection's `updated_at` is the MAX over the rows it
+  // matched and stamps the coverage evidence timestamp, so letting an unrelated
+  // scope edit into it would silently freshen coverage proof it never touched.
+  const scopeProjection = await getSyncState(storageTarget, {
+    allowedStreams: new Set([COLLECTION_SCOPE_STATE_KEY]),
+    grantId: null,
+  });
+  const declaredCollectionScope = declaredCollectionScopeFingerprint(
+    scopeProjection.state[COLLECTION_SCOPE_STATE_KEY] ?? null
+  );
   const generation = isPostgresStorageBackend()
     ? ((
         await postgresQuery(
@@ -3778,6 +4859,7 @@ export async function readCommittedLocalCoverageDiagnostics(storageTarget: Recor
   const stateGeneration = generation?.state_generation ?? null;
   return {
     ...parseCoverageDiagnosticsStateSnapshot(connectorId, state),
+    declaredCollectionScope,
     manifestGeneration: currentGeneration === null ? null : Number(currentGeneration),
     state,
     stateManifestGeneration: stateGeneration === null ? null : Number(stateGeneration),
@@ -3795,6 +4877,7 @@ export async function readCommittedLocalCoverageDiagnosticsByConnectionIds(conne
   const result = new Map<
     string,
     ReturnType<typeof parseCoverageDiagnosticsStateSnapshot> & {
+      declaredCollectionScope: string;
       manifestGeneration: number | null;
       state: unknown;
       stateManifestGeneration: number | null;
@@ -3808,19 +4891,28 @@ export async function readCommittedLocalCoverageDiagnosticsByConnectionIds(conne
     connector_id: string;
     connector_instance_id: string;
     current_generation: number | string | null;
+    scope_state_json: unknown;
     state_generation: number | string | null;
     state_json: unknown;
     updated_at: string | null;
   }
   const rows: Row[] = [];
+  // The declared boundary joins as its OWN row alongside the coverage snapshot.
+  // A separate join (rather than widening the coverage one) keeps `updated_at`
+  // the coverage row's own timestamp, so a scope edit can never freshen the
+  // coverage evidence it did not touch.
   const projection = `SELECT ci.connector_id, ci.connector_instance_id,
                               ci.manifest_generation AS current_generation,
                               cs.manifest_generation AS state_generation,
-                              cs.state_json, cs.updated_at
+                              cs.state_json, cs.updated_at,
+                              scope.state_json AS scope_state_json
                          FROM connector_instances ci
                          LEFT JOIN connector_state cs
                            ON cs.connector_instance_id = ci.connector_instance_id
-                          AND cs.stream = '${LOCAL_COVERAGE_DIAGNOSTICS_STREAM}'`;
+                          AND cs.stream = '${LOCAL_COVERAGE_DIAGNOSTICS_STREAM}'
+                         LEFT JOIN connector_state scope
+                           ON scope.connector_instance_id = ci.connector_instance_id
+                          AND scope.stream = '${COLLECTION_SCOPE_STATE_KEY}'`;
   if (isPostgresStorageBackend()) {
     const query = await postgresQuery<Row>(`${projection} WHERE ci.connector_instance_id = ANY($1::text[])`, [ids]);
     rows.push(...query.rows);
@@ -3849,6 +4941,7 @@ export async function readCommittedLocalCoverageDiagnosticsByConnectionIds(conne
     const parsedState = typeof state === "string" ? JSON.parse(state) : state;
     result.set(row.connector_instance_id, {
       ...parseCoverageDiagnosticsStateSnapshot(row.connector_id, parsedState),
+      declaredCollectionScope: declaredCollectionScopeFingerprint(row.scope_state_json ?? null),
       manifestGeneration: row.current_generation === null ? null : Number(row.current_generation),
       state: parsedState,
       stateManifestGeneration: row.state_generation === null ? null : Number(row.state_generation),
@@ -3862,6 +4955,21 @@ export async function readCommittedLocalCoverageDiagnosticsByConnectionIds(conne
  * Persist explicit provenance for a rejected internal write against the
  * current manifest generation. It never writes a record: retained history is
  * diagnostic/dormant unless this independent signal says otherwise.
+ *
+ * PRE-EXISTING, OUT-OF-SCOPE COORDINATOR BYPASS: the Postgres branch below
+ * never acquires the connector-instance write coordinator (no
+ * `withConnectorInstanceWrite`/`lockConnectorInstanceId`) — it substitutes a
+ * `SELECT ... FOR UPDATE` on the `connector_instances` row as its own
+ * transaction-scoped exclusion. This predates
+ * harden-connector-instance-write-fence-transaction-native and is
+ * deliberately left as-is: this function writes only diagnostic evidence
+ * (`manifest_write_violations`), never a durable record, so it was never
+ * exposed to the batch/`afterRecord` bounded-wait defect this change fixes.
+ * Its own `FOR UPDATE` row lock is transaction-scoped and auto-releasing,
+ * the same category of primitive as `pg_advisory_xact_lock`, so it does not
+ * share the defect either. The SQLite branch below DOES go through
+ * `withConnectorInstanceWrite` — this asymmetry is pre-existing and out of
+ * scope for this change, not newly introduced by it.
  */
 export async function recordCurrentGenerationUndeclaredWrite(
   storageTarget: RecordStorageTarget,
@@ -3875,6 +4983,9 @@ export async function recordCurrentGenerationUndeclaredWrite(
     throw new Error("Current manifest violation evidence requires connection and stream");
   }
   const observedAt = nowIso();
+  // `manifest_write_violations` is canonical source data. Its source-revision
+  // trigger makes the disposable summary row a candidate; touching that row
+  // here would let a projection fault reject the canonical provenance write.
   if (isPostgresStorageBackend()) {
     await withPostgresTransaction(async (client) => {
       const current = await client.query(
@@ -3891,10 +5002,6 @@ export async function recordCurrentGenerationUndeclaredWrite(
        ON CONFLICT(connector_instance_id, stream, manifest_generation) DO UPDATE
          SET provenance = EXCLUDED.provenance, observed_at = EXCLUDED.observed_at`,
         [connectorInstanceId, stream, generation, provenance, observedAt]
-      );
-      await client.query(
-        "UPDATE connector_summary_evidence SET dirty = 1, state = 'stale' WHERE connector_instance_id = $1",
-        [connectorInstanceId]
       );
     });
     return;
@@ -3916,9 +5023,6 @@ export async function recordCurrentGenerationUndeclaredWrite(
            SET provenance = excluded.provenance, observed_at = excluded.observed_at`
         )
         .run(connectorInstanceId, stream, generation, provenance, observedAt);
-      getDb()
-        .prepare("UPDATE connector_summary_evidence SET dirty = 1, state = 'stale' WHERE connector_instance_id = ?")
-        .run(connectorInstanceId);
     });
     return Promise.resolve();
   });
@@ -4593,9 +5697,8 @@ function recordWindowTime(value: unknown): number | null {
  * resources, time-range, and compiled filters), so the two surfaces stay in
  * lock-step and we never duplicate grant/filter semantics on a divergent path.
  *
- * Timestamp source for metadata remains the stream's logical
- * `consent_time_field`, never the storage ingest `emitted_at`. Authorization
- * independently uses the frozen grant `time_constraint.field`.
+ * Timestamp source is the stream's logical `consent_time_field` — the same
+ * field `passesTimeRange` filters on — never the storage ingest `emitted_at`.
  *
  * Honest-omission rules (never estimate; see spec scenario "Window metadata is
  * omitted rather than estimated"):
@@ -4988,6 +6091,17 @@ export async function getRecord(
     sortPosition: buildRecordSortPosition(rawData, row.record_key, mStream),
   };
 
+  // Single-row read, single scalar already selected by
+  // `recordsGetLiveRecordByKey` (see queries/records/get-live-record-by-key.sql)
+  // — not a second query. Attached directly to the already-built response
+  // record rather than threaded through `VisibleRecordRow`/`buildResponseRecord`,
+  // whose other call sites (list paging, expansion hydration) do not select
+  // this column. `undefined` stays `undefined` here; the wire layer omits it
+  // rather than fabricating `0`.
+  if (typeof row.record_json_bytes === "number") {
+    responseRow.responseRecord.record_json_bytes = row.record_json_bytes;
+  }
+
   const expansions = normalizeExpandRequest(
     {
       expand:
@@ -5044,8 +6158,8 @@ function assertFieldWindowRecordVisible(
     throw fieldWindowError("not_found", "Record not found", 404);
   }
   if (effective.timeConstraint && effective.timeConstraintField) {
-    const constrainedData = { [effective.timeConstraintField]: row.consent_time_value };
-    if (!passesTimeConstraint(constrainedData, effective.timeConstraint)) {
+    const consentData = { [effective.timeConstraintField]: row.consent_time_value };
+    if (!passesTimeConstraint(consentData, effective.timeConstraint)) {
       throw fieldWindowError("not_found", "Record not found", 404);
     }
   }
@@ -5231,8 +6345,9 @@ async function deleteRecordWithinCoordinator(storageTarget: RecordStorageTarget,
         connectorInstanceId,
         reason: "record delete changed connection count/stream evidence",
       });
-      await lexicalIndexDelete({ connectorId, connectorInstanceId, recordKey: recordId, stream });
-      await semanticIndexDelete({ connectorId, connectorInstanceId, recordKey: recordId, stream });
+      if (typeof outcome.version === "number") {
+        await maintainRecordIndexes(storageTarget, { key: decodeKey(recordId), op: "delete", stream }, outcome.version);
+      }
     }
     return outcome;
   }
@@ -5242,7 +6357,7 @@ async function deleteRecordWithinCoordinator(storageTarget: RecordStorageTarget,
   const now = nowIso();
   const changeHistoryLimit = getChangeHistoryLimit();
 
-  const outcome = writeTransaction<{ kind: "changed" | "noop" }>(() => {
+  const outcome = writeTransaction<{ kind: "changed"; version: number } | { kind: "noop" }>(() => {
     const current = getOne<CurrentRecordRow>(referenceQueries.recordsIngestGetCurrentRecordState, [
       connectorInstanceId,
       stream,
@@ -5310,7 +6425,7 @@ async function deleteRecordWithinCoordinator(storageTarget: RecordStorageTarget,
       stream,
     });
 
-    return { kind: "changed" };
+    return { kind: "changed", version: nextVersion };
   });
 
   if (outcome.kind === "noop") {
@@ -5328,9 +6443,12 @@ async function deleteRecordWithinCoordinator(storageTarget: RecordStorageTarget,
 
   // Derived index maintenance runs after the durable commit. Failures here
   // are not allowed to retroactively roll back the durable record mutation;
-  // recovery is the search-index drift detector's job.
-  await lexicalIndexDelete({ connectorId, connectorInstanceId, recordKey: recordId, stream });
-  await semanticIndexDelete({ connectorId, connectorInstanceId, recordKey: recordId, stream });
+  // recovery is the search-index drift detector's job. Gated on
+  // `outcome.version` (this delete's own durable version) so a same-instance
+  // writer that races and lands a newer version for this key first is never
+  // clobbered by this delete's publish landing late — see
+  // `maintainRecordIndexesWithinPermit`'s header.
+  await maintainRecordIndexes(storageTarget, { key: decodeKey(recordId), op: "delete", stream }, outcome.version);
 
   return 1;
 }
@@ -5467,24 +6585,49 @@ async function deleteAllRecordsWithinCoordinator(storageTarget: RecordStorageTar
  * Returns the number of records deleted plus the list of stream names
  * that had records, so the caller can produce an informative log line.
  */
-export async function deleteAllRecordsForConnector(connectorId: string) {
+/**
+ * `instanceIdFilter`, when supplied, restricts deletion to EXACTLY those
+ * connector_instance_ids -- every other instance of this connector type is
+ * left untouched, including its records, version counters, and blob
+ * bindings. Omitted (the default), this deletes for every instance of the
+ * connector type, as before. Added so a per-instance-scoped caller (e.g. a
+ * record-identity-generation reconcile that must only touch instances
+ * still on an old generation) can reuse this function's per-instance-fenced
+ * deletion machinery without inheriting its connector-wide blast radius.
+ */
+export async function deleteAllRecordsForConnector(connectorId: string, instanceIdFilter?: ReadonlySet<string>) {
   if (typeof connectorId !== "string" || !connectorId) {
+    return { deletedCount: 0, streams: [] };
+  }
+  if (instanceIdFilter && instanceIdFilter.size === 0) {
     return { deletedCount: 0, streams: [] };
   }
   const storageConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
   if (isPostgresStorageBackend()) {
-    return postgresDeleteAllRecordsForConnector(storageConnectorId);
+    return postgresDeleteAllRecordsForConnector(storageConnectorId, instanceIdFilter);
   }
   // Take exactly one instance fence at a time in stable id order.  The former
   // connector-wide transaction bypassed sibling instance coordination; this
   // keeps each instance's durable + derived teardown indivisible with respect
   // to direct/device writers without holding a lock for a second instance.
-  const namespaceRows = allowUnboundedReadAcknowledged<StreamNamespaceRow>(
+  const namespaceRowsUnfiltered = allowUnboundedReadAcknowledged<StreamNamespaceRow>(
     referenceQueries.recordsDeleteListInstanceStreamsByConnector,
     [storageConnectorId, storageConnectorId]
   );
-  const countRow = getOne<CountRow>(referenceQueries.recordsDeleteCountRecordsByConnector, [storageConnectorId]);
-  const deletedCount = countRow?.count || 0;
+  const namespaceRows = instanceIdFilter
+    ? namespaceRowsUnfiltered.filter((row) => instanceIdFilter.has(row.connector_instance_id))
+    : namespaceRowsUnfiltered;
+  let deletedCount: number;
+  if (instanceIdFilter) {
+    const filteredInstanceIds = Array.from(new Set(namespaceRows.map((row) => row.connector_instance_id)));
+    deletedCount = filteredInstanceIds.reduce((sum, instanceId) => {
+      const instanceCountRow = getOne<CountRow>(referenceQueries.recordsDeleteCountRecordsByInstance, [instanceId]);
+      return sum + (instanceCountRow?.count || 0);
+    }, 0);
+  } else {
+    const countRow = getOne<CountRow>(referenceQueries.recordsDeleteCountRecordsByConnector, [storageConnectorId]);
+    deletedCount = countRow?.count || 0;
+  }
   const streams = Array.from(new Set(namespaceRows.map((row) => row.stream)));
   const streamsByInstance = new Map<string, string[]>();
   for (const row of namespaceRows) {
@@ -5541,7 +6684,7 @@ export async function deleteAllRecordsForConnector(connectorId: string) {
 // version_counter, lexical/semantic search tables) and drop `blob_bindings`
 // separately, mirroring the SQLite per-connector path's extra fourth delete
 // vs. the per-stream owner-reset path.
-async function postgresDeleteAllRecordsForConnector(connectorId: string) {
+async function postgresDeleteAllRecordsForConnector(connectorId: string, instanceIdFilter?: ReadonlySet<string>) {
   // Union of (instance, stream) pairs across `records`, `record_changes`,
   // `blob_bindings`, AND `version_counter` so a stream that has only
   // history rows, only surviving blob bindings (records already pruned), or
@@ -5564,15 +6707,32 @@ async function postgresDeleteAllRecordsForConnector(connectorId: string) {
      ORDER BY connector_instance_id, stream`,
     [connectorId]
   );
-  const namespaceRows = pairsResult.rows;
+  const namespaceRows = instanceIdFilter
+    ? pairsResult.rows.filter((row) => instanceIdFilter.has(row.connector_instance_id))
+    : pairsResult.rows;
   const streams = Array.from(new Set(namespaceRows.map((row) => row.stream)));
 
-  const countResult = await postgresQuery<CountRow>(
-    `SELECT COUNT(*)::int AS count FROM records
-       WHERE connector_id = $1 AND deleted = FALSE`,
-    [connectorId]
-  );
-  const deletedCount = Number(countResult.rows[0]?.count || 0);
+  let deletedCount: number;
+  if (instanceIdFilter) {
+    const filteredInstanceIds = Array.from(new Set(namespaceRows.map((row) => row.connector_instance_id)));
+    if (filteredInstanceIds.length === 0) {
+      deletedCount = 0;
+    } else {
+      const countResult = await postgresQuery<CountRow>(
+        `SELECT COUNT(*)::int AS count FROM records
+           WHERE connector_id = $1 AND deleted = FALSE AND connector_instance_id = ANY($2::text[])`,
+        [connectorId, filteredInstanceIds]
+      );
+      deletedCount = Number(countResult.rows[0]?.count || 0);
+    }
+  } else {
+    const countResult = await postgresQuery<CountRow>(
+      `SELECT COUNT(*)::int AS count FROM records
+         WHERE connector_id = $1 AND deleted = FALSE`,
+      [connectorId]
+    );
+    deletedCount = Number(countResult.rows[0]?.count || 0);
+  }
 
   const streamsByInstance = new Map<string, string[]>();
   for (const row of namespaceRows) {
@@ -5620,6 +6780,62 @@ async function postgresDeleteAllRecordsForConnector(connectorId: string) {
   }
 
   return { deletedCount, streams };
+}
+
+interface RecordIdentityGenerationRow {
+  connector_instance_id: string;
+  record_identity_generation: number | string;
+}
+
+/**
+ * Every instance's `record_identity_generation` checkpoint for a connector
+ * type. Consumed by the generic (connector-agnostic) manifest reconcile
+ * pass to decide, per instance, whether it is behind the shipped manifest's
+ * declared `capabilities.record_identity.generation` — the reconcile code
+ * itself never learns what "generation" means for any specific connector,
+ * only that these are two integers to compare. See
+ * `ensureRecordIdentityGenerationColumn` in db.ts for the column design.
+ */
+export async function listRecordIdentityGenerationsByConnector(
+  connectorId: string
+): Promise<Array<{ connectorInstanceId: string; generation: number }>> {
+  const storageConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery<RecordIdentityGenerationRow>(
+      "SELECT connector_instance_id, record_identity_generation FROM connector_instances WHERE connector_id = $1 ORDER BY connector_instance_id ASC",
+      [storageConnectorId]
+    );
+    return result.rows.map((row) => ({
+      connectorInstanceId: row.connector_instance_id,
+      generation: Number(row.record_identity_generation),
+    }));
+  }
+  const rows = allowUnboundedReadAcknowledged<RecordIdentityGenerationRow>(
+    referenceQueries.connectorInstancesListGenerationByConnector,
+    [storageConnectorId]
+  );
+  return rows.map((row) => ({
+    connectorInstanceId: row.connector_instance_id,
+    generation: Number(row.record_identity_generation),
+  }));
+}
+
+/**
+ * Set a single instance's `record_identity_generation` checkpoint to
+ * `generation`. Called only AFTER that instance's records have been
+ * successfully invalidated (or on first registration, when there is
+ * nothing to invalidate) so the checkpoint always reflects what the
+ * instance's data actually reflects.
+ */
+export async function setRecordIdentityGeneration(connectorInstanceId: string, generation: number): Promise<void> {
+  if (isPostgresStorageBackend()) {
+    await postgresQuery(
+      "UPDATE connector_instances SET record_identity_generation = $1 WHERE connector_instance_id = $2",
+      [generation, connectorInstanceId]
+    );
+    return;
+  }
+  exec(referenceQueries.connectorInstancesSetRecordIdentityGeneration, [generation, connectorInstanceId]);
 }
 
 /**
@@ -5728,6 +6944,10 @@ export function deleteConnectionRecordRowsSqlite(connectorInstanceId: string) {
   exec(referenceQueries.recordsDeleteDeleteRecordChangesByInstance, [connectorInstanceId]);
   exec(referenceQueries.recordsDeleteDeleteVersionCounterByInstance, [connectorInstanceId]);
   exec(referenceQueries.recordsDeleteDeleteBlobBindingsByInstance, [connectorInstanceId]);
+  // Blob rows are content-addressed and can have a binding from a sibling
+  // connection. The registered delete query removes only unreferenced rows,
+  // after this connection's bindings are gone, so the sibling binding remains
+  // valid under SQLite's blob_bindings foreign key.
   exec(referenceQueries.recordsDeleteDeleteBlobsByInstance, [connectorInstanceId]);
   exec(referenceQueries.recordsDeleteDeleteAttentionRecordsByInstance, [connectorInstanceId]);
   exec(referenceQueries.recordsDeleteDeleteRecordsByInstance, [connectorInstanceId]);
@@ -5749,7 +6969,16 @@ export async function deleteConnectionRecordRowsPostgres(client: PostgresClient,
   await client.query("DELETE FROM record_changes WHERE connector_instance_id = $1", [connectorInstanceId]);
   await client.query("DELETE FROM version_counter WHERE connector_instance_id = $1", [connectorInstanceId]);
   await client.query("DELETE FROM blob_bindings WHERE connector_instance_id = $1", [connectorInstanceId]);
-  await client.query("DELETE FROM blobs WHERE connector_instance_id = $1", [connectorInstanceId]);
+  await client.query(
+    `DELETE FROM blobs
+      WHERE connector_instance_id = $1
+        AND NOT EXISTS (
+          SELECT 1
+            FROM blob_bindings
+           WHERE blob_bindings.blob_id = blobs.blob_id
+        )`,
+    [connectorInstanceId]
+  );
   await client.query("DELETE FROM connector_attention_records WHERE connector_instance_id = $1", [connectorInstanceId]);
   await client.query("DELETE FROM records WHERE connector_instance_id = $1", [connectorInstanceId]);
   return count;
@@ -5842,8 +7071,7 @@ export async function listStreams(
 // `getBlob`-style flows) with the canonical (connection_id, stream)
 // addressing rule from the public read contract:
 //
-//   - the grant's closed `instance_ids` set is the fan-in upper bound;
-//   - an omitted request-time `connection_id` reads that full set;
+//   - omitted `connection_id` SHALL fan in across the granted connections;
 //   - exactly one matching connection SHALL be auto-selected;
 //   - record/blob identifier ambiguity SHALL raise the typed
 //     `ambiguous_connection` error with `available_connections`.
@@ -6655,10 +7883,11 @@ function compareMergedBuckets(left: AggregateGroup, right: AggregateGroup, isSca
  * pre-existing shape with `connection_id`/`display_name` populated from
  * the sole active binding.
  *
- * The grant's per-stream `instance_ids` are the authority, and the request's
- * optional `connection_id` may narrow that set. The
- * `resolveBindingsForStream` callback lets the route adapter apply those
- * rules per stream. When callers do not pass
+ * When the grant pins per-stream `connection_id`, those streams resolve
+ * against the named binding(s) only; streams without the constraint fan
+ * in across `defaultBindings`. The `resolveBindingsForStream` callback
+ * lets the route adapter apply the same `(request connection_id, grant
+ * per-stream connection_id)` rules per stream. When callers do not pass
  * a resolver, the helper falls back to using `defaultBindings` for every
  * stream (preserving the prior single-resolution behavior for callers
  * that do not need per-stream constraint accuracy).
@@ -6710,8 +7939,9 @@ export async function listStreamsAcrossBindings(
     return summaries;
   }
 
-  // Per-stream resolver path: each stream honors its own closed instance_ids
-  // authority. Streams with different authorized sets do not bleed counts.
+  // Per-stream resolver path: each stream's bindings honor its own
+  // grant-scope `connection_id` constraint. Streams whose grant entry
+  // pins different connections do not bleed each other's counts.
   const namedGrants = grantStreams.filter((sg) => sg?.name);
   const perStreamResults = await mapWithConcurrency(
     namedGrants,
@@ -6820,8 +8050,8 @@ export async function getStreamDetailAcrossBindings(
  * should iterate. `warnings` contains the deprecated-alias warning when
  * the caller used `connector_instance_id` on the wire.
  *
- * Client instance authority comes only from the selected stream's required
- * `grant.streams[].instance_ids`. Owner reads opt into the active owner set.
+ * Honors per-stream `grant.streams[].connection_id` when present; absent
+ * constraint preserves cross-connection (fan-in) semantics.
  */
 export async function resolveReadRequestBindings({
   ownerSubjectId,
@@ -6829,6 +8059,7 @@ export async function resolveReadRequestBindings({
   grant,
   requestParams,
   streamName,
+  nativeProviderStorage = false,
   ownerRead = false,
 }: ReadRequestBindingsArgs) {
   // Canonicalize the storage binding's connector_id at the shared admission
@@ -6842,28 +8073,62 @@ export async function resolveReadRequestBindings({
   // Decision 1: storage bindings and grants key by connector_key.
   const rawConnectorId = storageBinding?.connector_id || null;
   const connectorId = rawConnectorId ? (canonicalConnectorKey(rawConnectorId) ?? rawConnectorId) : null;
-  const streamGrant = grant.streams.find((s) => s.name === streamName);
-  let authorizedInstanceIds: string[] | null | undefined;
-  if (ownerRead) {
-    authorizedInstanceIds = null;
-  } else if (streamName) {
-    authorizedInstanceIds = streamGrant?.instance_ids;
-  } else {
-    authorizedInstanceIds = [...new Set(grant.streams.flatMap((entry) => entry.instance_ids || []))];
+  if (nativeProviderStorage && connectorId) {
+    const { connectionId } = resolveRequestConnectionId(requestParams);
+    if (connectionId) {
+      const err: CodedReadError = Object.assign(
+        new Error("connection_id is not applicable to provider_native sources."),
+        {
+          code: "invalid_argument",
+        }
+      );
+      err.param =
+        typeof requestParams.connection_id === "string" && requestParams.connection_id
+          ? "connection_id"
+          : "connector_instance_id";
+      throw err;
+    }
+    return {
+      bindings: [
+        {
+          connectorId,
+          connectorInstanceId:
+            storageBinding?.connector_instance_id ||
+            makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId),
+          displayName: null,
+        },
+      ],
+      requestConnectionId: null,
+      warnings: [],
+    };
   }
-  const connectorInstanceIdHint = storageBinding?.connector_instance_id || undefined;
-  const instanceIds = ownerRead
-    ? (await listActiveBindingsForGrant({ connectorId, ownerSubjectId })).map((binding) => binding.connectorInstanceId)
-    : authorizedInstanceIds || [];
-  return await Reflect.apply(resolveRequestBindings, undefined, [
-    {
-      authorizedInstanceIds: instanceIds,
-      connectorId,
-      connectorInstanceIdHint,
-      ownerSubjectId,
-      requestParams,
-    },
-  ]);
+
+  const connectorInstanceIdHint = storageBinding?.connector_instance_id || null;
+  const streamGrant = streamName ? (grant?.streams?.find((s) => s.name === streamName) ?? null) : null;
+  const authorizedInstanceIds = ownerRead
+    ? (await listActiveBindingsForGrant({ connectorId, ownerSubjectId: ownerSubjectId ?? null })).map(
+        (binding) => binding.connectorInstanceId
+      )
+    : streamName
+      ? (streamGrant?.instance_ids ?? [])
+      : [...new Set((grant?.streams ?? []).flatMap((s) => s.instance_ids ?? []))];
+  const resolved = await resolveRequestBindings({
+    authorizedInstanceIds,
+    connectorId,
+    connectorInstanceIdHint,
+    ownerSubjectId,
+    requestParams,
+  });
+  return {
+    ...resolved,
+    bindings: resolved.bindings.map(
+      (binding): ReadRequestBinding => ({
+        connectorId: binding.connectorId,
+        connectorInstanceId: binding.connectorInstanceId,
+        displayName: binding.displayName ?? null,
+      })
+    ),
+  };
 }
 
 /**
@@ -7170,82 +8435,46 @@ function getManifestConsentTimeField(connectorId: string, streamName: string): s
   return field;
 }
 
-// Below this, a numeric timestamp is treated as Unix SECONDS; at or above it, as
-// Unix MILLISECONDS. 1e12 seconds is the year 33658 and 1e12 ms is 2001 — any
-// real record date is unambiguous against this boundary. Mirrors the constant in
-// packages/operator-ui/src/lib/search-record-timestamps.ts so ingest and search
-// coerce timestamps identically.
-const SEMANTIC_TIME_EPOCH_MS_THRESHOLD = 1e12;
-
-// Coerce a manifest-declared timestamp field value to a clean ISO-8601 string,
-// matching coerceTimestampValue in search-record-timestamps.ts: an ISO string
-// passes through (trimmed); a positive finite NUMBER is a Unix epoch (seconds
-// below the threshold, ms at/above) -> ISO. Anything else -> null so the caller
-// falls back to emitted_at.
-function coerceSemanticTimeValue(value: unknown): string | null {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-    const ms = value >= SEMANTIC_TIME_EPOCH_MS_THRESHOLD ? value : value * 1000;
-    const date = new Date(ms);
-    return Number.isNaN(date.getTime()) ? null : date.toISOString();
-  }
-  return null;
-}
-
-function firstSemanticTime(data: RecordData, fields: readonly unknown[]): string | null {
-  for (const field of fields) {
-    if (typeof field !== "string") {
-      continue;
-    }
-    const coerced = coerceSemanticTimeValue(data[field]);
-    if (coerced) {
-      return coerced;
-    }
-  }
-  return null;
-}
-
 // Compute the SEMANTIC time (when the thing happened) to stamp on a record at
 // ingest. Resolves the stream's manifest consent_time_field (preferred) then
 // cursor_field, reads that field from the record `data`, and coerces it
-// epoch-aware. Falls back to `effectiveEmittedAt` when no semantic field is
-// declared or the value is missing/unparseable — so semantic_time is never
-// empty and the merged-timeline sort degrades gracefully to ingest order. Loads
-// the manifest via the same query getManifestConsentTimeField uses.
+// epoch-aware. Yields SEMANTIC_TIME_UNKNOWN (empty string) when no semantic
+// field is declared or the value is missing/unparseable: an unknown date is
+// stored as ABSENT rather than backfilled with ingest time, which would record
+// "I do not know when this happened" as "it happened now" and be
+// indistinguishable downstream from a real timestamp. Readers COALESCE to
+// emitted_at, so the merged-timeline sort still degrades gracefully. Loads the
+// manifest via the same query getManifestConsentTimeField uses.
 function computeIngestSemanticTime(
   connectorId: string,
   streamName: string,
   data: unknown,
-  effectiveEmittedAt: string,
   attemptStreamFacts: AttemptStreamFacts | null = null
 ): string {
   if (!isRecordData(data)) {
-    return effectiveEmittedAt;
+    return SEMANTIC_TIME_UNKNOWN;
   }
   if (attemptStreamFacts) {
     return (
-      firstSemanticTime(data, [attemptStreamFacts.consentTimeField, attemptStreamFacts.cursorField]) ??
-      effectiveEmittedAt
+      firstSemanticTimeValue(data, [attemptStreamFacts.consentTimeField, attemptStreamFacts.cursorField]) ??
+      SEMANTIC_TIME_UNKNOWN
     );
   }
   const row = getOne<ConnectorManifestRow>(referenceQueries.authConnectorsGetManifestById, [connectorId]);
   if (!row?.manifest) {
-    return effectiveEmittedAt;
+    return SEMANTIC_TIME_UNKNOWN;
   }
   let manifest: StoredManifest;
   try {
     manifest = JSON.parse(row.manifest);
   } catch {
-    return effectiveEmittedAt;
+    return SEMANTIC_TIME_UNKNOWN;
   }
   const stream = Array.isArray(manifest?.streams)
     ? manifest.streams.find((candidate) => candidate?.name === streamName)
     : null;
   if (!stream) {
-    return effectiveEmittedAt;
+    return SEMANTIC_TIME_UNKNOWN;
   }
   // consent_time_field is the declared semantic/authored time; cursor_field is
   // the incremental sort field (often the same authored time). Prefer the former.
@@ -7253,7 +8482,100 @@ function computeIngestSemanticTime(
     (field, index, candidates): field is string =>
       typeof field === "string" && field !== "" && candidates.indexOf(field) === index
   );
-  return firstSemanticTime(data, fields) ?? effectiveEmittedAt;
+  return firstSemanticTimeValue(data, fields) ?? SEMANTIC_TIME_UNKNOWN;
+}
+
+/**
+ * Which already-stored `semantic_time` values a backfill pass is allowed to
+ * rewrite.
+ *
+ *   - `"drift"` (default) preserves the historical registration behaviour:
+ *     rewrite whenever the recomputed value differs from the stored one.
+ *   - `"ingest-stamped"` is the conservative repair mode. It rewrites ONLY
+ *     rows whose stored `semantic_time` is demonstrably not a semantic date:
+ *     empty (already absence, so rewriting is a no-op or a genuine discovery)
+ *     or exactly equal to `emitted_at`, which is the fingerprint of the ingest
+ *     clock having been stamped in as if it were the owner's timeline position.
+ *
+ * The distinction matters because a real semantic date can legitimately differ
+ * from what today's manifest would recompute (a provider corrected a field, a
+ * stream's declared field changed meaning). Blindly recomputing history would
+ * discard those. `"ingest-stamped"` cannot: a value equal to `emitted_at` to
+ * the millisecond carries no information a recompute could destroy.
+ */
+export type SemanticTimeBackfillMode = "drift" | "ingest-stamped";
+
+/**
+ * Per-stream tally of one backfill pass, so a repair caller can PRINT what it
+ * would change before changing anything. `toSemanticDate` and `toAbsence` are
+ * the two honest outcomes: a real date recovered from the declared field, or
+ * absence recorded where the payload carries no semantic date (including the
+ * provider sentinels `coerceSemanticTimeValue` rejects).
+ */
+/** One intended `semantic_time` write, resolved but not yet applied. */
+interface SemanticTimeRepairUpdate {
+  readonly recordKey: string;
+  readonly semanticTime: string;
+}
+
+export interface SemanticTimeBackfillStreamOutcome {
+  readonly connectorInstanceId: string;
+  readonly examined: number;
+  readonly repairable: number;
+  readonly stream: string;
+  readonly toAbsence: number;
+  readonly toSemanticDate: number;
+}
+
+/**
+ * True when `stored` is a value the `"ingest-stamped"` repair mode is allowed
+ * to overwrite. Absence is included so a row that is already correct-as-absent
+ * stays eligible without changing (the caller still skips no-op writes), which
+ * is what makes repeated runs idempotent.
+ */
+function isRepairableSemanticTime(stored: string | null, emittedAt: string | null): boolean {
+  const current = stored ?? SEMANTIC_TIME_UNKNOWN;
+  return current === SEMANTIC_TIME_UNKNOWN || (emittedAt !== null && current === emittedAt);
+}
+
+/**
+ * Decide, for one stream's already-stored rows, which `semantic_time` values
+ * this pass would rewrite and to what.
+ *
+ * Pure with respect to the database: it reads already-fetched rows and returns
+ * the intended writes, so the dry-run preview and the real write are produced
+ * by the same code rather than by an estimator that can drift from the writer.
+ */
+function planSemanticTimeRepairs(
+  connectorId: string,
+  facts: AttemptStreamFacts & { stream: string },
+  rows: readonly unknown[],
+  mode: SemanticTimeBackfillMode
+): { repairable: number; toAbsence: number; toSemanticDate: number; updates: SemanticTimeRepairUpdate[] } {
+  const updates: SemanticTimeRepairUpdate[] = [];
+  let toAbsence = 0;
+  let toSemanticDate = 0;
+  let repairable = 0;
+  for (const row of rows) {
+    const currentSemanticTime = (row as { semantic_time: string | null }).semantic_time;
+    const emittedAt = (row as { emitted_at: string | null }).emitted_at;
+    if (mode === "ingest-stamped" && !isRepairableSemanticTime(currentSemanticTime, emittedAt)) {
+      continue;
+    }
+    repairable += 1;
+    const data = JSON.parse((row as { record_json: string }).record_json);
+    const semanticTime = computeIngestSemanticTime(connectorId, facts.stream, data, facts);
+    if (semanticTime === (currentSemanticTime ?? SEMANTIC_TIME_UNKNOWN)) {
+      continue;
+    }
+    if (semanticTime === SEMANTIC_TIME_UNKNOWN) {
+      toAbsence += 1;
+    } else {
+      toSemanticDate += 1;
+    }
+    updates.push({ recordKey: (row as { record_key: string }).record_key, semanticTime });
+  }
+  return { repairable, toAbsence, toSemanticDate, updates };
 }
 
 // Registration changes can alter the manifest-derived sort facts of already
@@ -7262,13 +8584,18 @@ function computeIngestSemanticTime(
 // time), so repair that persisted fact under the same instance fence used by
 // every writer. This is version-free: a manifest evolution must not append a
 // record change or emit a client notification.
-export async function backfillSqliteRecordSemanticTimesForManifest(manifest: StoredManifest) {
+export async function backfillSqliteRecordSemanticTimesForManifest(
+  manifest: StoredManifest,
+  options: { dryRun?: boolean; mode?: SemanticTimeBackfillMode } = {}
+) {
+  const mode: SemanticTimeBackfillMode = options.mode ?? "drift";
+  const dryRun = options.dryRun === true;
   const connectorId =
     canonicalConnectorKey(manifest.connector_key || manifest.connector_id) ??
     manifest.connector_key ??
     manifest.connector_id;
   if (typeof connectorId !== "string" || !Array.isArray(manifest.streams)) {
-    return { updated: 0 };
+    return { streams: [] as SemanticTimeBackfillStreamOutcome[], updated: 0 };
   }
   const streamFacts = manifest.streams.flatMap((stream) => {
     if (typeof stream?.name !== "string" || !stream.name) {
@@ -7283,7 +8610,7 @@ export async function backfillSqliteRecordSemanticTimesForManifest(manifest: Sto
     ];
   });
   if (streamFacts.length === 0) {
-    return { updated: 0 };
+    return { streams: [] as SemanticTimeBackfillStreamOutcome[], updated: 0 };
   }
 
   const instanceRows = getDb()
@@ -7295,6 +8622,7 @@ export async function backfillSqliteRecordSemanticTimesForManifest(manifest: Sto
     )
     .all(connectorId, ...streamFacts.map((entry) => entry.stream));
   let updated = 0;
+  const streamOutcomes: SemanticTimeBackfillStreamOutcome[] = [];
   const connectorInstanceIds: string[] = instanceRows.map(
     (row: unknown) => (row as { connector_instance_id: string }).connector_instance_id
   );
@@ -7316,28 +8644,36 @@ export async function backfillSqliteRecordSemanticTimesForManifest(manifest: Sto
               WHERE connector_id = ? AND connector_instance_id = ? AND stream = ? AND deleted = 0`
           )
           .all(connectorId, connectorInstanceId, facts.stream);
+        // Planned first, applied second, so a dry run walks exactly the code
+        // that a real run would and reports what it would have written —
+        // rather than a separate estimator that can drift from the writer.
+        const plan = planSemanticTimeRepairs(connectorId, facts, rows, mode);
+        streamOutcomes.push({
+          connectorInstanceId,
+          examined: rows.length,
+          repairable: plan.repairable,
+          stream: facts.stream,
+          toAbsence: plan.toAbsence,
+          toSemanticDate: plan.toSemanticDate,
+        });
+        const planned = plan.updates;
+        updated += planned.length;
+        if (dryRun || planned.length === 0) {
+          continue;
+        }
         writeTransaction(() => {
           const update = getDb().prepare(
             `UPDATE records SET semantic_time = ?
                 WHERE connector_instance_id = ? AND stream = ? AND record_key = ? AND deleted = 0`
           );
-          for (const row of rows) {
-            const data = JSON.parse((row as { record_json: string }).record_json);
-            const emittedAt = (row as { emitted_at: string }).emitted_at;
-            const semanticTime = computeIngestSemanticTime(connectorId, facts.stream, data, emittedAt, facts);
-            const currentSemanticTime = (row as { semantic_time: string | null }).semantic_time;
-            if (semanticTime === currentSemanticTime) {
-              continue;
-            }
-            const recordKey = (row as { record_key: string }).record_key;
-            update.run(semanticTime, connectorInstanceId, facts.stream, recordKey);
-            updated += 1;
+          for (const entry of planned) {
+            update.run(entry.semanticTime, connectorInstanceId, facts.stream, entry.recordKey);
           }
         });
       }
     });
   });
-  return { updated };
+  return { streams: streamOutcomes, updated };
 }
 
 // Returns the manifest-declared primary_key field names for a stream, or null

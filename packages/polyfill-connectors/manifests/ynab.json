@@ -36,6 +36,14 @@
   },
   "capabilities": {
     "human_interaction": [],
+    "proven": {
+      "static_secret_live": {
+        "proven": true,
+        "run_id": null,
+        "date": "2026-06-10",
+        "note": "store path proven; captured credentials validated successfully"
+      }
+    },
     "refresh_policy": {
       "recommended_mode": "automatic",
       "recommended_interval_seconds": 3600,
@@ -45,17 +53,20 @@
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "low",
       "background_safe": true,
-      "rationale": "YNAB API uses a long-lived token; budgets do not change minute-to-minute, so hourly is enough."
+      "rationale": "YNAB API uses a long-lived token and documents a rolling 200-request-per-hour access-token budget; budgets do not change minute-to-minute, so hourly is enough."
     },
     "public_listing": {
-      "listed": true,
-      "status": "proven"
+      "tier": "supported"
     }
   },
   "streams": [
     {
       "name": "budgets",
+      "required": true,
       "description": "YNAB budgets (plans) the user owns or collaborates on. Includes currency/date locale.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["last_month", "last_modified_on"]
+      },
       "display": {
         "label": "Your budgets",
         "detail": "Budget names, currency locale (ISO code, symbol, separators), date format, and first/last month. No transaction data."
@@ -163,7 +174,10 @@
     },
     {
       "name": "accounts",
+      "required": true,
       "description": "Accounts within each budget (checking, savings, credit cards, loans, etc.).",
+      "compaction_class": "point_in_time_real_field",
+      "compaction_class_note": "balance/cleared_balance/uncleared_balance are point-in-time samples carried on this record; retained history is never compactable.",
       "display": {
         "label": "Your accounts",
         "detail": "Account names, types, on-budget status, balances, last reconciliation, direct-import status, and loan-specific details (interest rates, minimum payments, escrow). No individual transactions."
@@ -361,6 +375,7 @@
     },
     {
       "name": "category_groups",
+      "required": true,
       "description": "Category groups within each budget.",
       "display": {
         "label": "Your budget category groups",
@@ -405,11 +420,12 @@
           "semantic_fields": ["note"]
         }
       },
-      "coverage_strategy": "full_inventory",
+      "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "scheduled_window"
     },
     {
       "name": "categories",
+      "required": true,
       "description": "Categories within each budget, including budgeted/activity/balance snapshots and goal state.",
       "display": {
         "label": "Your budget categories",
@@ -537,11 +553,12 @@
           "goal_under_funded": ["gte", "gt", "lte", "lt"]
         }
       },
-      "coverage_strategy": "full_inventory",
+      "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "scheduled_window"
     },
     {
       "name": "payees",
+      "required": true,
       "description": "Payees within each budget.",
       "display": {
         "label": "Your payees",
@@ -581,12 +598,16 @@
           "lexical_fields": ["name"]
         }
       },
-      "coverage_strategy": "full_inventory",
+      "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "scheduled_window"
     },
     {
       "name": "payee_locations",
+      "required": true,
       "description": "GPS coordinates where YNAB mobile has logged a payee interaction.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Payee GPS locations",
         "detail": "Latitude/longitude coordinates linked to payees, typically added via the YNAB mobile app. Useful for matching transactions to merchant locations."
@@ -879,6 +900,7 @@
     },
     {
       "name": "scheduled_transactions",
+      "required": true,
       "description": "Recurring and one-time scheduled transactions (upcoming bills, salary, rent, etc.).",
       "display": {
         "label": "Your scheduled transactions",
@@ -964,7 +986,7 @@
         "fields": true,
         "resources": true
       },
-      "incremental": true,
+      "incremental": false,
       "relationships": [
         {
           "name": "account",
@@ -996,11 +1018,12 @@
           "group_by_time": ["date_next"]
         }
       },
-      "coverage_strategy": "checkpoint_window",
+      "coverage_strategy": "full_inventory",
       "freshness_strategy": "scheduled_window"
     },
     {
       "name": "months",
+      "required": true,
       "description": "Monthly budget aggregates (income, budgeted, activity, age of money).",
       "display": {
         "label": "Monthly budget summaries",
@@ -1071,11 +1094,12 @@
           "group_by_time": ["month"]
         }
       },
-      "coverage_strategy": "full_inventory",
+      "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "scheduled_window"
     },
     {
       "name": "month_categories",
+      "required": true,
       "description": "Per-month snapshot of every category's budgeted/activity/balance and goal progress. This is the real budget history matrix — historical months are frozen in YNAB, the current month mutates. Amounts in YNAB milliunits (1000 milliunits = 1 currency unit).",
       "display": {
         "label": "Monthly category history",
@@ -1272,7 +1296,7 @@
           "group_by_time": ["month"]
         }
       },
-      "coverage_strategy": "full_inventory",
+      "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "scheduled_window"
     }
   ],

@@ -37,6 +37,9 @@
   },
   "capabilities": {
     "human_interaction": [],
+    "proven": {
+      "local_collector": true
+    },
     "refresh_policy": {
       "recommended_mode": "automatic",
       "recommended_interval_seconds": 3600,
@@ -49,14 +52,19 @@
       "rationale": "Codex CLI session state lives on local disk; re-reading it is cheap."
     },
     "public_listing": {
-      "listed": true,
-      "status": "proven"
+      "tier": "supported"
     }
   },
   "streams": [
     {
       "name": "sessions",
+      "required": true,
       "description": "Codex CLI sessions. Canonical metadata comes from ~/.codex/state_5.sqlite#threads (title, archived, tokens_used, first_user_message, sandbox_policy, approval_mode), enriched with message/tool-call counts from the on-disk rollout JSONL.",
+      "compaction_class": "recurring_snapshot",
+      "compaction_class_note": "whole record is an evolving observation (message_count, last_event_at widen on growth); never compactable, never re-alarms as growth accumulates.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Codex CLI sessions",
         "detail": "Title, working directory, git commit/branch, model provider, CLI version, approval mode, sandbox policy, token usage, and counts."
@@ -168,7 +176,11 @@
     },
     {
       "name": "messages",
+      "required": true,
       "description": "Messages within Codex sessions: user prompts, assistant responses, and reasoning placeholders.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Codex messages",
         "detail": "Role (user/assistant), text content, timestamp, session reference. Reasoning traces are referenced but content is encrypted and not stored."
@@ -237,7 +249,11 @@
     },
     {
       "name": "function_calls",
+      "required": true,
       "description": "Tool invocations and their outputs (shell commands, file ops) recorded in Codex sessions.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Codex tool calls",
         "detail": "Tool name, arguments, call_id, and output preview. Includes shell commands Codex ran and their results."
@@ -308,7 +324,11 @@
     },
     {
       "name": "rules",
+      "required": true,
       "description": "Personal trust-registry rules recorded in ~/.codex/rules/*.rules — the de-facto log of approval decisions. One record per rule line. The stream is named `rules` to match the real local directory; `approval_rules` was backlog shorthand, not an on-disk source name.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Codex approval rules",
         "detail": "Each rule line (e.g. prefix_rule / decision=allow) from your .rules files, with ruleset and position."
@@ -361,7 +381,11 @@
     },
     {
       "name": "prompts",
+      "required": true,
       "description": "User-authored prompt templates from ~/.codex/prompts/*.md. Frontmatter (name, description) is parsed; body is the prompt content.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Codex prompts",
         "detail": "Name, description, body, and source path for each prompt template."
@@ -414,7 +438,11 @@
     },
     {
       "name": "skills",
+      "required": true,
       "description": "User-authored skills from ~/.codex/skills/<name>/SKILL.md. Frontmatter (name, description) is parsed; body is the skill content.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Codex skills",
         "detail": "Name, description, body, and source path for each skill."
@@ -469,6 +497,9 @@
     {
       "name": "history",
       "description": "Metadata-only inventory for Codex history.jsonl. Prompt-history payloads are not collected in this tranche.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -528,6 +559,9 @@
     {
       "name": "session_index",
       "description": "Metadata-only inventory for Codex session_index.jsonl.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -620,67 +654,11 @@
       "freshness_strategy": "device_heartbeat"
     },
     {
-      "name": "logs",
-      "description": "Deferred Codex logs inventory; log payloads require deterministic redaction before collection.",
-      "semantics": "mutable_state",
-      "schema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "store": {
-            "type": "string"
-          },
-          "relative_path": {
-            "type": "string",
-            "x_pdpp_role": "primary-title"
-          },
-          "path_hash": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string"
-          },
-          "size_bytes": {
-            "type": ["integer", "null"]
-          },
-          "mtime_epoch": {
-            "type": ["integer", "null"],
-            "x_pdpp_role": "event-time"
-          },
-          "classification": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "store",
-          "relative_path",
-          "path_hash",
-          "type",
-          "classification",
-          "reason"
-        ]
-      },
-      "primary_key": ["id"],
-      "cursor_field": "mtime_epoch",
-      "selection": {
-        "fields": true,
-        "resources": true
-      },
-      "incremental": false,
-      "required": false,
-      "coverage_policy": "deferred",
-      "coverage_strategy": "snapshot_import_receipt",
-      "freshness_strategy": "device_heartbeat"
-    },
-    {
       "name": "shell_snapshots",
       "description": "Metadata-only inventory for Codex shell snapshots; shell content is not collected.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -740,6 +718,9 @@
     {
       "name": "config_inventory",
       "description": "Metadata-only inventory for non-secret Codex configuration; raw config payloads are not collected.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -799,6 +780,9 @@
     {
       "name": "cache_inventory",
       "description": "Metadata-only inventory for Codex cache stores; raw cache payloads are not collected.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -908,5 +892,8 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "shape_check_failed": "The data didn't look like we expected"
+  }
 }

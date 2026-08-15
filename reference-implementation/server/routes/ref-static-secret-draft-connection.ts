@@ -12,9 +12,9 @@
 //
 // It is NOT an owner-agent bearer route: `requireOwnerSession` (cookie) gates
 // it, and it never accepts or returns a provider secret. Non-static-secret
-// connectors are refused. Each call mints a fresh random source-binding key, so
-// two mailboxes become two distinct `connection_id`s. See
-// add-static-secret-owner-session-connect-path design Decision 4.
+// connectors are refused. Manifest-declared identities get a deterministic
+// draft binding key so retries converge; connectors without a safe identity
+// retain a random key so distinct accounts cannot be collapsed.
 
 import { randomBytes } from "node:crypto";
 
@@ -26,6 +26,12 @@ import {
   type StaticSecretSetupField,
   staticSecretCredentialCaptureFromManifest,
 } from "../connection-setup-plan.ts";
+import {
+  findExistingStaticSecretIdentity,
+  parseStaticSecretDraftSetupFields,
+  staticSecretDraftIdentityBindingKey,
+  staticSecretSetupIdentity,
+} from "../static-secret-identity.ts";
 import {
   CREDENTIAL_ENCRYPTION_KEY_ENV,
   CREDENTIAL_ENCRYPTION_KEY_FILE_ENV,
@@ -63,10 +69,24 @@ interface ConnectorInstance {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
   readonly displayName?: string | null;
+  readonly ownerSubjectId: string;
+  readonly sourceBinding?: unknown;
+  readonly sourceBindingKey?: string;
   readonly status: string;
 }
 
 interface ConnectorInstanceStore {
+  getByBinding: (input: {
+    ownerSubjectId: string;
+    connectorId: string;
+    sourceKind: string;
+    sourceBindingKey: string;
+  }) => Promise<ConnectorInstance | null> | ConnectorInstance | null;
+  listActiveByConnector: (
+    ownerSubjectId: string,
+    connectorId: string,
+    options?: { limit?: number }
+  ) => Promise<ConnectorInstance[]> | ConnectorInstance[];
   upsert: (record: {
     ownerSubjectId: string;
     connectorId: string;
@@ -78,6 +98,51 @@ interface ConnectorInstanceStore {
     createdAt: string;
     updatedAt: string;
   }) => Promise<ConnectorInstance> | ConnectorInstance;
+}
+
+// The binding `createDraftConnection` below writes at draft-creation time.
+export interface StaticSecretDraftSourceBinding {
+  readonly kind: "static_secret_draft";
+  readonly setup_fields: Record<string, string>;
+  readonly verified_identity?: string;
+}
+
+// The credential itself lives in connector-instance-credential-store, never
+// in this binding; setup_fields (non-secret manifest fields) is read on
+// every credential probe and run, so it must survive promotion.
+export interface StaticSecretDurableSourceBinding {
+  readonly kind: "static_secret";
+  readonly promoted_at: string;
+  readonly promoted_from: "static_secret_draft";
+  readonly setup_fields: Record<string, string>;
+  readonly verified_identity?: string;
+}
+
+// Pure — no I/O.
+export function promoteStaticSecretDraftBinding(
+  draftBinding: StaticSecretDraftSourceBinding,
+  now: string
+): StaticSecretDurableSourceBinding {
+  return {
+    kind: "static_secret",
+    promoted_at: now,
+    promoted_from: "static_secret_draft",
+    setup_fields: draftBinding.setup_fields,
+    ...(draftBinding.verified_identity ? { verified_identity: draftBinding.verified_identity } : {}),
+  };
+}
+
+interface ParsedDisplayName {
+  readonly displayName: string | null;
+  readonly ok: true;
+}
+
+interface InvalidDisplayName {
+  readonly error: {
+    readonly message: string;
+    readonly param: "display_name";
+  };
+  readonly ok: false;
 }
 
 export interface MountRefStaticSecretDraftConnectionContext {
@@ -177,6 +242,7 @@ function projectSetup(connectorId: string, manifest: ConnectorManifestLike): Rec
       fields: capture.fields.map(projectField),
       kind: capture.kind,
       label: capture.label,
+      required: capture.required,
       submit_label: capture.submitLabel,
     },
     credential_kind: credentialKind,
@@ -191,43 +257,73 @@ function projectSetup(connectorId: string, manifest: ConnectorManifestLike): Rec
   };
 }
 
-function parseSetupFields(
+function bodyRecord(body: unknown): Record<string, unknown> {
+  return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+}
+
+function parseDisplayNameText(raw: string): ParsedDisplayName | InvalidDisplayName {
+  const displayName = raw.trim();
+  if (!displayName) {
+    return {
+      displayName: null,
+      ok: true,
+    };
+  }
+  if (displayName.length > 200) {
+    return {
+      error: { message: "display_name must be 200 characters or fewer", param: "display_name" },
+      ok: false,
+    };
+  }
+  return { displayName, ok: true };
+}
+
+function parseDisplayNameValue(raw: unknown): ParsedDisplayName | InvalidDisplayName {
+  if (raw === null || raw === undefined) {
+    return { displayName: null, ok: true };
+  }
+  if (typeof raw !== "string") {
+    return {
+      error: { message: "display_name must be a string when provided", param: "display_name" },
+      ok: false,
+    };
+  }
+  return parseDisplayNameText(raw);
+}
+
+function parseOptionalDisplayName(body: unknown): ParsedDisplayName | InvalidDisplayName {
+  const objectBody = bodyRecord(body);
+  if (!Object.hasOwn(objectBody, "display_name")) {
+    return { displayName: null, ok: true };
+  }
+  return parseDisplayNameValue(objectBody.display_name);
+}
+
+interface ParsedDraftSetup {
+  readonly displayName: string | null;
+  readonly setupFields: Record<string, string>;
+}
+
+function parseDraftSetup(
   ctx: MountRefStaticSecretDraftConnectionContext,
   res: RouteResponse,
   body: unknown,
   fields: readonly StaticSecretSetupField[]
-): Record<string, string> | null {
-  const objectBody = (body as Record<string, unknown> | null) || {};
-  const raw = objectBody.setup_fields;
-  const provided = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
-  const allowed = new Set(fields.filter((field) => !field.secret).map((field) => field.name));
-  const output: Record<string, string> = {};
-  for (const key of Object.keys(provided)) {
-    if (!allowed.has(key)) {
-      ctx.pdppError(res, 400, "unknown_setup_field", `Unknown setup field: ${key}`, `setup_fields.${key}`);
-      return null;
-    }
+): ParsedDraftSetup | null {
+  const objectBody = bodyRecord(body);
+  const setupFields = parseStaticSecretDraftSetupFields(objectBody.setup_fields, fields, (code, message, param) =>
+    ctx.pdppError(res, 400, code, message, param)
+  );
+  if (setupFields === null) {
+    return null;
   }
-  for (const field of fields) {
-    if (field.secret) {
-      continue;
-    }
-    const value = provided[field.name];
-    const text = typeof value === "string" ? value.trim() : "";
-    if (field.required && !text) {
-      ctx.pdppError(res, 400, "missing_setup_field", `${field.label} is required.`, `setup_fields.${field.name}`);
-      return null;
-    }
-    if (text) {
-      output[field.name] = text;
-    }
-  }
-  return output;
-}
 
-function identityValue(fields: readonly StaticSecretSetupField[], setupFields: Record<string, string>): string | null {
-  const field = fields.find((candidate) => candidate.identity && !candidate.secret);
-  return field ? (setupFields[field.name] ?? null) : null;
+  const parsedDisplayName = parseOptionalDisplayName(body);
+  if (!parsedDisplayName.ok) {
+    ctx.pdppError(res, 400, "invalid_request", parsedDisplayName.error.message, parsedDisplayName.error.param);
+    return null;
+  }
+  return { displayName: parsedDisplayName.displayName, setupFields };
 }
 
 async function emitDraftAudit(
@@ -281,22 +377,21 @@ function createDraftConnection(
     connectorId: string;
     manifest: ConnectorManifestLike;
     captureSetup: NonNullable<ReturnType<typeof staticSecretCredentialCaptureFromManifest>>;
+    displayName: string | null;
     setupFields: Record<string, string>;
     ownerSubjectId: string;
   }
 ): { displayName: string; instance: ReturnType<ConnectorInstanceStore["upsert"]> } {
-  // A fresh random binding key makes every draft a distinct connection
-  // identity (two mailboxes → two connection_ids) and deliberately avoids
-  // the deterministic default-account key, which is the phantom-
-  // resurrection key. The store derives the connector_instance_id from
-  // the binding key.
-  const sourceBindingKey = `draft_${randomBytes(24).toString("hex")}`;
   const now = ctx.now ? ctx.now() : new Date().toISOString();
   const store = ctx.createRequestConnectorInstanceStore();
-  const idValue = identityValue(input.captureSetup.fields, input.setupFields);
-  const displayName = idValue
+  const idValue = staticSecretSetupIdentity(input.captureSetup.fields, input.setupFields);
+  const sourceBindingKey =
+    staticSecretDraftIdentityBindingKey(input.ownerSubjectId, input.connectorId, idValue ?? "") ||
+    `draft_${randomBytes(24).toString("hex")}`;
+  const fallbackDisplayName = idValue
     ? `${displayNameForConnector(input.connectorId, input.manifest)} - ${idValue}`
     : displayNameForConnector(input.connectorId, input.manifest);
+  const displayName = input.displayName ?? fallbackDisplayName;
   const instance = store.upsert({
     connectorId: input.connectorId,
     createdAt: now,
@@ -401,8 +496,8 @@ export function mountRefStaticSecretDraftConnection(
           ctx.pdppError(res, 503, "credential_encryption_key_missing", staticSecretSetupErrorMessage());
           return;
         }
-        const setupFields = parseSetupFields(ctx, res, req.body, captureSetup.fields);
-        if (setupFields === null) {
+        const parsedSetup = parseDraftSetup(ctx, res, req.body, captureSetup.fields);
+        if (parsedSetup === null) {
           await emitDraftAudit(ctx, req, res, {
             connectorId,
             credentialKind,
@@ -412,15 +507,38 @@ export function mountRefStaticSecretDraftConnection(
           });
           return;
         }
+        const { displayName: requestedDisplayName, setupFields } = parsedSetup;
 
-        const { displayName, instance: pendingInstance } = createDraftConnection(ctx, {
-          captureSetup,
-          connectorId,
-          manifest,
-          ownerSubjectId,
-          setupFields,
-        });
-        const instance = await pendingInstance;
+        let existingIdentity: ConnectorInstance | null = null;
+        if (credentialValidationMode(connectorId) === "synchronous") {
+          existingIdentity = await findExistingStaticSecretIdentity<ConnectorInstance>({
+            connectorId,
+            fields: captureSetup.fields,
+            ownerSubjectId,
+            setupFields,
+            store: ctx.createRequestConnectorInstanceStore(),
+          });
+        }
+        let displayName: string;
+        let instance: ConnectorInstance;
+        let created = false;
+        if (existingIdentity) {
+          instance = existingIdentity;
+          displayName = existingIdentity.displayName ?? displayNameForConnector(connectorId, manifest);
+        } else {
+          const createdDraft = createDraftConnection(ctx, {
+            captureSetup,
+            connectorId,
+            displayName: requestedDisplayName,
+            manifest,
+            ownerSubjectId,
+            setupFields,
+          });
+          const { displayName: createdDisplayName, instance: createdInstance } = createdDraft;
+          instance = await createdInstance;
+          displayName = createdDisplayName;
+          created = true;
+        }
 
         await emitDraftAudit(ctx, req, res, {
           connectionId: instance.connectorInstanceId,
@@ -430,7 +548,7 @@ export function mountRefStaticSecretDraftConnection(
           ownerSubjectId,
         });
 
-        res.status(201).json({
+        res.status(created ? 201 : 200).json({
           connection_id: instance.connectorInstanceId,
           connector_id: connectorId,
           connector_instance_id: instance.connectorInstanceId,

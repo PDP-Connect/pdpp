@@ -24,8 +24,7 @@
       "rationale": "Calendar imports come from .ics exports the owner provides; refresh requires a new file."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "tier": "development"
     }
   },
   "streams": [
@@ -111,5 +110,9 @@
       "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "ics_fetch_failed": "We couldn't download the calendar feed",
+    "no_calendar_sources": "No calendars are configured to import from"
+  }
 }

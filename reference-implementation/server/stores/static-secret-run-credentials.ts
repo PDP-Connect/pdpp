@@ -43,13 +43,22 @@ export class StaticSecretRunCredentialError extends Error {
   }
 }
 
+function assertRunOwnerSubjectId(ownerSubjectId: unknown): asserts ownerSubjectId is string {
+  if (typeof ownerSubjectId !== "string" || ownerSubjectId.trim().length === 0) {
+    throw new StaticSecretRunCredentialError(
+      "owner_subject_required",
+      "A nonblank ownerSubjectId is required to resolve a static-secret run env."
+    );
+  }
+}
+
 /**
  * Resolve the connection-scoped secret env fragment for one run.
  *
  * @param {object} args
  * @param {string} args.connectorId - the connector type (e.g. 'gmail').
  * @param {string} args.connectorInstanceId - the connection being run.
- * @param {string} [args.ownerSubjectId] - owner scoping for recovery.
+ * @param {string} args.ownerSubjectId - owner scoping for recovery.
  * @param {unknown} [args.sourceBinding] - non-secret connection setup binding.
  * @param {object} args.credentialStore - a connector-instance credential store.
  * @param {(connectorId: string) => boolean} args.isStaticSecretConnector -
@@ -69,10 +78,7 @@ export interface RecoveredCredential {
 }
 
 export interface StaticSecretCredentialStore {
-  recoverSecret: (args: {
-    connectorInstanceId: string;
-    ownerSubjectId?: string | undefined;
-  }) => Promise<RecoveredCredential>;
+  recoverSecret: (args: { connectorInstanceId: string; ownerSubjectId: string }) => Promise<RecoveredCredential>;
 }
 
 export async function resolveStaticSecretRunEnv({
@@ -82,6 +88,7 @@ export async function resolveStaticSecretRunEnv({
   sourceBinding,
   credentialStore,
   isStaticSecretConnector,
+  isStaticSecretCaptureOptional,
   buildConnectionScopedSecretEnv,
 }: {
   buildConnectionScopedSecretEnv: (
@@ -92,8 +99,9 @@ export async function resolveStaticSecretRunEnv({
   connectorId: string;
   connectorInstanceId: string;
   credentialStore: StaticSecretCredentialStore | null | undefined;
+  isStaticSecretCaptureOptional?: (connectorId: string) => boolean;
   isStaticSecretConnector: (connectorId: string) => boolean;
-  ownerSubjectId?: string;
+  ownerSubjectId: string;
   sourceBinding?: unknown;
 }): Promise<Record<string, string> | null> {
   if (typeof isStaticSecretConnector !== "function" || typeof buildConnectionScopedSecretEnv !== "function") {
@@ -114,23 +122,38 @@ export async function resolveStaticSecretRunEnv({
       "A connector-instance credential store is required to resolve a static-secret run env."
     );
   }
+  assertRunOwnerSubjectId(ownerSubjectId);
   const browserSessionSource =
     isRecord(sourceBinding) &&
     (sourceBinding.kind === "browser_collector" || sourceBinding.kind === "browser_enrollment_shell");
-  // recoverSecret throws ConnectorInstanceCredentialError with code
-  // 'credential_not_found', 'credential_revoked', or 'credential_rejected' —
-  // the fail-closed path. We
-  // let it propagate for true static-secret sources so the run is refused
-  // rather than started with no/stale credential. Browser-session connections
-  // can optionally use stored login credentials, but their primary credential is
-  // the owner-authenticated browser session; absence of a static secret must not
-  // block the secure browser repair path.
+  // A missing/revoked/rejected credential falls back to `null` (no env
+  // fragment, run proceeds credential-less) under EITHER of two independent,
+  // provider-neutral conditions — never a connector-name check:
+  //   1. `browserSessionSource` — the CONNECTION is bound as a browser
+  //      session (`browser_collector`/`browser_enrollment_shell`); its
+  //      primary credential is the owner-authenticated browser session, so a
+  //      static secret is always secondary.
+  //   2. `captureOptional` — the CONNECTOR's own manifest declares
+  //      `credential_capture.required: false`, independent of
+  //      how this particular connection's `sourceBinding.kind` happens to be
+  //      set today. This closes the gap where a browser-bound-but-still-
+  //      static-secret-draft-bound connection (the real owner journey through
+  //      `/connect/static-secret/[connectorId]` today, since browser_collector
+  //      enrollment for this connector class remains proof-gated) would
+  //      otherwise fail closed on a deliberately blank optional credential —
+  //      the manifest already promises "leave these blank to sign in by
+  //      hand", and this is what makes that promise true at run time too.
+  // For every OTHER static-secret connector (required capture, no
+  // browser-session binding), recoverSecret's throw still propagates
+  // unmodified: the run is refused rather than started with no/stale
+  // credential.
+  const captureOptional = isStaticSecretCaptureOptional?.(connectorId) === true;
   let recovered: RecoveredCredential;
   try {
     recovered = await credentialStore.recoverSecret({ connectorInstanceId, ownerSubjectId });
   } catch (err) {
     if (
-      browserSessionSource &&
+      (browserSessionSource || captureOptional) &&
       err instanceof ConnectorInstanceCredentialError &&
       (err.code === "credential_not_found" || err.code === "credential_revoked" || err.code === "credential_rejected")
     ) {

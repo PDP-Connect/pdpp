@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(__dirname, "..");
@@ -149,6 +149,54 @@ function runConnectorEntrypointWithClosedStdin(connectorRelPath: string): Promis
   });
 }
 
+function runInteractionWithClosedStdin(): Promise<EntrypointResult> {
+  return new Promise((resolvePromise) => {
+    const runtimeUrl = pathToFileURL(join(PACKAGE_ROOT, "src/connector-runtime.ts")).href;
+    const code = `import(${JSON.stringify(runtimeUrl)}).then(({ runConnector }) => runConnector({ name: "stdin-close-interaction", collect: async ({ sendInteraction }) => { await sendInteraction({ kind: "otp", message: "Enter OTP" }); } })).catch((e) => { console.error(e); process.exit(2); });`;
+    const child = spawn(process.execPath, ["--import", "tsx/esm", "-e", code], {
+      cwd: PACKAGE_ROOT,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
+      },
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (d: Buffer) => {
+      stdout += d.toString();
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      stderr += d.toString();
+    });
+
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      resolvePromise({ code: null, signal: "SIGKILL", stderr, stdout, timedOut: true });
+    }, IMPORT_TIMEOUT_MS);
+
+    child.on("exit", (exitCode, signal) => {
+      clearTimeout(timer);
+      resolvePromise({ code: exitCode, signal, stderr, stdout, timedOut: false });
+    });
+
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolvePromise({
+        code: null,
+        signal: null,
+        stderr: `spawn error: ${err.message}\n${stderr}`,
+        stdout,
+        timedOut: false,
+      });
+    });
+
+    child.stdin?.end(`${JSON.stringify({ scope: { streams: [{ name: "items" }] }, type: "START" })}\n`);
+  });
+}
+
 test("importing chatgpt/index.ts (browser connector) in a child process exits cleanly without firing runConnector", {
   timeout: IMPORT_TIMEOUT_MS + 5000,
 }, async () => {
@@ -182,4 +230,13 @@ test("a connector entrypoint with closed stdin fails closed instead of hanging b
   assert.match(result.stdout, /"type":"DONE"/, "missing START should emit a terminal DONE envelope");
   assert.match(result.stdout, /"status":"failed"/, "missing START should fail the DONE envelope");
   assert.match(result.stdout, /Missing START message before stdin closed/);
+});
+
+test("an interaction with closed stdin settles instead of hanging", { timeout: IMPORT_TIMEOUT_MS + 5000 }, async () => {
+  const result = await runInteractionWithClosedStdin();
+  assert.equal(result.timedOut, false, `child hung: stderr=${result.stderr}`);
+  assert.equal(result.code, 1, `expected fail-closed exit code 1: stdout=${result.stdout} stderr=${result.stderr}`);
+  assert.match(result.stdout, /"type":"INTERACTION"/);
+  assert.match(result.stdout, /"type":"DONE"/);
+  assert.match(result.stdout, /Interaction .* ended before a response/);
 });

@@ -43,7 +43,7 @@ const CONNECTOR_ID = "test_backfill_connector";
 
 function seedManifestConnector(connectorId: string = CONNECTOR_ID): void {
   const manifest = {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: connectorId,
     display_name: connectorId,
     protocol_version: "0.1.0",

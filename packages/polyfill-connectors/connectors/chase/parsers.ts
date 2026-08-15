@@ -795,7 +795,8 @@ export function chooseActivity(
   requested: Map<string, StreamScopeLike>,
   state: TransactionsStateShape,
   stream: string,
-  accountId: string
+  accountId: string,
+  runDate: string
 ): ActivityChoice {
   const streamScope = requested.get(stream);
   const timeRange = streamScope?.time_range;
@@ -804,7 +805,7 @@ export function chooseActivity(
       activity: "date_range",
       dateRange: {
         from: timeRange.since?.slice(0, 10),
-        to: timeRange.until?.slice(0, 10),
+        to: timeRange.until?.slice(0, 10) ?? runDate.slice(0, 10),
       },
     };
   }

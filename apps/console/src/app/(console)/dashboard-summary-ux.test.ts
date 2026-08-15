@@ -15,10 +15,21 @@ const TEST_FILE = `${HERE}components/views/standing-view-model.test.ts`;
 const STANDING_OVERVIEW_RENDER = /<StandingOverview\b/;
 const SHARED_SOURCE_WORK_INPUT = /sourceWork: sourceWorkFromConnectors\(connectors\)/;
 const SHARED_SOURCE_WORK_AUTHORITY = /function activeSourceWork[\s\S]*return input\.sourceWork/;
+// The fleet verdict owns the hero, and now outranks the stale/partial-read
+// states as well: totals catching up is a self-resolving delay with no owner
+// action, while a source that stopped collecting is work only the owner can
+// clear. Ordering those the other way spent the single hero slot on the
+// transient state. This pins fleet health AHEAD of both projection staleness
+// and overviewLoadIssues.
 const SERVER_FLEET_VERDICT_HERO_PRECEDENCE =
-  /function computeHero\(input: StandingInputs\)[\s\S]*overviewLoadIssues\.length > 0[\s\S]*const fleetHealthHero = input\.fleetHealth \? buildFleetHealthHero\(input\.fleetHealth, input\.hrefs\) : null;[\s\S]*if \(fleetHealthHero\)[\s\S]*return fleetHealthHero/;
+  /function computeHero\(input: StandingInputs\)[\s\S]*const fleetHealthHero = input\.fleetHealth \? buildFleetHealthHero\(input\.fleetHealth, input\.hrefs\) : null;[\s\S]*if \(fleetHealthHero\)[\s\S]*return fleetHealthHero[\s\S]*projectionState === "stale"[\s\S]*overviewLoadIssues\.length > 0/;
+// Overview renders the section summary and the shared row copy. The row is
+// the owner-facing trust correction: it carries the exact source label and
+// sanctioned next action already classified by the shared model.
 const SOURCE_WORK_SECTIONS_RENDERED =
-  /data-row-count=\{rowCount\}[\s\S]*sections\.map\(\(section\)[\s\S]*section\.rows\.map\(\(a\)/;
+  /data-row-count=\{rowCount\}[\s\S]*sections\.map\(\(section\)[\s\S]*rr-attn__section-count/;
+const SOURCE_WORK_ROWS_RENDERED = /section\.rows\.map\(\(row\)[\s\S]*rr-attn__row[\s\S]*row\.what[\s\S]*row\.why/;
+const SOURCE_WORK_SYNCS_LINK_RE = /href=\{syncsHref\}/;
 const NOTIFICATIONS_BLOCK_RENDERED =
   /function NotificationsBlock\([\s\S]*<h2 className="rr-stand-block__title">Notifications<\/h2>[\s\S]*href=\{href\}/;
 const OVERVIEW_PASSES_NOTIFICATIONS_HREF = /notificationsHref=\{HREFS\.notifications\}/;
@@ -46,10 +57,12 @@ test("Standing Overview uses source work for detail while the server fleet verdi
   assert.match(src, SERVER_FLEET_VERDICT_HERO_PRECEDENCE);
 });
 
-test("Standing Overview renders sectioned shared source-work rows", async () => {
+test("Standing Overview renders sectioned shared source-work rows and links to Syncs for deeper recovery", async () => {
   const src = await readFile(OVERVIEW_FILE, "utf8");
 
   assert.match(src, SOURCE_WORK_SECTIONS_RENDERED);
+  assert.match(src, SOURCE_WORK_ROWS_RENDERED, "Overview must render the shared source label and next-step row");
+  assert.match(src, SOURCE_WORK_SYNCS_LINK_RE, "Overview must link into Syncs for the full attention list");
 });
 
 test("Standing Overview links to notification setup as a first-class utility", async () => {
@@ -77,18 +90,20 @@ test('"What\'s been read" CTA names the audit log and does not overclaim "every 
   assert.doesNotMatch(src, READS_OVERCLAIMED_CTA);
 });
 
-// ---- second gate REVISE (2026-07-29), finding 1: Overview's bounded page ----
+// ---- terminal gate REVISE (2026-08-11), finding 1: Overview pagination ----
 
 const LOAD_OVERVIEW_CONNECTORS_USES_BOUNDED_PAGE =
-  /async function loadOverviewConnectors\(\)[\s\S]*loadConnectorSummaryPage\(\{ cursor: undefined \}/;
-const OVERVIEW_PUSHES_INCOMPLETE_FLEET_ISSUE =
-  /if \(connectorsResult\.issue === null && !connectorsResult\.value\.complete\)[\s\S]*overviewLoadIssues\.push\("source_status_incomplete_fleet"\)/;
+  /async function loadOverviewConnectors\(\s*state:[\s\S]*loadConnectorSummaryPage\(state,/;
+const OVERVIEW_RENDERS_PAGER = /<ConnectorSummaryPager[\s\S]*basePath="\/"[\s\S]*hasMore=\{page\.hasMore\}/;
 const NO_LIST_ALL_CONNECTOR_SUMMARIES_IN_PAGE = /\blistAllConnectorSummaries\b/;
+const OVERVIEW_SOURCE_PAGE_ERROR = /function DashboardSourcePageControls[\s\S]*page\.kind === "error"/;
+const OVERVIEW_RENDERS_SOURCE_PAGE_ERROR = /<ConnectorSummaryPageError/;
 
-test("Overview's connector load is ONE bounded page (loadConnectorSummaryPage), never the exhaustive fold", async () => {
+test("Overview's connector load is ONE bounded page with an honest continuation pager", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
 
   assert.match(src, LOAD_OVERVIEW_CONNECTORS_USES_BOUNDED_PAGE);
+  assert.match(src, OVERVIEW_RENDERS_PAGER);
   assert.doesNotMatch(
     src,
     NO_LIST_ALL_CONNECTOR_SUMMARIES_IN_PAGE,
@@ -96,12 +111,9 @@ test("Overview's connector load is ONE bounded page (loadConnectorSummaryPage), 
   );
 });
 
-test("Overview surfaces an honest incompleteness issue when its one bounded page was not the whole fleet", async () => {
+test("Overview exposes an error state when its bounded source page cannot be loaded", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
 
-  // This reuses the EXISTING overviewLoadIssues -> buildPartialDataHero /
-  // toOverviewIssues machinery (SERVER_FLEET_VERDICT_HERO_PRECEDENCE above
-  // proves computeHero gates on overviewLoadIssues.length > 0) — no new UI,
-  // just an honest additional issue value when the fleet page was partial.
-  assert.match(src, OVERVIEW_PUSHES_INCOMPLETE_FLEET_ISSUE);
+  assert.match(src, OVERVIEW_SOURCE_PAGE_ERROR);
+  assert.match(src, OVERVIEW_RENDERS_SOURCE_PAGE_ERROR);
 });

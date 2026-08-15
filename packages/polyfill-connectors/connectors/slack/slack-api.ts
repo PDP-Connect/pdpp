@@ -47,6 +47,67 @@ const USER_AGENT = slackBrowserUserAgent();
 export const SLACK_API_RETRYABLE_FAILURE_RE = /slack_rate_limited|ECONN|ETIMEDOUT|timeout/i;
 
 /**
+ * Typed marker for a durable Slack session-credential rejection — a 401, or
+ * an `invalid_auth`/`not_authed`/`token_revoked` API response body. Never
+ * transient: retrying the same call with the same rejected credential
+ * repeats the same outcome forever. Callers classify with `instanceof`
+ * rather than matching on `.message`, so the classification survives a
+ * message-copy edit and cannot silently drift out of sync with the actual
+ * throw site the way a standalone regex can.
+ *
+ * `slackApiErrorCode` preserves the specific Slack-reported reason
+ * (`invalid_auth` / `not_authed` / `token_revoked`, or `null` for a bare
+ * HTTP 401 with no parsed body) as structured data, not string-embedded —
+ * a caller that wants the exact reason reads the field, it doesn't re-parse
+ * the message.
+ */
+export class SlackApiAuthError extends Error {
+  readonly slackApiErrorCode: string | null;
+
+  constructor(slackApiErrorCode: string | null, options?: ErrorOptions) {
+    super("slack_auth_failed", options);
+    this.name = "SlackApiAuthError";
+    this.slackApiErrorCode = slackApiErrorCode;
+  }
+}
+
+// slackdump's `makeCookie` (auth/value.go) treats these as already URL-safe
+// for a cookie value (note the literal `%`, so a pre-encoded input is left
+// alone); anything else is escaped via `goQueryEscape` before the wire.
+const SLACKDUMP_COOKIE_URL_SAFE_RE = /^[-._~%a-zA-Z0-9]*$/;
+
+// Go `net/url.QueryEscape` (encodeQueryComponent mode) unreserved set —
+// alphanumerics and `-_.~` only. NOT the same set as JS `encodeURIComponent`:
+// space encodes to `+` here (not `%20`), and `!'()*` are escaped here (JS
+// leaves them unescaped). See this file's tests for byte-level proof.
+const GO_QUERY_UNRESERVED_RE = /^[A-Za-z0-9\-_.~]$/;
+
+/** Exact port of Go's `net/url.QueryEscape` (encodeQueryComponent mode). */
+function goQueryEscape(value: string): string {
+  let out = "";
+  for (const byte of new TextEncoder().encode(value)) {
+    const char = String.fromCharCode(byte);
+    if (char === " ") {
+      out += "+";
+    } else if (GO_QUERY_UNRESERVED_RE.test(char)) {
+      out += char;
+    } else {
+      out += `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+    }
+  }
+  return out;
+}
+
+/**
+ * Percent-encode a `d` cookie value the way slackdump's Go client does
+ * before putting it on the wire. An already-URL-safe value (including one
+ * with valid `%XX` escapes) is returned unchanged.
+ */
+export function encodeSlackCookieValue(value: string): string {
+  return SLACKDUMP_COOKIE_URL_SAFE_RE.test(value) ? value : goQueryEscape(value);
+}
+
+/**
  * Mirror slackdump's client-token cookie shape.
  *
  * Slackdump's upstream auth provider sends both the `d` cookie and a derived
@@ -54,7 +115,7 @@ export const SLACK_API_RETRYABLE_FAILURE_RE = /slack_rate_limited|ECONN|ETIMEDOU
  * Unix timestamp and acts as an expected session freshness marker.
  */
 export function buildSlackSessionCookieHeader(cookie: string, nowSeconds = Math.floor(Date.now() / 1000)): string {
-  return `d=${cookie}; d-s=${String(nowSeconds - 10)}`;
+  return `d=${encodeSlackCookieValue(cookie)}; d-s=${String(nowSeconds - 10)}`;
 }
 
 let httpGovernor: ConnectorHttpGovernor = createConnectorHttpGovernor({
@@ -170,7 +231,7 @@ async function slackApiGet<T extends { error?: string; ok: boolean }>(
 
 function parseSlackApiResponse<T extends { error?: string; ok: boolean }>(raw: SlackApiRawResponse): T {
   if (raw.status === 401) {
-    throw new Error("slack_auth_failed");
+    throw new SlackApiAuthError(null);
   }
   if (raw.status < 200 || raw.status >= 300) {
     throw new Error(`slack_api_http_${String(raw.status)}: ${raw.body.slice(0, 200)}`);
@@ -183,7 +244,7 @@ function parseSlackApiResponse<T extends { error?: string; ok: boolean }>(raw: S
   }
   if (!parsed.ok) {
     if (parsed.error === "invalid_auth" || parsed.error === "not_authed" || parsed.error === "token_revoked") {
-      throw new Error("slack_auth_failed");
+      throw new SlackApiAuthError(parsed.error);
     }
     throw new Error(`slack_api_error_${parsed.error ?? "unknown"}`);
   }

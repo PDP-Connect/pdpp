@@ -45,11 +45,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { BrowserContext, Page } from "playwright";
+import type { BodyResponseDiagnostics } from "../../src/browser-artifact-response.ts";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   buildIndexRows,
+  buildPdfTemplateUnknownDiagnostics,
   classifyUsaaNoExportRoute,
   DEFERRED_STREAMS,
   driveExport,
@@ -64,8 +66,14 @@ import {
   runSingleLadderAttempt,
   shouldParseStatementTitle,
   USAA_RETRYABLE_PATTERN,
+  type UsaaRunState,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
+import {
+  buildUsaaStatementMenuDiagnostic,
+  hydrateStatementPdfs,
+  summarizeUsaaStatementResponseDiagnostics,
+} from "./statement-pdfs.ts";
 import type {
   DashboardAccount,
   DiagnosticInfo,
@@ -743,6 +751,7 @@ test("runSingleLadderAttempt retains a logon interstitial on the existing re-aut
     sendInteraction: async () => ({ request_id: "test", status: "success", type: "INTERACTION_RESPONSE" }),
     settleDelayMs: 0,
     sinceDate: "2026-01-01",
+    streamState: { sessionDeadMidRun: false, sessionRepairAttempted: false } satisfies UsaaRunState,
     todayIso: "2026-07-16",
   });
 
@@ -835,6 +844,142 @@ test("emitExportFailure: no diagnostic at all is an honest unknown outcome (stil
   assert.equal(emittedDiag.outcome, "unknown");
 });
 
+test("unknown PDF template diagnostics keep structural recovery facts but never statement text", () => {
+  const privateStatementText = "OWNER NAME | MERCHANT NAME | $9,999.99 | BALANCE 1234.56";
+  const parseMeta = {
+    era: "unknown" as const,
+    year: 2026,
+    // The parser no longer returns this field, but this fixture protects the
+    // emission boundary if an older parser shape is supplied at runtime.
+    rawTextSample: privateStatementText,
+  };
+  const diagnostics = buildPdfTemplateUnknownDiagnostics("opaque-statement-hash", parseMeta);
+
+  assert.deepEqual(diagnostics, {
+    parser_era: "unknown",
+    statement_id: "opaque-statement-hash",
+    year: 2026,
+  });
+  assert.doesNotMatch(JSON.stringify(diagnostics), /OWNER NAME|MERCHANT NAME|9,999\.99|1234\.56/);
+});
+
+test("statement PDF download diagnostics keep only allowlisted menu and response structure", () => {
+  const menu = buildUsaaStatementMenuDiagnostic({
+    downloadCandidateCount: 0,
+    menuActionCount: 3,
+    menuItemCount: 2,
+    menuPresent: true,
+  });
+  const responseDiagnostics: BodyResponseDiagnostics = {
+    candidates: [
+      {
+        bodyError: "private response header and owner label",
+        contentDisposition: 'attachment; filename="PRIVATE-OWNER.pdf"',
+        contentType: "text/html; private-label",
+        method: "POST",
+        reason: "body_error",
+        source: "playwright",
+        status: 500,
+        url: "https://www.usaa.com/private/path?account=owner",
+      },
+    ],
+    cdpError: "private cdp endpoint",
+    cdpReady: true,
+  };
+  const response = summarizeUsaaStatementResponseDiagnostics(responseDiagnostics);
+
+  assert.deepEqual(menu, {
+    menu: {
+      action_count: 3,
+      download_candidate_count: 0,
+      item_count: 2,
+      present: true,
+    },
+  });
+  assert.deepEqual(response, {
+    response: {
+      body_error_count: 1,
+      candidate_count: 1,
+      cdp_error: true,
+      cdp_ready: true,
+      matched_count: 0,
+      source_counts: { cdp: 0, playwright: 1 },
+      status_codes: [500],
+    },
+  });
+  assert.doesNotMatch(
+    JSON.stringify({ menu, response }),
+    /menu_html|PRIVATE-OWNER|private response|usaa\.com|private\/path|account=owner|content-disposition|POST/
+  );
+});
+
+test("hydrateStatementPdfs: missing Download menuitem emits structural menu facts only", async () => {
+  const locator = (count: number) => ({
+    click: async (): Promise<void> => undefined,
+    count: async (): Promise<number> => count,
+    filter: () => locator(0),
+    first: () => locator(count),
+    last: () => locator(count),
+    locator: () => locator(count),
+    nth: () => locator(count),
+  });
+  const page = {
+    keyboard: { press: async (): Promise<void> => undefined },
+    locator: (selector: string, options?: unknown) => {
+      if (options) {
+        return locator(0);
+      }
+      if (selector === '[role="menu"]') {
+        return locator(1);
+      }
+      if (selector === "tbody tr") {
+        return locator(1);
+      }
+      if (selector === '[role="menu"] [role="menuitem"]') {
+        return locator(2);
+      }
+      if (selector === '[role="menu"] a, [role="menu"] button') {
+        return locator(3);
+      }
+      return locator(0);
+    },
+    url: (): string => "https://www.usaa.com/my/documents",
+  } as never;
+  const skipped: Array<{ diag: unknown; reason: string }> = [];
+
+  const hydrated = await hydrateStatementPdfs({
+    page,
+    statements: [
+      {
+        account_id: null,
+        date_delivered: "2026-04-01",
+        id: "opaque-statement-id",
+        rowIndex: 0,
+        title: null,
+      },
+    ],
+    onSkip: ({ diag, reason }) => {
+      skipped.push({ diag, reason });
+    },
+  });
+
+  assert.deepEqual(hydrated, []);
+  assert.deepEqual(skipped, [
+    {
+      diag: {
+        menu: {
+          action_count: 3,
+          download_candidate_count: 0,
+          item_count: 2,
+          present: true,
+        },
+      },
+      reason: "no_download_menuitem",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(skipped), /menu_html|innerHTML|usaa\.com|opaque-statement-id/);
+});
+
 test("emitExportFailure: artifact diagnostics are summarized when page diagnostics are unavailable", async () => {
   const { deps, messages } = makeHarness();
   const diag: DiagnosticInfo = {
@@ -874,11 +1019,19 @@ test("emitExportFailure: artifact diagnostics are summarized when page diagnosti
   assert.match(skip.message, /export_artifact_wait_failed/);
   assert.match(skip.message, /page=unavailable/);
   assert.match(skip.message, /artifact cdpReady=true candidates=2 matched=0 bodyErrors=1/);
-  assert.match(skip.message, /firstCandidate=cdp,200,not_expected_body,128B,text\/plain/);
+  assert.doesNotMatch(skip.message, /secure\.usaa\.com|text\/plain|not_expected_body/);
   assert.doesNotMatch(skip.message, /url=https?:\/\//);
-  assert.match(skip.message, /body_response_timeout/);
+  assert.doesNotMatch(skip.message, /body_response_timeout|Protocol error|secure\.usaa\.com/);
   const emittedDiag = skip.diagnostics as DiagnosticInfo;
-  assert.equal(emittedDiag.artifact?.candidates[0]?.url, "", "artifact candidate URL is redacted before emission");
+  assert.deepEqual(emittedDiag.artifact, {
+    body_error_count: 1,
+    candidate_count: 2,
+    cdp_error: false,
+    cdp_ready: true,
+    matched_count: 0,
+    source_counts: { cdp: 1, playwright: 1 },
+    status_codes: [200],
+  });
 });
 
 test("emitExportFailure: download diagnostics surface non-PII wait evidence when present", async () => {
@@ -915,11 +1068,15 @@ test("emitExportFailure: download diagnostics surface non-PII wait evidence when
   assert.doesNotMatch(skip.message, /https?:\/\/|transaction_history\.csv/);
   assert.match(skip.message, /bytes=0/);
   assert.match(skip.message, /source=createReadStream/);
-  assert.match(skip.message, /saveAsError=saveAs_returned_zero_bytes/);
-  assert.match(skip.message, /downloadFailure=Download canceled by remote/);
+  assert.doesNotMatch(skip.message, /saveAs_returned_zero_bytes|Download canceled by remote/);
   const emittedDiag = skip.diagnostics as DiagnosticInfo;
-  assert.equal(emittedDiag.download?.url, null, "download URL is redacted before emission");
-  assert.equal(emittedDiag.download?.suggestedFilename, null, "download filename is redacted before emission");
+  assert.deepEqual(emittedDiag.download, {
+    bytes: 0,
+    has_download_failure: true,
+    has_save_as_error: true,
+    has_stream_error: false,
+    source: "createReadStream",
+  });
 });
 
 test("emitExportFailure: credit-card account uses credit_card_export_unverified reason", async () => {

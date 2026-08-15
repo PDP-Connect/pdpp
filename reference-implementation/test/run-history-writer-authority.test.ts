@@ -17,6 +17,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { emitSpineEvent } from "../lib/spine.ts";
+import { boundConnectorErrorCode, boundConnectorErrorMessage } from "../runtime/connector-gap-bounding.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import { createSqliteSchedulerStore } from "../server/stores/scheduler-store.ts";
@@ -28,6 +29,7 @@ const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL
 interface RunHistoryTestRow {
   readonly attempt: number;
   readonly completed_at: string | null;
+  readonly connector_error_json: string | null;
   readonly connector_id: string;
   readonly connector_instance_id: string;
   readonly facts_json: string | null;
@@ -35,6 +37,7 @@ interface RunHistoryTestRow {
   readonly scheduler_managed: 0 | 1;
   readonly started_at: string;
   readonly status: string;
+  readonly terminal_reason: string | null;
   readonly trigger_kind: string | null;
 }
 
@@ -167,6 +170,191 @@ test("a terminal-only browser-surface failure is durable with its bounded nested
       browser_surface_wait_reason: "surface_unhealthy",
     });
     assert.equal(countRunHistoryRows(runId), 1, "terminal fallback creates exactly one fenced row");
+  } finally {
+    closeDb();
+  }
+});
+
+// Regression for run_1786242751717 (live UAT, 2026-08-08): a run the RUNTIME
+// failed stored terminal_reason=connector_protocol_violation with
+// connector_error_json EMPTY. The connector had reported DONE with no error of
+// its own, so there were no `connector_error_*` fields to reassemble and the
+// column was written NULL — while the runtime's precise explanation
+// ("Connector detail coverage incomplete: ...") sat on the terminal spine event
+// as `failure_message` and reached nothing the owner could see. A terminal
+// failure must never be stored without its reason.
+test("a runtime-authored terminal failure stores its failure_message as the connector error", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-runtime-failure-message-");
+  initDb(dbPath);
+  try {
+    const runId = "run_runtime_authored_failure";
+    const connectorInstanceId = "cin_runtime_authored_failure";
+    const failureMessage = "Connector detail coverage incomplete: state_stream=holdings stream=valuations";
+    await emitSpineEvent(startedEvent(runId, connectorInstanceId));
+    await emitSpineEvent({
+      ...terminalEvent(runId, connectorInstanceId, "run.failed", "failed"),
+      data: {
+        connection_id: connectorInstanceId,
+        connector_instance_id: connectorInstanceId,
+        // The live shape: runtime-authored explanation, and NO connector_error_*
+        // field anywhere because the connector itself reported no error.
+        failure_message: failureMessage,
+        failure_origin: "runtime",
+        reason: "connector_protocol_violation",
+        records_emitted: 5,
+        source: { id: CONNECTOR_ID, kind: "connector" },
+      },
+    });
+
+    const row = readRunHistoryRow(runId);
+    assert.equal(row?.status, "failed");
+    assert.equal(row?.terminal_reason, "connector_protocol_violation");
+    assert.ok(row?.connector_error_json, "a terminal failure must not be stored with an empty error");
+    assert.deepEqual(JSON.parse(row?.connector_error_json ?? "null"), {
+      code: null,
+      message: failureMessage,
+      origin: "runtime",
+      retryable: null,
+    });
+  } finally {
+    closeDb();
+  }
+});
+
+// The connector's own DONE.error stays authoritative when it exists: the
+// runtime-authored fallback must not overwrite a more specific,
+// connector-reported explanation.
+test("a connector-reported terminal error is preserved verbatim over the runtime fallback", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-connector-error-wins-");
+  initDb(dbPath);
+  try {
+    const runId = "run_connector_error_wins";
+    const connectorInstanceId = "cin_connector_error_wins";
+    await emitSpineEvent(startedEvent(runId, connectorInstanceId));
+    await emitSpineEvent({
+      ...terminalEvent(runId, connectorInstanceId, "run.failed", "failed"),
+      data: {
+        connection_id: connectorInstanceId,
+        connector_error_code: "session_failed",
+        connector_error_message: "otp_not_provided",
+        connector_error_retryable: false,
+        connector_instance_id: connectorInstanceId,
+        failure_message: "a less specific runtime line",
+        failure_origin: "runtime",
+        reason: "connector_reported_failed",
+        source: { id: CONNECTOR_ID, kind: "connector" },
+      },
+    });
+
+    assert.deepEqual(JSON.parse(readRunHistoryRow(runId)?.connector_error_json ?? "null"), {
+      code: "session_failed",
+      message: "otp_not_provided",
+      retryable: false,
+    });
+  } finally {
+    closeDb();
+  }
+});
+
+// Regression for the apple_contacts UAT failure (2026-08-09): the free-form
+// `connector_error_message` field is redacted (stderr-redact.ts's
+// long-opaque-token rule, meant for generated secrets, previously also
+// destroyed a connector's own long snake_case error-class identifier — a
+// REJECTED fix attempt tried exempting pure-lowercase-underscore text from
+// that redaction, which a security review correctly rejected: shape alone
+// cannot prove absence of a secret). The actual fix routes a stable
+// diagnostic class through `error.code` — a SEPARATE, typed, validated
+// channel that is never redacted (see `boundConnectorErrorCode`) precisely
+// because it is constrained to a strict charset a real secret cannot take.
+// These tests exercise that channel through the real production path:
+// `boundConnectorErrorCode`/`boundConnectorErrorMessage` (what
+// `buildTerminalConnectorFields` in runtime/index.ts calls) feeding into
+// the same writer the tests above exercise.
+
+test("a well-formed connector error code survives end to end while the message stays fully redacted", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-typed-code-survives-");
+  initDb(dbPath);
+  try {
+    const runId = "run_apple_contacts_typed_code_survives";
+    const connectorInstanceId = "cin_apple_contacts_typed_code_survives";
+    const rawCode = "carddav_request_failed";
+    const secret = ["sk", "live", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"].join("_"); // runtime-constructed so secret scanners don't flag the synthetic fixture
+    const rawMessage = `status=401, token=${secret}`;
+    const boundedCode = boundConnectorErrorCode(rawCode);
+    const boundedMessage = boundConnectorErrorMessage(rawMessage);
+    assert.equal(boundedCode, rawCode, "a well-formed code must survive validation unchanged");
+    assert.ok(!boundedMessage?.includes(secret), "the message-channel secret must still be redacted");
+
+    await emitSpineEvent(startedEvent(runId, connectorInstanceId));
+    await emitSpineEvent({
+      ...terminalEvent(runId, connectorInstanceId, "run.failed", "failed"),
+      data: {
+        connection_id: connectorInstanceId,
+        connector_error_code: boundedCode,
+        connector_error_message: boundedMessage,
+        connector_error_retryable: true,
+        connector_instance_id: connectorInstanceId,
+        reason: "connector_reported_failed",
+        source: { id: CONNECTOR_ID, kind: "connector" },
+      },
+    });
+
+    const stored = JSON.parse(readRunHistoryRow(runId)?.connector_error_json ?? "null");
+    assert.equal(stored.code, "carddav_request_failed", "the typed code must survive verbatim");
+    assert.ok(!stored.message.includes(secret), "the credential in the adjacent message must not leak");
+    assert.ok(stored.message.includes("[REDACTED]"), "the message must show redaction happened, not silently vanish");
+    assert.equal(stored.retryable, true);
+  } finally {
+    closeDb();
+  }
+});
+
+test("boundConnectorErrorCode fails closed on a malformed/secret-shaped code (the actual runtime gate)", () => {
+  // This is the real gate: runtime/index.ts's buildTerminalConnectorFields
+  // calls boundConnectorErrorCode BEFORE constructing the spine event's
+  // `data` — a malformed code never reaches `data.connector_error_code`,
+  // so it can never reach run_history in any form. (The writer test below
+  // proves the OTHER half: the writer itself trusts whatever `code` is
+  // already present in `data`, exactly like it trusts `message` is
+  // already-bounded text — it is not a second validation layer.)
+  const secretShapedCode = "sk_LIVE_AbCdEfGhIjKlMnOpQrStUvWxYz012345"; // mixed case: a real secret's shape
+  assert.equal(boundConnectorErrorCode(secretShapedCode), null);
+});
+
+test("a malformed connector error code omitted upstream never reaches connector_error_json", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-malformed-code-omitted-");
+  initDb(dbPath);
+  try {
+    const runId = "run_malformed_code_omitted_upstream";
+    const connectorInstanceId = "cin_malformed_code_omitted_upstream";
+    const secretShapedCode = "sk_LIVE_AbCdEfGhIjKlMnOpQrStUvWxYz012345";
+    // Mirrors buildTerminalConnectorFields's real gate exactly: only set
+    // connector_error_code on the terminal data when boundConnectorErrorCode
+    // returns non-null. A malformed code is OMITTED, not passed through as
+    // null-in-the-object — matching what the production code path does.
+    const boundedCode = boundConnectorErrorCode(secretShapedCode);
+    assert.equal(boundedCode, null, "sanity: this fixture must actually be invalid");
+
+    await emitSpineEvent(startedEvent(runId, connectorInstanceId));
+    await emitSpineEvent({
+      ...terminalEvent(runId, connectorInstanceId, "run.failed", "failed"),
+      data: {
+        connection_id: connectorInstanceId,
+        ...(boundedCode ? { connector_error_code: boundedCode } : {}),
+        connector_error_message: "a normal failure message",
+        connector_error_retryable: false,
+        connector_instance_id: connectorInstanceId,
+        reason: "connector_reported_failed",
+        source: { id: CONNECTOR_ID, kind: "connector" },
+      },
+    });
+
+    const stored = JSON.parse(readRunHistoryRow(runId)?.connector_error_json ?? "null");
+    assert.equal(stored.code, null, "no code reached the stored row");
+    assert.ok(!JSON.stringify(stored).includes(secretShapedCode), "the raw invalid code text must not leak anywhere");
+    // The (redacted-as-normal) message still carries the failure explanation
+    // — omitting an invalid code does not blank the whole diagnostic.
+    assert.equal(stored.message, "a normal failure message");
   } finally {
     closeDb();
   }

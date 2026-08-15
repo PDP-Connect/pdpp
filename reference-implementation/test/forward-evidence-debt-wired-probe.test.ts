@@ -54,7 +54,7 @@ interface TerminalEventData {
 const SCHEDULE_INTERVAL_MS = 15 * 60 * 1000; // 15m schedule -> bound = max(4*15m, 1h) = 1h
 
 const MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "test" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: "forward-evidence-debt-wired-probe",
   display_name: "Forward Evidence Debt Wired Probe",
   protocol_version: "0.1.0",

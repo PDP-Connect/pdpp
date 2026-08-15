@@ -10,7 +10,7 @@ import { declaredRolesFromCapabilities } from "@pdpp/operator-ui/explore/explore
 import { notFound } from "next/navigation";
 import { RecordInspector } from "@/app/(console)/components/record-inspector.tsx";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../../../../components/shell.tsx";
+import { ServerUnreachable } from "../../../../components/server-unreachable.tsx";
 import { WarningsBanner } from "../../../../components/warnings-banner.tsx";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../../lib/owner-token.ts";
 import {
@@ -171,6 +171,7 @@ export default async function RecordDetailPage({
     fields: buildPeekFields(record.data, fieldCapabilities),
     readUrl: recordReadUrl,
     recordId: record.id,
+    recordSizeBytes: typeof record.record_json_bytes === "number" ? record.record_json_bytes : null,
     // Honest: the authored date only when a semantic field is actually declared;
     // null otherwise (the inspector falls back to showing "Emitted").
     semanticTimestamp: semanticTs

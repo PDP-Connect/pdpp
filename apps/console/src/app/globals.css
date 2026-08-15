@@ -63,3 +63,31 @@
     font-variant-numeric: inherit;
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   NAV-vs-ACTION: the overview's "Manage →" links.
+
+   The Standing overview contains NO mutations — every affordance on it only
+   navigates. Two of them nevertheless rendered in the `.rr-rel__revoke` slot:
+   destructive-red, and (in the bearer block) reading the literal word "revoke"
+   on a link that just opens /deployment/tokens. That is action-shaped chrome on
+   pure navigation, the inverse of the Sources problem.
+
+   `.rr-rel__revoke` also carries this row's grid PLACEMENT, so these links keep
+   that class and add `.rr-rel__manage` as a modifier: layout is inherited, only
+   the destructive signal is neutralized. Declared here (outside @layer, after
+   the components.css import) so it wins the cascade without editing the shared
+   @pdpp/brand-react sheet, which the sandbox mirror also consumes.
+   ──────────────────────────────────────────────────────────────────────────── */
+.rr-rel__manage {
+  font-weight: 500;
+  color: var(--muted-foreground);
+  /* `.rr-rel__revoke` hides itself until the row is hovered/focused — correct
+     for a destructive act you should have to reach for, wrong for the block's
+     primary way in. A navigation affordance is always visible. */
+  opacity: 1;
+}
+.rr-rel__manage:hover,
+.rr-rel__manage:focus-visible {
+  color: var(--primary);
+}

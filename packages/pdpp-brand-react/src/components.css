@@ -242,6 +242,17 @@
   opacity: 0.5;
 }
 
+/* Opt-in per-instance tint (e.g. ConnectorIcon's no-manifest-icon fallback) —
+   overrides only color/background/border, driven by a caller-supplied
+   deterministic hue custom property. Every other .pdpp-monogram caller is
+   unaffected since --pdpp-monogram-hue and this class are never set by them. */
+.pdpp-monogram--tinted {
+  color: oklch(from oklch(0.55 0.12 var(--pdpp-monogram-hue)) l c h);
+  background: oklch(from oklch(0.55 0.12 var(--pdpp-monogram-hue)) l c h / 12%);
+  box-shadow: inset 0 0 0 1px
+    oklch(from oklch(0.55 0.12 var(--pdpp-monogram-hue)) l c h / 42%);
+}
+
 /* ─── Endorsement — status typed by the protocol ─────────────────
    Spent color lives here. State color must ONLY appear inside .pdpp-endorse.
    The background and border are derived from currentColor so the color
@@ -301,6 +312,8 @@
   display: inline-flex;
   gap: 6px;
   align-items: center;
+  justify-content: center;
+  min-height: 44px;
   padding: 9px 18px;
   font-family: var(--font-sans);
   font-size: 0.84rem;
@@ -359,6 +372,10 @@
   background: var(--destructive-tint);
 }
 .pdpp-btn--sm {
+  /* Deliberately opts out of the default size's 44px touch-target floor —
+     `sm` is for compact inline contexts (e.g. Save/Cancel beside a rename
+     field), not a bar violation the P2 touch-target fix targets. */
+  min-height: 0;
   padding: 6px 12px;
   font-size: 0.75rem;
 }
@@ -952,6 +969,126 @@
 .rr-sync__empty {
   padding: 18px;
   border: 1px solid var(--border);
+}
+
+/* Recent syncs and Streams by source are peer sections of the page, so they
+   share one heading treatment. It is deliberately heavier than the attention
+   sections' uppercase eyebrow: those are triage groups nested under the band,
+   these are the page's two top-level regions. */
+.rr-sync__recent,
+.rr-sync__streams {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.rr-sync__section-head {
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border-strong);
+}
+.rr-sync__section-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+.rr-sync__fix-section-count {
+  display: inline-block;
+  min-width: 1.4em;
+  padding: 0 5px;
+  margin-left: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  text-align: center;
+  background: var(--muted);
+  border: 1px solid var(--border);
+}
+
+/* One recent run per row. The whole row is the link, so the hover affordance
+   sits on the row rather than on a trailing chevron. */
+.rr-recent-row {
+  align-items: center;
+  color: inherit;
+  text-decoration: none;
+}
+.rr-recent-row:hover {
+  background: var(--muted);
+}
+.rr-recent-row:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.rr-recent-row__name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.rr-recent-row__connection {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.rr-recent-row__run {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.68rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.rr-recent-row__outcome {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+.rr-recent-row__duration {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+}
+.rr-recent-row__records {
+  font-variant-numeric: tabular-nums;
+}
+.rr-recent-row__empty {
+  color: var(--muted-foreground);
+}
+
+/* The outcome chip is the one place this list spends state colour. `unknown`
+   stays neutral on purpose — an unclassified run must not read as a success. */
+.rr-recent-row__chip {
+  padding: 1px 7px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  background: var(--muted);
+  border: 1px solid var(--border-strong);
+}
+.rr-recent-row__chip[data-outcome="ok"] {
+  color: var(--success);
+  background: var(--success-tint);
+  border-color: var(--success);
+}
+.rr-recent-row__chip[data-outcome="partial"] {
+  color: var(--warning);
+  background: var(--warning-tint);
+  border-color: var(--warning);
+}
+.rr-recent-row__chip[data-outcome="failed"] {
+  color: var(--destructive);
+  background: var(--destructive-tint);
+  border-color: var(--destructive);
+}
+.rr-recent-row__chip[data-outcome="running"] {
+  color: var(--foreground);
+  border-color: var(--border-strong);
 }
 .rr-sync__overflow {
   max-width: 78ch;
@@ -1750,6 +1887,36 @@
   color: var(--muted-foreground);
 }
 
+/* Anything wrong — Overview's collapsed summary line (count only; full rows live on Syncs) */
+.rr-attn__section-summary {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 8px 0 8px 12px;
+  border-bottom: 1px solid var(--border);
+  box-shadow: inset 2px 0 0 var(--warning);
+}
+.rr-attn__section-summary.is-owner {
+  box-shadow: inset 3px 0 0 var(--destructive);
+}
+.rr-attn__section-summary.is-review {
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+.rr-attn__section-summary.is-system {
+  box-shadow: inset 3px 0 0 var(--muted-foreground);
+}
+.rr-attn__section-summary.is-muted {
+  box-shadow: inset 3px 0 0 var(--border);
+}
+.rr-attn__section-summary:last-of-type {
+  border-bottom: 0;
+}
+.rr-attn__syncs-link {
+  margin-top: 2px;
+  font-size: 0.78rem;
+}
+
 /* All clear */
 .rr-allclear {
   display: flex;
@@ -2176,7 +2343,7 @@
   grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
   align-items: baseline;
-  min-height: 34px;
+  min-height: 44px;
   padding: 6px 0;
   color: var(--muted-foreground);
   text-align: left;
@@ -2246,8 +2413,12 @@
   min-width: 0;
 }
 /* The "is not" exclude toggle (⊘). Quiet by default; turns warning-colored when
-   active so an exclusion reads as a distinct, intentional negative scope. */
+   active so an exclusion reads as a distinct, intentional negative scope.
+   The visible glyph stays small (grid-sized, ~21x20px) but `::before` grows
+   the actual hit area to >=44px in each dimension without changing visual
+   weight or the grid track it sits in. */
 .rr-x-facet-not {
+  position: relative;
   padding: 4px 5px;
   font-family: var(--font-sans);
   font-size: 12px;
@@ -2260,6 +2431,11 @@
   transition:
     opacity var(--duration-state) var(--ease-standard),
     color var(--duration-state) var(--ease-standard);
+}
+.rr-x-facet-not::before {
+  position: absolute;
+  inset: -12px;
+  content: "";
 }
 .rr-x-facet-row:hover .rr-x-facet-not {
   opacity: 0.8;
@@ -2330,6 +2506,17 @@
   flex-direction: column;
   gap: 16px;
   min-width: 0;
+}
+/* The page's real title. Small and quiet — the search bar right below it is
+   the primary affordance, not a headline — but a visible, non-duplicate h1. */
+.rr-x-h1 {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 .rr-x-controls {
   display: flex;
@@ -4622,7 +4809,6 @@ a.rr-x-row {
     overflow: visible;
   }
   .rr-x-facet {
-    min-height: 42px;
     padding-block: 8px;
   }
   /* D12 mobile: the command bar is a 2-row layout.
@@ -4657,6 +4843,15 @@ a.rr-x-row {
      so the From/To inputs and presets have room at 390px (matches the mobile filter
      sheet grammar — a card that spans the column, not a clipped 280px float). */
   .rr-x-datechip__popover {
+    right: 0;
+    left: 0;
+    width: auto;
+    max-width: none;
+  }
+  /* Mobile: the Options popover (operator-syntax legend) also becomes a full-width
+     sheet, same as DateChip. Without this override, right:0 on a left-positioned
+     trigger near the wrap boundary grows leftward past x=0, overflowing the viewport. */
+  .rr-x-options__body {
     right: 0;
     left: 0;
     width: auto;

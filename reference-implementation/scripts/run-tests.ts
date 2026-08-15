@@ -23,6 +23,7 @@ import {
   dedicatedPostgresTestUrl,
   isDedicatedPostgresTestDatabaseName,
 } from "../test/helpers/dedicated-postgres-test-url.ts";
+import { collectChildProcessOutput } from "./child-process-output.ts";
 import { deriveDedicatedPostgresDbNameForFile } from "./dedicated-postgres-db-name.ts";
 import { startFileProcessWatchdog } from "./file-process-watchdog.ts";
 import type { ProcessEnvLike } from "./test-env.ts";
@@ -320,8 +321,6 @@ async function runNodeTest(filePath: string, extraArgs: string[]): Promise<NodeT
       env: childEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    let output = "";
-
     // Reporter output proves that a long file is still making progress. The
     // hard deadline separately bounds a chatty process that never exits.
     const watchdog = startFileProcessWatchdog({
@@ -329,27 +328,27 @@ async function runNodeTest(filePath: string, extraArgs: string[]): Promise<NodeT
       idleBudgetMs: PER_FILE_IDLE_TIMEOUT_MS,
       kill: () => child.kill("SIGKILL"),
     });
+    let settled = false;
+    const outputPromise = collectChildProcessOutput(child, watchdog.markProgress);
 
-    child.stdout?.on("data", (chunk: Buffer) => {
-      watchdog.markProgress();
-      output += chunk.toString();
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      watchdog.markProgress();
-      output += chunk.toString();
-    });
-
-    child.on("error", (err) => {
+    const settleAfterRelease = async (finish: () => void | Promise<void>) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       watchdog.clear();
       if (allocation) {
-        allocation.release().finally(() => reject(err));
-      } else {
-        reject(err);
+        await allocation.release();
       }
+      await finish();
+    };
+
+    child.on("error", (err) => {
+      settleAfterRelease(() => reject(err)).catch(reject);
     });
-    child.on("exit", (code, signal) => {
-      watchdog.clear();
-      const finish = () => {
+    child.on("close", (code, signal) => {
+      settleAfterRelease(async () => {
+        const output = await outputPromise;
         const timeoutReason = watchdog.timeoutReason();
         if (timeoutReason === "idle") {
           reject(
@@ -377,12 +376,7 @@ async function runNodeTest(filePath: string, extraArgs: string[]): Promise<NodeT
           filePath,
           output: `\n==> ${filePath}\n${output}`,
         });
-      };
-      if (allocation) {
-        allocation.release().finally(finish);
-      } else {
-        finish();
-      }
+      }).catch(reject);
     });
   });
 }

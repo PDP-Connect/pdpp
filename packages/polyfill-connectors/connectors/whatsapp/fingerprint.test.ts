@@ -50,7 +50,7 @@ const CHAT_B = {
 };
 
 const MSG_A1 = {
-  id: "0123456789abcdef:0",
+  id: "0123456789abcdef:1111111111111111",
   chat_id: "0123456789abcdef",
   author: "Alice",
   content: "hey, are we still on for tomorrow?",
@@ -59,7 +59,7 @@ const MSG_A1 = {
 };
 
 const MSG_A2 = {
-  id: "0123456789abcdef:1",
+  id: "0123456789abcdef:2222222222222222",
   chat_id: "0123456789abcdef",
   author: "Bob",
   content: "Yes! See you at 10.",

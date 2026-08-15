@@ -63,9 +63,19 @@ test("validateGoogleMapsTimelineArtifact identifies unsupported artifacts", () =
   assert.match(validation.remediation ?? "", /Timeline JSON export/i);
 });
 
+test("validateGoogleMapsTimelineArtifact rejects recognized keys whose values are not arrays", () => {
+  for (const value of [{}, null, "not-an-array"]) {
+    const validation = validateGoogleMapsTimelineArtifact(JSON.stringify({ locations: value }));
+    assert.equal(validation.status, "unsupported");
+    assert.equal(validation.detected_format, "unsupported");
+    assert.equal(validation.estimated_points, 0);
+    assert.equal(validation.estimated_segments, 0);
+  }
+});
+
 test("validateGoogleMapsTimelineArtifact identifies artifacts over the manifest limit", () => {
   const validation = validateGoogleMapsTimelineArtifact(VALID_LEGACY, { maxFileBytes: 8 });
 
   assert.equal(validation.status, "too_large");
-  assert.match(validation.remediation ?? "", /import-folder/i);
+  assert.match(validation.remediation ?? "", /raise the deployment limit/i);
 });

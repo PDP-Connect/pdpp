@@ -4,10 +4,11 @@
 import { Callout, MetaPill, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { TimelineDetailView } from "@pdpp/operator-ui/components/views/timeline-detail-view";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../../components/shell.tsx";
+import { ServerUnreachable } from "../../components/server-unreachable.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import {
   getRunStatus,
@@ -29,9 +30,20 @@ import {
   formatRecoveryHint,
   type KnownGap,
   type KnownGapSummary,
+  type SkippedStreamSummary,
+  summarizeSkippedStreams,
 } from "../../lib/run-gaps.ts";
 import { CancelRunControl } from "./cancel-run-control.tsx";
 import { RunInteractionForm } from "./interaction-form.tsx";
+import {
+  describeAssistanceOwnerAction,
+  describeAssistanceProgressPosture,
+  describeAssistanceResponseContract,
+  describeCheckpointStatLabel,
+  describeInteractionStatLabel,
+  describeProgressStatLabel,
+  describeTerminalRunStatus,
+} from "./run-detail-labels.ts";
 import { RunDetailPoller } from "./run-detail-poller.tsx";
 import {
   isRunActive,
@@ -152,18 +164,27 @@ export default async function RunDetailPage({
         coverageGaps={gapClassification.coverageGaps}
         informationalGaps={gapClassification.informationalGaps}
         protocolViolationCount={gapClassification.protocolViolationGaps.length}
-        skippedCount={events.filter((e) => e.event_type === "run.stream_skipped").length}
+        skipped={summarizeSkippedStreams(events)}
         summary={terminalKnownGaps.summary ?? gapClassification.summary}
       />
       <ViolationDiagnosis failure={failure} />
       <ConnectorStderrTailSection failure={failure} />
     </>
   );
+  // The connector name is the owner's route back to the thing this run belongs
+  // to. Rendered as inert text it was a dead end: from a run there was no way
+  // to reach its source at all — not via the breadcrumb, not here.
   const description = (
     <>
       {connectorId ? (
         <>
-          connector <span className="font-mono text-foreground">{connectorId}</span>
+          connector{" "}
+          <Link
+            className="font-mono text-foreground underline underline-offset-2"
+            href={`/sources/${encodeURIComponent(connectorId)}`}
+          >
+            {connectorId}
+          </Link>
           {" · "}
         </>
       ) : null}
@@ -184,7 +205,15 @@ export default async function RunDetailPage({
       <RunDetailPoller enabled={active} />
       <TimelineDetailView
         beforeTimelineContent={beforeTimeline}
-        breadcrumbs={[{ href: dashboardRoutes.section.runs, label: "Syncs" }, { label: "Sync" }]}
+        breadcrumbs={
+          connectorId
+            ? [
+                { href: dashboardRoutes.section.runs, label: "Syncs" },
+                { href: `/sources/${encodeURIComponent(connectorId)}`, label: connectorId },
+                { label: "Sync" },
+              ]
+            : [{ href: dashboardRoutes.section.runs, label: "Syncs" }, { label: "Sync" }]
+        }
         cliCommand={`pdpp ref run timeline ${runId}`}
         description={description}
         envelope={envelope}
@@ -244,7 +273,9 @@ function CurrentAssistanceSection({
         <dd>{currentAssistance.message}</dd>
         <dt className="text-muted-foreground">state</dt>
         <dd>
-          {currentAssistance.progressPosture} · {currentAssistance.ownerAction} · {currentAssistance.responseContract}
+          {describeAssistanceProgressPosture(currentAssistance.progressPosture)} ·{" "}
+          {describeAssistanceOwnerAction(currentAssistance.ownerAction)} ·{" "}
+          {describeAssistanceResponseContract(currentAssistance.responseContract)}
         </dd>
         <dt className="text-muted-foreground">kind</dt>
         <dd>{currentAssistance.kind}</dd>
@@ -284,16 +315,16 @@ function getAssistanceTitle(assistance: CurrentRunAssistance, active: boolean): 
     assistance.ownerAction === "act_elsewhere" &&
     assistance.responseContract === "none"
   ) {
-    return "Waiting for external approval";
+    return "Waiting for approval outside this dashboard";
   }
   if (
     assistance.progressPosture === "waiting_retry" &&
     assistance.ownerAction === "none" &&
     assistance.responseContract === "none"
   ) {
-    return "Waiting before retry";
+    return "Retry scheduled";
   }
-  return "Waiting on operator input";
+  return "Waiting for your input";
 }
 
 function getAssistanceDescription(
@@ -309,14 +340,14 @@ function getAssistanceDescription(
     assistance.ownerAction === "act_elsewhere" &&
     assistance.responseContract === "none"
   ) {
-    return "The connector is still running and watching for completion. No dashboard response is required.";
+    return "The source is still running and watching for completion. No dashboard response is required.";
   }
   if (
     assistance.progressPosture === "waiting_retry" &&
     assistance.ownerAction === "none" &&
     assistance.responseContract === "none"
   ) {
-    return "The connector is waiting before retrying. No owner action is required right now.";
+    return "The source will retry automatically. No action is needed right now.";
   }
   if (supportsStreaming) {
     return "This run is blocked until the requested browser-surface action is completed.";
@@ -334,9 +365,9 @@ function formatAssistanceAttachments(assistance: CurrentRunAssistance): string {
         return attachment.kind;
       }
       if (hasAvailableBrowserSurfaceAttachment(assistance)) {
-        return "browser_surface available";
+        return "Secure browser ready";
       }
-      return "browser_surface waiting for stream target";
+      return "Waiting for the secure browser";
     })
     .join(", ");
 }
@@ -421,20 +452,20 @@ function KnownGapsSection({
   coverageGaps,
   informationalGaps,
   protocolViolationCount,
-  skippedCount,
+  skipped,
   summary,
 }: {
   coverageGaps: KnownGap[];
   informationalGaps: KnownGap[];
   protocolViolationCount: number;
-  skippedCount: number;
+  skipped: SkippedStreamSummary;
   summary: KnownGapSummary | null;
 }) {
   if (
     coverageGaps.length === 0 &&
     informationalGaps.length === 0 &&
     protocolViolationCount === 0 &&
-    skippedCount === 0
+    skipped.count === 0
   ) {
     return null;
   }
@@ -444,9 +475,15 @@ function KnownGapsSection({
       <header className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
         <div>
           <h3 className="pdpp-eyebrow">Known source gaps</h3>
-          <p className="pdpp-caption text-muted-foreground">
-            Partial coverage means flushed records may be useful, but this run did not collect every requested source.
-          </p>
+          {/* Explain partial coverage only when there IS partial coverage.
+              Rendering the explanation unconditionally put it directly above
+              "No partial source-coverage gaps were reported", so the section
+              defined a problem and denied it in the same breath. */}
+          {coverageGaps.length > 0 ? (
+            <p className="pdpp-caption text-muted-foreground">
+              This run collected some of what was asked for. The records it did flush are still usable.
+            </p>
+          ) : null}
         </div>
         {summary?.count ? (
           <span className="pdpp-caption text-muted-foreground">
@@ -480,9 +517,7 @@ function KnownGapsSection({
           ))}
         </ul>
       ) : (
-        <p className="pdpp-caption text-muted-foreground">
-          No partial source-coverage gaps were reported. Protocol failures are shown separately below.
-        </p>
+        <NoMissingSourcesClaim skipped={skipped} />
       )}
 
       {informationalGaps.length > 0 ? (
@@ -520,13 +555,72 @@ function KnownGapsSection({
           Failure diagnosis.
         </p>
       ) : null}
-      {skippedCount > 0 && coverageGaps.length === 0 ? (
-        <p className="pdpp-caption mt-3 text-muted-foreground">
-          Timeline includes {skippedCount} skipped stream event{skippedCount === 1 ? "" : "s"} without terminal gap
-          details.
+      {/* Skips with no gap record are the ONLY thing this section has to say
+          when coverageGaps is empty — so say it plainly instead of footnoting
+          it under a denial. Report the reason the connector recorded; claim
+          nothing was recorded only for the skips that genuinely carry none. */}
+      {skipped.count > 0 && coverageGaps.length === 0 ? <SkippedWithoutGapRecord skipped={skipped} /> : null}
+    </section>
+  );
+}
+
+/**
+ * Only claim "nothing missing" when nothing else in this section contradicts
+ * it. With skips that produced no gap record the honest answer is "unknown",
+ * which the skip line below states instead.
+ */
+function NoMissingSourcesClaim({ skipped }: { skipped: SkippedStreamSummary }) {
+  if (skipped.count === 0) {
+    return (
+      <p className="pdpp-caption text-muted-foreground">
+        This run reported no missing sources. Anything below is a separate protocol failure.
+      </p>
+    );
+  }
+  return null;
+}
+
+/**
+ * Skips that produced no entry in the terminal `known_gaps` list. Previously
+ * this rendered "{n} streams were skipped without saying why", which was wrong
+ * twice: the connector records its reason on each skip event, and the count is
+ * of skipped items, not streams. Say the reason, and count in the right unit.
+ */
+function SkippedWithoutGapRecord({ skipped }: { skipped: SkippedStreamSummary }) {
+  const items = `${skipped.count} record${skipped.count === 1 ? "" : "s"}`;
+  const where =
+    skipped.streams.length > 0
+      ? ` in ${skipped.streams.length === 1 ? "stream" : `${skipped.streams.length} streams`} ${skipped.streams.map((stream) => `\`${stream}\``).join(", ")}`
+      : "";
+  return (
+    <div className="mt-3">
+      <p className="pdpp-caption text-muted-foreground">
+        {items}
+        {where} {skipped.count === 1 ? "was" : "were"} skipped without a terminal gap entry.
+      </p>
+      {skipped.reasons.length > 0 ? (
+        <ul className="mt-1.5 space-y-1">
+          {skipped.reasons.map((entry) => (
+            <li className="pdpp-caption text-muted-foreground" key={entry.reason}>
+              <code>{formatGapReason(entry.reason)}</code> · {entry.count} record{entry.count === 1 ? "" : "s"}
+              {entry.diagnostics ? (
+                <>
+                  {" · first failing field "}
+                  <code>{entry.diagnostics.path}</code>
+                  {`: ${entry.diagnostics.message}`}
+                </>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {skipped.unexplainedCount > 0 ? (
+        <p className="pdpp-caption mt-1.5 text-muted-foreground">
+          {skipped.unexplainedCount} of these recorded no reason, so PDPP cannot tell you whether anything is missing
+          for {skipped.unexplainedCount === 1 ? "it" : "them"}.
         </p>
       ) : null}
-    </section>
+    </div>
   );
 }
 
@@ -625,7 +719,7 @@ function ViolationDiagnosis({ failure }: { failure: SpineEvent | undefined }) {
     <section className="mb-8 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 shadow-[inset_3px_0_0_0_color-mix(in_oklab,var(--destructive)_60%,transparent)]">
       <header className="mb-2 flex items-baseline justify-between gap-4">
         <h3 className="pdpp-eyebrow">Failure diagnosis</h3>
-        <span className="pdpp-caption text-muted-foreground">runtime-authored</span>
+        <span className="pdpp-caption text-muted-foreground">Runtime message</span>
       </header>
       <dl className="pdpp-caption grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1">
         <dt className="text-muted-foreground">subtype</dt>
@@ -838,7 +932,7 @@ function getRunStateValue({
   terminalStatus: TerminalRunStatus;
 }): string | null {
   if (!active) {
-    return terminalStatus;
+    return terminalStatus ? describeTerminalRunStatus(terminalStatus) : null;
   }
   if (!currentAssistance) {
     return "running";
@@ -857,9 +951,9 @@ function summarizeCheckpoints(events: SpineEvent[]): [string, string][] {
   const advanced = events.filter((e) => e.event_type === "run.state_advanced").length;
   const commitFailed = events.filter((e) => e.event_type === "run.state_commit_failed").length;
   return [
-    ["staged", String(staged)],
-    ["advanced", String(advanced)],
-    ["commit_failed", String(commitFailed)],
+    [describeCheckpointStatLabel("staged"), String(staged)],
+    [describeCheckpointStatLabel("advanced"), String(advanced)],
+    [describeCheckpointStatLabel("commit_failed"), String(commitFailed)],
   ];
 }
 
@@ -868,11 +962,11 @@ function summarizeProgress(events: SpineEvent[]): [string, string][] {
   const skipped = events.filter((e) => e.event_type === "run.stream_skipped").length;
   const last = progressEvents.at(-1);
   return [
-    ["reports", String(progressEvents.length)],
-    ["last_message", String(last?.data?.message ?? "—")],
-    ["last_count", String(last?.data?.count ?? "—")],
-    ["last_total", String(last?.data?.total ?? "—")],
-    ["skipped", String(skipped)],
+    [describeProgressStatLabel("reports"), String(progressEvents.length)],
+    [describeProgressStatLabel("last_message"), String(last?.data?.message ?? "—")],
+    [describeProgressStatLabel("last_count"), String(last?.data?.count ?? "—")],
+    [describeProgressStatLabel("last_total"), String(last?.data?.total ?? "—")],
+    [describeProgressStatLabel("skipped"), String(skipped)],
   ];
 }
 
@@ -880,8 +974,8 @@ function summarizeInteractions(events: SpineEvent[]): [string, string][] {
   const required = events.filter((e) => e.event_type === "run.interaction_required").length;
   const completed = events.filter((e) => e.event_type === "run.interaction_completed").length;
   return [
-    ["required", String(required)],
-    ["completed", String(completed)],
+    [describeInteractionStatLabel("required"), String(required)],
+    [describeInteractionStatLabel("completed"), String(completed)],
   ];
 }
 

@@ -85,6 +85,49 @@ export const searchHistorySchema = z.object({
 });
 
 /**
+ * photos: one entry per distinct photo/video content-hash in the Google
+ * Takeout Photos archive (Takeout duplicates a photo's bytes into every
+ * album folder it belongs to; `id` is derived from content sha256, not
+ * filename/path, so duplicate album copies collapse to one record).
+ * Metadata parsed from sidecar .json files where present. Cursor: event_time
+ * (ISO). blob_ref/content_sha256/size_bytes are null when hydration did not
+ * happen (upload boundary unavailable, oversized file, or read failure);
+ * hydration_status/hydration_error explain why without leaking a local path.
+ */
+const blobRefSchema = z.object({
+  blob_id: z.string(),
+  mime_type: z.string(),
+  sha256: z.string(),
+  size_bytes: z.number(),
+});
+const HYDRATION_STATUS_RE = /^(failed|hydrated|skipped_too_large|unavailable)$/;
+const coverageStatusSchema = z.enum(["collected", "inventory_only", "excluded", "deferred", "missing", "unsupported"]);
+
+export const photosSchema = z.object({
+  id: recordIdSchema,
+  filename: z.string().max(4096),
+  event_time: isoTimestampSchema,
+  title: pdppSafeText.max(2000).nullable(),
+  description: pdppSafeText.max(4000).nullable(),
+  latitude: latitudeSchema,
+  longitude: longitudeSchema,
+  altitude: sensorNumberSchema,
+  blob_ref: blobRefSchema.nullable(),
+  content_sha256: z.string().nullable(),
+  size_bytes: z.number().nullable(),
+  hydration_status: z.string().regex(HYDRATION_STATUS_RE),
+  hydration_error: pdppSafeText.max(240).nullable(),
+});
+
+export const coverageDiagnosticsSchema = z.object({
+  id: pdppSafeText,
+  store: pdppSafeText,
+  stream: pdppSafeText.nullable(),
+  status: coverageStatusSchema,
+  reason: pdppSafeText.max(512),
+});
+
+/**
  * Stream → schema registry. Single source of truth for the streams this
  * connector emits.
  */
@@ -92,6 +135,8 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   location_history: locationHistorySchema,
   youtube_watch_history: youtubeWatchHistorySchema,
   search_history: searchHistorySchema,
+  photos: photosSchema,
+  coverage_diagnostics: coverageDiagnosticsSchema,
 };
 
 export const validateRecord = makeValidateRecord(SCHEMAS);

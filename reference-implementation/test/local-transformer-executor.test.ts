@@ -93,13 +93,18 @@ async function afterIo() {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-function executorFor(children: FakeChild[], options: Omit<LocalTransformerExecutorOptions, "spawnChild"> = {}) {
+function executorFor(
+  children: FakeChild[],
+  options: Omit<LocalTransformerExecutorOptions, "spawnChild"> = {},
+  onSpawnEnv?: (env: NodeJS.ProcessEnv) => void
+) {
   return new LocalTransformerExecutor({
     deadlineMs: 100,
     killGraceMs: 10,
     termGraceMs: 10,
     ...options,
-    spawnChild: () => {
+    spawnChild: (_command, _args, spawnOptions) => {
+      onSpawnEnv?.(spawnOptions.env);
       const child = new FakeChild();
       children.push(child);
       return child as unknown as TransformerChild;
@@ -109,6 +114,14 @@ function executorFor(children: FakeChild[], options: Omit<LocalTransformerExecut
 
 function assertCode(code: string) {
   return (error: unknown) => error instanceof LocalTransformerExecutorError && error.code === code;
+}
+
+function restoreEnv(name: string, previous: string | undefined): void {
+  if (previous === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = previous;
+  }
 }
 
 function promiseState(promise: Promise<unknown>) {
@@ -176,6 +189,40 @@ test("local transformer executor bounds parent admission before writing and reco
   await assert.doesNotReject(Promise.all([second, third]));
   child.onEnd = () => child.exit();
   await executor.close();
+});
+
+test("PDPP_LOCAL_TRANSFORMER_WORK_LIMIT=2 forwards that value to the child env (proves the override path, not a specific default)", async () => {
+  // Regression for the stale hardcoded DEFAULT_WORK_LIMIT=1: proves the
+  // executor forwards a >1 workLimit to the child when configured to.
+  // Deliberately does NOT assert on the *unconfigured* default reached via
+  // embedding-concurrency.ts's resolveEmbeddingConcurrency() (which reads
+  // the REAL host/cgroup state) — see the identical note in
+  // test/semantic-work-admission.test.ts for why that default correctly
+  // (by design) floors to 1 in this exact sandbox. Injectable-probe
+  // coverage of the derivation itself lives in test/cpu-quota.test.ts and
+  // test/embedding-concurrency.test.ts.
+  const previous = process.env.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT;
+  process.env.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT = "2";
+  const children: FakeChild[] = [];
+  let capturedEnv: NodeJS.ProcessEnv | undefined;
+  try {
+    const executor = executorFor(children, {}, (env) => {
+      capturedEnv = env;
+    });
+    const first = executor.embed("first", "backend-a", {});
+    assert.ok(capturedEnv, "spawnChild must have been called");
+    assert.equal(capturedEnv?.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT, "2");
+    // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+    const child = children[0];
+    assert.ok(child);
+    const firstJob = JSON.parse(child.writes[0] ?? "{}") as Record<string, unknown>;
+    child.reply({ ...firstJob, vector: [1] });
+    await assert.doesNotReject(first);
+    child.onEnd = () => child.exit();
+    await executor.close();
+  } finally {
+    restoreEnv("PDPP_LOCAL_TRANSFORMER_WORK_LIMIT", previous);
+  }
 });
 
 test("unexpected child exit fences and rejects the generation after confirmed exit", async () => {

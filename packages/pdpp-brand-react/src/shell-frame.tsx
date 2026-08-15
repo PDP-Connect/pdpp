@@ -116,12 +116,36 @@ export const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 
 // ─── Active-route matching ────────────────────────────────────────
 //
+// `/connect` hosts two opposite data-flow directions under one URL prefix:
+// `/connect` itself is outbound (granting an external client/agent read
+// access), but five of its own sub-routes are inbound source-setup flows
+// (their own breadcrumbs already say "Sources", not "Connect apps"). Plain
+// prefix matching can't tell those apart, so these sub-routes are carved out
+// to highlight "/sources" instead — the honest signal their breadcrumbs
+// already carry. This is a minimal, in-place override; the correct fix is to
+// physically move these routes under /sources (tracked separately as a
+// judgment call, since it changes URLs).
+const CONNECT_SOURCE_SETUP_PREFIXES = [
+  "/connect/static-secret",
+  "/connect/browser-session",
+  "/connect/manual-upload",
+  "/connect/provider-auth",
+  "/connect/status",
+];
+
+function isConnectSourceSetupRoute(pathname: string): boolean {
+  return CONNECT_SOURCE_SETUP_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
+
 // `/` (Overview) must match ONLY itself — every other route is a top-level
 // noun off root, so an exact match is required for the root and a prefix match
 // (segment-boundary aware) for the rest.
 export function isNavItemActive(href: string, pathname: string): boolean {
   if (href === "/") {
     return pathname === "/";
+  }
+  if (isConnectSourceSetupRoute(pathname)) {
+    return href === "/sources";
   }
   return pathname === href || pathname.startsWith(`${href}/`);
 }

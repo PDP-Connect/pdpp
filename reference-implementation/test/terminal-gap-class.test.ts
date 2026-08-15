@@ -19,11 +19,13 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
+import { registerConnector } from "../server/auth.ts";
 import { closeDb, initDb } from "../server/db.ts";
 import { createSqliteConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
 import {
@@ -41,28 +43,45 @@ import {
 // real store down to exactly the shape `maybeTerminateGap` declares it needs.
 type MaybeTerminateGapStore = Parameters<typeof maybeTerminateGap>[0];
 
-// ─── terminalGapProfileForConnector: per-connector registry, NO default ──────
+const MANIFESTS_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "packages",
+  "polyfill-connectors",
+  "manifests"
+);
 
-test("terminalGapProfileForConnector resolves chatgpt (incl. instance-scoped ids) and returns null for unknown — no cross-provider default", () => {
-  assert.equal(terminalGapProfileForConnector("chatgpt"), CHATGPT_PROVIDER_PROFILE);
-  assert.equal(
-    terminalGapProfileForConnector("chatgpt:default"),
-    CHATGPT_PROVIDER_PROFILE,
-    "instance-scoped id resolves to base profile"
-  );
-  assert.equal(
-    terminalGapProfileForConnector("chatgpt@everyone"),
-    CHATGPT_PROVIDER_PROFILE,
-    "account-scoped id resolves to base profile"
-  );
-  // §3 rule 6: a connector with no declared profile must NOT borrow ChatGPT's
-  // budget — it returns null so the recovery path simply does not terminalize.
-  assert.equal(terminalGapProfileForConnector("gmail"), null);
-  assert.equal(terminalGapProfileForConnector("some-new-connector"), null);
-  assert.equal(terminalGapProfileForConnector(""), null);
-  // @ts-expect-error -- proving the runtime `typeof connectorId !== "string"` guard rejects a non-string connectorId from an untyped JS caller, not a type-level assertion this call site would ever legitimately make.
-  assert.equal(terminalGapProfileForConnector(undefined), null);
-});
+function loadRawManifest(name: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(join(MANIFESTS_DIR, `${name}.json`), "utf8")) as Record<string, unknown>;
+}
+
+// ─── terminalGapProfileForConnector: manifest-declared value, NO default ─────
+
+test(
+  "terminalGapProfileForConnector resolves chatgpt (incl. instance-scoped ids) and returns null for unknown — no cross-provider default",
+  withTempDb(async () => {
+    await registerConnector(loadRawManifest("chatgpt"));
+    assert.deepEqual(await terminalGapProfileForConnector("chatgpt"), CHATGPT_PROVIDER_PROFILE);
+    assert.deepEqual(
+      await terminalGapProfileForConnector("chatgpt:default"),
+      CHATGPT_PROVIDER_PROFILE,
+      "instance-scoped id resolves to base profile"
+    );
+    assert.deepEqual(
+      await terminalGapProfileForConnector("chatgpt@everyone"),
+      CHATGPT_PROVIDER_PROFILE,
+      "account-scoped id resolves to base profile"
+    );
+    // §3 rule 6: a connector with no declared profile must NOT borrow ChatGPT's
+    // budget — it returns null so the recovery path simply does not terminalize.
+    assert.equal(await terminalGapProfileForConnector("gmail"), null);
+    assert.equal(await terminalGapProfileForConnector("some-new-connector"), null);
+    assert.equal(await terminalGapProfileForConnector(""), null);
+    // @ts-expect-error -- proving the runtime `typeof connectorId !== "string"` guard rejects a non-string connectorId from an untyped JS caller, not a type-level assertion this call site would ever legitimately make.
+    assert.equal(await terminalGapProfileForConnector(undefined), null);
+  })
+);
 
 // The wired runtime adapter maps DETAIL_GAP last_error -> classifier errorInfo.
 // Pin that mapping (last_error.http_status -> status, last_error.class ->
@@ -87,6 +106,23 @@ test("the DETAIL_GAP last_error -> errorInfo mapping classifies non-transient st
   assert.equal(classifyRecoveryError(map({ class: "max_detail_fetches" })).nonTransient, false);
   assert.equal(classifyRecoveryError(map({ http_status: 429 })).nonTransient, false);
   assert.equal(classifyRecoveryError(map(null)).nonTransient, false);
+});
+
+// classifyRecoveryError's signature takes ONLY an errorInfo — no profile, no
+// maxRecoveryAttempts, no connectorId. This is the structural guarantee behind
+// the manifest-driven max_recovery_attempts redesign: a connector-declared
+// recovery-attempt budget can only change WHEN a gap ALREADY classified
+// non-transient flips to terminal (maybeTerminateGap's attempt_count compare);
+// it can never redefine WHAT counts as non-transient, because the classifier
+// has no channel through which a profile value could reach it.
+test("classifyRecoveryError takes no profile/budget input — a connector cannot redefine what 'permanently gone' means", () => {
+  assert.equal(classifyRecoveryError.length, 1, "classifyRecoveryError must declare exactly one parameter (errorInfo)");
+  // The same errorInfo classifies identically regardless of any surrounding
+  // profile value — there is no second argument to vary.
+  const withoutExtraArgs = classifyRecoveryError({ status: 404 });
+  // @ts-expect-error -- proving at runtime that a second (profile-shaped) argument is silently ignored, not consulted; classifyRecoveryError has no seam for connector-declared input.
+  const withExtraArgIgnored = classifyRecoveryError({ status: 404 }, { maxRecoveryAttempts: 999_999_999 });
+  assert.deepEqual(withExtraArgIgnored, withoutExtraArgs, "a second argument must have zero effect on classification");
 });
 
 // ─── Test helpers ───────────────────────────────────────────────────────────

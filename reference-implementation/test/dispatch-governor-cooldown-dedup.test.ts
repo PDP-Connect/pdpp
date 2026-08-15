@@ -40,6 +40,7 @@ function schedule(overrides = {}) {
     intervalMs: 60_000,
     manifest: {},
     maxRetries: 0,
+    ownerSubjectId: "owner_local",
     ownerToken: "owner-token",
     ...overrides,
   };

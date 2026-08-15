@@ -43,6 +43,7 @@ const SETUP: StaticSecretSetup = {
     ],
     kind: "username_password",
     label: "Sign-in details",
+    required: true,
     submit_label: null,
   },
   credential_kind: "username_password",

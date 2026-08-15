@@ -35,14 +35,28 @@ test("every local collector definition is well-formed and filesystem-class", () 
   }
 });
 
-test("bundled default streams request coverage_diagnostics so a drained run is never coverage_unknown", () => {
+test("bundled default streams request coverage_diagnostics whenever the connector's manifest declares that stream, so a drained run is never coverage_unknown", async () => {
   // Local-device collectors push records from a device outbox and write no
   // spine run, so the connection-health rollup can only project a non-`unknown`
-  // coverage axis from durable `coverage_diagnostics` records. Omitting that
-  // stream from the defaults strands the dashboard at coverage_unknown even
-  // after a healthy drain. See
+  // coverage axis from durable `coverage_diagnostics` records where that is the
+  // connector's coverage mechanism. Omitting that stream from the defaults
+  // strands the dashboard at coverage_unknown even after a healthy drain. See
   // openspec/changes/derive-local-collector-coverage-from-diagnostics.
+  //
+  // Not every connector uses this mechanism: a connector may instead declare a
+  // per-stream `coverage_strategy` (e.g. `snapshot_import_receipt`, as
+  // iMessage does) in its manifest, in which case it has no
+  // `coverage_diagnostics` stream to request at all — this check only applies
+  // when the manifest declares one.
   for (const def of LOCAL_COLLECTOR_DEFINITIONS) {
+    const manifestPath = fileURLToPath(new URL(`../manifests/${def.connector_id}.json`, import.meta.url));
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    const declaresCoverageDiagnostics = manifest.streams.some(
+      (stream: { name: string }) => stream.name === "coverage_diagnostics"
+    );
+    if (!declaresCoverageDiagnostics) {
+      continue;
+    }
     assert.ok(
       def.streams.includes("coverage_diagnostics"),
       `${def.connector_id} default streams must include coverage_diagnostics; got ${def.streams.join(", ")}`

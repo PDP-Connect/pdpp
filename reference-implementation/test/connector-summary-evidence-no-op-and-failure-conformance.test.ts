@@ -36,7 +36,12 @@ import { join } from "node:path";
 import test from "node:test";
 import { reconcileConnectorSummaryEvidence } from "../server/connector-summary-evidence-engine.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
-import { __setRecordIndexFaultHookForTest, deleteRecord, ingestRecord } from "../server/records.ts";
+import {
+  __setRecordIndexFaultHookForTest,
+  deleteRecord,
+  drainConnectorInstanceIndexWork,
+  ingestRecord,
+} from "../server/records.ts";
 
 const OWNER = "owner_local";
 const NOW = "2026-07-17T00:00:00.000Z";
@@ -53,10 +58,33 @@ async function withTempDb<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Awaits the scheduler's own settlement barrier for the deferred
+ * per-connector-instance index lane (records.ts's
+ * scheduleRecordIndexMaintenance runs on it), then reads the durable
+ * `search_index_dirty.last_error` evidence its catch block writes on
+ * failure. The barrier -- not a poll -- proves the job (including its
+ * failure-evidence write) has fully settled before this asserts on it.
+ */
+async function assertDeferredIndexFailureEvidence(
+  connectorInstanceId: string,
+  stream: string,
+  expected: RegExp
+): Promise<void> {
+  await drainConnectorInstanceIndexWork();
+  const row = getDb()
+    .prepare("SELECT last_error FROM search_index_dirty WHERE connector_instance_id = ? AND stream = ?")
+    .get(connectorInstanceId, stream) as { last_error: string | null } | undefined;
+  assert.ok(
+    row?.last_error && expected.test(row.last_error),
+    `expected deferred index-maintenance failure evidence matching ${expected} on ${connectorInstanceId}/${stream}, got ${JSON.stringify(row?.last_error ?? null)}`
+  );
+}
+
 function seedManifestConnector(connectorId: string, streams: string[]) {
   const manifest = {
     capabilities: {
-      public_listing: { listed: true, status: "test" },
+      public_listing: { tier: "supported" },
     },
     connector_id: connectorId,
     display_name: connectorId,
@@ -406,11 +434,19 @@ test("a post-commit index-maintenance failure cannot prevent the summary primiti
       }
     });
 
-    await assert.rejects(
-      ingestRecord(target, { data: { id: "msg_1" }, emitted_at: NOW, key: "msg_1", stream: "messages" }),
-      TOP_LEVEL_REGEX_1,
-      "the ingest call surfaces the index failure to its caller"
-    );
+    // Derived index maintenance runs on records.ts's per-connector-instance
+    // deferred lane (scheduleRecordIndexMaintenance), never awaited by the
+    // ingest ack: a durable commit must not synchronously block on derived
+    // indexing. So the ack resolves successfully even though the fault hook
+    // is armed...
+    await ingestRecord(target, { data: { id: "msg_1" }, emitted_at: NOW, key: "msg_1", stream: "messages" });
+
+    // ...and the fault still genuinely fires on that deferred lane: proven
+    // here by awaiting the scheduler's own settlement barrier, then reading
+    // the durable failure evidence (recordSearchIndexDirtyFailure) that
+    // scheduleRecordIndexMaintenance's catch block writes onto the scope's
+    // search_index_dirty row.
+    await assertDeferredIndexFailureEvidence("cin_index_failure", "messages", TOP_LEVEL_REGEX_1);
     __setRecordIndexFaultHookForTest(null);
 
     // Despite the index failure — and despite the dirty marker never firing

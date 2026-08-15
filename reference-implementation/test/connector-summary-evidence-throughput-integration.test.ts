@@ -70,7 +70,7 @@ async function withTempDb<T>(fn: () => Promise<T>): Promise<T> {
 function manifestFor(connectorKey: string, streams: readonly string[]) {
   return {
     capabilities: {
-      public_listing: { listed: true, status: "test" },
+      public_listing: { tier: "supported" },
     },
     connector_id: connectorKey,
     connector_key: connectorKey,

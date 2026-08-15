@@ -48,6 +48,7 @@ import test from "node:test";
 import { createScheduler } from "../runtime/scheduler.ts";
 import type { RunManagedConnectorViaController, RunRecord } from "../runtime/scheduler-domain-types.ts";
 import type { PendingPressureGap } from "../runtime/scheduler-source-pressure-cooldown.ts";
+import { createRunManagedConnectorViaController } from "../server/scheduler-manager-factory.ts";
 
 type ManagedRunOpts = Parameters<RunManagedConnectorViaController>[1];
 
@@ -133,6 +134,40 @@ function pressureGap({ attemptCount = 6 }: { attemptCount?: number } = {}): Pend
   };
 }
 
+test("managed controller adapter forwards the per-run owner subject", async () => {
+  const calls: { connectorId: string; ownerSubjectId: string | undefined }[] = [];
+  const runner = createRunManagedConnectorViaController({
+    awaitRun: async () => "succeeded",
+    browserSurfaceLeaseManager: { isManagedConnector: (connectorId) => connectorId === "chatgpt" },
+    getActiveRun: () => null,
+    isNeedsHuman: () => false,
+    issueRuntimeOwnerToken: async () => "owner-token",
+    markNeedsHuman: () => undefined,
+    runNow: (connectorId, options) => {
+      calls.push({ connectorId, ownerSubjectId: options.ownerSubjectId });
+      return Promise.resolve({
+        run_id: "run_managed_owner_spy",
+        status: "surface_failed",
+        trace_id: "trace-managed-owner-spy",
+      });
+    },
+  });
+  if (!runner) {
+    throw new Error("managed runner should be available when a lease manager is configured");
+  }
+
+  const result = await runner("chatgpt", {
+    connectorInstanceId: "cin_owner_b",
+    ownerSubjectId: "owner_b",
+    ownerToken: "owner-token-b",
+    priorityClass: "background",
+    triggerKind: "scheduled",
+  });
+
+  assert.deepEqual(calls, [{ connectorId: "chatgpt", ownerSubjectId: "owner_b" }]);
+  assert.equal(result?.status, "surface_failed");
+});
+
 // ── T1 + T2: managed connector acquires surface via callback ────────────────
 
 test("T1+T2: scheduled managed-connector run calls runManagedConnectorViaController with background priority", async () => {
@@ -154,6 +189,7 @@ test("T1+T2: scheduled managed-connector run calls runManagedConnectorViaControl
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
           maxRetries: 0,
+          ownerSubjectId: "owner-managed",
           ownerToken: "owner-token",
         },
       ],
@@ -182,6 +218,7 @@ test("T1+T2: scheduled managed-connector run calls runManagedConnectorViaControl
       assert.equal(call.opts.triggerKind, "scheduled", "triggerKind must be scheduled");
       assert.equal(call.opts.recoveryOnly, false, "normal scheduled managed run must not become recovery-only");
       assert.equal(call.opts.connectorInstanceId, connectorId, "connectorInstanceId defaults to connectorId");
+      assert.equal(call.opts.ownerSubjectId, "owner-managed", "ownerSubjectId forwarded");
       assert.equal(call.opts.ownerToken, "owner-token", "ownerToken forwarded");
 
       const [record] = completedRuns;
@@ -222,6 +259,7 @@ test("T2c: scheduled managed connector retries runtime-retryable terminal known 
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
           maxRetries: 2,
+          ownerSubjectId: "owner-managed",
           ownerToken: "owner-token",
         },
       ],
@@ -301,6 +339,7 @@ test("T2d: a definitive session_required failure is NOT retried even with maxRet
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
           maxRetries: 2,
+          ownerSubjectId: "owner-managed",
           ownerToken: "owner-token",
         },
       ],
@@ -359,6 +398,7 @@ test("T2b: scheduled managed-connector recovery dispatch preserves recoveryOnly"
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
           maxRetries: 0,
+          ownerSubjectId: "owner-managed",
           ownerToken: "owner-token",
         },
       ],
@@ -409,6 +449,7 @@ test("T3: browser_surface_queued status maps to skipped RunRecord (not failure-r
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
           maxRetries: 0,
+          ownerSubjectId: "owner-managed",
           ownerToken: "owner-token",
         },
       ],
@@ -457,6 +498,7 @@ test("T3c: run_already_active controller contention maps to skipped RunRecord", 
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
           maxRetries: 0,
+          ownerSubjectId: "owner-managed",
           ownerToken: "owner-token",
         },
       ],
@@ -511,6 +553,7 @@ test("T3b: surface_failed status also maps to skipped RunRecord", async () => {
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
           maxRetries: 0,
+          ownerSubjectId: "owner-managed",
           ownerToken: "owner-token",
         },
       ],
@@ -564,6 +607,7 @@ test("T4: non-managed connector (callback returns null) falls through to runConn
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
           maxRetries: 0,
+          ownerSubjectId: "owner-managed",
           ownerToken: "owner-token",
         },
       ],
@@ -630,6 +674,7 @@ test("T5: connectorInstanceId matches connectorId when not explicitly set (profi
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
           maxRetries: 0,
+          ownerSubjectId: "owner-managed",
           ownerToken: "owner-token",
         },
       ],
@@ -679,6 +724,7 @@ test("T6: controller.runNow throw produces a failed RunRecord (scheduler stays a
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
           maxRetries: 0,
+          ownerSubjectId: "owner-managed",
           ownerToken: "owner-token",
         },
       ],
@@ -731,6 +777,7 @@ test("T7: a managed run that DISPATCHES but FAILS records a failed RunRecord (no
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
           maxRetries: 0,
+          ownerSubjectId: "owner-managed",
           ownerToken: "owner-token",
         },
       ],
@@ -790,6 +837,7 @@ test("T7b: auth-required managed scheduled failure marks needs-human and suppres
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
           maxRetries: 0,
+          ownerSubjectId: "owner-managed",
           ownerToken: "owner-token",
         },
       ],
@@ -865,6 +913,7 @@ test("T8: managed connector with an unwired routing seam DEFERS (skip), not a co
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
           maxRetries: 0,
+          ownerSubjectId: "owner-managed",
           ownerToken: "owner-token",
         },
       ],
@@ -937,6 +986,7 @@ test("T9: non-managed connector with no routing seam still uses runConnector (de
           intervalMs: 25,
           manifest: BACKGROUND_SAFE_MANIFEST,
           maxRetries: 0,
+          ownerSubjectId: "owner-managed",
           ownerToken: "owner-token",
         },
       ],

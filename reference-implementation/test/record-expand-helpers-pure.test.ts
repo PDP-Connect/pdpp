@@ -27,6 +27,7 @@ import {
   normalizePrimaryKey,
   parseIntegerValue,
 } from "../server/record-expand-helpers.ts";
+import { jsonPathForTopLevelField } from "../server/record-filters.ts";
 
 interface QueryError extends Error {
   code?: string;
@@ -118,5 +119,30 @@ test("assertNonEmptyJsonField rejects empty and non-string values", () => {
   assert.throws(() => assertNonEmptyJsonField("", "field"), NON_EMPTY_STRING_ERROR);
   for (const bad of [null, undefined, 42, {}, ["id"]]) {
     assert.throws(() => assertNonEmptyJsonField(bad, "field"), Error);
+  }
+});
+
+// ─── SQL-literal escaping at the interpolation choke points ─────────────────
+// Main replaced staging's identifier-allowlist regex (SAFE_JSON_FIELD,
+// /^[A-Za-z_][A-Za-z_0-9]*$/) with assertNonEmptyJsonField PLUS single-quote
+// escaping applied where a field name is spliced into SQL text. These pin the
+// escaping half: the assertion alone would typecheck and load while silently
+// dropping injection defense.
+
+test("jsonPathForTopLevelField escapes quotes/backslashes so a field cannot break the JSON path", () => {
+  assert.equal(jsonPathForTopLevelField('a"b'), '$."a\\"b"');
+  assert.equal(jsonPathForTopLevelField("a\\b"), '$."a\\\\b"');
+  // A hyphenated key is legal here; staging's old regex rejected it outright.
+  assert.equal(jsonPathForTopLevelField("event-time"), '$."event-time"');
+});
+
+test("single-quote escaping keeps a hostile field name inside its SQL string literal", () => {
+  // Mirrors postgresTopLevelJsonExpr / sqliteTopLevelJsonExpr: escape ' as ''
+  // immediately before interpolation. Quote parity inside the literal region
+  // is what proves the value cannot terminate the literal early.
+  for (const field of ["event-time", "a' OR '1'='1", "x'; DROP TABLE records; --"]) {
+    const expr = `(record_json->>'${field.replace(/'/g, "''")}')`;
+    const inner = expr.slice(expr.indexOf("'") + 1, expr.lastIndexOf("'"));
+    assert.equal((inner.match(/'/g) ?? []).length % 2, 0, `unbalanced quotes for ${field}`);
   }
 });

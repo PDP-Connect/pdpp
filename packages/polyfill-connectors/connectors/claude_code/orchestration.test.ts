@@ -604,3 +604,64 @@ test("scanProjectDirs: a grown session re-emits once with the higher message_cou
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("scanProjectDirs: three-stream bounded proof — messages + attachments + memory_notes without sessions", async () => {
+  const { baseDir, cleanup } = await makeSyntheticProjectTree();
+  try {
+    // Bounded proof: only collect messages, attachments, and memory_notes (NOT sessions).
+    // This tests the case where the bounded source requests only these three streams.
+    // The collect orchestration calls scanProjectDirs twice: once for JSONL (messages/attachments)
+    // and once for non-JSONL (memory_notes). Simulate this flow.
+    const requested = makeRequested(["messages", "attachments", "memory_notes"]);
+    const harness = makeRecordingEmit();
+    const sessionAccumulators = new Map<string, SessionAccumulator>();
+    const fileMtimes: Record<string, number> = {};
+    const newMtimes: Record<string, number> = {};
+    const memoryNoteMtimes: Record<string, number> = {};
+    const newMemoryNoteMtimes: Record<string, number> = {};
+
+    // First pass: process JSONL files (messages and attachments).
+    await scanProjectDirs({
+      baseDir,
+      buildOnly: false,
+      emit: harness.emit,
+      emitRecord: harness.emitRecord,
+      fileMtimes,
+      newMtimes,
+      memoryNoteMtimes,
+      newMemoryNoteMtimes,
+      requested,
+      sessionAccumulators,
+      // skipJsonl not set, so JSONL is processed
+    });
+
+    // Second pass: process non-JSONL (memory_notes via legacy scan).
+    // This simulates scanLegacyNonJsonl() calling scanProjectDirs with skipJsonl: true.
+    await scanProjectDirs({
+      baseDir,
+      buildOnly: false,
+      emit: harness.emit,
+      emitRecord: harness.emitRecord,
+      fileMtimes: memoryNoteMtimes,
+      newMtimes: newMemoryNoteMtimes,
+      memoryNoteMtimes,
+      newMemoryNoteMtimes,
+      requested,
+      sessionAccumulators: new Map(),
+      skipJsonl: true,
+    });
+
+    // Verify all three streams emit records.
+    const messages = harness.emitted.filter((r) => r.stream === "messages");
+    const attachments = harness.emitted.filter((r) => r.stream === "attachments");
+    const memoryNotes = harness.emitted.filter((r) => r.stream === "memory_notes");
+    const sessions = harness.emitted.filter((r) => r.stream === "sessions");
+
+    assert.ok(messages.length > 0, "messages should emit when requested");
+    assert.ok(attachments.length > 0, "attachments should emit when requested");
+    assert.ok(memoryNotes.length > 0, "memory_notes should emit when requested");
+    assert.equal(sessions.length, 0, "sessions must not emit when not requested");
+  } finally {
+    await cleanup();
+  }
+});

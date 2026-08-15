@@ -32,8 +32,26 @@ export interface PilotFixtureTestArgs {
   /** Connector directory name under `connectors/` (also matches the
    *  `fixtures/<connector>/` directory). */
   connector: string;
+  /** Pilot fixtures lock record shape only; behavioral evidence belongs in focused connector tests. */
+  evidence?: "shape-only";
   /** Validator from the connector's `schemas.ts`. */
   validateRecord: ValidateRecord;
+}
+
+interface PilotManifest {
+  streams?: Array<{ name?: unknown }>;
+}
+
+function readManifestStreamNames(connector: string): string[] {
+  const manifestPath = join(PKG_ROOT, "manifests", `${connector}.json`);
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as PilotManifest;
+  assert.ok(Array.isArray(manifest.streams), `${manifestPath}: manifest streams must be an array`);
+  const names = manifest.streams.map((stream) => stream.name);
+  assert.ok(
+    names.every((name): name is string => typeof name === "string" && name.length > 0),
+    `${manifestPath}: every manifest stream must have a non-empty name`
+  );
+  return names as string[];
 }
 
 /**
@@ -53,7 +71,7 @@ export interface PilotFixtureTestArgs {
  *     the offending record's id.
  */
 export function registerPilotFixtureTests(args: PilotFixtureTestArgs & { expectMissing?: boolean }): void {
-  const { connector, validateRecord, expectMissing = false } = args;
+  const { connector, evidence = "shape-only", validateRecord, expectMissing = false } = args;
   const recordsDir = join(PKG_ROOT, "fixtures", connector, "scrubbed", "pilot-real-shape", "records");
 
   if (!existsSync(recordsDir)) {
@@ -68,20 +86,39 @@ export function registerPilotFixtureTests(args: PilotFixtureTestArgs & { expectM
     return;
   }
 
-  const filenames = readdirSync(recordsDir)
+  // Compare canonical stream names, not filenames. Sorting the suffix-bearing
+  // names makes `user.jsonl`/`user_stats.jsonl` order differently from the
+  // manifest's stream names because punctuation participates in collation.
+  const fixtureStreams = readdirSync(recordsDir)
     .filter((f) => f.endsWith(".jsonl"))
-    .sort();
-  if (filenames.length === 0) {
-    test(`pilot-real-shape/${connector}: at least one stream fixture exists`, () => {
+    .map((filename) => filename.replace(JSONL_EXT_RE, ""))
+    .sort((left, right) => left.localeCompare(right));
+  const declaredStreams = readManifestStreamNames(connector).sort((left, right) => left.localeCompare(right));
+
+  test(`pilot-real-shape/${connector}/${evidence}: fixture inventory matches manifest`, () => {
+    assert.deepEqual(
+      fixtureStreams,
+      declaredStreams,
+      `${connector}: ${evidence} fixtures must contain exactly one .jsonl file for every manifest stream`
+    );
+    assert.equal(
+      new Set(declaredStreams).size,
+      declaredStreams.length,
+      `${connector}: manifest stream names must be unique for an exact fixture inventory`
+    );
+  });
+
+  if (fixtureStreams.length === 0) {
+    test(`pilot-real-shape/${connector}/${evidence}: at least one stream fixture exists`, () => {
       assert.fail(`expected ≥1 .jsonl file under ${recordsDir}, found 0`);
     });
     return;
   }
 
-  for (const filename of filenames) {
-    const stream = filename.replace(JSONL_EXT_RE, "");
+  for (const stream of fixtureStreams) {
+    const filename = `${stream}.jsonl`;
     const filePath = join(recordsDir, filename);
-    test(`pilot-real-shape/${connector}/${stream}: every fixture record passes validateRecord`, () => {
+    test(`pilot-real-shape/${connector}/${stream}: ${evidence} record shape passes validateRecord`, () => {
       const lines = readFileSync(filePath, "utf8")
         .split("\n")
         .filter((l) => l.trim());

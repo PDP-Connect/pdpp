@@ -14,13 +14,22 @@ import {
   buildTerminalCollectionFacts,
   COLLECTOR_STDERR_MAX_BYTES,
   CollectorStateReadError,
+  DEFAULT_COLLECTOR_OUTBOX_POLICY,
   drainCollectorOutbox,
   drainCollectorQueue,
   recoverAndSummarizeOutbox,
   runCollectorConnector,
   transformRecordsToCollectorEnvelopes,
 } from "./collector-runner.ts";
-import { type IngestBatchRequest, type LocalDeviceClient, LocalDeviceHttpError } from "./local-device-client.ts";
+import {
+  type AckLocalCollectorGapRequest,
+  type AckLocalCollectorGapResponse,
+  type IngestBatchRequest,
+  type LocalDeviceClient,
+  LocalDeviceHttpError,
+  type PutSourceInstanceStateRequest,
+  type SourceInstanceStateResponse,
+} from "./local-device-client.ts";
 import { buildLocalDeviceOutboxId, LocalDeviceOutbox } from "./local-device-outbox.ts";
 import { LocalDeviceQueue } from "./local-device-queue.ts";
 import { RuntimeCapabilityMismatchError } from "./runtime-capabilities.ts";
@@ -277,6 +286,80 @@ test("runCollectorConnector reports null completeness when no coverage diagnosti
     // as "complete".
     assert.equal(result.done?.status, "succeeded");
     assert.equal(result.completeness, null);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector.onMessage observes every protocol message in emission order without altering the result", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const fixture = await writeFixtureConnector({
+      script: `
+        await new Promise((r) => { let b = ""; process.stdin.on("data", (c) => { b += c; if (b.includes("\\n")) r(); }); });
+        process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", key: "m-1", data: { id: "m-1" }, emitted_at: new Date().toISOString() }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", key: "m-2", data: { id: "m-2" }, emitted_at: new Date().toISOString() }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "STATE", stream: "messages", cursor: { fetched_at: new Date().toISOString() } }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 2 }) + "\\n");
+      `,
+    });
+
+    const observed: string[] = [];
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-onmessage",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      onMessage: (message) => observed.push(message.type),
+      queuePath: await tempQueuePath(),
+      sourceInstanceId: "src-onmessage",
+    });
+
+    assert.deepEqual(observed, ["RECORD", "RECORD", "STATE", "DONE"]);
+    assert.equal(result.done?.status, "succeeded");
+    assert.equal(result.recordsQueued, 2);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector.onMessage errors are swallowed and never break the run", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const fixture = await writeFixtureConnector({
+      script: `
+        await new Promise((r) => { let b = ""; process.stdin.on("data", (c) => { b += c; if (b.includes("\\n")) r(); }); });
+        process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", key: "m-1", data: { id: "m-1" }, emitted_at: new Date().toISOString() }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 1 }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-onmessage-throws",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      onMessage: () => {
+        throw new Error("reporter bug");
+      },
+      queuePath: await tempQueuePath(),
+      sourceInstanceId: "src-onmessage-throws",
+    });
+
+    assert.equal(result.done?.status, "succeeded");
+    assert.equal(result.recordsQueued, 1);
   } finally {
     await harness.close();
   }
@@ -1052,6 +1135,10 @@ test("runCollectorConnector skips state PUT when the queue still has retrying it
       deviceToken: "device-token",
       queuePath,
       sourceInstanceId: "src-1",
+      outboxPolicy: {
+        maxDrainDurationMs: 2000,
+        retryBackoffMs: 100,
+      },
     });
 
     // Ingest never succeeded → state must NOT have been advanced.
@@ -1064,10 +1151,13 @@ test("runCollectorConnector skips state PUT when the queue still has retrying it
   }
 });
 
-test("runCollectorConnector does not checkpoint when record work remains retryable", async () => {
+test("runCollectorConnector does not checkpoint when record work dead-letters", async () => {
+  // Uses a non-transient 400 (not 503) so the row genuinely exhausts
+  // maxAttempts and dead-letters — a 503/device_ingest_retryable no longer
+  // dead-letters purely on attempt-count exhaustion (local-ingest-backpressure-0810).
   const harness = await startCollectorHarness({
     priorState: {},
-    ingestFailureMode: "always-503",
+    ingestFailureMode: "always-400",
   });
   try {
     const queuePath = await tempQueuePath();
@@ -1115,10 +1205,14 @@ test("runCollectorConnector does not checkpoint when record work remains retryab
     });
 
     assert.equal(result.flushedState, null);
-    assert.equal(result.outboxSummary.deadLetter, 0);
-    assert.equal(result.outboxSummary.retrying, 1);
+    assert.equal(result.outboxSummary.deadLetter, 1);
     assert.equal(harness.stateOps.filter((op) => op.method === "PUT").length, 0);
-    assert.equal(harness.heartbeats.at(-1)?.status, "retrying");
+    const blockedHeartbeat = harness.heartbeats.at(-1);
+    assert.equal(blockedHeartbeat?.status, "blocked");
+    const lastError = heartbeatLastError(blockedHeartbeat?.last_error);
+    assert.equal(lastError?.kind, "dead_letter_backlog");
+    assert.ok((lastError?.top_dead_letter_classes?.length ?? 0) >= 1, "expected at least one error class");
+    assert.equal(lastError?.top_dead_letter_classes?.[0]?.count, 1);
   } finally {
     await harness.close();
   }
@@ -1506,7 +1600,7 @@ test("runCollectorConnector skips source scan when pre-existing durable work can
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      outboxPolicy: { retryBackoffMs: 60_000 },
+      outboxPolicy: { maxDrainDurationMs: 100, retryBackoffMs: 60_000 },
       queuePath,
       sourceInstanceId: "src-1",
     });
@@ -1555,7 +1649,7 @@ test("runCollectorConnector fails backlog-skip pass when terminal heartbeat is r
           },
           deviceId: "device-1",
           deviceToken: "device-token",
-          outboxPolicy: { retryBackoffMs: 60_000 },
+          outboxPolicy: { maxDrainDurationMs: 100, retryBackoffMs: 60_000 },
           queuePath,
           sourceInstanceId: "src-1",
         }),
@@ -1642,7 +1736,12 @@ test("a backlog-open second pass re-enqueues nothing: the durable rows are byte-
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      outboxPolicy: { retryBackoffMs: 60_000 },
+      // maxDrainDurationMs is set well below retryBackoffMs so the drain's
+      // auto-wait loop (which sleeps in real wall-clock time for a
+      // backoff-delayed retry) exits on its duration budget instead of
+      // actually sleeping ~60s. The backlog stays open either way — only
+      // the loop's real sleep is what's being avoided here.
+      outboxPolicy: { maxDrainDurationMs: 20, retryBackoffMs: 60_000 },
       queuePath,
       sourceInstanceId,
     });
@@ -1684,7 +1783,9 @@ test("a backlog-open second pass re-enqueues nothing: the durable rows are byte-
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      outboxPolicy: { retryBackoffMs: 60_000 },
+      // Same rationale as pass 1: keep the drain's auto-wait loop from
+      // sleeping in real wall-clock time for the still-open backoff.
+      outboxPolicy: { maxDrainDurationMs: 20, retryBackoffMs: 60_000 },
       queuePath,
       sourceInstanceId,
     });
@@ -1803,7 +1904,7 @@ interface CollectorHarnessOptions {
   heartbeatStatus?: number;
   /** Per-heartbeat status overrides. Entries are consumed in request order. */
   heartbeatStatuses?: number[];
-  ingestFailureMode?: "always-503";
+  ingestFailureMode?: "always-400" | "always-503";
   priorState?: Record<string, unknown> | null;
   /** When set, the GET state endpoint returns this status instead of 200. */
   stateReadStatus?: number;
@@ -1968,6 +2069,17 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
       if (options.ingestFailureMode === "always-503") {
         res.writeHead(503, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { code: "synthetic_unavailable" } }));
+        return;
+      }
+      if (options.ingestFailureMode === "always-400") {
+        // A non-retryable, non-transient 400 — does NOT match
+        // TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE (unlike 408/429/5xx),
+        // so it still exhausts maxAttempts and dead-letters. Used by tests
+        // that specifically exercise dead-letter behavior; a 503 no longer
+        // dead-letters purely on attempt-count exhaustion (see
+        // local-ingest-backpressure-0810).
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { code: "synthetic_bad_request" } }));
         return;
       }
       ingestedBatches.push(parsed as { records?: Array<{ data?: Record<string, unknown> }> });
@@ -2397,7 +2509,7 @@ test("runCollectorConnector defers checkpoint until every streamed record batch 
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      outboxPolicy: { retryBackoffMs: 60_000 },
+      outboxPolicy: { maxDrainDurationMs: 100, retryBackoffMs: 60_000 },
       queuePath,
       sourceInstanceId: "src-1",
     });
@@ -2503,6 +2615,7 @@ test("drainCollectorOutbox blocks checkpoint behind retry-delayed predecessors b
         maxDrainIterations: 4,
         maxEnqueuedBatchesPerRun: 10_000,
         maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
         retryBackoffMs: 1,
       },
       sourceInstanceId: "src-order",
@@ -3409,7 +3522,7 @@ test("runCollectorConnector skips spawn and reports blocked when queue depth cro
       deviceToken: "device-token",
       // Long retry backoff so the seeded batches stay retrying rather
       // than collapsing to ready during a possible second drain pass.
-      outboxPolicy: { maxQueueDepth, retryBackoffMs: 60_000 },
+      outboxPolicy: { maxDrainDurationMs: 100, maxQueueDepth, retryBackoffMs: 60_000 },
       queuePath,
       sourceInstanceId: "src-1",
     });
@@ -3502,6 +3615,7 @@ test("drainCollectorOutbox stops between iterations when the duration budget is 
         maxDrainIterations: 256,
         maxEnqueuedBatchesPerRun: 2048,
         maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
         retryBackoffMs: 30_000,
       },
       sourceInstanceId: "src-1",
@@ -3584,6 +3698,7 @@ test("drainCollectorOutbox does not crash when batch-claimed work expires before
         maxDrainIterations: 4,
         maxEnqueuedBatchesPerRun: 2048,
         maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
         retryBackoffMs: 30_000,
       },
       sourceInstanceId: "src-1",
@@ -3819,7 +3934,7 @@ test("runCollectorConnector enqueues a policy-budget gap row when queue depth bl
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      outboxPolicy: { maxQueueDepth, retryBackoffMs: 60_000 },
+      outboxPolicy: { maxQueueDepth, retryBackoffMs: 60_000, maxDrainDurationMs: 100 },
       queuePath,
       runId: "run-policy-1",
       sourceInstanceId: "src-gap-policy",
@@ -3863,7 +3978,7 @@ test("runCollectorConnector enqueues a policy-budget gap row when queue depth bl
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      outboxPolicy: { maxQueueDepth, retryBackoffMs: 60_000 },
+      outboxPolicy: { maxQueueDepth, retryBackoffMs: 60_000, maxDrainDurationMs: 100 },
       queuePath,
       runId: "run-policy-2",
       sourceInstanceId: "src-gap-policy",
@@ -4144,6 +4259,7 @@ test("drainCollectorOutbox delivers gap rows via ackLocalCollectorGap and acknow
         maxDrainIterations: 16,
         maxEnqueuedBatchesPerRun: 2048,
         maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
         retryBackoffMs: 1,
       },
       sourceInstanceId: "src-drain-gap",
@@ -4207,6 +4323,7 @@ test("drainCollectorOutbox dead-letters a malformed gap row instead of poisoning
         maxDrainIterations: 4,
         maxEnqueuedBatchesPerRun: 2048,
         maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
         retryBackoffMs: 1,
       },
       sourceInstanceId: "src-bad-gap",
@@ -4292,6 +4409,7 @@ test("drainCollectorOutbox sanitizes secrets out of the persisted last_error on 
         maxDrainIterations: 2,
         maxEnqueuedBatchesPerRun: 2048,
         maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
         retryBackoffMs: 1,
       },
       sourceInstanceId: "src-leak",
@@ -4491,4 +4609,1219 @@ test("runCollectorConnector recovers acknowledged local gaps only after a succes
   } finally {
     await harness.close();
   }
+});
+
+function createTestClient(): Pick<
+  LocalDeviceClient,
+  "ingestBatch" | "putSourceInstanceState" | "ackLocalCollectorGap"
+> {
+  return {
+    ingestBatch: async (_request: IngestBatchRequest) => ({ ok: true }),
+    putSourceInstanceState: async (request: PutSourceInstanceStateRequest): Promise<SourceInstanceStateResponse> => ({
+      connector_instance_id: "test-instance",
+      device_id: "test-device",
+      object: "device_source_instance_state" as const,
+      source_instance_id: request.sourceInstanceId,
+      state: request.state,
+      updated_at: new Date().toISOString(),
+    }),
+    ackLocalCollectorGap: async (request: AckLocalCollectorGapRequest): Promise<AckLocalCollectorGapResponse> => ({
+      attempt_count: 1,
+      connector_id: request.connector_id,
+      connector_instance_id: "test-instance",
+      device_id: "test-device",
+      first_seen_at: request.first_seen_at,
+      first_seen_run_id: request.first_seen_run_id ?? null,
+      gap_id: "test-gap",
+      last_run_id: request.last_run_id ?? null,
+      object: "device_local_collector_gap" as const,
+      reason: request.reason,
+      retryable: request.retryable,
+      source_instance_id: request.source_instance_id,
+      status: "acknowledged",
+      stream: request.stream ?? "unknown",
+      updated_at: new Date().toISOString(),
+    }),
+  };
+}
+
+test("drainCollectorOutbox auto-waits for backoff-delayed items and retries within budget", async () => {
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  let sendAttempts = 0;
+  const client = createTestClient();
+  const originalIngest = client.ingestBatch;
+  client.ingestBatch = (request: IngestBatchRequest) => {
+    sendAttempts += 1;
+    if (sendAttempts === 1) {
+      return Promise.reject(new LocalDeviceHttpError(500, ""));
+    }
+    return originalIngest(request);
+  };
+
+  const srcId = "test-src-autowait";
+  const records = transformRecordsToCollectorEnvelopes({
+    batchId: "batch-autowait",
+    batchSeq: 1,
+    connectorId: "test_connector",
+    deviceId: "test-device",
+    messages: [
+      {
+        data: { id: "m-1" },
+        emitted_at: "2026-08-09T12:00:00.000Z",
+        key: "m-1",
+        stream: "messages",
+        type: "RECORD",
+      },
+    ],
+    sourceInstanceId: srcId,
+  });
+  outbox.enqueue({
+    id: buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-autowait"],
+      sourceInstanceId: srcId,
+    }),
+    kind: "record_batch" as const,
+    payload: {
+      batchId: "batch-autowait",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      records,
+      sourceInstanceId: srcId,
+    },
+    sourceInstanceId: srcId,
+  });
+
+  const holderId = "test-holder";
+  const startMs = Date.now();
+  const result = await drainCollectorOutbox({
+    client,
+    connectorId: "test_connector",
+    holderId,
+    outbox,
+    policy: {
+      drainBatchSize: 4,
+      leaseMs: 60_000,
+      maxAttempts: 3,
+      maxDrainDurationMs: 15_000,
+      maxDrainIterations: 100,
+      maxEnqueuedBatchesPerRun: 10_000,
+      maxQueueDepth: 10_000,
+      maxRetryAfterMs: 60_000,
+      retryBackoffMs: 1500,
+    },
+    sourceInstanceId: srcId,
+  });
+  const elapsedMs = Date.now() - startMs;
+
+  assert.equal(result.sent, 1, "should send once (after retry)");
+  assert.equal(result.failed, 1, "first attempt should fail");
+  assert.ok(elapsedMs >= 1500, `elapsed ${elapsedMs}ms should be >= 1500ms (backoff time)`);
+  assert.ok(elapsedMs < 4000, `elapsed ${elapsedMs}ms should be < 4000ms (no excessive waiting)`);
+  assert.equal(sendAttempts, 2, "should attempt send twice (fail + retry)");
+
+  const summary = outbox.summary({ sourceInstanceId: srcId });
+  assert.equal(summary.succeeded, 1, "item should be succeeded after retry");
+  assert.equal(summary.ready, 0, "no items should remain ready");
+
+  outbox.close();
+});
+
+test("drainCollectorOutbox reclaims a row whose deadline falls between the claim read and the retry-time read instead of exiting with due work", async () => {
+  // Deterministic oracle for the drain-exit boundary race. The drain's
+  // empty-claim path reads the clock twice: `claimReadyOutboxItems` first
+  // (via `peekReady`, inclusive `next_attempt_at <= now`), then
+  // `nextRetryTime` (strict `next_attempt_at > now`). A row whose
+  // `next_attempt_at` lands in the gap between those two reads is not yet
+  // due for the first and no longer "in the future" for the second, so an
+  // unfixed drain returns with a due row still ready. The scripted clock
+  // is frozen during setup, then advances exactly 1ms per read once
+  // armed; the row is due exactly 2ms after arming, so read #1 (peek)
+  // sees t+1 < t+2 and read #2 (nextRetryTime) sees exactly t+2, which
+  // the strict filter excludes. Every clock value is scripted — no
+  // sleeps, no retries, no reliance on scheduler timing.
+  const baseMs = new Date("2026-08-11T12:00:00.000Z").getTime();
+  let armed = false;
+  let scriptedMs = baseMs;
+  const clock = () => {
+    if (armed) {
+      scriptedMs += 1;
+    }
+    return new Date(scriptedMs);
+  };
+  const outbox = new LocalDeviceOutbox({ clock, path: await tempQueuePath() });
+  try {
+    let sendAttempts = 0;
+    const client = createTestClient();
+    const originalIngest = client.ingestBatch;
+    client.ingestBatch = (request: IngestBatchRequest) => {
+      sendAttempts += 1;
+      return originalIngest(request);
+    };
+    const srcId = "test-src-boundary-race";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-boundary",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        {
+          data: { id: "m-1" },
+          emitted_at: "2026-08-11T12:00:00.000Z",
+          key: "m-1",
+          stream: "messages",
+          type: "RECORD",
+        },
+      ],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: buildLocalDeviceOutboxId({
+        kind: "record_batch",
+        parts: ["batch-boundary"],
+        sourceInstanceId: srcId,
+      }),
+      kind: "record_batch" as const,
+      nextAttemptAt: new Date(baseMs + 2),
+      payload: {
+        batchId: "batch-boundary",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+    armed = true;
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy: {
+        drainBatchSize: 1,
+        leaseMs: 60_000,
+        maxAttempts: 3,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 20,
+        maxEnqueuedBatchesPerRun: 10_000,
+        maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
+        retryBackoffMs: 2,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    assert.equal(result.sent, 1, "the due row must be sent, not abandoned at the read boundary");
+    assert.equal(result.failed, 0, "no send fails in this scenario");
+    assert.equal(result.deadLettered, 0, "nothing dead-letters in this scenario");
+    assert.equal(result.durationBudgetExceeded, false, "exit must be work-complete, not budget-driven");
+    assert.equal(sendAttempts, 1, "exactly one send serves the row");
+    const summary = outbox.summary({ sourceInstanceId: srcId });
+    assert.equal(summary.ready, 0, "no due row may remain ready after the drain returns");
+    assert.equal(summary.succeeded, 1, "the row must be acknowledged");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox retries a transient 503 whose backoff deadline lands exactly between the claim read and the retry-time read", async () => {
+  // Production shape of the same boundary race: attempt #1 fails with a
+  // transient 503, `failRetryable` anchors `next_attempt_at` to its own
+  // clock read plus the 2ms linear backoff, and the very next drain pass
+  // performs the claim read (1ms later — still early) followed by the
+  // `nextRetryTime` read (2ms later — exactly at the deadline, excluded
+  // by the strict filter). An unfixed drain returns `{sent: 0, failed: 1}`
+  // with the retryable row abandoned while due; the fix must instead
+  // re-check with a fresh read, reclaim, and complete the retry. Transient
+  // classification, attempt accounting, and backoff scheduling all run for
+  // real — only the clock is scripted.
+  const baseMs = new Date("2026-08-11T12:00:00.000Z").getTime();
+  let armed = false;
+  let scriptedMs = baseMs;
+  const clock = () => {
+    if (armed) {
+      scriptedMs += 1;
+    }
+    return new Date(scriptedMs);
+  };
+  const outbox = new LocalDeviceOutbox({ clock, path: await tempQueuePath() });
+  try {
+    let sendAttempts = 0;
+    const client = createTestClient();
+    const originalIngest = client.ingestBatch;
+    client.ingestBatch = (request: IngestBatchRequest) => {
+      sendAttempts += 1;
+      if (sendAttempts === 1) {
+        return Promise.reject(new LocalDeviceHttpError(503, '{"error":{"code":"device_ingest_retryable"}}'));
+      }
+      return originalIngest(request);
+    };
+    const srcId = "test-src-boundary-retry";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-boundary-retry",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        {
+          data: { id: "m-1" },
+          emitted_at: "2026-08-11T12:00:00.000Z",
+          key: "m-1",
+          stream: "messages",
+          type: "RECORD",
+        },
+      ],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: buildLocalDeviceOutboxId({
+        kind: "record_batch",
+        parts: ["batch-boundary-retry"],
+        sourceInstanceId: srcId,
+      }),
+      kind: "record_batch" as const,
+      payload: {
+        batchId: "batch-boundary-retry",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+    armed = true;
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy: {
+        drainBatchSize: 1,
+        leaseMs: 60_000,
+        maxAttempts: 3,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 20,
+        maxEnqueuedBatchesPerRun: 10_000,
+        maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
+        retryBackoffMs: 2,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    assert.equal(result.sent, 1, "the retry must complete instead of being abandoned at the read boundary");
+    assert.equal(result.failed, 1, "the transient first attempt still counts as one failure");
+    assert.equal(result.deadLettered, 0, "a transient failure under maxAttempts must not dead-letter");
+    assert.equal(result.durationBudgetExceeded, false, "exit must be work-complete, not budget-driven");
+    assert.equal(sendAttempts, 2, "exactly two sends: the transient failure and the successful retry");
+    const summary = outbox.summary({ sourceInstanceId: srcId });
+    assert.equal(summary.ready, 0, "no due row may remain ready after the drain returns");
+    assert.equal(summary.succeeded, 1, "the row must be acknowledged after the retry");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox keeps a record_batch durably retryable under sustained device_ingest_retryable 503s at the production maxAttempts default, instead of dead-lettering on attempt-count exhaustion", async () => {
+  // Reproduces the exact incident shape (local-ingest-backpressure-0810
+  // audit): a bounded local collector hits the server's admission gate
+  // (connector_instance_write_coordinator) under concurrent hosted-connector
+  // load and gets repeated `503 device_ingest_retryable` with `Retry-After: 1`
+  // — an explicit, authoritative "retry me" signal, not an unclassified
+  // failure. Before the fix, `failOutboxItem` counted every failed attempt
+  // identically regardless of error class, so 5 (production
+  // DEFAULT_COLLECTOR_OUTBOX_POLICY.maxAttempts) consecutive 503s
+  // dead-lettered the row even though the server never stopped saying
+  // "retry". The fix: an explicit-transient error (matching
+  // TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE, the same class
+  // requeueTransientLocalDeviceDeadLetters already treats as self-healing)
+  // must not consume the attempt-count budget that drives dead-letter.
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  try {
+    let sendAttempts = 0;
+    const client = createTestClient();
+    // Mirrors ref-device-exporters.ts's device_ingest_retryable envelope
+    // exactly, including a genuine Retry-After header (kept tiny so the
+    // test runs fast without touching maxAttempts/retryBackoffMs — the
+    // policy under test is the real, unmodified production default).
+    client.ingestBatch = () => {
+      sendAttempts += 1;
+      return Promise.reject(
+        new LocalDeviceHttpError(
+          503,
+          '{"error":{"code":"device_ingest_retryable","message":"Device ingest is temporarily unavailable; retry the same batch"}}',
+          10
+        )
+      );
+    };
+
+    const srcId = "test-src-sustained-503";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-sustained-503",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+      ],
+      sourceInstanceId: srcId,
+    });
+    const itemId = buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-sustained-503"],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: itemId,
+      kind: "record_batch" as const,
+      payload: {
+        batchId: "batch-sustained-503",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    // Real production default: maxAttempts: 5 (unmodified). Only
+    // maxDrainIterations is widened (so ONE drain call can drive well past
+    // 5 attempts) and retryBackoffMs is negligible so the test doesn't wait
+    // through the real production backoff schedule on the transient path —
+    // the fix makes that irrelevant anyway, since an explicit-transient
+    // failure now backs off by the server's own (tiny, real) Retry-After
+    // instead of policy.retryBackoffMs.
+    const policy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, maxDrainIterations: 20, retryBackoffMs: 1 };
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy,
+      sourceInstanceId: srcId,
+    });
+
+    assert.ok(sendAttempts >= 6, `expected more attempts than maxAttempts (5), got ${sendAttempts}`);
+    assert.equal(result.sent, 0);
+    assert.equal(
+      result.deadLettered,
+      0,
+      "an explicit device_ingest_retryable signal must never dead-letter on attempt-count alone"
+    );
+
+    const item = outbox.get(itemId);
+    assert.equal(item?.status, "ready", "row stays durably pending/backed-off, not owner-action dead-letter");
+    assert.ok(
+      (item?.attempt_count ?? 0) > policy.maxAttempts,
+      "attempt_count legitimately exceeds maxAttempts for this class"
+    );
+
+    const summary = outbox.summary({ sourceInstanceId: srcId });
+    assert.equal(summary.deadLetter, 0);
+    assert.ok(summary.retrying > 0 || summary.ready > 0, "work remains durably retryable, not lost");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox honors a server Retry-After for an explicit-transient failure instead of the linear backoff schedule", async () => {
+  // Counterweight to the sustained-503 test above: proves the fix reads the
+  // server's actual Retry-After value (bounded by maxRetryAfterMs) rather
+  // than ignoring it, and that the honored wait is the structural
+  // LocalDeviceHttpError#retryAfterMs field, not a re-parse of the message.
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  try {
+    let sendAttempts = 0;
+    const client = createTestClient();
+    const originalIngest = client.ingestBatch;
+    client.ingestBatch = (request: IngestBatchRequest) => {
+      sendAttempts += 1;
+      if (sendAttempts === 1) {
+        return Promise.reject(new LocalDeviceHttpError(503, '{"error":{"code":"device_ingest_retryable"}}', 300));
+      }
+      return originalIngest(request);
+    };
+
+    const srcId = "test-src-retry-after-honored";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-retry-after",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+      ],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: buildLocalDeviceOutboxId({ kind: "record_batch", parts: ["batch-retry-after"], sourceInstanceId: srcId }),
+      kind: "record_batch" as const,
+      payload: {
+        batchId: "batch-retry-after",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    const startMs = Date.now();
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy: {
+        drainBatchSize: 4,
+        leaseMs: 60_000,
+        maxAttempts: 5,
+        // Generous relative to the 300ms Retry-After: under concurrent test
+        // load elapsed wall-clock can drift well past the server's honored
+        // wait without indicating a defect; the budget only needs to be
+        // comfortably below the 20s linear-backoff schedule to prove that
+        // schedule was NOT used.
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 100,
+        maxEnqueuedBatchesPerRun: 10_000,
+        maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
+        // Deliberately much larger than the server's Retry-After so a pass
+        // here proves the server value (300ms) was honored instead of the
+        // linear schedule (which would wait >= 20_000ms on attempt 1).
+        retryBackoffMs: 20_000,
+      },
+      sourceInstanceId: srcId,
+    });
+    const elapsedMs = Date.now() - startMs;
+
+    assert.equal(result.sent, 1, "should send once (after honoring Retry-After)");
+    assert.ok(elapsedMs >= 300, `elapsed ${elapsedMs}ms should be >= the server's Retry-After (300ms)`);
+    assert.ok(elapsedMs < 20_000, `elapsed ${elapsedMs}ms should not wait the linear-backoff schedule (20s+)`);
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox dead-letters on attempt-count exhaustion even when a NON-transient error's message is crafted to match the legacy prose regex exactly", async () => {
+  // Mutation/counterweight test for classifyLocalDeviceFailure: a plain
+  // Error (not LocalDeviceHttpError, not LocalDeviceRequestTimeoutError, no
+  // structured `.cause.code`) whose message is deliberately crafted to
+  // START WITH the exact anchored prefix
+  // TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE matches ("fetch failed") —
+  // proving this is a business-logic error impersonating the transient
+  // prose shape, not an actual network fault — must still dead-letter on
+  // attempt-count exhaustion. If classification still ran the legacy regex
+  // against a live error's message, this row would incorrectly retry
+  // forever instead of dead-lettering. Confirmed pre-existing regex WOULD
+  // have misclassified this exact message as transient (verified against
+  // the prior prose-matching implementation before this test was hardened).
+  const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
+  try {
+    const client = createTestClient();
+    client.ingestBatch = () =>
+      Promise.reject(
+        new Error("fetch failed: destination rejected the batch as permanently malformed (not a network fault)")
+      );
+
+    const srcId = "test-src-misleading-prose";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-misleading-prose",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+      ],
+      sourceInstanceId: srcId,
+    });
+    const itemId = buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-misleading-prose"],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: itemId,
+      kind: "record_batch" as const,
+      payload: {
+        batchId: "batch-misleading-prose",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy: {
+        drainBatchSize: 1,
+        leaseMs: 60_000,
+        maxAttempts: 2,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 8,
+        maxEnqueuedBatchesPerRun: 10_000,
+        maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
+        retryBackoffMs: 1,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    assert.equal(result.deadLettered, 1, "a non-structured error must still dead-letter on attempt-count exhaustion");
+    const item = outbox.get(itemId);
+    assert.equal(item?.status, "dead_letter", "misleading message prose must not keep the row alive forever");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox classifies LocalDeviceHttpError as transient by structured status alone, independent of code/message content", async () => {
+  // Mutation/counterweight test, inverse of the one above: a LocalDeviceHttpError
+  // with status 503 but a completely unrelated code/message (no "503",
+  // "device_ingest_retryable", or any legacy-regex substring anywhere in
+  // the envelope) must still classify as explicit-transient. Guards against
+  // a regression where classifyLocalDeviceFailure is narrowed to check
+  // `error.code === "device_ingest_retryable"` (or similar code/message
+  // matching) instead of the TYPED `.status` field — status 5xx/408/429 is
+  // the authoritative signal per HTTP semantics, regardless of which PDPP
+  // error code the server's envelope happens to carry.
+  const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
+  try {
+    let sendAttempts = 0;
+    const client = createTestClient();
+    client.ingestBatch = () => {
+      sendAttempts += 1;
+      // The envelope code/message deliberately shares NO substring with the
+      // legacy regex ("408", "429", "5xx", "timed out", "fetch failed",
+      // "ECONN", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND") — only `.status`
+      // carries the transient signal.
+      return Promise.reject(new LocalDeviceHttpError(503, '{"error":{"code":"upstream_hiccup"}}'));
+    };
+
+    const srcId = "test-src-structured-status-only";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-structured-status-only",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+      ],
+      sourceInstanceId: srcId,
+    });
+    const itemId = buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-structured-status-only"],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: itemId,
+      kind: "record_batch" as const,
+      payload: {
+        batchId: "batch-structured-status-only",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    const policy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, maxDrainIterations: 20, retryBackoffMs: 1 };
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy,
+      sourceInstanceId: srcId,
+    });
+
+    assert.ok(
+      sendAttempts > policy.maxAttempts,
+      `expected attempts beyond maxAttempts (${policy.maxAttempts}), got ${sendAttempts}`
+    );
+    assert.equal(
+      result.deadLettered,
+      0,
+      "a 503 status must classify transient by status alone, independent of code/message text"
+    );
+    const item = outbox.get(itemId);
+    assert.equal(item?.status, "ready");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox classifies a network-transport fault as transient via structured .cause.code, and an unrecognized cause code as terminal", async () => {
+  // Covers the third branch of classifyLocalDeviceFailure: a raw fetch
+  // TypeError ("fetch failed", contentless) with the real fault nested on
+  // `.cause` (the shape Node's fetch actually produces — see
+  // describeThrownTransportError in http-retry.ts for the same pattern).
+  // A recognized transport code (ECONNRESET) must classify transient; an
+  // unrecognized one must NOT — proving the fix does not broaden to "any
+  // error with a .cause is retried forever" (explicit non-broadening
+  // requirement).
+  const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
+  try {
+    let sendAttempts = 0;
+    const client = createTestClient();
+    client.ingestBatch = () => {
+      sendAttempts += 1;
+      const transportFault = new Error("read ECONNRESET") as Error & { code: string };
+      transportFault.code = "ECONNRESET";
+      const fetchFailed = new Error("fetch failed", { cause: transportFault });
+      return Promise.reject(fetchFailed);
+    };
+
+    const srcId = "test-src-network-cause-code";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-network-cause-code",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+      ],
+      sourceInstanceId: srcId,
+    });
+    const itemId = buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-network-cause-code"],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: itemId,
+      kind: "record_batch" as const,
+      payload: {
+        batchId: "batch-network-cause-code",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    const policy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, maxDrainIterations: 20, retryBackoffMs: 1 };
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy,
+      sourceInstanceId: srcId,
+    });
+
+    assert.ok(sendAttempts > policy.maxAttempts, `expected attempts beyond maxAttempts, got ${sendAttempts}`);
+    assert.equal(result.deadLettered, 0, "ECONNRESET on .cause.code must classify transient structurally");
+    assert.equal(outbox.get(itemId)?.status, "ready");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox dead-letters a network error whose .cause has no recognized transport code, rather than retrying forever", async () => {
+  // Explicit non-broadening guard: an error with SOME .cause but an
+  // unrecognized/absent code must NOT be swept into infinite retries just
+  // because it superficially resembles a transport failure.
+  const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
+  try {
+    const client = createTestClient();
+    client.ingestBatch = () => {
+      const unknownFault = new Error("something odd happened") as Error & { code: string };
+      unknownFault.code = "EWEIRD_UNRECOGNIZED_CODE";
+      return Promise.reject(new Error("fetch failed", { cause: unknownFault }));
+    };
+
+    const srcId = "test-src-unrecognized-cause-code";
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "batch-unrecognized-cause-code",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      messages: [
+        { data: { id: "m-1" }, emitted_at: "2026-08-10T12:00:00.000Z", key: "m-1", stream: "messages", type: "RECORD" },
+      ],
+      sourceInstanceId: srcId,
+    });
+    const itemId = buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-unrecognized-cause-code"],
+      sourceInstanceId: srcId,
+    });
+    outbox.enqueue({
+      id: itemId,
+      kind: "record_batch" as const,
+      payload: {
+        batchId: "batch-unrecognized-cause-code",
+        batchSeq: 1,
+        connectorId: "test_connector",
+        deviceId: "test-device",
+        records,
+        sourceInstanceId: srcId,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "test_connector",
+      holderId: "test-holder",
+      outbox,
+      policy: {
+        drainBatchSize: 1,
+        leaseMs: 60_000,
+        maxAttempts: 2,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 8,
+        maxEnqueuedBatchesPerRun: 10_000,
+        maxQueueDepth: 10_000,
+        maxRetryAfterMs: 60_000,
+        retryBackoffMs: 1,
+      },
+      sourceInstanceId: srcId,
+    });
+
+    assert.equal(
+      result.deadLettered,
+      1,
+      "an unrecognized cause code must still dead-letter on attempt-count exhaustion"
+    );
+    assert.equal(outbox.get(itemId)?.status, "dead_letter");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox exits cleanly when abort fires during backoff wait", async () => {
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  const client = createTestClient();
+  client.ingestBatch = () => Promise.reject(new LocalDeviceHttpError(500, ""));
+
+  const srcId = "test-src-abort";
+  outbox.enqueue({
+    id: "test:abort-item",
+    kind: "record_batch" as const,
+    payload: { records: [] },
+    sourceInstanceId: srcId,
+  });
+
+  const [claimedItem] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
+  assert.ok(claimedItem);
+
+  outbox.failRetryable({
+    error: "local device request failed: 500",
+    holder: "test",
+    id: claimedItem.id,
+    leaseEpoch: claimedItem.lease_epoch,
+    retryBackoffMs: 10_000,
+  });
+
+  const controller = new AbortController();
+  const holderId = "test-holder";
+
+  const drainPromise = drainCollectorOutbox({
+    abortSignal: controller.signal,
+    client,
+    connectorId: "test_connector",
+    holderId,
+    outbox,
+    policy: {
+      drainBatchSize: 4,
+      leaseMs: 60_000,
+      maxAttempts: 3,
+      maxDrainDurationMs: 30_000,
+      maxDrainIterations: 100,
+      maxEnqueuedBatchesPerRun: 10_000,
+      maxQueueDepth: 10_000,
+      maxRetryAfterMs: 60_000,
+      retryBackoffMs: 30_000,
+    },
+    sourceInstanceId: srcId,
+  });
+
+  setTimeout(() => controller.abort(new Error("user abort")), 100);
+
+  let caughtError: Error | null = null;
+  try {
+    await drainPromise;
+  } catch (error) {
+    if (error instanceof Error) {
+      caughtError = error;
+    }
+  }
+
+  assert.ok(caughtError, "drain should throw on abort");
+  assert.equal(caughtError?.message, "user abort", "should propagate abort reason");
+
+  const nextRetry = outbox.nextRetryTime({ sourceInstanceId: srcId });
+  assert.ok(nextRetry, "backoff item should still exist for next drain");
+
+  outbox.close();
+});
+
+test("abort signal listener cleanup (regression: listener must be removed on abort)", async () => {
+  const controller = new AbortController();
+  let listenerCount = 0;
+  let removeCount = 0;
+
+  const originalAddEventListener = controller.signal.addEventListener;
+  const originalRemoveEventListener = controller.signal.removeEventListener;
+
+  controller.signal.addEventListener = function (
+    type: string,
+    listener: EventListener,
+    options?: boolean | AddEventListenerOptions
+  ) {
+    if (type === "abort") {
+      listenerCount += 1;
+    }
+    return originalAddEventListener.call(this, type, listener, options);
+  };
+
+  controller.signal.removeEventListener = function (type: string, listener: EventListener) {
+    if (type === "abort") {
+      removeCount += 1;
+    }
+    return originalRemoveEventListener.call(this, type, listener);
+  };
+
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  const client = createTestClient();
+  client.ingestBatch = () => Promise.reject(new LocalDeviceHttpError(500, ""));
+
+  const srcId = "test-src-abort-cleanup";
+  const records = transformRecordsToCollectorEnvelopes({
+    batchId: "batch-abort",
+    batchSeq: 1,
+    connectorId: "test_connector",
+    deviceId: "test-device",
+    messages: [
+      {
+        data: { id: "m-abort" },
+        emitted_at: "2026-08-09T12:00:00.000Z",
+        key: "m-abort",
+        stream: "messages",
+        type: "RECORD",
+      },
+    ],
+    sourceInstanceId: srcId,
+  });
+  outbox.enqueue({
+    id: buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-abort"],
+      sourceInstanceId: srcId,
+    }),
+    kind: "record_batch" as const,
+    payload: {
+      batchId: "batch-abort",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      records,
+      sourceInstanceId: srcId,
+    },
+    sourceInstanceId: srcId,
+  });
+
+  const drainPromise = drainCollectorOutbox({
+    abortSignal: controller.signal,
+    client,
+    connectorId: "test_connector",
+    holderId: "test-holder",
+    outbox,
+    policy: {
+      drainBatchSize: 4,
+      leaseMs: 60_000,
+      maxAttempts: 3,
+      maxDrainDurationMs: 15_000,
+      maxDrainIterations: 100,
+      maxEnqueuedBatchesPerRun: 10_000,
+      maxQueueDepth: 10_000,
+      maxRetryAfterMs: 60_000,
+      retryBackoffMs: 5000,
+    },
+    sourceInstanceId: srcId,
+  });
+
+  setTimeout(() => controller.abort(new Error("abort for cleanup test")), 100);
+
+  let caughtError: Error | null = null;
+  try {
+    await drainPromise;
+  } catch (error) {
+    if (error instanceof Error) {
+      caughtError = error;
+    }
+  }
+
+  assert.ok(caughtError, "drain should throw on abort");
+  assert.equal(listenerCount, 1, "exactly one abort listener should be added");
+  assert.equal(removeCount, 1, "exactly one abort listener should be removed (cleanup on abort)");
+
+  outbox.close();
+});
+
+test("drainCollectorOutbox exits with budget exceeded when wait exceeds duration limit", async () => {
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  const client = createTestClient();
+  client.ingestBatch = () => Promise.reject(new LocalDeviceHttpError(500, ""));
+
+  const srcId = "test-src-budget";
+  const records = transformRecordsToCollectorEnvelopes({
+    batchId: "batch-budget",
+    batchSeq: 1,
+    connectorId: "test_connector",
+    deviceId: "test-device",
+    messages: [
+      {
+        data: { id: "m-budget" },
+        emitted_at: "2026-08-09T12:00:00.000Z",
+        key: "m-budget",
+        stream: "messages",
+        type: "RECORD",
+      },
+    ],
+    sourceInstanceId: srcId,
+  });
+  outbox.enqueue({
+    id: buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-budget"],
+      sourceInstanceId: srcId,
+    }),
+    kind: "record_batch" as const,
+    payload: {
+      batchId: "batch-budget",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      records,
+      sourceInstanceId: srcId,
+    },
+    sourceInstanceId: srcId,
+  });
+
+  const holderId = "test-holder";
+  const result = await drainCollectorOutbox({
+    client,
+    connectorId: "test_connector",
+    holderId,
+    outbox,
+    policy: {
+      drainBatchSize: 4,
+      leaseMs: 60_000,
+      maxAttempts: 3,
+      maxDrainDurationMs: 1000,
+      maxDrainIterations: 100,
+      maxEnqueuedBatchesPerRun: 10_000,
+      maxQueueDepth: 10_000,
+      maxRetryAfterMs: 60_000,
+      retryBackoffMs: 5000,
+    },
+    sourceInstanceId: srcId,
+  });
+
+  assert.equal(result.durationBudgetExceeded, true, "should exit with budget exceeded");
+  assert.equal(result.sent, 0, "no items should be sent");
+  assert.equal(result.failed, 1, "one item should have failed and been re-queued");
+
+  const nextRetry = outbox.nextRetryTime({ sourceInstanceId: srcId });
+  assert.ok(nextRetry, "backoff item should still exist for next drain");
+
+  outbox.close();
+});
+
+test("nextRetryTime excludes dead_letter rows (terminal, never retry)", async () => {
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  const srcId = "test-src-deadletter";
+
+  const item1 = outbox.enqueue({
+    id: "test:ready-1",
+    kind: "record_batch" as const,
+    payload: { records: [] },
+    sourceInstanceId: srcId,
+    nextAttemptAt: new Date(Date.now() + 5000),
+  });
+
+  outbox.enqueue({
+    id: "test:dead-1",
+    kind: "record_batch" as const,
+    payload: { records: [] },
+    sourceInstanceId: srcId,
+  });
+
+  const [claimedItem] = outbox.claimReady({ holder: "h1", leaseMs: 60_000, sourceInstanceId: srcId });
+  assert.ok(claimedItem);
+
+  outbox.deadLetter({
+    error: "permanently failed",
+    holder: "h1",
+    id: claimedItem.id,
+    leaseEpoch: claimedItem.lease_epoch,
+  });
+
+  const nextRetry = outbox.nextRetryTime({ sourceInstanceId: srcId });
+  assert.ok(nextRetry, "nextRetryTime should return the ready item's time");
+  assert.equal(
+    new Date(nextRetry).getTime(),
+    new Date(item1.next_attempt_at).getTime(),
+    "should match ready item's time, not dead-letter"
+  );
+
+  outbox.close();
+});
+
+test("nextRetryTime excludes leased rows (belong to active drainers)", async () => {
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  const srcId = "test-src-leased";
+
+  const item1 = outbox.enqueue({
+    id: "test:ready-2",
+    kind: "record_batch" as const,
+    payload: { records: [] },
+    sourceInstanceId: srcId,
+    nextAttemptAt: new Date(Date.now() + 3000),
+  });
+
+  outbox.enqueue({
+    id: "test:immediate-item",
+    kind: "record_batch" as const,
+    payload: { records: [] },
+    sourceInstanceId: srcId,
+  });
+
+  const [claimedImmediate] = outbox.claimReady({ holder: "h1", leaseMs: 60_000, sourceInstanceId: srcId });
+  assert.ok(claimedImmediate, "should claim the immediately-ready item");
+
+  const nextRetry = outbox.nextRetryTime({ sourceInstanceId: srcId });
+  assert.ok(nextRetry, "nextRetryTime should return the future ready item's time");
+  assert.equal(
+    new Date(nextRetry).getTime(),
+    new Date(item1.next_attempt_at).getTime(),
+    "should match future ready item's time, not the leased item"
+  );
+
+  outbox.close();
+});
+
+test("drainCollectorOutbox waits for checkpoint blocked by delayed predecessor", async () => {
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  let sendAttempts = 0;
+  const client = createTestClient();
+  const originalIngest = client.ingestBatch;
+  client.ingestBatch = (request: IngestBatchRequest) => {
+    sendAttempts += 1;
+    if (sendAttempts === 1) {
+      return Promise.reject(new LocalDeviceHttpError(500, ""));
+    }
+    return originalIngest(request);
+  };
+
+  const srcId = "test-src-blocked";
+  const records = transformRecordsToCollectorEnvelopes({
+    batchId: "batch-blocked",
+    batchSeq: 1,
+    connectorId: "test_connector",
+    deviceId: "test-device",
+    messages: [
+      {
+        data: { id: "m-block" },
+        emitted_at: "2026-08-09T12:00:00.000Z",
+        key: "m-block",
+        stream: "messages",
+        type: "RECORD",
+      },
+    ],
+    sourceInstanceId: srcId,
+  });
+  outbox.enqueue({
+    id: buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-blocked"],
+      sourceInstanceId: srcId,
+    }),
+    kind: "record_batch" as const,
+    payload: {
+      batchId: "batch-blocked",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      records,
+      sourceInstanceId: srcId,
+    },
+    sourceInstanceId: srcId,
+  });
+
+  outbox.enqueue({
+    id: buildLocalDeviceOutboxId({
+      kind: "checkpoint",
+      parts: ["after-record"],
+      sourceInstanceId: srcId,
+    }),
+    kind: "checkpoint" as const,
+    payload: {
+      connectorId: "test_connector",
+      sourceInstanceId: srcId,
+      state: { after: "record" },
+    },
+    sourceInstanceId: srcId,
+  });
+
+  const holderId = "test-holder";
+  const startMs = Date.now();
+  const result = await drainCollectorOutbox({
+    client,
+    connectorId: "test_connector",
+    holderId,
+    outbox,
+    policy: {
+      drainBatchSize: 4,
+      leaseMs: 60_000,
+      maxAttempts: 3,
+      maxDrainDurationMs: 15_000,
+      maxDrainIterations: 100,
+      maxEnqueuedBatchesPerRun: 10_000,
+      maxQueueDepth: 10_000,
+      maxRetryAfterMs: 60_000,
+      retryBackoffMs: 1000,
+    },
+    sourceInstanceId: srcId,
+  });
+  const elapsedMs = Date.now() - startMs;
+
+  assert.ok(elapsedMs >= 1000, `elapsed ${elapsedMs}ms should be >= 1000ms (waited for predecessor)`);
+  assert.equal(result.sent, 2, "should send record + checkpoint");
+  assert.equal(result.failed, 1, "one item should have failed initially");
+  assert.equal(sendAttempts, 2, "should attempt record send twice (fail + retry)");
+
+  const summary = outbox.summary({ sourceInstanceId: srcId });
+  assert.equal(summary.succeeded, 2, "both record and checkpoint should succeed");
+
+  outbox.close();
 });

@@ -21,6 +21,7 @@ import {
   pdppCliPackageInfo,
   pdppLocalCollectorDoctorCommand,
   pdppLocalCollectorRetryDeadLettersCommand,
+  pdppLocalCollectorSetupCommand,
   pdppLocalCollectorStatusCommand,
   substituteCommandTemplate,
 } from "./pdpp-cli-command.ts";
@@ -94,6 +95,53 @@ test("pdppCliCollectorEnrollCommand ignores empty device labels", () => {
     }),
     "npx -y @pdpp/local-collector enroll --base-url https://ref.example.com --code code-1"
   );
+});
+
+test("pdppLocalCollectorSetupCommand renders the guided one-command onboarding form", () => {
+  assert.equal(
+    pdppLocalCollectorSetupCommand({
+      baseUrl: "http://127.0.0.1:7662",
+      code: "abc-123",
+      connectorId: "claude_code",
+    }),
+    "npx -y @pdpp/local-collector setup --base-url http://127.0.0.1:7662 --code abc-123 --connector claude_code"
+  );
+});
+
+test("pdppLocalCollectorSetupCommand appends a quoted --device-label and --sample when provided", () => {
+  assert.equal(
+    pdppLocalCollectorSetupCommand({
+      baseUrl: "https://ref.example.com",
+      code: "code-1",
+      connectorId: "codex",
+      deviceLabel: "the owner's laptop",
+      sample: 20,
+    }),
+    'npx -y @pdpp/local-collector setup --base-url https://ref.example.com --code code-1 --connector codex --device-label "the owner\'s laptop" --sample 20'
+  );
+});
+
+test("pdppLocalCollectorSetupCommand ignores an empty device label and omits --sample when absent", () => {
+  assert.equal(
+    pdppLocalCollectorSetupCommand({
+      baseUrl: "https://ref.example.com",
+      code: "code-1",
+      connectorId: "claude_code",
+      deviceLabel: "   ",
+    }),
+    "npx -y @pdpp/local-collector setup --base-url https://ref.example.com --code code-1 --connector claude_code"
+  );
+});
+
+test("pdppLocalCollectorSetupCommand never embeds a device token or other secret", () => {
+  const rendered = pdppLocalCollectorSetupCommand({
+    baseUrl: "https://ref.example.com",
+    code: "code-1",
+    connectorId: "claude_code",
+    sample: 20,
+  });
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.doesNotMatch(rendered, /--device-token|--device-id/);
 });
 
 test("pdppCliCollectorRunCommand renders the canonical run form", () => {

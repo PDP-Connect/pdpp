@@ -3,6 +3,7 @@ import importlib.util
 import os
 import pathlib
 import re
+import select
 import shutil
 import socket
 import subprocess
@@ -234,8 +235,8 @@ class WindowSettleStatusTest(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    all(shutil.which(command) for command in ("Xvfb", "openbox", "xterm", "xdpyinfo", "xwininfo")),
-    "requires Xvfb, Openbox, xterm, xdpyinfo, and xwininfo",
+    all(shutil.which(command) for command in ("Xvfb", "openbox", "xprop", "xterm", "xdpyinfo", "xwininfo")),
+    "requires Xvfb, Openbox, xprop, xterm, xdpyinfo, and xwininfo",
 )
 class WindowSettleX11IntegrationTest(unittest.TestCase):
     def setUp(self):
@@ -243,47 +244,70 @@ class WindowSettleX11IntegrationTest(unittest.TestCase):
         self.bin_dir = pathlib.Path(self.tempdir.name, "bin")
         self.bin_dir.mkdir()
         self.processes = []
+        self.addCleanup(self.tempdir.cleanup)
+        self.addCleanup(self.stop_processes)
         self.display = self.start_disposable_display()
         env = {**os.environ, "DISPLAY": self.display}
-        self.openbox = subprocess.Popen(["openbox"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.openbox = subprocess.Popen(
+            ["openbox", "--sm-disable"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
         self.processes.append(self.openbox)
-        time.sleep(0.2)
+        self.wait_for(self.window_manager_ready, "Openbox window manager")
 
     def start_disposable_display(self):
-        first_display_number = 300 + (os.getpid() % 1000)
-        for display_number in range(first_display_number, first_display_number + 20):
-            display = f":{display_number}"
-            xvfb = subprocess.Popen(
-                ["Xvfb", display, "-screen", "0", "246x161x24"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            for _ in range(20):
-                if subprocess.run(["xdpyinfo", "-display", display], capture_output=True).returncode == 0:
-                    self.processes.append(xvfb)
-                    return display
-                if xvfb.poll() is not None:
-                    break
-                time.sleep(0.05)
-            xvfb.terminate()
-            xvfb.wait(timeout=2)
-        self.fail("could not allocate a disposable Xvfb display")
+        xvfb = subprocess.Popen(
+            ["Xvfb", "-displayfd", "1", "-screen", "0", "246x161x24"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        self.processes.append(xvfb)
+        ready, _, _ = select.select([xvfb.stdout], [], [], 5)
+        display_number = xvfb.stdout.readline().strip() if ready else ""
+        xvfb.stdout.close()
+        if xvfb.poll() is not None or not display_number.isdecimal():
+            self.fail("could not allocate a disposable Xvfb display")
+        return f":{display_number}"
 
-    def tearDown(self):
+    def window_manager_ready(self):
+        if self.openbox.poll() is not None:
+            return False
+        result = subprocess.run(
+            ["xprop", "-root", "_NET_SUPPORTING_WM_CHECK"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "DISPLAY": self.display},
+        )
+        match = re.search(r"window id # (0x[0-9a-fA-F]+)", result.stdout)
+        if result.returncode != 0 or match is None:
+            return False
+        wm_name = subprocess.run(
+            ["xprop", "-id", match.group(1), "_NET_WM_NAME"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "DISPLAY": self.display},
+        )
+        return wm_name.returncode == 0 and '"Openbox"' in wm_name.stdout
+
+    def stop_processes(self):
         for process in reversed(self.processes):
-            process.terminate()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-        self.tempdir.cleanup()
+            self.stop_process(process)
 
-    def wait_for(self, predicate):
+    def stop_process(self, process):
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+
+    def wait_for(self, predicate, description="disposable X11 fixture"):
         for _ in range(100):
             if predicate():
                 return
             time.sleep(0.05)
-        self.fail("timed out waiting for disposable X11 fixture")
+        self.fail(f"timed out waiting for {description}")
 
     def wait_for_value(self, predicate):
         for _ in range(100):

@@ -39,6 +39,19 @@ export interface StreamScope {
 }
 
 export interface StartMessage {
+  /**
+   * RI's own full-refresh-vs-incremental intent for this run, already sent on
+   * the wire today (`reference-implementation/runtime/index.ts` START build)
+   * but never previously parsed on the connector-runtime side. `"full_refresh"`
+   * is an explicit owner/operator signal that a connector's own incremental
+   * bookkeeping (checkpoints, anchors, frontiers) should be bypassed for this
+   * run and the source walked to its natural end — the connector-local repair
+   * path for state that only a full re-walk can recover (e.g. a mutable field
+   * that changed further back than any per-record change-detection window
+   * would otherwise re-visit). Absent is treated as `"incremental"` for
+   * backward compatibility with connectors/tests that predate this field.
+   */
+  collection_mode?: "full_refresh" | "incremental";
   detail_gaps?: readonly DetailGapStartEntry[];
   /**
    * SLVP-ideal §4.3 recovery-only launch mode. When true, the connector drains
@@ -61,6 +74,8 @@ export interface DetailGapStartEntry {
   gap_id: string;
   /** Opaque, run-owned token required when settling a served recovery lease. */
   lease_id?: string;
+  /** Checkpoint-owning parent retained from the durable gap, when declared. */
+  parent_stream?: string | null;
   record_key?: string | number | null;
   reference_only?: true;
   status: "pending";
@@ -163,6 +178,7 @@ export interface DetailGapMessage {
   };
   lease_id?: string;
   list_cursor?: unknown;
+  /** Checkpoint-owning parent stream; must match DETAIL_COVERAGE.state_stream. */
   parent_stream?: string;
   reason: "rate_limited" | "retry_exhausted" | "temporary_unavailable" | "upstream_pressure";
   record_key: string | number;
@@ -201,12 +217,130 @@ export interface DetailCoverageMessage {
   covered?: number;
   gap_keys?: Array<string | number>;
   hydrated_keys: Array<string | number>;
+  /**
+   * Required keys accepted by an explicit optional-detail policy. A provider
+   * failure belongs here only after connector-specific evidence establishes a
+   * terminal unavailable object; status, age, or retry exhaustion alone do not.
+   */
   optional_skip_keys?: Array<string | number>;
   reference_only: true;
   required_keys: Array<string | number>;
   state_stream: string;
   stream: string;
   type: "DETAIL_COVERAGE";
+}
+
+export interface RuntimeContinuationFact {
+  boundary: string;
+  considered: number;
+  covered: number;
+  owner: "runtime";
+  remaining: true;
+  slice_end: number;
+  slice_start: number;
+}
+
+export function optionalContinuationField(value: unknown): { continuation?: RuntimeContinuationFact } {
+  return value ? { continuation: value as RuntimeContinuationFact } : {};
+}
+
+export function validateRuntimeContinuationFact(value: unknown): asserts value is RuntimeContinuationFact {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Connector emitted invalid SKIP_RESULT.continuation");
+  }
+  const fact = value as Record<string, unknown>;
+  if (
+    ![
+      typeof fact.boundary === "string" && Boolean(fact.boundary.trim()),
+      Number.isSafeInteger(fact.considered) && (fact.considered as number) >= 0,
+      Number.isSafeInteger(fact.covered) && (fact.covered as number) >= 0,
+      fact.owner === "runtime",
+      fact.remaining === true,
+      Number.isSafeInteger(fact.slice_start) && (fact.slice_start as number) >= 0,
+      Number.isSafeInteger(fact.slice_end) && (fact.slice_end as number) >= (fact.slice_start as number),
+    ].every(Boolean)
+  ) {
+    throw new Error("Connector emitted invalid SKIP_RESULT.continuation");
+  }
+}
+
+export function readRuntimeContinuationFact(value: unknown): RuntimeContinuationFact | undefined {
+  return isRuntimeContinuationFact(value) ? value : undefined;
+}
+
+function isRuntimeContinuationFact(value: unknown): value is RuntimeContinuationFact {
+  try {
+    validateRuntimeContinuationFact(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function selectAuthoritativeContinuation<T extends { kind?: string; stream?: string; continuation?: unknown }>(
+  gaps: readonly T[],
+  stream: string
+): T | undefined {
+  const latest = selectAuthoritativeSkip(gaps, stream);
+  return latest && readRuntimeContinuationFact(latest.continuation) !== undefined ? latest : undefined;
+}
+
+export function selectAuthoritativeSkip<T extends { kind?: string; stream?: string; continuation?: unknown }>(
+  gaps: readonly T[],
+  stream: string
+): T | undefined {
+  return gaps.findLast((candidate) => candidate.kind === "skip_result" && candidate.stream === stream);
+}
+
+export function readOptionalText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+export function optionalTextField(key: string, value: unknown): Record<string, string> {
+  const text = readOptionalText(value);
+  return text ? { [key]: text } : {};
+}
+
+export function projectRuntimeSkip(gap: { reason?: string; recovery_hint?: unknown; continuation?: unknown }): {
+  reason: string;
+  continuation?: RuntimeContinuationFact;
+  recovery_action?: string;
+} {
+  const action =
+    gap.recovery_hint && typeof gap.recovery_hint === "object"
+      ? (gap.recovery_hint as { action?: string }).action
+      : undefined;
+  return {
+    reason: gap.reason ?? "unknown",
+    ...optionalContinuationField(gap.continuation),
+    ...(action ? { recovery_action: action } : {}),
+  };
+}
+
+export function optionalRuntimeScopeFields(entry: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...optionalTextField("collection_scope", entry.collection_scope),
+    ...(typeof entry.scoped === "boolean" ? { scoped: entry.scoped } : {}),
+  };
+}
+
+export function readRuntimeSkipFact(
+  value: unknown
+): { reason: string; continuation?: RuntimeContinuationFact; recovery_action?: string } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const skip = value as Record<string, unknown>;
+  if (typeof skip.reason !== "string") {
+    return null;
+  }
+  const continuation = readRuntimeContinuationFact(skip.continuation);
+  const recoveryAction = typeof skip.recovery_action === "string" ? skip.recovery_action : undefined;
+  return {
+    reason: skip.reason,
+    ...(continuation ? { continuation } : {}),
+    ...(recoveryAction ? { recovery_action: recoveryAction } : {}),
+  };
 }
 
 export interface DetailGapRecoveredMessage {
@@ -308,7 +442,13 @@ export type EmittedMessage =
   | {
       type: "RECORD";
       stream: string;
-      key: string | number;
+      /**
+       * Primary key value: non-empty string, or non-empty string[] for
+       * compound keys (spec-core.md "The RECORD envelope"). A scalar
+       * `number` is never valid on the wire — connectors MUST stringify
+       * before emitting.
+       */
+      key: string | readonly string[];
       data: RecordData;
       emitted_at: string;
       op?: "delete";
@@ -333,7 +473,8 @@ export type EmittedMessage =
       reason: string;
       message: string;
       diagnostics?: unknown;
-      recovery_hint?: string | { action?: string; retryable?: boolean };
+      continuation?: RuntimeContinuationFact;
+      recovery_hint?: string | { action: string; retryable?: boolean };
     }
   | DetailGapMessage
   | DetailGapAttemptedMessage
@@ -344,7 +485,12 @@ export type EmittedMessage =
       type: "DONE";
       status: "succeeded" | "failed";
       records_emitted: number;
-      error?: { code?: string; message: string; retryable: boolean };
+      error?: {
+        code?: string;
+        message: string;
+        recovery_hint?: string | { action: string; retryable?: boolean };
+        retryable: boolean;
+      };
     }
   | {
       type: "INTERACTION";
@@ -366,7 +512,24 @@ export interface InteractionRequest {
 
 // ─── Shape-check validator ──────────────────────────────────────────────
 
+/**
+ * A field whose value the schema did not model, on a record that is otherwise
+ * structurally sound. Reported alongside `ok: true` so the record still emits
+ * with its unrecognized value intact while the drift stays visible — see
+ * `makeValidateRecord` (schema-registry.ts) for the policy that raises these.
+ */
+export interface ShapeAnomaly {
+  /** The values the schema does model, for the diagnostic reader. */
+  expected: readonly unknown[];
+  /** Dot-joined path to the field, e.g. `attachments.0.type`. */
+  path: string;
+  /** The unrecognized value, verbatim, exactly as the source sent it. */
+  value: unknown;
+}
+
 export type ValidateRecord = (
   stream: string,
   data: RecordData
-) => { ok: true; data: RecordData } | { ok: false; issues: Array<{ path: string; message: string }> };
+) =>
+  | { ok: true; data: RecordData; anomalies?: readonly ShapeAnomaly[] }
+  | { ok: false; issues: Array<{ path: string; message: string }> };

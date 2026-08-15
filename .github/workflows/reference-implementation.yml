@@ -166,7 +166,7 @@ jobs:
 
       - name: Test stream health audit
         if: steps.changes.outputs.reference_impacting == 'true'
-        run: pnpm test:scratch -- node --test reference-implementation/test/stream-health-audit.test.ts
+        run: pnpm test:scratch -- node --test --import tsx scripts/stream-health-audit/authority.test.ts
 
       - name: Test console health surface gate
         if: steps.changes.outputs.reference_impacting == 'true'

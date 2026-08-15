@@ -5,7 +5,7 @@
  * Accessibility + structure contract for the shared route-loading skeletons.
  *
  * Every records (and runs) `loading.tsx` renders one of the three skeletons in
- * this module inside the stable `DashboardShell`. The skeletons are the only
+ * this module inside the stable `RecordroomShellWithPalette`. The skeletons are the only
  * thing the owner sees while a `force-dynamic` page resolves, so their
  * loading-state contract is load-bearing UX:
  *

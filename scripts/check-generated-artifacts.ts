@@ -108,7 +108,47 @@ try {
     stdio: "inherit",
   });
 
-  const pairs = [serviceWorker, syncScript, ...designScripts, ...recordroomScripts, cliListEnvelope];
+  // reference-implementation/server/connector-key.ts and
+  // connection-setup-plan.ts are imported by apps/console (browser/edge
+  // bundling) and must stay node:fs-free, so they cannot scan
+  // packages/polyfill-connectors/manifests/ at load time. The connector-id
+  // allowlists they'd otherwise hand-maintain are generated instead — see
+  // reference-implementation/scripts/generate-connector-registry.ts.
+  const connectorRegistry: ArtifactPair = {
+    generated: join(temporaryRoot, "connector-registry", "connector-registry.generated.ts"),
+    tracked: "reference-implementation/server/generated/connector-registry.generated.ts",
+  };
+  execFileSync(
+    "node",
+    ["--experimental-strip-types", "scripts/generate-connector-registry.ts", connectorRegistry.generated],
+    { cwd: join(root, "reference-implementation"), stdio: "inherit" }
+  );
+
+  // static-secret-injection.ts (packages/polyfill-connectors) ships inside the
+  // publishable @pdpp/local-collector runner slice and so must stay free of
+  // node:fs / manifest-directory scanning at import time on an owner's
+  // machine — its injection mapping (which env var(s) each connector's secret
+  // lands on) is generated at build/CI time instead. See
+  // packages/polyfill-connectors/scripts/generate-static-secret-registry.ts.
+  const staticSecretRegistry: ArtifactPair = {
+    generated: join(temporaryRoot, "static-secret-registry", "static-secret-registry.generated.ts"),
+    tracked: "packages/polyfill-connectors/src/generated/static-secret-registry.generated.ts",
+  };
+  execFileSync(
+    "node",
+    ["--experimental-strip-types", "scripts/generate-static-secret-registry.ts", staticSecretRegistry.generated],
+    { cwd: join(root, "packages/polyfill-connectors"), stdio: "inherit" }
+  );
+
+  const pairs = [
+    serviceWorker,
+    syncScript,
+    ...designScripts,
+    ...recordroomScripts,
+    cliListEnvelope,
+    connectorRegistry,
+    staticSecretRegistry,
+  ];
   for (const pair of pairs) {
     compare(pair);
   }

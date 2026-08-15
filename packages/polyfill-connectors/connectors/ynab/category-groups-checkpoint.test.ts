@@ -5,21 +5,22 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { type BudgetCtx, collectCategoriesAndGroups } from "./index.ts";
+import { type BudgetCtx, collectCategoriesAndGroups, ynab } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
 // Regression proof for the stream-coverage evidence omission: a succeeded YNAB
 // run emitted `category_groups` records but never staged a checkpoint for the
 // stream, so `buildCollectionFacts` reported `checkpoint:not_staged` and the
-// `full_inventory` coverage strategy could not prove coverage — the stream
-// projected `unmeasured` despite retained records (live run_1783393253269).
+// checkpoint-window coverage could not prove coverage — the stream projected
+// `unmeasured` despite retained records (live run_1783393253269).
 //
 // `category_groups` is co-fetched from `/categories` and advances on the same
 // `server_knowledge` delta cursor as `categories`. The fix stages its own STATE
 // checkpoint (gated on request scope) so a succeeded run commits the stream.
 //
-// The projection consequence — `checkpoint:committed` + `full_inventory` ->
-// coverage `complete` instead of the pre-fix `unknown`/`unmeasured` — is proven
+// The projection consequence — `checkpoint:committed` plus measured
+// checkpoint-window coverage -> `complete` instead of the pre-fix
+// `unknown`/`unmeasured` — is proven
 // against the real projection in
 // reference-implementation/test/collection-report-projection.test.js.
 
@@ -79,6 +80,7 @@ function makeCtx(requestedStreams: readonly string[]): {
     emit: harness.emit as BudgetCtx["emit"],
     newState: {},
     progress: (): Promise<void> => Promise.resolve(),
+    request: ynab,
     requested: new Map(requestedStreams.map((name) => [name, {}])),
     state: {},
     token: "test-token",
@@ -97,7 +99,7 @@ test("collectCategoriesAndGroups: succeeded run stages a category_groups checkpo
   const restore = stubFetch(CATEGORIES_RESPONSE);
   try {
     const { ctx, emitted, messages } = makeCtx(["categories", "category_groups"]);
-    await collectCategoriesAndGroups(ctx);
+    const coverage = await collectCategoriesAndGroups(ctx);
 
     // Records were emitted for both streams (fixture passes the zod shape-check).
     assert.ok(
@@ -128,6 +130,41 @@ test("collectCategoriesAndGroups: succeeded run stages a category_groups checkpo
     // is valid. (An out-of-scope STATE would throw `STATE for undeclared
     // stream` in the runtime — see validateStateMessage.)
     assert.ok(ctx.requested.has("category_groups"));
+    assert.deepEqual(coverage.categoryGroups, { considered: 2, covered: 2, enumeratedFresh: true });
+    assert.deepEqual(coverage.categories, { considered: 1, covered: 1, enumeratedFresh: true });
+  } finally {
+    restore();
+  }
+});
+
+test("collectCategoriesAndGroups: omitted nested categories fail before coverage or checkpoint", async () => {
+  const restore = stubFetch({
+    data: {
+      server_knowledge: 4242,
+      category_groups: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          name: "Immediate Obligations",
+          hidden: false,
+          deleted: false,
+        },
+      ],
+    },
+  });
+  try {
+    const { ctx, messages } = makeCtx(["categories", "category_groups"]);
+
+    await assert.rejects(() => collectCategoriesAndGroups(ctx), /ynab_response_malformed/);
+    assert.equal(
+      messages.some((message) => message.type === "STATE"),
+      false,
+      "a malformed nested list must not advance either co-fetched checkpoint"
+    );
+    assert.equal(
+      messages.some((message) => message.type === "DETAIL_COVERAGE"),
+      false,
+      "a malformed nested list must not prove an empty boundary"
+    );
   } finally {
     restore();
   }

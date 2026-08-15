@@ -478,6 +478,114 @@ test("the minted enrollment code is genuine: exchanging it materializes a real c
   });
 });
 
+interface CollectionScopeBody {
+  connection_id?: string;
+  declared_at?: string;
+  fingerprint?: string;
+  object?: string;
+  scope?: { since?: string; source_roots?: string[] } | null;
+  [key: string]: unknown;
+}
+
+function getCollectionScope(rsUrl: string, ownerToken: string, connectionId: string): Promise<JsonResult> {
+  return fetchJson(`${rsUrl}/v1/owner/connections/${encodeURIComponent(connectionId)}/collection-scope`, {
+    headers: { Authorization: `Bearer ${ownerToken}` },
+  });
+}
+
+test("a boundary declared at intent creation is materialized on enroll and reads back exactly", async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const declaredScope = { since: "2026-07-10T00:00:00.000Z" };
+    const intent = (await createIntent(rsUrl, ownerToken, { collection_scope: declaredScope, connector_id: "codex" }))
+      .body as IntentResponseBody;
+    assert.ok(intent.next_step, "intent response carries a next_step");
+    // The intent echoes the boundary it staged, before any device exists, so a
+    // caller can confirm what will apply without a second round trip.
+    assert.deepEqual(intent.next_step.collection_scope, declaredScope);
+
+    const enrollResult = await fetchJson(intent.next_step.enroll_endpoint ?? "", {
+      body: JSON.stringify({ enrollment_code: intent.next_step.enrollment_code }),
+      headers: { Accept: "application/json", "Content-Type": "application/json", ...PROTOCOL_HEADERS },
+      method: "POST",
+    });
+    const enrollBody = enrollResult.body as { connector_instance_id?: string };
+    assert.equal(enrollResult.status, 201);
+    assert.ok(enrollBody.connector_instance_id, "enroll response carries the materialized connector_instance_id");
+
+    // The declared boundary is now durable against the real connection — read
+    // back through the SAME owner-scope route a UI/CLI would use later.
+    const scopeResp = await getCollectionScope(rsUrl, ownerToken, enrollBody.connector_instance_id ?? "");
+    const scopeBody = scopeResp.body as CollectionScopeBody;
+    assert.equal(scopeResp.status, 200);
+    assert.equal(scopeBody.object, "collection_scope");
+    assert.deepEqual(scopeBody.scope, declaredScope);
+    assert.equal(scopeBody.fingerprint, `since=${declaredScope.since}`);
+  });
+});
+
+test("omitting collection_scope at intent creation defaults the connection to recent history, not an implicit full pass", async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const intent = (await createIntent(rsUrl, ownerToken, { connector_id: "codex" })).body as IntentResponseBody;
+    assert.equal(intent.next_step?.collection_scope, null);
+
+    const enrollResult = await fetchJson(intent.next_step?.enroll_endpoint ?? "", {
+      body: JSON.stringify({ enrollment_code: intent.next_step?.enrollment_code }),
+      headers: { Accept: "application/json", "Content-Type": "application/json", ...PROTOCOL_HEADERS },
+      method: "POST",
+    });
+    const enrollBody = enrollResult.body as { connector_instance_id?: string };
+    assert.equal(enrollResult.status, 201);
+
+    const scopeResp = await getCollectionScope(rsUrl, ownerToken, enrollBody.connector_instance_id ?? "");
+    const scopeBody = scopeResp.body as CollectionScopeBody;
+    assert.equal(scopeResp.status, 200);
+    // Neither the intent NOR the device declared a boundary, so the honest
+    // system default applies: recent history, never an implicit full pass.
+    // See enrollment-scope-narrowing.ts's resolveEffectiveEnrollmentScope.
+    assert.ok(scopeBody.scope?.since, "an undeclared enrollment defaults to a recent-history since, not null");
+    // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
+    assert.match(scopeBody.fingerprint ?? "", /^since=/);
+  });
+});
+
+test("owner-agent intent rejects an unparseable collection_scope.since with a typed 400", async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body: rawBody } = await createIntent(rsUrl, ownerToken, {
+      collection_scope: { since: "last tuesday" },
+      connector_id: "codex",
+    });
+    const body = rawBody as IntentResponseBody;
+    assert.equal(status, 400);
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: the runtime fixture deliberately exercises an absent or nullable boundary value.
+    assert.equal(body?.error?.code, "invalid_request");
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: the runtime fixture deliberately exercises an absent or nullable boundary value.
+    assert.equal(body?.error?.param, "collection_scope");
+
+    // A rejected intent must mint no enrollment code and materialize nothing.
+    const rows = await createSqliteConnectorInstanceStore().listByOwner(OWNER_SUBJECT_ID);
+    assert.equal(rows.length, 0);
+  });
+});
+
+test("owner-agent intent rejects a malformed collection_scope.source_roots entry with a typed 400", async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body: rawBody } = await createIntent(rsUrl, ownerToken, {
+      collection_scope: { source_roots: ["pdpp", ""] },
+      connector_id: "codex",
+    });
+    const body = rawBody as IntentResponseBody;
+    assert.equal(status, 400);
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: the runtime fixture deliberately exercises an absent or nullable boundary value.
+    assert.equal(body?.error?.code, "invalid_request");
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: the runtime fixture deliberately exercises an absent or nullable boundary value.
+    assert.equal(body?.error?.param, "collection_scope");
+  });
+});
+
 test("owner-agent initiating Amazon gets browser runtime class plus static-secret proof gate", async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);

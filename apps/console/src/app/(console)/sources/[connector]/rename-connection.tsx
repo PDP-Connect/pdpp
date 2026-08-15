@@ -4,6 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { IcButton, IcInput } from "@pdpp/brand-react";
+// biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve this pnpm package export; tsc and pnpm Node resolution validate it.
+import { Pencil } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { type RenameConnectionResult, renameConnectionAction } from "./actions.ts";
@@ -21,18 +23,20 @@ interface Props {
    * starts from a blank field rather than re-typing a meaningless default.
    */
   currentLabel: string;
+  /** The connection's current display name, for the icon's aria-label. */
+  displayName: string;
   /** Connector type name, shown as placeholder guidance (e.g. "Gmail"). */
   typeName: string;
 }
 
 /**
- * Inline edit-in-place rename for a connection's `display_name`. A "Rename"
- * button reveals a text field with Save/Cancel; the server action returns a
- * discriminated result so we can toast and refresh in place without a
- * redirect. The stable selector stays `connection_id`; the label is a
- * human-facing alias only.
+ * Inline edit-in-place rename for a connection's `display_name`. A small
+ * pencil icon next to the connection name reveals a text field with
+ * Save/Cancel; the server action returns a discriminated result so we can
+ * toast and refresh in place without a redirect. The stable selector stays
+ * `connection_id`; the label is a human-facing alias only.
  */
-export function RenameConnection({ connectionId, currentLabel, typeName }: Props) {
+export function RenameConnection({ connectionId, currentLabel, displayName, typeName }: Props) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(currentLabel);
@@ -87,12 +91,18 @@ export function RenameConnection({ connectionId, currentLabel, typeName }: Props
 
   if (!editing) {
     return (
-      <div className="flex flex-col items-end gap-1">
-        <IcButton onClick={() => setEditing(true)} size="sm" variant="ghost">
-          Rename
-        </IcButton>
+      <span className="inline-flex flex-col items-start gap-1">
+        <button
+          aria-label={`Rename ${displayName}`}
+          className="relative inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors before:absolute before:inset-[-10px] before:content-[''] hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          onClick={() => setEditing(true)}
+          title="Rename"
+          type="button"
+        >
+          <Pencil aria-hidden className="h-3.5 w-3.5" />
+        </button>
         {toast ? <Toast message={toast.message} tone={toast.tone} /> : null}
-      </div>
+      </span>
     );
   }
 

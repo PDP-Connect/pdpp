@@ -10,7 +10,7 @@ import {
   loadConnectorSummaryPage,
 } from "../components/connector-summary-page.tsx";
 import { isPagedRequest, parseConnectorSummaryPageState } from "../components/connector-summary-pager.ts";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { listConnectorSummaries } from "../lib/ref-client.ts";
 import { ScheduleRow } from "./schedule-row.tsx";
@@ -53,13 +53,15 @@ export default async function SchedulesPage({ searchParams }: { searchParams?: P
   }
 
   const summaries = page.items;
-  const hasActiveRun = summaries.some((s) => s.schedule?.active_run_id !== null);
+  const hasActiveRun = summaries.some(
+    (s) => typeof s.schedule?.active_run_id === "string" && s.schedule.active_run_id.length > 0
+  );
 
   return (
     <RecordroomShellWithPalette>
       <SchedulesPoller enabled={hasActiveRun} />
       <SchedulesView
-        description="Set automatic refresh cadences for your connectors. High-friction connectors (banks, browser-based) should be kept manual or low-frequency."
+        description="Set automatic refresh cadences for your connectors. Keep high-friction ones (banks, browser-based) manual or infrequent."
         renderRow={(summary) => (
           <ScheduleRow
             key={summary.connection_id ?? summary.connector_instance_id ?? summary.connector_id}
@@ -69,7 +71,7 @@ export default async function SchedulesPage({ searchParams }: { searchParams?: P
         )}
         scheduledEmptyHint="Use the buttons below to add a schedule to any connector."
         summaries={[...summaries]}
-        unscheduledDescription="These connectors have no automatic schedule. Use 'Set schedule' to add one, or sync manually from the Records page."
+        unscheduledDescription="These connectors run only when you ask. Use 'Set schedule' to add a cadence, or sync manually from the Records page."
       />
       <ConnectorSummaryPager
         basePath={SCHEDULES_PATH}

@@ -47,6 +47,10 @@ const requiredFiles = new Set([
   "dist/local-collector/src/runner.js",
   "dist/polyfill-connectors/connectors/claude_code/index.js",
   "dist/polyfill-connectors/connectors/codex/index.js",
+  "dist/polyfill-connectors/connectors/imessage/index.js",
+  "dist/polyfill-connectors/connectors/google_takeout/index.js",
+  "dist/polyfill-connectors/connectors/apple_photos/index.js",
+  "dist/polyfill-connectors/connectors/google_messages/index.js",
 ]);
 
 const packInfo = (await npmPackMetadata({ cwd: packageRoot })) as PackMetadata;
@@ -77,6 +81,11 @@ const forbidden = [
   /(?:from\s+|import\s*\(|require\s*\()\s*["']pdf-parse["']/,
   /(?:from\s+|import\s*\(|require\s*\()\s*["']better-sqlite3["']/,
   /(?:from\s+|import\s*\(|require\s*\()\s*["']linkedom["']/,
+  // iMessage reads chat.db via node:sqlite (built into Node.js), not a
+  // spawned `sqlite3` binary — a regression to shelling out would silently
+  // break the zero-install npx promise on hosts without that binary on
+  // PATH. See connectors/imessage/index.ts's module doc.
+  /execFileSync?\s*\(\s*["']sqlite3["']/,
   /["']workspace:/,
 ];
 const forbiddenChecks = await Promise.all(

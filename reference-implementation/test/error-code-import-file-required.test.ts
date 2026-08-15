@@ -96,7 +96,7 @@ test("manual-upload validation-preview refuses an empty body with import_file_re
     // Empty body -> import_file_required.
     const empty = await fetch(previewUrl, {
       body: "",
-      headers: { Accept: "application/json", "Content-Type": "application/octet-stream" },
+      headers: { Accept: "application/json", "Content-Type": "application/vnd.pdpp.manual-upload" },
       method: "POST",
       redirect: "manual",
     });
@@ -112,7 +112,7 @@ test("manual-upload validation-preview refuses an empty body with import_file_re
     });
     const nonEmpty = await fetch(previewUrl, {
       body: validTimeline,
-      headers: { Accept: "application/json", "Content-Type": "application/octet-stream" },
+      headers: { Accept: "application/json", "Content-Type": "application/vnd.pdpp.manual-upload" },
       method: "POST",
       redirect: "manual",
     });

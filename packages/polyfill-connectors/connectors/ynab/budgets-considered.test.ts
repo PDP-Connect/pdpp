@@ -37,9 +37,9 @@ type YnabBudget = BudgetsStreamDeps["budgets"][number];
 
 function makeBudget(overrides: Partial<YnabBudget> = {}): YnabBudget {
   return {
-    id: "budget-main",
+    id: "00000000-0000-4000-8000-000000000000",
     name: "My Budget",
-    last_modified_on: "2026-06-01T00:00:00+00:00",
+    last_modified_on: "2026-06-01T00:00:00Z",
     first_month: "2024-01-01",
     last_month: "2026-06-01",
     date_format: { format: "MM/DD/YYYY" },
@@ -88,7 +88,10 @@ function budgetsSelfCoverage(messages: EmittedMessage[]): Record<string, unknown
 }
 
 test("budgets considered: a fresh run declares considered === covered === enumerated, all emitted", async () => {
-  const budgets = [makeBudget({ id: "B1" }), makeBudget({ id: "B2", name: "Side Budget" })];
+  const budgets = [
+    makeBudget({ id: "11111111-1111-4111-8111-111111111111" }),
+    makeBudget({ id: "22222222-2222-4222-8222-222222222222", name: "Side Budget" }),
+  ];
   const h = makeHarness();
   await emitBudgetsStream({ budgets, state: {}, newState: {}, emit: h.emit, trackAndEmit: h.trackAndEmit });
 
@@ -102,7 +105,10 @@ test("budgets considered: a fresh run declares considered === covered === enumer
 });
 
 test("budgets considered: a steady-state run declares covered === considered while collected is 0", async () => {
-  const budgets = [makeBudget({ id: "B1" }), makeBudget({ id: "B2", name: "Side Budget" })];
+  const budgets = [
+    makeBudget({ id: "11111111-1111-4111-8111-111111111111" }),
+    makeBudget({ id: "22222222-2222-4222-8222-222222222222", name: "Side Budget" }),
+  ];
 
   const run1 = makeHarness();
   const state1: Record<string, unknown> = {};
@@ -115,7 +121,7 @@ test("budgets considered: a steady-state run declares covered === considered whi
   const priorState = nextStateFrom(run1.messages);
   const run2 = makeHarness();
   const rolled = budgets.map((b) =>
-    makeBudget({ ...b, last_month: "2026-07-01", last_modified_on: "2026-07-01T00:00:00+00:00" })
+    makeBudget({ ...b, last_month: "2026-07-01", last_modified_on: "2026-07-01T00:00:00Z" })
   );
   await emitBudgetsStream({
     budgets: rolled,
@@ -135,7 +141,10 @@ test("budgets considered: a steady-state run declares covered === considered whi
 test("budgets considered: a one-changed run keeps covered === considered", async () => {
   const run1 = makeHarness();
   await emitBudgetsStream({
-    budgets: [makeBudget({ id: "B1", name: "Old Name" }), makeBudget({ id: "B2" })],
+    budgets: [
+      makeBudget({ id: "11111111-1111-4111-8111-111111111111", name: "Old Name" }),
+      makeBudget({ id: "22222222-2222-4222-8222-222222222222" }),
+    ],
     state: {},
     newState: {},
     emit: run1.emit,
@@ -147,7 +156,10 @@ test("budgets considered: a one-changed run keeps covered === considered", async
   const priorState = nextStateFrom(run1.messages);
   const run2 = makeHarness();
   await emitBudgetsStream({
-    budgets: [makeBudget({ id: "B1", name: "Renamed Budget" }), makeBudget({ id: "B2" })],
+    budgets: [
+      makeBudget({ id: "11111111-1111-4111-8111-111111111111", name: "Renamed Budget" }),
+      makeBudget({ id: "22222222-2222-4222-8222-222222222222" }),
+    ],
     state: priorState,
     newState: {},
     emit: run2.emit,
@@ -165,7 +177,7 @@ test("budgets considered: covered tracks the enumerated boundary, not the emitte
   // A single-budget steady-state run: collected 0, but the run still considered
   // and covered the one budget it re-enumerated. Pins that covered is measured at
   // the loop, never aliased to the (zero) emit count.
-  const budget = makeBudget({ id: "SOLO" });
+  const budget = makeBudget({ id: "33333333-3333-4333-8333-333333333333" });
 
   const run1 = makeHarness();
   await emitBudgetsStream({

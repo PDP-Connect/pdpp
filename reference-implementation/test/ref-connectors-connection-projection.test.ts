@@ -84,7 +84,7 @@ function withTmpDb(fn: () => Promise<void>): () => Promise<void> {
 function seedConnector() {
   const manifest = {
     capabilities: {
-      public_listing: { listed: true, status: "test" },
+      public_listing: { tier: "supported" },
     },
     connector_id: CONNECTOR_ID,
     display_name: "Connection First Records",
@@ -106,14 +106,14 @@ function seedConnector() {
 function seedStaticSecretConnector() {
   const manifest = {
     capabilities: {
-      public_listing: { listed: true, status: "test" },
+      public_listing: { tier: "supported" },
     },
     connector_id: STATIC_SECRET_CONNECTOR_ID,
     display_name: "Connection First Static Secret",
     protocol_version: "0.1.0",
     setup: {
       credential_capture: {
-        fields: [{ label: "App password", name: "app_password", secret: true }],
+        fields: [{ env: ["TEST_APP_PASSWORD"], label: "App password", name: "app_password", secret: true }],
         kind: "app_password",
       },
     },
@@ -221,6 +221,32 @@ function seedRecord({
        VALUES (?, ?, ?, ?, ?, ?, ?, 0)`
     )
     .run(connectorId, connectorInstanceId, stream, key, version, JSON.stringify(data), emittedAt);
+}
+
+/**
+ * Record that a stream was canonically OBSERVED — what the real ingest path
+ * does when it allocates a version. A declared stream with no records is a
+ * PROVEN zero (`known_zero`) only once this exists; otherwise it is
+ * `unobserved`. These tests seed records with direct SQL, so the observation
+ * must be seeded alongside. See `connector-summary-count-state-proof.test.ts`.
+ */
+function seedObservedStream({
+  connectorId = CONNECTOR_ID,
+  connectorInstanceId,
+  stream,
+  maxVersion = 1,
+}: {
+  connectorId?: string;
+  connectorInstanceId: string;
+  stream: string;
+  maxVersion?: number;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+       VALUES (?, ?, ?, ?)`
+    )
+    .run(connectorId, connectorInstanceId, stream, maxVersion);
 }
 
 interface SeedBrowserSurfaceRunOptions {
@@ -1256,6 +1282,9 @@ test(
       stream: "messages",
       version: 1,
     });
+    // `files` was canonically observed for this connection and holds no
+    // records — a PROVEN zero rather than a never-collected absence.
+    seedObservedStream({ connectorInstanceId: WORK_INSTANCE_ID, stream: "files" });
     await rebuildRetainedSize();
     // Terminal-gate revision (2026-07-29): the observation barrier no longer
     // runs inline on a read — only the maintenance sweep (startup + periodic)
@@ -1270,11 +1299,12 @@ test(
     assert.equal(scoped.connector_instance_id, WORK_INSTANCE_ID);
     assert.equal(scoped.connector_id, CONNECTOR_ID);
     assert.equal(scoped.total_records, 1, "scoped route must not include sibling connection records");
-    // `files` is a manifest-declared stream with no live canonical records for
-    // this connection. The maintenance sweep already completed this
-    // connection's canonical snapshot before this read, so `files` reads as
-    // an exact, genuine `known_zero` — never a fabricated value, and never
-    // smeared with the sibling connection's `messages` record.
+    // `files` is a manifest-declared stream that was observed for this
+    // connection and holds no live canonical records. The maintenance sweep
+    // already completed this connection's canonical snapshot before this
+    // read, so `files` reads as an exact, genuine `known_zero` — never a
+    // fabricated value, and never smeared with the sibling connection's
+    // `messages` record.
     assert.deepEqual(
       [...scoped.stream_records]
         .sort((a, b) => a.stream.localeCompare(b.stream))
@@ -1304,6 +1334,7 @@ test(
       stream: "messages",
       version: 1,
     });
+    seedObservedStream({ connectorInstanceId: WORK_INSTANCE_ID, stream: "files" });
     await rebuildRetainedSize();
     // Simulate a write landing after rebuild but before reconcile catches up:
     // the connection's retained-size row is mid-flight dirty.
@@ -1348,15 +1379,18 @@ test(
     seedConnector();
     await seedInstances({ sourceKind: "manual" });
     // No records seeded, no rebuildRetainedSize() call: the connection has no
-    // retained_size_connection row at all (never ingested, never rebuilt).
-    // Under the reconcile-active-summary-evidence contract (design.md "Explicit
-    // stream evidence"), canonical `records` is the count authority
-    // independent of retained-size: a declared stream absent from a COMPLETED
-    // canonical snapshot is `declared + known_zero`, not a synthesized-absence
-    // gap. Terminal-gate revision (2026-07-29): the barrier no longer runs
-    // inline during a read — simulate the maintenance sweep having already
-    // completed that snapshot before this read, so `known_zero` is exact
-    // truth here, not a fabricated value.
+    // retained_size_connection row at all (never rebuilt). Under the
+    // reconcile-active-summary-evidence contract (design.md "Explicit stream
+    // evidence"), canonical `records` is the count authority independent of
+    // retained-size: an OBSERVED declared stream holding no records is
+    // `declared + known_zero`. The observation is what makes that zero exact
+    // — an absent canonical row alone would only be `unobserved` (see
+    // `connector-summary-count-state-proof.test.ts`). Terminal-gate revision
+    // (2026-07-29): the barrier no longer runs inline during a read —
+    // simulate the maintenance sweep having already completed that snapshot
+    // before this read, so `known_zero` is exact truth here.
+    seedObservedStream({ connectorInstanceId: WORK_INSTANCE_ID, stream: "files" });
+    seedObservedStream({ connectorInstanceId: WORK_INSTANCE_ID, stream: "messages" });
     await reconcileConnectorSummaryEvidence(null);
 
     const scoped = await getConnectorSummaryForRoute(WORK_INSTANCE_ID);
@@ -1569,7 +1603,7 @@ const CHATGPT_SHAPED_INSTANCE_ID = "cin_browser_static_secret";
 
 function seedBrowserBoundStaticSecretConnector({ browserRequired = true } = {}) {
   const manifest = {
-    capabilities: { public_listing: { listed: true, status: "test" } },
+    capabilities: { public_listing: { tier: "supported" } },
     connector_id: CHATGPT_SHAPED_CONNECTOR_ID,
     display_name: "Browser + Static Secret",
     protocol_version: "0.1.0",
@@ -1579,8 +1613,8 @@ function seedBrowserBoundStaticSecretConnector({ browserRequired = true } = {}) 
     setup: {
       credential_capture: {
         fields: [
-          { label: "Email", name: "username", secret: true },
-          { label: "Password", name: "password", secret: true },
+          { env: ["TEST_BROWSER_STATIC_SECRET_USERNAME"], label: "Email", name: "username", secret: true },
+          { env: ["TEST_BROWSER_STATIC_SECRET_PASSWORD"], label: "Password", name: "password", secret: true },
         ],
         kind: "username_password",
       },

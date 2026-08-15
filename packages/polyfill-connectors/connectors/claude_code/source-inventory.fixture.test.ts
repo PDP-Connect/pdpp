@@ -15,15 +15,15 @@ import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
  * source homes under `fixtures/claude_code/source-home/`. Unlike the
  * `source-preflight.test.ts` suite (which builds ad-hoc temp homes), this
  * suite pins the classification contract against durable fixtures that cover
- * every store class: declared/collected streams, inventory-only stores,
- * deferred stores, an excluded auth-adjacent file, a diagnostics-only private
- * store, an undeclared "unknown" store, and a second device source home.
+ * every store class: declared/collected streams, inventory-only stores, an
+ * excluded auth-adjacent file, a diagnostics-only private store, an
+ * undeclared "unknown" store, and a second device source home.
  *
- * The risky-store fixtures (cache, backups, debug, downloads, config,
- * file-history, auth, context-mode) all embed obvious synthetic sentinel
- * strings of the form `FIXTURE_FAKE_*_DO_NOT_COLLECT`. The redaction/negative
- * tests assert those sentinels never appear in any emitted RECORD or STATE —
- * proving risky log/debug/config payloads stay inventory-only or excluded.
+ * The risky-store fixtures (cache, backups, config, file-history, auth,
+ * context-mode) all embed obvious synthetic sentinel strings of the form
+ * `FIXTURE_FAKE_*_DO_NOT_COLLECT`. The redaction/negative tests assert those
+ * sentinels never appear in any emitted RECORD or STATE — proving risky
+ * cache/backup/config payloads stay inventory-only or excluded.
  */
 
 const FIXTURE_ROOT = join(import.meta.dirname, "../../fixtures/claude_code/source-home");
@@ -38,9 +38,6 @@ const SECRET_SENTINELS = [
   "FIXTURE_FAKE_FILE_HISTORY_PAYLOAD_DO_NOT_COLLECT",
   "FIXTURE_FAKE_CACHE_SECRET_DO_NOT_COLLECT",
   "FIXTURE_FAKE_BACKUP_SECRET_DO_NOT_COLLECT",
-  "FIXTURE_FAKE_DEBUG_BEARER_DO_NOT_COLLECT",
-  "FIXTURE_FAKE_DEBUG_SECRET_DO_NOT_COLLECT",
-  "FIXTURE_FAKE_DOWNLOAD_SECRET_DO_NOT_COLLECT",
   "FIXTURE_FAKE_CONFIG_SECRET_DO_NOT_COLLECT",
   "FIXTURE_FAKE_CONTEXT_MODE_PRIVATE_DO_NOT_COLLECT",
   "FIXTURE_FAKE_AUTH_TOKEN_DO_NOT_COLLECT",
@@ -56,8 +53,6 @@ const ALL_LOCAL_STREAMS = [
   { name: "cache_inventory" },
   { name: "backup_inventory" },
   { name: "config_inventory" },
-  { name: "debug_artifacts" },
-  { name: "downloads" },
   { name: "coverage_diagnostics" },
 ];
 
@@ -85,10 +80,6 @@ test("claude_code fixture home: coverage diagnostics classify every known store"
   for (const store of ["file_history", "cache", "backups", "config"]) {
     assert.equal(coverageFor(recs, store)?.data.status, "inventory_only", `${store} should be inventory_only`);
   }
-  // Deferred stores (no payload emission; metadata only).
-  for (const store of ["debug", "downloads"]) {
-    assert.equal(coverageFor(recs, store)?.data.status, "deferred", `${store} should be deferred`);
-  }
   // Diagnostics-only private store and excluded auth-adjacent store.
   const contextMode = coverageFor(recs, "context_mode");
   assert.equal(contextMode?.data.status, "inventory_only");
@@ -103,8 +94,8 @@ test("claude_code fixture home: risky-store secret sentinels are never emitted",
   assert.equal(result.exitCode, 0);
 
   // Scan the ENTIRE message stream (RECORD, STATE, PROGRESS, DONE) — no
-  // sentinel from any cache/backup/debug/download/config/auth/context-mode
-  // fixture may surface anywhere.
+  // sentinel from any cache/backup/config/auth/context-mode fixture may
+  // surface anywhere.
   const serialized = JSON.stringify(result.messages);
   for (const sentinel of SECRET_SENTINELS) {
     assert(!serialized.includes(sentinel), `sentinel leaked into connector output: ${sentinel}`);
@@ -128,21 +119,6 @@ test("claude_code fixture home: inventory-only stores emit metadata without payl
     recs.some((r) => r.stream === "file_history" && r.data.relative_path === "file-history/snapshot.json"),
     "file_history should inventory the snapshot file"
   );
-});
-
-test("claude_code fixture home: deferred stores emit metadata but no payload content", async () => {
-  const result = await runFixtureConnector({ home: DEVICE_A_HOME, streams: ALL_LOCAL_STREAMS });
-  const recs = records(result.messages);
-
-  // debug_artifacts / downloads are classified `defer`: a metadata inventory
-  // record is allowed, but the log/debug/download payload must never appear.
-  for (const stream of ["debug_artifacts", "downloads"]) {
-    const rec = recs.find((r) => r.stream === stream);
-    if (rec) {
-      assert.equal(rec.data.classification, "defer", `${stream} record must be classified defer`);
-      assert(!("content" in rec.data), `${stream} must not carry payload content`);
-    }
-  }
 });
 
 test("claude_code fixture home: undeclared 'unknown' store is never collected", async () => {

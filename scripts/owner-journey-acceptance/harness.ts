@@ -62,8 +62,20 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** Repo root: scripts/owner-journey-acceptance/ -> ../../ */
 export const REPO_ROOT = path.resolve(HERE, "..", "..");
 
-function readRepoFile(repoRelativePath: string): Promise<string> {
-  return readFile(path.join(REPO_ROOT, repoRelativePath), "utf8");
+async function readRepoFile(repoRelativePath: string): Promise<string> {
+  try {
+    return await readFile(path.join(REPO_ROOT, repoRelativePath), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(
+        `owner-journey-acceptance surface manifest declares "${repoRelativePath}", but that file no longer exists. ` +
+          "Update NORMAL_OWNER_UI_FILES/ADVANCED_OWNER_UI_FILES/COMMAND_SOURCE_FILES in surface-manifest.ts to point " +
+          "at the file's actual successor (do not assume by filename — trace the real import graph).",
+        { cause: error }
+      );
+    }
+    throw error;
+  }
 }
 
 async function walkRepoFiles(repoRelativeDir: string): Promise<string[]> {

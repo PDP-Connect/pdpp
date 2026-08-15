@@ -2,9 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { buttonVariants, IcButton, IcTimestamp } from "@pdpp/brand-react";
-import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/display";
+import type { StreamManifestEntry } from "@pdpp/display";
+import {
+  formatConnectorKeyForDisplay,
+  formatConnectorNameForDisplay,
+  isFallbackConnectionLabel,
+  streamDisplayLabel,
+} from "@pdpp/display";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { buildBreakdownLabel } from "@pdpp/operator-ui/lib/source-storage";
+import { formatStorageBytes } from "@pdpp/operator-ui/lib/storage-footprint";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import {
@@ -13,7 +21,7 @@ import {
   staticSecretCredentialCaptureFromManifest,
 } from "pdpp-reference-implementation/connection-setup-plan";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../../components/shell.tsx";
+import { ServerUnreachable } from "../../components/server-unreachable.tsx";
 import {
   formatStreamCollectionFacts,
   indexCollectionReportByStream,
@@ -31,7 +39,7 @@ import {
   syncActionIdleLabel,
 } from "../../lib/connection-evidence.ts";
 import { isBrowserBoundConnector, isBrowserSessionBoundConnection } from "../../lib/connection-modality.ts";
-import { isActiveConnectorRunSummaryStatus } from "../../lib/connector-run-summary-status.ts";
+import { connectorRunSummaryId, isActiveConnectorRunSummaryStatus } from "../../lib/connector-run-summary-status.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { isRevokedConnection } from "../../lib/records-list-classification.ts";
 import {
@@ -147,6 +155,13 @@ export interface ConnectorPageModel {
    *  command templates. `null` when unavailable → command fails closed. */
   providerOrigin: string | null;
   recentRuns: RunSummary[];
+  /**
+   * Retained payload for this connection, already computed onto `overview`
+   * (`retainedBytes` / `totalRetainedBytes`) and previously discarded. `null`
+   * when the retained-bytes evidence is unobserved/stale/failed — the header
+   * then omits the size rather than fabricating a `0 B`.
+   */
+  retainedStorage: { breakdown: string | null; total: string } | null;
   schedule: RefSchedule | null;
   scheduleError: string | null;
   /** Connection-scoped source-binding kind for binding-first repair routing. */
@@ -158,7 +173,8 @@ export interface ConnectorPageModel {
 }
 
 function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
-  if (!summary) {
+  const runId = connectorRunSummaryId(summary?.run_id);
+  if (!(summary && runId)) {
     return null;
   }
   return {
@@ -167,7 +183,7 @@ function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
     first_at: summary.first_at,
     known_gaps: summary.known_gaps ?? [],
     last_at: summary.last_at,
-    run_id: summary.run_id,
+    run_id: runId,
     status: summary.status,
   };
 }
@@ -179,6 +195,10 @@ function toRunSummaryForConnection(
   collectionReport: readonly RefCollectionReportEntry[] | null | undefined
 ): RunSummary | null {
   if (!summary) {
+    return null;
+  }
+  const runId = connectorRunSummaryId(summary.run_id);
+  if (!runId) {
     return null;
   }
   const status = runStatusWithCollectionReportGaps(summary.status, collectionReport);
@@ -194,7 +214,7 @@ function toRunSummaryForConnection(
     last_at: summary.last_at,
     needs_input: false,
     object: "run_summary",
-    run_id: summary.run_id,
+    run_id: runId,
     status,
   };
 }
@@ -252,6 +272,20 @@ function toConnectorOverview(summary: RefConnectorSummary, streams: StreamSummar
   };
 }
 
+function gapStreamNames(gap: unknown): string[] {
+  if (typeof gap === "string") {
+    return [gap];
+  }
+  if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+    return [];
+  }
+  const row = gap as Record<string, unknown>;
+  const scope = row.scope && typeof row.scope === "object" && !Array.isArray(row.scope) ? row.scope : null;
+  return [row.stream, row.stream_id, row.parent_stream, scope && (scope as Record<string, unknown>).stream].filter(
+    (candidate): candidate is string => typeof candidate === "string"
+  );
+}
+
 function streamsFromConnectorSummary(summary: RefConnectorSummary): StreamSummary[] {
   const recordsByStream = new Map((summary.stream_records ?? []).map((record) => [record.stream, record]));
   const orderedNames = new Set<string>();
@@ -279,6 +313,14 @@ function streamsFromConnectorSummary(summary: RefConnectorSummary): StreamSummar
     });
   };
 
+  const pushGapStreams = (gaps: readonly unknown[] | null | undefined) => {
+    for (const gap of gaps ?? []) {
+      for (const name of gapStreamNames(gap)) {
+        pushStream(name);
+      }
+    }
+  };
+
   // Preserve manifest/source order for known streams, then append live-only
   // streams from the retained-size projection. Local collectors can retain
   // streams before the committed manifest catches up; hiding those rows makes
@@ -289,6 +331,16 @@ function streamsFromConnectorSummary(summary: RefConnectorSummary): StreamSummar
   for (const record of summary.stream_records ?? []) {
     pushStream(record.stream);
   }
+  // Collection facts include streams that were observed without a retained row;
+  // the rendered verdict includes server-classified gap streams even when the
+  // latest run did not retain a count row. Keep both evidence paths visible.
+  for (const entry of summary.collection_report ?? []) {
+    pushStream(entry.stream);
+  }
+  for (const entry of summary.rendered_verdict?.streams ?? []) {
+    pushStream(entry.stream_id);
+  }
+  pushGapStreams(summary.last_run?.known_gaps);
   return streams;
 }
 
@@ -297,7 +349,7 @@ export default async function ConnectorPage({
   searchParams,
 }: {
   params: Promise<{ connector: string }>;
-  searchParams: Promise<{ demo?: string; error?: string; message?: string }>;
+  searchParams: Promise<{ connection_id?: string; demo?: string; error?: string; message?: string }>;
 }) {
   const { connector } = await params;
   const routeId = decodeURIComponent(connector);
@@ -309,7 +361,7 @@ export default async function ConnectorPage({
     model = demo.buildRecoveryDemoModel();
   } else {
     try {
-      model = await loadConnectorPageModel(routeId);
+      model = await loadConnectorPageModel(routeId, sp.connection_id ?? null);
     } catch (err) {
       if (err instanceof ReferenceServerUnreachableError) {
         return (
@@ -330,8 +382,14 @@ export default async function ConnectorPage({
   return <ConnectorPageView dangerError={sp.error} dangerMessage={sp.message} model={model} now={now} />;
 }
 
-async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageModel> {
-  const [summary, manifests] = await Promise.all([resolveConnectionForRecordsRoute(routeId), listConnectorManifests()]);
+async function loadConnectorPageModel(
+  routeId: string,
+  explicitConnectionId?: string | null
+): Promise<ConnectorPageModel> {
+  const [summary, manifests] = await Promise.all([
+    resolveConnectionForRecordsRoute(routeId, explicitConnectionId),
+    listConnectorManifests(),
+  ]);
   if (!summary) {
     notFound();
   }
@@ -404,6 +462,17 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
     totalRecords,
     totalRecordsState: summary.total_records_state,
   });
+  // The retained payload for this connection was already projected onto the
+  // overview and then discarded by every renderer. Surface it in the header.
+  // `total_retained_bytes` is `null` whenever the retained-bytes evidence is
+  // unobserved/stale/failed, so absence hides the line rather than rendering
+  // a fabricated `0 B`. This is a LOGICAL payload size — it is deliberately
+  // not compared here against any physical on-disk figure.
+  const retainedTotal = overview.totalRetainedBytes;
+  const retainedStorage =
+    typeof retainedTotal === "number" && Number.isFinite(retainedTotal) && retainedTotal >= 0
+      ? { breakdown: buildBreakdownLabel(overview.retainedBytes), total: formatStorageBytes(retainedTotal) }
+      : null;
   // Seed the rename field with the owner-set label only. A fallback label
   // (bare connector type / registry URL) seeds blank so the operator names
   // the connection from scratch rather than editing a meaningless default.
@@ -434,6 +503,7 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
     overview,
     providerOrigin,
     recentRuns,
+    retainedStorage,
     // Connection-scoped binding kind, so repair routing is binding-first (a
     // browser-session connection reconnects its session, not a static secret).
     sourceBindingKind: summary.source_binding_kind ?? null,
@@ -482,13 +552,58 @@ function resolveActiveRunNavigation(input: { overview: ConnectorOverview; schedu
   running: boolean;
 } {
   const activeRunId =
-    input.scheduleActiveRunId ?? (input.overview.isRunning ? (input.overview.lastRun?.run_id ?? null) : null);
+    input.scheduleActiveRunId ??
+    (input.overview.isRunning && input.overview.lastRun ? input.overview.lastRun.run_id : null);
   return {
     activeRunHref: activeRunId ? `/syncs/${encodeURIComponent(activeRunId)}` : null,
     running: activeRunId !== null || input.overview.isRunning,
   };
 }
 
+function resolveCredentialUpdateHref({
+  browserSessionRepairHref,
+  sessionBound,
+  storedCredentialUpdateHref,
+}: {
+  browserSessionRepairHref: string | null;
+  sessionBound: boolean;
+  storedCredentialUpdateHref: string | null;
+}): string | null {
+  if (sessionBound) {
+    return browserSessionRepairHref;
+  }
+  if (storedCredentialUpdateHref !== null) {
+    return storedCredentialUpdateHref;
+  }
+  return browserSessionRepairHref;
+}
+
+function StreamDisplayName({
+  displayLabel,
+  name,
+  unexpected,
+}: {
+  displayLabel: string;
+  name: string;
+  unexpected: boolean;
+}) {
+  return (
+    <span className="pdpp-body break-all font-medium font-mono" title={displayLabel === name ? undefined : name}>
+      {displayLabel}
+      {unexpected ? (
+        <span
+          className="ml-1.5 align-middle text-[color:var(--warning)]"
+          data-testid="stream-unexpected-declaration"
+          title="This stream has canonical or retained data, but the current manifest no longer declares it."
+        >
+          (undeclared)
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this server view intentionally composes the detail evidence panels and their binding-aware actions in one owner-visible route.
 function ConnectorPageView({
   model,
   dangerMessage,
@@ -520,6 +635,7 @@ function ConnectorPageView({
     overview,
     providerOrigin,
     recentRuns,
+    retainedStorage,
     schedule,
     scheduleError,
     sourceBindingKind,
@@ -552,18 +668,11 @@ function ConnectorPageView({
     sessionBound || isBrowserBoundConnector(connectorId)
       ? browserSessionReconnectHref(connectorId, repairConnectionId)
       : null;
-  const credentialUpdateHref = (() => {
-    if (sessionBound) {
-      return browserSessionRepairHref;
-    }
-    if (storedCredentialUpdateHref !== null) {
-      return storedCredentialUpdateHref;
-    }
-    if (browserSessionRepairHref !== null) {
-      return browserSessionRepairHref;
-    }
-    return null;
-  })();
+  const credentialUpdateHref = resolveCredentialUpdateHref({
+    browserSessionRepairHref,
+    sessionBound,
+    storedCredentialUpdateHref,
+  });
   // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const primaryActionSurface = connectionPrimaryAction?.surface?.kind ?? null;
   // The detail-page primary action is modality-aware for the same reason the
@@ -579,6 +688,12 @@ function ConnectorPageView({
   const syncIdleLabel = syncActionIdleLabel(overview.lastRun?.status);
   const streakDots = deriveStreakDots(recentRuns);
   const autoPausedBanner = deriveAutoPausedBanner(schedule);
+  const manifestStreams = Array.isArray(manifest.streams) ? manifest.streams : [];
+  const streamLabelsByName = new Map(
+    manifestStreams.map(
+      (stream) => [stream.name, streamDisplayLabel(stream.name, stream as StreamManifestEntry)] as const
+    )
+  );
 
   return (
     <RecordroomShellWithPalette>
@@ -588,7 +703,6 @@ function ConnectorPageView({
             activeRunHref={activeRunHref}
             browserSessionRepairHref={browserSessionRepairHref}
             connectionId={connectorInstanceId}
-            connectionLabelSeed={connectionLabelSeed}
             connectorId={connectorId}
             credentialUpdateHref={credentialUpdateHref}
             displayName={displayName}
@@ -597,7 +711,6 @@ function ConnectorPageView({
             }
             manualUploadHref={manualUploadHref}
             primaryAction={primaryAction}
-            renameSelector={renameSelector}
             renderedAction={connectionPrimaryAction}
             revoked={revoked}
             running={running}
@@ -606,7 +719,22 @@ function ConnectorPageView({
           />
         }
         breadcrumbs={[{ href: "/sources", label: "Sources" }, { label: displayName }]}
-        count={headerCount}
+        count={
+          retainedStorage === null ? (
+            headerCount
+          ) : (
+            <>
+              {headerCount}
+              <span
+                className="ml-3 text-muted-foreground/70"
+                data-testid="header-retained-bytes"
+                title={retainedStorage.breakdown ?? undefined}
+              >
+                {retainedStorage.total} retained
+              </span>
+            </>
+          )
+        }
         description={
           <ConnectionIdentityLine
             connectionId={connectionId}
@@ -615,26 +743,22 @@ function ConnectorPageView({
             providerId={manifest.provider_id ?? null}
           />
         }
-        title={displayName}
+        title={
+          <span className="inline-flex items-center gap-2">
+            {displayName}
+            <RenameConnection
+              connectionId={renameSelector}
+              currentLabel={connectionLabelSeed}
+              displayName={displayName}
+              typeName={formatConnectorKeyForDisplay(connectorId)}
+            />
+          </span>
+        }
       />
 
       {streakDots.length > 0 ? <StreakStrip dots={streakDots} /> : null}
 
       {revoked ? <RevokedConnectionSection connectorId={connectorId} revokedAt={overview.revokedAt ?? null} /> : null}
-
-      <ConnectionDiagnostics
-        connectionHealth={connectionHealth}
-        connectionId={connectorInstanceId ?? connectionId}
-        connectorId={connectorId}
-        localDeviceProgress={overview.localDeviceProgress ?? null}
-        now={now}
-        providerOrigin={providerOrigin}
-        renderedVerdict={connectionRenderedVerdict}
-        schedule={schedule}
-        scheduleError={scheduleError}
-        sourceInstances={sourceInstances}
-        sourceInstancesError={sourceInstancesError}
-      />
 
       <AcquisitionCoverageSection
         connectionId={connectorInstanceId ?? connectionId}
@@ -658,6 +782,7 @@ function ConnectorPageView({
               const ownerActionAvailable = collectionOwnerActionByStream[s.name] ?? true;
               const countLabel = streamCountLabel(s);
               const unexpected = isUnexpectedStreamDeclaration(s.declaration_state);
+              const displayLabel = streamLabelsByName.get(s.name) ?? s.name;
               return (
                 <li key={s.name}>
                   <Link
@@ -666,18 +791,7 @@ function ConnectorPageView({
                     }`}
                     href={`/sources/${encodeURIComponent(connectionId)}/${encodeURIComponent(s.name)}`}
                   >
-                    <span className="pdpp-body break-all font-medium font-mono">
-                      {s.name}
-                      {unexpected ? (
-                        <span
-                          className="ml-1.5 align-middle text-[color:var(--warning)]"
-                          data-testid="stream-unexpected-declaration"
-                          title="This stream has canonical or retained data, but the current manifest no longer declares it."
-                        >
-                          (undeclared)
-                        </span>
-                      ) : null}
-                    </span>
+                    <StreamDisplayName displayLabel={displayLabel} name={s.name} unexpected={unexpected} />
                     <span
                       className="pdpp-caption inline-flex flex-wrap items-baseline gap-x-1 text-muted-foreground tabular-nums"
                       data-count-state={s.count_state ?? "unknown_state"}
@@ -710,6 +824,23 @@ function ConnectorPageView({
 
       <RecentRunsSection autoPausedBanner={autoPausedBanner} connectorId={connectorId} recentRuns={recentRuns} />
 
+      {/* Diagnostics is operator-debug detail. It sat first, above the
+          streams and runs an owner actually opens this page for, so the
+          page led with its least-wanted content. It now follows them. */}
+      <ConnectionDiagnostics
+        connectionHealth={connectionHealth}
+        connectionId={connectorInstanceId ?? connectionId}
+        connectorId={connectorId}
+        localDeviceProgress={overview.localDeviceProgress ?? null}
+        now={now}
+        providerOrigin={providerOrigin}
+        renderedVerdict={connectionRenderedVerdict}
+        schedule={schedule}
+        scheduleError={scheduleError}
+        sourceInstances={sourceInstances}
+        sourceInstancesError={sourceInstancesError}
+      />
+
       <ConnectionDangerZone
         connectionId={connectorInstanceId ?? connectionId}
         error={dangerError}
@@ -723,14 +854,12 @@ function ConnectorHeaderActions({
   activeRunHref,
   browserSessionRepairHref,
   connectionId,
-  connectionLabelSeed,
   connectorId,
   credentialUpdateHref,
   displayName,
   hasStaticSecretCredentialUpdate,
   manualUploadHref,
   primaryAction,
-  renameSelector,
   renderedAction,
   revoked,
   running,
@@ -740,14 +869,12 @@ function ConnectorHeaderActions({
   activeRunHref: string | null;
   browserSessionRepairHref: string | null;
   connectionId: string | null;
-  connectionLabelSeed: string;
   connectorId: string;
   credentialUpdateHref: string | null;
   displayName: string;
   hasStaticSecretCredentialUpdate: boolean;
   manualUploadHref: string | null;
   primaryAction: PrimaryRowAction;
-  renameSelector: string;
   renderedAction: RefRequiredAction | null;
   revoked: boolean;
   running: boolean;
@@ -755,7 +882,7 @@ function ConnectorHeaderActions({
   syncIdleLabel: string;
 }) {
   return (
-    <>
+    <div className="flex flex-wrap items-start gap-2">
       {activeRunHref ? (
         <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={activeRunHref} prefetch={false}>
           Active sync →
@@ -791,12 +918,7 @@ function ConnectorHeaderActions({
         storedCredentialUpdateHref={storedCredentialUpdateHref}
         syncIdleLabel={syncIdleLabel}
       />
-      <RenameConnection
-        connectionId={renameSelector}
-        currentLabel={connectionLabelSeed}
-        typeName={formatConnectorKeyForDisplay(connectorId)}
-      />
-    </>
+    </div>
   );
 }
 
@@ -929,7 +1051,7 @@ function reauthActionPresentation({
     case "browser_session":
       return {
         href: browserSessionRepairHref ?? fallbackHref,
-        label: "Reconnect account",
+        label: action.cta,
         title: "Open the secure browser session for this connection. Records, history, and schedule are preserved.",
       };
     default:

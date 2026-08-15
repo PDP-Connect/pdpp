@@ -19,12 +19,27 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | messages | checkpoint_window | manual_as_of | — | true | — | — |
 | projects | full_inventory | manual_as_of | — | true | — | — |
 
+## polyfill/apple_contacts
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| address_books | full_inventory | scheduled_window | — | true | — | — |
+| contacts | full_inventory | scheduled_window | — | true | — | — |
+| contact_groups | full_inventory | scheduled_window | — | true | — | — |
+
 ## polyfill/apple-health
 
 | stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
 | --- | --- | --- | --- | --- | --- | --- |
 | records | snapshot_import_receipt | manual_as_of | — | true | — | — |
 | workouts | snapshot_import_receipt | manual_as_of | — | true | — | — |
+
+## polyfill/apple-photos
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| photos | snapshot_import_receipt | manual_as_of | — | true | — | — |
+| coverage_diagnostics | snapshot_import_receipt | device_heartbeat | — | false | — | — |
 
 ## polyfill/chase
 
@@ -60,8 +75,6 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | file_history | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | cache_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | coverage_diagnostics | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
-| debug_artifacts | snapshot_import_receipt | device_heartbeat | deferred | false | — | — |
-| downloads | snapshot_import_receipt | device_heartbeat | deferred | false | — | — |
 | backup_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | config_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 
@@ -78,7 +91,6 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | history | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | session_index | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | coverage_diagnostics | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| logs | snapshot_import_receipt | device_heartbeat | deferred | false | — | — |
 | shell_snapshots | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | config_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | cache_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
@@ -109,21 +121,42 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | messages | checkpoint_window | scheduled_window | — | true | — | — |
 | threads | checkpoint_window | scheduled_window | — | true | — | — |
 | labels | full_inventory | scheduled_window | — | true | — | — |
-| message_bodies | checkpoint_window | scheduled_window | — | true | messages | — |
+| message_bodies | checkpoint_window | scheduled_window | — | false | messages | — |
 | attachments | parent_detail_accounting | scheduled_window | — | true | — | — |
+
+## polyfill/google-calendar
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| calendars | full_inventory | scheduled_window | — | true | — | — |
+| events | checkpoint_window | scheduled_window | — | true | — | — |
+
+## polyfill/google-contacts
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| people | checkpoint_window | scheduled_window | — | true | — | — |
+| contact_groups | full_inventory | scheduled_window | — | true | — | — |
 
 ## polyfill/google-maps
 
 | stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
 | --- | --- | --- | --- | --- | --- | --- |
 | timeline_points | checkpoint_window | manual_as_of | — | true | — | — |
-| timeline_segments | checkpoint_window | manual_as_of | — | true | — | — |
+| timeline_segments | checkpoint_window | manual_as_of | — | false | — | — |
 
 ## polyfill/google-maps-data-portability
 
 | stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
 | --- | --- | --- | --- | --- | --- | --- |
 | archive_jobs | checkpoint_window | manual_as_of | — | true | — | — |
+
+## polyfill/google-messages
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| messages | snapshot_import_receipt | device_heartbeat | — | true | — | — |
+| coverage_diagnostics | snapshot_import_receipt | device_heartbeat | — | false | — | — |
 
 ## polyfill/google-takeout
 
@@ -132,6 +165,18 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | location_history | snapshot_import_receipt | manual_as_of | — | true | — | — |
 | youtube_watch_history | snapshot_import_receipt | manual_as_of | — | true | — | — |
 | search_history | snapshot_import_receipt | manual_as_of | — | true | — | — |
+| photos | snapshot_import_receipt | manual_as_of | — | true | — | — |
+| coverage_diagnostics | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
+
+## polyfill/groupme
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| groups | full_inventory | scheduled_window | — | true | — | — |
+| group_messages | checkpoint_window | scheduled_window | — | true | — | — |
+| direct_messages | checkpoint_window | scheduled_window | — | true | — | — |
+| direct_chat_messages | checkpoint_window | scheduled_window | — | true | — | — |
+| attachments | parent_detail_accounting | scheduled_window | — | false | — | — |
 
 ## polyfill/heb
 
@@ -151,6 +196,15 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
 | --- | --- | --- | --- | --- | --- | --- |
 | messages | snapshot_import_receipt | manual_as_of | — | true | — | — |
+| participants | snapshot_import_receipt | manual_as_of | — | false | — | — |
+| attachments | parent_detail_accounting | manual_as_of | — | false | — | — |
+
+## polyfill/jellyfin
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| libraries | full_inventory | scheduled_window | — | true | — | — |
+| items | full_inventory | scheduled_window | — | true | — | — |
 
 ## polyfill/linkedin
 
@@ -174,6 +228,12 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | --- | --- | --- | --- | --- | --- | --- |
 | profile | singleton_presence | manual_as_of | — | true | — | — |
 | posts | checkpoint_window | manual_as_of | — | true | — | — |
+
+## polyfill/netflix-export
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| viewing_activity | snapshot_import_receipt | manual_as_of | — | false | — | — |
 
 ## polyfill/notion
 
@@ -241,6 +301,16 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | top_artists | full_inventory | manual_as_of | — | true | — | — |
 | recently_played | checkpoint_window | manual_as_of | — | true | — | — |
 
+## polyfill/steam
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| profile | singleton_presence | scheduled_window | — | false | — | — |
+| owned_games | full_inventory | scheduled_window | — | false | — | — |
+| recently_played_games | full_inventory | scheduled_window | — | false | — | — |
+| friends | full_inventory | scheduled_window | — | false | — | — |
+| steam_level | singleton_presence | scheduled_window | — | false | — | — |
+
 ## polyfill/strava
 
 | stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
@@ -271,6 +341,14 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | inbox_messages | checkpoint_window | manual_as_of | — | true | — | — |
 | credit_card_billing | checkpoint_window | manual_as_of | — | true | — | — |
 | credit_card_billing_stats | singleton_presence | manual_as_of | — | true | — | — |
+
+## polyfill/venmo
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| profile | full_inventory | scheduled_window | — | true | — | — |
+| friends | full_inventory | scheduled_window | — | true | — | — |
+| transactions | checkpoint_window | scheduled_window | — | true | — | — |
 
 ## polyfill/whatsapp
 
@@ -305,14 +383,14 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | budgets | full_inventory | scheduled_window | — | true | — | — |
 | accounts | full_inventory | scheduled_window | — | true | — | — |
 | account_stats | singleton_presence | scheduled_window | — | true | — | — |
-| category_groups | full_inventory | scheduled_window | — | true | — | — |
-| categories | full_inventory | scheduled_window | — | true | — | — |
-| payees | full_inventory | scheduled_window | — | true | — | — |
+| category_groups | checkpoint_window | scheduled_window | — | true | — | — |
+| categories | checkpoint_window | scheduled_window | — | true | — | — |
+| payees | checkpoint_window | scheduled_window | — | true | — | — |
 | payee_locations | full_inventory | scheduled_window | — | true | — | — |
 | transactions | checkpoint_window | scheduled_window | — | true | — | — |
-| scheduled_transactions | checkpoint_window | scheduled_window | — | true | — | — |
-| months | full_inventory | scheduled_window | — | true | — | — |
-| month_categories | full_inventory | scheduled_window | — | true | — | — |
+| scheduled_transactions | full_inventory | scheduled_window | — | true | — | — |
+| months | checkpoint_window | scheduled_window | — | true | — | — |
+| month_categories | checkpoint_window | scheduled_window | — | true | — | — |
 
 ## reference/github
 

@@ -28,15 +28,39 @@
  *     erasing any collected data. Copy is SLVP-honest: shows the retained
  *     record count and notes that credential freshness may need attention on
  *     the next run for OAuth/account connections.
- *   - Reauthorize has no dedicated server action at the index level; it links
- *     to the connection detail page (the always-safe target where reauth lives)
- *     and is labeled as a navigation, not a stubbed mutation.
+ *   - Reauthorization has no dedicated server action at the index level, and no
+ *     affordance here claims otherwise. "Source details →" links to the
+ *     connection detail page (the always-safe target where reauth and
+ *     credential controls actually live) and is named for that destination —
+ *     it is a navigation, not a stubbed mutation. The label is CONSTANT: it
+ *     used to flip to "Reauthorize →" on a manual-upload / non-owner-verdict
+ *     condition unrelated to reauthorization, while pointing at the same href.
  *   - The next_action CTA renders the formatted, non-secret label and links to
  *     the in-app detail page, never the raw `action_target`.
+ *
+ * ── NAV-vs-ACTION RULE (applies to every affordance in this file) ──
+ *
+ * A <Link> NAVIGATES and never changes state. An <IcButton> CHANGES STATE and
+ * never navigates. The rendered chrome must say which is which BEFORE the user
+ * reads the label:
+ *
+ *   1. Navigation carries a trailing "→" and never a filled or destructive
+ *      variant. In `pdpp-btn` terms that means `pdpp-btn--ghost`, never
+ *      `pdpp-btn--default` / `--destructive` / `--human`.
+ *   2. Mutation carries NO arrow and keeps the filled `default` /
+ *      `destructive` / `human` variant semantics.
+ *
+ * Why: these sit side by side in one `rr-s-actions` flex row. Before this rule,
+ * "Add another export" (a <Link>) and "Reactivate" (a real server action) both
+ * rendered as filled `default` `sm` controls, and "Reprocess all exports" (a
+ * mutation) was styled identically to "Source details →" (navigation). Nothing
+ * in the output distinguished a route change from a state change. The trailing
+ * arrow already existed as a habit here — this promotes it to the rule.
  */
 "use client";
 
 import {
+  ConnectorIcon,
   CopyMono,
   Endorse,
   IcButton,
@@ -57,6 +81,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
 import { type RunNowResult, runConnectorNowAction } from "./actions.ts";
+import { SOURCE_ACCESS_NOTE } from "./sources-copy.ts";
 import {
   buildDuplicateSourceReview,
   collapseDuplicateFallbackSources,
@@ -168,12 +193,12 @@ export function SourcesView({
             <Link className="rr-s-link" href={ADD_SOURCE_HREF}>
               add a source →
             </Link>
-            <span className="rr-s-end__note">a source pushes into your streams · nothing leaves</span>
+            <span className="rr-s-end__note">{SOURCE_ACCESS_NOTE}</span>
           </div>
         </aside>
 
         {selected ? (
-          <div className="rr-s-detail">
+          <div className="rr-s-detail" data-pdpp-selected-source={selected.connectionId ?? selected.id}>
             <InstancePassport
               instance={selected}
               interactive={interactive}
@@ -227,7 +252,7 @@ function DuplicateSourcesAdvisory({ reviews }: { reviews: readonly DuplicateSour
   const more = reviews.length > 1 ? ` ${reviews.length - 1} other source type needs the same review.` : "";
   return (
     <aside className="rr-s-duplicates" data-testid="sources-duplicate-review" role="note">
-      <span className="rr-s-churn__eyebrow">same source type · review labels</span>
+      <span className="rr-s-churn__eyebrow">Several sources need labels</span>
       <p className="rr-s-churn__head">
         {primary.total.toLocaleString()} {primary.kind} sources are configured; {primary.unnamed.toLocaleString()}{" "}
         {primary.unnamed === 1 ? "is" : "are"} unnamed.
@@ -237,7 +262,7 @@ function DuplicateSourcesAdvisory({ reviews }: { reviews: readonly DuplicateSour
         and revoke it if it was only a setup attempt.{more}
       </p>
       <Link className="rr-s-duplicates__link" href={primary.firstUnnamedHref}>
-        Review first unnamed source →
+        Review duplicate source labels →
       </Link>
     </aside>
   );
@@ -296,7 +321,10 @@ function InstanceListItem({
   // Inner content shared by both the mobile <Link> and the desktop <button>.
   const inner = (
     <>
-      <span className="rr-s-item__name">{instance.displayName}</span>
+      <span className="rr-s-item__identity">
+        <ConnectorIcon className="rr-s-item__icon" icon={instance.icon} name={instance.displayName} />
+        <span className="rr-s-item__name">{instance.displayName}</span>
+      </span>
       {/* Keep list rows comparable: connector kind lives in the selected detail
           panel, while the list shows only the owner label, retained facts, and
           health. */}
@@ -331,18 +359,34 @@ function InstanceListItem({
       <Link
         aria-current={selected ? "page" : undefined}
         className={`${cls} rr-s-item--mobile`}
+        data-pdpp-source-row={instance.connectionId ?? instance.id}
+        data-source-id={instance.id}
+        data-source-label={instance.displayName}
         href={instance.detailHref}
       >
         {inner}
       </Link>
       {/*
-       * Desktop (>800px): in-place selection drives the right-column passport.
-       * Hidden on mobile via CSS so only one affordance is interactive at
-       * any given viewport width.
+       * Desktop (>800px): the row body SELECTS, driving the right-column
+       * passport in place. The link to the full detail page lives IN that
+       * passport, next to the identity it belongs to — a second "Open" column
+       * beside every row repeated the same destination once per row and read
+       * as a stray column. Hidden on mobile via CSS, where the row Link above
+       * is the single affordance.
        */}
-      <button aria-pressed={selected} className={`${cls} rr-s-item--desktop`} onClick={onSelect} type="button">
-        {inner}
-      </button>
+      <div className="rr-s-item-wrap rr-s-item-wrap--desktop">
+        <button
+          aria-pressed={selected}
+          className={`${cls} rr-s-item--desktop`}
+          data-pdpp-source-row={instance.connectionId ?? instance.id}
+          data-source-id={instance.id}
+          data-source-label={instance.displayName}
+          onClick={onSelect}
+          type="button"
+        >
+          {inner}
+        </button>
+      </div>
     </>
   );
 }
@@ -364,7 +408,20 @@ function InstancePassport({
         <SheetTitle>{instance.revoked ? <s>{instance.displayName}</s> : instance.displayName}</SheetTitle>
         {instance.connectionId ? (
           <SheetSerial>
+            {/* The connection id is the thing owners recognize a source BY, so it
+                is both a jump-off and a copy target — not either/or. CopyMono keeps
+                the copy affordance (its button is a real control, so it must stay a
+                SIBLING of the link, never nested inside one); the adjacent arrow
+                link navigates to the same detail page the foot CTA targets. */}
             <CopyMono text={instance.connectionId} />
+            <Link
+              aria-label={`Open source details for connection ${instance.connectionId}`}
+              className="rr-s-serial-open"
+              href={instance.detailHref}
+              title="Open this connection's detail page."
+            >
+              →
+            </Link>
           </SheetSerial>
         ) : (
           <SheetSerial>no connection id</SheetSerial>
@@ -485,14 +542,7 @@ function PassportActions({
   const [confirmingRevoke, setConfirmingRevoke] = useState(false);
   const [confirmingReactivate, setConfirmingReactivate] = useState(false);
   const { manualUploadHref } = instance;
-  const nonOwnerVerdictAction =
-    instance.primaryVerdictAction !== null && !instance.primaryVerdictAction.ownerRunnable
-      ? instance.primaryVerdictAction
-      : null;
-  const detailsTitle = sourceDetailsTitle({
-    hasManualUpload: Boolean(manualUploadHref),
-    hasNonOwnerVerdictAction: Boolean(nonOwnerVerdictAction),
-  });
+  const detailsTitle = sourceDetailsTitle();
 
   const handleSync = useCallback(() => {
     setToast({ kind: "none" });
@@ -542,8 +592,13 @@ function PassportActions({
           syncDisabled={syncDisabled}
         />
 
+        {/* NAV (see the nav-vs-action rule above): one destination, one name.
+            The label used to flip to "Reauthorize →" on a condition — manual-upload
+            support / a non-owner-runnable verdict — that has nothing to do with
+            reauthorization, so a healthy OAuth source with no pending reauth still
+            read "Reauthorize →". The href never changed; only the word did. */}
         <Link className="pdpp-btn pdpp-btn--ghost pdpp-btn--sm" href={instance.detailHref} title={detailsTitle}>
-          {manualUploadHref || nonOwnerVerdictAction ? "Source details →" : "Reauthorize →"}
+          Source details →
         </Link>
 
         {interactive && revokeAction && instance.connectionId && !instance.revoked ? (
@@ -603,14 +658,30 @@ function PassportActions({
   );
 }
 
-function sourceDetailsTitle(input: { hasManualUpload: boolean; hasNonOwnerVerdictAction: boolean }): string {
-  if (input.hasNonOwnerVerdictAction) {
-    return "Open runs, receipts, streams, and source settings for this source.";
-  }
-  if (input.hasManualUpload) {
-    return "Open runs, receipts, streams, and source settings.";
-  }
-  return "Reauthorize and credential controls live on the connection detail page.";
+/**
+ * Tooltip for the "Source details →" link.
+ *
+ * One destination gets one description. The old fallback branch read
+ * "Reauthorize and credential controls live on the connection detail page." —
+ * an accurate description of a PAGE attached to a control that read like a
+ * CREDENTIAL OPERATION, which is what made the affordance misleading. The
+ * detail page is where reauth/credential controls live either way, so naming
+ * the page honestly covers every branch.
+ */
+function sourceDetailsTitle(): string {
+  return "Open runs, receipts, streams, credential controls, and settings for this source.";
+}
+
+/**
+ * Enforce the nav-vs-action rule's trailing arrow on a SERVER-SUPPLIED label.
+ *
+ * Verdict CTAs come from the reference's rendered verdict, so their wording is
+ * not ours to choose — but the arrow is chrome, not copy, and every navigation
+ * in this file must carry one. Idempotent: a `cta` that already ends in an
+ * arrow is returned untouched, so this never yields "Open →  →".
+ */
+function withNavArrow(label: string): string {
+  return label.trimEnd().endsWith("→") ? label : `${label} →`;
 }
 
 function manualImportButtonLabel(instance: SourceInstanceView, isPending: boolean): string {
@@ -672,28 +743,36 @@ function CollectionRunAction({
     );
   }
   if (primaryVerdictAction?.ownerRunnable) {
+    // NAV: this owner action is COMPLETED on the detail page, not started here,
+    // so it takes the ghost+arrow navigation chrome. It previously rendered
+    // filled `default` — visually identical to the adjacent Reactivate/Sync
+    // mutations. The server-supplied `cta` may or may not already end in an
+    // arrow, so append one only when it does not.
     return (
       <Link
-        className="pdpp-btn pdpp-btn--default pdpp-btn--sm"
+        className="pdpp-btn pdpp-btn--ghost pdpp-btn--sm"
         data-action-audience={primaryVerdictAction.audience}
         data-action-kind={primaryVerdictAction.kind}
         data-testid="sources-owner-verdict-action"
         href={instance.detailHref}
         title="Open source details to complete this owner action."
       >
-        {primaryVerdictAction.cta}
+        {withNavArrow(primaryVerdictAction.cta)}
       </Link>
     );
   }
   if (manualUploadHref) {
     return (
       <>
+        {/* NAV: this routes to the manual-upload flow; it does not itself upload
+            anything. It used to render filled `default` — the same chrome as the
+            Reactivate mutation beside it. Ghost + arrow per the rule above. */}
         <Link
-          className="pdpp-btn pdpp-btn--default pdpp-btn--sm"
+          className="pdpp-btn pdpp-btn--ghost pdpp-btn--sm"
           href={manualUploadHref}
           title="Upload another exported file into this same source. Use Add source only for a different account or identity."
         >
-          Add another export
+          Add another export →
         </Link>
         <IcButton
           aria-label={`Reprocess the uploaded export for ${instance.displayName}`}
@@ -818,7 +897,7 @@ function StreamManifest({ instance }: { instance: SourceInstanceView }) {
             <TableHeader>read in</TableHeader>
           </TableHeaderRow>
           {instance.streams.map((stream) => (
-            <StreamManifestRow key={stream.name} stream={stream} />
+            <StreamManifestRow connectionId={instance.connectionId ?? instance.id} key={stream.name} stream={stream} />
           ))}
         </Table>
       )}
@@ -830,12 +909,28 @@ function StreamManifest({ instance }: { instance: SourceInstanceView }) {
   );
 }
 
-function StreamManifestRow({ stream }: { stream: SourceInstanceView["streams"][number] }) {
+function StreamManifestRow({
+  connectionId,
+  stream,
+}: {
+  connectionId: string;
+  stream: SourceInstanceView["streams"][number];
+}) {
   const { collection } = stream;
+  const isDisplayLabelDifferent = stream.displayLabel !== stream.name;
   return (
-    <Link className="pdpp-table__row rr-s-stream-row" href={stream.exploreHref} style={{ display: "grid" }}>
+    <Link
+      className="pdpp-table__row rr-s-stream-row"
+      data-connection-id={connectionId}
+      data-pdpp-stream-row="true"
+      data-stream-name={stream.name}
+      href={stream.exploreHref}
+      style={{ display: "grid" }}
+    >
       <TableCell>
-        <span className="rr-s-stream">{stream.name}</span>
+        <span className="rr-s-stream" title={isDisplayLabelDifferent ? stream.name : undefined}>
+          {stream.displayLabel}
+        </span>
       </TableCell>
       <TableCell>
         <StreamRecordCount stream={stream} />

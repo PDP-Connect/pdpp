@@ -57,7 +57,7 @@ export const channelsSchema = z.object({
   is_read_only: nullableBoolSchema,
   creator: z.string().nullable(),
   created: z.number().int().nullable(), // Unix epoch seconds
-  created_at: isoDatetimeSchema,
+  created_at: nullableIsoDatetimeSchema,
   topic: z.string().nullable(),
   topic_creator: z.string().nullable(),
   topic_last_set: z.number().int().min(0).nullable(),
@@ -173,7 +173,7 @@ export const filesSchema = z.object({
   pretty_type: z.string().nullable(),
   size: nullableNonNegativeIntSchema,
   created: z.number().int().nullable(), // Unix epoch seconds
-  created_at: isoDatetimeSchema,
+  created_at: nullableIsoDatetimeSchema,
   uploader_id: slackIdSchema,
   is_public: nullableBoolSchema,
   is_external: nullableBoolSchema,
@@ -231,9 +231,9 @@ export const canvasesSchema = z.object({
   filetype: z.string().nullable(),
   pretty_type: z.string().nullable(),
   created: z.number().int().nullable(),
-  created_at: isoDatetimeSchema,
+  created_at: nullableIsoDatetimeSchema,
   updated: z.number().int().nullable(),
-  updated_at: isoDatetimeSchema,
+  updated_at: nullableIsoDatetimeSchema,
   permalink: z.string().nullable(),
   url_private: z.string().nullable(),
 });

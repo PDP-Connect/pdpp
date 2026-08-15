@@ -35,7 +35,9 @@ import { makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   type AccountDetailOutcome,
   buildServedAccountGapLookup,
+  classifyNoActivityOutcome,
   type EmitDeps,
+  emitNoActivityProgress,
   recoverServedAccountGaps,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
@@ -103,6 +105,28 @@ function servedGap(accountId: string, gapId: string): DetailGapStartEntry {
     detail_locator: { kind: "chase.account", account_id: accountId },
   };
 }
+
+test("unbounded no-activity is not accepted as evidence that transaction history is empty", () => {
+  assert.deepEqual(classifyNoActivityOutcome("ACC-1", "all"), {
+    kind: "gap",
+    accountId: "ACC-1",
+    reason: "temporary_unavailable",
+    errorClass: "unbounded_no_activity_unverified",
+  });
+  assert.deepEqual(classifyNoActivityOutcome("ACC-1", "date_range"), {
+    kind: "no_activity",
+    accountId: "ACC-1",
+  });
+});
+
+test("unbounded no-activity is reported as unverified rather than complete", async () => {
+  const { deps, messages } = makeHarness();
+  await emitNoActivityProgress(deps, "all");
+  const progress = messages.find((message) => message.type === "PROGRESS");
+  assert.ok(progress);
+  assert.match(progress.message, /unverified/);
+  assert.doesNotMatch(progress.message, /complete/);
+});
 
 // ─── buildServedAccountGapLookup: only account-level chase gaps ──────────
 

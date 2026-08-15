@@ -27,7 +27,7 @@ const CONNECTOR_ID = "https://test.pdpp.dev/connectors/summary-facts-reliability
 const INSTANCE_ID = "cin_summary_facts_reliability_pg";
 
 const MANIFEST = {
-  capabilities: { public_listing: { listed: true, status: "test" } },
+  capabilities: { public_listing: { tier: "supported" } },
   connector_id: CONNECTOR_ID,
   display_name: "Summary Facts Reliability Probe (Postgres)",
   protocol_version: "0.1.0",

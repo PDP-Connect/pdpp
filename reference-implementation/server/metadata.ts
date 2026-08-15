@@ -828,6 +828,7 @@ export interface LexicalRetrievalCapabilityInput {
   crossStream?: boolean;
   defaultLimit?: number;
   endpoint?: string;
+  indexState?: "built" | "building" | "stale" | null;
   maxLimit?: number;
   score?: LexicalRetrievalScoreCapability | null;
   snippets?: boolean;
@@ -852,6 +853,14 @@ export type LexicalRetrievalCapability =
       snippets: boolean;
       default_limit: number;
       max_limit: number;
+      // I7 (search-index crash-convergence terminal design): public parity
+      // with semantic_retrieval.index_state, sourced from the same
+      // isLexicalIndexBackfillActive()/backfill-drift-check state already
+      // tracked internally (search.ts) but previously wired only to the
+      // operator-only /_ref/deployment diagnostics route. Optional: a host
+      // that does not compute it simply omits the field, matching the prior
+      // behavior exactly.
+      index_state?: "built" | "building" | "stale";
       score?: LexicalRetrievalScoreCapability;
     };
 
@@ -862,6 +871,7 @@ export function buildLexicalRetrievalCapability({
   snippets = true,
   defaultLimit = 25,
   maxLimit = 100,
+  indexState = null,
   score = {
     kind: "bm25",
     order: "lower_is_better",
@@ -890,6 +900,9 @@ export function buildLexicalRetrievalCapability({
     snippets,
     supported: true,
   };
+  if (indexState) {
+    capability.index_state = indexState;
+  }
   if (score) {
     capability.score = score;
   }

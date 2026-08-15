@@ -16,6 +16,7 @@ import {
   buildMessageBodyRecord,
   buildMessageRecord,
   buildThreadRecord,
+  canonicalBodyBlobCandidates,
   canonicalLabelName,
   classifyBodySource,
   decodeBodyPart,
@@ -38,6 +39,7 @@ import {
   toLabelsArray,
   updateThreadAggregate,
 } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type { ThreadAggregate } from "./types.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -697,6 +699,7 @@ test("buildMessageBodyRecord: text_plain path populates full fields + bytes", ()
     bodyTextFull: "plain body text",
     bodyHtmlFull: "<p>html body</p>",
     gmMsgid: "msg-1",
+    receivedAt: "2024-03-01T10:00:00.000Z",
     textCharset: "utf-8",
     htmlCharset: null,
   });
@@ -708,7 +711,38 @@ test("buildMessageBodyRecord: text_plain path populates full fields + bytes", ()
   assert.equal(rec.body_html_bytes, Buffer.byteLength("<p>html body</p>", "utf8"));
   assert.equal(rec.body_source, "text_plain");
   assert.equal(rec.charset, "utf-8");
+  assert.equal(rec.message_received_at, "2024-03-01T10:00:00.000Z");
   assert.equal(rec.content_languages, null);
+});
+
+test("buildMessageBodyRecord: control-rich canonical fields become null without silent loss", () => {
+  const bodyText = "plain\u0007body\u001b text";
+  const bodyHtml = "<p>html\u007fbody</p>";
+  const rec = buildMessageBodyRecord({
+    bodyTextFull: bodyText,
+    bodyHtmlFull: bodyHtml,
+    gmMsgid: "a",
+    receivedAt: "2024-03-01T10:00:00.000Z",
+    textCharset: "utf-8",
+    htmlCharset: "utf-8",
+  });
+  assert.equal(rec.body_text, null);
+  assert.equal(rec.body_html, null);
+  const candidates = canonicalBodyBlobCandidates({ bodyTextFull: bodyText, bodyHtmlFull: bodyHtml });
+  assert.equal(candidates.length, 2);
+  assert.deepEqual(
+    candidates.map((candidate) => candidate.jsonPath),
+    ["/body_text", "/body_html"]
+  );
+  assert.deepEqual(
+    candidates.map((candidate) => candidate.content),
+    [Buffer.from(bodyText), Buffer.from(bodyHtml)]
+  );
+  const validation = validateRecord("message_bodies", rec);
+  assert.equal(validation.ok, true);
+  if (validation.ok) {
+    assert.equal(validation.data.message_received_at, "2024-03-01T10:00:00.000Z");
+  }
 });
 
 test("buildMessageBodyRecord: truncates body_text past MAX_BODY_FIELD_CHARS and tags truncation", () => {
@@ -716,7 +750,8 @@ test("buildMessageBodyRecord: truncates body_text past MAX_BODY_FIELD_CHARS and 
   const rec = buildMessageBodyRecord({
     bodyTextFull: huge,
     bodyHtmlFull: null,
-    gmMsgid: "m",
+    gmMsgid: "a",
+    receivedAt: "2024-03-01T10:00:00.000Z",
     textCharset: null,
     htmlCharset: null,
   });
@@ -729,19 +764,35 @@ test("buildMessageBodyRecord: truncates body_text past MAX_BODY_FIELD_CHARS and 
   assert.equal(rec.body_text_bytes, Buffer.byteLength(huge, "utf8"));
 });
 
-test("buildMessageBodyRecord: CR/LF escaped in place for JSONL safety", () => {
+test("buildMessageBodyRecord: normal CR/LF remains canonical and schema-valid", () => {
   const rec = buildMessageBodyRecord({
     bodyTextFull: "line 1\nline 2\rline 3",
     bodyHtmlFull: null,
-    gmMsgid: "m",
+    gmMsgid: "a",
+    receivedAt: "2024-03-01T10:00:00.000Z",
     textCharset: "utf-8",
     htmlCharset: null,
   });
   const body = rec.body_text;
   assert.ok(typeof body === "string");
   assert.ok(body);
-  assert.equal(body.includes("\n"), false);
-  assert.equal(body.includes("\r"), false);
+  assert.equal(body, "line 1\nline 2\rline 3");
+  assert.equal(validateRecord("message_bodies", rec).ok, true);
+});
+
+test("buildMessageBodyRecord: carries the parent message's received time as its semantic time", () => {
+  const rec = buildMessageBodyRecord({
+    bodyTextFull: "body",
+    bodyHtmlFull: null,
+    gmMsgid: "m",
+    receivedAt: "2024-03-01T10:00:00.000Z",
+    textCharset: null,
+    htmlCharset: null,
+  });
+  // A body has no timestamp of its own; semantic-time resolution reads only
+  // the record's own fields, so the parent time must be denormalized here or
+  // the stream falls back to ingest time.
+  assert.equal(rec.message_received_at, "2024-03-01T10:00:00.000Z");
 });
 
 test("buildMessageBodyRecord: empty body → null + body_source='empty'", () => {
@@ -749,6 +800,7 @@ test("buildMessageBodyRecord: empty body → null + body_source='empty'", () => 
     bodyTextFull: null,
     bodyHtmlFull: null,
     gmMsgid: "m",
+    receivedAt: "2024-03-01T10:00:00.000Z",
     textCharset: null,
     htmlCharset: null,
   });

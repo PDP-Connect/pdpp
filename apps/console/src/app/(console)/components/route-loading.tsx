@@ -4,7 +4,7 @@
 /**
  * Lightweight content skeletons for App Router `loading.tsx` files.
  *
- * Each dashboard `loading.tsx` wraps one of these in the same `DashboardShell`
+ * Each dashboard `loading.tsx` wraps one of these in the same `RecordroomShellWithPalette`
  * the resolved page uses, so the sidebar/topbar stay stable through the
  * navigation and only the content region animates. The shell's env-footer
  * probe is cached (15s revalidate), so on a warm dashboard the loading state

@@ -34,6 +34,7 @@ import { makeDefaultAccountConnectorInstanceId } from "../server/stores/connecto
 type RunConnectorTestOptions = Omit<RuntimeRunConnectorOptions, "detailGapStore"> & { detailGapStore?: unknown };
 type RunConnectorFn = (opts: RunConnectorTestOptions) => Promise<RuntimeRunConnectorResult>;
 const runConnectorWithGapStore = runConnector as RunConnectorFn;
+const DIFFERENT_PARENT_STREAM_PATTERN = /different parent stream/;
 
 // This file never routes through the real connector-instance store — every
 // dependency it hands the runtime (detail gap store, state server, etc.) is
@@ -114,6 +115,20 @@ test(
       stream: "files",
     });
     await store.markGapStatus(secondGap.gap_id, "terminal", { now });
+    // A second recovered gap on `first` whose reason lands in the SECOND
+    // 98-value reason chunk of the 101-reason filter below, so the count
+    // assertion proves disjoint reason chunks are summed, not overwritten.
+    const crossChunkGap = await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId: first,
+      gapId: "gap_cross_chunk",
+      now,
+      reason: "other_99",
+      recordKey: "cross_chunk",
+      stream: "files",
+    });
+    assert.ok(crossChunkGap);
+    await store.markGapStatus(crossChunkGap.gap_id, "recovered", { now });
 
     const originalPrepare = Database.prototype.prepare;
     let membershipStatements = 0;
@@ -153,7 +168,7 @@ test(
           reasons: ["rate_limited", ...Array.from({ length: 100 }, (_, index) => `other_${index}`)],
           status: "recovered",
         }),
-        new Map([[first, 1]])
+        new Map([[first, 2]])
       );
       assert.ok(
         maximumMembershipPlaceholders <= 999,
@@ -388,6 +403,36 @@ rl.on('line', (line) => {
   process.stdout.write(JSON.stringify({
     type: 'DETAIL_GAP_ATTEMPTED', reference_only: true,
     gap_id: first.gap_id, lease_id: second.lease_id, stream: first.stream,
+  }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
+  rl.close();
+  process.stdout.write('', () => process.exit(0));
+});
+`,
+    "utf8"
+  );
+  return { cleanup: () => rmSync(dir, { force: true, recursive: true }), connectorPath };
+}
+
+function createParentSwapRedeferConnector(outputPath: string): ConnectorHandle {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-detail-gap-parent-swap-"));
+  const connectorPath = join(dir, "connector.mjs");
+  writeFileSync(
+    connectorPath,
+    `
+import { createInterface } from 'node:readline';
+import { writeFileSync } from 'node:fs';
+const rl = createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  const start = JSON.parse(line);
+  if (start.type !== 'START') return;
+  writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify(start), 'utf8');
+  const [first, second] = start.detail_gaps;
+  process.stdout.write(JSON.stringify({
+    type: 'DETAIL_GAP', reference_only: true, status: 'pending', retryable: true,
+    gap_id: first.gap_id, lease_id: first.lease_id, stream: first.stream,
+    parent_stream: second.parent_stream, record_key: first.record_key,
+    detail_locator: first.detail_locator, reason: 'temporary_unavailable',
   }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
   rl.close();
@@ -2019,6 +2064,62 @@ test(
       pending.every((gap) => gap.attempt_count === 0),
       true
     );
+  })
+);
+
+test(
+  "a served multi-parent gap cannot be re-deferred under its sibling parent",
+  withTempDb(async (dir) => {
+    const store = createSqliteConnectorDetailGapStore();
+    for (const parentStream of ["group_messages", "direct_chat_messages"]) {
+      // biome-ignore lint/performance/noAwaitInLoops: ordered setup creates two distinct parent-scoped identities.
+      await store.upsertPendingGap({
+        connectorId: "groupme",
+        detailLocator: { kind: "groupme.attachment", message_id: "shared-key" },
+        grantId: "grant_parent_swap",
+        parentStream,
+        reason: "temporary_unavailable",
+        recordKey: "shared-key",
+        stream: "attachments",
+      });
+    }
+    const startPath = join(dir, "parent-swap-start.json");
+    const { connectorPath, cleanup } = createParentSwapRedeferConnector(startPath);
+    try {
+      await assert.rejects(
+        () =>
+          runConnectorWithGapStore({
+            admitRunConnection: fakeAdmitRunConnection(),
+            connectorId: "groupme",
+            connectorPath,
+            detailGapStore: store,
+            grantId: "grant_parent_swap",
+            manifest: {
+              streams: [
+                { name: "group_messages" },
+                { name: "direct_chat_messages" },
+                {
+                  coverage_strategy: "parent_detail_accounting",
+                  name: "attachments",
+                  parent_streams: ["group_messages", "direct_chat_messages"],
+                },
+              ],
+            },
+            // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op progress observer for the protocol fixture.
+            onProgress: () => {},
+            ownerToken: "owner",
+            persistState: false,
+          }),
+        DIFFERENT_PARENT_STREAM_PATTERN
+      );
+    } finally {
+      cleanup();
+    }
+    const start = JSON.parse(readFileSync(startPath, "utf8"));
+    assert.deepEqual(start.detail_gaps.map((gap: { parent_stream: string }) => gap.parent_stream).sort(), [
+      "direct_chat_messages",
+      "group_messages",
+    ]);
   })
 );
 
@@ -3792,8 +3893,15 @@ test(
   })
 );
 
+// Contract revised 2026-08-08: an unproven DETAIL_COVERAGE key still WITHHOLDS
+// the state commit (a claim of completeness must carry proof), but it no longer
+// KILLS the run. A coverage shortfall is a reported gap, not a protocol
+// violation — the connector's envelope was well-formed and it simply covered
+// fewer detail items than expected, so a run whose records are already ingested
+// must keep them. The cursor-withholding half below is unchanged and is the
+// invariant this test has always really been protecting.
 test(
-  "runtime rejects state commit when required DETAIL_COVERAGE has no hydrated detail or durable gap",
+  "runtime withholds state commit and reports a gap when required DETAIL_COVERAGE has no hydrated detail or durable gap",
   withTempDb(async () => {
     await withStateServer(async ({ rsUrl, stateWrites }) => {
       const { connectorPath, cleanup } = createConnector([
@@ -3810,23 +3918,30 @@ test(
       ]);
 
       try {
-        await assert.rejects(
-          () =>
-            runConnectorWithGapStore({
-              admitRunConnection: fakeAdmitRunConnection(),
-              connectorId: "chatgpt",
-              connectorPath,
-              manifest: { streams: [{ name: "conversation_list" }, { name: "conversations" }] },
-              // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
-              onProgress: () => {},
-              ownerToken: "owner",
-              rsUrl,
-              state: {},
-            }),
+        const result = await runConnectorWithGapStore({
+          admitRunConnection: fakeAdmitRunConnection(),
+          connectorId: "chatgpt",
+          connectorPath,
+          manifest: { streams: [{ name: "conversation_list" }, { name: "conversations" }] },
+          // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+          onProgress: () => {},
+          ownerToken: "owner",
+          rsUrl,
+          state: {},
+        });
+
+        assert.equal(result.status, "succeeded", "a coverage shortfall is not a run-killing protocol violation");
+        // The unproven state_stream's cursor is still not advanced.
+        assert.equal(stateWrites.length, 0);
+        // ...and the shortfall is reported honestly rather than swallowed.
+        const gaps = (result.known_gaps ?? []) as Record<string, unknown>[];
+        const coverageGap = gaps.find((gap) => gap.reason === "detail_coverage_incomplete");
+        assert.ok(coverageGap, "the shortfall is surfaced as a known gap");
+        assert.match(
+          String(coverageGap.message ?? ""),
           // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
           /Connector detail coverage incomplete: state_stream=conversation_list stream=conversations missing_required_keys=1/
         );
-        assert.equal(stateWrites.length, 0);
       } finally {
         cleanup();
       }

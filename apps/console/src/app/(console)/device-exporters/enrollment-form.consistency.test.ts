@@ -29,6 +29,7 @@ function read(relPath: string): Promise<string> {
 const FORM_PATH = "apps/console/src/app/(console)/device-exporters/enrollment-form.tsx";
 const ACTIONS_PATH = "apps/console/src/app/(console)/device-exporters/actions.ts";
 
+const COLLECTOR_SETUP_HELPER = /pdppLocalCollectorSetupCommand/;
 const COLLECTOR_ENROLL_HELPER = /pdppLocalCollectorEnrollCommand/;
 const COLLECTOR_RUN_HELPER = /pdppLocalCollectorRunCommand/;
 const LOCAL_COLLECTOR_PACKAGE = /@pdpp\/local-collector/;
@@ -36,10 +37,16 @@ const BROWSER_COLLECTOR_MONOREPO_COPY =
   /PDPP monorepo checkout|pnpm --dir|packages\/polyfill-connectors|browser-collector run command/;
 const ENROLL_TESTID = /data-testid="collector-enroll-command"/;
 const RUN_TESTID_CLAUDE = /data-testid={`collector-run-command-/;
-const SUPPORTED_CONNECTORS = /COLLECTOR_RUN_CONNECTORS\s*=\s*\["claude_code",\s*"codex"\]/;
+const SUPPORTED_CONNECTORS =
+  /COLLECTOR_RUN_CONNECTORS\s*=\s*\[\s*"claude_code",\s*"codex",\s*"google_takeout",\s*"imessage",\s*"apple_photos",\s*"google_messages",?\s*\]/;
 
 test("enrollment form derives the canonical local collector commands via shared helpers", async () => {
   const src = await read(FORM_PATH);
+  assert.doesNotMatch(
+    src,
+    COLLECTOR_SETUP_HELPER,
+    "form must not render pdppLocalCollectorSetupCommand: `setup`/`--sample` are not in the published @pdpp/local-collector package"
+  );
   assert.match(src, COLLECTOR_ENROLL_HELPER, "form must call pdppLocalCollectorEnrollCommand");
   assert.match(src, COLLECTOR_RUN_HELPER, "form must call pdppLocalCollectorRunCommand");
   assert.match(src, LOCAL_COLLECTOR_PACKAGE, "form must surface the public @pdpp/local-collector path");
@@ -52,9 +59,33 @@ test("enrollment form exposes stable test hooks for the rendered commands", asyn
   assert.match(src, RUN_TESTID_CLAUDE, "run command must carry a stable per-connector data-testid");
 });
 
-test("enrollment form advertises claude_code and codex as the operator-ready connectors", async () => {
+test("enroll command appears before the run command in the rendered form", async () => {
   const src = await read(FORM_PATH);
-  assert.match(src, SUPPORTED_CONNECTORS, "claude_code and codex are the documented MVP collector lanes");
+  const enrollIndex = src.indexOf('data-testid="collector-enroll-command"');
+  const runIndex = src.indexOf("data-testid={`collector-run-command-");
+  assert.ok(enrollIndex > -1, "enroll command block must be present");
+  assert.ok(runIndex > -1, "run command block must be present");
+  assert.ok(enrollIndex < runIndex, "enroll must render before run, matching the two-step CLI contract");
+});
+
+test("enrollment form never renders a local-collector setup invocation", async () => {
+  // Direct regression test for the fresh-install blocker: the published
+  // @pdpp/local-collector CLI (confirmed against the live 1.1.0 tarball) has
+  // no `setup` subcommand and no `--sample` flag. Guard the LITERAL rendered
+  // string, not just the helper import, so a future inline command build
+  // cannot reintroduce the unpublished subcommand.
+  const src = await read(FORM_PATH);
+  assert.doesNotMatch(src, /local-collector setup/, "form must never render `local-collector setup`");
+  assert.doesNotMatch(src, /--sample/, "form must never render the unpublished --sample flag");
+});
+
+test("enrollment form advertises every connector bundled in the published @pdpp/local-collector npx path", async () => {
+  const src = await read(FORM_PATH);
+  assert.match(
+    src,
+    SUPPORTED_CONNECTORS,
+    "claude_code, codex, google_takeout, imessage, apple_photos, and google_messages are all bundled in the published @pdpp/local-collector npx path"
+  );
 });
 
 test("enrollment action only mints packaged local collector enrollment codes", async () => {

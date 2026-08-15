@@ -58,8 +58,7 @@
       "rationale": "Reddit remains manual by default because first login from a new profile commonly serves a 2FA/OTP step or a Cloudflare challenge, but the session persists in the profile afterward, so an owner can explicitly opt into a background schedule after authenticating the connection."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "tier": "supported"
     }
   },
   "streams": [

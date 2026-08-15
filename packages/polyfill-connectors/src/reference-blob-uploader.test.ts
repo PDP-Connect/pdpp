@@ -151,6 +151,36 @@ test("makeReferenceBlobUploader: classifies invalid successful responses and int
   );
 });
 
+test("makeReferenceBlobUploader: transports exact bytes separately from their declared MIME type", async () => {
+  const bytes = Buffer.from([0xff, 0xfe, 0x00, 0x61]);
+  const upload = makeReferenceBlobUploader({
+    fetchFn: async (input, init) => {
+      const url = new URL(String(input));
+      assert.equal(url.searchParams.get("mime_type"), "text/plain");
+      assert.equal(new Headers(init?.headers).get("content-type"), "application/octet-stream");
+      const received = Buffer.from(await new Response(requestBody(init)).arrayBuffer());
+      assert.deepEqual(received, bytes);
+      const sha256 = createHash("sha256").update(received).digest("hex");
+      return new Response(
+        JSON.stringify({
+          blob_id: `blob_sha256_${sha256}`,
+          mime_type: "text/plain",
+          object: "blob",
+          sha256,
+          size_bytes: received.byteLength,
+        }),
+        { status: 200 }
+      );
+    },
+    ownerToken: "test-token",
+    rsUrl: "https://pdpp.example.test",
+  });
+
+  const result = await upload({ ...baseArgs, content: [bytes] });
+  assert.equal(result.mime_type, "text/plain");
+  assert.equal(result.size_bytes, bytes.byteLength);
+});
+
 test("makeReferenceBlobUploader: classifies source stream failures separately from blob transport", async () => {
   const sourceFailure = new Error("IMAP stream failed");
   const brokenContent: AsyncIterable<Buffer> = {

@@ -47,6 +47,7 @@
   },
   "capabilities": {
     "human_interaction": ["otp", "manual_action"],
+    "browser_surface_kind": "chase_current_activity",
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,
@@ -58,14 +59,17 @@
       "rationale": "Chase requires OTP and short-lived browser sessions; never run a bank refresh in the background."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "tier": "supported"
     }
   },
   "streams": [
     {
       "name": "accounts",
+      "required": true,
       "description": "Chase retail accounts (checking, savings, credit cards). Hybrid-sourced: identity + account type come from the QFX ACCTINFO response; friendly name, open date, and tier come from chase.com dashboard scrape.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["fetched_at"]
+      },
       "display": {
         "label": "Your Chase accounts",
         "detail": "Account names, types, last-four, current balance, and status. Credit card accounts additionally surface available credit and statement balance."
@@ -148,7 +152,13 @@
     },
     {
       "name": "transactions",
+      "required": true,
       "description": "Chase transactions per account, parsed from QFX (Quicken Web Connect) downloads. QFX is Chase's canonical transaction-export format: per-request date window is ~90 days, so the connector walks backward in 90-day chunks until QFX returns empty. Primary key is (account_id, fitid) — Chase's QFX FITID is a stable unique transaction identifier, so dedup across overlapping date windows collapses naturally. Amounts are in cents (integer, signed).",
+      "compaction_fingerprint": {
+        "exclude_keys": ["fetched_at", "source"],
+        "change_model": "immutable_semantic",
+        "representative_policy": "current"
+      },
       "display": {
         "label": "Your Chase transactions",
         "detail": "Date, signed amount in cents, cleaned payee name, original memo, Chase-assigned transaction type (DEBIT/CREDIT/CHECK/XFER/PAYMENT/FEE/etc.), check number, and FITID (Chase's stable transaction identifier). Pending transactions are not included — QFX delivers posted transactions only."
@@ -284,7 +294,11 @@
     },
     {
       "name": "current_activity",
+      "required": true,
       "description": "Chase UI-visible account activity at scrape time. This mutable freshness stream can include pending rows and recently posted current-cycle rows from the signed-in Chase activity UI. It is not the settled QFX ledger; pending rows may change, disappear, or later post under a different QFX FITID.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["fetched_at"]
+      },
       "display": {
         "label": "Your current Chase activity",
         "detail": "Pending and current-cycle activity visible in Chase's account UI. Use this for freshness, not reconciliation. Posted ledger identity remains in the QFX-only transactions stream."
@@ -405,7 +419,22 @@
     },
     {
       "name": "statements",
+      "required": true,
       "description": "Monthly statement PDFs per account from Chase's Statements & Documents page. Each record carries the document's title, delivery date, account reference, and — when the PDF is hydrated on-device — a content-addressed path + sha256. PDFs themselves live on the owner's disk under ~/.pdpp/chase-statements/<account>/<YYYY-MM>-<sha8>.pdf rather than in the RS, keeping blob storage out of SQLite per `design-notes/blob-hydration-open-question.md`.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["fetched_at"],
+        "change_model": "immutable_semantic",
+        "representative_policy": "current",
+        "content_gate": {
+          "presence_fields": ["pdf_text_sha256", "pdf_page_count"],
+          "gated_exclude_keys": [
+            "pdf_sha256",
+            "pdf_path",
+            "document_url",
+            "fetched_at"
+          ]
+        }
+      },
       "display": {
         "label": "Your Chase statements",
         "detail": "PDF monthly statements across all Chase accounts. Metadata is always captured (title, delivery date, account reference); PDF bytes are downloaded and stored locally with a content hash when blob hydration runs. The same hash reappears across runs so downloads are idempotent."
@@ -563,5 +592,13 @@
       "coverage_strategy": "parent_detail_accounting",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "ambiguous_multi_account_overview": "We couldn't tell which account view to use",
+    "qfx_download_failed": "We couldn't download the transactions file",
+    "qfx_parse_failed": "We couldn't read the transactions file",
+    "row_exception": "Something went wrong reading one of the rows",
+    "selectors_pending": "Support for this part of the connector isn't complete yet",
+    "statements_scrape_failed": "We couldn't read your statements page"
+  }
 }

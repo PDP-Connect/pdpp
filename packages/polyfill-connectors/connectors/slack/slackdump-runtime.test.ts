@@ -2,26 +2,93 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { resolveConnectorArtifactDir } from "../../src/connector-artifact-root.ts";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 import {
+  extractSlackCredentials,
   formatSlackdumpMissingError,
+  normalizeSlackCookie,
+  normalizeSlackToken,
+  normalizeSlackWorkspace,
+  readSlackdumpProgressSnapshot,
   runSlackdump,
   SLACK_RETRYABLE_FAILURE_RE,
   slackdumpProgressChanged,
 } from "./index.ts";
 
+const execFileAsync = promisify(execFile);
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Where the connector will look for `<workspace>`'s archive, given an artifact
+ * root the test owns. Derived from the SAME resolver the connector uses, so
+ * these tests pin the seam rather than re-encoding the on-disk layout: if the
+ * root moves again, the seed follows automatically.
+ *
+ * Tests drive it with `PDPP_CONNECTOR_ARTIFACT_ROOT` (rule 1) rather than
+ * `HOME`, because the connector no longer derives the archive path from the
+ * home directory — that was the container-replacement data-loss bug.
+ */
+function seedArchiveRoot(artifactRoot: string, workspace: string): string {
+  return resolveConnectorArtifactDir("slack", [workspace], {
+    PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
+  }).root;
+}
+
 const PACKAGE_ROOT = resolve(__dirname, "../..");
 const SLACK_ENTRYPOINT = join(PACKAGE_ROOT, "connectors", "slack", "index.ts");
 const SLACK_MANIFEST = join(PACKAGE_ROOT, "manifests", "slack.json");
+const VALID_SLACK_TOKEN = "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+test("Slack credential normalization preserves URL-encoded d-cookie bytes", () => {
+  const encodedCookie = "xoxd-session-a%2Bb%2Fc%3D%3D";
+  const rawCookie = "xoxd-session-a+b/c==";
+  const opaqueToken = "xoxc-enterprise/session.v2+opaque==";
+  const opaqueCookie = "xoxd-enterprise/session.v2+opaque==?&!";
+
+  assert.equal(normalizeSlackCookie(`  d=${encodedCookie}  `), encodedCookie);
+  assert.equal(normalizeSlackCookie(rawCookie), rawCookie);
+  assert.equal(normalizeSlackToken(`  ${VALID_SLACK_TOKEN}  `), VALID_SLACK_TOKEN);
+  assert.equal(normalizeSlackToken(`  ${opaqueToken}  `), opaqueToken);
+  assert.equal(normalizeSlackCookie(opaqueCookie), opaqueCookie);
+  assert.equal(normalizeSlackWorkspace("  MyTeam  "), "myteam");
+
+  assert.deepEqual(
+    extractSlackCredentials({
+      SLACK_WORKSPACE: "  myteam  ",
+      SLACK_TOKEN: `  ${opaqueToken}  `,
+      SLACK_COOKIE: `d=${opaqueCookie}`,
+    }),
+    { workspace: "myteam", token: opaqueToken, cookie: opaqueCookie }
+  );
+});
+
+test("Slack credential normalization rejects empty, control, malformed, and oversized values", () => {
+  assert.throws(() => normalizeSlackToken(" "), /slack_token_invalid/);
+  assert.throws(() => normalizeSlackToken("xoxp-not-a-client-token"), /slack_token_invalid/);
+  assert.throws(() => normalizeSlackToken("xoxc-valid\u0000opaque"), /slack_token_invalid/);
+  assert.throws(() => normalizeSlackToken(`xoxc-${"a".repeat(4092)}`), /slack_token_invalid/);
+  assert.throws(() => normalizeSlackCookie("d= "), /slack_cookie_invalid/);
+  assert.throws(() => normalizeSlackCookie("xoxd-session-%2"), /slack_cookie_invalid/);
+  assert.throws(() => normalizeSlackCookie("xoxd-valid\u0001opaque"), /slack_cookie_invalid/);
+  assert.throws(() => normalizeSlackCookie(`xoxd-${"a".repeat(4092)}`), /slack_cookie_invalid/);
+  assert.throws(() => normalizeSlackWorkspace("../outside"), /slack_workspace_invalid/);
+  assert.throws(() => extractSlackCredentials({ SLACK_WORKSPACE: "myteam", SLACK_TOKEN: "", SLACK_COOKIE: "" }), {
+    message: "slack_credentials_missing",
+  });
+});
 
 function createSlackArchiveSchema(db: DatabaseSync): void {
   db.exec(`
@@ -116,6 +183,50 @@ test("runSlackdump: maps ENOENT to actionable missing-binary guidance", async ()
   }
 });
 
+test("runSlackdump: redacts session credentials from child failure output", async () => {
+  const tmpDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-redaction-"));
+  const fakeSlackdump = join(tmpDir, "fake-slackdump.mjs");
+  const token = VALID_SLACK_TOKEN;
+  const cookie = "xoxd-session-secret%2Bvalue";
+  const priorBin = process.env.SLACKDUMP_BIN;
+
+  await writeFile(
+    fakeSlackdump,
+    `#!/usr/bin/env node
+process.stderr.write("token=" + process.env.SLACK_TOKEN + " cookie=" + process.env.SLACK_COOKIE);
+process.stdout.write("stdout-token=" + process.env.SLACK_TOKEN);
+process.exit(7);
+`,
+    "utf8"
+  );
+  await chmod(fakeSlackdump, 0o755);
+  process.env.SLACKDUMP_BIN = fakeSlackdump;
+
+  try {
+    await assert.rejects(
+      runSlackdump(["workspace", "new"], {
+        env: { ...process.env, SLACK_TOKEN: token, SLACK_COOKIE: cookie },
+        timeoutMs: 1000,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /slackdump_exit_7/);
+        assert.doesNotMatch(error.message, new RegExp(token));
+        assert.doesNotMatch(error.message, new RegExp(cookie));
+        assert.match(error.message, /\[REDACTED\]/);
+        return true;
+      }
+    );
+  } finally {
+    if (priorBin === undefined) {
+      delete process.env.SLACKDUMP_BIN;
+    } else {
+      process.env.SLACKDUMP_BIN = priorBin;
+    }
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("slack retry classification treats slackdump exit 6 as resumable", () => {
   assert.equal(SLACK_RETRYABLE_FAILURE_RE.test("slackdump failed: slackdump_exit_6: conversations.history 500"), true);
   assert.equal(SLACK_RETRYABLE_FAILURE_RE.test("parser error: unexpected token in archive"), false);
@@ -170,7 +281,7 @@ setTimeout(() => process.exit(0), 100);
   assert.equal((progressEvents[0]?.extra as { stream?: unknown } | undefined)?.stream, "messages");
 });
 
-test("runSlackdump: detects progress from row counts even when a WAL checkpoint keeps archive bytes flat", async () => {
+test("runSlackdump: detects progress from mtime even when a WAL checkpoint keeps archive bytes flat", async () => {
   // SQLite WAL mode can checkpoint (fold the WAL back into the main file and
   // reuse its allocation) on every commit, so combined main+WAL+SHM byte size
   // can stay unchanged across real, committed writes. An archiveBytes-only
@@ -178,7 +289,9 @@ test("runSlackdump: detects progress from row counts even when a WAL checkpoint 
   // progress-driven watchdog time out a healthy long-running dump. The fake
   // slackdump here performs REAL WAL-mode commits with wal_autocheckpoint=1
   // (matching the condition that keeps file size flat) so this test would
-  // fail if slackdumpProgressChanged only compared archiveBytes.
+  // fail if slackdumpProgressChanged only compared archiveBytes. Detection
+  // must come from stat-ing the file (mtime), NOT from opening the SQLite
+  // archive ourselves — see readSlackdumpProgressSnapshot's comment for why.
   const tmpDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-wal-checkpoint-"));
   const fakeSlackdump = join(tmpDir, "fake-slackdump.mjs");
   const sqlitePath = join(tmpDir, "slackdump.sqlite");
@@ -237,37 +350,102 @@ const insert = setInterval(() => {
     await rm(tmpDir, { recursive: true, force: true });
   }
 
-  const messageCounts = progressEvents.map((event) => (event.extra as { count?: unknown } | undefined)?.count);
+  // At least one commit must be observed AFTER the first (i.e. more than one
+  // progress event), proving mtime advanced across a checkpoint that left
+  // combined byte size unchanged.
   assert.ok(
-    messageCounts.some((count) => typeof count === "number" && count >= 2),
-    `expected progress to observe message count advancing past the first commit; got counts=${JSON.stringify(messageCounts)}`
+    progressEvents.length >= 2,
+    `expected more than one progress event across multiple checkpointed commits; got ${progressEvents.length}`
   );
 });
 
-test("slackdumpProgressChanged does not treat a failed read (counts falling to null) as progress", () => {
-  // readSlackdumpProgressSnapshot falls back to null for channels/maxChunkId/
-  // messages when the archive is locked or mid-write (its try/catch). A
-  // naive !== comparison sees `null !== 5` as "changed" and would report a
-  // read FAILURE as real progress — with nothing on disk having actually
-  // happened. Only a transition between two successfully-read, differing
-  // non-null values counts.
-  const previous = { archiveBytes: 1000, channels: 2, maxChunkId: 3, messages: 5 };
-  const failedRead = { archiveBytes: 1000, channels: null, maxChunkId: null, messages: null };
+test("slackdumpProgressChanged does not treat a missing archive (null) as progress", () => {
+  const previous = { archiveBytes: 1000, archiveMtimeMs: 111 };
+  const missing: { archiveBytes: number; archiveMtimeMs: number } | null = null;
   assert.equal(
-    slackdumpProgressChanged(previous, failedRead),
+    slackdumpProgressChanged(previous, missing),
     false,
-    "a transient failed read must not be reported as progress"
+    "a transient missing-archive read must not be reported as progress"
   );
 });
 
-test("slackdumpProgressChanged still detects a real count advance even when archiveBytes is flat", () => {
-  const previous = { archiveBytes: 1000, channels: 2, maxChunkId: 3, messages: 5 };
-  const advanced = { archiveBytes: 1000, channels: 2, maxChunkId: 3, messages: 6 };
+test("slackdumpProgressChanged detects an mtime advance even when archiveBytes is flat", () => {
+  const previous = { archiveBytes: 1000, archiveMtimeMs: 111 };
+  const advanced = { archiveBytes: 1000, archiveMtimeMs: 222 };
   assert.equal(
     slackdumpProgressChanged(previous, advanced),
     true,
-    "a genuine successful-read count advance must still be reported as progress"
+    "a genuine mtime advance must still be reported as progress even when byte size is flat"
   );
+});
+
+// THE concurrency oracle for the observer-induced lock. Confirms the fix is
+// real: a writer that holds a multi-row transaction against the archive
+// (slackdump does real batched inserts, not one-row-per-open) must never see
+// SQLITE_BUSY from our own polling reader. Before the fix, readSlackdumpProgressSnapshot
+// opened a read-only SQLite connection on every poll tick; that reader's
+// SHARED lock could collide with the writer's COMMIT and fail the writer's
+// OWN transaction — confirmed directly via a standalone repro (batched
+// writer + concurrent read-only poller against a rollback-journal-mode
+// archive: SQLITE_BUSY on COMMIT in roughly half of repeated trials). This
+// test pins the after-state: polling `readSlackdumpProgressSnapshot` at the
+// same real cadence a live run would use, concurrently with a genuine
+// multi-row committed transaction, must never perturb the writer.
+test("readSlackdumpProgressSnapshot polling never causes a concurrent multi-row writer transaction to fail", async () => {
+  const tmpDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-lock-oracle-"));
+  const sqlitePath = join(tmpDir, "slackdump.sqlite");
+  try {
+    const db = new DatabaseSync(sqlitePath);
+    try {
+      createSlackArchiveSchema(db);
+    } finally {
+      db.close();
+    }
+
+    const writerScript = join(tmpDir, "writer.mjs");
+    await writeFile(
+      writerScript,
+      `#!/usr/bin/env node
+import { DatabaseSync } from "node:sqlite";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const db = new DatabaseSync(process.argv[2]);
+for (let batch = 0; batch < 150; batch++) {
+  db.exec("BEGIN");
+  for (let i = 0; i < 50; i++) {
+    const n = batch * 50 + i;
+    db.prepare(
+      "INSERT INTO MESSAGE (CHANNEL_ID, TS, THREAD_TS, IS_PARENT, TXT, NUM_FILES, DATA, CHUNK_ID) VALUES (?,?,?,?,?,?,?,?)"
+    ).run("C0PROGRESS", "17140330" + String(n).padStart(6, "0") + ".000000", null, null, "chunk " + n, null, null, n + 1);
+  }
+  db.exec("COMMIT");
+  await sleep(3);
+}
+db.close();
+console.log("writer-ok");
+`,
+      "utf8"
+    );
+    await chmod(writerScript, 0o755);
+
+    // Poll at the same 5ms cadence used to reliably reproduce the pre-fix
+    // regression in isolation, for the ~450ms+ window the writer's 150
+    // batched commits (with a short gap between each) take to run.
+    let pollCount = 0;
+    const pollTimer = setInterval(() => {
+      pollCount += 1;
+      readSlackdumpProgressSnapshot(sqlitePath);
+    }, 5);
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [writerScript, sqlitePath], { timeout: 30_000 });
+      assert.match(stdout, /writer-ok/);
+    } finally {
+      clearInterval(pollTimer);
+    }
+    assert.ok(pollCount > 20, `expected many concurrent polls during the writer run; got ${pollCount}`);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test("slack manifest declares no unsupported-in-mode streams (all four gap streams now collect directly)", async () => {
@@ -309,11 +487,38 @@ test("slack manifest declares no unsupported-in-mode streams (all four gap strea
   }
 });
 
+test("slack manifest explains the xoxc token and d-cookie fields with the official manual", async () => {
+  const manifest = JSON.parse(await readFile(SLACK_MANIFEST, "utf8")) as {
+    setup?: {
+      credential_capture?: {
+        description?: string;
+        fields?: Array<{ help_text?: string; help_url?: string; label?: string; name?: string }>;
+      };
+    };
+  };
+  const setup = manifest.setup?.credential_capture;
+  const token = setup?.fields?.find((field) => field.name === "slack_token");
+  const cookie = setup?.fields?.find((field) => field.name === "slack_cookie");
+  assert.match(setup?.description ?? "", /not an OAuth app token/);
+  assert.match(token?.label ?? "", /web-client session token/);
+  assert.match(token?.help_text ?? "", /localConfig_v2/);
+  assert.match(cookie?.label ?? "", /d cookie value/);
+  assert.match(cookie?.help_text ?? "", /cookie named exactly d/);
+  assert.match(cookie?.help_text ?? "", /not d=/);
+  assert.match(cookie?.help_text ?? "", /%2F.*%2B/);
+  assert.equal(token?.help_url, cookie?.help_url);
+  assert.match(
+    token?.help_url ?? "",
+    /github\.com\/rusq\/slackdump\/blob\/5ecece6b7fa63f6e1a71e049900b9ccc61f6b1e7\/doc\/login-manual\.md/
+  );
+  assert.doesNotMatch(token?.help_url ?? "", /wiki\/How-to-get-your-Slack-credentials/);
+});
+
 test("slack connector reports DONE.records_emitted from runtime-counted RECORDs", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-counter-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-counter-"));
   try {
     const workspace = "counter-test";
-    const archiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const archiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     await mkdir(archiveDir, { recursive: true });
     const db = new DatabaseSync(join(archiveDir, "slackdump.sqlite"));
     try {
@@ -352,10 +557,10 @@ test("slack connector reports DONE.records_emitted from runtime-counted RECORDs"
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -376,19 +581,16 @@ test("slack connector reports DONE.records_emitted from runtime-counted RECORDs"
     assert.equal(done?.status, "succeeded");
     assert.equal(done?.records_emitted, records.length);
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("slack connector counts channel-scoped message RECORDs in DONE.records_emitted", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-counter-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-counter-"));
   try {
     const workspace = "scoped-counter-test";
     const archiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest(["C02SCOPED"])
     );
@@ -439,10 +641,10 @@ test("slack connector counts channel-scoped message RECORDs in DONE.records_emit
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -463,15 +665,15 @@ test("slack connector counts channel-scoped message RECORDs in DONE.records_emit
     assert.equal(done?.status, "succeeded");
     assert.equal(done?.records_emitted, records.length);
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("slack connector emits a bounded source-partition diagnostic when a prior channel is missing", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-missing-channel-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-missing-channel-"));
   try {
     const workspace = "missing-channel-test";
-    const archiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const archiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     await mkdir(archiveDir, { recursive: true });
     const db = new DatabaseSync(join(archiveDir, "slackdump.sqlite"));
     try {
@@ -486,10 +688,10 @@ test("slack connector emits a bounded source-partition diagnostic when a prior c
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -521,20 +723,17 @@ test("slack connector emits a bounded source-partition diagnostic when a prior c
     const cursor = messagesState(result);
     assert.deepEqual(cursor.observed_channel_ids, ["C_MISSING", "C_PRESENT"]);
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("slack connector heals a missing prior channel from an existing scoped archive", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-heal-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-heal-"));
   try {
     const workspace = "scoped-heal-test";
-    const archiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const archiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const scopedDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest(["C0MISSING"])
     );
@@ -563,10 +762,10 @@ test("slack connector heals a missing prior channel from an existing scoped arch
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -613,15 +812,15 @@ test("slack connector heals a missing prior channel from an existing scoped arch
       C0PRESENT: "1714032849.123456",
     });
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("slack connector does not emit a missing-partition diagnostic when prior channels remain present", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-clean-channel-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-clean-channel-"));
   try {
     const workspace = "clean-channel-test";
-    const archiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const archiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     await mkdir(archiveDir, { recursive: true });
     const db = new DatabaseSync(join(archiveDir, "slackdump.sqlite"));
     try {
@@ -636,10 +835,10 @@ test("slack connector does not emit a missing-partition diagnostic when prior ch
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -663,15 +862,15 @@ test("slack connector does not emit a missing-partition diagnostic when prior ch
     );
     assert.deepEqual(messagesState(result).observed_channel_ids, ["C_PRESENT"]);
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("slack connector uses per-channel message cursors with legacy global fallback", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-channel-cursor-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-channel-cursor-"));
   try {
     const workspace = "channel-cursor-test";
-    const archiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const archiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     await mkdir(archiveDir, { recursive: true });
     const db = new DatabaseSync(join(archiveDir, "slackdump.sqlite"));
     try {
@@ -690,10 +889,10 @@ test("slack connector uses per-channel message cursors with legacy global fallba
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -732,21 +931,18 @@ test("slack connector uses per-channel message cursors with legacy global fallba
     });
     assert.deepEqual(cursor.observed_channel_ids, ["C1", "C2"]);
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("slack connector uses an isolated scoped archive for targeted channel backfill", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-archive-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-archive-"));
   try {
     const workspace = "scoped-archive-test";
     const scopedChannelId = "C02SCOPE123";
-    const mainArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const mainArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const scopedArchiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest([scopedChannelId])
     );
@@ -775,10 +971,10 @@ test("slack connector uses an isolated scoped archive for targeted channel backf
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -802,21 +998,18 @@ test("slack connector uses an isolated scoped archive for targeted channel backf
     );
     assert.equal(messagesState(result).archive_dir, mainArchiveDir);
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("slack connector emits scoped archive rows even when they are older than the channel cursor", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-hole-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-hole-"));
   try {
     const workspace = "scoped-hole-test";
     const scopedChannelId = "C02HOLE123";
-    const mainArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const mainArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const scopedArchiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest([scopedChannelId])
     );
@@ -837,10 +1030,10 @@ test("slack connector emits scoped archive rows even when they are older than th
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -876,6 +1069,291 @@ test("slack connector emits scoped archive rows even when they are older than th
     assert.deepEqual(cursor.channel_last_ts, { [scopedChannelId]: "1714033500.000000" });
     assert.deepEqual(cursor.observed_channel_ids, [scopedChannelId]);
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
+});
+
+// The container-replacement regression, pinned at the connector boundary.
+//
+// The archive used to be computed from `homedir()`. The documented deployment
+// mounts only `/var/lib/pdpp`, so `$HOME` was on the container's writable layer
+// and every `docker rm` + `docker run` destroyed the accumulated archive —
+// nine consecutive real runs died on slackdump_timeout re-downloading it.
+//
+// This test recreates that split: the archive is seeded next to PDPP_DB_PATH
+// (the deployment's persistent volume) while HOME points at a DIFFERENT,
+// empty directory standing in for the discarded writable layer. The connector
+// must read the archive on the durable volume and ignore HOME entirely. Before
+// the fix it looked under HOME, found nothing, and failed.
+test("slack archive resolves next to PDPP_DB_PATH, not HOME (survives container replacement)", async () => {
+  const durableVolume = await mkdtemp(join(tmpdir(), "pdpp-slack-durable-"));
+  const discardedHome = await mkdtemp(join(tmpdir(), "pdpp-slack-discarded-home-"));
+  try {
+    const workspace = "recreate-test";
+    // Stand in for `-v pdpp_data:/var/lib/pdpp` + the baked
+    // PDPP_DB_PATH=/var/lib/pdpp/pdpp.sqlite that Core ships.
+    const dbPath = join(durableVolume, "pdpp.sqlite");
+    const archiveDir = join(
+      resolveConnectorArtifactDir("slack", [workspace], { PDPP_DB_PATH: dbPath }).root,
+      "archive"
+    );
+    await mkdir(archiveDir, { recursive: true });
+    const db = new DatabaseSync(join(archiveDir, "slackdump.sqlite"));
+    try {
+      createSlackArchiveSchema(db);
+      insertChannel(db, "C0DURABLE", "durable");
+      insertMessage(db, "C0DURABLE", "1714032849.123456", "survived the recreate");
+    } finally {
+      db.close();
+    }
+
+    // The archive must live on the durable volume, never under HOME.
+    assert.ok(archiveDir.startsWith(durableVolume), `expected archive under the durable volume, got ${archiveDir}`);
+    assert.ok(!archiveDir.startsWith(discardedHome));
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: discardedHome,
+        PDPP_DB_PATH: dbPath,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: VALID_SLACK_TOKEN,
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+      },
+    });
+
+    const records = result.messages.filter(
+      (message): message is Extract<EmittedMessage, { type: "RECORD" }> => message.type === "RECORD"
+    );
+    const done = result.messages.findLast(
+      (message): message is Extract<EmittedMessage, { type: "DONE" }> => message.type === "DONE"
+    );
+    assert.equal(done?.status, "succeeded");
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.stream, "messages");
+
+    // The run log must state the durable root it chose, and must NOT claim the
+    // local-development fallback while running against a deployment path.
+    const progress = result.messages
+      .filter((message): message is Extract<EmittedMessage, { type: "PROGRESS" }> => message.type === "PROGRESS")
+      .map((message) => message.message)
+      .join("\n");
+    assert.match(progress, /Durable artifact root/);
+    assert.doesNotMatch(progress, /LOCAL-DEVELOPMENT FALLBACK/);
+
+    // HOME stayed untouched — nothing durable was written to the layer that
+    // container replacement discards.
+    assert.equal(existsSync(join(discardedHome, ".pdpp")), false);
+  } finally {
+    await rm(durableVolume, { recursive: true, force: true });
+    await rm(discardedHome, { recursive: true, force: true });
+  }
+});
+
+// ─── Stall budget vs total-runtime cap ────────────────────────────────
+//
+// The UAT terminal failure this pins: `SLACKDUMP_TIMEOUT_MS` was enforced as a
+// TOTAL wall-clock cap. With the deployment's 90-minute value, a first sync of
+// a multi-year workspace was killed mid-download while steadily making
+// progress — 13k-17k records emitted and 80k+ messages banked in the archive,
+// yet every stream left uncommitted and zero successful runs. The budget must
+// bound SILENCE, not useful work.
+
+/**
+ * Write a fake slackdump that appends real rows to the archive on a cadence,
+ * then sleeps. `advances` controls how many progress steps it makes before
+ * going quiet, which is what separates a healthy long run from a true stall.
+ */
+async function writeProgressingSlackdump(
+  path: string,
+  { advances, stepMs, thenIdleMs }: { advances: number; stepMs: number; thenIdleMs: number }
+): Promise<void> {
+  await writeFile(
+    path,
+    `#!/usr/bin/env node
+import { DatabaseSync } from "node:sqlite";
+const archive = process.env.FAKE_ARCHIVE_PATH;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+for (let i = 0; i < ${advances}; i++) {
+  await sleep(${stepMs});
+  const db = new DatabaseSync(archive);
+  try {
+    db.prepare(
+      "INSERT INTO MESSAGE (CHANNEL_ID, TS, THREAD_TS, IS_PARENT, TXT, NUM_FILES, DATA, CHUNK_ID) VALUES (?,?,?,?,?,?,?,?)"
+    ).run("C0PROGRESS", "17140330" + String(i).padStart(2, "0") + ".000000", null, null, "chunk " + i, null, null, i + 1);
+  } finally {
+    db.close();
+  }
+}
+await sleep(${thenIdleMs});
+process.exit(0);
+`,
+    "utf8"
+  );
+  await chmod(path, 0o755);
+}
+
+async function withFakeSlackdump<T>(fn: (paths: { archive: string; bin: string }) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-stall-"));
+  const prior = process.env.SLACKDUMP_BIN;
+  try {
+    const archive = join(dir, "slackdump.sqlite");
+    const db = new DatabaseSync(archive);
+    try {
+      createSlackArchiveSchema(db);
+    } finally {
+      db.close();
+    }
+    const bin = join(dir, "fake-slackdump.mjs");
+    process.env.SLACKDUMP_BIN = bin;
+    return await fn({ archive, bin });
+  } finally {
+    if (prior === undefined) {
+      delete process.env.SLACKDUMP_BIN;
+    } else {
+      process.env.SLACKDUMP_BIN = prior;
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+// THE regression. Total runtime (~1.8s) far exceeds the 600ms budget, but the
+// child never goes quiet for more than ~200ms. Under the old total-runtime cap
+// this rejected with slackdump_timeout; under a stall budget it must succeed.
+test("runSlackdump: a steadily-progressing dump outlives its budget (stall, not total runtime)", async () => {
+  await withFakeSlackdump(async ({ archive, bin }) => {
+    await writeProgressingSlackdump(bin, { advances: 9, stepMs: 200, thenIdleMs: 0 });
+
+    await runSlackdump(["archive"], {
+      env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
+      progressIntervalMs: 50,
+      sqlitePath: archive,
+      timeoutMs: 600,
+    });
+  });
+});
+
+// The other half of the contract: real silence must still be terminal, or the
+// budget would be worthless. Same budget, but the child stops advancing.
+test("runSlackdump: a genuinely stalled dump still times out", async () => {
+  await withFakeSlackdump(async ({ archive, bin }) => {
+    await writeProgressingSlackdump(bin, { advances: 1, stepMs: 50, thenIdleMs: 30_000 });
+
+    await assert.rejects(
+      runSlackdump(["archive"], {
+        env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
+        progressIntervalMs: 50,
+        sqlitePath: archive,
+        timeoutMs: 700,
+      }),
+      /slackdump_timeout/
+    );
+  });
+});
+
+// Progress must rearm the budget even when nothing is reporting it: stall
+// detection reads the archive directly and must not depend on a `progress`
+// callback being supplied.
+test("runSlackdump: progress rearms the budget with no progress callback attached", async () => {
+  await withFakeSlackdump(async ({ archive, bin }) => {
+    await writeProgressingSlackdump(bin, { advances: 8, stepMs: 200, thenIdleMs: 0 });
+
+    await runSlackdump(["archive"], {
+      env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
+      progressIntervalMs: 50,
+      sqlitePath: archive,
+      timeoutMs: 600,
+    });
+  });
+});
+
+// With no observable archive there is no progress signal, so the budget can
+// only mean total runtime. Pins that degradation explicitly.
+test("runSlackdump: without an observable archive the budget stays a total-runtime deadline", async () => {
+  await withFakeSlackdump(async ({ archive, bin }) => {
+    await writeProgressingSlackdump(bin, { advances: 20, stepMs: 100, thenIdleMs: 0 });
+
+    await assert.rejects(
+      runSlackdump(["archive"], {
+        env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
+        timeoutMs: 500,
+      }),
+      /slackdump_timeout/
+    );
+  });
+});
+
+// An absolute ceiling stays available for operators who want one, and is
+// reported as a distinct reason so it is never confused with a stall.
+test("runSlackdump: SLACKDUMP_MAX_RUNTIME_MS caps even a progressing dump, with a distinct reason", async () => {
+  await withFakeSlackdump(async ({ archive, bin }) => {
+    await writeProgressingSlackdump(bin, { advances: 30, stepMs: 100, thenIdleMs: 0 });
+
+    await assert.rejects(
+      runSlackdump(["archive"], {
+        env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
+        maxRuntimeMs: 900,
+        progressIntervalMs: 50,
+        sqlitePath: archive,
+        timeoutMs: 60_000,
+      }),
+      /slackdump_max_runtime/
+    );
+  });
+});
+
+// Both timeout shapes must classify retryable: the durable archive means a
+// retry resumes rather than restarting the multi-hour dump from zero.
+test("both slackdump timeout shapes are retryable failures", () => {
+  assert.equal(SLACK_RETRYABLE_FAILURE_RE.test("slackdump failed: slackdump_timeout"), true);
+  assert.equal(SLACK_RETRYABLE_FAILURE_RE.test("slackdump failed: slackdump_max_runtime"), true);
+});
+
+// A child that exits without ever making progress must settle on its OWN exit
+// event, promptly — never wait out the (now 24h-default) silence budget. This
+// is what keeps a genuinely broken invocation fast to fail even though the
+// budget bounds silence rather than runtime.
+test("runSlackdump: a child that exits with no progress settles immediately, not after the budget", async () => {
+  await withFakeSlackdump(async ({ archive, bin }) => {
+    await writeProgressingSlackdump(bin, { advances: 0, stepMs: 0, thenIdleMs: 0 });
+
+    const startedAt = Date.now();
+    await runSlackdump(["archive"], {
+      env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
+      progressIntervalMs: 50,
+      sqlitePath: archive,
+      // A budget far larger than the test could ever wait for: the only way
+      // this returns is the child's own exit path.
+      timeoutMs: 10 * 60 * 1000,
+    });
+
+    assert.ok(Date.now() - startedAt < 10_000, "expected exit-driven settle, not a budget wait");
+  });
+});
+
+// Same contract on the failure side, and the reason must stay the exit code —
+// a no-progress failure is not reported as a stall.
+test("runSlackdump: a failing child reports its exit code, never a stall, and settles promptly", async () => {
+  await withFakeSlackdump(async ({ archive, bin }) => {
+    await writeFile(bin, "#!/usr/bin/env node\nprocess.exit(4);\n", "utf8");
+    await chmod(bin, 0o755);
+
+    const startedAt = Date.now();
+    await assert.rejects(
+      runSlackdump(["archive"], {
+        env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
+        progressIntervalMs: 50,
+        sqlitePath: archive,
+        timeoutMs: 10 * 60 * 1000,
+      }),
+      /slackdump_exit_4/
+    );
+    assert.ok(Date.now() - startedAt < 10_000, "expected exit-driven settle, not a budget wait");
+  });
 });
