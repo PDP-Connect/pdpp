@@ -204,7 +204,7 @@ jobs:
         env:
           PDPP_CORE_IMAGE_TAG: pdpp:ci-core-test
         run: |
-          node --test scripts/docker-slackdump-core-bundle.test.ts
+          pnpm test:scratch -- node --test scripts/docker-slackdump-core-bundle.test.ts
 
       # Runtime oracle: proves the exact image just built actually contains
       # a launchable full-Chromium Patchright binary (not a headless-shell

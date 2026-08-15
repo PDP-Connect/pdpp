@@ -1242,11 +1242,11 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
         },
         ...(ingestRecords
           ? {
-              ingestRecords: async (
+              ingestRecords: async function ingestRecordsForRoute(
                 cid: string,
                 cin: string | null,
                 records: readonly Record<string, unknown>[]
-              ): Promise<readonly (IngestLineFailure | null)[]> => {
+              ): Promise<readonly (IngestLineFailure | null)[]> {
                 const namespace =
                   storageNamespace ??
                   (await resolveAdmittedNamespace(cid, cin));
@@ -1254,7 +1254,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
                 const streamName = req.params.stream ?? "";
                 const getLatestAcquisitionBatch = ctx.getLatestAcquisitionBatchForConnection;
                 const connectorInstanceIdForBatch = namespace.connectorInstanceId;
-                const afterRecord = async (record: unknown, outcome: unknown): Promise<void> => {
+                const afterRecord = async function afterRecord(record: unknown, outcome: unknown): Promise<void> {
                   const outcomeError = batchOutcomeError(outcome);
                   if (outcomeError) {
                     return;
