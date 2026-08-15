@@ -108,9 +108,22 @@
      stranded the hero in the left half with ~690px of dead space beside it,
      clipped the data columns mid-word, and wrapped the CTA row. Production
      holds it at 1080 and that is correct for a one-track page. */
-  [data-surface="concept"]
-  .container.max-w-page:has([data-slot="pdpp-concept-rail"]),
+  /* Scoped on the SHELL, not on the page container. The masthead is a sibling
+     of the page, so a :has() on the container widens the document track while
+     leaving the nav at the old width — measured 175px of split between the
+     wordmark and the rail on /self-host. The shell contains both, so both move
+     together and the wordmark stays put across surfaces. */
+  /* Split rather than grouped, and ordered low-specificity first: these two
+     differ ((0,3,0) then (0,4,0)), so grouping them - or writing them in
+     the other order - puts a weaker selector after a stronger one, which
+     is a lint error and a real ordering hazard. Neither overrides the
+     other; they select disjoint surfaces. */
   [data-pdpp-doc-theme] .container.max-w-page {
+    max-width: 1560px;
+  }
+
+  [data-surface="concept"]:has([data-slot="pdpp-concept-rail"])
+    .container.max-w-page {
     max-width: 1560px;
   }
 
@@ -123,9 +136,7 @@
      measured document: capping it at the figure width squeezed it into the
      left 720px of a 1080px container, clipped the data columns mid-word
      ("artist Grou", "title Weath") and wrapped the three CTAs onto two rows. */
-  [data-surface="concept"]
-    .container.max-w-page:has([data-slot="pdpp-concept-rail"])
-    .pdpp-doc {
+  [data-surface="concept"]:has([data-slot="pdpp-concept-rail"]) .pdpp-doc {
     max-width: var(--container-concept-figure);
   }
 }
