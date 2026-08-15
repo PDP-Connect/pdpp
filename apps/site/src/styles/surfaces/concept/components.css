@@ -48,10 +48,19 @@
    Frame on PdppConceptShell; palette + type rebinds live in tokens/semantic.css. */
 
 [data-surface="concept"] {
-  /* Widest any block (grid, table) may run. Prose holds --container-measure;
-     this is the concept surface's counterpart to --container-figure on
-     /specification, so both surfaces bound their wide blocks the same way. */
-  --container-concept-figure: 900px;
+  /* Widest any block (table, code, figure) may run. Prose holds
+     --container-measure; this is the concept surface's counterpart to
+     --container-figure on /specification.
+
+     720 against a 600px measure is 1.20x. Surveyed 24 protocol/standards and
+     docs sites at 1920 on 2026-08-14: table width is a median 1.00x of prose
+     (n=6, max 1.50x), code 1.00x (n=11, max 1.25x), images 0.76x (n=7, never
+     above 1.00x). Nothing anywhere exceeded 1.50x. An earlier 900px here put
+     tables at exactly 1.50x and code at 1.28x — the ceiling of the observed
+     range, matched only by Terraform. Flush (1.00x) is the modal answer
+     (GitHub across 135 code blocks, PostgreSQL across 37, Deno, Node.js,
+     OpenTelemetry); 1.20x keeps a table legible without leaving the band. */
+  --container-concept-figure: 720px;
   @apply bg-background font-serif text-body text-foreground oldstyle-nums;
 }
 
