@@ -7814,7 +7814,8 @@ export async function listConnectorSourcesSummaryPage(
             },
             ownerSubjectId,
             undefined,
-            null
+            null,
+            true
           )
         : null,
   };
