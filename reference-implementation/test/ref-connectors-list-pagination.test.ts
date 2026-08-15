@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -21,6 +22,24 @@ const cursorKey = process.env.PDPP_CREDENTIAL_ENCRYPTION_KEY ?? "test connector-
 const CURSOR_PREFIX_PATTERN = /^rcs1\./;
 const CURSOR_SECRET_PATTERN = /github|conn_work|owner_a/;
 process.env.PDPP_CREDENTIAL_ENCRYPTION_KEY ??= cursorKey;
+
+function encodeLegacyUnfilteredCursor(): string {
+  const payload = Buffer.from(
+    JSON.stringify({
+      c: boundary.connectorId,
+      f: "",
+      i: boundary.connectorInstanceId,
+      s: createHash("sha256").update("pdpp-ref-connectors-page-v1:owner_a  ").digest().toString("base64url"),
+      t: boundary.createdAt,
+      v: 1,
+    })
+  );
+  const key = createHash("sha256").update(`pdpp.ref-connectors-page.cursor.v1\n${cursorKey}`).digest();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(payload), cipher.final()]);
+  return `rcs1.${Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString("base64url")}`;
+}
 
 test("connector summary cursor is versioned, opaque, and owner-scope bound", () => {
   const cursor = encodeConnectorSummaryPageCursor(boundary, "owner_a", cursorKey);
@@ -69,6 +88,15 @@ test("connector summary cursor rejects a connector_id filter mismatch", () => {
     () => decodeConnectorSummaryPageCursor(unfiltered, "owner_a", "github", cursorKey),
     ConnectorSummaryPageCursorError,
     "an unfiltered cursor must not resolve for a connector_id-filtered request"
+  );
+});
+
+test("legacy unfiltered cursors remain valid only on the unfiltered surface", () => {
+  const legacy = encodeLegacyUnfilteredCursor();
+  assert.deepEqual(decodeConnectorSummaryPageCursor(legacy, "owner_a", null, cursorKey, false), boundary);
+  assert.throws(
+    () => decodeConnectorSummaryPageCursor(legacy, "owner_a", null, cursorKey, true),
+    ConnectorSummaryPageCursorError
   );
 });
 
